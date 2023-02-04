@@ -39,8 +39,6 @@ void r_process::start()
 
     if(_pid.pid == 0) // 0 is returned in child...
     {
-//        setpgid(0, 0); // 0 here is special case that means set pgid to pid of caller.
-
         vector<string> parts;
 
         // work left to right
@@ -122,6 +120,13 @@ void r_process::start()
 #endif
 }
 
+bool r_process::running()
+{
+    int code;
+    auto status = wait_for(code, milliseconds(1));
+    return _pid.valid();
+}
+
 r_wait_status r_process::wait_for(int& code, milliseconds timeout)
 {
 #ifdef IS_LINUX
@@ -156,10 +161,30 @@ r_wait_status r_process::wait_for(int& code, milliseconds timeout)
 #ifdef IS_WINDOWS
     auto result = WaitForSingleObject(_pid.pi.hProcess, (DWORD)duration_cast<milliseconds>(timeout).count());
     if(result == WAIT_OBJECT_0)
+    {
+        CloseHandle(_pid.pi.hProcess);
+        CloseHandle(_pid.pi.hThread);
+        _pid.clear();
         return R_PROCESS_EXITED;
+    }
 #endif
 
     return R_PROCESS_WAIT_TIMEDOUT;
+}
+
+r_wait_status r_process::wait(int& code)
+{
+#ifdef IS_LINUX
+    int status;
+    waitpid(_pid.pid, &status, 0);
+#endif
+#ifdef IS_WINDOWS
+    WaitForSingleObject(_pid.pi.hProcess, INFINITE);
+    CloseHandle(_pid.pi.hProcess);
+    CloseHandle(_pid.pi.hThread);
+#endif
+    _pid.clear();
+    return R_PROCESS_EXITED;
 }
 
 void r_process::kill()
@@ -169,5 +194,8 @@ void r_process::kill()
 #endif
 #ifdef IS_WINDOWS
     TerminateProcess(_pid.pi.hProcess, 0);
+    CloseHandle(_pid.pi.hProcess);
+    CloseHandle(_pid.pi.hThread);
 #endif
+    _pid.clear();
 }

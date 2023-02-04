@@ -90,8 +90,10 @@ public:
     r_process( const std::string& cmd );
     virtual ~r_process() noexcept;
     void start();
+    bool running();
     r_pid get_pid() const { return _pid; }
     r_wait_status wait_for(int& code, std::chrono::milliseconds timeout);
+    r_wait_status wait(int& code);
     void kill();
 
     static r_pid get_current_pid();

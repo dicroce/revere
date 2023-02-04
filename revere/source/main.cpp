@@ -801,7 +801,8 @@ int main(int argc, char** argv)
                 camera_setup_wizard.next("configure_rtsp_source_camera");
             },
             [&](){
-                vision_process.start();
+                if(!vision_process.running())
+                    vision_process.start();
             }
         );
 
