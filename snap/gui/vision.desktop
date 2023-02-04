@@ -1,0 +1,11 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=vision
+Exec=revere.vision
+Comment=blah
+Icon=${SNAP}/meta/gui/V.png
+Terminal=false
+Categories=Utility;GTK;
+

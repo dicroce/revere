@@ -1,0 +1,11 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=revere
+Exec=/usr/local/revere/revere
+Comment=blah
+Icon=/usr/local/revere/R.png
+Terminal=false
+Categories=Utility;GTK;
+
