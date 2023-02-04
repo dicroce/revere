@@ -600,7 +600,7 @@ void _set_working_dir()
 {
     // Set the current working directory to the directory of the executable
     auto exe_path = r_fs::current_exe_path();
-    auto wd = exe_path.substr(0, exe_path.find_last_of("/"));
+    auto wd = exe_path.substr(0, exe_path.find_last_of(PATH_SLASH));
     R_LOG_INFO("wd: %s", wd.c_str());
     r_fs::change_working_directory(wd);
 }
@@ -627,19 +627,19 @@ int main(int argc, char** argv)
 #endif
 {
 #ifdef IS_WINDOWS
-    vector<string> arg_storage;
     int argc;
-    LPTSTR* argv = CommandLineToArgvW(pCmdLine, &argc);
+    LPWSTR* argv_p = CommandLineToArgvW(pCmdLine, &argc);
+    vector<string> arg_storage;
     for(int i = 0; i < argc; i++)
-        arg_storage.push_back(r_string::convert_wide_string_to_multi_byte_string(argv[i]));
-    argc = arg_storage.size();
-    char* argv[argc];
+        arg_storage.push_back(r_string_utils::convert_wide_string_to_multi_byte_string(argv_p[i]));
+    argc = (int)arg_storage.size();
+    vector<char*> argv(argc);
     for(int i = 0; i < argc; i++)
-        argv[i] = (char*)arg_storage[i].c_str();
+        argv[i] = const_cast<char*>(arg_storage[i].c_str());
 #endif
-    auto args = r_args::parse_arguments(argc, argv);
+    auto args = r_args::parse_arguments(argc, &argv[0]);
 
-    auto maybe_start_minimized = (r_args::get_required_argument(args, "--start_minimized", "false") == "false")? false : true;
+    auto maybe_start_minimized = (r_args::get_optional_argument(args, "--start_minimized", "false").value() == "false")? false : true;
 
     auto top_dir = revere::top_dir();
     auto log_path = revere::sub_dir("logs");

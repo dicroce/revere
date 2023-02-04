@@ -101,7 +101,7 @@ string r_utils::r_fs::working_directory()
 void r_utils::r_fs::change_working_directory(const string& dir)
 {
 #ifdef IS_WINDOWS
-    if(_chdir(dir.c_str()) < 0)
+    if(SetCurrentDirectory(dir.c_str()) == 0)
         R_STHROW(r_not_found_exception, ("Unable to change working directory to: %s", dir.c_str()));
 #endif
 #ifdef IS_LINUX

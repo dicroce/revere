@@ -235,7 +235,7 @@ void _set_working_dir()
 {
     // Set the current working directory to the directory of the executable
     auto exe_path = r_fs::current_exe_path();
-    auto wd = exe_path.substr(0, exe_path.find_last_of("/"));
+    auto wd = exe_path.substr(0, exe_path.find_last_of(PATH_SLASH));
     R_LOG_INFO("wd: %s", wd.c_str());
     r_fs::change_working_directory(wd);
 }
