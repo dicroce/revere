@@ -99,8 +99,6 @@ public:
 private:
     r_pid _pid;
     std::string _cmd;
-    int _iopipe[2];
-    FILE* _stdout;
 };
 
 }
