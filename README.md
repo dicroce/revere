@@ -34,7 +34,7 @@ sudo apt install git curl zip unzip tar cmake pkg-config nasm libxinerama-dev li
 ```
 4) Building
 ```
-git clone --recurse-submodules https://github.com/dicroce/revere
+git clone https://github.com/dicroce/revere --recursive
 mkdir revere/build && pushd revere/build && cmake .. && make && sudo make install
 ```
 At this point you should have revere installed in /usr/local/revere and vision installed in /usr/local/vision
@@ -45,7 +45,7 @@ At this point you should have revere installed in /usr/local/revere and vision i
 3) Launch the Git Bash prompt that comes with git for windows.
 4) Type the following commands
 ```
-git clone --recurse-submodules https://github.com/dicroce/revere
+git clone https://github.com/dicroce/revere --recursive
 mkdir revere/build && pushd revere/build && cmake .. && cmake --build . --target install
 ```
 NOTE: the "cmake --build . --target install" target works on Windows but it has to be run from a Git Bash shell run with Administrator privelages. It will install Revere and Vision to C:\Program Files (x86)\revere.
