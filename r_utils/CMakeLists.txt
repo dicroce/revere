@@ -52,6 +52,8 @@ add_library(
     source/r_sha1.cpp
     include/r_utils/r_udp_socket.h
     source/r_udp_socket.cpp
+    include/r_utils/r_process.h
+    source/r_process.cpp
     include/r_utils/r_blocking_q.h
     include/r_utils/r_work_q.h
     include/r_utils/r_server_threaded.h

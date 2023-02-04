@@ -1,0 +1,173 @@
+
+#include "r_utils/r_process.h"
+#include "r_utils/r_file.h"
+#include <string.h>
+#include <vector>
+
+using namespace r_utils;
+using namespace std;
+using namespace std::chrono;
+
+r_process::r_process(const string& cmd) :
+    _pid(),
+    _cmd(cmd)
+{
+}
+
+r_process::~r_process() noexcept
+{
+    if(_pid.valid())
+    {
+#ifdef IS_LINUX
+        int status;
+        waitpid(_pid.pid, &status, 0);
+#endif
+#ifdef IS_WINDOWS
+        WaitForSingleObject(_pid.pi.hProcess, INFINITE);
+        CloseHandle(_pid.pi.hProcess);
+        CloseHandle(_pid.pi.hThread);
+#endif
+    }
+}
+
+void r_process::start()
+{
+#ifdef IS_LINUX
+    _pid.pid = fork();
+    if(_pid.pid < 0)
+        R_THROW(("Unable to fork()."));
+
+    if(_pid.pid == 0) // 0 is returned in child...
+    {
+        setpgid(0, 0); // 0 here is special case that means set pgid to pid of caller.
+
+        vector<string> parts;
+
+        // work left to right
+        // if you see whitespace, make command part
+        // if you see quote, find terminating quote and make command part
+
+        size_t ps=0, pe=0, cmdLen = _cmd.length();
+        while(ps < cmdLen)
+        {
+            bool inQuote = false;
+
+            while(_cmd[ps] == ' ' && ps < cmdLen)
+            {
+                ++ps;
+                pe=ps;
+            }
+
+            if(_cmd[ps] == '"')
+                inQuote = true;
+
+            while((inQuote || _cmd[pe] != ' ') && pe < cmdLen)
+            {
+                ++pe;
+                if(_cmd[pe] == '"')
+                {
+                    if(inQuote)
+                    {
+                        // push command ps+1 -> pe
+                        parts.push_back(string(&_cmd[ps+1],pe-(ps+1)));
+                        inQuote = false;
+                        ps = pe+1;
+                        break;
+                    }
+                    else
+                    {
+                        inQuote = true;
+                    }
+                }
+                else if((!inQuote && _cmd[pe] == ' ') || pe == cmdLen)
+                {
+                    // push command ps -> pe
+                    parts.push_back(string(&_cmd[ps],pe-ps));
+                    ps = pe;
+                    break;
+                }
+            }
+        }
+
+        vector<const char*> partPtrs;
+        for( auto& p : parts )
+            partPtrs.push_back(p.c_str());
+        partPtrs.push_back(NULL);
+        execve( parts[0].c_str(), (char* const*)&partPtrs[0], NULL );
+        R_THROW(("Failed to execve()."));
+    }
+#endif
+#ifdef IS_WINDOWS
+    STARTUPINFO si;
+    ZeroMemory( &si, sizeof(si) );
+    si.cb = sizeof(si);
+    ZeroMemory( &_pid.pi, sizeof(_pid.pi) );
+
+    if(!CreateProcess(
+        NULL,           // No module name (use command line)
+        _cmd.c_str(),   // Command line
+        NULL,           // Process handle not inheritable
+        NULL,           // Thread handle not inheritable
+        FALSE,          // Set handle inheritance to FALSE
+        0,              // No creation flags
+        NULL,           // Use parent's environment block
+        NULL,           // Use parent's starting directory 
+        &si,            // Pointer to STARTUPINFO structure
+        &_pid.pi        // Pointer to PROCESS_INFORMATION structure
+    ))
+    {
+        R_THROW(( "CreateProcess failed (%d).\n", GetLastError()));
+        return;
+    }
+#endif
+}
+
+r_wait_status r_process::wait_for(int& code, milliseconds timeout)
+{
+#ifdef IS_LINUX
+    auto remaining = timeout;
+    while(duration_cast<milliseconds>(remaining).count() > 0)
+    {
+        auto before = steady_clock::now();
+
+        int status;
+        int res = waitpid(_pid.pid, &status, WNOHANG);
+        if( res > 0 )
+        {
+            code = WEXITSTATUS(status);
+            _pid.clear();
+            return R_PROCESS_EXITED;
+        }
+
+        if( res < 0 )
+            R_THROW(("Unable to waitpid()."));
+
+        usleep(250000);
+
+        auto after = steady_clock::now();
+
+        auto delta = duration_cast<milliseconds>(after - before);
+
+        if( remaining > delta )
+            remaining -= delta;
+        else remaining = milliseconds::zero();
+    }
+#endif
+#ifdef IS_WINDOWS
+    auto result = WaitForSingleObject(_pid.pi.hProcess, duration_cast<milliseconds>(timeout).count());
+    if(result == WAIT_OBJECT_0)
+        return R_PROCESS_EXITED;
+#endif
+
+    return R_PROCESS_WAIT_TIMEDOUT;
+}
+
+void r_process::kill()
+{
+#ifdef IS_LINUX
+    ::kill(-_pid.pid, SIGKILL); //negated pid means kill entire process group id
+#endif
+#ifdef IS_WINDOWS
+    TerminateProcess(_pid.pi.hProcess, 0);
+#endif
+}
