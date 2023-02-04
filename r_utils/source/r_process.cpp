@@ -105,7 +105,7 @@ void r_process::start()
 
     if(!CreateProcess(
         NULL,           // No module name (use command line)
-        _cmd.c_str(),   // Command line
+        (LPSTR)_cmd.c_str(),     // Command line
         NULL,           // Process handle not inheritable
         NULL,           // Thread handle not inheritable
         FALSE,          // Set handle inheritance to FALSE
@@ -154,7 +154,7 @@ r_wait_status r_process::wait_for(int& code, milliseconds timeout)
     }
 #endif
 #ifdef IS_WINDOWS
-    auto result = WaitForSingleObject(_pid.pi.hProcess, duration_cast<milliseconds>(timeout).count());
+    auto result = WaitForSingleObject(_pid.pi.hProcess, (DWORD)duration_cast<milliseconds>(timeout).count());
     if(result == WAIT_OBJECT_0)
         return R_PROCESS_EXITED;
 #endif
