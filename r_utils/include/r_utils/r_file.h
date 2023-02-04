@@ -89,6 +89,7 @@ struct r_file_info
 R_API std::string current_exe_path();
 R_API std::string platform_path(const std::string& path);
 R_API std::string working_directory();
+R_API void change_working_directory(const std::string& dir);
 R_API std::string path_join(const std::string& path, const std::string& filename);
 R_API int stat(const std::string& fileName, struct r_file_info* fileInfo);
 R_API uint64_t file_size(const std::string& fileName);

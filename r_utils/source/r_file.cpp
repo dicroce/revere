@@ -98,6 +98,19 @@ string r_utils::r_fs::working_directory()
     return output;
 }
 
+void r_utils::r_fs::change_working_directory(const string& dir)
+{
+#ifdef IS_WINDOWS
+    if(_chdir(dir.c_str()) < 0)
+        R_STHROW(r_not_found_exception, ("Unable to change working directory to: %s", dir.c_str()));
+#endif
+#ifdef IS_LINUX
+    if(chdir(dir.c_str()) < 0)
+        R_STHROW(r_not_found_exception, ("Unable to change working directory to: %s", dir.c_str()));
+#endif
+}
+
+
 string r_utils::r_fs::path_join(const string& path, const string& filename)
 {
 #ifdef IS_WINDOWS

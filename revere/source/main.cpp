@@ -601,12 +601,7 @@ void _set_working_dir()
     auto exe_path = r_fs::current_exe_path();
     auto wd = exe_path.substr(0, exe_path.find_last_of("/"));
     R_LOG_INFO("wd: %s", wd.c_str());
-#ifdef IS_LINUX
-    chdir(wd.c_str());
-#endif
-#ifdef IS_WINDOWS
-    SetCurrentDirectory(wd.c_str());
-#endif
+    r_fs::change_working_directory(wd);
 }
 
 void _set_window_icon(GLFWwindow* window)
