@@ -21,6 +21,7 @@
 #include "r_utils/r_logger.h"
 #include "r_utils/r_uuid.h"
 #include "r_utils/r_socket.h"
+#include "r_utils/r_args.h"
 #include "r_disco/r_agent.h"
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
@@ -622,9 +623,24 @@ void _set_window_icon(GLFWwindow* window)
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow)
 #endif
 #ifdef IS_LINUX
-int main(int, char**)
+int main(int argc, char** argv)
 #endif
 {
+#ifdef IS_WINDOWS
+    vector<string> arg_storage;
+    int argc;
+    LPTSTR* argv = CommandLineToArgvW(pCmdLine, &argc);
+    for(int i = 0; i < argc; i++)
+        arg_storage.push_back(r_string::convert_wide_string_to_multi_byte_string(argv[i]));
+    argc = arg_storage.size();
+    char* argv[argc];
+    for(int i = 0; i < argc; i++)
+        argv[i] = (char*)arg_storage[i].c_str();
+#endif
+    auto args = r_args::parse_arguments(argc, argv);
+
+    auto maybe_start_minimized = (r_args::get_required_argument(args, "--start_minimized", "false") == "false")? false : true;
+
     auto top_dir = revere::top_dir();
     auto log_path = revere::sub_dir("logs");
 
@@ -741,6 +757,12 @@ int main(int, char**)
         glfwWaitEventsTimeout(0.1);
 
         tray.pump();
+
+        if(maybe_start_minimized)
+        {
+            maybe_start_minimized = false;
+            glfwHideWindow(window);
+        }
 
         if(glfwWindowShouldClose(window) != GL_FALSE)
         {
