@@ -39,7 +39,7 @@ void r_process::start()
 
     if(_pid.pid == 0) // 0 is returned in child...
     {
-        setpgid(0, 0); // 0 here is special case that means set pgid to pid of caller.
+//        setpgid(0, 0); // 0 here is special case that means set pgid to pid of caller.
 
         vector<string> parts;
 
@@ -93,7 +93,7 @@ void r_process::start()
         for( auto& p : parts )
             partPtrs.push_back(p.c_str());
         partPtrs.push_back(NULL);
-        execve( parts[0].c_str(), (char* const*)&partPtrs[0], NULL );
+        execv(parts[0].c_str(), (char* const*)&partPtrs[0]);
         R_THROW(("Failed to execve()."));
     }
 #endif

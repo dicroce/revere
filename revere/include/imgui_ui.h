@@ -49,8 +49,8 @@ void error_modal(
     }
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb)
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb)
 {
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("File"))
@@ -59,6 +59,8 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
             add_rtsp_source_camera_cb();
         if (ImGui::MenuItem("Minimize to system tray"))
             minimize_cb();
+        if (ImGui::MenuItem("Launch Vision"))
+            launch_vision_cb();
         if (ImGui::MenuItem("Exit"))
             exit_cb();
 

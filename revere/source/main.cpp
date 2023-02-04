@@ -21,6 +21,7 @@
 #include "r_utils/r_logger.h"
 #include "r_utils/r_uuid.h"
 #include "r_utils/r_socket.h"
+#include "r_utils/r_process.h"
 #include "r_utils/r_args.h"
 #include "r_disco/r_agent.h"
 #include "r_disco/r_devices.h"
@@ -738,6 +739,13 @@ int main(int argc, char** argv)
     auto last_ui_update_ts = chrono::steady_clock::now();
     bool force_ui_update = false;
 
+    string vision_cmd = "vision";
+#ifdef IS_WINDOWS
+    vision_cmd += ".exe";
+#endif
+
+    r_process vision_process(vision_cmd);
+
     // Main loop
     while(!close_requested)
     {
@@ -791,6 +799,9 @@ int main(int argc, char** argv)
             },
             [&](){
                 camera_setup_wizard.next("configure_rtsp_source_camera");
+            },
+            [&](){
+                vision_process.start();
             }
         );
 
