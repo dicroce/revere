@@ -122,9 +122,13 @@ void r_process::start()
 
 bool r_process::running()
 {
-    int code;
-    auto status = wait_for(code, milliseconds(1));
-    return _pid.valid();
+    if(_pid.valid())
+    {
+        int code;
+        auto status = wait_for(code, milliseconds(1));
+        return _pid.valid();
+    }
+    return false;
 }
 
 r_wait_status r_process::wait_for(int& code, milliseconds timeout)
