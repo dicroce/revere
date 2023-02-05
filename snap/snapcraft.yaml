@@ -47,7 +47,7 @@ parts:
 apps:
   revere:
     command: usr/local/revere/revere
-    plugs: [process-control, home, network, network-bind, network-control, network-manager, network-manager-observe, network-observe, network-setup-control, network-setup-observe, network-status, removable-media, opengl, desktop, avahi-control, avahi-observe, desktop-launch]
+    plugs: [process-control, home, network, network-bind, network-control, network-manager, network-manager-observe, network-observe, network-setup-control, network-setup-observe, network-status, removable-media, opengl, desktop, avahi-control, avahi-observe]
   vision:
     command: usr/local/revere/vision
-    plugs: [process-control, home, network, network-bind, network-control, network-manager, network-manager-observe, network-observe, network-setup-control, network-setup-observe, network-status, removable-media, opengl, desktop, avahi-control, avahi-observe, desktop-launch]
+    plugs: [process-control, home, network, network-bind, network-control, network-manager, network-manager-observe, network-observe, network-setup-control, network-setup-observe, network-status, removable-media, opengl, desktop, avahi-control, avahi-observe]
