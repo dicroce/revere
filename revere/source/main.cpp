@@ -739,9 +739,9 @@ int main(int argc, char** argv)
     auto last_ui_update_ts = chrono::steady_clock::now();
     bool force_ui_update = false;
 
-    string vision_cmd = "vision";
+    string vision_cmd = "revere.vision";
 #ifdef IS_WINDOWS
-    vision_cmd += ".exe";
+    vision_cmd = "vision.exe";
 #endif
 
     r_process vision_process(vision_cmd);
