@@ -320,7 +320,7 @@ void r_stream_keeper::_rtsp_server_entry_point()
 {
     while(_running)
     {
-        g_main_context_iteration(NULL, false);
+        g_main_context_iteration(NULL, true);
     }
 }
 
