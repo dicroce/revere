@@ -49,3 +49,22 @@ git clone https://github.com/dicroce/revere --recursive
 mkdir revere/build && pushd revere/build && cmake .. && cmake --build . --target install
 ```
 NOTE: the "cmake --build . --target install" target works on Windows but it has to be run from a Git Bash shell run with Administrator privelages. It will install Revere and Vision to C:\Program Files (x86)\revere.
+
+## Attributions
+Revere was developed using these great open source projects
+
+nlohmann/json
+- https://github.com/nlohmann/json
+Dear Imgui
+- https://github.com/ocornut/imgui
+libonvif
+- https://github.com/sr99622/libonvif
+Gstreamer
+- https://gstreamer.freedesktop.org/
+FFmpeg
+- https://ffmpeg.org/
+SQLite
+- https://sqlite.org/
+Vcpkg
+- https://github.com/dicroce/vcpkg
+  

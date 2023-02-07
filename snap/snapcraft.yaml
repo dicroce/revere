@@ -7,6 +7,14 @@ description: |
 grade: stable
 confinement: strict
 
+apps:
+  revere:
+    command: desktop-launch $SNAP/usr/local/revere/revere
+    plugs: [process-control, home, network, network-bind, network-control, network-manager, network-manager-observe, network-observe, network-setup-control, network-setup-observe, network-status, removable-media, opengl, desktop, avahi-control, avahi-observe]
+  vision:
+    command: desktop-launch $SNAP/usr/local/revere/vision
+    plugs: [process-control, home, network, network-bind, network-control, network-manager, network-manager-observe, network-observe, network-setup-control, network-setup-observe, network-status, removable-media, opengl, desktop, avahi-control, avahi-observe]
+
 parts:
   revere:
     plugin: cmake
@@ -14,7 +22,6 @@ parts:
     source: https://github.com/dicroce/revere
     build-packages:
       - git
-      - curl
       - zip
       - unzip
       - tar
@@ -31,23 +38,30 @@ parts:
       - libgtk-3-dev
       - libayatana-appindicator3-dev
       - libunwind-dev
+      - libcurl4-openssl-dev
       - build-essential
     stage-packages:
-      - libcurl3-gnutls
+      - libcurl4
       - lzip
       - libxinerama1
       - libxcursor1
       - libglu1-mesa
       - libayatana-appindicator3-1
       - libunwind8
+      - mesa-utils
+      - libglu1-mesa
+      - libgl1-mesa-glx
       - libglx0
       - libgl1-mesa-dri
       - xserver-xorg-video-all
+    after:
+      - desktop-glib-only
 
-apps:
-  revere:
-    command: usr/local/revere/revere
-    plugs: [process-control, home, network, network-bind, network-control, network-manager, network-manager-observe, network-observe, network-setup-control, network-setup-observe, network-status, removable-media, opengl, desktop, avahi-control, avahi-observe]
-  vision:
-    command: usr/local/revere/vision
-    plugs: [process-control, home, network, network-bind, network-control, network-manager, network-manager-observe, network-observe, network-setup-control, network-setup-observe, network-status, removable-media, opengl, desktop, avahi-control, avahi-observe]
+  desktop-glib-only:
+    source: https://github.com/ubuntu/snapcraft-desktop-helpers.git
+    source-subdir: glib-only
+    plugin: make
+    build-packages:
+      - libglib2.0-dev
+    stage-packages:
+      - libglib2.0-bin
