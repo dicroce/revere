@@ -54,17 +54,22 @@ NOTE: the "cmake --build . --target install" target works on Windows but it has 
 Revere was developed using these great open source projects
 
 nlohmann/json
-- https://github.com/nlohmann/json
+https://github.com/nlohmann/json
+
 Dear Imgui
-- https://github.com/ocornut/imgui
+https://github.com/ocornut/imgui
+
 libonvif
-- https://github.com/sr99622/libonvif
+https://github.com/sr99622/libonvif
+
 Gstreamer
-- https://gstreamer.freedesktop.org/
+https://gstreamer.freedesktop.org/
+
 FFmpeg
-- https://ffmpeg.org/
+https://ffmpeg.org/
+
 SQLite
-- https://sqlite.org/
+https://sqlite.org/
+
 Vcpkg
-- https://github.com/dicroce/vcpkg
-  
+https://github.com/dicroce/vcpkg
