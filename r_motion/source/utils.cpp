@@ -226,13 +226,11 @@ r_image r_motion::gray8_remove(const r_image& a, const r_image& b)
     {
         for(uint16_t w = 0; w < a.width; ++w)
         {
-            if(a.data->data()[(h*a.width) + w] > 0)
-            {
-                if(b.data->data()[(h*b.width) + w] == 0)
-                    output_buffer->data()[(h*a.width) + w] = a.data->data()[(h*a.width) + w];
-                else
-                    output_buffer->data()[(h*a.width) + w] = 0;
-            }
+            auto a_ofs = (h*a.width) + w;
+            auto a_val = a.data->data()[a_ofs];
+
+            if(a_val > 0)
+                output_buffer->data()[a_ofs] = (b.data->data()[(h*b.width) + w] == 0)?a_val:0;
         }
     }
 
@@ -299,14 +297,15 @@ r_image r_motion::average_images(const std::deque<r_image>& images)
 
 uint64_t r_motion::gray8_compute_motion(const r_image& a)
 {
+    auto a_p = a.data->data();
     uint64_t sum = 0;
 
     for(uint16_t h = 0; h < a.height; ++h)
     {
         for(uint16_t w = 0; w < a.width; ++w)
         {
-            uint8_t diff = a.data->data()[(h*a.width) + w];
-            sum += diff;
+            sum += *a_p;
+            ++a_p;
         }
     }
 

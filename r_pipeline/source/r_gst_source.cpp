@@ -19,23 +19,6 @@ using namespace std::chrono;
 
 static const int MSECS_IN_TEN_MINUTES = 600000;
 
-//Note: statically linked plugins must be first registered with the plugin system
-//extern "C" {
-//GST_PLUGIN_STATIC_DECLARE(rtsp);
-//GST_PLUGIN_STATIC_DECLARE(rtp);
-//GST_PLUGIN_STATIC_DECLARE(videoparsersbad);
-//GST_PLUGIN_STATIC_DECLARE(app);
-//}
-//
-//static void r_pipeline::gstreamer_init()
-//{
-//    gst_init(NULL, NULL);
-//    GST_PLUGIN_STATIC_REGISTER(rtsp);
-//    GST_PLUGIN_STATIC_REGISTER(rtp);
-//    GST_PLUGIN_STATIC_REGISTER(videoparsersbad);
-//    GST_PLUGIN_STATIC_REGISTER(app);
-//}
-
 void r_pipeline::gstreamer_init()
 {
     gst_init(NULL, NULL);
