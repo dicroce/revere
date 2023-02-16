@@ -28,6 +28,7 @@ SetupIconFile=C:\dev\revere\revere\R.ico
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+OutputDir=C:\output
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -38,6 +39,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "C:\revere\revere\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\revere\revere\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\revere\revere\VC_redist.x64.exe"; DestDir: {app}; Flags: dontcopy
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
@@ -45,5 +47,5 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+Filename: "{app}\VC_redist.x64.exe"; Parameters: "/install /passive /norestart"; WorkingDir: {app}
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
-
