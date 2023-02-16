@@ -190,7 +190,11 @@ vector<uint8_t> r_utils::r_fs::read_file(const string& path)
     }
 
     if(remainder > 0)
-        fread(writer, 1, remainder, f);
+    {
+        auto remainder_items_read = fread(writer, 1, remainder, f);
+        if(remainder_items_read != remainder)
+            R_STHROW(r_io_exception, ("Unable to read file: %s", path.c_str()));
+    }
 
     return out;
 }
@@ -212,7 +216,11 @@ void r_utils::r_fs::write_file(const uint8_t* bytes, size_t len, const string& p
     }
 
     if(remainder > 0)
-        fwrite(bytes, 1, remainder, f);
+    {
+        auto remainder_items_written = fwrite(bytes, 1, remainder, f);
+        if(remainder_items_written != remainder)
+            R_STHROW(r_io_exception, ("Unable to write file: %s", path.c_str()));
+    }
 }
 
 void r_utils::r_fs::atomic_rename_file(const string& oldPath, const string& newPath)

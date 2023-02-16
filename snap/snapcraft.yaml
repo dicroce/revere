@@ -18,6 +18,8 @@ apps:
 parts:
   revere:
     plugin: cmake
+    cmake-parameters:
+      - -DCMAKE_BUILD_TYPE=Release
     source-type: git
     source: https://github.com/dicroce/revere
     build-packages:
