@@ -95,7 +95,8 @@ struct revere_ui_state
 
 static void glfw_error_callback(int error, const char* description)
 {
-    fprintf(stderr, "Glfw Error %d: %s\n", error, description);
+    R_LOG_ERROR("GLFW Error %d: %s", error, description);
+    printf("GLFW Error %d: %s\n", error, description);
 }
 
 extern ImGuiContext *GImGui;
@@ -629,6 +630,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 int main(int argc, char** argv)
 #endif
 {
+    r_logger::install_terminate();
+
+    auto top_dir = revere::top_dir();
+    auto log_path = revere::sub_dir("logs");
+
+    r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
+
 #ifdef IS_WINDOWS
     int argc;
     LPWSTR* argv_p = CommandLineToArgvW(pCmdLine, &argc);
@@ -643,12 +651,6 @@ int main(int argc, char** argv)
     auto args = r_args::parse_arguments(argc, &argv[0]);
 
     auto maybe_start_minimized = (r_args::get_optional_argument(args, "--start_minimized", "false").value() == "false")? false : true;
-
-    auto top_dir = revere::top_dir();
-    auto log_path = revere::sub_dir("logs");
-
-    r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
-    r_logger::install_terminate();
 
     r_raw_socket::socket_startup();
 
@@ -673,7 +675,10 @@ int main(int argc, char** argv)
     // Setup window
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
+    {
+        R_LOG_ERROR("Unable to initialize GLFW");
         return 1;
+    }
 
     // GL 3.0 + GLSL 130
     const char* glsl_version = "#version 130";
@@ -683,7 +688,10 @@ int main(int argc, char** argv)
     // Create window with graphics context
     GLFWwindow* window = glfwCreateWindow(960, 540, "Revere", NULL, NULL);
     if (window == NULL)
+    {
+        R_LOG_ERROR("Unable to glfwCreateWindow");
         return 1;
+    }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
 

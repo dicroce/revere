@@ -40,7 +40,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "C:\revere\revere\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\revere\revere\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "C:\revere\revere\VC_redist.x64.exe"; DestDir: {app}; Flags: dontcopy
-; NOTE: Don't use "Flags: ignoreversion" on any shared system files
+Source: "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64\msvcp140.dll"; DestDir: "{app}";
+Source: "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64\vcruntime140.dll"; DestDir: "{app}";
+Source: "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64\vcruntime140_1.dll"; DestDir: "{app}";
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

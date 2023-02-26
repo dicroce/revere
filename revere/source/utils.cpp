@@ -31,7 +31,17 @@ string revere::top_dir()
     if(ret != S_OK)
         R_THROW(("Could not get path to documents folder."));
 
-    return r_string_utils::convert_wide_string_to_multi_byte_string(szPath)  + PATH_SLASH + "revere" + PATH_SLASH + "revere";
+    auto revere_path = r_string_utils::convert_wide_string_to_multi_byte_string(szPath)  + PATH_SLASH + "revere";
+
+    if(!r_fs::file_exists(revere_path))
+        r_fs::mkdir(revere_path);
+
+    revere_path += PATH_SLASH + "revere";
+
+    if(!r_fs::file_exists(revere_path))
+        r_fs::mkdir(revere_path);
+
+    return revere_path;
 #endif
 
 #ifdef IS_LINUX
