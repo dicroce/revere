@@ -43,7 +43,7 @@ All times are accepted and returned as ISO 8601 time strings: 2023-02-26T12:00:0
 Here is a brief
 overview:
 
-http://127.0.0.1:10080/cameras
+###http://127.0.0.1:10080/cameras
 
 Returns a list of known and recording cameras.
 
@@ -79,7 +79,7 @@ Returns a list of known and recording cameras.
 Note: the first camera here state is "assigned", which means its recording. The second camera state is "discovered" which means its
 been found on the network but not yet recording.
 
-http://127.0.0.1:10080/jpg
+###http://127.0.0.1:10080/jpg
 
 Returns a jpg transcoded from the frame closest to the provided time.
 
@@ -89,14 +89,14 @@ camera_id, start_time
 Optional Arguments
 width, height
 
-http://127.0.0.1:10080/key_frame
+###http://127.0.0.1:10080/key_frame
 
 Returns the key frame from the camera bitstream nearest the provided time.
 
 Required Arguments
 camera_id, start_time
 
-http://127.0.0.1:10080/contents
+###http://127.0.0.1:10080/contents
 
 Returns an array of time segments representing periods of continuous
 recording available.
@@ -116,14 +116,14 @@ media_type ["video" or "audio"]
   ]
 }
 
-http://127.0.0.1:10080/export
+###http://127.0.0.1:10080/export
 
 Request a containerized video file (mov, etc) be created in Revere's export folder for a particular camera at a particular time range. Does not transcode.
 
 Required Arguments
 camera_id, start_time, end_time, file_name
 
-http://127.0.0.1:10080/motions
+###http://127.0.0.1:10080/motions
 
 Return a json representation of the raw motion data for a requested camera and time range.
 
@@ -144,7 +144,7 @@ motion_threshold
   ]
 }
 
-http://127.0.0.1:10080/motion_events
+###http://127.0.0.1:10080/motion_events
 
 Joins close motion data into logical events with a start and end time.
 
