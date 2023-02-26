@@ -46,34 +46,34 @@ Here is a brief overview:
 
 Returns a list of known and recording cameras.
 
-{
-  "cameras": [
-    {
+  {
+    "cameras": [
       {
-        "audio_codec": "mpeg4-generic",
-        "camera_name": "IPC-BO RLC-810A",
-        "do_motion_detection": true,
-        "friendly_name": "porch",
-        "id": "cc492272-fab1-d4e9-cc6f-d84b3a963cec",
-        "ipv4": "192.168.1.12",
-        "rtsp_url": "rtsp://192.168.1.12:554/",
-        "state": "assigned",
-        "video_codec": "h264"
-      },
-      {
-        "audio_codec": "",
-        "camera_name": "AXIS Camera",
-        "do_motion_detection": false,
-        "friendly_name": "",
-        "id": "9b7c4835-2f83-532b-48ef-28037ae65b74",
-        "ipv4": "169.254.41.241",
-        "rtsp_url": "",
-        "state": "discovered",
-        "video_codec": ""
+        {
+          "audio_codec": "mpeg4-generic",
+          "camera_name": "IPC-BO RLC-810A",
+          "do_motion_detection": true,
+          "friendly_name": "porch",
+          "id": "cc492272-fab1-d4e9-cc6f-d84b3a963cec",
+          "ipv4": "192.168.1.12",
+          "rtsp_url": "rtsp://192.168.1.12:554/",
+          "state": "assigned",
+          "video_codec": "h264"
+        },
+        {
+          "audio_codec": "",
+          "camera_name": "AXIS Camera",
+          "do_motion_detection": false,
+          "friendly_name": "",
+          "id": "9b7c4835-2f83-532b-48ef-28037ae65b74",
+          "ipv4": "169.254.41.241",
+          "rtsp_url": "",
+          "state": "discovered",
+          "video_codec": ""
+        }
       }
-    }
-  ]
-}
+    ]
+  }
 
 Note: the first camera here state is "assigned", which means its recording. The second camera state is "discovered" which means its
 been found on the network but not yet recording.
@@ -106,14 +106,14 @@ camera_id, start_time, end_time
 Optional Arguments
 media_type ["video" or "audio"]
 
-{
-  "segments": [
-    {
-      "start_time": "2023-02-26T10:00:00.000",
-      "end_time": "2023-02-26T11:00:00.000"
-    }
-  ]
-}
+  {
+    "segments": [
+      {
+        "start_time": "2023-02-26T10:00:00.000",
+        "end_time": "2023-02-26T11:00:00.000"
+      }
+    ]
+  }
 
 `http://127.0.0.1:10080/export`
 
@@ -132,16 +132,16 @@ camera_id, start_time, end_time
 Optional Arguments
 motion_threshold
 
-{
-  "motions": [
-    {
-      "time": "2023-02-26T10:00:00.000",
-      "motion": 7,
-      "avg_motion": 7,
-      "stddev": 7
-    }
-  ]
-}
+  {
+    "motions": [
+      {
+        "time": "2023-02-26T10:00:00.000",
+        "motion": 7,
+        "avg_motion": 7,
+        "stddev": 7
+      }
+    ]
+  }
 
 `http://127.0.0.1:10080/motion_events`
 
@@ -153,17 +153,17 @@ camera_id, start_time, end_time
 Optional Arguments
 motion_threshold
 
-{
-  "motion_events": [
-    {
-      "start_time": "2023-02-26T10:00:00.000",
-      "start_time": "2023-02-26T10:00:08.000",
-      "motion": 7,
-      "avg_motion": 7,
-      "stddev": 7
-    }
-  ]
-}
+  {
+    "motion_events": [
+      {
+        "start_time": "2023-02-26T10:00:00.000",
+        "start_time": "2023-02-26T10:00:08.000",
+        "motion": 7,
+        "avg_motion": 7,
+        "stddev": 7
+      }
+    ]
+  }
 
 ## Compiling on Ubuntu Desktop 22.04 LTS
 
