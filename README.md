@@ -40,6 +40,8 @@ are REST / Json based and are available on port 10080.
 
 All times are accepted and returned as ISO 8601 time strings: 2023-02-26T12:00:00.000
 
+All API arguments should be provided via URL query strings using the standard convention.
+
 Here is a brief overview:
 
 `http://127.0.0.1:10080/cameras`
