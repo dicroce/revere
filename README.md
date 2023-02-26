@@ -33,7 +33,7 @@ The easiest way to get Revere on Windows is by download a release package here f
 ### Api
 The Revere background process has an extensive API. Firstly, all recording cameras live streams are available via a centralized RTSP link:
 
-rtsp://127.0.0.1:10554/porch
+###`rtsp://127.0.0.1:10554/porch`
 
 where porch is the friendly name of the camera. The rest of the API's
 are REST / Json based and are available on port 10080.
@@ -43,7 +43,7 @@ All times are accepted and returned as ISO 8601 time strings: 2023-02-26T12:00:0
 Here is a brief
 overview:
 
-###http://127.0.0.1:10080/cameras
+###`http://127.0.0.1:10080/cameras`
 
 Returns a list of known and recording cameras.
 
