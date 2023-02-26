@@ -21,6 +21,15 @@
 - Extensive REST API: (/cameras,/contents,/jpg,/motions,/export), etc.
 - Exports
 
+## How to Get It
+
+### Linux
+The easiest way to get Revere on Linux is from the Snap package available at: https://snapcraft.io/revere
+This snap has been tested on the current version of Ubuntu & Fedora.
+
+### Windows
+The easiest way to get Revere on Windows is by download a release package here from github: https://github.com/dicroce/revere/releases
+
 ## Compiling on Ubuntu Desktop 22.04 LTS
 
 1) Update your system.
