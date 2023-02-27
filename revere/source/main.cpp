@@ -1,6 +1,14 @@
 
 // Revere
 
+// TODO
+// - Add db upgrades
+// - Document r_storage
+// - Add pruning of still video
+// - Update imgui lib so that we use the win32 backend on windows, and whatever the most compatible is on linux
+// - Add Launch Vision option to revere tray menu
+//
+
 #include "r_utils/r_file.h"
 
 #ifdef IS_WINDOWS
