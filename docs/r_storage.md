@@ -9,18 +9,18 @@ r_storage
 - The dumbdex is an array of entries that contain a uint64_t and a uint16_t. The uint64_t is the timestamp of the video contained in the block, the uint16_t is the index of the block in question.
 - When a file is first allocated the freedex is full and the dumbdex is empty.
 - Since the dumbdex is sorted and consists of fixed size entries it is binary search able.
-
 - SO, what all this structure accomplishes is to get queries to the correct block in O(log N). Once you have a block number, then what?
-
-- Brief background knowledge side track: video frames come in a few types (I, P, B). Only I frames are independently decodable. Decoding a particular P requires decoding the preceeding I frame and all of the frames between.
-
+- Brief background knowledge side track: video frames come in a few types (I, P, B). Only I frames are independently decodable. Decoding a particular P requires decoding the preceeding I frame and all of the frames between. All the frames from an I up to but not including the next I are called a GOP (Group Of Pictures).
 - Because of this, the r_storage now has a layer optimized for storing "Independent Blocks" called r_ind_block. Within the payload of an ind block is another layer called r_rel_block. Ultimately, all data winds up in r_rel_blocks IN r_ind_blocks.
 For video, r_rel_block provides access to the frames within a GOP. For audio, r_rel_block is still used even though the frames generally do not have the intra dependence.
-
 - Let's back up a bit. r_ind_block generally represents a few minutes of data from a camera. It also needs to store multiple streams (video & audio).
-
 - BUT, since we write whole GOP's inside r_rel_block's we need a way to hold the current gop + whatever audio frames arrived during this gop in memory until we have accumulated a complete gop and can write it all out.
-
 - This is implemented in r_storage_file using the GOP buffer.
-
 - Since r_rel_block is generally storing at most a GOP it is designed to allow accumulation of frame data into a contiguous in memory buffer... it can also be created from a buffer. This allows r_storage_file to accumulate arriving frames directly into a r_rel_block and then it can write the whole r_rel_block into the r_ind_block payload with a single memcpy once it detects that it has a complete gop.
+- Ok, we desribed how the dumbdex helps queries find the block to look in, but how do you find video within a block? r_ind_block takes care of this.
+- r_ind_block generally looks like this: [[header][index][data...]]
+- The r_ind_block header has a frame count. The index is preallocated big enough to hold some number of indexes. The data section contains the data payloads (which are r_rel_blocks, but to r_ind_block they are just data + size).
+- The r_ind_block index contains fixed size entries that contain a timestamp and an offset into the data section.
+- So, queries work by first reading the frame count from the header, then binary searching
+the index up to frame count frames, then offseting into the data section to find r_rel_blocks.
+- Write to an r_ind_block work by first finding a location in the data section (right after the end of the last data payload) and writing the data. Next an index entry is appended and finally the frame count in the header is updated. Memory fences are used to maintain the ordering of these writes. This structure naturally allows multiple simultaneous readers + a single writer without the use of locks.
