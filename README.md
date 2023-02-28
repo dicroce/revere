@@ -7,9 +7,13 @@
 - Windows & Linux support
 - Unobtrusive background application that will only use the disk space you allocate to it.
 
-![](assets/revere.png)
+![](assets/revere_desktop.jpg)
 
-![](assets/vision.png)
+![](assets/revere_tray.jpg)
+
+![](assets/vision_desktop.jpg)
+
+![](assets/vision_desktop_2.jpg)
 
 ### What Works
 - Onvif camera discovery
