@@ -42,6 +42,7 @@ public:
       TEST(test_r_utils::test_timer_basic);
       TEST(test_r_utils::test_sha1_basic);
       TEST(test_r_utils::test_exp_avg);
+      TEST(test_r_utils::test_lower_bound_bytes);
     RTF_FIXTURE_END();
 
     virtual ~test_r_utils() throw() {}
@@ -86,4 +87,5 @@ public:
     void test_timer_basic();
     void test_sha1_basic();
     void test_exp_avg();
+    void test_lower_bound_bytes();
 };

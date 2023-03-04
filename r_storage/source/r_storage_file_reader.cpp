@@ -26,6 +26,9 @@ r_storage_file_reader::r_storage_file_reader(const string& file_name) :
     _dumbdex_map(_map_block(0)),
     _block_index(file_name, (uint8_t*)_dumbdex_map->map() + r_storage_file::R_STORAGE_FILE_HEADER_SIZE, _h.num_blocks)
 {
+    auto base_name = file_name.substr(0, (file_name.find_last_of('.')));
+
+    r_storage_file::upgrade_file(base_name);
 }
 
 r_storage_file_reader::~r_storage_file_reader() noexcept

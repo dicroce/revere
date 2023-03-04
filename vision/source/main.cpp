@@ -454,6 +454,8 @@ int main(int, char**)
                             }
                             else ImGui::Image((void*)(intptr_t)0, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
 
+                            // Note: The BeginPopupContextItem() applies to the last widget we have emitted. At this point
+                            // we have emitted the image, so we want to apply the popup to the image.
                             if(ImGui::BeginPopupContextItem("popup_menu"))
                             {
                                 if(ImGui::Selectable("Disconnect"))
@@ -503,6 +505,15 @@ int main(int, char**)
                                     }
                                 }
                                 ImGui::EndDragDropTarget();
+                            }
+
+                            if(maybe_rc.is_null())
+                            {
+                                auto label_size = ImGui::CalcTextSize("Drag camera here...");
+                                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(128, 128, 128, 128));
+                                ImGui::SetCursorPos(ImVec2((w/2)-(label_size.x/2), (h/2) - (label_size.y/2)));
+                                ImGui::Text("Drag camera here...");
+                                ImGui::PopStyleColor();
                             }
                         },
                         std::bind(&pipeline_host::control_bar_cb, &ph, std::placeholders::_1, std::placeholders::_2),

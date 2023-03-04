@@ -63,6 +63,11 @@ public:
             return _dex->_read_index(_iter);
         }
 
+        R_API bool operator!=(const iterator& other) const
+        {
+            return _iter != other._iter;
+        }
+
         R_API bool operator==(const iterator& other) const
         {
             return _iter == other._iter;
@@ -114,7 +119,7 @@ public:
     R_API iterator begin() const {return iterator(this, _index);}
     R_API iterator end() const {return iterator(this, _index + (*_n_indexes * INDEX_ELEMENT_SIZE));}
 
-    R_API iterator find_lower_bound(int64_t ts) const;
+    R_API iterator find_lower_bound(uint64_t ts) const;
 
     R_API uint16_t insert(uint64_t ts);
     R_API void remove(uint64_t ts);

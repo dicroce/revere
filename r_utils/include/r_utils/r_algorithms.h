@@ -17,6 +17,9 @@ R_API uint8_t* lower_bound_bytes(uint8_t* start,
 				                 size_t elementSize,
 								 CMP cmp)
 {
+    if(cmp(target, start) <= 0)
+        return start;
+
     const size_t N = (end - start) / elementSize;
     size_t mid;
     size_t low = 0;

@@ -25,9 +25,14 @@ r_storage_file::r_storage_file(const string& file_name) :
     _ind_map(),
     _current_block(),
     _first_ts(),
-    _last_ts()
+    _last_ts(),
+    _current_segment_id()
 {
-    r_storage_file_reader reader(file_name);
+    auto base_name = file_name.substr(0, (file_name.find_last_of('.')));
+
+    r_storage_file::upgrade_file(base_name);
+
+    r_storage_file_reader reader(base_name + string(".rvd"));
 
     auto last_ts = reader.last_ts();
 
@@ -80,6 +85,8 @@ void r_storage_file::write_frame(const r_storage_write_context& ctx, r_storage_m
                     _first_ts.value()
                 )
             );
+
+            _current_segment_id.set_value(conn.last_insert_id());
         });
     }
 
@@ -174,6 +181,9 @@ void r_storage_file::write_frame(const r_storage_write_context& ctx, r_storage_m
 
 void r_storage_file::finalize(const r_storage_write_context& ctx)
 {
+    if(_current_segment_id.is_null())
+        R_THROW(("No segment. Did you write frames?"));
+
     r_file_lock_guard g(_file_lock);
 
     r_sqlite_conn conn(_file_name.substr(0, _file_name.find_last_of('.')) + string(".sdb"));
@@ -181,9 +191,9 @@ void r_storage_file::finalize(const r_storage_write_context& ctx)
     r_sqlite_transaction(conn,[&](const r_sqlite_conn& conn){
         conn.exec(
             r_string_utils::format(
-                "UPDATE segments SET end_ts=%s WHERE start_ts=%s;",
+                "UPDATE segments SET end_ts=%s WHERE id=%s;",
                 r_string_utils::int64_to_s((_last_ts.is_null())?0:_last_ts.value()).c_str(),
-                r_string_utils::int64_to_s((_first_ts.is_null())?0:_first_ts.value()).c_str()
+                _current_segment_id.value().c_str()
             )
         );
     });
@@ -198,6 +208,167 @@ void r_storage_file::finalize(const r_storage_write_context& ctx)
     
         _current_block->append(g.data.data(), g.data.size(), g.media_type, g.ts);
     }
+}
+
+r_nullable<map<string, r_nullable<string>>> _query_one_segment(r_sqlite_conn& conn, const std::string& query)
+{
+    auto rows = conn.exec(query);
+
+    if(rows.size() == 0)
+        return r_nullable<map<string, r_nullable<string>>>();
+
+    return r_nullable<map<string, r_nullable<string>>>(rows[0]);
+}
+
+size_t r_storage_file::remove_blocks(int64_t start_ts, int64_t end_ts)
+{
+    r_file_lock_guard g(_file_lock);
+
+#if 0
+    {
+        auto i = _block_index.begin();
+        while(i != _block_index.end())
+        {
+            printf("    block_index: %ld\n", (*i).first);
+            i.next();
+        }
+    }
+#endif
+
+    vector<int64_t> index_blocks_to_delete;
+
+    auto block_start = _block_index.find_lower_bound(start_ts);
+
+    auto block_end = _block_index.find_lower_bound(end_ts);
+
+    if(block_start.valid() && block_end.valid() && (block_start != block_end))
+    {
+        r_nullable<int64_t> del_start_ts;
+
+        while(block_start != block_end)
+        {
+            auto block_start_ts = (*block_start).first;
+            if(del_start_ts.is_null())
+                del_start_ts.set_value(block_start_ts);
+            index_blocks_to_delete.push_back(block_start_ts);
+            block_start.next();
+        }
+
+        r_nullable<int64_t> del_end_ts;
+
+        if(!block_end.valid())
+            R_THROW(("remove_blocks() block_end is invalid."));
+
+        del_end_ts.set_value((*block_end).first);
+
+        r_sqlite_conn conn(_file_name.substr(0, _file_name.find_last_of('.')) + string(".sdb"));
+
+        auto containing_segment = _query_one_segment(
+            conn,
+            r_string_utils::format(
+                "SELECT * FROM segments WHERE %s > start_ts AND %s < end_ts;",
+                r_string_utils::int64_to_s(del_start_ts.value()).c_str(),
+                r_string_utils::int64_to_s(del_end_ts.value()).c_str()
+            )
+        );
+
+        if(containing_segment.is_null())
+        {
+            r_sqlite_transaction(conn,[&](const r_sqlite_conn& conn){
+                // - For all segments whose end_ts > del_start_ts and end_ts < del_end_ts
+                //   - if the start_ts < del_start_ts
+                //     - Update the segment's end_ts to del_start_ts
+                //   - Else delete the segment
+                auto result = conn.exec(
+                    r_string_utils::format(
+                        "SELECT * FROM segments WHERE end_ts >= %s AND end_ts < %s;",
+                        r_string_utils::int64_to_s(del_start_ts.value()).c_str(),
+                        r_string_utils::int64_to_s(del_end_ts.value()).c_str()
+                    )
+                );
+
+                for(auto row : result)
+                {
+                    int64_t seg_start_ts = r_string_utils::s_to_int64(row.at("start_ts").value());
+                    int64_t seg_end_ts = r_string_utils::s_to_int64(row.at("end_ts").value());
+
+                    if(seg_start_ts < del_start_ts.value())
+                    {
+                        conn.exec(
+                            r_string_utils::format(
+                                "UPDATE segments SET end_ts=%s WHERE id=%s;",
+                                r_string_utils::int64_to_s(del_start_ts.value()).c_str(),
+                                row.at("id").value().c_str()
+                            )
+                        );
+                    }
+                    else
+                    {
+                        conn.exec(
+                            r_string_utils::format(
+                                "DELETE FROM segments WHERE id=%s;",
+                                row.at("id").value().c_str()
+                            )
+                        );
+                    }
+                }
+
+                // - For all segments whose start_ts > del_start_ts and start_ts < del_end_ts
+                //   - update segment's start_ts to del_end_ts
+
+                result = conn.exec(
+                    r_string_utils::format(
+                        "SELECT * FROM segments WHERE start_ts >= %s and start_ts < %s;",
+                        r_string_utils::int64_to_s(del_start_ts.value()).c_str(),
+                        r_string_utils::int64_to_s(del_end_ts.value()).c_str()
+                    )
+                );
+
+                for(auto row : result)
+                {
+                    conn.exec(
+                        r_string_utils::format(
+                            "UPDATE segments SET start_ts=%s WHERE id=%s;",
+                            r_string_utils::int64_to_s(del_end_ts.value()).c_str(),
+                            row.at("id").value().c_str()
+                        )
+                    );
+                }
+            });
+        }
+        else
+        {
+            // segment splitting case
+            // - Update the segment's end_ts to del_start_ts
+            // - Create a new segment with start_ts = del_end_ts and end_ts = old_end_ts
+            // - Delete the block from the index
+
+            r_sqlite_transaction(conn,[&](const r_sqlite_conn& conn){
+                string seg_id = containing_segment.value().at("id").value();
+
+                conn.exec(
+                    r_string_utils::format(
+                        "UPDATE segments SET end_ts=%s WHERE id=%s;",
+                        r_string_utils::int64_to_s(del_start_ts.value()).c_str(),
+                        seg_id.c_str()
+                    )
+                );
+
+                conn.exec(
+                    r_string_utils::format(
+                        "INSERT INTO segments(start_ts, end_ts) VALUES(%s, %s);",
+                        r_string_utils::int64_to_s(del_end_ts.value()).c_str(),
+                        containing_segment.value().at("end_ts").value().c_str()
+                    )
+                );
+            });
+        }
+
+        for(auto del_ts : index_blocks_to_delete)
+            _block_index.remove(del_ts);
+    }
+
+    return index_blocks_to_delete.size();
 }
 
 void r_storage_file::allocate(const std::string& file_name, size_t block_size, size_t num_blocks)
@@ -299,6 +470,53 @@ string r_storage_file::human_readable_file_size(double size)
     }
 
     return r_string_utils::format("%.2f %s", size, units[i]);
+}
+
+int r_storage_file::get_file_version(const std::string& friendly_name)
+{
+    auto db_file_name = r_string_utils::format("%s.sdb", friendly_name.c_str());
+
+    r_sqlite_conn conn(db_file_name);
+
+    auto maybe_value = r_db::to_scalar(conn.exec("PRAGMA user_version;"));
+
+    if(maybe_value.is_null())
+        R_THROW(("Unable to read user_version from %s", db_file_name.c_str()));
+    else return r_string_utils::s_to_int(maybe_value.value());
+}
+
+void r_storage_file::set_file_version(const std::string& friendly_name, int version)
+{
+    auto db_file_name = r_string_utils::format("%s.sdb", friendly_name.c_str());
+
+    r_sqlite_conn conn(db_file_name);
+
+    conn.exec(r_string_utils::format("PRAGMA user_version = %d;", version));
+}
+
+void r_storage_file::upgrade_file(const std::string& friendly_name)
+{
+    auto current_version = r_storage_file::get_file_version(friendly_name);
+
+    switch(current_version)
+    {
+        case 0:
+        {
+            auto db_file_name = r_string_utils::format("%s.sdb", friendly_name.c_str());
+
+            r_sqlite_conn conn(db_file_name);
+
+            r_sqlite_transaction(conn,[&](const r_sqlite_conn& conn){
+                conn.exec("CREATE TABLE new_segments(id INTEGER PRIMARY KEY AUTOINCREMENT, start_ts INTEGER, end_ts INTEGER);");
+                conn.exec("INSERT INTO new_segments(start_ts, end_ts) SELECT start_ts, end_ts FROM segments;");
+                conn.exec("DROP TABLE segments;");
+                conn.exec("ALTER TABLE new_segments RENAME TO segments;");
+                conn.exec("CREATE INDEX segments_start_ts_idx ON segments(start_ts);");
+            });
+
+            r_storage_file::set_file_version(friendly_name, 1);
+        }
+    }
 }
 
 r_storage_file::_storage_file_header r_storage_file::_read_header(const std::string& file_name)

@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <iterator>
 #include <chrono>
+#include <iostream>
 
 #include <cstdint>
 #include <cstdio>
@@ -53,14 +54,18 @@ REGISTER_TEST_FIXTURE(test_r_storage);
 
 static void _whack_files()
 {
-    if(r_fs::file_exists("test_file"))
-        r_fs::remove_file("test_file");
-    if(r_fs::file_exists("ten_mb_file"))
-        r_fs::remove_file("ten_mb_file");
+    if(r_fs::file_exists("test_file.rvd"))
+        r_fs::remove_file("test_file.rvd");
+    if(r_fs::file_exists("ten_mb_file.rvd"))
+        r_fs::remove_file("ten_mb_file.rvd");
     if(r_fs::file_exists("output.mp4"))
         r_fs::remove_file("output.mp4");
     if(r_fs::file_exists("ring_buffer"))
         r_fs::remove_file("ring_buffer");
+    if(r_fs::file_exists("ten_mb_file.sdb"))
+        r_fs::remove_file("ten_mb_file.sdb");
+    if(r_fs::file_exists("test_file.sdb"))
+        r_fs::remove_file("test_file.sdb");
 }
 
 void test_r_storage::setup()
@@ -398,6 +403,39 @@ void test_r_storage::test_r_dumbdex_full()
 
     blk = d.insert(1170);
     RTF_ASSERT(blk == 1);
+}
+
+void test_r_storage::test_r_dumbdex_query_first_element()
+{
+    const size_t MAX_INDEXES = 17;
+    vector<uint8_t> buffer(sizeof(uint32_t) + (MAX_INDEXES * INDEX_ELEMENT_SIZE) + sizeof(uint32_t) + (MAX_INDEXES * FREEDEX_ELEMENT_SIZE));
+
+    r_dumbdex::allocate("baz", &buffer[0], buffer.size(), MAX_INDEXES);
+
+    r_dumbdex d("baz", &buffer[0], 17);
+
+    d.insert(1000);
+    d.insert(1010);
+    d.insert(1020);
+    d.insert(1030);
+    d.insert(1040);
+    d.insert(1050);
+    d.insert(1060);
+    d.insert(1070);
+    d.insert(1090);
+    d.insert(1100);
+    d.insert(1110);
+    d.insert(1120);
+    d.insert(1130);
+    d.insert(1140);
+    d.insert(1150);
+    d.insert(1160);
+    d.insert(1170);
+
+    auto i = d.find_lower_bound(1000);
+
+    auto index_info = *i;
+    RTF_ASSERT((*i).first == 1000);
 }
 
 void test_r_storage::test_r_ind_block_basic_iteration()
@@ -743,9 +781,9 @@ void test_r_storage::test_r_rel_block_basic_iteration()
 void test_r_storage::test_r_storage_file_basic()
 {
     {
-        r_storage_file::allocate("test_file", 65536, 10);
+        r_storage_file::allocate("test_file.rvd", 65536, 10);
 
-        r_storage_file sf("test_file");
+        r_storage_file sf("test_file.rvd");
 
         vector<uint8_t> frame(256);
         std::iota(begin(frame), end(frame), 0);
@@ -772,7 +810,7 @@ void test_r_storage::test_r_storage_file_basic()
         }
     }
 
-    r_storage_file_reader sfr("test_file");
+    r_storage_file_reader sfr("test_file.rvd");
 
     auto gop_starts = sfr.key_frame_start_times(R_STORAGE_MEDIA_TYPE_VIDEO);
 
@@ -784,9 +822,561 @@ void test_r_storage::test_r_storage_file_basic()
     RTF_ASSERT(result.size() > 0);
 }
 
+static vector<pair<int64_t, int64_t>> _query_segments(const string& file_name)
+{
+    r_storage_file_reader sfr(file_name);
+    return sfr.query_segments(R_STORAGE_MEDIA_TYPE_VIDEO);
+}
+
+static bool _validate_segments(const string& file_name, const vector<pair<int64_t, int64_t>>& segments)
+{
+    auto actual = _query_segments(file_name);
+    if(actual != segments)
+    {
+        cout << "Expected: {";
+        for(auto& s : segments)
+            cout << "{" << s.first << "," << s.second << "},";
+        cout << "}" << endl;
+
+        cout << "Actual: {";
+        for(auto& s : actual)
+            cout << "{" << s.first << "," << s.second << "},";
+        cout << "}" << endl;
+    }
+    return actual == segments;
+}
+
+static bool _validate_n_segments(const string& file_name, int n)
+{
+    auto actual = _query_segments(file_name);
+    return actual.size() == n;
+}
+
+void test_r_storage::test_r_storage_file_remove_single_block_from_middle()
+{
+    {
+        r_storage_file::allocate("test_file.rvd", 65536, 15);
+
+        r_storage_file sf("test_file.rvd");
+
+        vector<uint8_t> frame(45000);
+        std::iota(begin(frame), end(frame), 0);
+
+        r_nullable<string> vp = string("vparam"), ap = string("aparam");
+        r_nullable<string> acn = string("aname");
+        auto wc = sf.create_write_context("vname", vp, acn, ap);
+
+        int64_t ts = 10, pts = 100;
+        for(int i = 0; i < 14; ++i)
+        {
+            sf.write_frame(
+                wc,
+                R_STORAGE_MEDIA_TYPE_VIDEO,
+                frame.data(),
+                frame.size() - (_random() % 32),
+                true,
+                ts,
+                pts
+            );
+
+            ts += 10;
+            pts += 10;
+        }
+
+        sf.finalize(wc);
+
+        RTF_ASSERT(_validate_segments("test_file.rvd", {{10, 140}}));
+
+        sf.remove_blocks(60, 70);
+
+        RTF_ASSERT(_validate_segments("test_file.rvd", {{10, 60}, {70, 140}}));
+    }
+}
+
+void test_r_storage::test_r_storage_file_remove_multiple_block_from_middle()
+{
+    {
+        r_storage_file::allocate("test_file.rvd", 65536, 15);
+
+        r_storage_file sf("test_file.rvd");
+
+        vector<uint8_t> frame(45000);
+        std::iota(begin(frame), end(frame), 0);
+
+        r_nullable<string> vp = string("vparam"), ap = string("aparam");
+        r_nullable<string> acn = string("aname");
+        auto wc = sf.create_write_context("vname", vp, acn, ap);
+
+        int64_t ts = 10, pts = 100;
+        for(int i = 0; i < 14; ++i)
+        {
+            sf.write_frame(
+                wc,
+                R_STORAGE_MEDIA_TYPE_VIDEO,
+                frame.data(),
+                frame.size() - (_random() % 32),
+                true,
+                ts,
+                pts
+            );
+
+            ts += 10;
+            pts += 10;
+        }
+
+        sf.finalize(wc);
+
+        RTF_ASSERT(_validate_segments("test_file.rvd", {{10, 140}}));
+
+        sf.remove_blocks(60, 90);
+
+        RTF_ASSERT(_validate_segments("test_file.rvd", {{10, 60}, {90, 140}}));
+    }
+}
+
+void test_r_storage::test_r_storage_file_remove_single_block_from_front()
+{
+    {
+        r_storage_file::allocate("test_file.rvd", 65536, 15);
+
+        r_storage_file sf("test_file.rvd");
+
+        vector<uint8_t> frame(45000);
+        std::iota(begin(frame), end(frame), 0);
+
+        r_nullable<string> vp = string("vparam"), ap = string("aparam");
+        r_nullable<string> acn = string("aname");
+        auto wc = sf.create_write_context("vname", vp, acn, ap);
+
+        int64_t ts = 10, pts = 100;
+        for(int i = 0; i < 14; ++i)
+        {
+            sf.write_frame(
+                wc,
+                R_STORAGE_MEDIA_TYPE_VIDEO,
+                frame.data(),
+                frame.size() - (_random() % 32),
+                true,
+                ts,
+                pts
+            );
+
+            ts += 10;
+            pts += 10;
+        }
+
+        sf.finalize(wc);
+
+        RTF_ASSERT(_validate_segments("test_file.rvd", {{10, 140}}));
+
+        sf.remove_blocks(10, 20);
+
+        RTF_ASSERT(_validate_segments("test_file.rvd", {{20, 140}}));
+    }
+}
+
+void test_r_storage::test_r_storage_file_remove_multiple_block_from_front()
+{
+    {
+        r_storage_file::allocate("test_file.rvd", 65536, 15);
+
+        r_storage_file sf("test_file.rvd");
+
+        vector<uint8_t> frame(45000);
+        std::iota(begin(frame), end(frame), 0);
+
+        r_nullable<string> vp = string("vparam"), ap = string("aparam");
+        r_nullable<string> acn = string("aname");
+        auto wc = sf.create_write_context("vname", vp, acn, ap);
+
+        int64_t ts = 10, pts = 100;
+        for(int i = 0; i < 14; ++i)
+        {
+            sf.write_frame(
+                wc,
+                R_STORAGE_MEDIA_TYPE_VIDEO,
+                frame.data(),
+                frame.size() - (_random() % 32),
+                true,
+                ts,
+                pts
+            );
+
+            ts += 10;
+            pts += 10;
+        }
+
+        sf.finalize(wc);
+
+        RTF_ASSERT(_validate_segments("test_file.rvd", {{10, 140}}));
+
+        sf.remove_blocks(10, 40);
+
+        RTF_ASSERT(_validate_segments("test_file.rvd", {{40, 140}}));
+    }
+}
+
+void test_r_storage::test_r_storage_file_fail_remove_single_block_from_end()
+{
+    {
+        r_storage_file::allocate("test_file.rvd", 65536, 15);
+
+        r_storage_file sf("test_file.rvd");
+
+        vector<uint8_t> frame(45000);
+        std::iota(begin(frame), end(frame), 0);
+
+        r_nullable<string> vp = string("vparam"), ap = string("aparam");
+        r_nullable<string> acn = string("aname");
+        auto wc = sf.create_write_context("vname", vp, acn, ap);
+
+        int64_t ts = 10, pts = 100;
+        for(int i = 0; i < 14; ++i)
+        {
+            sf.write_frame(
+                wc,
+                R_STORAGE_MEDIA_TYPE_VIDEO,
+                frame.data(),
+                frame.size() - (_random() % 32),
+                true,
+                ts,
+                pts
+            );
+
+            ts += 10;
+            pts += 10;
+        }
+
+        sf.finalize(wc);
+
+        RTF_ASSERT(_validate_segments("test_file.rvd", {{10, 140}}));
+
+        RTF_ASSERT(sf.remove_blocks(140, 150) == 0);
+    }
+}
+
+void test_r_storage::test_r_storage_file_remove_whole_segment()
+{
+    {
+        r_storage_file::allocate("test_file.rvd", 65536, 15);
+
+        vector<uint8_t> frame(45000);
+        std::iota(begin(frame), end(frame), 0);
+        r_nullable<string> vp = string("vparam"), ap = string("aparam");
+        r_nullable<string> acn = string("aname");
+        int64_t ts = 10, pts = 100;
+
+        {
+            r_storage_file sf("test_file.rvd");
+            auto wc = sf.create_write_context("vname", vp, acn, ap);
+
+            for(int i = 0; i < 3; ++i)
+            {
+                sf.write_frame(
+                    wc,
+                    R_STORAGE_MEDIA_TYPE_VIDEO,
+                    frame.data(),
+                    frame.size() - (_random() % 32),
+                    true,
+                    ts,
+                    pts
+                );
+
+                ts += 10;
+                pts += 10;
+            }
+
+            sf.finalize(wc);
+        }
+
+        {
+            r_storage_file sf("test_file.rvd");
+            auto wc = sf.create_write_context("vname", vp, acn, ap);
+            for(int i = 0; i < 8; ++i)
+            {
+                sf.write_frame(
+                    wc,
+                    R_STORAGE_MEDIA_TYPE_VIDEO,
+                    frame.data(),
+                    frame.size() - (_random() % 32),
+                    true,
+                    ts,
+                    pts
+                );
+
+                ts += 10;
+                pts += 10;
+            }
+
+            sf.finalize(wc);
+        }
+
+        {
+            r_storage_file sf("test_file.rvd");
+            auto wc = sf.create_write_context("vname", vp, acn, ap);
+            for(int i = 0; i < 3; ++i)
+            {
+                sf.write_frame(
+                    wc,
+                    R_STORAGE_MEDIA_TYPE_VIDEO,
+                    frame.data(),
+                    frame.size() - (_random() % 32),
+                    true,
+                    ts,
+                    pts
+                );
+
+                ts += 10;
+                pts += 10;
+            }
+
+            sf.finalize(wc);
+        }
+
+        {
+            r_storage_file sf("test_file.rvd");
+
+            RTF_ASSERT(_validate_segments("test_file.rvd", {{10, 30}, {40, 110}, {120, 140}}));
+
+            sf.remove_blocks(35, 125);
+
+            RTF_ASSERT(_validate_segments("test_file.rvd", {{10, 30}, {130, 140}}));
+        }
+    }
+}
+
+void test_r_storage::test_r_storage_file_remove_whole_segment_realistic()
+{
+    {
+        r_storage_file::allocate("test_file.rvd", 8192, 15);
+
+        vector<uint8_t> frame(256);
+        std::iota(begin(frame), end(frame), 0);
+        r_nullable<string> vp = string("vparam"), ap = string("aparam");
+        r_nullable<string> acn = string("aname");
+        int64_t ts = 10, pts = 100;
+
+        {
+            r_storage_file sf("test_file.rvd");
+            auto wc = sf.create_write_context("vname", vp, acn, ap);
+
+            for(int i = 0; i < 24; ++i)
+            {
+                sf.write_frame(
+                    wc,
+                    R_STORAGE_MEDIA_TYPE_VIDEO,
+                    frame.data(),
+                    frame.size() - (_random() % 32),
+                    true,
+                    ts,
+                    pts
+                );
+
+                ts += 1;
+                pts += 10;
+            }
+
+            sf.finalize(wc);
+        }
+
+        {
+            r_storage_file sf("test_file.rvd");
+            auto wc = sf.create_write_context("vname", vp, acn, ap);
+            for(int i = 0; i < 64; ++i)
+            {
+                sf.write_frame(
+                    wc,
+                    R_STORAGE_MEDIA_TYPE_VIDEO,
+                    frame.data(),
+                    frame.size() - (_random() % 32),
+                    true,
+                    ts,
+                    pts
+                );
+
+                ts += 1;
+                pts += 10;
+            }
+
+            sf.finalize(wc);
+        }
+
+        {
+            r_storage_file sf("test_file.rvd");
+            auto wc = sf.create_write_context("vname", vp, acn, ap);
+            for(int i = 0; i < 24; ++i)
+            {
+                sf.write_frame(
+                    wc,
+                    R_STORAGE_MEDIA_TYPE_VIDEO,
+                    frame.data(),
+                    frame.size() - (_random() % 32),
+                    true,
+                    ts,
+                    pts
+                );
+
+                ts += 1;
+                pts += 10;
+            }
+
+            sf.finalize(wc);
+        }
+
+        {
+            r_storage_file sf("test_file.rvd");
+
+            RTF_ASSERT(_validate_segments("test_file.rvd", {{10, 33}, {34, 97}, {98, 121}}));
+
+            sf.remove_blocks(20, 110);
+
+            RTF_ASSERT(_validate_n_segments("test_file.rvd", 2));
+        }
+    }
+}
+
+void test_r_storage::test_r_storage_file_remove_random()
+{
+    {
+        r_storage_file::allocate("test_file.rvd", 131072, 100);
+
+        vector<uint8_t> frame(16384);
+        std::iota(begin(frame), end(frame), 0);
+        r_nullable<string> vp = string("vparam"), ap = string("aparam");
+        r_nullable<string> acn = string("aname");
+        int64_t ts = 10, pts = 100;
+
+        {
+            r_storage_file sf("test_file.rvd");
+            auto wc = sf.create_write_context("vname", vp, acn, ap);
+
+            for(int i = 0; i < 500; ++i)
+            {
+                sf.write_frame(
+                    wc,
+                    R_STORAGE_MEDIA_TYPE_VIDEO,
+                    frame.data(),
+                    frame.size() - (_random() % 2048),
+                    true,
+                    ts,
+                    pts
+                );
+
+                ts += 1;
+                pts += 10;
+            }
+
+            sf.finalize(wc);
+        }
+
+        {
+            r_storage_file sf("test_file.rvd");
+
+            for(int i = 0; i < 25; ++i)
+            {
+                auto bs = _random() % 500;
+                sf.remove_blocks(bs, bs + 20);
+            }
+        }
+
+        {
+            r_storage_file_reader sfr("test_file.rvd");
+
+            auto segments = sfr.query_segments();
+
+            RTF_ASSERT(segments.size() > 1);
+        }
+    }
+}
+
+void test_r_storage::test_r_storage_file_remove_random_then_write()
+{
+    {
+        r_storage_file::allocate("test_file.rvd", 131072, 100);
+
+        vector<uint8_t> frame(16384);
+        std::iota(begin(frame), end(frame), 0);
+        r_nullable<string> vp = string("vparam"), ap = string("aparam");
+        r_nullable<string> acn = string("aname");
+        int64_t ts = 10, pts = 100;
+
+        {
+            r_storage_file sf("test_file.rvd");
+            auto wc = sf.create_write_context("vname", vp, acn, ap);
+
+            for(int i = 0; i < 500; ++i)
+            {
+                sf.write_frame(
+                    wc,
+                    R_STORAGE_MEDIA_TYPE_VIDEO,
+                    frame.data(),
+                    frame.size() - (_random() % 2048),
+                    true,
+                    ts,
+                    pts
+                );
+
+                ts += 1;
+                pts += 10;
+            }
+
+            sf.finalize(wc);
+        }
+
+        {
+            r_storage_file sf("test_file.rvd");
+
+            for(int i = 0; i < 25; ++i)
+            {
+                auto bs = _random() % 500;
+                sf.remove_blocks(bs, bs + 20);
+            }
+        }
+
+        {
+            r_storage_file_reader sfr("test_file.rvd");
+
+            auto segments = sfr.query_segments();
+
+            RTF_ASSERT(segments.size() > 1);
+        }
+
+        {
+            r_storage_file sf("test_file.rvd");
+            auto wc = sf.create_write_context("vname", vp, acn, ap);
+
+            for(int i = 0; i < 25000; ++i)
+            {
+                sf.write_frame(
+                    wc,
+                    R_STORAGE_MEDIA_TYPE_VIDEO,
+                    frame.data(),
+                    frame.size() - (_random() % 2048),
+                    true,
+                    ts,
+                    pts
+                );
+
+                ts += 1;
+                pts += 10;
+            }
+
+            sf.finalize(wc);
+        }
+
+        {
+            r_storage_file_reader sfr("test_file.rvd");
+
+            auto segments = sfr.query_segments();
+
+            RTF_ASSERT(segments.size() == 1);
+        }
+    }
+}
+
 void test_r_storage::test_r_storage_file_fake_camera()
 {
-    r_storage_file::allocate("ten_mb_file", 65536, 160);
+    r_storage_file::allocate("ten_mb_file.rvd", 65536, 160);
 
     int port = RTF_NEXT_PORT();
 
@@ -816,7 +1406,7 @@ void test_r_storage::test_r_storage_file_fake_camera()
         int audio_timebase;
         tie(audio_codec_name, audio_codec_parameters, audio_timebase) = sdp_media_map_to_s(AUDIO_MEDIA, sdp_media);
 
-        sf = make_shared<r_storage_file>("ten_mb_file");
+        sf = make_shared<r_storage_file>("ten_mb_file.rvd");
         ctx = sf->create_write_context(video_codec_name, video_codec_parameters, audio_codec_name, audio_codec_parameters);
     });
 
@@ -851,11 +1441,10 @@ void test_r_storage::test_r_storage_file_fake_camera()
 
     sf->finalize(ctx);
 
-    shared_ptr<r_storage_file_reader> sfr = make_shared<r_storage_file_reader>("ten_mb_file");
+    shared_ptr<r_storage_file_reader> sfr = make_shared<r_storage_file_reader>("ten_mb_file.rvd");
 
-
-    auto kfst = sfr->key_frame_start_times(R_STORAGE_MEDIA_TYPE_ALL);
-    auto result = sfr->query(R_STORAGE_MEDIA_TYPE_ALL, kfst.front(), kfst.back());
+    auto kfst = sfr->key_frame_start_times(R_STORAGE_MEDIA_TYPE_VIDEO);
+    auto result = sfr->query(R_STORAGE_MEDIA_TYPE_VIDEO, kfst.front(), kfst.back());
 
     uint32_t version = 0;
     auto bt = r_blob_tree::deserialize(&result[0], result.size(), version);

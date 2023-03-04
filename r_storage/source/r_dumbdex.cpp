@@ -90,7 +90,7 @@ r_dumbdex& r_dumbdex::operator=(r_dumbdex&& other) noexcept
     return *this;
 }
 
-r_dumbdex::iterator r_dumbdex::find_lower_bound(int64_t ts) const
+r_dumbdex::iterator r_dumbdex::find_lower_bound(uint64_t ts) const
 {
     if(*_n_indexes == 0)
         return r_dumbdex::end();
@@ -98,10 +98,13 @@ r_dumbdex::iterator r_dumbdex::find_lower_bound(int64_t ts) const
     auto b = _index;
     auto e = b + (*_n_indexes * INDEX_ELEMENT_SIZE);
 
+    vector<uint8_t> ts_bytes(INDEX_ELEMENT_SIZE);
+    memcpy(ts_bytes.data(), &ts, sizeof(uint64_t));
+
     auto found = lower_bound_bytes(
         b, 
         e, 
-        (uint8_t*)&ts, 
+        ts_bytes.data(),
         INDEX_ELEMENT_SIZE,
         [this](const uint8_t* p, const uint8_t* ts){
             auto pv = _read_index(p).first;

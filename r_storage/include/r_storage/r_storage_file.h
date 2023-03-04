@@ -61,11 +61,17 @@ public:
 
     R_API void finalize(const r_storage_write_context& ctx);
 
+    R_API size_t remove_blocks(int64_t start_ts, int64_t end_ts);
+
     R_API static void allocate(const std::string& file_name, size_t block_size, size_t num_blocks);
 
     R_API static std::pair<int64_t, int64_t> required_file_size_for_retention_hours(int64_t retention_hours, int64_t byte_rate);
 
     R_API static std::string human_readable_file_size(double size);
+
+    R_API static int get_file_version(const std::string& friendly_name);
+    R_API static void set_file_version(const std::string& friendly_name, int version);
+    R_API static void upgrade_file(const std::string& friendly_name);
 
 private:
 
@@ -110,6 +116,8 @@ private:
 
     r_utils::r_nullable<int64_t> _first_ts;
     r_utils::r_nullable<int64_t> _last_ts;
+
+    r_utils::r_nullable<std::string> _current_segment_id;
 };
 
 }

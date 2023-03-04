@@ -703,6 +703,13 @@ int main(int argc, char** argv)
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
 
+    string vision_cmd = "vision";
+#ifdef IS_WINDOWS
+    vision_cmd = "vision.exe";
+#endif
+
+    r_process vision_process(vision_cmd);
+
     _set_window_icon(window);
 
     bool close_requested = false;
@@ -723,6 +730,10 @@ int main(int argc, char** argv)
     }));
     tray.addEntry(Tray::Button("Hide", [&]{
         glfwHideWindow(window);
+    }));
+    tray.addEntry(Tray::Button("Launch Vision", [&]{
+        if(!vision_process.running())
+            vision_process.start();
     }));
 
     // Setup Dear ImGui context
@@ -757,12 +768,6 @@ int main(int argc, char** argv)
     auto last_ui_update_ts = chrono::steady_clock::now();
     bool force_ui_update = false;
 
-    string vision_cmd = "vision";
-#ifdef IS_WINDOWS
-    vision_cmd = "vision.exe";
-#endif
-
-    r_process vision_process(vision_cmd);
 
     // Main loop
     while(!close_requested)

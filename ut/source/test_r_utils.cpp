@@ -17,6 +17,7 @@
 #include "r_utils/r_work_q.h"
 #include "r_utils/r_timer.h"
 #include "r_utils/r_avg.h"
+#include "r_utils/r_algorithms.h"
 #include <chrono>
 #include <thread>
 #include <climits>
@@ -1064,4 +1065,43 @@ void test_r_utils::test_exp_avg()
     auto sstddev = avg2.standard_deviation();
 
     RTF_ASSERT(fstddev < sstddev);
+}
+
+static bool ufind(uint8_t* b, uint8_t* e, uint8_t target, bool exact=true)
+{
+    auto found = lower_bound_bytes(
+        b,
+        e,
+        &target,
+        1,
+        [](const uint8_t* p, const uint8_t* ts){
+            return *p < *ts?-1:*p > *ts?1:0;
+        }
+    );
+
+    if(found == e)
+        return false;
+    else
+    {
+        return (exact)?*found == target:true;
+    }
+}
+
+void test_r_utils::test_lower_bound_bytes()
+{
+    std::vector<uint8_t> v = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140};
+
+    auto b = &v[0];
+    auto e = &v[0] + v.size();
+
+    // find first thing
+    RTF_ASSERT(ufind(b, e, 10));
+    // find middle thing
+    RTF_ASSERT(ufind(b, e, 50));
+    // find last thing
+    RTF_ASSERT(ufind(b, e, 140));
+    // find thing before first thing, should return first thing
+    RTF_ASSERT(ufind(b, e, 5, false));
+    // find thing after last thing should return false
+    RTF_ASSERT(!ufind(b, e, 145));
 }
