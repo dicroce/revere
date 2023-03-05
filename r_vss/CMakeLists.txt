@@ -13,6 +13,8 @@ add_library(
     source/r_ws.cpp
     include/r_vss/r_vss_utils.h
     source/r_vss_utils.cpp
+    include/r_vss/r_prune.h
+    source/r_prune.cpp
 )
 
 target_include_directories(

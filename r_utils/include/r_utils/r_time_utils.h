@@ -20,9 +20,9 @@ R_API std::chrono::milliseconds iso_8601_period_to_duration(const std::string& s
 
 R_API std::string duration_to_iso_8601_period(std::chrono::milliseconds d);
 
-R_API uint64_t tp_to_epoch_millis(const std::chrono::system_clock::time_point& tp);
+R_API int64_t tp_to_epoch_millis(const std::chrono::system_clock::time_point& tp);
 
-R_API std::chrono::system_clock::time_point epoch_millis_to_tp(uint64_t t);
+R_API std::chrono::system_clock::time_point epoch_millis_to_tp(int64_t t);
 
 template<typename INT>
 R_API INT convert_clock_freq(INT ticks, INT srcTicksPerSecond, INT dstTicksPerSecond)

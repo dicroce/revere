@@ -5,6 +5,7 @@
 //#include "r_vss/r_recording_context.h"
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_ws.h"
+#include "r_vss/r_prune.h"
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
 #include "r_utils/r_nullable.h"
@@ -99,6 +100,7 @@ private:
     std::vector<GstRTSPMediaFactory*> _factories;
     r_motion_engine _motionEngine;
     r_ws _ws;
+    r_prune _prune;
 };
 
 }

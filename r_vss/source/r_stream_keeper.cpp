@@ -6,6 +6,7 @@
 #include "r_utils/r_functional.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_file.h"
+#include "r_utils/r_time_utils.h"
 
 #ifdef IS_WINDOWS
 #pragma warning( push )
@@ -45,7 +46,8 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
     _mounts(nullptr),
     _factories(),
     _motionEngine(_devices, top_dir),
-    _ws(top_dir, _devices)
+    _ws(top_dir, _devices),
+    _prune(_ws)
 {
     auto video_path = top_dir + PATH_SLASH + "video";
 
@@ -91,6 +93,8 @@ void r_stream_keeper::start()
     _rtsp_server_th = thread(&r_stream_keeper::_rtsp_server_entry_point, this);
 
     _th = thread(&r_stream_keeper::_entry_point, this);
+
+    _prune.start();
 }
 
 void r_stream_keeper::stop()
@@ -110,6 +114,8 @@ void r_stream_keeper::stop()
     _th.join();
 
     _rtsp_server_th.join();
+
+    _prune.stop();
 }
 
 vector<r_stream_status> r_stream_keeper::fetch_stream_status()
@@ -265,7 +271,7 @@ void r_stream_keeper::post_key_frame_to_motion_engine(r_pipeline::r_gst_buffer b
 
 vector<uint8_t> r_stream_keeper::get_jpg(const string& camera_id, int64_t ts, uint16_t w, uint16_t h)
 {
-    return _ws.get_jpg(camera_id, ts, w, h);
+    return _ws.get_jpg(camera_id, r_time_utils::epoch_millis_to_tp(ts), w, h);
 }
 
 void r_stream_keeper::_entry_point()

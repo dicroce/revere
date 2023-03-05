@@ -32,6 +32,14 @@ using json = nlohmann::json;
 
 const int WEB_SERVER_PORT = 10080;
 
+struct motion_info
+{
+    int64_t time;
+    uint8_t motion;
+    uint8_t avg_motion;
+    uint8_t stddev;
+};
+
 r_ws::r_ws(const string& top_dir, r_devices& devices) :
     _top_dir(top_dir),
     _devices(devices),
@@ -53,7 +61,7 @@ r_ws::~r_ws()
     _server.stop();
 }
 
-vector<uint8_t> r_ws::get_jpg(const std::string& camera_id, int64_t ts, uint16_t w, uint16_t h)
+vector<uint8_t> r_ws::get_jpg(const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h)
 {
     auto maybe_camera = _devices.get_camera_by_id(camera_id);
 
@@ -65,7 +73,7 @@ vector<uint8_t> r_ws::get_jpg(const std::string& camera_id, int64_t ts, uint16_t
 
     r_storage_file_reader sf(_top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
 
-    auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, ts);
+    auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, r_time_utils::tp_to_epoch_millis(ts));
 
     uint32_t version = 0;
     auto bt = r_blob_tree::deserialize(&key_bt[0], key_bt.size(), version);
@@ -110,7 +118,7 @@ vector<uint8_t> r_ws::get_jpg(const std::string& camera_id, int64_t ts, uint16_t
     R_THROW(("Unable to JPG fail."));
 }
 
-vector<uint8_t> r_ws::get_key_frame(const std::string& camera_id, int64_t ts)
+vector<uint8_t> r_ws::get_key_frame(const std::string& camera_id, std::chrono::system_clock::time_point ts)
 {
     auto maybe_camera = _devices.get_camera_by_id(camera_id);
 
@@ -122,7 +130,111 @@ vector<uint8_t> r_ws::get_key_frame(const std::string& camera_id, int64_t ts)
 
     r_storage_file_reader sf(_top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
 
-    return sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, ts);
+    return sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, r_time_utils::tp_to_epoch_millis(ts));
+}
+
+vector<segment> r_ws::get_contents(const string& camera_id, r_storage_media_type mt, system_clock::time_point start, system_clock::time_point end)
+{
+    auto maybe_camera = _devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    if(maybe_camera.value().record_file_path.is_null())
+        R_THROW(("Camera has no recording file!"));
+
+    r_storage_file_reader sf(_top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+
+    auto segments = sf.query_segments(
+        r_time_utils::tp_to_epoch_millis(start),
+        r_time_utils::tp_to_epoch_millis(end)
+    );
+
+    vector<segment> result;
+
+    for(auto& s : segments)
+    {
+        segment seg;
+        seg.start = r_time_utils::epoch_millis_to_tp(s.first);
+        seg.end = r_time_utils::epoch_millis_to_tp(s.second);
+
+        result.push_back(seg);
+    }
+
+    return result;
+}
+
+vector<r_camera> r_ws::get_cameras()
+{
+    return _devices.get_all_cameras();
+}
+
+vector<motion_event_info> r_ws::get_motion_events(const std::string& camera_id, uint8_t motion_threshold, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
+{
+    auto maybe_camera = _devices.get_camera_by_id(camera_id);
+
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    if(maybe_camera.value().motion_detection_file_path.is_null())
+        R_THROW(("Camera has no motion recording file!"));
+
+    auto motion_file_name = maybe_camera.value().motion_detection_file_path.value();
+
+    auto motion_path = _top_dir + PATH_SLASH + "video" + PATH_SLASH + motion_file_name;
+
+    if(!r_fs::file_exists(motion_path))
+        R_THROW(("Motion database file does not exist."));
+
+    r_ring r(motion_path, RING_MOTION_EVENT_SIZE);
+
+    vector<uint8_t> motion_data = r.query_raw(start, end);
+
+    // OK, so we have a bunch of raw motion data... We need to make events. Here are some
+
+    // 1. Create a map<> of motion event time to motion data (motion, avg_motion and stddev).
+    map<int64_t, motion_info> motion_infos;
+    for(int i = 0; i < motion_data.size() / RING_MOTION_EVENT_SIZE; ++i)
+    {
+        motion_info mi;
+        mi.time = *(int64_t*)(&motion_data[(i*RING_MOTION_EVENT_SIZE)]);
+        mi.motion = motion_data[(i*RING_MOTION_EVENT_SIZE)+8];
+        mi.avg_motion = motion_data[(i*RING_MOTION_EVENT_SIZE)+9];
+        mi.stddev = motion_data[(i*RING_MOTION_EVENT_SIZE)+10];
+        if(mi.motion >= motion_threshold)    
+            motion_infos.insert(make_pair(mi.time, mi));
+    }
+
+    // 2. Create a vector<> of motion times.
+    vector<int64_t> motion_times;
+    for(auto& mi : motion_infos)
+        motion_times.push_back(mi.first);
+
+    // 3. Call r_vss::find_contiguous_segments() to find events.
+    auto events = r_vss::find_contiguous_segments(motion_times);
+
+    vector<motion_event_info> result;
+
+    for(auto e : events)
+    {
+        // for each event, the motion, stddev and avg_motion will be taken from the motion data with the largest
+        // motion value. Effectively the event becomes the highwater mark of the raw motions.
+        auto first = motion_infos.find(e.first);
+        auto last = motion_infos.find(e.second);
+
+        auto max = max_element(first, last, [](const auto& a, const auto& b){ return a.second.motion < b.second.motion; });
+
+        motion_event_info mi;
+
+        mi.start = system_clock::time_point(milliseconds(e.first));
+        mi.end = system_clock::time_point(milliseconds(e.second));
+        mi.motion = max->second.motion;
+        mi.avg_motion = max->second.avg_motion;
+        mi.stddev = max->second.stddev;
+
+        result.push_back(mi);        
+    }
+
+    return result;
 }
 
 r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_socket>& r_ws,
@@ -147,11 +259,9 @@ r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_s
         if(args.find("height") != end(args))
             h = r_string_utils::s_to_uint16(args["height"]);
 
-        auto ts = duration_cast<std::chrono::milliseconds>(r_time_utils::iso_8601_to_tp(args["start_time"]).time_since_epoch()).count();
-
         auto result = get_jpg(
             args["camera_id"],
-            ts,
+            r_time_utils::iso_8601_to_tp(args["start_time"]),
             w,
             h
         );
@@ -183,11 +293,9 @@ r_http::r_server_response r_ws::_get_key_frame(const r_http::r_web_server<r_util
         if(args.find("start_time") == end(args))
             R_THROW(("Missing start_time."));
 
-        auto ts = duration_cast<std::chrono::milliseconds>(r_time_utils::iso_8601_to_tp(args["start_time"]).time_since_epoch()).count();
-
         auto result = get_key_frame(
             args["camera_id"],
-            ts
+            r_time_utils::iso_8601_to_tp(args["start_time"])
         );
 
         r_server_response response;
@@ -211,24 +319,11 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
     {
         auto args = request.get_uri().get_get_args();
 
-        auto maybe_camera = _devices.get_camera_by_id(args["camera_id"]);
-
-        if(maybe_camera.is_null())
-            R_THROW(("Unknown camera id: %s", args["camera_id"].c_str()));
-
-        if(maybe_camera.value().record_file_path.is_null())
-            R_THROW(("Camera has no recording file!"));
-
-        r_storage_file_reader sf(_top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
-
         r_storage_media_type mt = R_STORAGE_MEDIA_TYPE_VIDEO;
         if(args["media_type"] == "audio")
             mt = R_STORAGE_MEDIA_TYPE_AUDIO;
         else if(args["media_type"] == "video")
             mt = R_STORAGE_MEDIA_TYPE_VIDEO;
-
-        if(args.find("start_time") == args.end())
-            R_THROW(("Missing start_time."));
 
         auto start_time_s = args["start_time"];
 
@@ -239,9 +334,11 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
         
         auto end_time_s = args["end_time"];
 
-        auto segments = sf.query_segments(
-            duration_cast<std::chrono::milliseconds>(r_time_utils::iso_8601_to_tp(start_time_s).time_since_epoch()).count(),
-            duration_cast<std::chrono::milliseconds>(r_time_utils::iso_8601_to_tp(end_time_s).time_since_epoch()).count()
+        auto segments = get_contents(
+            args["camera_id"],
+            mt,
+            r_time_utils::iso_8601_to_tp(start_time_s),
+            r_time_utils::iso_8601_to_tp(end_time_s)            
         );
 
         json j;
@@ -250,8 +347,9 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
         for(auto& s : segments)
         {
             // note: instead of push_back here its also possible to use += operator to append json object to array
-            j["segments"].push_back({{"start_time", r_time_utils::tp_to_iso_8601(r_time_utils::epoch_millis_to_tp(s.first), input_z_time)},
-                                    {"end_time", r_time_utils::tp_to_iso_8601(r_time_utils::epoch_millis_to_tp(s.second), input_z_time)}});
+            j["segments"].push_back({{"start_time", r_time_utils::tp_to_iso_8601(s.start, input_z_time)},
+                                    {"end_time", r_time_utils::tp_to_iso_8601(s.end, input_z_time)}});
+
         }
 
         r_server_response response;
@@ -273,7 +371,7 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
 {
     try
     {
-        auto cameras = _devices.get_all_cameras();
+        auto cameras = get_cameras();
 
         json j;
         j["cameras"] = json::array();
@@ -740,13 +838,6 @@ r_http::r_server_response r_ws::_get_motions(const r_http::r_web_server<r_utils:
     R_STHROW(r_http_500_exception, ("Failed to query motions."));
 }
 
-struct motion_info
-{
-    int64_t time;
-    uint8_t motion;
-    uint8_t avg_motion;
-    uint8_t stddev;
-};
 
 r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_utils::r_socket>& r_ws,
                                                    r_utils::r_buffered_socket<r_utils::r_socket>& conn,
@@ -793,50 +884,20 @@ r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_
 
         auto end_tp = r_time_utils::iso_8601_to_tp(end_time_s);
 
-        vector<uint8_t> motion_data = r.query_raw(start_tp, end_tp);
-
-        // OK, so we have a bunch of raw motion data... We need to make events. Here are some
-
-        // 1. Create a map<> of motion event time to motion data (motion, avg_motion and stddev).
-        map<int64_t, motion_info> motion_infos;
-        for(int i = 0; i < motion_data.size() / RING_MOTION_EVENT_SIZE; ++i)
-        {
-            motion_info mi;
-            mi.time = *(int64_t*)(&motion_data[(i*RING_MOTION_EVENT_SIZE)]);
-            mi.motion = motion_data[(i*RING_MOTION_EVENT_SIZE)+8];
-            mi.avg_motion = motion_data[(i*RING_MOTION_EVENT_SIZE)+9];
-            mi.stddev = motion_data[(i*RING_MOTION_EVENT_SIZE)+10];
-            if(mi.motion >= motion_threshold)    
-                motion_infos.insert(make_pair(mi.time, mi));
-        }
-
-        // 2. Create a vector<> of motion times.
-        vector<int64_t> motion_times;
-        for(auto& mi : motion_infos)
-            motion_times.push_back(mi.first);
-
-        // 3. Call r_vss::find_contiguous_segments() to find events.
-        auto events = r_vss::find_contiguous_segments(motion_times);
+        auto motion_events = get_motion_events(maybe_camera.value().id, motion_threshold, start_tp, end_tp);
 
         json j;
         j["motion_events"] = json::array();
 
-        for(auto e : events)
+        for(auto e : motion_events)
         {
-            // for each event, the motion, stddev and avg_motion will be taken from the motion data with the largest
-            // motion value. Effectively the event becomes the highwater mark of the raw motions.
-            auto first = motion_infos.find(e.first);
-            auto last = motion_infos.find(e.second);
-
-            auto max = max_element(first, last, [](const auto& a, const auto& b){ return a.second.motion < b.second.motion; });
-
             json j_motion;
 
-            j_motion["start_time"] = r_time_utils::tp_to_iso_8601(system_clock::time_point(milliseconds(e.first)), input_z_time);
-            j_motion["end_time"] = r_time_utils::tp_to_iso_8601(system_clock::time_point(milliseconds(e.second)), input_z_time);
-            j_motion["motion"] = max->second.motion;
-            j_motion["avg_motion"] = max->second.avg_motion;
-            j_motion["stddev"] = max->second.stddev;
+            j_motion["start_time"] = r_time_utils::tp_to_iso_8601(e.start, input_z_time);
+            j_motion["end_time"] = r_time_utils::tp_to_iso_8601(e.end, input_z_time);
+            j_motion["motion"] = e.motion;
+            j_motion["avg_motion"] = e.avg_motion;
+            j_motion["stddev"] = e.stddev;
 
             j["motion_events"].push_back(j_motion);
         }

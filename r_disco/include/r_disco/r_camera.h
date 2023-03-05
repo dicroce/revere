@@ -33,6 +33,8 @@ struct r_camera
     r_utils::r_nullable<int64_t> record_file_block_size;
     r_utils::r_nullable<bool> do_motion_detection;
     r_utils::r_nullable<std::string> motion_detection_file_path;
+    r_utils::r_nullable<bool> do_motion_pruning;
+    r_utils::r_nullable<int> min_continuous_recording_hours;
 
     std::string stream_config_hash;
 };

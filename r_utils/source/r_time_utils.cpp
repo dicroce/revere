@@ -231,12 +231,12 @@ string r_utils::r_time_utils::duration_to_iso_8601_period(milliseconds d)
     return output;
 }
 
-uint64_t r_utils::r_time_utils::tp_to_epoch_millis(const chrono::system_clock::time_point& tp)
+int64_t r_utils::r_time_utils::tp_to_epoch_millis(const chrono::system_clock::time_point& tp)
 {
 	return duration_cast<milliseconds>(tp.time_since_epoch()).count();
 }
 
-chrono::system_clock::time_point r_utils::r_time_utils::epoch_millis_to_tp(uint64_t t)
+chrono::system_clock::time_point r_utils::r_time_utils::epoch_millis_to_tp(int64_t t)
 {
 	return system_clock::time_point() + milliseconds(t);
 }

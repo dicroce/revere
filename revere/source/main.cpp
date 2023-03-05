@@ -72,6 +72,10 @@ struct revere_ui_state
     string restream_url;
     string kbps;
 
+    // camera properties dialog
+    bool do_motion_pruning {false};
+    std::string min_continuous_recording_hours {"24"};
+
     bool minimize_requested {false};
     void reset_selection()
     {
@@ -593,6 +597,39 @@ void configure_camera_setup_wizard(
             );
         }
     );
+
+    camera_setup_wizard.add_step(
+        "camera_properties_modal",
+        [&ui_state, &camera_setup_wizard, &rscc, &devices](){
+
+            ImGui::OpenPopup("Camera Properties");
+            revere::camera_properties_modal(
+                GImGui,
+                "Camera Properties",
+                ui_state.do_motion_pruning,
+                ui_state.min_continuous_recording_hours,
+                [&](){
+                    // OK button
+                    auto camera_id = ui_state.selected_camera_id();
+                    auto camera = devices.get_camera_by_id(camera_id.value()).value();
+                    camera.do_motion_pruning.set_value(ui_state.do_motion_pruning);
+                    camera.min_continuous_recording_hours.set_value(r_string_utils::s_to_int(ui_state.min_continuous_recording_hours));
+                    devices.save_camera(camera);
+
+                    ui_state.do_motion_pruning = false;
+                    ui_state.min_continuous_recording_hours = "24";
+
+                    camera_setup_wizard.cancel();
+                },
+                [&](){
+                    ui_state.do_motion_pruning = false;
+                    ui_state.min_continuous_recording_hours = "24";
+
+                    camera_setup_wizard.cancel();
+                }
+            );
+        }
+    );
 }
 
 string _get_icon_path()
@@ -876,7 +913,9 @@ int main(int argc, char** argv)
                                     ui_state.reset_selection();
                                     update_ui = true;
                                 }
-                            }
+                            },
+                            false, // Dont include the properites button
+                            [](int i){}
                         );
                     },
                     "Recording",
@@ -905,8 +944,15 @@ int main(int argc, char** argv)
                                 ui_state.discovered_selected_item = -1;
                                 update_ui = true;
                             },
-                            false,
-                            [](int i){}
+                            false, // Dont include forget button
+                            [](int i){},
+                            true, // Do include the properties button
+                            [&](int i){
+                                auto camera = devices.get_camera_by_id(ui_state.selected_camera_id().value()).value();
+                                ui_state.do_motion_pruning = camera.do_motion_pruning.value();
+                                ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());
+                                camera_setup_wizard.next("camera_properties_modal");
+                            }
                         );
                     },
                     "Camera Info",

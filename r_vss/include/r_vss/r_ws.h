@@ -7,7 +7,24 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/r_macro.h"
 #include "r_disco/r_devices.h"
+#include "r_storage/r_storage_file.h"
 #include <vector>
+#include <chrono>
+
+struct motion_event_info
+{
+    std::chrono::system_clock::time_point start;
+    std::chrono::system_clock::time_point end;
+    uint8_t motion;
+    uint8_t avg_motion;
+    uint8_t stddev;
+};
+
+struct segment
+{
+    std::chrono::system_clock::time_point start;
+    std::chrono::system_clock::time_point end;
+};
 
 class r_ws final
 {
@@ -15,9 +32,15 @@ public:
     R_API r_ws(const std::string& top_dir, r_disco::r_devices& devices);
     R_API ~r_ws();
 
-    R_API std::vector<uint8_t> get_jpg(const std::string& camera_id, int64_t ts, uint16_t w, uint16_t h);
+    R_API std::vector<uint8_t> get_jpg(const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h);
 
-    R_API std::vector<uint8_t> get_key_frame(const std::string& camera_id, int64_t ts);
+    R_API std::vector<uint8_t> get_key_frame(const std::string& camera_id, std::chrono::system_clock::time_point ts);
+
+    R_API std::vector<segment> get_contents(const std::string& camera_id, r_storage::r_storage_media_type mt, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
+
+    R_API std::vector<r_disco::r_camera> get_cameras();
+
+    R_API std::vector<motion_event_info> get_motion_events(const std::string& camera_id, uint8_t motion_threshold, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
 
 private:
     r_http::r_server_response _get_jpg(const r_http::r_web_server<r_utils::r_socket>& r_ws,

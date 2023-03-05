@@ -382,6 +382,18 @@ void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
                 _set_db_version(conn, 1);
             });
         }
+        case 1:
+        {
+            r_sqlite_transaction(conn,[&](const r_sqlite_conn& conn){
+                conn.exec(
+                    "ALTER TABLE cameras ADD COLUMN do_motion_pruning INTEGER DEFAULT 0;"
+                );
+                conn.exec(
+                    "ALTER TABLE cameras ADD COLUMN min_continuous_recording_hours INTEGER DEFAULT 24;"
+                );
+                _set_db_version(conn, 2);
+            });
+        }
         default:
             break;
     };
@@ -529,6 +541,11 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
     else camera.do_motion_detection = false;
     if(!row.at("motion_detection_file_path").is_null())
         camera.motion_detection_file_path = row.at("motion_detection_file_path").value();
+    if(!row.at("do_motion_pruning").is_null())
+        camera.do_motion_pruning = (s_to_int(row.at("do_motion_pruning").value()) == 1)?true:false;
+    else camera.do_motion_pruning = false;
+    if(!row.at("min_continuous_recording_hours").is_null())
+        camera.min_continuous_recording_hours = (s_to_int(row.at("min_continuous_recording_hours").value()));
 
     camera.stream_config_hash = row.at("stream_config_hash").value();
     return camera;
@@ -605,8 +622,10 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
 
     auto query = r_string_utils::format(
             "REPLACE INTO cameras("
-                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%slast_update_time, stream_config_hash) "
+                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%slast_update_time, stream_config_hash) "
             "VALUES("
+                "%s"
+                "%s"
                 "%s"
                 "%s"
                 "%s"
@@ -650,6 +669,8 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.record_file_block_size.is_null())?"record_file_block_size, ":"",
             (!camera.do_motion_detection.is_null())?"do_motion_detection, ":"",
             (!camera.motion_detection_file_path.is_null())?"motion_detection_file_path, ":"",
+            (!camera.do_motion_pruning.is_null())?"do_motion_pruning, ":"",
+            (!camera.min_continuous_recording_hours.is_null())?"min_continuous_recording_hours, ":"",
 
             r_string_utils::format("'%s', ", camera.id.c_str()).c_str(),
             (!camera.camera_name.is_null())?r_string_utils::format("'%s', ", camera.camera_name.value().c_str()).c_str():"",
@@ -672,6 +693,9 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.record_file_block_size.is_null())?r_string_utils::format("%d, ", camera.record_file_block_size.value()).c_str():"",
             (!camera.do_motion_detection.is_null())?r_string_utils::format("%d, ", (camera.do_motion_detection.value()==true)?1:0).c_str():"",
             (!camera.motion_detection_file_path.is_null())?r_string_utils::format("'%s', ", camera.motion_detection_file_path.value().c_str()).c_str():"",
+            (!camera.do_motion_pruning.is_null())?r_string_utils::format("%d, ", (camera.do_motion_pruning.value()==true)?1:0).c_str():"",
+            (!camera.min_continuous_recording_hours.is_null())?r_string_utils::format("%d, ", camera.min_continuous_recording_hours.value()).c_str():"",
+
             "unixepoch(), ",
             r_string_utils::format("'%s'", hash.c_str()).c_str()
         );

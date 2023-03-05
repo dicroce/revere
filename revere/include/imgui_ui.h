@@ -9,6 +9,7 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_exception.h"
 #include "r_storage/r_storage_file.h"
+#include "r_disco/r_camera.h"
 #include <map>
 #include <functional>
 #include <mutex>
@@ -192,7 +193,7 @@ struct sidebar_list_ui_item
     std::string camera_id;
 };
 
-template<typename BUTTON_CLICK_CB, typename ITEM_CLICK_CB, typename FORGET_BUTTON_CLICK_CB>
+template<typename BUTTON_CLICK_CB, typename ITEM_CLICK_CB, typename FORGET_BUTTON_CLICK_CB, typename PROPERTIES_CLICK_CB>
 void sidebar_list(
     ImGuiContext* GImGui,
     revere::assignment_state& as,
@@ -203,7 +204,9 @@ void sidebar_list(
     BUTTON_CLICK_CB button_click_cb,
     ITEM_CLICK_CB item_click_cb,
     bool show_forget_button,
-    FORGET_BUTTON_CLICK_CB forget_button_click_cb
+    FORGET_BUTTON_CLICK_CB forget_button_click_cb,
+    bool show_properties_button,
+    PROPERTIES_CLICK_CB properties_click_cb
 )
 {
     auto pos = ImGui::GetCursorPos();
@@ -243,6 +246,13 @@ void sidebar_list(
             ImGui::SameLine();
             if(ImGui::Button("Forget"))
                 forget_button_click_cb(i);
+        }
+
+        if(show_properties_button)
+        {
+            ImGui::SameLine();
+            if(ImGui::Button("Properties"))
+                properties_click_cb(i);
         }
 
         ImGui::SetCursorPos(ImVec2(pos.x, pos.y));
@@ -627,6 +637,47 @@ void configure_rtsp_source_camera_modal(
 
         if(ImGui::InputText("RTSP Password", rtsp_password_buffer, 64))
             rscc.rtsp_password = std::string(rtsp_password_buffer);
+
+        if(ImGui::Button("Cancel"))
+        {
+            ImGui::CloseCurrentPopup();
+            cancel_cb();
+        }
+
+        ImGui::SameLine();
+
+        if(ImGui::Button("Ok"))
+        {
+            ImGui::CloseCurrentPopup();
+            ok_cb();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+template<typename OK_CB, typename CANCEL_CB>
+void camera_properties_modal(
+    ImGuiContext* GImGui,
+    const std::string& name,
+    bool& do_motion_pruning,
+    std::string& min_continuous_retention_hours,
+    OK_CB ok_cb,
+    CANCEL_CB cancel_cb
+)
+{
+    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGuiContext& g = *GImGui;
+        ImGuiWindow* window = g.CurrentWindow;
+        ImVec2 pos_before = window->DC.CursorPos;
+
+        ImGui::Checkbox("Prune Still Video", &do_motion_pruning);
+
+        char retention_hours[64] = {0};
+        r_ui_utils::copy_s(retention_hours, 64, min_continuous_retention_hours);
+        if(ImGui::InputText("Minimum continuous retention hours", retention_hours, 64))
+            min_continuous_retention_hours = std::string(retention_hours);
 
         if(ImGui::Button("Cancel"))
         {
