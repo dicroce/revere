@@ -192,13 +192,22 @@ At this point you should have revere installed in /usr/local/revere and vision i
 ## Compiling on Windows
 1) Download and install git for windows from https://git-scm.com
 2) Download and install Visual Studio 2019 (free Community edition is fine since Revere is opensource).
-3) Launch the Git Bash prompt that comes with git for windows.
-4) Type the following commands
+3) In git bash shell, cd to to desired location for source tree.
+4) Type:
 ```
 git clone https://github.com/dicroce/revere --recursive
-mkdir revere/build && pushd revere/build && cmake .. && cmake --build . --target install
+mkdir revere/build && pushd revere/build && cmake ..
 ```
-NOTE: the "cmake --build . --target install" target works on Windows but it has to be run from a Git Bash shell run with Administrator privelages. It will install Revere and Vision to C:\Program Files (x86)\revere.
+6) Launch x64 Native Tools Command Prompt as Administrator
+7) cd to source build directory
+8) Type:
+```
+revere.sln
+```
+10) In visual studio set build type to Release
+11) Click Build -> Configuration Manager and check the checkbox in the Build column for the INSTALL target
+12) Click Build -> Build Solution
+13) Revere will install to Program Files C:\Program Files (x86)\revere
 
 ## Attributions
 Revere was developed using these great open source projects
