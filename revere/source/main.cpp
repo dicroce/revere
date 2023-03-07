@@ -2,11 +2,11 @@
 // Revere
 
 // TODO
-// - Add db upgrades
-// - Document r_storage
-// - Add pruning of still video
+// - Add "do motion detection" checkbox to camera properties dialog
+//   - If checked and event files doesn't exist, create it
+// - Make "do motion pruning" conditional on "do motion detection" being checked
+//   - figure out how to make disabled controls
 // - Update imgui lib so that we use the win32 backend on windows, and whatever the most compatible is on linux
-// - Add Launch Vision option to revere tray menu
 //
 
 #include "r_utils/r_file.h"
@@ -614,6 +614,7 @@ void configure_camera_setup_wizard(
                     auto camera = devices.get_camera_by_id(camera_id.value()).value();
                     camera.do_motion_pruning.set_value(ui_state.do_motion_pruning);
                     camera.min_continuous_recording_hours.set_value(r_string_utils::s_to_int(ui_state.min_continuous_recording_hours));
+                    printf("Saving camera %s with do_motion_pruning=%d and min_continuous_recording_hours=%d\n", camera.friendly_name.value().c_str(), camera.do_motion_pruning.value(), camera.min_continuous_recording_hours.value());
                     devices.save_camera(camera);
 
                     ui_state.do_motion_pruning = false;
@@ -948,6 +949,12 @@ int main(int argc, char** argv)
                             [](int i){},
                             true, // Do include the properties button
                             [&](int i){
+                                // first update the ui state
+                                ui_state.recording_selected_item = i;
+                                ui_state.discovered_selected_item = -1;
+                                update_ui = true;
+
+                                // Go to camera properties modal
                                 auto camera = devices.get_camera_by_id(ui_state.selected_camera_id().value()).value();
                                 ui_state.do_motion_pruning = camera.do_motion_pruning.value();
                                 ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());

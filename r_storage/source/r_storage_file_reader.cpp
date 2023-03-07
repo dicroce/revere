@@ -210,6 +210,39 @@ vector<pair<int64_t, int64_t>> r_storage_file_reader::query_segments(int64_t sta
     return segments;
 }
 
+vector<pair<int64_t, int64_t>> r_storage_file_reader::query_blocks(int64_t start_ts, int64_t end_ts)
+{
+    vector<pair<int64_t, int64_t>> segments;
+
+    int64_t current_ts = start_ts;
+
+    auto fi = _block_index.find_lower_bound(current_ts);
+
+    if(!fi.valid())
+        R_THROW(("Unable to locate query start."));
+
+    auto block_info = *fi;
+
+    r_nullable<int64_t> block_start;
+    r_nullable<int64_t> block_end;
+
+    while((int64_t)block_info.first < end_ts)
+    {
+        block_end.set_value((int64_t)block_info.first);
+
+        if(!block_start.is_null())
+            segments.push_back(make_pair(block_start.value(), block_end.value()));
+
+        block_start = block_end;
+
+        if(!fi.next())
+            break;
+        block_info = *fi;
+    }
+
+    return segments;
+}
+
 vector<int64_t> r_storage_file_reader::key_frame_start_times(r_storage_media_type media_type, int64_t start_ts, int64_t end_ts)
 {
     r_file_lock_guard g(_file_lock, false);

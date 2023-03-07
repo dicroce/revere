@@ -72,8 +72,13 @@ r_video_decoder::r_video_decoder(AVCodecID codec_id, bool parse_input) :
     if(!_parse_input)
         _parser->flags = PARSER_FLAG_COMPLETE_FRAMES;
 
-    _context->thread_count = 4;
-    _context->thread_type = FF_THREAD_FRAME;
+    _context->thread_count = 0;
+
+    if(_codec->capabilities & AV_CODEC_CAP_FRAME_THREADS)
+        _context->thread_type = FF_THREAD_FRAME;
+    else if(_codec->capabilities & AV_CODEC_CAP_SLICE_THREADS)
+        _context->thread_type = FF_THREAD_SLICE;
+    else _context->thread_count = 1; //don't use multithreading
 
     auto ret = avcodec_open2(_context, _codec, nullptr);
     if(ret < 0)

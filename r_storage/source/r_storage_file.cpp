@@ -181,22 +181,22 @@ void r_storage_file::write_frame(const r_storage_write_context& ctx, r_storage_m
 
 void r_storage_file::finalize(const r_storage_write_context& ctx)
 {
-    if(_current_segment_id.is_null())
-        R_THROW(("No segment. Did you write frames?"));
-
     r_file_lock_guard g(_file_lock);
 
-    r_sqlite_conn conn(_file_name.substr(0, _file_name.find_last_of('.')) + string(".sdb"));
+    if(!_current_segment_id.is_null())
+    {
+        r_sqlite_conn conn(_file_name.substr(0, _file_name.find_last_of('.')) + string(".sdb"));
 
-    r_sqlite_transaction(conn,[&](const r_sqlite_conn& conn){
-        conn.exec(
-            r_string_utils::format(
-                "UPDATE segments SET end_ts=%s WHERE id=%s;",
-                r_string_utils::int64_to_s((_last_ts.is_null())?0:_last_ts.value()).c_str(),
-                _current_segment_id.value().c_str()
-            )
-        );
-    });
+        r_sqlite_transaction(conn,[&](const r_sqlite_conn& conn){
+            conn.exec(
+                r_string_utils::format(
+                    "UPDATE segments SET end_ts=%s WHERE id=%s;",
+                    r_string_utils::int64_to_s((_last_ts.is_null())?0:_last_ts.value()).c_str(),
+                    _current_segment_id.value().c_str()
+                )
+            );
+        });
+    }
 
     while(!_gop_buffer.empty())
     {
@@ -365,7 +365,10 @@ size_t r_storage_file::remove_blocks(int64_t start_ts, int64_t end_ts)
         }
 
         for(auto del_ts : index_blocks_to_delete)
+        {
+            printf("REMOVING BLOCK @ %ld\n", del_ts);
             _block_index.remove(del_ts);
+        }
     }
 
     return index_blocks_to_delete.size();

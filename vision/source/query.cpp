@@ -86,6 +86,8 @@ vector<segment> vision::query_segments(const configure_state& cs, const std::str
     req.set_uri(uri);
     req.write_request(sok);
 
+    R_LOG_INFO("Querying segments: %s", uri.c_str());
+
     r_client_response resp;
     resp.read_response(sok);
     sok.close();
@@ -94,6 +96,8 @@ vector<segment> vision::query_segments(const configure_state& cs, const std::str
         R_THROW(("Could not query segments."));
 
     auto doc = resp.get_body_as_string().value();
+
+    R_LOG_INFO("%s", doc.c_str());
 
     auto j = json::parse(doc);
 

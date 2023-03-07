@@ -102,6 +102,8 @@ public:
 
     R_API r_map_info map(r_map_type type) const;
 
+    R_API bool key() const noexcept {return !GST_BUFFER_FLAG_IS_SET(_buffer, GST_BUFFER_FLAG_DELTA_UNIT);}
+
     R_API GstBuffer* get() const noexcept {return _buffer;}
 
 private:

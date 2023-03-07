@@ -133,7 +133,7 @@ vector<uint8_t> r_ws::get_key_frame(const std::string& camera_id, std::chrono::s
     return sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, r_time_utils::tp_to_epoch_millis(ts));
 }
 
-vector<segment> r_ws::get_contents(const string& camera_id, r_storage_media_type mt, system_clock::time_point start, system_clock::time_point end)
+contents r_ws::get_contents(const string& camera_id, system_clock::time_point start, system_clock::time_point end)
 {
     auto maybe_camera = _devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
@@ -159,6 +159,31 @@ vector<segment> r_ws::get_contents(const string& camera_id, r_storage_media_type
 
         result.push_back(seg);
     }
+
+    contents c;
+    c.segments = result;
+    c.first_ts = r_time_utils::epoch_millis_to_tp(sf.first_ts());
+    c.last_ts = r_time_utils::epoch_millis_to_tp(sf.last_ts());
+
+    return c;
+}
+
+r_nullable<system_clock::time_point> r_ws::get_first_ts(const std::string& camera_id)
+{
+    auto maybe_camera = _devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    if(maybe_camera.value().record_file_path.is_null())
+        R_THROW(("Camera has no recording file!"));
+
+    r_storage_file_reader sfr(_top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+
+    r_nullable<system_clock::time_point> result;
+
+    auto first_ts = sfr.first_ts();
+    if(!first_ts.is_null())
+        result = r_time_utils::epoch_millis_to_tp(first_ts.value());
 
     return result;
 }
@@ -235,6 +260,52 @@ vector<motion_event_info> r_ws::get_motion_events(const std::string& camera_id, 
     }
 
     return result;
+}
+
+vector<segment> r_ws::get_blocks(const string& camera_id, system_clock::time_point start, system_clock::time_point end)
+{
+    auto maybe_camera = _devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    if(maybe_camera.value().record_file_path.is_null())
+        R_THROW(("Camera has no recording file!"));
+
+    r_storage_file_reader sf(_top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+
+    vector<pair<int64_t, int64_t>> blocks;
+
+    if(start == system_clock::time_point())
+        blocks = sf.query_blocks();
+    else blocks = sf.query_blocks(
+        r_time_utils::tp_to_epoch_millis(start),
+        r_time_utils::tp_to_epoch_millis(end)
+    );
+
+    vector<segment> results;
+    for(auto b : blocks)
+    {
+        segment s;
+        s.start = r_time_utils::epoch_millis_to_tp(b.first);
+        s.end = r_time_utils::epoch_millis_to_tp(b.second);
+        results.push_back(s);
+    }
+
+    return results;
+}
+
+void r_ws::remove_blocks(const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
+{
+    auto maybe_camera = _devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    if(maybe_camera.value().record_file_path.is_null())
+        R_THROW(("Camera has no recording file!"));
+
+    r_storage_file sf(_top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+
+    sf.remove_blocks(r_time_utils::tp_to_epoch_millis(start), r_time_utils::tp_to_epoch_millis(end));
 }
 
 r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_socket>& r_ws,
@@ -319,12 +390,6 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
     {
         auto args = request.get_uri().get_get_args();
 
-        r_storage_media_type mt = R_STORAGE_MEDIA_TYPE_VIDEO;
-        if(args["media_type"] == "audio")
-            mt = R_STORAGE_MEDIA_TYPE_AUDIO;
-        else if(args["media_type"] == "video")
-            mt = R_STORAGE_MEDIA_TYPE_VIDEO;
-
         auto start_time_s = args["start_time"];
 
         bool input_z_time = start_time_s.find("Z") != std::string::npos;
@@ -334,9 +399,8 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
         
         auto end_time_s = args["end_time"];
 
-        auto segments = get_contents(
+        auto contents = get_contents(
             args["camera_id"],
-            mt,
             r_time_utils::iso_8601_to_tp(start_time_s),
             r_time_utils::iso_8601_to_tp(end_time_s)            
         );
@@ -344,13 +408,16 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
         json j;
         j["segments"] = json::array();
 
-        for(auto& s : segments)
+        for(auto& s : contents.segments)
         {
             // note: instead of push_back here its also possible to use += operator to append json object to array
             j["segments"].push_back({{"start_time", r_time_utils::tp_to_iso_8601(s.start, input_z_time)},
                                     {"end_time", r_time_utils::tp_to_iso_8601(s.end, input_z_time)}});
 
         }
+
+        j["first_ts"] = r_time_utils::tp_to_iso_8601(contents.first_ts, input_z_time);
+        j["last_ts"] = r_time_utils::tp_to_iso_8601(contents.last_ts, input_z_time);
 
         r_server_response response;
         response.set_content_type("text/json");

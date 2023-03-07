@@ -40,6 +40,8 @@ public:
 
     R_API std::vector<std::pair<int64_t, int64_t>> query_segments(int64_t start_ts = 0, int64_t end_ts = LLONG_MAX);
 
+    R_API std::vector<std::pair<int64_t, int64_t>> query_blocks(int64_t start_ts = 0, int64_t end_ts = LLONG_MAX);
+
     // key_frame_start_times() returns an array of the independent block ts's
     R_API std::vector<int64_t> key_frame_start_times(r_storage_media_type media_type, int64_t start_ts = 0, int64_t end_ts = LLONG_MAX);
 

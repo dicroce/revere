@@ -26,6 +26,13 @@ struct segment
     std::chrono::system_clock::time_point end;
 };
 
+struct contents
+{
+    std::vector<segment> segments;
+    std::chrono::system_clock::time_point first_ts;
+    std::chrono::system_clock::time_point last_ts;
+};
+
 class r_ws final
 {
 public:
@@ -36,11 +43,17 @@ public:
 
     R_API std::vector<uint8_t> get_key_frame(const std::string& camera_id, std::chrono::system_clock::time_point ts);
 
-    R_API std::vector<segment> get_contents(const std::string& camera_id, r_storage::r_storage_media_type mt, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
+    R_API contents get_contents(const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
+
+    R_API r_utils::r_nullable<std::chrono::system_clock::time_point> get_first_ts(const std::string& camera_id);
 
     R_API std::vector<r_disco::r_camera> get_cameras();
 
     R_API std::vector<motion_event_info> get_motion_events(const std::string& camera_id, uint8_t motion_threshold, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
+
+    R_API std::vector<segment> get_blocks(const std::string& camera_id, std::chrono::system_clock::time_point start = {}, std::chrono::system_clock::time_point end = {});
+
+    R_API void remove_blocks(const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
 
 private:
     r_http::r_server_response _get_jpg(const r_http::r_web_server<r_utils::r_socket>& r_ws,
