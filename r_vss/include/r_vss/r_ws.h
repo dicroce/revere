@@ -41,6 +41,8 @@ public:
 
     R_API std::vector<uint8_t> get_jpg(const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h);
 
+    R_API std::chrono::hours get_retention_hours(const std::string& camera_id);
+
     R_API std::vector<uint8_t> get_key_frame(const std::string& camera_id, std::chrono::system_clock::time_point ts);
 
     R_API contents get_contents(const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);

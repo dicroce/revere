@@ -40,7 +40,7 @@ class r_storage_file final
 {
     friend class r_storage_file_reader;
 public:
-    R_API r_storage_file(const std::string& file_name);
+    R_API r_storage_file(const std::string& file_name, bool fix_live_segment = true);
 
     R_API r_storage_file(const r_storage_file&) = delete;
     R_API r_storage_file(r_storage_file&& other) noexcept = delete;
@@ -72,6 +72,8 @@ public:
     R_API static int get_file_version(const std::string& friendly_name);
     R_API static void set_file_version(const std::string& friendly_name, int version);
     R_API static void upgrade_file(const std::string& friendly_name);
+
+    R_API static void fix_live_segment(const std::string& file_name);
 
 private:
 

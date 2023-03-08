@@ -118,6 +118,26 @@ vector<uint8_t> r_ws::get_jpg(const std::string& camera_id, std::chrono::system_
     R_THROW(("Unable to JPG fail."));
 }
 
+chrono::hours r_ws::get_retention_hours(const std::string& camera_id)
+{
+    auto maybe_camera = _devices.get_camera_by_id(camera_id);
+
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    if(maybe_camera.value().record_file_path.is_null())
+        R_THROW(("Camera has no recording file!"));
+
+    r_storage_file_reader sf(_top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+
+    auto maybe_first_ts = sf.first_ts();
+
+    if(maybe_first_ts.is_null())
+        return chrono::hours(0);
+
+    return chrono::duration_cast<chrono::hours>(chrono::system_clock::now() - r_time_utils::epoch_millis_to_tp(maybe_first_ts.value()));
+}
+
 vector<uint8_t> r_ws::get_key_frame(const std::string& camera_id, std::chrono::system_clock::time_point ts)
 {
     auto maybe_camera = _devices.get_camera_by_id(camera_id);
@@ -303,7 +323,8 @@ void r_ws::remove_blocks(const std::string& camera_id, std::chrono::system_clock
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file sf(_top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+    // Note: the false here is very important. We do not want to fix live segments here.
+    r_storage_file sf(_top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value(), false);
 
     sf.remove_blocks(r_time_utils::tp_to_epoch_millis(start), r_time_utils::tp_to_epoch_millis(end));
 }

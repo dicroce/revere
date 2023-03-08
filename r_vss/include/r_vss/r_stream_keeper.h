@@ -17,6 +17,7 @@
 #include <thread>
 #include <memory>
 #include <functional>
+#include <chrono>
 
 struct _GMainLoop;
 typedef struct _GMainLoop GMainLoop;
@@ -77,6 +78,8 @@ public:
     R_API void post_key_frame_to_motion_engine(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_params, const std::string& camera_id);
 
     R_API std::vector<uint8_t> get_jpg(const std::string& camera_id, int64_t ts, uint16_t w, uint16_t h);
+
+    R_API std::chrono::hours get_retention_hours(const std::string& camera_id);
 
 private:
     void _entry_point();

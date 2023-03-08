@@ -8,6 +8,13 @@
 //   - figure out how to make disabled controls
 // - Update imgui lib so that we use the win32 backend on windows, and whatever the most compatible is on linux
 //
+// - Empty Contents Bar Bug
+//   - Theory: What if they ask for a period completely inside of a segment? What happens?
+//     - Should contents query return the segment start even if its before start_time? Should it return segment end even if its after the end_time?
+//
+// - Mar  7 06:52:42 trantor vision: Querying segments: /contents?camera_id=6b7c96c0-2872-dd5a-7e0a-d4a99101337c&start_time=2023-03-07T06:22:42.005&end_time=2023-03-07T06:52:42.005
+// - Mar  7 06:52:42 trantor vision: {"first_ts":"1969-12-31T19:00:00.001","last_ts":"1969-12-31T19:00:00.001","segments":[]}
+
 
 #include "r_utils/r_file.h"
 
@@ -33,6 +40,7 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/r_process.h"
 #include "r_utils/r_args.h"
+#include "r_utils/r_time_utils.h"
 #include "r_disco/r_agent.h"
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
@@ -71,6 +79,7 @@ struct revere_ui_state
     string ipv4;
     string restream_url;
     string kbps;
+    string retention;
 
     // camera properties dialog
     bool do_motion_pruning {false};
@@ -85,6 +94,7 @@ struct revere_ui_state
         ipv4.clear();
         restream_url.clear();
         kbps.clear();
+        retention.clear();
     }
     bool recording_selected() const {return (recording_selected_item != -1)?true:false;}
     bool discovered_selected() const {return (discovered_selected_item != -1)?true:false;}
@@ -978,6 +988,8 @@ int main(int argc, char** argv)
                                     ui_state.ipv4 = status.camera.ipv4.value();
                                     ui_state.restream_url = r_string_utils::format("rtsp://127.0.0.1:10554/%s",ui_state.friendly_name.c_str());
                                     ui_state.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
+                                    auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;                                    
+                                    ui_state.retention = r_string_utils::format("%.2f days", retention_days);
                                 }
                             }
                         }
@@ -989,6 +1001,7 @@ int main(int argc, char** argv)
                             ImGui::Text("IP: %s", ui_state.ipv4.c_str());
                             ImGui::Text("restream url: %s",ui_state.restream_url.c_str());
                             ImGui::Text("kbps: %s", ui_state.kbps.c_str());
+                            ImGui::Text("retention: %s", ui_state.retention.c_str());
                             ImGui::PopFont();
                         }
                     }

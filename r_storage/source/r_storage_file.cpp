@@ -14,7 +14,7 @@ using namespace r_storage;
 using namespace r_db;
 using namespace std;
 
-r_storage_file::r_storage_file(const string& file_name) :
+r_storage_file::r_storage_file(const string& file_name, bool fix_live_segment) :
     _file(r_file::open(file_name, "r+")),
     _file_name(file_name),
     _file_lock(r_fs::fileno(_file)),
@@ -32,22 +32,8 @@ r_storage_file::r_storage_file(const string& file_name) :
 
     r_storage_file::upgrade_file(base_name);
 
-    r_storage_file_reader reader(base_name + string(".rvd"));
-
-    auto last_ts = reader.last_ts();
-
-    if(!last_ts.is_null())
-    {
-        r_sqlite_conn conn(_file_name.substr(0, _file_name.find_last_of('.')) + string(".sdb"));
-        r_sqlite_transaction(conn,[&](const r_sqlite_conn& conn){
-            conn.exec(
-                r_string_utils::format(
-                    "UPDATE segments SET end_ts=%lld WHERE end_ts=0;",
-                    last_ts.value()
-                )
-            );
-        });
-    }
+    if(fix_live_segment)
+        r_storage_file::fix_live_segment(file_name);
 }
 
 r_storage_file::~r_storage_file() noexcept
@@ -519,6 +505,28 @@ void r_storage_file::upgrade_file(const std::string& friendly_name)
 
             r_storage_file::set_file_version(friendly_name, 1);
         }
+    }
+}
+
+void r_storage_file::fix_live_segment(const string& file_name)
+{
+    auto base_name = file_name.substr(0, (file_name.find_last_of('.')));
+
+    r_storage_file_reader reader(base_name + string(".rvd"));
+
+    auto last_ts = reader.last_ts();
+
+    if(!last_ts.is_null())
+    {
+        r_sqlite_conn conn(base_name + string(".sdb"));
+        r_sqlite_transaction(conn,[&](const r_sqlite_conn& conn){
+            conn.exec(
+                r_string_utils::format(
+                    "UPDATE segments SET end_ts=%lld WHERE end_ts=0;",
+                    last_ts.value()
+                )
+            );
+        });
     }
 }
 

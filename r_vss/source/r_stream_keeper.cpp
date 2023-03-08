@@ -274,6 +274,11 @@ vector<uint8_t> r_stream_keeper::get_jpg(const string& camera_id, int64_t ts, ui
     return _ws.get_jpg(camera_id, r_time_utils::epoch_millis_to_tp(ts), w, h);
 }
 
+std::chrono::hours r_stream_keeper::get_retention_hours(const string& camera_id)
+{
+    return _ws.get_retention_hours(camera_id);
+}
+
 void r_stream_keeper::_entry_point()
 {
     while(_running)
