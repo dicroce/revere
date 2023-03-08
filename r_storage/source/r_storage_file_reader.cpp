@@ -199,7 +199,7 @@ vector<pair<int64_t, int64_t>> r_storage_file_reader::query_segments(int64_t sta
 
                 auto e_ts = r_string_utils::s_to_int64(row["end_ts"].value());
 
-                if(e_ts == 0)
+                if(e_ts == 0 || e_ts > end_ts)
                     e_ts = end_ts;
 
                 segments.push_back(make_pair(s_ts, e_ts));
