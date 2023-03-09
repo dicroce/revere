@@ -183,6 +183,9 @@ void pipeline_state::stop()
 
 void pipeline_state::control_bar(const system_clock::time_point& pos)
 {
+    if(_video_decoder.is_null())
+        return;
+
     auto maybe_revere_ipv4 = _cfg_state.get_revere_ipv4();
     if(maybe_revere_ipv4.is_null())
         return;

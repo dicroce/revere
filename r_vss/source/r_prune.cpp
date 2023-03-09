@@ -101,12 +101,14 @@ void r_prune::_entry_point()
 
                     if(motion_events.empty())
                     {
+#if 0
                         R_LOG_INFO(
                             "Pruning %s FROM %s -> %s\n", 
                             current_ps.camera.friendly_name.value().c_str(),
                             r_time_utils::tp_to_iso_8601(block_start, false).c_str(),
                             r_time_utils::tp_to_iso_8601(block_end, false).c_str()
                         );
+#endif
                         _ws.remove_blocks(
                             current_ps.camera.id,
                             block_start,
@@ -152,6 +154,7 @@ void r_prune::_update_cameras()
         {
             if(cc.id == c.id)
             {
+                cc = c; // update cc in case a field has changed...
                 found = true;
                 break;
             }

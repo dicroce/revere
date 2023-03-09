@@ -42,7 +42,8 @@ struct r_stream_status
 enum r_stream_keeper_commands
 {
     R_SK_FETCH_STREAM_STATUS,
-    R_SK_IS_RECORDING
+    R_SK_IS_RECORDING,
+    R_SK_STOP
 };
 
 struct r_stream_keeper_cmd
@@ -81,6 +82,8 @@ public:
 
     R_API std::chrono::hours get_retention_hours(const std::string& camera_id);
 
+    R_API void bounce(const std::string& camera_id);
+
 private:
     void _entry_point();
     void _rtsp_server_entry_point();
@@ -89,6 +92,7 @@ private:
     void _remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras);
     std::vector<r_stream_status> _fetch_stream_status() const;
     static void _restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, gpointer user_data);
+    void _stop(const std::string& id);
     r_disco::r_devices& _devices;
     std::string _top_dir;
     std::thread _th;

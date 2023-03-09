@@ -279,6 +279,15 @@ std::chrono::hours r_stream_keeper::get_retention_hours(const string& camera_id)
     return _ws.get_retention_hours(camera_id);
 }
 
+void r_stream_keeper::bounce(const std::string& camera_id)
+{
+    r_stream_keeper_cmd cmd;
+    cmd.cmd = R_SK_STOP;
+    cmd.id = camera_id;
+
+    _cmd_q.post(cmd).get();
+}
+
 void r_stream_keeper::_entry_point()
 {
     while(_running)
@@ -315,6 +324,12 @@ void r_stream_keeper::_entry_point()
                 {
                     r_stream_keeper_result result;
                     result.is_recording = _streams.find(cmd.first.id) != _streams.end();
+                    cmd.second.set_value(result);
+                }
+                else if(cmd.first.cmd == R_SK_STOP)
+                {
+                    r_stream_keeper_result result;
+                    _stop(cmd.first.id);
                     cmd.second.set_value(result);
                 }
                 else R_THROW(("Unknown command sent to stream keeper!"));
@@ -389,4 +404,15 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
 void r_stream_keeper::_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, gpointer user_data)
 {
     ((r_recording_context*)user_data)->restream_media_configure(factory, media);
+}
+
+void r_stream_keeper::_stop(const string& camera_id)
+{
+    if(_streams.count(camera_id) == 0)
+    {
+        R_LOG_ERROR("Attempt to stop recording for camera %s that is not being recorded!", camera_id.c_str());
+        return;
+    }
+
+    _streams[camera_id]->stop();
 }

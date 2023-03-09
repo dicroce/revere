@@ -82,6 +82,7 @@ struct revere_ui_state
     string retention;
 
     // camera properties dialog
+    bool do_motion_detection {false};
     bool do_motion_pruning {false};
     std::string min_continuous_recording_hours {"24"};
 
@@ -183,6 +184,14 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices)
     }
 }
 
+void _create_motion_files(const string& motion_path)
+{
+    if(r_fs::file_exists(motion_path))
+        return;
+
+    r_storage::r_ring::allocate(motion_path, 11, 2592000);
+}
+
 void _on_new_file(revere::assignment_state& as, r_ui_utils::wizard& camera_setup_wizard, r_disco::r_devices& devices, revere_ui_state& ui_state)
 {
     auto video_path = revere::sub_dir("video");
@@ -216,18 +225,11 @@ void _on_new_file(revere::assignment_state& as, r_ui_utils::wizard& camera_setup
 
         auto motion_path = revere::join_path(video_path, motion_file_name);
 
-        if(r_fs::file_exists(motion_path))
-        {
-            as.error_message = "Motion file already exists";
-            camera_setup_wizard.next("error_modal");
-            return;
-        }
+        _create_motion_files(video_path);
 
         as.motion_detection_file_path = motion_file_name;
-
-        r_storage::r_ring::allocate(motion_path, 11, 2592000);
     }
-
+    
     camera_setup_wizard.cancel();
 
     r_storage::r_storage_file::allocate(storage_path, as.storage_file_block_size.value(), as.num_storage_file_blocks.value());
@@ -341,6 +343,7 @@ void configure_camera_setup_wizard(
     r_ui_utils::texture_loader& tl,
     r_disco::r_agent& agent,
     r_disco::r_devices& devices,
+    r_vss::r_stream_keeper& stream_keeper,
     revere_ui_state& ui_state,
     GLFWwindow* window
 )
@@ -610,29 +613,55 @@ void configure_camera_setup_wizard(
 
     camera_setup_wizard.add_step(
         "camera_properties_modal",
-        [&ui_state, &camera_setup_wizard, &rscc, &devices](){
+        [&ui_state, &camera_setup_wizard, &rscc, &devices, &stream_keeper, &as](){
 
             ImGui::OpenPopup("Camera Properties");
             revere::camera_properties_modal(
                 GImGui,
                 "Camera Properties",
+                ui_state.do_motion_detection,
                 ui_state.do_motion_pruning,
                 ui_state.min_continuous_recording_hours,
                 [&](){
                     // OK button
                     auto camera_id = ui_state.selected_camera_id();
                     auto camera = devices.get_camera_by_id(camera_id.value()).value();
+
+                    string initial_md_file_name;
+                    if(!camera.motion_detection_file_path.is_null())
+                        initial_md_file_name = camera.motion_detection_file_path.value();
+
+                    string motion_file_name = initial_md_file_name;
+                    auto existing_path = revere::join_path(revere::sub_dir("video"), motion_file_name);
+                    if(!r_fs::file_exists(existing_path) || motion_file_name.empty())
+                    {
+                        motion_file_name = camera.record_file_path.value();
+
+                        auto dot_pos = motion_file_name.find_last_of('.');
+
+                        motion_file_name = (dot_pos == string::npos)?motion_file_name+".mdb":motion_file_name.substr(0, dot_pos)+".mdb";
+
+                        auto motion_path = revere::join_path(revere::sub_dir("video"), motion_file_name);
+
+                        _create_motion_files(motion_path);
+                    }
+
+                    camera.do_motion_detection.set_value(ui_state.do_motion_detection);
+                    camera.motion_detection_file_path.set_value(motion_file_name);
                     camera.do_motion_pruning.set_value(ui_state.do_motion_pruning);
                     camera.min_continuous_recording_hours.set_value(r_string_utils::s_to_int(ui_state.min_continuous_recording_hours));
-                    printf("Saving camera %s with do_motion_pruning=%d and min_continuous_recording_hours=%d\n", camera.friendly_name.value().c_str(), camera.do_motion_pruning.value(), camera.min_continuous_recording_hours.value());
                     devices.save_camera(camera);
 
+                    stream_keeper.bounce(camera_id.value());
+
+                    ui_state.do_motion_detection = false;
                     ui_state.do_motion_pruning = false;
                     ui_state.min_continuous_recording_hours = "24";
 
                     camera_setup_wizard.cancel();
                 },
                 [&](){
+                    ui_state.do_motion_detection = false;
                     ui_state.do_motion_pruning = false;
                     ui_state.min_continuous_recording_hours = "24";
 
@@ -810,7 +839,7 @@ int main(int argc, char** argv)
     revere::assignment_state as;
     revere::rtsp_source_camera_config rscc;
     r_ui_utils::wizard camera_setup_wizard;
-    configure_camera_setup_wizard(as, rscc, camera_setup_wizard, tl, agent, devices, ui_state, window);
+    configure_camera_setup_wizard(as, rscc, camera_setup_wizard, tl, agent, devices, streamKeeper, ui_state, window);
 
     _update_list_ui(ui_state, devices);
     auto last_ui_update_ts = chrono::steady_clock::now();
@@ -966,6 +995,7 @@ int main(int argc, char** argv)
 
                                 // Go to camera properties modal
                                 auto camera = devices.get_camera_by_id(ui_state.selected_camera_id().value()).value();
+                                ui_state.do_motion_detection = camera.do_motion_detection.value();
                                 ui_state.do_motion_pruning = camera.do_motion_pruning.value();
                                 ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());
                                 camera_setup_wizard.next("camera_properties_modal");

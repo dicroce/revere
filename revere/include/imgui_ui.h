@@ -660,6 +660,7 @@ template<typename OK_CB, typename CANCEL_CB>
 void camera_properties_modal(
     ImGuiContext* GImGui,
     const std::string& name,
+    bool& do_motion_detection,
     bool& do_motion_pruning,
     std::string& min_continuous_retention_hours,
     OK_CB ok_cb,
@@ -671,6 +672,8 @@ void camera_properties_modal(
         ImGuiContext& g = *GImGui;
         ImGuiWindow* window = g.CurrentWindow;
         ImVec2 pos_before = window->DC.CursorPos;
+
+        ImGui::Checkbox("Motion Detection", &do_motion_detection);
 
         ImGui::Checkbox("Prune Still Video", &do_motion_pruning);
 
