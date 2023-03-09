@@ -1,6 +1,6 @@
 name: revere
 base: core22
-version: '0.1'
+version: '0.1.1'
 summary: Open source, cross platform ONVIF compatible video surveillance.
 description: |
   A free, open source, onvif compatible, cross platform video surveillance system designed to run unobtrusively on standard desktop computers.
