@@ -57,7 +57,7 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& argb_input)
 
             r_motion_info mi;
             mi.motion_pixels = diff;
-            mi.motion = gray8_compute_motion(diff);
+            mi.motion = gray8_compute_motion(diff, gray8_distribution(diff));
             mi.avg_motion = _avg_motion.update(mi.motion);
             mi.stddev = _avg_motion.standard_deviation();
 

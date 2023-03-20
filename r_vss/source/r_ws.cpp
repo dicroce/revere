@@ -245,8 +245,11 @@ vector<motion_event_info> r_ws::get_motion_events(const std::string& camera_id, 
         mi.motion = motion_data[(i*RING_MOTION_EVENT_SIZE)+8];
         mi.avg_motion = motion_data[(i*RING_MOTION_EVENT_SIZE)+9];
         mi.stddev = motion_data[(i*RING_MOTION_EVENT_SIZE)+10];
-        if(mi.motion >= motion_threshold)    
+        auto delta = abs(mi.motion - mi.avg_motion);
+        if(delta > (mi.stddev * 1))
             motion_infos.insert(make_pair(mi.time, mi));
+        //if(mi.motion >= motion_threshold)    
+        //    motion_infos.insert(make_pair(mi.time, mi));
     }
 
     // 2. Create a vector<> of motion times.

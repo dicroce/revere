@@ -201,11 +201,7 @@ r_image r_motion::gray8_subtract(const r_image& a, const r_image& b)
     {
         for(uint16_t w = 0; w < a.width; ++w)
         {
-            uint8_t diff = std::abs(*src_a - *src_b);
-            *dst = (diff>32)?diff:0;
-            ++src_a;
-            ++src_b;
-            ++dst;
+            *dst++ = std::abs(*src_a++ - *src_b++);
         }
     }
 
@@ -241,6 +237,73 @@ r_image r_motion::gray8_remove(const r_image& a, const r_image& b)
     output.data = output_buffer;
 
     return output;
+}
+
+vector<uint16_t> gray8_20x20_histogram(const r_image& image)
+{
+    if((image.width % 20) != 0 || (image.height % 20) != 0)
+        R_THROW(("Image dimensions must be divisible by 20"));
+
+    uint16_t buckets_wide = image.width / 20;
+    uint16_t buckets_high = image.height / 20;
+
+    vector<uint16_t> histogram(buckets_wide * buckets_high, 0);
+
+    const uint8_t* src = image.data->data();
+    for(uint16_t h = 0; h < image.height; ++h)
+    {
+        for(uint16_t w = 0; w < image.width; ++w)
+        {
+            uint8_t value = *src++;
+            if(value > 0)
+            {
+                uint16_t x = w / 20;
+                uint16_t y = h / 20;
+                ++histogram[(y*buckets_wide) + x];
+            }
+        }
+    }
+
+}
+
+double r_motion::gray8_distribution(const r_image& image)
+{
+    // 320 / 20 == 16
+    // 240 / 20 == 12
+
+    // Ok, the problem with this simple method is as follows:
+    //    Because video has noise, ALL of these buckets will have motion.
+    //    You would need to know the average motion for a bucket and some
+    //    idea of the stddev to determine if the bucket has motion or not.
+
+    vector<uint32_t> histogram(16*12, 0);
+
+    const uint8_t* src = image.data->data();
+    for(uint16_t h = 0; h < image.height; ++h)
+    {
+        for(uint16_t w = 0; w < image.width; ++w)
+        {
+            uint8_t value = *src++;
+            if(value > 0)
+            {
+                uint16_t x = w / 20;
+                uint16_t y = h / 20;
+                ++histogram[(y*16) + x];
+            }
+        }
+    }
+
+    printf("buckets[");
+    uint32_t buckets_with_motion_pixels = 0;
+    for(auto& bucket : histogram)
+    {
+        printf("%u,",bucket);
+        if(bucket > 0)
+            ++buckets_with_motion_pixels;
+    }
+    printf("]\n");
+
+    return ((double)buckets_with_motion_pixels) / ((double)histogram.size());
 }
 
 r_image r_motion::average_images(const std::deque<r_image>& images)
@@ -295,7 +358,7 @@ r_image r_motion::average_images(const std::deque<r_image>& images)
     return output;
 }
 
-uint64_t r_motion::gray8_compute_motion(const r_image& a)
+uint64_t r_motion::gray8_compute_motion(const r_image& a, double distribution)
 {
     auto a_p = a.data->data();
     uint64_t sum = 0;
@@ -309,7 +372,16 @@ uint64_t r_motion::gray8_compute_motion(const r_image& a)
         }
     }
 
-    return sum;
+    printf("distribution: %f\n", distribution);
+    fflush(stdout);
+
+    // distribution varies between 0.0 and 1.0
+    // A small distribution means that most of the motion ocurred in a small area
+    // A large distribution means that most of the motion ocurred in a large area
+    // So, consider a distribution of 0.9. Multiplying sum times 1.0 - 0.9 will
+    // scale sum down to 10% of its original value. This will cause the motion
+    // detection to be more sensitive to motion in a small area.
+    return (uint64_t)((1.0 - distribution) * sum);
 }
 
 void r_motion::ppm_write_argb(const std::string& filename, const r_image& image)

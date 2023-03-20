@@ -35,9 +35,11 @@ R_API r_image gray16_to_argb(const r_image& gray);
 R_API r_image gray8_subtract(const r_image& a, const r_image& b);
 R_API r_image gray8_remove(const r_image& a, const r_image& b);
 
+R_API double gray8_distribution(const r_image& image);
+
 R_API r_image average_images(const std::deque<r_image>& images);
 
-R_API uint64_t gray8_compute_motion(const r_image& a);
+R_API uint64_t gray8_compute_motion(const r_image& a, double distribution = 0.01);
 
 R_API void ppm_write_argb(const std::string& filename, const r_image& image);
 

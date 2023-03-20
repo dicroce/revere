@@ -118,7 +118,7 @@ void r_motion_engine::_entry_point()
                             // than 50% of the stanard deviation, then we have motion.
 
                             if(current_motion > avg_motion &&
-                               current_motion - avg_motion > ((double)stddev * 0.5))
+                               current_motion - avg_motion > ((double)stddev * 1))
                             {
                                 printf("MOTION! %u\n", current_motion);
                             }
