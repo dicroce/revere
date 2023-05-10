@@ -225,7 +225,7 @@ void _on_new_file(revere::assignment_state& as, r_ui_utils::wizard& camera_setup
 
         auto motion_path = revere::join_path(video_path, motion_file_name);
 
-        _create_motion_files(video_path);
+        _create_motion_files(motion_path);
 
         as.motion_detection_file_path = motion_file_name;
     }

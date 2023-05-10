@@ -7,6 +7,7 @@
 #include "r_utils/r_memory_map.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_macro.h"
+#include "r_utils/r_time_utils.h"
 #include <memory>
 #include <string>
 #include <chrono>
@@ -39,7 +40,7 @@ public:
         std::time_t now_et = std::chrono::system_clock::to_time_t(now);
 
         if(qe <= qs)
-            R_THROW(("invalid query"));
+            R_THROW(("invalid query: " + r_utils::r_time_utils::tp_to_iso_8601(qs, false) + " to " + r_utils::r_time_utils::tp_to_iso_8601(qe, false)));
 
         std::time_t qs_et = std::chrono::system_clock::to_time_t(qs);
         std::time_t oldest_et = now_et - n_elements;
