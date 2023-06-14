@@ -109,8 +109,7 @@ void handle_terminate()
         }
         catch(std::exception& ex)
         {
-            printf("%s\n",ex.what());
-            fflush(stdout);
+            R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
         }
         catch(...)
         {

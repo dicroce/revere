@@ -50,9 +50,7 @@ void r_sqlite_transaction(const r_sqlite_conn& db, T t)
     }
     catch(const r_utils::r_exception& ex)
     {
-        printf("TRANS ROLLBACK! exception: %s\n", ex.what());
-        fflush(stdout);
-        R_LOG_ERROR("TRANS ROLLBACK! exception: %s\n", ex.what());
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
         db.exec("ROLLBACK");
     }
     catch(...)

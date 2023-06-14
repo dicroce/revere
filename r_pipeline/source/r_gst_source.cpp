@@ -441,7 +441,7 @@ gboolean r_gst_source::_select_stream_callbackS(GstElement* src, guint num, GstC
     }
     catch(const std::exception& e)
     {
-        R_LOG_ERROR("%s", e.what());
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
         g_set_error(NULL, GST_STREAM_ERROR, GST_STREAM_ERROR_FAILED, "pad added callback error");
     }
     return FALSE;
@@ -469,9 +469,39 @@ void r_gst_source::_pad_added_callbackS(GstElement* src, GstPad* new_pad, r_gst_
     }
     catch(const std::exception& e)
     {
-        R_LOG_ERROR("%s", e.what());
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
         g_set_error(NULL, GST_STREAM_ERROR, GST_STREAM_ERROR_FAILED, "pad added callback error");
     }
+}
+
+static gboolean print_field (GQuark field, const GValue * value, gpointer pfx) {
+  gchar *str = gst_value_serialize (value);
+
+  g_print ("%s  %15s: %s\n", (gchar *) pfx, g_quark_to_string (field), str);
+  g_free (str);
+  return TRUE;
+}
+
+static void print_caps (const GstCaps * caps, const gchar * pfx) {
+  guint i;
+
+  g_return_if_fail (caps != NULL);
+
+  if (gst_caps_is_any (caps)) {
+    g_print ("%sANY\n", pfx);
+    return;
+  }
+  if (gst_caps_is_empty (caps)) {
+    g_print ("%sEMPTY\n", pfx);
+    return;
+  }
+
+  for (i = 0; i < gst_caps_get_size (caps); i++) {
+    GstStructure *structure = gst_caps_get_structure (caps, i);
+
+    g_print ("%s%s\n", pfx, gst_structure_get_name (structure));
+    gst_structure_foreach (structure, print_field, (gpointer) pfx);
+  }
 }
 
 void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
@@ -483,9 +513,13 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
     GstStructure* new_pad_struct = gst_caps_get_structure(new_pad_caps.get(), 0);
 
+    print_caps(new_pad_caps.get(), "      ");
+
     const gchar* new_pad_type = gst_structure_get_name(new_pad_struct);
 
-    auto media_str = r_string_utils::to_lower(string(gst_structure_get_string(new_pad_struct, "media")));
+    auto temp_s = gst_structure_get_string(new_pad_struct, "media");
+
+    auto media_str = (temp_s)?r_string_utils::to_lower(string(temp_s)):string();
 
     if(g_str_has_prefix(new_pad_type, "application/x-rtp") && (media_str == "video" || media_str == "audio"))
     {
@@ -499,24 +533,34 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
         gst_structure_get_int(new_pad_struct, "clock-rate", &si.clock_rate);
 
         if(gst_structure_has_field(new_pad_struct, "a-framerate") == TRUE)
-            si.framerate.set_value(r_string_utils::s_to_double(gst_structure_get_string(new_pad_struct, "a-framerate")));
+        {
+            temp_s = gst_structure_get_string(new_pad_struct, "a-framerate");
+            si.framerate.set_value((temp_s)?r_string_utils::s_to_double(temp_s):0.0);
+        }
 
-        string encoding_name(gst_structure_get_string(new_pad_struct, "encoding-name"));
+        bool has_encoding = gst_structure_has_field(new_pad_struct, "encoding-name") == TRUE;
 
         r_encoding encoding;
 
-        try
+        if(has_encoding)
         {
-            encoding = str_to_encoding(encoding_name);
-        }
-        catch(const std::exception& e)
-        {
-            R_LOG_NOTICE("Encountered unknown encoding: %s %s", encoding_name.c_str(), e.what());
+            temp_s = gst_structure_get_string(new_pad_struct, "encoding-name");
+
+            string encoding_name(temp_s?temp_s:string());
+
+            try
+            {
+                encoding = str_to_encoding(encoding_name);
+            }
+            catch(const std::exception& e)
+            {
+                R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+            }
         }
 
         if(si.media == VIDEO_MEDIA)
         {
-            if(encoding == H264_ENCODING)
+            if(has_encoding && encoding == H264_ENCODING)
             {
                 r_h264_info h264_info;
 
@@ -537,7 +581,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 _h264_nal_parser = gst_h264_nal_parser_new();
             }
-            else if(encoding == H265_ENCODING)
+            else if(has_encoding && encoding == H265_ENCODING)
             {
                 r_h265_info h265_info;
                 auto str = gst_structure_get_string(new_pad_struct, "sprop-vps");
@@ -563,7 +607,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
             if(gst_structure_get_int(new_pad_struct, "clock-rate", &value) == TRUE)
                 clock_rate.set_value(value);
 
-            if(encoding == AAC_LATM_ENCODING)
+            if(has_encoding && encoding == AAC_LATM_ENCODING)
             {
                 r_aac_info aac_info;
                 aac_info.clock_rate = clock_rate;
@@ -573,7 +617,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 _attach_aac_audio_pipeline(new_pad, encoding);
             }
-            else if(encoding == AAC_GENERIC_ENCODING)
+            else if(has_encoding && encoding == AAC_GENERIC_ENCODING)
             {
                 r_aac_info aac_info;
                 aac_info.clock_rate = clock_rate;
@@ -583,7 +627,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 _attach_aac_audio_pipeline(new_pad, encoding);
             }
-            else if(encoding == PCMU_ENCODING)
+            else if(has_encoding && encoding == PCMU_ENCODING)
             {
                 r_pcmu_info pcmu_info;
                 pcmu_info.clock_rate = clock_rate;
@@ -593,7 +637,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 _attach_mulaw_audio_pipeline(new_pad);
             }
-            else if(encoding == PCMA_ENCODING)
+            else if(has_encoding && encoding == PCMA_ENCODING)
             {
                 r_pcma_info pcma_info;
                 pcma_info.clock_rate = clock_rate;
@@ -601,9 +645,9 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
                 si.encoding = PCMA_ENCODING;
                 si.pcma.set_value(pcma_info);
 
-                _attach_mulaw_audio_pipeline(new_pad);
+                _attach_alaw_audio_pipeline(new_pad);
             }
-            else if(encoding == AAL2_G726_16_ENCODING)
+            else if(has_encoding && encoding == AAL2_G726_16_ENCODING)
             {
                 r_g726_info g726_info;
                 g726_info.clock_rate = clock_rate;
@@ -613,7 +657,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 _attach_g726_audio_pipeline(new_pad);
             }
-            else if(encoding == AAL2_G726_24_ENCODING)
+            else if(has_encoding && encoding == AAL2_G726_24_ENCODING)
             {
                 r_g726_info g726_info;
                 g726_info.clock_rate = clock_rate;
@@ -623,7 +667,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 _attach_g726_audio_pipeline(new_pad);
             }
-            else if(encoding == AAL2_G726_32_ENCODING)
+            else if(has_encoding && encoding == AAL2_G726_32_ENCODING)
             {
                 r_g726_info g726_info;
                 g726_info.clock_rate = clock_rate;
@@ -633,7 +677,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 _attach_g726_audio_pipeline(new_pad);
             }
-            else if(encoding == AAL2_G726_40_ENCODING)
+            else if(has_encoding && encoding == AAL2_G726_40_ENCODING)
             {
                 r_g726_info g726_info;
                 g726_info.clock_rate = clock_rate;
@@ -643,7 +687,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 _attach_g726_audio_pipeline(new_pad);
             }
-            else if(encoding == G726_16_ENCODING)
+            else if(has_encoding && encoding == G726_16_ENCODING)
             {
                 r_g726_info g726_info;
                 g726_info.clock_rate = clock_rate;
@@ -653,7 +697,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 _attach_g726_audio_pipeline(new_pad);
             }
-            else if(encoding == G726_24_ENCODING)
+            else if(has_encoding && encoding == G726_24_ENCODING)
             {
                 r_g726_info g726_info;
                 g726_info.clock_rate = clock_rate;
@@ -663,7 +707,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 _attach_g726_audio_pipeline(new_pad);
             }
-            else if(encoding == G726_32_ENCODING)
+            else if(has_encoding && encoding == G726_32_ENCODING)
             {
                 r_g726_info g726_info;
                 g726_info.clock_rate = clock_rate;
@@ -673,7 +717,7 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 _attach_g726_audio_pipeline(new_pad);
             }
-            else if(encoding == G726_40_ENCODING)
+            else if(has_encoding && encoding == G726_40_ENCODING)
             {
                 r_g726_info g726_info;
                 g726_info.clock_rate = clock_rate;
@@ -682,6 +726,30 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
                 si.g726.set_value(g726_info);
 
                 _attach_g726_audio_pipeline(new_pad);
+            }
+
+            if(!has_encoding)
+            {
+                if(si.payload == 0)
+                {
+                    r_pcmu_info pcmu_info;
+                    pcmu_info.clock_rate = clock_rate;
+
+                    si.encoding = PCMU_ENCODING;
+                    si.pcmu.set_value(pcmu_info);
+
+                    _attach_mulaw_audio_pipeline(new_pad);
+                }
+                else if(si.payload == 8)
+                {
+                    r_pcma_info pcma_info;
+                    pcma_info.clock_rate = clock_rate;
+
+                    si.encoding = PCMA_ENCODING;
+                    si.pcma.set_value(pcma_info);
+
+                    _attach_alaw_audio_pipeline(new_pad);
+                }
             }
         }
 
@@ -982,7 +1050,7 @@ GstFlowReturn r_gst_source::_new_video_sample(GstElement* elt, r_gst_source* src
     }
     catch(const r_exception& e)
     {
-        R_LOG_ERROR("GST VIDEO SAMPLE ERROR: %s", e.what());
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
         result = GST_FLOW_ERROR;
     }
 
@@ -1048,7 +1116,7 @@ GstFlowReturn r_gst_source::_new_audio_sample(GstElement* elt, r_gst_source* src
     }
     catch(const r_exception& e)
     {
-        R_LOG_ERROR("GST VIDEO SAMPLE ERROR: %s", e.what());
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
         result = GST_FLOW_ERROR;
     }
 
@@ -1063,7 +1131,7 @@ gboolean r_gst_source::_bus_callbackS(GstBus* bus, GstMessage* message, gpointer
     }
     catch(const std::exception& e)
     {
-        R_LOG_ERROR("%s", e.what());
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
         g_set_error(NULL, GST_STREAM_ERROR, GST_STREAM_ERROR_FAILED, "bus callback error");
     }
 
@@ -1130,9 +1198,15 @@ void r_gst_source::_on_sdp_callback(GstElement* src, GstSDPMessage* sdp)
         auto media_str = r_string_utils::to_lower(string(m->media));
 
         if(media_str == "video")
+        {
             media.type = VIDEO_MEDIA;
+            R_LOG_ERROR("VIDEO\n");
+        }
         else if(media_str == "audio")
+        {
             media.type = AUDIO_MEDIA;
+            R_LOG_ERROR("AUDIO\n");
+        }
         else continue;
 
         // Note: If its a GArray of object pointers you use & in front of g_array_index
@@ -1149,6 +1223,9 @@ void r_gst_source::_on_sdp_callback(GstElement* src, GstSDPMessage* sdp)
 
             string attr_key(attr->key);
             string attr_val(attr->value);
+
+            R_LOG_ERROR("attr_key: %s\n", attr_key.c_str());
+            R_LOG_ERROR("attr_val: %s\n", attr_val.c_str());
 
             // Note: we might want to parse fmtp lines here as well. fmtp attributes occur for each
             // available video stream and are slightly different for h.264

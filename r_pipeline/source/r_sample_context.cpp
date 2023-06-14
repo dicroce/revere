@@ -118,3 +118,19 @@ r_nullable<string> sample_context::sprop_vps() const
 
     return result;
 }
+
+r_nullable<r_encoding> sample_context::video_encoding() const
+{
+    r_nullable<r_encoding> enc;
+    if(_src_pad_info.count(VIDEO_MEDIA) > 0)
+        enc.set_value(_src_pad_info.at(VIDEO_MEDIA).encoding);
+    return enc;
+}
+
+r_nullable<r_encoding> sample_context::audio_encoding() const
+{
+    r_nullable<r_encoding> enc;
+    if(_src_pad_info.count(AUDIO_MEDIA) > 0)
+        enc.set_value(_src_pad_info.at(AUDIO_MEDIA).encoding);
+    return enc;
+}

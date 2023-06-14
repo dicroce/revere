@@ -55,6 +55,9 @@ public:
     R_API r_utils::r_nullable<std::string> sprop_pps() const;
     R_API r_utils::r_nullable<std::string> sprop_vps() const;
 
+    R_API r_utils::r_nullable<r_encoding> video_encoding() const;
+    R_API r_utils::r_nullable<r_encoding> audio_encoding() const;
+
 private:
     r_utils::r_nullable<uint8_t> _audio_channels {0};
     r_utils::r_nullable<uint32_t> _audio_sample_rate {0};

@@ -33,9 +33,7 @@ void handle_terminate()
             std::rethrow_exception(p);
         }
         catch(std::exception& ex) {
-            printf("%s\n",ex.what());
-            fflush(stdout);
-            R_LOG_ERROR("terminate handler called! %s\n", ex.what());
+            R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
         }
         catch(...) {
             printf("Unknown exception!");

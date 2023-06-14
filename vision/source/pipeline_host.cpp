@@ -366,7 +366,7 @@ pipeline_host_cmd_result pipeline_host::_control_bar_update_data_cb(control_bar_
         }
         catch(const std::exception& e)
         {
-            R_LOG_EXCEPTION(e);
+            R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
         }        
     }
 

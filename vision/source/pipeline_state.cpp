@@ -225,7 +225,7 @@ void pipeline_state::control_bar(const system_clock::time_point& pos)
     }
     catch(const std::exception& e)
     {
-        R_LOG_EXCEPTION(e);
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
 }
 
@@ -253,13 +253,16 @@ void pipeline_state::_entry_point()
 
                     r_codec::r_codec_state decode_state = r_codec::R_CODEC_STATE_INITIALIZED;
 
-                    while(decode_state != r_codec::R_CODEC_STATE_HUNGRY)
-                    {
+//                    while(decode_state != r_codec::R_CODEC_STATE_HUNGRY)
+//                    {
                         decode_state = _video_decoder.raw().decode();
+                        R_LOG_ERROR("DECODE");
 
                         if(decode_state == r_codec::R_CODEC_STATE_HAS_OUTPUT)
                         {
                             tries = 0;
+
+                            R_LOG_ERROR("GOT DECODE OUTPUT");
 
                             // If we are behind, drop the frame here
 
@@ -288,7 +291,7 @@ void pipeline_state::_entry_point()
                                 );
                             }
                         }
-                    }
+                    //}
 
                     --tries;
                 }

@@ -106,10 +106,13 @@ public:
 
     R_API GstBuffer* get() const noexcept {return _buffer;}
 
+    R_API size_t size() const noexcept {return _size;}
+
 private:
     void _clear() noexcept;
 
     GstBuffer* _buffer;
+    size_t _size;
 };
 
 }

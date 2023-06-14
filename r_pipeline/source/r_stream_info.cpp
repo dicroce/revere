@@ -246,13 +246,25 @@ vector<uint8_t> r_pipeline::make_h264_extradata(
     const r_nullable<vector<uint8_t>>& pps
 )
 {
+    std::vector<uint8_t> start_code = {0x00, 0x00, 0x00, 0x01};
+
     auto sps_b = (!sps.is_null())?sps.value():vector<uint8_t>();
     auto pps_b = (!pps.is_null())?pps.value():vector<uint8_t>();
-    vector<uint8_t> output(sps_b.size() + pps_b.size());
+    vector<uint8_t> output(sps_b.size() + pps_b.size() + (start_code.size() * 2));
+    uint8_t* writer = &output[0];
     if(!sps_b.empty())
-        memcpy(&output[0], &sps_b[0], sps_b.size());
+    {
+        memcpy(writer, &start_code[0], start_code.size());
+        writer += start_code.size();
+        memcpy(writer, &sps_b[0], sps_b.size());
+        writer += sps_b.size();
+    }
     if(!pps_b.empty())
+    {
+        memcpy(writer, &start_code[0], start_code.size());
+        writer += start_code.size();
         memcpy(&output[sps_b.size()], &pps_b[0], pps_b.size());
+    }
     return output;
 }
 

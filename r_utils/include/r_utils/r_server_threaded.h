@@ -78,7 +78,7 @@ public:
         }
         catch( std::exception& ex )
         {
-            R_LOG_NOTICE("Exception (%s) caught while initializing r_server_threaded. Exiting.", ex.what());
+            R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
             return;
         }
         catch( ... )
@@ -121,7 +121,7 @@ public:
             }
             catch( std::exception& ex )
             {
-                R_LOG_NOTICE("Exception (%s) occured while responding to connection.",ex.what());
+                R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
             }
             catch( ... )
             {
@@ -152,7 +152,7 @@ private:
         }
         catch(std::exception& ex)
         {
-            R_LOG_ERROR("%s",ex.what());
+            R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
         }
         catch(...)
         {

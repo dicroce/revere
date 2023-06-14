@@ -18,7 +18,7 @@
 #define WS_CATCH(type, code) \
     catch(type& ex) \
     { \
-        R_LOG_EXCEPTION(ex); \
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__); \
         if(conn.valid()) \
         { \
             r_server_response response; \
@@ -129,7 +129,7 @@ private:
             // and incomplete io... but nevertheless our sockets might not
             // be able to communicate becuase the other side make have
             // broken its connection.
-            R_LOG_EXCEPTION(ex);
+            R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
         }
         catch(...)
         {

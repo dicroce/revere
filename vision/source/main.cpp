@@ -204,7 +204,7 @@ std::thread system_info_thread(
                 ru.cameras.clear();
                 ru.status_text = "Unable to communicate with Revere.";
                 update_q.post(ru);
-                R_LOG_ERROR("Revere Communications Error: %s", e.what());
+                R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
             }
             catch(...)
             {

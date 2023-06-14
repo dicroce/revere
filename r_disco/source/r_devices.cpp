@@ -56,7 +56,7 @@ void r_devices::insert_or_update_devices(const vector<pair<r_stream_config, stri
     }
     catch(const std::exception& e)
     {
-        R_LOG_EXCEPTION(e);
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }    
 }
 
@@ -77,7 +77,7 @@ r_nullable<r_camera> r_devices::get_camera_by_id(const string& id)
     }
     catch(const std::exception& e)
     {
-        R_LOG_EXCEPTION(e);
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
 
     return camera;
@@ -95,7 +95,7 @@ vector<r_camera> r_devices::get_all_cameras()
     }
     catch(const std::exception& e)
     {
-        R_LOG_EXCEPTION(e);
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
 
     return cameras;
@@ -113,7 +113,7 @@ vector<r_camera> r_devices::get_assigned_cameras()
     }
     catch(const std::exception& e)
     {
-        R_LOG_EXCEPTION(e);
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
     
     return cameras;
@@ -130,7 +130,7 @@ void r_devices::save_camera(const r_camera& camera)
     }
     catch(const std::exception& e)
     {
-        R_LOG_EXCEPTION(e);
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
 }
 
@@ -145,7 +145,7 @@ void r_devices::remove_camera(const r_camera& camera)
     }
     catch(const std::exception& e)
     {
-        R_LOG_EXCEPTION(e);
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
 }
 
@@ -173,7 +173,7 @@ pair<r_nullable<string>, r_nullable<string>> r_devices::get_credentials(const st
     }
     catch(const std::exception& e)
     {
-        R_LOG_EXCEPTION(e);
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
     
     return result;
@@ -191,7 +191,7 @@ vector<r_camera> r_devices::get_modified_cameras(const vector<r_camera>& cameras
     }
     catch(const std::exception& e)
     {
-        R_LOG_EXCEPTION(e);
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
 
     return modified_cameras;
@@ -209,7 +209,7 @@ vector<r_camera> r_devices::get_assigned_cameras_added(const vector<r_camera>& c
     }
     catch(const std::exception& e)
     {
-        R_LOG_EXCEPTION(e);
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
 
     return added_cameras;
@@ -227,7 +227,7 @@ vector<r_camera> r_devices::get_assigned_cameras_removed(const vector<r_camera>&
     }
     catch(const std::exception& e)
     {
-        R_LOG_EXCEPTION(e);
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
 
     return removed_cameras;

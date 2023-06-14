@@ -365,7 +365,7 @@ r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_s
     }
     catch(const std::exception& ex)
     {
-        R_LOG_ERROR("%s", ex.what());
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
 
     R_STHROW(r_http_500_exception, ("Failed to create jpg."));
@@ -397,7 +397,7 @@ r_http::r_server_response r_ws::_get_key_frame(const r_http::r_web_server<r_util
     }
     catch(const std::exception& ex)
     {
-        R_LOG_ERROR("%s", ex.what());
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
 
     R_STHROW(r_http_500_exception, ("Failed to fetch key frame."));
@@ -447,7 +447,7 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
     }
     catch(const std::exception& ex)
     {
-        R_LOG_ERROR("%s", ex.what());
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
 
     R_STHROW(r_http_500_exception, ("Failed to get contents."));
@@ -490,7 +490,7 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
     }
     catch(const std::exception& ex)
     {
-        R_LOG_ERROR("%s", ex.what());
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
 
     R_STHROW(r_http_500_exception, ("Failed to get cameras."));
@@ -838,7 +838,7 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
     }
     catch(const std::exception& ex)
     {
-        R_LOG_ERROR("%s", ex.what());
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
 
     R_STHROW(r_http_500_exception, ("Failed to export."));
@@ -920,7 +920,7 @@ r_http::r_server_response r_ws::_get_motions(const r_http::r_web_server<r_utils:
     }
     catch(const std::exception& ex)
     {
-        R_LOG_ERROR("%s", ex.what());
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
 
     R_STHROW(r_http_500_exception, ("Failed to query motions."));
@@ -997,7 +997,7 @@ r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_
     }
     catch(const std::exception& ex)
     {
-        R_LOG_ERROR("%s", ex.what());
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
 
     R_STHROW(r_http_500_exception, ("Failed to query motions."));

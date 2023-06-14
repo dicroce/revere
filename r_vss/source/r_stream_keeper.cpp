@@ -135,49 +135,58 @@ bool r_stream_keeper::is_recording(const string& id)
     return _cmd_q.post(cmd).get().is_recording;
 }
 
-std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, const r_disco::r_camera& camera, r_recording_context* rc)
+std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, const r_disco::r_camera& camera, r_recording_context* rc, r_nullable<r_pipeline::r_encoding> video_encoding, r_nullable<r_pipeline::r_encoding> audio_encoding)
 {
+    R_LOG_ERROR("==>add_restream_mount()");
+
     auto factory = gst_rtsp_media_factory_new();
     if(!factory)
         R_THROW(("Failed to create restream media factory!"));
 
+    R_LOG_ERROR("    1");
+
     // fetch video encoding (it's mandatory)
     if(sdp_medias.find("video") == sdp_medias.end())
         R_THROW(("No video stream found in SDP!"));
+
+    R_LOG_ERROR("    2");
 
     auto& sdp_video = sdp_medias.at("video");
 
     if(sdp_video.formats.empty())
         R_THROW(("No video formats found in SDP!"));
 
+    R_LOG_ERROR("    3");
+
     auto& sdp_video_formats = sdp_video.formats;
 
-    auto video_encoding = sdp_video.rtpmaps.at(sdp_video_formats.front()).encoding;
+    R_LOG_ERROR("    4");
 
     // fetch audio encoding (it's not mandatory)
-    r_nullable<r_pipeline::r_encoding> audio_encoding;
     r_nullable<r_pipeline::r_sdp_media> sdp_audio;
 
     if(sdp_medias.find("audio") != sdp_medias.end())
     {
+
+        R_LOG_ERROR("    5");
         sdp_audio.set_value(sdp_medias.at("audio"));
 
         if(sdp_audio.value().formats.empty())
             R_THROW(("No audio formats found in SDP!"));
-
-        auto& sdp_audio_formats = sdp_audio.value().formats;
-
-        audio_encoding.set_value(sdp_audio.value().rtpmaps.at(sdp_audio_formats.front()).encoding);
     }
+
+    R_LOG_ERROR("    7");
 
     string launch_str = r_string_utils::format("( appsrc name=videosrc ! ");
 
-    if(video_encoding == r_pipeline::r_encoding::H264_ENCODING)
+    if(video_encoding.value() == r_pipeline::r_encoding::H264_ENCODING)
         launch_str += r_string_utils::format("h264parse config-interval=-1 ! rtph264pay name=pay0 pt=%d ", sdp_video.formats.front());
-    else if(video_encoding == r_pipeline::r_encoding::H265_ENCODING)
+    else if(video_encoding.value() == r_pipeline::r_encoding::H265_ENCODING)
         launch_str += r_string_utils::format("h265parse config-interval=-1 ! rtph265pay name=pay0 pt=%d ", sdp_video.formats.front());
     else
-        R_THROW(("Unsupported video encoding: %s", r_pipeline::encoding_to_str(video_encoding).c_str()));
+        R_THROW(("Unsupported video encoding: %s", r_pipeline::encoding_to_str(video_encoding.value()).c_str()));
+
+    R_LOG_ERROR("    8");
 
     if(!audio_encoding.is_null())
     {
@@ -211,6 +220,10 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
     }
     else launch_str += ")";
 
+    R_LOG_ERROR("launch_str=%s\n",launch_str.c_str());
+
+    R_LOG_ERROR("    9");
+
     gst_rtsp_media_factory_set_launch(factory, launch_str.c_str());
 
     gst_rtsp_media_factory_set_shared(factory, TRUE);
@@ -220,13 +233,19 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
     if(camera.friendly_name.is_null())
         R_THROW(("Camera friendly name is null!"));
 
+    R_LOG_ERROR("    10");
+
     string mount_path = camera.friendly_name.value();
 
     replace(begin(mount_path), end(mount_path), ' ', '_');
 
     mount_path = r_string_utils::format("/%s", mount_path.c_str());
 
+    R_LOG_ERROR("    11");
+
     gst_rtsp_mount_points_add_factory(_mounts, mount_path.c_str(), factory);
+
+    R_LOG_ERROR("<==add_restream_mount()");
 
     return mount_path;
 }
@@ -337,7 +356,7 @@ void r_stream_keeper::_entry_point()
         }
         catch(const std::exception& e)
         {
-            R_LOG_ERROR("Recording Exception: %s", e.what());
+            R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
         }
     }
 }

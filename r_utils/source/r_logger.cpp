@@ -199,8 +199,7 @@ void r_utils_terminate()
         }
         catch(std::exception& ex)
         {
-            R_LOG_CRITICAL("%s",ex.what());
-            printf("%s\n",ex.what());
+            R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
         }
         catch(...)
         {

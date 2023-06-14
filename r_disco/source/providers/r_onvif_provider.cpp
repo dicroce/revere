@@ -202,7 +202,7 @@ vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir)
         }
         catch(const std::exception& e)
         {
-            R_LOG_EXCEPTION(e);
+            R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
         }
     }
 

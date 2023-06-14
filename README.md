@@ -185,9 +185,12 @@ sudo apt install git curl zip unzip tar cmake pkg-config nasm libxinerama-dev li
 4) Building
 ```
 git clone https://github.com/dicroce/revere --recursive
-mkdir revere/build && pushd revere/build && cmake .. && make && sudo make install
+mkdir revere/build && pushd revere/build && cmake .. && make
+
+5) At this point, you can run "cpack -G DEB" to make a .deb you can install with dpkg, OR you can just type "sudo make install"
+to install to /usr/local/revere
 ```
-At this point you should have revere installed in /usr/local/revere and vision installed in /usr/local/vision
+At this point you should have revere and vision installed in /usr/local/revere.
 
 ## Compiling on Windows
 1) Download and install git for windows from https://git-scm.com

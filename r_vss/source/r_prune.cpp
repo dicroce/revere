@@ -137,7 +137,7 @@ void r_prune::_entry_point()
         }
         catch(const std::exception& e)
         {
-            R_LOG_ERROR("Pruning Exception: %s", e.what());
+            R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
             printf("Pruning Exception: %s\n", e.what());
         }
     }

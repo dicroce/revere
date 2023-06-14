@@ -109,7 +109,7 @@ vector<r_onvif_discovery_info> r_onvif_session::discover()
             }
             catch(const std::exception& e)
             {
-                R_LOG_EXCEPTION(e);
+                R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
             }
 
             i++;
@@ -617,7 +617,14 @@ int r_onvif_session::_get_time_offset(
         utc_there->tm_sec = stoi(sec_buf);
         utc_there->tm_isdst = is_dst;
         time_t utc_time_there = mktime(utc_there);
-        time_t result = utc_time_there - utc_time_here;
+        // if utc_time_there > utc_time_here then the camera is in the future so the offset
+        // is utc_time_there - utc_time_here
+        // if utc_time_there < utc_time_here then the camera is in the past so the offset
+        // is utc_time_here - utc_time_there
+        int64_t tmp = (int64_t)utc_time_there - (int64_t)utc_time_here;
+        
+        result = (int)tmp;
+
         _check_for_xml_error_msg(reply.get(), xaddrs);
     }
     else R_THROW(("Unable to fetch device time."));

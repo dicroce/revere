@@ -4,3 +4,4 @@ deps/
 media/
 *.snap
 Output/
+_packages/
