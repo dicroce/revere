@@ -34,6 +34,10 @@ This snap has been tested on the current version of Ubuntu & Fedora.
 ### Windows
 The easiest way to get Revere on Windows is by download a release package here from github: https://github.com/dicroce/revere/releases
 
+## Startup at boot
+If you are on Ubuntu and running the snap package you can open "Startup Applications" and add a new entry with the following command line:
+/snap/bin/revere --start_minimized
+
 ### Api
 The Revere background process has an extensive API. Firstly, all recording cameras live streams are available via a centralized RTSP link:
 
