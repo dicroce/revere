@@ -10,10 +10,10 @@ confinement: strict
 apps:
   revere:
     command: bin/desktop-launch $SNAP/usr/local/revere/revere
-    plugs: [process-control, home, network, network-bind, network-control, network-manager, network-manager-observe, network-observe, network-setup-control, network-setup-observe, network-status, removable-media, opengl, desktop, avahi-control, avahi-observe]
+    plugs: [process-control, desktop, desktop-legacy, spi, home, network, network-bind, network-status, opengl, unity7, wayland]
   vision:
     command: bin/desktop-launch $SNAP/usr/local/revere/vision
-    plugs: [process-control, home, network, network-bind, network-control, network-manager, network-manager-observe, network-observe, network-setup-control, network-setup-observe, network-status, removable-media, opengl, desktop, avahi-control, avahi-observe]
+    plugs: [process-control, desktop, desktop-legacy, spi, home, network, network-bind, network-status, opengl, unity7, wayland]
 
 parts:
   revere:
