@@ -9,11 +9,13 @@ confinement: strict
 
 apps:
   revere:
-    command: bin/desktop-launch $SNAP/usr/local/revere/revere
+    command: usr/local/revere/revere
     plugs: [process-control, desktop, desktop-legacy, spi, home, network, network-bind, network-status, opengl, unity7, wayland]
+    extensions: [gnome]
   vision:
-    command: bin/desktop-launch $SNAP/usr/local/revere/vision
+    command: usr/local/revere/vision
     plugs: [process-control, desktop, desktop-legacy, spi, home, network, network-bind, network-status, opengl, unity7, wayland]
+    extensions: [gnome]
 
 parts:
   revere:
@@ -56,14 +58,3 @@ parts:
       - libglx0
       - libgl1-mesa-dri
       - xserver-xorg-video-all
-    after:
-      - desktop-glib-only
-
-  desktop-glib-only:
-    source: https://github.com/ubuntu/snapcraft-desktop-helpers.git
-    source-subdir: glib-only
-    plugin: make
-    build-packages:
-      - libglib2.0-dev
-    stage-packages:
-      - libglib2.0-bin
