@@ -6,6 +6,8 @@ description: |
   A free, open source, onvif compatible, cross platform video surveillance system designed to run unobtrusively on standard desktop computers.
 grade: stable
 confinement: strict
+architectures:
+  - build-on: [amd64]
 
 apps:
   revere:
@@ -24,6 +26,8 @@ parts:
       - -DCMAKE_BUILD_TYPE=Release
     source-type: git
     source: https://github.com/dicroce/revere
+    source-submodules:
+      - vcpkg
     build-packages:
       - git
       - zip
