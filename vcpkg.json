@@ -2,29 +2,9 @@
     "name": "revere",
     "version-string": "1.0",
     "dependencies": [
-        {
-            "name":"ffmpeg", 
-            "features": [
-                "avcodec",
-                "avdevice",
-                "avfilter",
-                "avformat",
-                "swresample",
-                "swscale",
-                "x264",
-                "x265"
-            ]
-        },
+        { "name":"ffmpeg", "features": ["avcodec", "avdevice", "avfilter", "avformat", "swresample", "swscale", "x264", "x265"] },
         "gst-rtsp-server",
-        {
-            "name": "gstreamer",
-            "features": [
-                "plugins-bad",
-                "plugins-base",
-                "plugins-good",
-                "plugins-ugly"
-            ]
-        },
+        { "name": "gstreamer", "features": ["plugins-bad", "plugins-base", "plugins-good", "plugins-ugly"]},
         "libxml2",
         "glfw3"
     ]

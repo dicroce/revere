@@ -59,6 +59,9 @@ private:
     static void _need_data(GstElement* appsrc, guint unused, r_recording_context* rc);
     void need_data(GstElement* appsrc, guint unused);
 
+    static void _seek_data(GstElement* appsrc, guint64 offset, r_recording_context* rc);
+    void seek_data(GstElement* appsrc, guint64 offset);
+
     static void _restream_cleanup(r_recording_context* rc);
 
     void _final_storage_writer_audio_config(const r_pipeline::sample_context& sc);

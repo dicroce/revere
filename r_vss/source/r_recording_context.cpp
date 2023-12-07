@@ -97,15 +97,6 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             if(!this->_video_caps.is_null() && this->_restream_mount_path.empty())
                 this->_restream_mount_path = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), sc.audio_encoding());
 
-//            if(this->_audio_caps.is_null())
-//            {
-//                R_LOG_ERROR("NULL audio caps!");
-//                this->_audio_caps = _source.get_audio_caps();
-//                R_LOG_ERROR("AUDIO CAPS=%s", this->_audio_caps.is_null()?"NULL":"NOT NULL");
-//                if(!this->_video_caps.is_null())
-//                    this->_restream_mount_path = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), sc.audio_encoding());
-//            }
-
             auto ts = sc.stream_start_ts() + pts;
             this->_storage_file.write_frame(
                 this->_storage_write_context,
@@ -136,7 +127,6 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                     fc.key = key;
                     fc.buffer = buffer;
                     _audio_samples.post(fc);
-                    R_LOG_ERROR("audio sample posted key=%s", key ? "true" : "false");
                 }
             }
         }
@@ -283,12 +273,10 @@ int32_t r_recording_context::bytes_per_second() const
 
 void r_recording_context::restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media)
 {
-    R_LOG_ERROR("media configure");
     auto element = gst_rtsp_media_get_element(media);
     if(!element)
         R_THROW(("Failed to get element from media in restream media configure."));
 
-    R_LOG_ERROR("media configure 2");
     // pay0 is the video payloader
     // pay1 is the audio payloader which might now actually be present
 
@@ -298,41 +286,41 @@ void r_recording_context::restream_media_configure(GstRTSPMediaFactory* factory,
     // set restreaming flag (used in frame callbacks to determine if we should send the frame to the restreamer)
     _restreaming = true;
 
-    R_LOG_ERROR("media configure 3");
-
     _v_appsrc = gst_bin_get_by_name_recurse_up(GST_BIN(element), "videosrc");
     if(!_v_appsrc)
         R_THROW(("Failed to get videosrc from element in restream media configure."));
-
-    R_LOG_ERROR("media configure 4");
 
     gst_util_set_object_arg(G_OBJECT(_v_appsrc), "format", "time");
 
     g_object_set(G_OBJECT(_v_appsrc), "caps", (GstCaps*)_video_caps.value(), NULL);
 
+//    gst_util_set_object_arg(G_OBJECT(_v_appsrc), "stream-type", "seekable");
+
+//    g_object_set(G_OBJECT(_v_appsrc), "duration", 10000000000, NULL);
+
     g_signal_connect(_v_appsrc, "need-data", (GCallback)r_recording_context::_need_data, this);
 
-    R_LOG_ERROR("media configure 5");
+    g_signal_connect(_v_appsrc, "seek-data", (GCallback)r_recording_context::_seek_data, this);
 
     auto videoPayloader = gst_bin_get_by_name_recurse_up(GST_BIN(element), "pay0");
 
     _a_appsrc = gst_bin_get_by_name_recurse_up(GST_BIN(element), "audiosrc");
 
-    R_LOG_ERROR("media configure 6");
-
     if(_a_appsrc)
     {
         gst_util_set_object_arg(G_OBJECT(_a_appsrc), "format", "time");
 
-        R_LOG_ERROR("audio caps: %p", (GstCaps*)_audio_caps.value());
-
         g_object_set(G_OBJECT(_a_appsrc), "caps", (GstCaps*)_audio_caps.value(), NULL);
 
-        g_signal_connect(_a_appsrc, "need-data", (GCallback)r_recording_context::_need_data, this);        
+//        gst_util_set_object_arg(G_OBJECT(_a_appsrc), "stream-type", "seekable");
+
+//        g_object_set(G_OBJECT(_v_appsrc), "duration", 10000000000, NULL);
+
+        g_signal_connect(_a_appsrc, "need-data", (GCallback)r_recording_context::_need_data, this);
+
+        g_signal_connect(_a_appsrc, "seek-data", (GCallback)r_recording_context::_seek_data, this);
     }
     else R_LOG_ERROR("no audio appsrc");
-
-    R_LOG_ERROR("media configure 7");
 }
 
 void r_recording_context::stop()
@@ -373,6 +361,17 @@ void r_recording_context::need_data(GstElement* appsrc, guint unused)
             g_signal_emit_by_name(appsrc, "push-buffer", output_buffer.get(), &ret);
         }
     }
+}
+
+void r_recording_context::_seek_data(GstElement* appsrc, guint64 offset, r_recording_context* rc)
+{
+    // offset is in microseconds
+    R_LOG_ERROR("seek-data %lu", offset);
+    rc->seek_data(appsrc, offset);
+}
+
+void r_recording_context::seek_data(GstElement* appsrc, guint64 offset)
+{
 }
 
 void r_recording_context::_restream_cleanup(r_recording_context* rc)
