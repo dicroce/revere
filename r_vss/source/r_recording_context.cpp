@@ -474,8 +474,6 @@ void r_recording_context::stop()
 
 void r_recording_context::create_playback_mount(GstRTSPServer* server, GstRTSPMountPoints* mounts, uint64_t start_ts, uint64_t end_ts)
 {
-    R_LOG_ERROR("adding playback restream mount: camera.friendly_name=%s, start_ts=%s, end_ts=%s", _camera.friendly_name.value().c_str(), r_string_utils::uint64_to_s(start_ts).c_str(), r_string_utils::uint64_to_s(end_ts).c_str());
-
     system_clock::time_point start_tp{milliseconds{start_ts}};
     system_clock::time_point end_tp{milliseconds{end_ts}};
 
@@ -534,8 +532,6 @@ void r_recording_context::create_playback_mount(GstRTSPServer* server, GstRTSPMo
         (maybe_audio_encoding.is_null())?0:r_pipeline::encoding_to_pt(maybe_audio_encoding.value())
     );
 
-    R_LOG_ERROR("playback launch_str=%s", launch_str.c_str());
-
     // Ok, now that we have a launch string lets build our factory...
 
     auto factory = gst_rtsp_media_factory_new();
@@ -549,8 +545,6 @@ void r_recording_context::create_playback_mount(GstRTSPServer* server, GstRTSPMo
     g_signal_connect(factory, "media-configure", (GCallback)_playback_restream_media_configure_cbs, this);
 
     auto mount_path = r_string_utils::format("/%s_%lu_%lu", _camera.friendly_name.value().c_str(), start_ts, end_ts);
-
-    R_LOG_ERROR("mount_path=%s\n", mount_path.c_str());
 
     gst_rtsp_mount_points_add_factory(mounts, mount_path.c_str(), factory);
 }
@@ -682,9 +676,7 @@ r_gst_caps _create_caps(const string& codec_parameters, const string& key)
             {
                 auto decoded = r_string_utils::from_base64(kv[1]);
                 string caps_s((char*)decoded.data(), decoded.size());
-                R_LOG_ERROR("DECODED CAPS: %s", caps_s.c_str());
                 return r_gst_caps(gst_caps_from_string(caps_s.c_str()));
-                //return r_gst_caps::from_string(decoded);
             }
         }
     }
@@ -725,20 +717,16 @@ static void _need_playback_data_cbs(GstElement* appsrc, guint unused, playback_r
 
 void r_recording_context::_playback_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media)
 {
-    R_LOG_ERROR("PLAYBACK RESTREAM MEDIA CONFIGURE");
     auto prs = make_shared<playback_restreaming_state>();
     prs->rc = this;
     prs->media = media;
 
     tie(prs->friendly_name, prs->start_time_s, prs->end_time_s) =
         _get_playback_url_parts();
-    R_LOG_ERROR("friendly_name=%s, start_time_s=%s, end_time_s=%s", prs->friendly_name.c_str(), prs->start_time_s.c_str(), prs->end_time_s.c_str());
     tie(prs->con, prs->playback_duration) = 
         _fetch_contents(_ws, _camera.id, prs->start_time_s, prs->end_time_s);
-    R_LOG_ERROR("playback_duration=%s", r_string_utils::uint64_to_s(prs->playback_duration.count()).c_str());
     tie(prs->has_audio, prs->video_codec_name, prs->video_codec_parameters, prs->audio_codec_name, prs->audio_codec_parameters, prs->video_encoding, prs->maybe_audio_encoding) =
         _fetch_stream_info(prs, _ws, _camera.id);
-    R_LOG_ERROR("has_audio=%s, video_codec_name=%s, video_codec_parameters=%s, audio_codec_name=%s, audio_codec_parameters=%s", (prs->has_audio)?"true":"false", prs->video_codec_name.c_str(), prs->video_codec_parameters.c_str(), prs->audio_codec_name.c_str(), prs->audio_codec_parameters.c_str());
 
     _playback_restreaming_states[media] = prs;
 
@@ -779,82 +767,6 @@ void r_recording_context::_playback_restream_media_configure(GstRTSPMediaFactory
 
     }
     else R_LOG_ERROR("no audio appsrc");
-
-    R_LOG_ERROR("CONFIGURED PLAYBACK\n");
-
-
-
-    // - We can get the playback time range by
-    //   - Call gst_rtsp_context_get_current() to get the current GSTRTSPContext
-    //   - Call gst_rtsp_context_get_url() to get the GstRTSPUrl
-    //   - parse the GstRTSPUrl to get the start_ts and end_ts
-    // - We then need to query the contents between start_ts and end_ts
-    //   - If there is no video, just fail
-    //   - If there is video, sum the contents
-    // - Create a playback context with the contents and sum
-    //   - Set the r_recording_context on the playback context
-    //   - Set the media on the playback context
-    // - Add the playback context to the map of playback contexts keyed by the GstRTSPMedia
-    // - Get the appsrc(s) and set "duration" and "seekable".
-    // - Register playback "need-data" callbacks.
-    // - Register "seek-data" callbacks.
-
-    // Note: We're going to have to set audio and video "caps" on the appsrc(s) to match the
-    // video and audio. We can use syntax like this:
-    //  GstCaps *caps = gst_caps_new_simple ("video/x-raw",
-    //      "format", G_TYPE_STRING, "I420",
-    //      "framerate", GST_TYPE_FRACTION, 25, 1,
-    //      "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
-    //      "width", G_TYPE_INT, 320,
-    //      "height", G_TYPE_INT, 240,
-    //      NULL);
-    // Those caps are for raw video. For live we literally just copy the caps from the live
-    // pipeline. For playback we'll have to get the caps from the first segment and use those.
-    // We should print the live stream caps to get some examples and then use the syntax above
-    // to create them (we'll have to do it for all supported codecs/etc). That might work.
-
-#if 0
-
-I can get the width/height by parsing the sps/pps. Its possible that not all of these will be
-required.
-
-video caps: video/x-h264
-video caps:     stream-format: byte-stream
-video caps:         alignment: au
-video caps:             level: 5.1
-video caps:           profile: high
-video caps:             width: 2304
-video caps:            height: 1296
-video caps:         framerate: 0/1
-video caps:     chroma-format: 4:2:0
-video caps:    bit-depth-luma: 8
-video caps:   bit-depth-chroma: 8
-video caps:            parsed: true
-audio caps: audio/mpeg
-audio caps:       mpegversion: 4
-audio caps:     stream-format: raw
-audio caps:        codec_data: 1408
-audio caps:            framed: true
-audio caps:             level: 1
-audio caps:      base-profile: lc
-audio caps:           profile: lc
-audio caps:              rate: 16000
-audio caps:          channels: 1
-
-mime type for Mu-Law audio: audio/x-mulaw
-mime type for A-Law audio: audio/x-alaw
-mime type for g.726
-
-to parse h.264 call r_pipeline::get_h264_sps(video_codec_parameters) to get profile_idc, level_idc, width & height
-to parse h.265 call r_pipeline::get_h265_sps(video_codec_parameters) to get profile_idc, level_idc, width & height
-to parse AAC
-
-#endif
-
-// We need some code that brings up a pipeline with an appsrc -> [parser] where the parser is
-// either h264parse, h265parse or aacparse. For g.711 and g.726 we can hard code the caps.
-// This code should probably live in r_pipeline.
-
 }
 
 void r_recording_context::_playback_restream_cleanup_cbs(playback_restreaming_state* prs)

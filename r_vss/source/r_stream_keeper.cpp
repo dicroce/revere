@@ -434,7 +434,6 @@ void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
     GstRTSPClientClass* klass = GST_RTSP_CLIENT_GET_CLASS(client);
     shared_ptr<gchar> raw_path(klass->make_path_from_uri(client, ctx->uri), [](gchar* p){if(p) g_free(p);});
     auto path = string(raw_path.get());
-    R_LOG_ERROR("ORIGINAL PATH: %s\n", path.c_str());
 
     if(r_string_utils::starts_with(path, "/"))
         path = path.substr(1);
@@ -463,7 +462,6 @@ void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
     // this request to the proper r_recording_context, but to do that we need to access _streams
     // but that all happens on the thread processing our command q. So, we'll post a command to 
     // it to take it from here.
-    R_LOG_ERROR("ABOUT TO SEND CMD: friendly_name=%s, start_time_s=%s, end_time_s=%s\n", friendly_name.c_str(), start_time_s.c_str(), end_time_s.c_str());
 
     r_stream_keeper_cmd cmd;
     cmd.cmd = R_SK_CREATE_PLAYBACK_MOUNT;
@@ -471,16 +469,17 @@ void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
     cmd.start_ts = r_string_utils::s_to_uint64(start_time_s);
     cmd.end_ts = r_string_utils::s_to_uint64(end_time_s);
 
-    _cmd_q.post(cmd);
+    // Why wait here? Because we need to wait for the mount to be created before we can send the response
+    // because the client might get their DESCRIBE request in before the mount is created and then we'll
+    // get a failure. We dont wait forever here however, just in case (also note, wait_for() will return
+    // immediately when the response is ready... so in most cases this wait will be very short).
+    _cmd_q.post(cmd).wait_for(chrono::seconds(1));
 }
 
 void r_stream_keeper::_create_playback_mount(const string& friendly_name, uint64_t start_ts, uint64_t end_ts)
 {
-    R_LOG_ERROR("_add_playback_restream_mount()");
-
     for(auto s : _streams)
     {
-        R_LOG_ERROR("friendly_name=%s, found=%s\n", friendly_name.c_str(), s.second->camera().friendly_name.value().c_str());
         if(s.second->camera().friendly_name.value() == friendly_name)
         {
             s.second->create_playback_mount(_server, _mounts, start_ts, end_ts);
