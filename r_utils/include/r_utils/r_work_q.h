@@ -41,7 +41,8 @@ public:
             _asleep = true;
             if(d == std::chrono::milliseconds {})
                 _cond.wait(g, [this](){return !this->_queue.empty() || !this->_asleep;});
-            else _cond.wait_for(g, d, [this](){return !this->_queue.empty() || !this->_asleep;});
+            else _cond.wait_for(g, d,[this](){return !this->_queue.empty() || !this->_asleep;});
+            _asleep = false;
         }
 
         r_utils::r_nullable<std::pair<CMD,std::promise<RESULT>>> result;

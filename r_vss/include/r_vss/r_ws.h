@@ -45,6 +45,8 @@ public:
 
     R_API std::vector<uint8_t> get_key_frame(const std::string& camera_id, std::chrono::system_clock::time_point ts);
 
+    R_API std::vector<uint8_t> get_video(const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
+
     R_API contents get_contents(const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
 
     R_API r_utils::r_nullable<std::chrono::system_clock::time_point> get_first_ts(const std::string& camera_id);

@@ -57,7 +57,7 @@ public:
 #endif
     }
 
-	R_API void close() { fclose(_f); _f = nullptr; }
+	R_API void close() { if(_f) {fclose(_f); _f = nullptr;} }
 
 private:
     FILE* _f;

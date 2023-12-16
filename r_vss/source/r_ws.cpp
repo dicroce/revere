@@ -153,6 +153,25 @@ vector<uint8_t> r_ws::get_key_frame(const std::string& camera_id, std::chrono::s
     return sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, r_time_utils::tp_to_epoch_millis(ts));
 }
 
+vector<uint8_t> r_ws::get_video(const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
+{
+    auto maybe_camera = _devices.get_camera_by_id(camera_id);
+
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    if(maybe_camera.value().record_file_path.is_null())
+        R_THROW(("Camera has no recording file!"));
+
+    r_storage_file_reader sf(_top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+
+    return sf.query(
+        R_STORAGE_MEDIA_TYPE_ALL,
+        chrono::duration_cast<std::chrono::milliseconds>(start.time_since_epoch()).count(),
+        chrono::duration_cast<std::chrono::milliseconds>(end.time_since_epoch()).count()
+    );
+}
+
 contents r_ws::get_contents(const string& camera_id, system_clock::time_point start, system_clock::time_point end)
 {
     auto maybe_camera = _devices.get_camera_by_id(camera_id);
@@ -281,6 +300,10 @@ vector<motion_event_info> r_ws::get_motion_events(const std::string& camera_id, 
 
     return result;
 }
+
+// Note: r_storage_file_reader::query_blocks() returns a vector of pairs of timestamps. Note that the dumbdex only has block start
+// times, so the block end times returned here are the start times of the next block. This makes these segments particularly suited for
+// calling remove_blocks().
 
 vector<segment> r_ws::get_blocks(const string& camera_id, system_clock::time_point start, system_clock::time_point end)
 {
@@ -576,8 +599,8 @@ static void _check_timestamps(const r_blob_tree& bt)
 }
 
 r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                          r_utils::r_buffered_socket<r_utils::r_socket>& conn,
-                                          const r_http::r_server_request& request)
+                                            r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                            const r_http::r_server_request& request)
 {
     try
     {    

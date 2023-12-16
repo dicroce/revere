@@ -39,6 +39,10 @@ enum r_encoding
 R_API r_encoding str_to_encoding(const std::string& encoding_str);
 R_API std::string encoding_to_str(r_encoding encoding);
 
+R_API int encoding_to_pt(r_encoding encoding);
+
+R_API std::string encoding_to_mime(r_encoding encoding);
+
 struct r_h264_info
 {
     std::string profile_level_id;

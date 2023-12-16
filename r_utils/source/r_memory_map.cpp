@@ -137,14 +137,26 @@ void r_memory_map::_clear() noexcept
 {
 #ifdef IS_WINDOWS
     if(_mem != nullptr)
+    {
         UnmapViewOfFile( _mem );
+        _mem = nullptr;
+    }
     if(_mapHandle != INVALID_HANDLE_VALUE)
+    {
         CloseHandle( _mapHandle );
+        _mapHandle = INVALID_HANDLE_VALUE;
+    }
     if(_fileHandle != INVALID_HANDLE_VALUE)
+    {
         CloseHandle( _fileHandle );
+        _fileHandle = INVALID_HANDLE_VALUE;
+    }
 #else
     if(_mem != nullptr)
+    {
         munmap( _mem, _length );
+        _mem = nullptr;
+    }
 #endif
 }
 

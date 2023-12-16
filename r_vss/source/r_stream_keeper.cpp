@@ -7,23 +7,7 @@
 #include "r_utils/r_logger.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_time_utils.h"
-
-#ifdef IS_WINDOWS
-#pragma warning( push )
-#pragma warning( disable : 4244 )
-#endif
-#ifdef IS_LINUX
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-#include <gst/gst.h>
-#include <gst/rtsp-server/rtsp-server.h>
-#ifdef IS_LINUX
-#pragma GCC diagnostic pop
-#endif
-#ifdef IS_WINDOWS
-#pragma warning( pop )
-#endif
+#include "r_utils/r_string_utils.h"
 
 #include <algorithm>
 
@@ -89,6 +73,13 @@ void r_stream_keeper::start()
         R_THROW(("Stream keeper already started!"));
 
     _running = true;
+
+    g_signal_connect(
+        _server,
+        "client-connected",
+        (GCallback)_client_connected_cbs,
+        this
+    );
 
     _rtsp_server_th = thread(&r_stream_keeper::_rtsp_server_entry_point, this);
 
@@ -163,52 +154,13 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
             R_THROW(("No audio formats found in SDP!"));
     }
 
-    string launch_str = r_string_utils::format("( appsrc name=videosrc ! ");
-
-    if(video_encoding.value() == r_pipeline::r_encoding::H264_ENCODING)
-        launch_str += r_string_utils::format("h264parse config-interval=-1 ! rtph264pay name=pay0 pt=%d ", sdp_video.formats.front());
-    else if(video_encoding.value() == r_pipeline::r_encoding::H265_ENCODING)
-        launch_str += r_string_utils::format("h265parse config-interval=-1 ! rtph265pay name=pay0 pt=%d ", sdp_video.formats.front());
-    else
-        R_THROW(("Unsupported video encoding: %s", r_pipeline::encoding_to_str(video_encoding.value()).c_str()));
-
-    if(!audio_encoding.is_null())
-    {
-        launch_str += string(" appsrc name=audiosrc ! ");
-
-        if(audio_encoding.value() == r_pipeline::r_encoding::AAC_GENERIC_ENCODING)
-            launch_str += r_string_utils::format("aacparse ! rtpmp4gpay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else if(audio_encoding.value() == r_pipeline::r_encoding::AAC_LATM_ENCODING)
-            launch_str += r_string_utils::format("aacparse ! rtpmp4apay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else if(audio_encoding.value() == r_pipeline::r_encoding::PCMU_ENCODING)
-            launch_str += r_string_utils::format("rawaudioparse ! rtppcmupay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else if(audio_encoding.value() == r_pipeline::r_encoding::PCMA_ENCODING)
-            launch_str += r_string_utils::format("rawaudioparse ! rtppcmapay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else if(audio_encoding.value() == r_pipeline::r_encoding::AAL2_G726_16_ENCODING)
-            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else if(audio_encoding.value() == r_pipeline::r_encoding::AAL2_G726_24_ENCODING)
-            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else if(audio_encoding.value() == r_pipeline::r_encoding::AAL2_G726_32_ENCODING)
-            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else if(audio_encoding.value() == r_pipeline::r_encoding::AAL2_G726_40_ENCODING)
-            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else if(audio_encoding.value() == r_pipeline::r_encoding::G726_16_ENCODING)
-            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else if(audio_encoding.value() == r_pipeline::r_encoding::G726_24_ENCODING)
-            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else if(audio_encoding.value() == r_pipeline::r_encoding::G726_32_ENCODING)
-            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else if(audio_encoding.value() == r_pipeline::r_encoding::G726_40_ENCODING)
-            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", sdp_audio.value().formats.front());
-        else R_THROW(("Unsupported audio encoding: %s", r_pipeline::encoding_to_str(audio_encoding.value()).c_str()));
-    }
-    else launch_str += ")";
+    auto launch_str = create_restream_launch_string(video_encoding.value(), sdp_video.formats.front(), audio_encoding, (audio_encoding.is_null())?0:sdp_audio.value().formats.front());
 
     gst_rtsp_media_factory_set_launch(factory, launch_str.c_str());
 
-    gst_rtsp_media_factory_set_shared(factory, TRUE);
+    gst_rtsp_media_factory_set_shared(factory, FALSE);
 
-    g_signal_connect(factory, "media-configure", (GCallback)_restream_media_configure, rc);
+    g_signal_connect(factory, "media-configure", (GCallback)_live_restream_media_configure, rc);
 
     if(camera.friendly_name.is_null())
         R_THROW(("Camera friendly name is null!"));
@@ -281,6 +233,52 @@ void r_stream_keeper::bounce(const std::string& camera_id)
     _cmd_q.post(cmd).get();
 }
 
+string r_stream_keeper::create_restream_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding, int audio_format)
+{
+    string launch_str = r_string_utils::format("( appsrc name=videosrc ! ");
+
+    if(video_encoding == r_pipeline::r_encoding::H264_ENCODING)
+        launch_str += r_string_utils::format("h264parse config-interval=-1 ! rtph264pay name=pay0 pt=%d ", video_format);
+    else if(video_encoding == r_pipeline::r_encoding::H265_ENCODING)
+        launch_str += r_string_utils::format("h265parse config-interval=-1 ! rtph265pay name=pay0 pt=%d ", video_format);
+    else
+        R_THROW(("Unsupported video encoding: %s", r_pipeline::encoding_to_str(video_encoding).c_str()));
+
+    if(!maybe_audio_encoding.is_null())
+    {
+        launch_str += string(" appsrc name=audiosrc ! ");
+
+        if(maybe_audio_encoding.value() == r_pipeline::r_encoding::AAC_GENERIC_ENCODING)
+            launch_str += r_string_utils::format("aacparse ! rtpmp4gpay name=pay1 pt=%d )", audio_format);
+        else if(maybe_audio_encoding.value() == r_pipeline::r_encoding::AAC_LATM_ENCODING)
+            launch_str += r_string_utils::format("aacparse ! rtpmp4apay name=pay1 pt=%d )", audio_format);
+        else if(maybe_audio_encoding.value() == r_pipeline::r_encoding::PCMU_ENCODING)
+            launch_str += r_string_utils::format("rawaudioparse ! rtppcmupay name=pay1 pt=%d )", audio_format);
+        else if(maybe_audio_encoding.value() == r_pipeline::r_encoding::PCMA_ENCODING)
+            launch_str += r_string_utils::format("rawaudioparse ! rtppcmapay name=pay1 pt=%d )", audio_format);
+        else if(maybe_audio_encoding.value() == r_pipeline::r_encoding::AAL2_G726_16_ENCODING)
+            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", audio_format);
+        else if(maybe_audio_encoding.value() == r_pipeline::r_encoding::AAL2_G726_24_ENCODING)
+            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", audio_format);
+        else if(maybe_audio_encoding.value() == r_pipeline::r_encoding::AAL2_G726_32_ENCODING)
+            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", audio_format);
+        else if(maybe_audio_encoding.value() == r_pipeline::r_encoding::AAL2_G726_40_ENCODING)
+            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", audio_format);
+        else if(maybe_audio_encoding.value() == r_pipeline::r_encoding::G726_16_ENCODING)
+            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", audio_format);
+        else if(maybe_audio_encoding.value() == r_pipeline::r_encoding::G726_24_ENCODING)
+            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", audio_format);
+        else if(maybe_audio_encoding.value() == r_pipeline::r_encoding::G726_32_ENCODING)
+            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", audio_format);
+        else if(maybe_audio_encoding.value() == r_pipeline::r_encoding::G726_40_ENCODING)
+            launch_str += r_string_utils::format("rtpg726pay name=pay1 pt=%d )", audio_format);
+        else R_THROW(("Unsupported audio encoding: %s", r_pipeline::encoding_to_str(maybe_audio_encoding.value()).c_str()));
+    }
+    else launch_str += ")";
+
+    return launch_str;
+}
+
 void r_stream_keeper::_entry_point()
 {
     while(_running)
@@ -325,6 +323,12 @@ void r_stream_keeper::_entry_point()
                     _stop(cmd.first.id);
                     cmd.second.set_value(result);
                 }
+                else if(cmd.first.cmd == R_SK_CREATE_PLAYBACK_MOUNT)
+                {
+                    r_stream_keeper_result result;
+                    _create_playback_mount(cmd.first.friendly_name, cmd.first.start_ts, cmd.first.end_ts);
+                    cmd.second.set_value(result);
+                }
                 else R_THROW(("Unknown command sent to stream keeper!"));
             }
         }
@@ -360,7 +364,7 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         {
             printf("stream keeper add camera.id=%s\n", camera.id.c_str());
             fflush(stdout);
-            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir);
+            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws);
         }
     }
 }
@@ -394,9 +398,9 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
     return statuses;
 }
 
-void r_stream_keeper::_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, gpointer user_data)
+void r_stream_keeper::_live_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, gpointer user_data)
 {
-    ((r_recording_context*)user_data)->restream_media_configure(factory, media);
+    ((r_recording_context*)user_data)->live_restream_media_configure(factory, media);
 }
 
 void r_stream_keeper::_stop(const string& camera_id)
@@ -408,4 +412,79 @@ void r_stream_keeper::_stop(const string& camera_id)
     }
 
     _streams[camera_id]->stop();
+}
+
+void r_stream_keeper::_client_connected_cbs(GstRTSPServer* server, GstRTSPClient* client, r_stream_keeper* sk)
+{
+    g_signal_connect(
+        client,
+        "options-request",
+        (GCallback)_options_cbs,
+        sk
+    );
+}
+
+void r_stream_keeper::_options_cbs(GstRTSPClient* client, GstRTSPContext* ctx, r_stream_keeper* sk)
+{
+    sk->_options_cb(client, ctx);
+}
+
+void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
+{
+    GstRTSPClientClass* klass = GST_RTSP_CLIENT_GET_CLASS(client);
+    shared_ptr<gchar> raw_path(klass->make_path_from_uri(client, ctx->uri), [](gchar* p){if(p) g_free(p);});
+    auto path = string(raw_path.get());
+    R_LOG_ERROR("ORIGINAL PATH: %s\n", path.c_str());
+
+    if(r_string_utils::starts_with(path, "/"))
+        path = path.substr(1);
+
+    auto parts = r_string_utils::split(path, '_');
+
+    // playback urls look like this: the_porch_7389303093_3838949845
+    if(parts.size() < 3)
+        return;
+
+    auto end_time_s = parts.back();
+    parts.pop_back();
+
+    if(!r_string_utils::is_integer(end_time_s))
+        return;
+
+    auto start_time_s = parts.back();
+    parts.pop_back();
+
+    if(!r_string_utils::is_integer(start_time_s))
+        return;
+
+    string friendly_name = r_string_utils::join(parts, '_');
+
+    // Now, we have the friendly name, start time, and end time. Ultimately we need to send
+    // this request to the proper r_recording_context, but to do that we need to access _streams
+    // but that all happens on the thread processing our command q. So, we'll post a command to 
+    // it to take it from here.
+    R_LOG_ERROR("ABOUT TO SEND CMD: friendly_name=%s, start_time_s=%s, end_time_s=%s\n", friendly_name.c_str(), start_time_s.c_str(), end_time_s.c_str());
+
+    r_stream_keeper_cmd cmd;
+    cmd.cmd = R_SK_CREATE_PLAYBACK_MOUNT;
+    cmd.friendly_name = friendly_name;
+    cmd.start_ts = r_string_utils::s_to_uint64(start_time_s);
+    cmd.end_ts = r_string_utils::s_to_uint64(end_time_s);
+
+    _cmd_q.post(cmd);
+}
+
+void r_stream_keeper::_create_playback_mount(const string& friendly_name, uint64_t start_ts, uint64_t end_ts)
+{
+    R_LOG_ERROR("_add_playback_restream_mount()");
+
+    for(auto s : _streams)
+    {
+        R_LOG_ERROR("friendly_name=%s, found=%s\n", friendly_name.c_str(), s.second->camera().friendly_name.value().c_str());
+        if(s.second->camera().friendly_name.value() == friendly_name)
+        {
+            s.second->create_playback_mount(_server, _mounts, start_ts, end_ts);
+            return;
+        }
+    }
 }

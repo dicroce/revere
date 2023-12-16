@@ -81,6 +81,74 @@ string r_pipeline::encoding_to_str(r_encoding encoding)
     R_THROW(("Unknown encoding: %d",encoding));
 }
 
+int r_pipeline::encoding_to_pt(r_encoding encoding)
+{
+    if(encoding == H264_ENCODING)
+        return 96;
+    else if(encoding == H265_ENCODING)
+        return 96;
+    else if(encoding == AAC_LATM_ENCODING)
+        return 97;
+    else if(encoding == AAC_GENERIC_ENCODING)
+        return 97;
+    else if(encoding == PCMU_ENCODING)
+        return 0;
+    else if(encoding == PCMA_ENCODING)
+        return 8;
+    else if(encoding == AAL2_G726_16_ENCODING)
+        return 96;
+    else if(encoding == AAL2_G726_24_ENCODING)
+        return 96;
+    else if(encoding == AAL2_G726_32_ENCODING)
+        return 96;
+    else if(encoding == AAL2_G726_40_ENCODING)
+        return 96;
+    else if(encoding == G726_16_ENCODING)
+        return 96;
+    else if(encoding == G726_24_ENCODING)
+        return 96;
+    else if(encoding == G726_32_ENCODING)
+        return 96;
+    else if(encoding == G726_40_ENCODING)
+        return 96;
+
+    R_THROW(("Unknown encoding: %d",encoding));
+}
+
+string r_pipeline::encoding_to_mime(r_encoding encoding)
+{
+    if(encoding == H264_ENCODING)
+        return "video/x-h264";
+    else if(encoding == H265_ENCODING)
+        return "video/x-h265";
+    else if(encoding == AAC_LATM_ENCODING)
+        return "audio/mpeg";
+    else if(encoding == AAC_GENERIC_ENCODING)
+        return "audio/mpeg";
+    else if(encoding == PCMU_ENCODING)
+        return "audio/x-mulaw";
+    else if(encoding == PCMA_ENCODING)
+        return "audio/x-alaw";
+    else if(encoding == AAL2_G726_16_ENCODING)
+        return "audio/G726-16";
+    else if(encoding == AAL2_G726_24_ENCODING)
+        return "audio/G726-24";
+    else if(encoding == AAL2_G726_32_ENCODING)
+        return "audio/G726-32";
+    else if(encoding == AAL2_G726_40_ENCODING)
+        return "audio/G726-40";
+    else if(encoding == G726_16_ENCODING)
+        return "audio/G726-16";
+    else if(encoding == G726_24_ENCODING)
+        return "audio/G726-24";
+    else if(encoding == G726_32_ENCODING)
+        return "audio/G726-32";
+    else if(encoding == G726_40_ENCODING)
+        return "audio/G726-40";
+
+    R_THROW(("Unknown encoding: %d",encoding));
+}
+
 tuple<string, string, int> r_pipeline::sdp_media_map_to_s(r_media m, const map<string, r_sdp_media>& sdp_media)
 {
     auto sdp_m = sdp_media.at((m==VIDEO_MEDIA)?"video":"audio");

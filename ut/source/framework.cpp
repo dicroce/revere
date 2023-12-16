@@ -109,7 +109,7 @@ void handle_terminate()
         }
         catch(std::exception& ex)
         {
-            R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+            printf("caught an exception in custom terminate handler: %s, %s:%d\n", ex.what(), __FILE__, __LINE__);
         }
         catch(...)
         {

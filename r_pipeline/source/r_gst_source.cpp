@@ -1198,15 +1198,9 @@ void r_gst_source::_on_sdp_callback(GstElement* src, GstSDPMessage* sdp)
         auto media_str = r_string_utils::to_lower(string(m->media));
 
         if(media_str == "video")
-        {
             media.type = VIDEO_MEDIA;
-            R_LOG_ERROR("VIDEO\n");
-        }
         else if(media_str == "audio")
-        {
             media.type = AUDIO_MEDIA;
-            R_LOG_ERROR("AUDIO\n");
-        }
         else continue;
 
         // Note: If its a GArray of object pointers you use & in front of g_array_index
@@ -1223,9 +1217,6 @@ void r_gst_source::_on_sdp_callback(GstElement* src, GstSDPMessage* sdp)
 
             string attr_key(attr->key);
             string attr_val(attr->value);
-
-            R_LOG_ERROR("attr_key: %s\n", attr_key.c_str());
-            R_LOG_ERROR("attr_val: %s\n", attr_val.c_str());
 
             // Note: we might want to parse fmtp lines here as well. fmtp attributes occur for each
             // available video stream and are slightly different for h.264

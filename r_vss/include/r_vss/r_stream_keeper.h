@@ -2,7 +2,6 @@
 #ifndef __r_vss_r_stream_keeper_h
 #define __r_vss_r_stream_keeper_h
 
-//#include "r_vss/r_recording_context.h"
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_ws.h"
 #include "r_vss/r_prune.h"
@@ -18,6 +17,23 @@
 #include <memory>
 #include <functional>
 #include <chrono>
+
+#ifdef IS_WINDOWS
+#pragma warning( push )
+#pragma warning( disable : 4244 )
+#endif
+#ifdef IS_LINUX
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+#include <gst/gst.h>
+#include <gst/rtsp-server/rtsp-server.h>
+#ifdef IS_LINUX
+#pragma GCC diagnostic pop
+#endif
+#ifdef IS_WINDOWS
+#pragma warning( pop )
+#endif
 
 struct _GMainLoop;
 typedef struct _GMainLoop GMainLoop;
@@ -43,13 +59,19 @@ enum r_stream_keeper_commands
 {
     R_SK_FETCH_STREAM_STATUS,
     R_SK_IS_RECORDING,
-    R_SK_STOP
+    R_SK_STOP,
+    R_SK_CREATE_PLAYBACK_MOUNT
 };
 
 struct r_stream_keeper_cmd
 {
     r_stream_keeper_commands cmd;
     std::string id;
+
+    // for R_SK_ADD_PLAYBACK_RESTREAM_MOUNT
+    std::string friendly_name;
+    uint64_t start_ts;
+    uint64_t end_ts;
 };
 
 struct r_stream_keeper_result
@@ -84,6 +106,8 @@ public:
 
     R_API void bounce(const std::string& camera_id);
 
+    R_API std::string create_restream_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding, int audio_format);
+
 private:
     void _entry_point();
     void _rtsp_server_entry_point();
@@ -91,8 +115,13 @@ private:
     void _add_recording_contexts(const std::vector<r_disco::r_camera>& cameras);
     void _remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras);
     std::vector<r_stream_status> _fetch_stream_status() const;
-    static void _restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, gpointer user_data);
+    static void _live_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, gpointer user_data);
     void _stop(const std::string& id);
+    static void _client_connected_cbs(GstRTSPServer* server, GstRTSPClient* client, r_stream_keeper* sk);
+    static void _options_cbs(GstRTSPClient * client, GstRTSPContext * ctx, r_stream_keeper* sk);
+    void _options_cb(GstRTSPClient * client, GstRTSPContext * ctx);
+    void _create_playback_mount(const std::string& friendly_name, uint64_t start_ts, uint64_t end_ts);
+
     r_disco::r_devices& _devices;
     std::string _top_dir;
     std::thread _th;
