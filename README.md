@@ -43,8 +43,13 @@ The Revere background process has an extensive API. Firstly, all recording camer
 
 `rtsp://127.0.0.1:10554/porch`
 
-where porch is the friendly name of the camera. The rest of the API's
-are REST / Json based and are available on port 10080.
+where porch is the friendly name of the camera. In addition playback rtsp urls can be formed by adding start and end ISO 8601 times (all
+separated by underscores):
+
+`rtsp://127.0.0.1:10554/porch_2024-12-10T12:00:00.000Z_2024-12-10T13:00:00.000Z`
+
+
+The rest of the API's are REST / Json based and are available on port 10080.
 
 All times are accepted and returned as ISO 8601 time strings: 2023-02-26T12:00:00.000
 

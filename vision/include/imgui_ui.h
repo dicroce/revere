@@ -303,9 +303,22 @@ void control_bar(
     }
     ImGui::PopFont();
 
+    // play button
+    ImGui::PushFont(r_ui_utils::fonts["16.00"].roboto_regular);
+    auto play_button_x = (center_box_left + center_box_width) - 120;
+    ImGui::SetCursorScreenPos(ImVec2((float)play_button_x, (float)top_line_top));
+    if(ImGui::Button("Play"))
+    {
+        //cbs.get_range() returns timerange
+        auto name = r_utils::r_string_utils::format("%d_onebyone_%d", window, 0);
+        update_data_cb(cbs);
+        control_bar_button_cb(name, CONTROL_BAR_BUTTON_PLAY);
+    }
+    ImGui::PopFont();
+
     // draw export button
     ImGui::PushFont(r_ui_utils::fonts["16.00"].roboto_regular);
-    auto export_button_x = (center_box_left + center_box_width) - 260;
+    auto export_button_x = (center_box_left + center_box_width) - 300;
     ImGui::SetCursorScreenPos(ImVec2((float)export_button_x, (float)top_line_top));
     bool export_clicked = false;
     bool finish_export_clicked = false;
@@ -335,7 +348,7 @@ void control_bar(
     if(cbs.exp_state == EXPORT_STATE_CONFIGURING)
     {
         ImGui::PushFont(r_ui_utils::fonts["16.00"].roboto_regular);
-        auto export_cancel_button_x = (center_box_left + center_box_width) - 160;
+        auto export_cancel_button_x = (center_box_left + center_box_width) - 200;
         ImGui::SetCursorScreenPos(ImVec2((float)export_cancel_button_x, (float)top_line_top));
         ImGui::PushStyleColor(ImGuiCol_Button, (ImVec4)ImColor::HSV(0.0f, 0.6f, 0.6f));
         if(ImGui::Button("Cancel"))

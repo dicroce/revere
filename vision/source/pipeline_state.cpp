@@ -85,7 +85,10 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
     _last_a_pts(0),
     _v_pts_at_check(0),
     _a_pts_at_check(0),
-    _cfg_state(cfg_state)
+    _cfg_state(cfg_state),
+    _last_control_bar_pos(),
+    _range_start(),
+    _range_end()
 {
     // The callbacks for audio and video sample post the arriving buffers (as samples) onto the
     // _process_q. The process thread (in the pipeline_state) then pulls samples from the process_q
@@ -166,10 +169,39 @@ void pipeline_state::resize(uint16_t w, uint16_t h)
         _process_q.post(_last_video_sample.value());
 }
 
-void pipeline_state::play()
+void pipeline_state::play_live()
 {
     vector<r_arg> arguments;
     add_argument(arguments, "url", _si.rtsp_url);
+    add_argument(arguments, "protocols", string("tcp"));
+    _source.set_args(arguments);
+
+    _source.play();
+}
+
+void pipeline_state::play()
+{
+    // Get the end time of the bar
+    // Subtract the current playhead position from the end time to get the duration
+    // of the bar.
+    // copy the rtsp url to new string
+    // Convert to the current playhead position to iso 8601 and append to url
+    // add bar duration to playhead position and convert to iso 8601 and append to url.
+    // set url on source and call play()
+
+    R_LOG_ERROR("PLAY %s", _si.rtsp_url.c_str());
+
+    auto playback_duration = _range_end - _last_control_bar_pos;
+
+    string url = r_string_utils::format(
+        "%s_%s_%s",
+        _si.rtsp_url.c_str(),
+        r_time_utils::tp_to_iso_8601(_last_control_bar_pos, false).c_str(),
+        r_time_utils::tp_to_iso_8601(_last_control_bar_pos + playback_duration, false).c_str()
+    );
+
+    vector<r_arg> arguments;
+    add_argument(arguments, "url", url);
     add_argument(arguments, "protocols", string("tcp"));
     _source.set_args(arguments);
 
@@ -183,6 +215,8 @@ void pipeline_state::stop()
 
 void pipeline_state::control_bar(const system_clock::time_point& pos)
 {
+    _last_control_bar_pos = pos;
+
     if(_video_decoder.is_null())
         return;
 

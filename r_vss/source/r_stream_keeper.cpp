@@ -8,6 +8,7 @@
 #include "r_utils/r_file.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_string_utils.h"
+#include "r_utils/r_time_utils.h"
 
 #include <algorithm>
 
@@ -326,7 +327,7 @@ void r_stream_keeper::_entry_point()
                 else if(cmd.first.cmd == R_SK_CREATE_PLAYBACK_MOUNT)
                 {
                     r_stream_keeper_result result;
-                    _create_playback_mount(cmd.first.friendly_name, cmd.first.start_ts, cmd.first.end_ts);
+                    _create_playback_mount(cmd.first.friendly_name, cmd.first.url, cmd.first.start_ts, cmd.first.end_ts);
                     cmd.second.set_value(result);
                 }
                 else R_THROW(("Unknown command sent to stream keeper!"));
@@ -440,21 +441,15 @@ void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
 
     auto parts = r_string_utils::split(path, '_');
 
-    // playback urls look like this: the_porch_7389303093_3838949845
+    // playback urls look like this: the_porch_2024-12-10T12:00:00.000Z_2024-12-10T13:00:00.000Z
     if(parts.size() < 3)
         return;
 
     auto end_time_s = parts.back();
     parts.pop_back();
 
-    if(!r_string_utils::is_integer(end_time_s))
-        return;
-
     auto start_time_s = parts.back();
     parts.pop_back();
-
-    if(!r_string_utils::is_integer(start_time_s))
-        return;
 
     string friendly_name = r_string_utils::join(parts, '_');
 
@@ -466,8 +461,9 @@ void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
     r_stream_keeper_cmd cmd;
     cmd.cmd = R_SK_CREATE_PLAYBACK_MOUNT;
     cmd.friendly_name = friendly_name;
-    cmd.start_ts = r_string_utils::s_to_uint64(start_time_s);
-    cmd.end_ts = r_string_utils::s_to_uint64(end_time_s);
+    cmd.start_ts = r_time_utils::tp_to_epoch_millis(r_time_utils::iso_8601_to_tp(start_time_s));
+    cmd.end_ts = r_time_utils::tp_to_epoch_millis(r_time_utils::iso_8601_to_tp(end_time_s));
+    cmd.url = "/" + path;
 
     // Why wait here? Because we need to wait for the mount to be created before we can send the response
     // because the client might get their DESCRIBE request in before the mount is created and then we'll
@@ -476,13 +472,13 @@ void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
     _cmd_q.post(cmd).wait_for(chrono::seconds(1));
 }
 
-void r_stream_keeper::_create_playback_mount(const string& friendly_name, uint64_t start_ts, uint64_t end_ts)
+void r_stream_keeper::_create_playback_mount(const string& friendly_name, const string& url, uint64_t start_ts, uint64_t end_ts)
 {
     for(auto s : _streams)
     {
         if(s.second->camera().friendly_name.value() == friendly_name)
         {
-            s.second->create_playback_mount(_server, _mounts, start_ts, end_ts);
+            s.second->create_playback_mount(_server, _mounts, url, start_ts, end_ts);
             return;
         }
     }

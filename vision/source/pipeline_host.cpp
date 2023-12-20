@@ -122,7 +122,7 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
         if(found_ps == end(_pipes))
         {
             auto ps = make_shared<pipeline_state>(found_si->second, this, w, h, _cfg);
-            ps->play();
+            ps->play_live();
             _pipes.insert(make_pair(name, ps));
         }
         else
@@ -335,7 +335,7 @@ pipeline_host_cmd_result pipeline_host::_control_bar_cb(const string& name, cons
 }
 
 pipeline_host_cmd_result pipeline_host::_control_bar_button_cb(const string& name, control_bar_button_type button_type)
-{
+{ 
     auto found = _pipes.find(name);
     if(found != end(_pipes))
     {
@@ -344,7 +344,13 @@ pipeline_host_cmd_result pipeline_host::_control_bar_button_cb(const string& nam
         if(button_type == CONTROL_BAR_BUTTON_LIVE)
         {
             if(!pipe->running())
+                pipe->play_live();
+        }
+        else if(button_type == CONTROL_BAR_BUTTON_PLAY)
+        {
+            if(!pipe->running())
                 pipe->play();
+            R_LOG_ERROR("PLAY PRESSED");
         }
     }
 
@@ -355,12 +361,15 @@ pipeline_host_cmd_result pipeline_host::_control_bar_button_cb(const string& nam
 
 pipeline_host_cmd_result pipeline_host::_control_bar_update_data_cb(control_bar_state* cbs)
 {
+    auto found_pipe = _pipes.find("0_onebyone_0");
+
     auto found_si = _stream_infos.find("0_onebyone_0");
-    if(found_si != end(_stream_infos))
+    if(found_si != end(_stream_infos) && found_pipe != end(_pipes))
     {
         try
         {
             auto range = cbs->get_range();
+            found_pipe->second->update_range(range.first, range.second);
             cbs->set_contents(query_segments(_cfg, found_si->second.camera_id, range.first, range.second));
             cbs->set_motion_events(query_motion_events(_cfg, found_si->second.camera_id, range.first, range.second));
         }

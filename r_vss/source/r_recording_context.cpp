@@ -22,6 +22,7 @@
 #include "r_vss/r_ws.h"
 #include "r_pipeline/r_arg.h"
 #include "r_pipeline/r_stream_info.h"
+#include "r_pipeline/r_gst_buffer.h"
 #include "r_mux/r_muxer.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
@@ -29,6 +30,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_blob_tree.h"
+#include "r_utils/r_time_utils.h"
 #include <vector>
 
 using namespace r_vss;
@@ -317,88 +319,6 @@ static void _need_live_data_cbs(GstElement* appsrc, guint unused, live_restreami
     }
 }
 
-static void _seek_live_data_cbs(GstElement* appsrc, guint64 offset, live_restreaming_state* lrs)
-{
-}
-
-// Here are some functions that I sometimes use for debugging. I'm leaving them here so I can easily
-// use them in the future.
-static gboolean print_field (GQuark field, const GValue * value, gpointer pfx) {
-  gchar *str = gst_value_serialize (value);
-
-  g_print ("%s  %15s: %s\n", (gchar *) pfx, g_quark_to_string (field), str);
-  g_free (str);
-  return TRUE;
-}
-
-static void print_caps (const GstCaps * caps, const gchar * pfx) {
-  guint i;
-
-  g_return_if_fail (caps != NULL);
-
-  if (gst_caps_is_any (caps)) {
-    g_print ("%sANY\n", pfx);
-    return;
-  }
-  if (gst_caps_is_empty (caps)) {
-    g_print ("%sEMPTY\n", pfx);
-    return;
-  }
-
-  for (i = 0; i < gst_caps_get_size (caps); i++) {
-    GstStructure *structure = gst_caps_get_structure (caps, i);
-
-    g_print ("%s%s\n", pfx, gst_structure_get_name (structure));
-    gst_structure_foreach (structure, print_field, (gpointer) pfx);
-  }
-}
-
-static string nal_type(int type)
-{
-  if(type == GST_H264_NAL_UNKNOWN)
-    return "GST_H264_NAL_UNKNOWN";
-  else if(type == GST_H264_NAL_SLICE)
-    return "GST_H264_NAL_SLICE";
-  else if(type == GST_H264_NAL_SLICE_DPA)
-      return "GST_H264_NAL_SLICE_DPA";
-  else if(type == GST_H264_NAL_SLICE_DPB)
-      return "GST_H264_NAL_SLICE_DPB";
-  else if(type == GST_H264_NAL_SLICE_DPC)
-      return "GST_H264_NAL_SLICE_DPC";
-  else if(type == GST_H264_NAL_SLICE_IDR)
-      return "GST_H264_NAL_SLICE_IDR";
-  else if(type == GST_H264_NAL_SEI)
-      return "GST_H264_NAL_SEI";
-  else if(type == GST_H264_NAL_SPS)
-      return "GST_H264_NAL_SPS";
-  else if(type == GST_H264_NAL_PPS)
-      return "GST_H264_NAL_PPS";
-  else if(type == GST_H264_NAL_AU_DELIMITER)
-      return "GST_H264_NAL_AU_DELIMITER";
-  else if(type == GST_H264_NAL_SEQ_END)
-      return "GST_H264_NAL_SEQ_END";
-  else if(type == GST_H264_NAL_STREAM_END)
-      return "GST_H264_NAL_STREAM_END";
-  else if(type == GST_H264_NAL_FILLER_DATA)
-      return "GST_H264_NAL_FILLER_DATA";
-  else if(type == GST_H264_NAL_SPS_EXT)
-      return "GST_H264_NAL_SPS_EXT";
-  else if(type == GST_H264_NAL_PREFIX_UNIT)
-      return "GST_H264_NAL_PREFIX_UNIT";
-  else if(type == GST_H264_NAL_SUBSET_SPS)
-      return "GST_H264_NAL_SUBSET_SPS";
-  else if(type == GST_H264_NAL_DEPTH_SPS)
-      return "GST_H264_NAL_DEPTH_SPS";
-  else if(type == GST_H264_NAL_SLICE_AUX)
-      return "GST_H264_NAL_SLICE_AUX";
-  else if(type == GST_H264_NAL_SLICE_EXT)
-      return "";
-  else if(type == GST_H264_NAL_SLICE_DEPTH)
-      return "GST_H264_NAL_SLICE_DEPTH";
-    R_THROW(("UNKNOWN NAL"));
-}
-
-
 void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media)
 {
     auto lrs = make_shared<live_restreaming_state>();
@@ -423,19 +343,7 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory* fac
 
     g_object_set(G_OBJECT(lrs->v_appsrc), "caps", (GstCaps*)_video_caps.value(), NULL);
 
-    print_caps((GstCaps*)_video_caps.value(), "video caps: ");
-
-    gchar* caps_ser = gst_caps_serialize((GstCaps*)_video_caps.value(), GST_SERIALIZE_FLAG_NONE);
-    printf("%s\n", caps_ser);
-    g_free(caps_ser);
-
-//    gst_util_set_object_arg(G_OBJECT(_v_appsrc), "stream-type", "seekable");
-
-//    g_object_set(G_OBJECT(_v_appsrc), "duration", 10000000000, NULL);
-
     g_signal_connect(lrs->v_appsrc, "need-data", (GCallback)_need_live_data_cbs, lrs.get());
-
-    g_signal_connect(lrs->v_appsrc, "seek-data", (GCallback)_seek_live_data_cbs, lrs.get());
 
     lrs->a_appsrc = gst_bin_get_by_name_recurse_up(GST_BIN(element), "audiosrc");
 
@@ -445,20 +353,7 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory* fac
 
         g_object_set(G_OBJECT(lrs->a_appsrc), "caps", (GstCaps*)_audio_caps.value(), NULL);
 
-        print_caps((GstCaps*)_audio_caps.value(), "audio caps: ");
-
-        caps_ser = gst_caps_serialize((GstCaps*)_audio_caps.value(), GST_SERIALIZE_FLAG_NONE);
-        printf("%s\n", caps_ser);
-        g_free(caps_ser);
-
-
-//        gst_util_set_object_arg(G_OBJECT(_a_appsrc), "stream-type", "seekable");
-
-//        g_object_set(G_OBJECT(_v_appsrc), "duration", 10000000000, NULL);
-
         g_signal_connect(lrs->a_appsrc, "need-data", (GCallback)_need_live_data_cbs, lrs.get());
-
-        g_signal_connect(lrs->a_appsrc, "seek-data", (GCallback)_seek_live_data_cbs, lrs.get());
     }
     else R_LOG_ERROR("no audio appsrc");
 
@@ -472,7 +367,7 @@ void r_recording_context::stop()
     this->_storage_file.finalize(this->_maybe_storage_write_context.value());
 }
 
-void r_recording_context::create_playback_mount(GstRTSPServer* server, GstRTSPMountPoints* mounts, uint64_t start_ts, uint64_t end_ts)
+void r_recording_context::create_playback_mount(GstRTSPServer* server, GstRTSPMountPoints* mounts, const std::string& url, uint64_t start_ts, uint64_t end_ts)
 {
     system_clock::time_point start_tp{milliseconds{start_ts}};
     system_clock::time_point end_tp{milliseconds{end_ts}};
@@ -544,12 +439,10 @@ void r_recording_context::create_playback_mount(GstRTSPServer* server, GstRTSPMo
 
     g_signal_connect(factory, "media-configure", (GCallback)_playback_restream_media_configure_cbs, this);
 
-    auto mount_path = r_string_utils::format("/%s_%lu_%lu", _camera.friendly_name.value().c_str(), start_ts, end_ts);
-
-    gst_rtsp_mount_points_add_factory(mounts, mount_path.c_str(), factory);
+    gst_rtsp_mount_points_add_factory(mounts, url.c_str(), factory);
 }
 
-tuple<string, string, string> r_recording_context::_get_playback_url_parts()
+tuple<string, system_clock::time_point, system_clock::time_point> r_recording_context::_get_playback_url_parts()
 {
     GstRTSPContext* context = gst_rtsp_context_get_current();
 
@@ -562,25 +455,19 @@ tuple<string, string, string> r_recording_context::_get_playback_url_parts()
 
     auto parts = r_string_utils::split(path, '_');
 
-    // playback urls look like this: the_porch_7389303093_3838949845
+    // playback urls look like this: the_porch_2024-12-10T12:00:00.000Z_2024-12-10T13:00:00.000Z
     if(parts.size() < 3)
         R_THROW(("Unable to parse playback url (%s)!", path.c_str()));
 
     auto end_time_s = parts.back();
     parts.pop_back();
 
-    if(!r_string_utils::is_integer(end_time_s))
-        R_THROW(("Unable to parse playback url (%s)!", path.c_str()));
-
     auto start_time_s = parts.back();
     parts.pop_back();
 
-    if(!r_string_utils::is_integer(start_time_s))
-        R_THROW(("Unable to parse playback url (%s)!", path.c_str()));
-
     string friendly_name = r_string_utils::join(parts, '_');
 
-    return make_tuple(friendly_name, start_time_s, end_time_s);
+    return make_tuple(friendly_name, r_time_utils::iso_8601_to_tp(start_time_s), r_time_utils::iso_8601_to_tp(end_time_s));
 }
 
 void r_recording_context::_live_restream_cleanup_cbs(live_restreaming_state* lrs)
@@ -593,7 +480,7 @@ void r_recording_context::_live_restream_cleanup_cbs(live_restreaming_state* lrs
     rc->_live_restreaming_states.erase(media);
 }
 
-tuple<bool, string, string, string, string, r_encoding, r_nullable<r_encoding>>
+static tuple<bool, string, string, string, string, r_encoding, r_nullable<r_encoding>>
 _fetch_stream_info(shared_ptr<playback_restreaming_state> prs, r_ws& ws, const string& camera_id)
 {
     if(prs->con.segments.empty())
@@ -642,12 +529,9 @@ _fetch_stream_info(shared_ptr<playback_restreaming_state> prs, r_ws& ws, const s
     );
 }
 
-tuple<contents, std::chrono::milliseconds> _fetch_contents(r_ws& ws, const string& camera_id, const string& start_time_s, const string& end_time_s)
+static tuple<contents, std::chrono::milliseconds> _fetch_contents(r_ws& ws, const string& camera_id, system_clock::time_point start_time, system_clock::time_point end_time)
 {
-    system_clock::time_point start_tp{milliseconds{r_string_utils::s_to_uint64(start_time_s)}};
-    system_clock::time_point end_tp{milliseconds{r_string_utils::s_to_uint64(end_time_s)}};
-
-    auto con = ws.get_contents(camera_id, start_tp, end_tp);
+    auto con = ws.get_contents(camera_id, start_time, end_time);
 
     if(con.segments.empty())
         R_THROW(("No segments found for playback restream mount."));
@@ -664,7 +548,7 @@ void r_recording_context::_playback_restream_media_configure_cbs(GstRTSPMediaFac
     rc->_playback_restream_media_configure(factory, media);
 }
 
-r_gst_caps _create_caps(const string& codec_parameters, const string& key)
+static r_gst_caps _create_caps(const string& codec_parameters, const string& key)
 {
     auto params = r_string_utils::split(codec_parameters, ", ");
     for(auto p : params)
@@ -686,11 +570,9 @@ r_gst_caps _create_caps(const string& codec_parameters, const string& key)
 
 static void _need_playback_data_cbs(GstElement* appsrc, guint unused, playback_restreaming_state* prs)
 {
-    R_LOG_ERROR("NEED PLAYBACK DATA");
-#if 0
-    if(appsrc == lrs->v_appsrc)
+    if(appsrc == prs->v_appsrc)
     {
-        auto sample = lrs->video_samples.poll(chrono::milliseconds(3000));
+        auto sample = prs->video_samples.poll(chrono::milliseconds(3000));
         if(!sample.is_null())
         {
             auto output_buffer = r_gst_buffer(gst_buffer_copy(sample.value().buffer.get()));
@@ -702,7 +584,7 @@ static void _need_playback_data_cbs(GstElement* appsrc, guint unused, playback_r
     }
     else
     {
-        auto sample = lrs->audio_samples.poll(chrono::milliseconds(3000));
+        auto sample = prs->audio_samples.poll(chrono::milliseconds(3000));
         if(!sample.is_null())
         {
             auto output_buffer = r_gst_buffer(gst_buffer_copy(sample.value().buffer.get()));
@@ -712,25 +594,97 @@ static void _need_playback_data_cbs(GstElement* appsrc, guint unused, playback_r
             g_signal_emit_by_name(appsrc, "push-buffer", output_buffer.get(), &ret);
         }
     }
-#endif
+}
+
+static void _seek_playback_data_cbs(GstElement* appsrc, guint64 offset, playback_restreaming_state* prs)
+{
+    R_LOG_ERROR("SEEK PLAYBACK");
+}
+
+static bool _time_to_get_more_data(shared_ptr<playback_restreaming_state> prs)
+{
+    return prs->running && (prs->video_samples.size() < 40 || (prs->has_audio && prs->audio_samples.size() < 40));
+}
+
+static void _playback_entry_point(shared_ptr<playback_restreaming_state> prs)
+{
+    prs->running = true;
+
+    while(prs->running)
+    {
+        try
+        {
+            if(_time_to_get_more_data(prs))
+            {
+                auto video_buffer = prs->ws.get_video(prs->camera_id, prs->query_start, prs->query_end);
+
+                prs->query_start = prs->query_end;
+                prs->query_end = prs->query_start + seconds(5);
+
+                uint32_t version = 0;
+                auto bt = r_blob_tree::deserialize(video_buffer.data(), video_buffer.size(), version);
+
+                if(bt.has_key("frames"))
+                {
+                    auto n_frames = bt["frames"].size();
+
+                    for(size_t fi = 0; fi < n_frames; ++fi)
+                    {
+                        auto sid = bt["frames"][fi]["stream_id"].get_value<int>();
+                        auto key = (bt["frames"][fi]["key"].get_string() == "true");
+                        auto frame = bt["frames"][fi]["data"].get();
+                        auto ts = bt["frames"][fi]["ts"].get_value<int64_t>();
+
+                        if(prs->first_ts.is_null())
+                            prs->first_ts.set_value(ts);
+
+                        if(system_clock::time_point(milliseconds(ts)) > prs->end_time)
+                        {
+                            prs->running = false;
+                            break;
+                        }
+
+                        r_gst_buffer buffer(frame.data(), frame.size());
+
+                        _frame_context fc;
+                        fc.gst_pts = (ts - prs->first_ts.value()) * 1000000;
+                        fc.gst_dts = (ts - prs->first_ts.value()) * 1000000;
+                        fc.key = key;                
+                        fc.buffer = buffer;
+
+                        if(sid == R_STORAGE_MEDIA_TYPE_VIDEO)
+                            prs->video_samples.post(fc);
+                        else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO)
+                            prs->audio_samples.post(fc);
+                    }
+                }
+            }
+            else this_thread::sleep_for(chrono::milliseconds(200));
+        }
+        catch(const std::exception& e)
+        {
+            R_LOG_EXCEPTION(e);
+        }
+    }
 }
 
 void r_recording_context::_playback_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media)
 {
-    auto prs = make_shared<playback_restreaming_state>();
+    auto prs = make_shared<playback_restreaming_state>(_ws);
     prs->rc = this;
     prs->media = media;
 
-    tie(prs->friendly_name, prs->start_time_s, prs->end_time_s) =
+    tie(prs->friendly_name, prs->start_time, prs->end_time) =
         _get_playback_url_parts();
+    prs->query_start = prs->start_time;
+    prs->query_end = prs->start_time + seconds(5);
+    prs->camera_id = _camera.id;
+
     tie(prs->con, prs->playback_duration) = 
-        _fetch_contents(_ws, _camera.id, prs->start_time_s, prs->end_time_s);
+        _fetch_contents(_ws, _camera.id, prs->start_time, prs->end_time);
+
     tie(prs->has_audio, prs->video_codec_name, prs->video_codec_parameters, prs->audio_codec_name, prs->audio_codec_parameters, prs->video_encoding, prs->maybe_audio_encoding) =
         _fetch_stream_info(prs, _ws, _camera.id);
-
-    _playback_restreaming_states[media] = prs;
-
-    auto video_caps = _create_caps(prs->video_codec_parameters, "encoded_video_sample_caps");
 
     auto element = gst_rtsp_media_get_element(media);
     if(!element)
@@ -745,9 +699,16 @@ void r_recording_context::_playback_restream_media_configure(GstRTSPMediaFactory
 
     gst_util_set_object_arg(G_OBJECT(prs->v_appsrc), "format", "time");
 
+    auto video_caps = _create_caps(prs->video_codec_parameters, "encoded_video_sample_caps");
+
     g_object_set(G_OBJECT(prs->v_appsrc), "caps", (GstCaps*)video_caps, NULL);
 
+//    gst_util_set_object_arg(G_OBJECT(prs->v_appsrc), "stream-type", "seekable");
+
+    g_object_set(G_OBJECT(prs->v_appsrc), "duration", chrono::duration_cast<chrono::nanoseconds>(prs->playback_duration).count(), NULL);
+
     g_signal_connect(prs->v_appsrc, "need-data", (GCallback)_need_playback_data_cbs, prs.get());
+//    g_signal_connect(prs->v_appsrc, "seek-data", (GCallback)_seek_playback_data_cbs, prs.get());
 
     prs->a_appsrc = gst_bin_get_by_name_recurse_up(GST_BIN(element), "audiosrc");
 
@@ -759,14 +720,22 @@ void r_recording_context::_playback_restream_media_configure(GstRTSPMediaFactory
 
         g_object_set(G_OBJECT(prs->a_appsrc), "caps", (GstCaps*)audio_caps, NULL);
 
-//        gst_util_set_object_arg(G_OBJECT(_a_appsrc), "stream-type", "seekable");
+//        gst_util_set_object_arg(G_OBJECT(prs->a_appsrc), "stream-type", "seekable");
 
-//        g_object_set(G_OBJECT(_v_appsrc), "duration", 10000000000, NULL);
+        g_object_set(G_OBJECT(prs->a_appsrc), "duration", chrono::duration_cast<chrono::nanoseconds>(prs->playback_duration).count(), NULL);
 
         g_signal_connect(prs->a_appsrc, "need-data", (GCallback)_need_playback_data_cbs, prs.get());
 
+//        g_signal_connect(prs->a_appsrc, "seek-data", (GCallback)_seek_playback_data_cbs, prs.get());
     }
     else R_LOG_ERROR("no audio appsrc");
+
+    prs->playback_thread = std::thread(
+        _playback_entry_point,
+        prs
+    );
+
+    _playback_restreaming_states[media] = prs;
 }
 
 void r_recording_context::_playback_restream_cleanup_cbs(playback_restreaming_state* prs)
@@ -776,9 +745,11 @@ void r_recording_context::_playback_restream_cleanup_cbs(playback_restreaming_st
     auto rc = prs->rc;
     auto media = prs->media;
 
+    prs->running = false;
+    prs->playback_thread.join();
+
     rc->_playback_restreaming_states.erase(media);
 }
-
 
 void r_recording_context::_final_storage_writer_audio_config(const r_pipeline::sample_context& sc)
 {
@@ -815,7 +786,6 @@ void r_recording_context::_final_storage_writer_video_config(const r_pipeline::s
     }
     _maybe_storage_write_context.set_value(wc);
 }
-
 
 r_storage::r_storage_write_context r_recording_context::_create_storage_writer_context()
 {

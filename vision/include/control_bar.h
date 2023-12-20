@@ -18,7 +18,8 @@ namespace vision
 
 enum control_bar_button_type
 {
-    CONTROL_BAR_BUTTON_LIVE
+    CONTROL_BAR_BUTTON_LIVE,
+    CONTROL_BAR_BUTTON_PLAY
 };
 
 enum export_state

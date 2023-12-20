@@ -72,6 +72,7 @@ struct r_stream_keeper_cmd
     std::string friendly_name;
     uint64_t start_ts;
     uint64_t end_ts;
+    std::string url;
 };
 
 struct r_stream_keeper_result
@@ -120,7 +121,7 @@ private:
     static void _client_connected_cbs(GstRTSPServer* server, GstRTSPClient* client, r_stream_keeper* sk);
     static void _options_cbs(GstRTSPClient * client, GstRTSPContext * ctx, r_stream_keeper* sk);
     void _options_cb(GstRTSPClient * client, GstRTSPContext * ctx);
-    void _create_playback_mount(const std::string& friendly_name, uint64_t start_ts, uint64_t end_ts);
+    void _create_playback_mount(const std::string& friendly_name, const std::string& url, uint64_t start_ts, uint64_t end_ts);
 
     r_disco::r_devices& _devices;
     std::string _top_dir;

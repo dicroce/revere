@@ -25,6 +25,7 @@ public:
 
     void resize(uint16_t w, uint16_t h);
 
+    void play_live();
     void play();
     void stop();
     bool running() const {return _source.running();}
@@ -42,6 +43,12 @@ public:
     inline void set_v_pts_at_check(int64_t v_pts) {_v_pts_at_check = v_pts;}
     inline int64_t a_pts_at_check() const {return _a_pts_at_check;}
     inline void set_a_pts_at_check(int64_t a_pts) {_a_pts_at_check = a_pts;}
+
+    inline void update_range(std::chrono::_V2::system_clock::time_point start, std::chrono::_V2::system_clock::time_point end)
+    {
+        _range_start = start;
+        _range_end = end;
+    }
 
 private:
     void _entry_point();
@@ -64,6 +71,10 @@ private:
     int64_t _a_pts_at_check;
 
     configure_state& _cfg_state;
+
+    std::chrono::system_clock::time_point _last_control_bar_pos;
+    std::chrono::system_clock::time_point _range_start;
+    std::chrono::system_clock::time_point _range_end;
 };
 
 }

@@ -19,6 +19,7 @@
 #include <vector>
 #include <map>
 #include <tuple>
+#include <thread>
 
 struct _GstRTSPMediaFactory;
 typedef _GstRTSPMediaFactory GstRTSPMediaFactory;
@@ -59,12 +60,19 @@ struct live_restreaming_state
 
 struct playback_restreaming_state
 {
+    playback_restreaming_state(r_ws& ws) : ws(ws) {}
+
     r_recording_context* rc {nullptr};
     GstRTSPMedia* media {nullptr};
+    r_ws& ws;
 
     std::string friendly_name;
-    std::string start_time_s;
-    std::string end_time_s;
+    std::chrono::system_clock::time_point start_time;
+    std::chrono::system_clock::time_point end_time;
+    std::chrono::system_clock::time_point query_start;
+    std::chrono::system_clock::time_point query_end;
+    std::string camera_id;
+    r_utils::r_nullable<int64_t> first_ts;
 
     contents con;
     std::chrono::milliseconds playback_duration {0};
@@ -76,6 +84,10 @@ struct playback_restreaming_state
     std::string audio_codec_parameters;
     r_pipeline::r_encoding video_encoding;
     r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding;
+    r_utils::r_blocking_q<struct _frame_context> video_samples;
+    r_utils::r_blocking_q<struct _frame_context> audio_samples;
+    std::thread playback_thread;
+    bool running;
 
     GstElement* v_appsrc {nullptr};
     GstElement* a_appsrc {nullptr};
@@ -102,10 +114,10 @@ public:
 
     R_API void stop();
 
-    R_API void create_playback_mount(GstRTSPServer* server, GstRTSPMountPoints* mounts, uint64_t start_ts, uint64_t end_ts);
+    R_API void create_playback_mount(GstRTSPServer* server, GstRTSPMountPoints* mounts, const std::string& url, uint64_t start_ts, uint64_t end_ts);
 
 private:
-    std::tuple<std::string, std::string, std::string> _get_playback_url_parts();
+    std::tuple<std::string, std::chrono::system_clock::time_point, std::chrono::system_clock::time_point> _get_playback_url_parts();
 
 
     static void _live_restream_cleanup_cbs(live_restreaming_state* lrs);
