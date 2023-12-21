@@ -1,0 +1,10 @@
+Package: x265
+Version: 3.4
+Port-Version: 8
+Depends: vcpkg-cmake:x64-windows
+Architecture: x86-windows
+Multi-Arch: same
+Abi: a2f32ee89f0e1a755168faf0895a59ae9f5ec30126d7b04b930230c3cd92aed2
+Description: x265 is a H.265 / HEVC video encoder application library, designed to encode video or images into an H.265 / HEVC encoded bitstream.
+Type: Port
+Status: install ok half-installed
