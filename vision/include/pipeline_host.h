@@ -148,6 +148,8 @@ public:
         }
     }
 
+    bool playing() const;
+
 private:
     void _entry_point();
     pipeline_host_cmd_result _change_layout(int window, layout l);

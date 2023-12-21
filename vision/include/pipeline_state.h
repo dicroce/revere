@@ -50,6 +50,11 @@ public:
         _range_end = end;
     }
 
+    bool playing() const
+    {
+        return _source.running();
+    }
+
 private:
     void _entry_point();
 

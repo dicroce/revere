@@ -194,6 +194,17 @@ void pipeline_host::control_bar_export_cb(const std::chrono::system_clock::time_
     fr.wait();
 }
 
+bool pipeline_host::playing() const
+{
+    auto found_pipe = _pipes.find("0_onebyone_0");
+
+    auto found_si = _stream_infos.find("0_onebyone_0");
+    if(found_si != end(_stream_infos) && found_pipe != end(_pipes))
+        return found_pipe->second->playing();
+
+    return false;
+}
+
 void pipeline_host::_entry_point()
 {
     _running = true;

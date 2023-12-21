@@ -226,7 +226,8 @@ void control_bar(
     CONTROL_BAR_SLIDER_CB control_bar_slider_cb,
     CONTROL_BAR_BUTTON_CB control_bar_button_cb,
     UPDATE_DATA_CB update_data_cb,
-    EXPORT_CB export_cb
+    EXPORT_CB export_cb,
+    bool playing
 )
 {
     if(!cbs.entered)
@@ -294,10 +295,8 @@ void control_bar(
     ImGui::SetCursorScreenPos(ImVec2((float)live_button_x, (float)top_line_top));
     if(ImGui::Button("Go Live"))
     {
-        cbs.playhead_pos = 1000;
         cbs.live();
         auto name = r_utils::r_string_utils::format("%d_onebyone_%d", window, 0);
-        control_bar_slider_cb(name, cbs.tr.time_in_range(0, 1000, cbs.playhead_pos));
         control_bar_button_cb(name, CONTROL_BAR_BUTTON_LIVE);
         update_data_cb(cbs);
     }
@@ -434,26 +433,32 @@ void control_bar(
     // draw playhead...
     auto playhead_x = (center_box_left + (((double)cbs.playhead_pos / 1000.0) * (double)center_box_width)) - (cbs.playhead_width / 2);
     auto playhead_top = slider_top;
-    draw_list->AddRectFilled(
-        ImVec2(playhead_x, playhead_top),
-        ImVec2((playhead_x + cbs.playhead_width), (playhead_top + slider_height)),
-        ImColor(ImVec4(0.0f, 1.0f, 0.0f, 1.0f))
-    );
+    if(!playing)
+    {
+        draw_list->AddRectFilled(
+            ImVec2(playhead_x, playhead_top),
+            ImVec2((playhead_x + cbs.playhead_width), (playhead_top + slider_height)),
+            ImColor(ImVec4(0.0f, 1.0f, 0.0f, 1.0f))
+        );
+    }
 
     // draw playhead text
-    ImGui::PushFont(r_ui_utils::fonts["16.00"].roboto_regular);
-    auto playhead_pos_s = cbs.playhead_pos_s();
-    auto text_size = ImGui::CalcTextSize(playhead_pos_s.c_str());
-    auto playhead_text_x = playhead_x - (text_size.x / 2);
-    if(playhead_text_x < center_box_left)
-        playhead_text_x = center_box_left;
-    auto center_box_right = center_box_left + center_box_width;
-    if(playhead_x > (center_box_right - text_size.x))
-        playhead_text_x = (center_box_right - text_size.x);
-    auto playhead_text_y = (playhead_top + (text_line_height * 2));
-    ImGui::SetCursorScreenPos(ImVec2(playhead_text_x, playhead_text_y));
-    ImGui::Text("%s",cbs.playhead_pos_s().c_str());
-    ImGui::PopFont();
+    if(!playing)
+    {
+        ImGui::PushFont(r_ui_utils::fonts["16.00"].roboto_regular);
+        auto playhead_pos_s = cbs.playhead_pos_s();
+        auto text_size = ImGui::CalcTextSize(playhead_pos_s.c_str());
+        auto playhead_text_x = playhead_x - (text_size.x / 2);
+        if(playhead_text_x < center_box_left)
+            playhead_text_x = center_box_left;
+        auto center_box_right = center_box_left + center_box_width;
+        if(playhead_x > (center_box_right - text_size.x))
+            playhead_text_x = (center_box_right - text_size.x);
+        auto playhead_text_y = (playhead_top + (text_line_height * 2));
+        ImGui::SetCursorScreenPos(ImVec2(playhead_text_x, playhead_text_y));
+        ImGui::Text("%s",cbs.playhead_pos_s().c_str());
+        ImGui::PopFont();
+    }
 
     // playhead dragging...
     if(ImGui::IsMouseHoveringRect(ImVec2(center_box_left, slider_top), ImVec2(center_box_left + center_box_width, slider_top + slider_height)) && ImGui::IsMouseDown(ImGuiMouseButton_Left))
@@ -613,7 +618,8 @@ void main_client(
     CONTROL_BAR_SLIDER_CB control_bar_slider_cb,
     CONTROL_BAR_BUTTON_CB control_bar_button_cb,
     UPDATE_DATA_CB update_data_cb,
-    EXPORT_CB export_cb
+    EXPORT_CB export_cb,
+    bool playing
 )
 {
     if(l == LAYOUT_ONE_BY_ONE)
@@ -635,7 +641,8 @@ void main_client(
             control_bar_slider_cb,
             control_bar_button_cb,
             update_data_cb,
-            export_cb
+            export_cb,
+            playing
         );
     }
     else if(l == LAYOUT_TWO_BY_TWO)
