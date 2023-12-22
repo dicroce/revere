@@ -223,6 +223,16 @@ revere.sln
 12) Click Build -> Build Solution
 13) Revere will install to Program Files C:\Program Files (x86)\revere
 
+Windows-Build-Maintenance Note:
+Periodically vcpkg repositories drop older packages. This means that periodically we need to run:
+```
+git submodule update --remote
+git add .
+git commit -m "git submodule updated"
+git push origin
+```
+To update our vcpkg submodule so that it keeps working.
+
 ## Attributions
 Revere was developed using these great open source projects
 
