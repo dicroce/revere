@@ -224,7 +224,8 @@ revere.sln
 13) Revere will install to Program Files C:\Program Files (x86)\revere
 
 Windows-Build-Maintenance Note:
-Periodically vcpkg repositories drop older packages. This means that periodically we need to run:
+Periodically vcpkg repositories drop older packages. This means that periodically we need to update our fork of vcpkg
+(https://github.com/dicroce/vcpkg) and then pull those changes into our submodule like this.
 ```
 git submodule update --remote
 git add .
