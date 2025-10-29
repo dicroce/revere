@@ -12,6 +12,7 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 - RTSP streaming
 - Cross-platform (Linux/Windows)
 - Full featured API
+- YOLOv8 object detection of people and cars.
 
 ## Screenshots
 
@@ -29,11 +30,11 @@ The quickest way to try it is the .AppImage version on linux or the portable win
 ### Installation
 
 On Linux, simply run the AppImage. You can set the appimage as a startup application on your linux desktop.
-On Windows, unzip the package and run the revere.exe.
+On Windows, unzip the package and run the revere.exe. In both cases feel free to set revere.exe as a startup application.
 
 ### Adding Your First Camera
 
-Onvif discoverable cameras should appear in the Discovered list. Once it appears click Record and follow the instructions. Revere will attempt to stream a little from the camera to measure its bitrate and then allow you to pick a storage file size (with retention estimates) for that stream.
+Onvif discoverable cameras should appear in the Discovered list. Once it appears click Record and follow the instructions. Revere will attempt to stream a little from the camera to measure its bitrate and then allow you to pick a storage file size (with retention estimates) for that stream. During the camera provisioning process you will be asked if you want to enable motion detection for this camera. To get motion data in the timeline bar (in vision) you will need to say yes here. Additionally, yolov8 object detection is only run on frames containing motion.
 
 ## Documentation
 
@@ -75,7 +76,7 @@ Revere supports ONVIF-compliant cameras with the following features:
 
 If you have a camera that doesn't work with Revere, the project maintainer is willing to work with you to add support.
 
-## Technology Stack
+## Technology Stack & Acknowledgements
 
 **Core Media Processing:**
 - **OpenCV** (4.x) - Computer vision, motion detection, and background subtraction
@@ -100,14 +101,3 @@ If you have a camera that doesn't work with Revere, the project maintainer is wi
 ## License
 
 This project is licensed under the BSD 3-Clause License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-Revere is built on top of many excellent open source projects:
-- OpenCV, GStreamer, FFmpeg for media processing
-- ImGui for the user interface
-- NCNN for neural network inference
-- SQLite for data storage
-- All other dependencies listed in the Technology Stack
-
-Special thanks to the contributors and testers who help improve Revere.
