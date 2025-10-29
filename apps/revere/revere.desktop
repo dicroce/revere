@@ -1,0 +1,10 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=revere
+Exec=/usr/local/revere/revere
+Comment=An open source video surveillance application
+Icon=/usr/local/revere/R.ico
+Terminal=false
+Categories=Utility;GTK;

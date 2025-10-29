@@ -1,0 +1,1296 @@
+#define _GNU_SOURCE  /* For sync_file_range on Linux */
+
+#include <sqlite3/sqlite3.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <stdint.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#endif
+
+/* Metadata structure stored at the beginning of the allocated region */
+#define EMBEDDED_DB_MAGIC 0x45444253  /* "EDBS" - Embedded DataBase SQLite */
+#define EMBEDDED_DB_VERSION 1
+#define MAX_AUX_FILENAME_LEN 256
+#define METADATA_SIZE 320  /* 32 + 256 + padding for alignment */
+#define LOCK_AREA_SIZE 64
+#define DATA_OFFSET (METADATA_SIZE + LOCK_AREA_SIZE)
+
+typedef struct EmbeddedDBMetadata {
+    uint32_t magic;        /* Magic number to identify our format */
+    uint32_t version;      /* Version of our embedded format */
+    sqlite3_int64 db_size; /* Current size of the SQLite database */
+    sqlite3_int64 max_size; /* Maximum allowed size (excluding metadata) */
+    uint32_t page_size;    /* SQLite page size (for future use) */
+    uint32_t reserved;     /* Reserved for future use */
+    char aux_filename[MAX_AUX_FILENAME_LEN]; /* Simplified auxiliary filename base */
+    char padding[32];      /* Padding to make total size 320 bytes */
+} EmbeddedDBMetadata;
+
+/* Structure to hold our embedded file info */
+typedef struct EmbeddedFile {
+    sqlite3_file base;    /* Base class - must be first */
+#ifdef _WIN32
+    HANDLE hFile;        /* Windows file handle */
+#else
+    int fd;              /* File descriptor for host file */
+#endif
+    sqlite3_int64 region_offset; /* Offset within host file where our region starts */
+    sqlite3_int64 region_size;   /* Total size of allocated region (including metadata) */
+    sqlite3_int64 data_offset;   /* Offset where SQLite data starts (region_offset + METADATA_SIZE) */
+    sqlite3_int64 max_db_size;   /* Maximum size for SQLite database */
+    char *host_filename;  /* Name of the host file */
+    EmbeddedDBMetadata metadata; /* Cached metadata */
+    int lockLevel;        /* Current lock level for this connection */
+    
+    /* Shared mapping support */
+    void *shared_mapping; /* Pointer to shared memory mapping (optional) */
+    size_t mapping_size;  /* Size of the shared mapping */
+} EmbeddedFile;
+
+/* Structure for our VFS */
+typedef struct EmbeddedVFS {
+    sqlite3_vfs base;    /* Base class - must be first */
+    sqlite3_vfs *pReal;  /* Underlying VFS */
+} EmbeddedVFS;
+
+/* Forward declarations for new methods */
+static int embeddedShmLock(sqlite3_file*, int offset, int n, int flags);
+static void embeddedShmBarrier(sqlite3_file*);
+static int embeddedShmUnmap(sqlite3_file*, int deleteFlag);
+static int embeddedShmMap(sqlite3_file*, int iPg, int pgsz, int, void volatile**);
+static int embeddedFetch(sqlite3_file*, sqlite3_int64 iOfst, int iAmt, void **pp);
+static int embeddedUnfetch(sqlite3_file*, sqlite3_int64 iOfst, void *p);
+
+/* Forward declarations */
+static int embeddedClose(sqlite3_file*);
+static int embeddedRead(sqlite3_file*, void*, int iAmt, sqlite3_int64 iOfst);
+static int embeddedWrite(sqlite3_file*, const void*, int iAmt, sqlite3_int64 iOfst);
+static int embeddedTruncate(sqlite3_file*, sqlite3_int64 size);
+static int embeddedSync(sqlite3_file*, int flags);
+static int embeddedFileSize(sqlite3_file*, sqlite3_int64 *pSize);
+static int embeddedLock(sqlite3_file*, int);
+static int embeddedUnlock(sqlite3_file*, int);
+static int embeddedCheckReservedLock(sqlite3_file*, int *pResOut);
+static int embeddedFileControl(sqlite3_file*, int op, void *pArg);
+static int embeddedSectorSize(sqlite3_file*);
+static int embeddedDeviceCharacteristics(sqlite3_file*);
+
+/* VFS methods */
+static int embeddedOpen(sqlite3_vfs*, const char *zName, sqlite3_file*, int flags, int *pOutFlags);
+static int embeddedDelete(sqlite3_vfs*, const char *zName, int syncDir);
+static int embeddedAccess(sqlite3_vfs*, const char *zName, int flags, int *pResOut);
+static int embeddedFullPathname(sqlite3_vfs*, const char *zName, int nOut, char *zOut);
+
+/* Helper functions for metadata management */
+static int readMetadata(EmbeddedFile *pFile);
+static int writeMetadata(EmbeddedFile *pFile);
+static int initializeMetadata(EmbeddedFile *pFile);
+
+/* Helper functions for shared mapping */
+static int readFromMapping(EmbeddedFile *pFile, void *zBuf, int iAmt, sqlite3_int64 iOfst);
+static int writeToMapping(EmbeddedFile *pFile, const void *zBuf, int iAmt, sqlite3_int64 iOfst);
+
+/* File methods implementation */
+
+/* Helper functions for shared mapping */
+static int readFromMapping(EmbeddedFile *pFile, void *zBuf, int iAmt, sqlite3_int64 iOfst) {
+    if (!pFile->shared_mapping || pFile->mapping_size == 0) {
+        return 0; /* Not using shared mapping */
+    }
+    
+    /* Check bounds */
+    if (iOfst + iAmt > (sqlite3_int64)pFile->mapping_size) {
+        return 0; /* Read would exceed mapping bounds */
+    }
+    
+    /* Copy from shared mapping */
+    memcpy(zBuf, (char*)pFile->shared_mapping + iOfst, iAmt);
+    return 1; /* Success */
+}
+
+static int writeToMapping(EmbeddedFile *pFile, const void *zBuf, int iAmt, sqlite3_int64 iOfst) {
+    if (!pFile->shared_mapping || pFile->mapping_size == 0) {
+        return 0; /* Not using shared mapping */
+    }
+    
+    /* Check bounds */
+    if (iOfst + iAmt > (sqlite3_int64)pFile->mapping_size) {
+        return 0; /* Write would exceed mapping bounds */
+    }
+    
+    /* Copy to shared mapping */
+    memcpy((char*)pFile->shared_mapping + iOfst, zBuf, iAmt);
+    return 1; /* Success */
+}
+
+/* Helper functions for metadata management */
+static int readMetadata(EmbeddedFile *pFile) {
+#ifdef _WIN32
+    LARGE_INTEGER liDistanceToMove;
+    DWORD dwBytesRead;
+    
+    liDistanceToMove.QuadPart = pFile->region_offset;
+    if (!SetFilePointerEx(pFile->hFile, liDistanceToMove, NULL, FILE_BEGIN)) {
+        DWORD error = GetLastError();
+        return SQLITE_IOERR_READ;
+    }
+    
+    if (!ReadFile(pFile->hFile, &pFile->metadata, sizeof(EmbeddedDBMetadata), &dwBytesRead, NULL) ||
+        dwBytesRead != sizeof(EmbeddedDBMetadata)) {
+        DWORD error = GetLastError();
+        return SQLITE_IOERR_READ;
+    }    
+#else
+    if (lseek(pFile->fd, pFile->region_offset, SEEK_SET) == -1) {
+        return SQLITE_IOERR_READ;
+    }
+    
+    if (read(pFile->fd, &pFile->metadata, sizeof(EmbeddedDBMetadata)) != sizeof(EmbeddedDBMetadata)) {
+        return SQLITE_IOERR_READ;
+    }
+#endif
+    
+    return SQLITE_OK;
+}
+
+static int embeddedLock(sqlite3_file *pFile, int eLock) {
+    EmbeddedFile *p = (EmbeddedFile*)pFile;
+    
+    /* If already at this lock level or higher, nothing to do */
+    if (p->lockLevel >= eLock) {
+        return SQLITE_OK;
+    }
+
+#ifdef _WIN32
+    OVERLAPPED overlapped = {0};
+    DWORD dwFlags = LOCKFILE_EXCLUSIVE_LOCK;
+    
+    /* SAFE APPROACH: Use dedicated lock area within your region */
+    sqlite3_int64 lock_area_start = p->region_offset + METADATA_SIZE;
+    sqlite3_int64 lock_offset;
+    DWORD lock_length = 1;
+    
+    switch (eLock) {
+        case SQLITE_LOCK_SHARED:
+            lock_offset = lock_area_start + 0;  /* First byte of lock area */
+            dwFlags = 0;  /* Non-exclusive for shared locks */
+            break;
+        case SQLITE_LOCK_RESERVED:
+            lock_offset = lock_area_start + 1;  /* Second byte */
+            break;
+        case SQLITE_LOCK_PENDING:
+            lock_offset = lock_area_start + 2;  /* Third byte */
+            break;
+        case SQLITE_LOCK_EXCLUSIVE:
+            lock_offset = lock_area_start + 3;  /* Fourth byte */
+            break;
+        default:
+            return SQLITE_OK;
+    }
+    
+    /* Verify lock offset is within our allocated region */
+    if (lock_offset >= p->region_offset + p->region_size) {
+        return SQLITE_IOERR_LOCK;  /* Lock area outside our region! */
+    }
+    
+    overlapped.Offset = (DWORD)(lock_offset & 0xFFFFFFFF);
+    overlapped.OffsetHigh = (DWORD)(lock_offset >> 32);
+    
+    if (!LockFileEx(p->hFile, dwFlags | LOCKFILE_FAIL_IMMEDIATELY, 0, lock_length, 0, &overlapped)) {
+        DWORD error = GetLastError();
+        
+        switch (error) {
+            case ERROR_ACCESS_DENIED:
+            case ERROR_SHARING_VIOLATION:
+            case ERROR_LOCK_VIOLATION:
+                return SQLITE_BUSY;
+            case ERROR_INVALID_HANDLE:
+                return SQLITE_READONLY;
+            default:
+                return SQLITE_IOERR_LOCK;
+        }
+    }
+    
+#else
+    /* POSIX file locking using fcntl */
+    struct flock lock;
+    sqlite3_int64 lock_area_start = p->region_offset + METADATA_SIZE;
+    
+    lock.l_whence = SEEK_SET;
+    lock.l_start = lock_area_start + eLock;  /* Different byte for each lock level */
+    lock.l_len = 1;
+    
+    /* Verify lock offset is within our allocated region */
+    if (lock.l_start >= p->region_offset + p->region_size) {
+        return SQLITE_IOERR_LOCK;  /* Lock area outside our region! */
+    }
+    
+    switch (eLock) {
+        case SQLITE_LOCK_SHARED:
+            lock.l_type = F_RDLCK;
+            break;
+        case SQLITE_LOCK_RESERVED:
+        case SQLITE_LOCK_PENDING:
+        case SQLITE_LOCK_EXCLUSIVE:
+            lock.l_type = F_WRLCK;
+            break;
+        default:
+            return SQLITE_OK;
+    }
+    
+    if (fcntl(p->fd, F_SETLK, &lock) == -1) {
+        if (errno == EACCES || errno == EAGAIN) {
+            return SQLITE_BUSY;
+        } else if (errno == EBADF) {
+            return SQLITE_READONLY;
+        }
+        return SQLITE_IOERR_LOCK;
+    }
+#endif
+    
+    p->lockLevel = eLock;
+    return SQLITE_OK;
+}
+
+static int embeddedUnlock(sqlite3_file *pFile, int eLock) {
+    EmbeddedFile *p = (EmbeddedFile*)pFile;
+    
+    /* If already at this lock level or lower, nothing to do */
+    if (p->lockLevel <= eLock) {
+        return SQLITE_OK;
+    }
+    
+#ifdef _WIN32
+    sqlite3_int64 lock_area_start = p->region_offset + METADATA_SIZE;
+    
+    /* Windows file unlocking - unlock all levels above the target */
+    for (int level = p->lockLevel; level > eLock; level--) {
+        OVERLAPPED overlapped = {0};
+        sqlite3_int64 lock_offset = lock_area_start + (level - 1);  /* Adjust for 0-based indexing */
+        
+        overlapped.Offset = (DWORD)(lock_offset & 0xFFFFFFFF);
+        overlapped.OffsetHigh = (DWORD)(lock_offset >> 32);
+        
+        if (!UnlockFileEx(p->hFile, 0, 1, 0, &overlapped)) {
+            /* Log warning but continue - don't fail the unlock */
+            DWORD error = GetLastError();
+        }
+    }
+    
+#else
+    sqlite3_int64 lock_area_start = p->region_offset + METADATA_SIZE;
+    
+    /* POSIX file unlocking */
+    for (int level = p->lockLevel; level > eLock; level--) {
+        struct flock lock;
+        lock.l_whence = SEEK_SET;
+        lock.l_start = lock_area_start + level;
+        lock.l_len = 1;
+        lock.l_type = F_UNLCK;
+        
+        fcntl(p->fd, F_SETLK, &lock);
+    }
+#endif
+    
+    p->lockLevel = eLock;
+    return SQLITE_OK;
+}
+
+static int writeMetadata(EmbeddedFile *pFile) {
+    static int metadata_write_count = 0;
+    metadata_write_count++;
+
+#ifdef _WIN32
+    LARGE_INTEGER liDistanceToMove;
+    DWORD dwBytesWritten = 0;
+    
+    /* Check if file handle is valid */
+    if (pFile->hFile == INVALID_HANDLE_VALUE) {
+        return SQLITE_IOERR_WRITE;
+    }
+    
+    liDistanceToMove.QuadPart = pFile->region_offset;
+    
+    if (!SetFilePointerEx(pFile->hFile, liDistanceToMove, NULL, FILE_BEGIN)) {
+        DWORD error = GetLastError();
+        
+        /* Print detailed error */
+        char* errorMessage = NULL;
+        FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+                      NULL, error, 0, (LPSTR)&errorMessage, 0, NULL);
+        if (errorMessage) LocalFree(errorMessage);
+        
+        return SQLITE_IOERR_WRITE;
+    }
+    
+    if (!WriteFile(pFile->hFile, &pFile->metadata, sizeof(EmbeddedDBMetadata), &dwBytesWritten, NULL)) {
+        DWORD error = GetLastError();
+        
+        /* Print detailed error */
+        char* errorMessage = NULL;
+        FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+                      NULL, error, 0, (LPSTR)&errorMessage, 0, NULL);
+
+        if (errorMessage) LocalFree(errorMessage);
+        
+        if (error == ERROR_ACCESS_DENIED) {
+            return SQLITE_READONLY;
+        }
+        return SQLITE_IOERR_WRITE;
+    }
+
+    if (dwBytesWritten != sizeof(EmbeddedDBMetadata)) {
+        return SQLITE_IOERR_WRITE;
+    }
+    
+#else
+    if (lseek(pFile->fd, pFile->region_offset, SEEK_SET) == -1) {
+        return SQLITE_IOERR_WRITE;
+    }
+    
+    int wrote = write(pFile->fd, &pFile->metadata, sizeof(EmbeddedDBMetadata));
+    if (wrote < 0) {
+        if (errno == EBADF || errno == EACCES) {
+            return SQLITE_READONLY;
+        }
+        return SQLITE_IOERR_WRITE;
+    }
+    
+    if (wrote != sizeof(EmbeddedDBMetadata)) {
+        return SQLITE_IOERR_WRITE;
+    }
+#endif
+    
+    return SQLITE_OK;
+}
+
+static int initializeMetadata(EmbeddedFile *pFile) {
+    memset(&pFile->metadata, 0, sizeof(EmbeddedDBMetadata));
+    pFile->metadata.magic = EMBEDDED_DB_MAGIC;
+    pFile->metadata.version = EMBEDDED_DB_VERSION;
+    pFile->metadata.db_size = 0;
+    pFile->metadata.max_size = pFile->max_db_size;
+    pFile->metadata.page_size = 0;  /* Will be set by SQLite later */
+    pFile->metadata.reserved = 0;
+    
+    /* Store the simplified auxiliary filename base (just the host filename) */
+    if (pFile->host_filename) {
+        strncpy(pFile->metadata.aux_filename, pFile->host_filename, MAX_AUX_FILENAME_LEN - 1);
+        pFile->metadata.aux_filename[MAX_AUX_FILENAME_LEN - 1] = '\0';
+    }
+    
+    int result = writeMetadata(pFile);
+    
+    return result;
+}
+
+/* Static IO methods structure - must persist beyond embeddedOpen() */
+static sqlite3_io_methods embeddedIoMethods = {
+    3,                          /* iVersion - use version 3 for newer SQLite */
+    embeddedClose,              /* xClose */
+    embeddedRead,               /* xRead */
+    embeddedWrite,              /* xWrite */
+    embeddedTruncate,           /* xTruncate */
+    embeddedSync,               /* xSync */
+    embeddedFileSize,           /* xFileSize */
+    embeddedLock,               /* xLock */
+    embeddedUnlock,             /* xUnlock */
+    embeddedCheckReservedLock,  /* xCheckReservedLock */
+    embeddedFileControl,        /* xFileControl */
+    embeddedSectorSize,         /* xSectorSize */
+    embeddedDeviceCharacteristics, /* xDeviceCharacteristics */
+    embeddedShmMap,             /* xShmMap */
+    embeddedShmLock,            /* xShmLock */
+    embeddedShmBarrier,         /* xShmBarrier */
+    embeddedShmUnmap,           /* xShmUnmap */
+    embeddedFetch,              /* xFetch */
+    embeddedUnfetch             /* xUnfetch */
+};
+
+static int embeddedClose(sqlite3_file *pFile) {
+    EmbeddedFile *p = (EmbeddedFile*)pFile;
+    
+    /* Defensive programming - check if already closed */
+    if (!p) {
+        return SQLITE_OK;
+    }
+    
+    /* Release any locks held by this connection */
+    embeddedUnlock(pFile, SQLITE_LOCK_NONE);
+    
+#ifdef _WIN32
+    if (p->hFile != INVALID_HANDLE_VALUE) {
+        CloseHandle(p->hFile);
+        p->hFile = INVALID_HANDLE_VALUE;
+    }
+#else
+    if (p->fd >= 0) {
+        close(p->fd);
+        p->fd = -1;
+    }
+#endif
+    
+    if (p->host_filename) {
+        free(p->host_filename);
+        p->host_filename = NULL;
+    }
+    
+    /* Note: We don't free shared_mapping as it's managed externally */
+    p->shared_mapping = NULL;
+    p->mapping_size = 0;
+    
+    return SQLITE_OK;
+}
+
+static int embeddedWrite(sqlite3_file *pFile, const void *zBuf, int iAmt, sqlite3_int64 iOfst) {
+    EmbeddedFile *p = (EmbeddedFile*)pFile;
+    static int write_count = 0;
+    
+    write_count++;
+    
+    /* Check if write would exceed maximum database size */
+    if (iOfst + iAmt > p->max_db_size) {
+        return SQLITE_FULL;
+    }
+    
+    /* Try writing to shared mapping first if available */
+    if (writeToMapping(p, zBuf, iAmt, iOfst)) {
+        /* Update database size if this write extended it */
+        sqlite3_int64 new_end = iOfst + iAmt;
+        if (new_end > p->metadata.db_size) {
+            p->metadata.db_size = new_end;
+            /* Write updated metadata to file */
+            int rc = writeMetadata(p);
+            if (rc != SQLITE_OK) {
+                return rc;
+            }
+        }
+        return SQLITE_OK;
+    }
+    
+    /* Calculate actual file position */
+    sqlite3_int64 file_pos = p->data_offset + iOfst;
+    
+#ifdef _WIN32
+    LARGE_INTEGER liDistanceToMove;
+    DWORD dwBytesWritten = 0;
+    
+    liDistanceToMove.QuadPart = file_pos;
+    if (!SetFilePointerEx(p->hFile, liDistanceToMove, NULL, FILE_BEGIN)) {
+        DWORD error = GetLastError();
+        return SQLITE_IOERR_WRITE;
+    }
+    
+    if (!WriteFile(p->hFile, zBuf, (DWORD)iAmt, &dwBytesWritten, NULL)) {
+        DWORD error = GetLastError();
+        
+        // Print detailed error information
+        char* errorMessage = NULL;
+        FormatMessageA(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+            NULL, error, 0, (LPSTR)&errorMessage, 0, NULL
+        );
+
+        if (errorMessage) LocalFree(errorMessage);
+        
+        if (error == ERROR_ACCESS_DENIED) {
+            return SQLITE_READONLY;
+        }
+        return SQLITE_IOERR_WRITE;
+    }
+    
+    if ((int)dwBytesWritten < iAmt) {
+        return SQLITE_IOERR_WRITE;
+    }
+#else
+    if (lseek(p->fd, file_pos, SEEK_SET) == -1) {
+        return SQLITE_IOERR_WRITE;
+    }
+    
+    int wrote = write(p->fd, zBuf, iAmt);
+    if (wrote < 0) {
+        if (errno == EBADF || errno == EACCES) {
+            return SQLITE_READONLY;
+        }
+        return SQLITE_IOERR_WRITE;
+    }
+    
+    if (wrote < iAmt) {
+        return SQLITE_IOERR_WRITE;
+    }
+#endif
+    
+    /* Update database size if this write extended it */
+    sqlite3_int64 new_end = iOfst + iAmt;
+    if (new_end > p->metadata.db_size) {
+        // Store current lock level
+        int saved_lock_level = p->lockLevel;
+        
+        // Temporarily release locks to avoid conflict with metadata write
+        if (p->lockLevel > SQLITE_LOCK_NONE) {
+            embeddedUnlock((sqlite3_file*)p, SQLITE_LOCK_NONE);
+        }
+        
+        p->metadata.db_size = new_end;
+        
+        /* Write updated metadata */
+        int rc = writeMetadata(p);
+        
+        // Restore locks
+        if (saved_lock_level > SQLITE_LOCK_NONE) {
+            int lock_rc = embeddedLock((sqlite3_file*)p, saved_lock_level);
+            if (lock_rc != SQLITE_OK) {
+            }
+        }
+        
+        if (rc != SQLITE_OK) {
+            return rc;
+        }
+    }
+
+    return SQLITE_OK;
+}
+
+// Also enhance the embeddedRead function to see if reads are working:
+static int embeddedRead(sqlite3_file *pFile, void *zBuf, int iAmt, sqlite3_int64 iOfst) {
+    EmbeddedFile *p = (EmbeddedFile*)pFile;
+    
+    /* Try reading from shared mapping first if available */
+    if (readFromMapping(p, zBuf, iAmt, iOfst)) {
+        return SQLITE_OK;
+    }
+    
+    /* Re-read metadata to get current database size (for concurrent access) */
+    int rc = readMetadata(p);
+    if (rc != SQLITE_OK) {
+        return rc;
+    }
+    
+    /* Check if reading beyond current database size */
+    if (iOfst >= p->metadata.db_size) {
+        /* Reading beyond current data - return zeros */
+        memset(zBuf, 0, iAmt);
+        return SQLITE_IOERR_SHORT_READ;
+    }
+    
+    /* Adjust read amount if it extends beyond current data */
+    if (iOfst + iAmt > p->metadata.db_size) {
+        sqlite3_int64 available = p->metadata.db_size - iOfst;
+        
+        /* Read what's available, zero the rest */
+        if (available > 0) {
+            int to_read = (int)available;
+            int result = embeddedRead(pFile, zBuf, to_read, iOfst);
+            if (result != SQLITE_OK) return result;
+        }
+        
+        /* Zero out the remainder */
+        memset(((char*)zBuf) + available, 0, iAmt - available);
+        return SQLITE_IOERR_SHORT_READ;
+    }
+    
+    /* Calculate actual file position (metadata + SQLite data offset) */
+    sqlite3_int64 file_pos = p->data_offset + iOfst;
+    
+#ifdef _WIN32
+    LARGE_INTEGER liDistanceToMove;
+    DWORD dwBytesRead;
+    
+    liDistanceToMove.QuadPart = file_pos;
+    if (!SetFilePointerEx(p->hFile, liDistanceToMove, NULL, FILE_BEGIN)) {
+        DWORD error = GetLastError();
+        return SQLITE_IOERR_READ;
+    }
+    
+    if (!ReadFile(p->hFile, zBuf, (DWORD)iAmt, &dwBytesRead, NULL)) {
+        DWORD error = GetLastError();
+        return SQLITE_IOERR_READ;
+    }
+    
+    if ((int)dwBytesRead < iAmt) {
+        memset(((char*)zBuf) + dwBytesRead, 0, iAmt - dwBytesRead);
+        return SQLITE_IOERR_SHORT_READ;
+    }
+#else
+    if (lseek(p->fd, file_pos, SEEK_SET) == -1) {
+        return SQLITE_IOERR_READ;
+    }
+    
+    int got = read(p->fd, zBuf, iAmt);
+    if (got < 0) {
+        return SQLITE_IOERR_READ;
+    }
+    
+    if (got < iAmt) {
+        memset(((char*)zBuf) + got, 0, iAmt - got);
+        return SQLITE_IOERR_SHORT_READ;
+    }
+#endif
+    
+    return SQLITE_OK;
+}
+
+static int embeddedTruncate(sqlite3_file *pFile, sqlite3_int64 size) {
+    EmbeddedFile *p = (EmbeddedFile*)pFile;
+    
+    /* Check if truncate size is within our bounds */
+    if (size > p->max_db_size) {
+        return SQLITE_FULL;
+    }
+    
+#ifndef _WIN32
+    /* Check if file is opened read-only */
+    int fd_flags = fcntl(p->fd, F_GETFL);
+    int access_mode = fd_flags & O_ACCMODE;
+    if (access_mode == O_RDONLY) {
+        return SQLITE_READONLY;
+    }
+#endif
+    
+    /* Simply update the database size in metadata - no need to zero data */
+    p->metadata.db_size = size;
+    
+    /* Write updated metadata */
+    int rc = writeMetadata(p);
+    if (rc != SQLITE_OK) {
+        if (rc == SQLITE_IOERR_WRITE) {
+            /* Could be a read-only file */
+            return SQLITE_READONLY;
+        }
+        return SQLITE_IOERR_TRUNCATE;
+    }
+    
+    return SQLITE_OK;
+}
+
+static int embeddedSync(sqlite3_file *pFile, int flags) {
+    EmbeddedFile *p = (EmbeddedFile*)pFile;
+    
+    /* If using shared mapping, no need to sync to disk */
+    if (p->shared_mapping && p->mapping_size > 0) {
+        return SQLITE_OK;
+    }
+    
+#ifdef _WIN32
+    /* Windows: sync only our region using file mapping */
+    HANDLE hMapping = NULL;
+    LPVOID pView = NULL;
+    int rc = SQLITE_OK;
+    
+    if (p->hFile == INVALID_HANDLE_VALUE) {
+        return SQLITE_IOERR_FSYNC;
+    }
+    
+    /* Create file mapping for the entire file */
+    hMapping = CreateFileMapping(p->hFile, NULL, PAGE_READWRITE, 0, 0, NULL);
+    if (!hMapping) {
+        return SQLITE_IOERR_FSYNC;
+    }
+    
+    /* Map view of our specific region (including metadata) */
+    pView = MapViewOfFile(hMapping, FILE_MAP_WRITE,
+                         (DWORD)(p->region_offset >> 32),       /* High offset */
+                         (DWORD)(p->region_offset & 0xFFFFFFFF), /* Low offset */
+                         (SIZE_T)p->region_size);               /* Size to map */
+    if (!pView) {
+        CloseHandle(hMapping);
+        return SQLITE_IOERR_FSYNC;
+    }
+    
+    /* Flush just this view to disk */
+    if (!FlushViewOfFile(pView, (SIZE_T)p->region_size)) {
+        rc = SQLITE_IOERR_FSYNC;
+    }
+    
+    /* Clean up */
+    UnmapViewOfFile(pView);
+    CloseHandle(hMapping);
+    
+    return rc;
+    
+#elif defined(__linux__) && defined(SYNC_FILE_RANGE_WRITE)
+    /* Linux: sync only our region if sync_file_range is available */
+    if (sync_file_range(p->fd, p->region_offset, p->region_size, 
+                       SYNC_FILE_RANGE_WAIT_BEFORE | 
+                       SYNC_FILE_RANGE_WRITE | 
+                       SYNC_FILE_RANGE_WAIT_AFTER) == -1) {
+        return SQLITE_IOERR_FSYNC;
+    }
+    
+#else
+    /* Other platforms or older Linux: fallback to full file sync */
+    if (fsync(p->fd) == -1) {
+        return SQLITE_IOERR_FSYNC;
+    }
+#endif
+    
+    return SQLITE_OK;
+}
+
+static int embeddedFileSize(sqlite3_file *pFile, sqlite3_int64 *pSize) {
+    EmbeddedFile *p = (EmbeddedFile*)pFile;
+    
+    /* Re-read metadata to get current database size (for concurrent access) */
+    int rc = readMetadata(p);
+    if (rc != SQLITE_OK) {
+        return rc;
+    }
+    
+    /* Return the current database size from metadata */
+    *pSize = p->metadata.db_size;
+    
+    return SQLITE_OK;
+}
+
+static int embeddedCheckReservedLock(sqlite3_file *pFile, int *pResOut) {
+    EmbeddedFile *p = (EmbeddedFile*)pFile;
+    
+#ifdef _WIN32
+    /* Try to lock the reserved byte */
+    OVERLAPPED overlapped = {0};
+    sqlite3_int64 lock_offset = p->region_offset + SQLITE_LOCK_RESERVED;
+    
+    overlapped.Offset = (DWORD)(lock_offset & 0xFFFFFFFF);
+    overlapped.OffsetHigh = (DWORD)(lock_offset >> 32);
+    
+    if (LockFileEx(p->hFile, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 
+                   0, 1, 0, &overlapped)) {
+        /* We got the lock, so it wasn't reserved */
+        UnlockFileEx(p->hFile, 0, 1, 0, &overlapped);
+        *pResOut = 0;
+    } else {
+        /* Could not get the lock, so it is reserved */
+        *pResOut = 1;
+    }
+    
+#else
+    /* POSIX: try to lock the reserved byte */
+    struct flock lock;
+    lock.l_whence = SEEK_SET;
+    lock.l_start = p->region_offset + SQLITE_LOCK_RESERVED;
+    lock.l_len = 1;
+    lock.l_type = F_WRLCK;
+    
+    if (fcntl(p->fd, F_SETLK, &lock) == -1) {
+        *pResOut = 1;  /* Lock is held by someone else */
+    } else {
+        /* We got the lock, release it immediately */
+        lock.l_type = F_UNLCK;
+        fcntl(p->fd, F_SETLK, &lock);
+        *pResOut = 0;
+    }
+#endif
+    
+    return SQLITE_OK;
+}
+
+static int embeddedFileControl(sqlite3_file *pFile, int op, void *pArg) {
+    return SQLITE_NOTFOUND;  /* Not implemented */
+}
+
+static int embeddedSectorSize(sqlite3_file *pFile) {
+    return 512;  /* Default sector size */
+}
+
+static int embeddedDeviceCharacteristics(sqlite3_file *pFile) {
+    return 0;  /* No special characteristics */
+}
+
+/* Shared memory methods - these are used for WAL mode */
+static int embeddedShmMap(sqlite3_file *pFile, int iPg, int pgsz, int isWrite, void volatile **pp) {
+    /* For embedded databases, we disable shared memory/WAL mode */
+    return SQLITE_IOERR;
+}
+
+static int embeddedShmLock(sqlite3_file *pFile, int offset, int n, int flags) {
+    /* For embedded databases, we disable shared memory/WAL mode */
+    return SQLITE_IOERR;
+}
+
+static void embeddedShmBarrier(sqlite3_file *pFile) {
+    /* No-op for embedded databases */
+}
+
+static int embeddedShmUnmap(sqlite3_file *pFile, int deleteFlag) {
+    /* No-op for embedded databases */
+    return SQLITE_OK;
+}
+
+/* Fetch/Unfetch methods - used for memory-mapped I/O */
+static int embeddedFetch(sqlite3_file *pFile, sqlite3_int64 iOfst, int iAmt, void **pp) {
+    EmbeddedFile *p = (EmbeddedFile*)pFile;
+    
+    /* Initialize output pointer to NULL */
+    *pp = 0;
+    
+    /* Only support fetch if we have a shared mapping */
+    if (!p->shared_mapping || p->mapping_size == 0) {
+        return SQLITE_OK;  /* No mapping available, SQLite will fall back to read/write */
+    }
+    
+    /* Check bounds - make sure the requested region is within our mapping */
+    if (iOfst < 0 || iOfst + iAmt > (sqlite3_int64)p->mapping_size) {
+        return SQLITE_OK;  /* Out of bounds, let SQLite fall back to read/write */
+    }
+    
+    /* Also check against the current database size */
+    int rc = readMetadata(p);
+    if (rc != SQLITE_OK) {
+        return SQLITE_OK;  /* Can't read metadata, fall back to read/write */
+    }
+    
+    /* If the request extends beyond current database size, only provide what's valid */
+    if (iOfst >= p->metadata.db_size) {
+        return SQLITE_OK;  /* Reading beyond current data */
+    }
+    
+    sqlite3_int64 available_data = p->metadata.db_size - iOfst;
+    if (iAmt > available_data) {
+        /* Request extends beyond current data - SQLite will handle this properly
+           by calling read() for the remainder, so we can still return the pointer */
+        if (available_data <= 0) {
+            return SQLITE_OK;
+        }
+    }
+    
+    /* Return pointer to the requested offset within our shared mapping */
+    *pp = (char*)p->shared_mapping + iOfst;
+    
+    return SQLITE_OK;
+}
+
+static int embeddedUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *p) {
+    EmbeddedFile *pEmbedded = (EmbeddedFile*)pFile;
+    
+    /* Verify this pointer is within our shared mapping range */
+    if (pEmbedded->shared_mapping && p) {
+        char *start = (char*)pEmbedded->shared_mapping;
+        char *end = start + pEmbedded->mapping_size;
+        char *ptr = (char*)p;
+        
+        if (ptr >= start && ptr < end) {
+            /* Valid pointer within our mapping - nothing to do since we don't 
+               need to free or release anything for shared mappings */
+            return SQLITE_OK;
+        }
+    }
+    
+    /* If we get here, either no shared mapping or invalid pointer */
+    return SQLITE_OK;
+}
+
+/* VFS method implementations */
+static int embeddedOpen(sqlite3_vfs *pVfs, const char *zName, sqlite3_file *pFile, int flags, int *pOutFlags) {
+    EmbeddedFile *p = (EmbeddedFile*)pFile;
+    char *host_file, *offset_str, *size_str;
+    char *name_copy;
+    sqlite3_int64 region_offset, region_size;
+    char *suffix_pos;
+#ifdef _WIN32
+    HANDLE hFile;
+    DWORD dwDesiredAccess;
+    DWORD dwCreationDisposition;
+#else
+    int fd = -1;
+#endif
+    
+    /* Initialize structure to safe defaults first */
+    memset(p, 0, sizeof(EmbeddedFile));
+#ifdef _WIN32
+    p->hFile = INVALID_HANDLE_VALUE;
+#else
+    p->fd = -1;
+#endif
+    p->host_filename = NULL;
+    p->lockLevel = SQLITE_LOCK_NONE;
+    p->shared_mapping = NULL;
+    p->mapping_size = 0;
+    
+    /* Parse the filename format: "host_file:offset:size" or "host_file:offset:size:map:ptr:size" */
+    if (!zName) {
+        return SQLITE_CANTOPEN;
+    }
+    
+    name_copy = strdup(zName);
+    if (!name_copy) {
+        return SQLITE_NOMEM;
+    }
+    
+    /* Check for auxiliary files */
+    suffix_pos = strstr(name_copy, "-journal");
+    if (!suffix_pos) suffix_pos = strstr(name_copy, "-wal");
+    if (!suffix_pos) suffix_pos = strstr(name_copy, "-shm");
+    
+    if (suffix_pos) {
+        /* Handle auxiliary files - use simplified filename from metadata */
+        char *host_part = strtok(name_copy, ":");
+        if (host_part) {
+            /* Create simplified auxiliary filename */
+            static char simple_name[MAX_AUX_FILENAME_LEN + 20];
+            int len = snprintf(simple_name, sizeof(simple_name), "%s%s", host_part, suffix_pos);
+            if (len >= (int)sizeof(simple_name)) {
+                free(name_copy);
+                return SQLITE_CANTOPEN;
+            }
+            
+            sqlite3_vfs *pDefaultVfs = sqlite3_vfs_find(NULL);
+            if (pDefaultVfs && pDefaultVfs->xOpen) {
+                int result = pDefaultVfs->xOpen(pDefaultVfs, simple_name, pFile, flags, pOutFlags);
+                free(name_copy);
+                return result;
+            }
+        }
+        free(name_copy);
+        return SQLITE_CANTOPEN;
+    }
+    
+    /* Parse main database filename */
+    host_file = strtok(name_copy, ":");
+    offset_str = strtok(NULL, ":");
+    size_str = strtok(NULL, ":");
+    
+    if (!host_file || !offset_str || !size_str) {
+        free(name_copy);
+        return SQLITE_CANTOPEN;
+    }
+    
+    region_offset = strtoll(offset_str, NULL, 10);
+    region_size = strtoll(size_str, NULL, 10);
+    
+    /* Check for optional mapping parameters */
+    void *shared_mapping = NULL;
+    size_t mapping_size = 0;
+    char *map_keyword = strtok(NULL, ":");
+    if (map_keyword && strcmp(map_keyword, "map") == 0) {
+        char *mapping_ptr_str = strtok(NULL, ":");
+        char *mapping_size_str = strtok(NULL, ":");
+        
+        if (mapping_ptr_str && mapping_size_str) {
+            unsigned long long ptr_value = strtoull(mapping_ptr_str, NULL, 10);
+            shared_mapping = (void*)(uintptr_t)ptr_value;
+            mapping_size = strtoull(mapping_size_str, NULL, 10);
+        }
+    }
+    
+    if (region_offset < 0 || region_size <= METADATA_SIZE) {
+        free(name_copy);
+        return SQLITE_CANTOPEN;
+    }
+    
+    /* Open the host file */
+#ifdef _WIN32
+    /* Determine access mode based on SQLite flags */
+    if (flags & SQLITE_OPEN_READONLY) {
+        dwDesiredAccess = GENERIC_READ;
+        dwCreationDisposition = OPEN_EXISTING;
+    } else {
+        dwDesiredAccess = GENERIC_READ | GENERIC_WRITE;
+        dwCreationDisposition = (flags & SQLITE_OPEN_CREATE) ? OPEN_ALWAYS : OPEN_EXISTING;
+    }
+    
+    hFile = CreateFileA(host_file, dwDesiredAccess, 
+                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                       NULL, dwCreationDisposition, 
+                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, 
+                       NULL);
+                       
+    if (hFile == INVALID_HANDLE_VALUE) {
+        free(name_copy);
+        return SQLITE_CANTOPEN;
+    }
+    
+    /* Validate and extend file size if necessary */
+    LARGE_INTEGER fileSize;
+    if (!GetFileSizeEx(hFile, &fileSize)) {
+        CloseHandle(hFile);
+        free(name_copy);
+        return SQLITE_CANTOPEN;
+    }
+    
+    if (fileSize.QuadPart < region_offset + region_size) {
+        /* File too small, try to extend it */
+        LARGE_INTEGER newSize;
+        newSize.QuadPart = region_offset + region_size;
+        
+        if (!SetFilePointerEx(hFile, newSize, NULL, FILE_BEGIN) || !SetEndOfFile(hFile)) {
+            CloseHandle(hFile);
+            free(name_copy);
+            return SQLITE_CANTOPEN;
+        }
+    }
+    
+#else
+    /* Determine access mode based on SQLite flags */
+    int open_flags;
+    if (flags & SQLITE_OPEN_READONLY) {
+        open_flags = O_RDONLY;
+    } else {
+        open_flags = O_RDWR;
+        if (flags & SQLITE_OPEN_CREATE) {
+            open_flags |= O_CREAT;
+        }
+    }
+    
+    fd = open(host_file, open_flags, 0644);
+    if (fd < 0) {
+        free(name_copy);
+        return SQLITE_CANTOPEN;
+    }
+    
+    /* Validate and extend file size if necessary */
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        close(fd);
+        free(name_copy);
+        return SQLITE_CANTOPEN;
+    }
+    
+    if (st.st_size < region_offset + region_size) {
+        if (ftruncate(fd, region_offset + region_size) < 0) {
+            close(fd);
+            free(name_copy);
+            return SQLITE_CANTOPEN;
+        }
+    }
+#endif
+    
+    /* Initialize our file structure */
+    memset(p, 0, sizeof(EmbeddedFile));
+    p->base.pMethods = &embeddedIoMethods;
+    
+#ifdef _WIN32
+    p->hFile = hFile;
+#else
+    p->fd = fd;
+#endif
+    p->region_offset = region_offset;
+    p->region_size = region_size;
+    p->data_offset = region_offset + DATA_OFFSET;
+    p->max_db_size = region_size - DATA_OFFSET;
+    p->host_filename = strdup(host_file);
+    p->lockLevel = SQLITE_LOCK_NONE;
+    
+    /* Store optional mapping info */
+    p->shared_mapping = shared_mapping;
+    p->mapping_size = mapping_size;
+    
+    /* Try to read existing metadata */
+    int rc = readMetadata(p);
+    if (rc == SQLITE_OK && p->metadata.magic == EMBEDDED_DB_MAGIC && 
+        p->metadata.version == EMBEDDED_DB_VERSION) {
+        /* Valid existing metadata - database already exists */
+    } else if (flags & SQLITE_OPEN_READONLY) {
+        /* Read-only open but no valid database found */
+        if (p->host_filename) {
+            free(p->host_filename);
+            p->host_filename = NULL;
+        }
+#ifdef _WIN32
+        if (p->hFile != INVALID_HANDLE_VALUE) {
+            CloseHandle(p->hFile);
+            p->hFile = INVALID_HANDLE_VALUE;
+        }
+#else
+        if (p->fd >= 0) {
+            close(p->fd);
+            p->fd = -1;
+        }
+#endif
+        free(name_copy);
+        return SQLITE_CANTOPEN;
+    } else {
+        /* Initialize new metadata */
+        rc = initializeMetadata(p);
+        if (rc != SQLITE_OK) {
+            /* Manual cleanup instead of calling embeddedClose to avoid double-free */
+            if (p->host_filename) {
+                free(p->host_filename);
+                p->host_filename = NULL;
+            }
+#ifdef _WIN32
+            if (p->hFile != INVALID_HANDLE_VALUE) {
+                CloseHandle(p->hFile);
+                p->hFile = INVALID_HANDLE_VALUE;
+            }
+#else
+            if (p->fd >= 0) {
+                close(p->fd);
+                p->fd = -1;
+            }
+#endif
+            free(name_copy);
+            return rc;
+        }
+    }
+    
+    free(name_copy);
+    
+    if (pOutFlags) {
+        *pOutFlags = flags;
+    }
+    
+    return SQLITE_OK;
+}
+
+static int embeddedDelete(sqlite3_vfs *pVfs, const char *zName, int syncDir) {
+    /* Check if this is an auxiliary file */
+    if (strstr(zName, "-journal") || strstr(zName, "-wal") || strstr(zName, "-shm")) {
+        /* For auxiliary files, create simplified filename and delegate to default VFS */
+        char *name_copy = strdup(zName);
+        if (!name_copy) return SQLITE_NOMEM;
+        
+        char *host_part = strtok(name_copy, ":");
+        const char *suffix_pos = strstr(zName, "-");
+        
+        if (host_part && suffix_pos) {
+            char simple_name[256];
+            snprintf(simple_name, sizeof(simple_name), "%s%s", host_part, suffix_pos);
+            
+            sqlite3_vfs *pDefaultVfs = sqlite3_vfs_find(NULL);
+            if (pDefaultVfs && pDefaultVfs->xDelete) {
+                int result = pDefaultVfs->xDelete(pDefaultVfs, simple_name, syncDir);
+                free(name_copy);
+                return result;
+            }
+        }
+        free(name_copy);
+        return SQLITE_IOERR_DELETE;
+    }
+    
+    /* For an embedded database, "delete" means zero out the region */
+    sqlite3_file *pFile;
+    EmbeddedFile file;
+    int rc;
+    
+    pFile = (sqlite3_file*)&file;
+    rc = embeddedOpen(pVfs, zName, pFile, SQLITE_OPEN_READWRITE, NULL);
+    if (rc != SQLITE_OK) {
+        return rc;
+    }
+    
+    /* Reset database size to 0 */
+    rc = embeddedTruncate(pFile, 0);
+    embeddedClose(pFile);
+    
+    return rc;
+}
+
+static int embeddedAccess(sqlite3_vfs *pVfs, const char *zName, int flags, int *pResOut) {
+    char *host_file, *name_copy;
+    int result = 0;
+    
+    if (!zName) {
+        *pResOut = 0;
+        return SQLITE_OK;
+    }
+    
+    /* Check if this is an auxiliary file */
+    if (strstr(zName, "-journal") || strstr(zName, "-wal") || strstr(zName, "-shm")) {
+        /* For auxiliary files, create simplified filename and delegate to default VFS */
+        name_copy = strdup(zName);
+        if (!name_copy) return SQLITE_NOMEM;
+        
+        char *host_part = strtok(name_copy, ":");
+        const char *suffix_pos = strstr(zName, "-");
+        
+        if (host_part && suffix_pos) {
+            char simple_name[256];
+            snprintf(simple_name, sizeof(simple_name), "%s%s", host_part, suffix_pos);
+            
+            sqlite3_vfs *pDefaultVfs = sqlite3_vfs_find(NULL);
+            if (pDefaultVfs && pDefaultVfs->xAccess) {
+                int rc = pDefaultVfs->xAccess(pDefaultVfs, simple_name, flags, pResOut);
+                free(name_copy);
+                return rc;
+            }
+        }
+        free(name_copy);
+        *pResOut = 0;
+        return SQLITE_OK;
+    }
+    
+    name_copy = strdup(zName);
+    if (!name_copy) {
+        return SQLITE_NOMEM;
+    }
+    
+    host_file = strtok(name_copy, ":");
+    if (host_file) {
+#ifdef _WIN32
+        DWORD dwAttrib = GetFileAttributesA(host_file);
+        result = (dwAttrib != INVALID_FILE_ATTRIBUTES) ? 1 : 0;
+#else
+        result = (access(host_file, F_OK) == 0) ? 1 : 0;
+#endif
+    }
+    
+    free(name_copy);
+    *pResOut = result;
+    return SQLITE_OK;
+}
+
+static int embeddedFullPathname(sqlite3_vfs *pVfs, const char *zName, int nOut, char *zOut) {
+    if (!zName || !zOut || nOut <= 0) {
+        return SQLITE_ERROR;
+    }
+    
+    strncpy(zOut, zName, nOut - 1);
+    zOut[nOut - 1] = '\0';
+    return SQLITE_OK;
+}
+
+/* Global VFS instance */
+static EmbeddedVFS embeddedVFS = {0};
+
+/* Register the VFS */
+int sqlite3_embedded_vfs_init(void) {
+    sqlite3_vfs *pDefault = sqlite3_vfs_find(NULL);
+    if (!pDefault) {
+        return SQLITE_ERROR;
+    }
+    
+    memset(&embeddedVFS, 0, sizeof(embeddedVFS));
+    
+    embeddedVFS.base.iVersion = 1;
+    embeddedVFS.base.szOsFile = sizeof(EmbeddedFile);
+    embeddedVFS.base.mxPathname = pDefault->mxPathname;
+    embeddedVFS.base.zName = "embedded";
+    embeddedVFS.base.pAppData = NULL;
+    embeddedVFS.base.xOpen = embeddedOpen;
+    embeddedVFS.base.xDelete = embeddedDelete;
+    embeddedVFS.base.xAccess = embeddedAccess;
+    embeddedVFS.base.xFullPathname = embeddedFullPathname;
+    embeddedVFS.base.xDlOpen = pDefault->xDlOpen;
+    embeddedVFS.base.xDlError = pDefault->xDlError;
+    embeddedVFS.base.xDlSym = pDefault->xDlSym;
+    embeddedVFS.base.xDlClose = pDefault->xDlClose;
+    embeddedVFS.base.xRandomness = pDefault->xRandomness;
+    embeddedVFS.base.xSleep = pDefault->xSleep;
+    embeddedVFS.base.xCurrentTime = pDefault->xCurrentTime;
+    embeddedVFS.base.xGetLastError = pDefault->xGetLastError;
+    
+    embeddedVFS.pReal = pDefault;
+    
+    return sqlite3_vfs_register(&embeddedVFS.base, 0);
+}
+
+/* Global setup function called by test framework */
+void setup_global() {
+    sqlite3_embedded_vfs_init();
+}
+
+/* Global teardown function called by test framework */
+void teardown_global() {
+    /* Unregister the VFS if needed */
+    sqlite3_vfs_unregister(&embeddedVFS.base);
+    memset(&embeddedVFS, 0, sizeof(embeddedVFS));
+}
