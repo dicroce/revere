@@ -138,60 +138,11 @@ After building, you may need to ensure GStreamer plugins are available. The buil
 
 ### Fedora/RHEL
 
-```bash
-# System dependencies
-sudo dnf install -y \
-    gcc-c++ \
-    cmake \
-    git \
-    pkg-config \
-    libuuid-devel
-
-# OpenCV
-sudo dnf install -y opencv-devel
-
-# GStreamer
-sudo dnf install -y \
-    gstreamer1-devel \
-    gstreamer1-plugins-base-devel \
-    gstreamer1-plugins-good \
-    gstreamer1-plugins-bad-free \
-    gstreamer1-plugins-ugly-free
-
-# FFmpeg
-sudo dnf install -y \
-    ffmpeg-devel
-
-# Then follow the same build steps as Ubuntu
-```
+TBD (should probably work)
 
 ### Arch Linux
 
-```bash
-# System dependencies
-sudo pacman -S \
-    base-devel \
-    cmake \
-    git \
-    pkg-config \
-    util-linux-libs
-
-# OpenCV
-sudo pacman -S opencv
-
-# GStreamer
-sudo pacman -S \
-    gstreamer \
-    gst-plugins-base \
-    gst-plugins-good \
-    gst-plugins-bad \
-    gst-plugins-ugly
-
-# FFmpeg
-sudo pacman -S ffmpeg
-
-# Then follow the same build steps as Ubuntu
-```
+TBD (should probably work)
 
 ## Building on Windows
 
@@ -202,7 +153,6 @@ sudo pacman -S ffmpeg
 Download and install Visual Studio 2019 or newer from [visualstudio.microsoft.com](https://visualstudio.microsoft.com/).
 - Recommended: Visual Studio 2022 (MSVC v17)
 - Required components: "Desktop development with C++"
-- Ensure Windows SDK is installed
 
 #### CMake
 
