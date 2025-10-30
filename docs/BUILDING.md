@@ -98,7 +98,7 @@ mkdir $HOME/NCNN_INSTALL
 git clone https://github.com/Tencent/ncnn.git
 cd ncnn
 mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release -DNCNN_BUILD_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX=/home/td/NCNN_INSTALL ..
+cmake -DCMAKE_BUILD_TYPE=Release -DNCNN_BUILD_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX=$HOME/NCNN_INSTALL ..
 make -j$(nproc)
 sudo make install
 export NCNN_TOP_DIR=$HOME/NCNN_INSTALL
