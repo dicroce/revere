@@ -16,7 +16,15 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 
 ## Screenshots
 
+### Revere
+- Runs in the system tray
+- Pre-allocated storage means it wont suprise you by using up more hard drive than you have allocated to it.
+  
+![Alt text](/assets/screenshots/revere.jpg "Revere")
 
+### Vision
+- Connects to revere
+![Alt text](/assets/screenshots/vision.jpg "Vision")
 
 ## Quick Start
 
