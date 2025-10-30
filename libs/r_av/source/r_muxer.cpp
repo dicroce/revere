@@ -87,8 +87,12 @@ void r_muxer::add_audio_stream(AVCodecID codec_id, uint8_t channels, uint32_t sa
 
     _audio_stream->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
     _audio_stream->codecpar->codec_id = codec_id;
+#if LIBAVCODEC_VERSION_MAJOR >= 59
     _audio_stream->codecpar->ch_layout.order = AV_CHANNEL_ORDER_UNSPEC;
     _audio_stream->codecpar->ch_layout.nb_channels = channels;
+#else
+    _audio_stream->codecpar->channels = channels;
+#endif
     _audio_stream->codecpar->sample_rate = sample_rate;
     _audio_stream->time_base.num = 1;
     _audio_stream->time_base.den = sample_rate;
