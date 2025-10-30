@@ -94,18 +94,16 @@ NCNN enables AI-based person detection plugins (YOLOv8, MobileNet, PicoDet).
 
 ```bash
 # Clone and build NCNN
+mkdir $HOME/NCNN_INSTALL
 git clone https://github.com/Tencent/ncnn.git
 cd ncnn
 mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release -DNCNN_BUILD_EXAMPLES=OFF ..
+cmake -DCMAKE_BUILD_TYPE=Release -DNCNN_BUILD_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX=/home/td/NCNN_INSTALL ..
 make -j$(nproc)
 sudo make install
+export NCNN_TOP_DIR=$HOME/NCNN_INSTALL
 
-# Or install via package manager if available
-# Some distributions may have ncnn packages
 ```
-
-Set the `NCNN_TOP_DIR` environment variable to the NCNN installation path if CMake can't find it automatically.
 
 #### Building Revere
 
@@ -121,9 +119,6 @@ cd build
 # Configure
 cmake .. -DCMAKE_BUILD_TYPE=Release
 
-# Or with NCNN support
-cmake .. -DCMAKE_BUILD_TYPE=Release -DNCNN_TOP_DIR=/path/to/ncnn
-
 # Build
 make -j$(nproc)
 
@@ -131,7 +126,7 @@ make -j$(nproc)
 sudo make install
 ```
 
-The executables will be in `build/apps/revere/` and `build/apps/vision/`.
+The executables will be in `build/apps/revere/` and `build/apps/vision/`. make install will install them to /usr/loca/revere (it also should add an icon to your gui).
 
 #### Post-Build Setup
 
