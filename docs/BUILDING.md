@@ -200,7 +200,7 @@ mkdir build
 cd build
 
 # Configure
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake -DCMAKE_BUILD_TYPE=Release ..
 
 # Build
 cmake --build .
