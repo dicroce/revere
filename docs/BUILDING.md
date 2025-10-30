@@ -58,7 +58,8 @@ sudo apt-get install -y \
     libuuid1 \
     libgtk-3-dev \
     libbz2-dev \
-    uuid-dev
+    uuid-dev \
+    libayatana-appindicator3-dev
 
 # OpenCV
 sudo apt-get install -y \
