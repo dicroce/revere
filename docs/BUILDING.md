@@ -109,7 +109,7 @@ export NCNN_TOP_DIR=$HOME/NCNN_INSTALL
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone [<repository-url>](https://github.com/dicroce/revere.git)
 cd revere
 
 # Create build directory
