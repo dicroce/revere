@@ -128,10 +128,6 @@ sudo make install
 
 The executables will be in `build/apps/revere/` and `build/apps/vision/`. make install will install them to /usr/loca/revere (it also should add an icon to your gui).
 
-#### Post-Build Setup
-
-After building, you may need to ensure GStreamer plugins are available. The build system installs required plugins to `gstreamer_plugins/` in the build directory.
-
 ### Fedora/RHEL
 
 TBD (should probably work)
