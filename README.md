@@ -24,6 +24,8 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 
 ### Vision
 - Connects to revere
+- Supports 2x2, 4x4 and single view.
+
 ![Alt text](/assets/screenshots/vision.jpg "Vision")
 
 ## Quick Start
