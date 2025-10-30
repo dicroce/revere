@@ -123,7 +123,11 @@ struct r_stream_info r_demuxer::get_stream_info(int stream_index) const
     else
     {
         si.bits_per_raw_sample = (uint8_t)stream->codecpar->bits_per_raw_sample;
+#ifdef LIBAVFORMAT_VERSION_MAJOR >= 59
         si.channels = (uint8_t)stream->codecpar->ch_layout.nb_channels;
+#else
+        si.channels = (uint8_t)stream->codecpar->channels;
+#endif
         si.sample_rate = stream->codecpar->sample_rate;
     }
 
