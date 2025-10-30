@@ -94,24 +94,22 @@ NCNN enables AI-based person detection plugins (YOLOv8, MobileNet, PicoDet).
 
 ```bash
 # Clone and build NCNN
+mkdir $HOME/NCNN_INSTALL
 git clone https://github.com/Tencent/ncnn.git
 cd ncnn
 mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release -DNCNN_BUILD_EXAMPLES=OFF ..
+cmake -DCMAKE_BUILD_TYPE=Release -DNCNN_BUILD_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX=$HOME/NCNN_INSTALL ..
 make -j$(nproc)
 sudo make install
+export NCNN_TOP_DIR=$HOME/NCNN_INSTALL
 
-# Or install via package manager if available
-# Some distributions may have ncnn packages
 ```
-
-Set the `NCNN_TOP_DIR` environment variable to the NCNN installation path if CMake can't find it automatically.
 
 #### Building Revere
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone [<repository-url>](https://github.com/dicroce/revere.git)
 cd revere
 
 # Create build directory
@@ -121,9 +119,6 @@ cd build
 # Configure
 cmake .. -DCMAKE_BUILD_TYPE=Release
 
-# Or with NCNN support
-cmake .. -DCMAKE_BUILD_TYPE=Release -DNCNN_TOP_DIR=/path/to/ncnn
-
 # Build
 make -j$(nproc)
 
@@ -131,11 +126,7 @@ make -j$(nproc)
 sudo make install
 ```
 
-The executables will be in `build/apps/revere/` and `build/apps/vision/`.
-
-#### Post-Build Setup
-
-After building, you may need to ensure GStreamer plugins are available. The build system installs required plugins to `gstreamer_plugins/` in the build directory.
+The executables will be in `build/apps/revere/` and `build/apps/vision/`. make install will install them to /usr/loca/revere (it also should add an icon to your gui).
 
 ### Fedora/RHEL
 
@@ -154,6 +145,10 @@ TBD (should probably work)
 Download and install Visual Studio 2019 or newer from [visualstudio.microsoft.com](https://visualstudio.microsoft.com/).
 - Recommended: Visual Studio 2022 (MSVC v17)
 - Required components: "Desktop development with C++"
+
+#### GIT
+
+- Installing GIT will give you GIT bash. I usually do everything but the finall install from a git bash command line.
 
 #### CMake
 
@@ -190,254 +185,32 @@ For AI motion detection plugins:
 - Set environment variable: `NCNN_TOP_DIR=C:\path\to\ncnn`
 - Structure should include `lib\ncnn.lib` (Release) or `lib\ncnnd.lib` (Debug)
 
-### Setting Environment Variables
-
-You must set the following environment variables for CMake to find the dependencies:
-
-```powershell
-# Set temporarily (for current session)
-$env:OPENCV_TOP_DIR = "C:\path\to\opencv"
-$env:GST_TOP_DIR = "C:\path\to\gstreamer"
-$env:FFMPEG_TOP_DIR = "C:\path\to\ffmpeg"
-$env:NCNN_TOP_DIR = "C:\path\to\ncnn"  # Optional
-
-# Or set permanently (all sessions)
-[System.Environment]::SetEnvironmentVariable("OPENCV_TOP_DIR", "C:\path\to\opencv", "User")
-[System.Environment]::SetEnvironmentVariable("GST_TOP_DIR", "C:\path\to\gstreamer", "User")
-[System.Environment]::SetEnvironmentVariable("FFMPEG_TOP_DIR", "C:\path\to\ffmpeg", "User")
-```
-
-#### Required Directory Structure
-
-**OPENCV_TOP_DIR:**
-```
-OPENCV_TOP_DIR/
-├── include/
-│   └── opencv2/
-├── x64/
-│   └── vc17/  (or vc16 for VS2019)
-│       ├── lib/
-│       └── bin/
-```
-
-**GST_TOP_DIR:**
-```
-GST_TOP_DIR/
-├── include/
-│   └── gstreamer-1.0/
-├── lib/
-└── bin/
-```
-
-**FFMPEG_TOP_DIR:**
-```
-FFMPEG_TOP_DIR/
-├── include/
-│   ├── libavcodec/
-│   ├── libavformat/
-│   ├── libavutil/
-│   └── libswscale/
-├── lib/
-└── bin/  (contains DLLs)
-```
-
 ### Building with CMake
 
-#### Using CMake GUI
+#### Building with git bash
+- Open git bash
 
-1. Open CMake GUI
-2. Set "Where is the source code" to your Revere directory
-3. Set "Where to build the binaries" to `<revere>/build`
-4. Click "Configure" and select your Visual Studio version
-5. Verify all dependencies are found (check the output)
-6. Click "Generate"
-7. Click "Open Project" to launch Visual Studio
-
-#### Using Command Line
-
-```powershell
-# Open Developer Command Prompt for VS
-# Navigate to revere directory
-cd C:\path\to\revere
+```bash
+# Clone the repository
+git clone [<repository-url>](https://github.com/dicroce/revere.git)
+cd revere
 
 # Create build directory
 mkdir build
 cd build
 
 # Configure
-cmake .. -G "Visual Studio 17 2022" -A x64
+cmake -DCMAKE_BUILD_TYPE=Release ..
 
 # Build
-cmake --build . --config Release
+cmake --build .
 
-# Or open the solution in Visual Studio
-start revere.sln
 ```
-
-#### Building from Visual Studio
-
-1. Open the generated `revere.sln` solution file
-2. Select your desired build configuration (Debug or Release)
-3. Build > Build Solution (or press F7)
-4. The executables will be in `build\apps\revere\<Config>\` and `build\apps\vision\<Config>\`
-5. Copy required DLLs to the executable directory or ensure they're in your PATH
-
-## Build Options
-
-### CMake Options
-
-**CMAKE_BUILD_TYPE:** Debug, Release, or RelWithDebInfo (Linux/Mac)
-
+#### Installing
+- Then open x64 Native Tools Command Prompt by right clicking and choosing "Run as Administrator"
+- cd to the revere/build dir. Then:
 ```bash
-# Release build (optimized)
-cmake .. -DCMAKE_BUILD_TYPE=Release
-
-# Debug build (with AddressSanitizer on Linux)
-cmake .. -DCMAKE_BUILD_TYPE=Debug
-```
-
-**NCNN_TOP_DIR:** Path to NCNN installation (enables AI plugins)
-
-```bash
-cmake .. -DNCNN_TOP_DIR=/path/to/ncnn
-```
-
-### Build Configurations
-
-**Debug:**
-- Includes debug symbols
-- No optimization
-- Linux: Enables AddressSanitizer for memory error detection
-- Windows: Runtime checks enabled (/RTC1)
-
-**Release:**
-- Full optimization (-O3 on Linux, /O2 on Windows)
-- No debug symbols
-- Best performance
-- Recommended for production use
-
-**RelWithDebInfo:**
-- Optimized but with debug symbols
-- Useful for profiling and debugging performance issues
-
-## Optional Dependencies
-
-### NCNN (Neural Network Framework)
-
-**Purpose:** Enables AI-based motion detection plugins for person detection
-
-**Plugins enabled:**
-- YOLOv8 Person Plugin (currently active)
-- MobileNet Person Plugin (available but disabled by default)
-- PicoDet Person Plugin (available but disabled by default)
-
-**Building with NCNN:**
-```bash
-# Set NCNN_TOP_DIR environment variable
-export NCNN_TOP_DIR=/path/to/ncnn  # Linux
-set NCNN_TOP_DIR=C:\path\to\ncnn   # Windows
-
-# Configure with NCNN support
-cmake .. -DNCNN_TOP_DIR=/path/to/ncnn
-```
-
-**Building without NCNN:**
-Simply don't set `NCNN_TOP_DIR`. The system will build without AI plugin support. The basic motion detection will still work.
-
-## Running Tests
-
-```bash
-# From build directory
-ctest
-
-# Or run with verbose output
-ctest -V
-
-# Or run individual test binaries
-./libs/r_av/ut/test_r_av
-./libs/r_db/ut/test_r_db
-./libs/r_disco/ut/test_r_disco
-./libs/r_http/ut/test_r_http
-./libs/r_motion/ut/test_r_motion
-./libs/r_onvif/ut/test_r_onvif
-./libs/r_pipeline/ut/test_r_pipeline
-./libs/r_storage/ut/test_r_storage
-./libs/r_utils/ut/test_r_utils
-```
-
-### Test Requirements
-
-Most tests are unit tests that don't require external dependencies. Some integration tests may require:
-- Network access for ONVIF discovery tests
-- Test video files (generated automatically where needed)
-- Write permissions in the test directory
-
-## Common Build Issues
-
-### OpenCV Not Found
-
-**Symptoms:**
-[Error messages]
-
-**Solutions:**
-[How to fix]
-
-### GStreamer Linking Errors
-
-**Symptoms:**
-[Error messages]
-
-**Solutions:**
-[How to fix]
-
-### Windows: Missing DLL at Runtime
-
-**Symptoms:**
-```
-The code execution cannot proceed because opencv_world4120.dll was not found
-The code execution cannot proceed because avcodec-62.dll was not found
-The code execution cannot proceed because gstreamer-1.0-0.dll was not found
-```
-
-**Solutions:**
-
-1. **Add to PATH:**
-   ```powershell
-   # Add directories to PATH
-   $env:PATH += ";C:\opencv\build\x64\vc17\bin"
-   $env:PATH += ";C:\gstreamer\1.0\msvc_x86_64\bin"
-   $env:PATH += ";C:\ffmpeg\bin"
-   ```
-
-2. **Copy DLLs:** Copy all required DLLs to the same directory as the executable
-
-3. **Verify DLL locations:**
-   ```powershell
-   where opencv_world4120.dll
-   where avcodec-62.dll
-   ```
-
-### Windows: MSVC Version Mismatch
-
-**Symptoms:**
-```
-opencv_world4120.lib was built with vc17 but you're using vc16
-```
-
-**Solution:**
-Ensure your OpenCV version matches your Visual Studio version (vc17 for VS2022, vc16 for VS2019), or rebuild OpenCV from source with your compiler.
-
-### Linux: Permission Denied When Running
-
-**Symptoms:**
-```
-./revere: Permission denied
-```
-
-**Solution:**
-```bash
-chmod +x build/apps/revere/revere
-chmod +x build/apps/vision/vision
+cmake --build . --target install
 ```
 
 ## Verified Build Configurations

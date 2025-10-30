@@ -31,13 +31,14 @@ I shoot for building lego blocks that are generally useful from which many appli
 [ASCII diagram or reference to image showing major components and their relationships]
 
 ```
-[Camera] --RTSP--> [r_vss] --> [r_storage] --> [Disk]
-                      |              |
-                      v              v
-                 [r_motion]      [r_http]
-                      |              |
-                      v              v
-                 [AI Plugins]    [Web UI]
+[Camera] --RTSP--> [r_pipeline] --> [r_vss] --> [r_storage] --> [Disk]
+                                       |
+                                       v
+                                   [r_motion]      [r_http]
+                                       |              |
+                                       v              v
+                                  [AI Plugins]    [Web UI]
+* Not complete!
 ```
 
 ## Component Overview
@@ -395,33 +396,15 @@ Disk (video segments + time-series index)
 
 ## Storage Architecture
 
-### File Organization
-
-[Description of how recordings are organized on disk]
-
-```
-storage_root/
-├── camera_id_1/
-│   ├── YYYY-MM-DD/
-│   │   ├── segment_1.mp4
-│   │   ├── segment_2.mp4
-│   │   └── index.db
-│   └── events/
-└── camera_id_2/
-    └── ...
-```
-
-### Segment Management
-
-[How video segments are created, rotated, and pruned]
+revere uses nanots for storage: https://github.com/dicroce/nanots
 
 ### Metadata Storage
 
-[How metadata is stored and indexed]
+revere uses nanots for some metdata storage and sqlite for other metdata.
 
 ### Storage Optimization
 
-[Strategies for efficient storage usage]
+nanots is highly optimized for multiple readers + writers. See the nanots repo for more info: https://github.com/dicroce/nanots
 
 ## Plugin System
 
@@ -437,20 +420,6 @@ storage_root/
 **Performance:** Medium speed, high accuracy
 **Use case:** Reliable person detection with good balance of speed and accuracy
 **Requirements:** NCNN, model files in `models/yolov8_person_plugin/`
-
-#### mobilenet_person_plugin
-**Status:** Available but disabled by default
-**Purpose:** Person detection using MobileNet SSD
-**Performance:** Fast, moderate accuracy
-**Use case:** Resource-constrained systems needing quick detection
-**Requirements:** NCNN, model files
-
-#### picodet_person_plugin
-**Status:** Available but disabled by default
-**Purpose:** Person detection using PicoDet lightweight detector
-**Performance:** Very fast, good accuracy
-**Use case:** Real-time detection on lower-end hardware
-**Requirements:** NCNN, model files
 
 #### test_plugin
 **Status:** Always built (no NCNN required)
