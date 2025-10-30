@@ -5,7 +5,7 @@ include(FetchContent)
 
 FetchContent_Declare(
   nanots
-  GIT_REPOSITORY git@github.com:dicroce/nanots_private.git
+  GIT_REPOSITORY https://github.com/dicroce/nanots.git
   GIT_TAG main
 )
 FetchContent_MakeAvailable(nanots)
