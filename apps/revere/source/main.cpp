@@ -510,7 +510,7 @@ void configure_camera_setup_wizard(
         "choose_file",
         [&as, &camera_setup_wizard, &devices, &ui_state](){
             ImGuiFileDialog::Instance()->OpenDialog("ChooseFileDlgKey", "Choose File", ".nts", revere::sub_dir("video"));
-            if(ImGuiFileDialog::Instance()->Display("ChooseFileDlgKey")) 
+            if(ImGuiFileDialog::Instance()->Display("ChooseFileDlgKey", ImGuiWindowFlags_None, ImVec2(800, 600))) 
             {
                 if(ImGuiFileDialog::Instance()->IsOk())
                 {

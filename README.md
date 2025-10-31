@@ -4,6 +4,8 @@
 
 Revere is an open source video surveillance system with ONVIF camera support, motion detection, recording, playback and object detection.
 
+**Revere is extremely beta software at the moment. I have only been able to test this on a small number of cameras.**
+
 ## Key Features
 
 - ONVIF camera discovery and management
@@ -24,6 +26,8 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 
 ### Vision
 - Connects to revere
+- Supports 2x2, 4x4 and single view.
+
 ![Alt text](/assets/screenshots/vision.jpg "Vision")
 
 ## Quick Start
