@@ -91,6 +91,8 @@ public:
 
     R_API void post_frame(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_parameters, const std::string& id, bool is_key_frame);
 
+    R_API void remove_work_context(const std::string& camera_id);
+
 private:
     void _entry_point();
     std::map<std::string, std::shared_ptr<r_work_context>>::iterator _create_work_context(const r_work_item& item);

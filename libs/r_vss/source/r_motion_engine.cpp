@@ -61,6 +61,16 @@ void r_motion_engine::post_frame(r_pipeline::r_gst_buffer buffer, int64_t ts, co
     _work.post(item);
 }
 
+void r_motion_engine::remove_work_context(const string& camera_id)
+{
+    // Post a special work item to trigger removal in the worker thread
+    // This ensures the work context is removed from the same thread that accesses it
+    r_work_item item;
+    item.id = camera_id;
+    item.ts = -1; // Use -1 as a sentinel value to indicate removal request
+    _work.post(item);
+}
+
 void r_motion_engine::_entry_point()
 {
     _running = true;
@@ -72,6 +82,17 @@ void r_motion_engine::_entry_point()
         if(!maybe_work.is_null())
         {
             auto work = maybe_work.value();
+
+            // Check for removal request (sentinel value ts == -1)
+            if(work.ts == -1)
+            {
+                auto found_wc = _work_contexts.find(work.id);
+                if(found_wc != _work_contexts.end())
+                {
+                    _work_contexts.erase(found_wc);
+                }
+                continue;
+            }
 
             try
             {

@@ -683,6 +683,64 @@ void camera_properties_modal(
     }
 }
 
+template<typename DELETE_FILES_CB, typename KEEP_FILES_CB, typename CANCEL_CB>
+void remove_camera_modal(
+    ImGuiContext*,
+    const std::string& name,
+    const std::string& camera_name,
+    bool& delete_files,
+    DELETE_FILES_CB delete_files_cb,
+    KEEP_FILES_CB keep_files_cb,
+    CANCEL_CB cancel_cb
+)
+{
+    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("Remove camera: %s", camera_name.c_str());
+        ImGui::Spacing();
+        ImGui::Text("Do you want to delete the camera's storage files?");
+        ImGui::Text("This will permanently delete video recordings and motion detection data.");
+        ImGui::Spacing();
+
+        ImGui::Checkbox("Delete storage files (.nts, .mdb, .mdnts, .db)", &delete_files);
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if(ImGui::Button("Cancel", ImVec2(120, 30)))
+        {
+            ImGui::CloseCurrentPopup();
+            cancel_cb();
+        }
+
+        ImGui::SameLine();
+
+        if(delete_files)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(180, 50, 50, 255));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(200, 60, 60, 255));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(160, 40, 40, 255));
+            if(ImGui::Button("Remove & Delete Files", ImVec2(200, 30)))
+            {
+                ImGui::CloseCurrentPopup();
+                delete_files_cb();
+            }
+            ImGui::PopStyleColor(3);
+        }
+        else
+        {
+            if(ImGui::Button("Remove (Keep Files)", ImVec2(200, 30)))
+            {
+                ImGui::CloseCurrentPopup();
+                keep_files_cb();
+            }
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
 }
 
 #endif

@@ -423,7 +423,12 @@ void r_stream_keeper::_remove_recording_contexts(const std::vector<r_disco::r_ca
     for(const auto& camera : cameras)
     {
         if(_streams.count(camera.id) > 0)
+        {
+            // Stop the recording context and clean up motion engine
+            _stop(camera.id);
+            // Erase the recording context (this will close all file handles)
             _streams.erase(camera.id);
+        }
     }
 }
 
@@ -461,6 +466,9 @@ void r_stream_keeper::_stop(const string& camera_id)
     }
 
     _streams[camera_id]->stop();
+
+    // Clean up motion engine work context for this camera
+    _motionEngine.remove_work_context(camera_id);
 }
 
 void r_stream_keeper::_client_connected_cbs(GstRTSPServer*, GstRTSPClient* client, r_stream_keeper* sk)

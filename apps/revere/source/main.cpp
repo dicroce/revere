@@ -90,6 +90,10 @@ struct revere_ui_state
     bool do_motion_pruning {false};
     std::string min_continuous_recording_hours {"24"};
 
+    // camera removal dialog
+    bool delete_camera_files {false};
+    std::string camera_to_remove_name;
+
     bool minimize_requested {false};
 
     // Cached values for performance optimization
@@ -202,10 +206,106 @@ void _create_motion_files(const string& motion_path)
         return;
 
     r_storage::r_ring::allocate(motion_path, 11, 2592000);
-    
+
     // Also allocate metadata storage for analytics (person detection, etc.)
     // Use 512KB blocks, 30 blocks total
     r_storage::r_md_storage_file::allocate(motion_path, 524288, 30);
+}
+
+void _delete_camera_files(const r_disco::r_camera& camera)
+{
+    auto video_path = revere::sub_dir("video");
+
+    // Delete the main storage file (.nts)
+    if(!camera.record_file_path.is_null())
+    {
+        auto storage_path = revere::join_path(video_path, camera.record_file_path.value());
+        if(r_fs::file_exists(storage_path))
+        {
+            try
+            {
+                r_fs::remove_file(storage_path);
+                R_LOG_INFO("Deleted camera storage file: %s", storage_path.c_str());
+            }
+            catch(const std::exception& e)
+            {
+                R_LOG_ERROR("Failed to delete storage file %s: %s", storage_path.c_str(), e.what());
+            }
+        }
+    }
+
+    // Delete motion detection files (.mdb and .mdnts)
+    if(!camera.motion_detection_file_path.is_null())
+    {
+        auto motion_base_path = revere::join_path(video_path, camera.motion_detection_file_path.value());
+
+        // Delete .mdb file (ring buffer)
+        if(r_fs::file_exists(motion_base_path))
+        {
+            try
+            {
+                r_fs::remove_file(motion_base_path);
+                R_LOG_INFO("Deleted camera motion file: %s", motion_base_path.c_str());
+            }
+            catch(const std::exception& e)
+            {
+                R_LOG_ERROR("Failed to delete motion file %s: %s", motion_base_path.c_str(), e.what());
+            }
+        }
+
+        // Delete .db file (SQLite database for ring buffer)
+        auto mdb_db_path = motion_base_path;
+        if(mdb_db_path.size() >= 4 && mdb_db_path.substr(mdb_db_path.size() - 4) == ".mdb")
+        {
+            mdb_db_path = mdb_db_path.substr(0, mdb_db_path.size() - 4) + ".db";
+            if(r_fs::file_exists(mdb_db_path))
+            {
+                try
+                {
+                    r_fs::remove_file(mdb_db_path);
+                    R_LOG_INFO("Deleted camera motion database file: %s", mdb_db_path.c_str());
+                }
+                catch(const std::exception& e)
+                {
+                    R_LOG_ERROR("Failed to delete motion database file %s: %s", mdb_db_path.c_str(), e.what());
+                }
+            }
+        }
+
+        // Delete .mdnts file (metadata storage)
+        auto mdnts_path = motion_base_path;
+        if(mdnts_path.size() >= 4 && mdnts_path.substr(mdnts_path.size() - 4) == ".mdb")
+        {
+            mdnts_path = mdnts_path.substr(0, mdnts_path.size() - 4) + ".mdnts";
+            if(r_fs::file_exists(mdnts_path))
+            {
+                try
+                {
+                    r_fs::remove_file(mdnts_path);
+                    R_LOG_INFO("Deleted camera metadata file: %s", mdnts_path.c_str());
+                }
+                catch(const std::exception& e)
+                {
+                    R_LOG_ERROR("Failed to delete metadata file %s: %s", mdnts_path.c_str(), e.what());
+                }
+            }
+
+            // Delete .mdnts.db file (SQLite database for metadata storage)
+            auto mdnts_db_path = mdnts_path + ".db";
+            if(r_fs::file_exists(mdnts_db_path))
+            {
+                try
+                {
+                    r_fs::remove_file(mdnts_db_path);
+                    R_LOG_INFO("Deleted camera metadata database file: %s", mdnts_db_path.c_str());
+                }
+                catch(const std::exception& e)
+                {
+                    R_LOG_ERROR("Failed to delete metadata database file %s: %s", mdnts_db_path.c_str(), e.what());
+                }
+            }
+        }
+    }
 }
 
 void _on_new_file(revere::assignment_state& as, r_ui_utils::wizard& camera_setup_wizard, r_disco::r_devices& devices, revere_ui_state& ui_state)
@@ -670,6 +770,67 @@ void configure_camera_setup_wizard(
             );
         }
     );
+
+    camera_setup_wizard.add_step(
+        "remove_camera_modal",
+        [&ui_state, &camera_setup_wizard, &devices](){
+            ImGui::OpenPopup("Remove Camera");
+            revere::remove_camera_modal(
+                GImGui,
+                "Remove Camera",
+                ui_state.camera_to_remove_name,
+                ui_state.delete_camera_files,
+                [&](){
+                    // Delete files callback
+                    auto camera_id = ui_state.selected_camera_id();
+                    if(!camera_id.is_null())
+                    {
+                        auto maybe_camera = devices.get_camera_by_id(camera_id.value());
+                        if(!maybe_camera.is_null())
+                        {
+                            auto camera = maybe_camera.value();
+
+                            // First, unassign the camera - this will trigger stream_keeper
+                            // to stop recording and close all file handles
+                            devices.unassign_camera(camera);
+
+                            // Wait a bit to ensure all file handles are closed
+                            // The stream_keeper's main loop polls every 2 seconds, so we need to wait
+                            // for at least one iteration to process the unassignment
+                            std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+
+                            // Now it's safe to delete the files
+                            _delete_camera_files(camera);
+                        }
+                    }
+                    ui_state.reset_selection();
+                    ui_state.delete_camera_files = false;
+                    camera_setup_wizard.cancel();
+                },
+                [&](){
+                    // Keep files callback
+                    auto camera_id = ui_state.selected_camera_id();
+                    if(!camera_id.is_null())
+                    {
+                        auto maybe_camera = devices.get_camera_by_id(camera_id.value());
+                        if(!maybe_camera.is_null())
+                        {
+                            auto camera = maybe_camera.value();
+                            devices.unassign_camera(camera);
+                        }
+                    }
+                    ui_state.reset_selection();
+                    ui_state.delete_camera_files = false;
+                    camera_setup_wizard.cancel();
+                },
+                [&](){
+                    // Cancel callback
+                    ui_state.delete_camera_files = false;
+                    camera_setup_wizard.cancel();
+                }
+            );
+        }
+    );
 }
 
 string _get_icon_path()
@@ -1049,14 +1210,22 @@ int main(int argc, char** argv)
                             ui_state.recording_items,
                             "Remove",
                             [&](int i){
+                                // Set up the UI state for the remove dialog
+                                ui_state.recording_selected_item = i;
+                                ui_state.discovered_selected_item = -1;
+
                                 auto maybe_c = devices.get_camera_by_id(ui_state.recording_items[i].camera_id);
                                 if(!maybe_c.is_null())
                                 {
                                     auto c = maybe_c.value();
-                                    devices.unassign_camera(c);
+                                    // Store camera name for display in the dialog
+                                    ui_state.camera_to_remove_name = c.friendly_name.is_null() ?
+                                        c.camera_name.value() : c.friendly_name.value();
+                                    // Reset the delete files checkbox to false (unchecked by default)
+                                    ui_state.delete_camera_files = false;
+                                    // Show the removal confirmation dialog
+                                    camera_setup_wizard.next("remove_camera_modal");
                                 }
-
-                                ui_state.reset_selection();
 
                                 force_ui_update = true;
                             },
