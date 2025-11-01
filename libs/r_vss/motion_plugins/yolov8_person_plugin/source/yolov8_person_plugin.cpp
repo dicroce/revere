@@ -104,8 +104,6 @@ void yolov8_person_plugin::post_motion_event(r_vss::r_motion_event evt, const st
     msg.height = height;
     msg.motion_bbox = motion_bbox;
 
-    R_LOG_INFO("yolov8_person_plugin: Motion event posted for camera %s", camera_id.c_str());
-
     _event_queue.post(msg);
 }
 
