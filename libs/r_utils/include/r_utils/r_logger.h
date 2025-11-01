@@ -8,6 +8,7 @@
 #include <syslog.h>
 #endif
 #include <string>
+#include <functional>
 
 namespace r_utils
 {
@@ -26,6 +27,8 @@ enum LOG_LEVEL
     LOG_LEVEL_DEBUG = 8
 };
 
+using log_callback_t = std::function<void(LOG_LEVEL level, const std::string& message)>;
+
 #define R_LOG_CRITICAL(format, ...) r_utils::r_logger::write(r_utils::r_logger::LOG_LEVEL_CRITICAL, __LINE__, __FILE__, format,  ##__VA_ARGS__)
 #define R_LOG_ERROR(format, ...) r_utils::r_logger::write(r_utils::r_logger::LOG_LEVEL_ERROR, __LINE__, __FILE__, format,  ##__VA_ARGS__)
 #define R_LOG_WARNING(format, ...) r_utils::r_logger::write(r_utils::r_logger::LOG_LEVEL_WARNING, __LINE__, __FILE__, format,  ##__VA_ARGS__)
@@ -40,6 +43,9 @@ R_API void write(LOG_LEVEL level, int line, const char* file, const char* format
 R_API void install_logger(const std::string& log_dir, const std::string& log_prefix);
 R_API void uninstall_logger();
 R_API void install_terminate();
+
+R_API void set_log_callback(log_callback_t callback);
+R_API void clear_log_callback();
 
 }
 

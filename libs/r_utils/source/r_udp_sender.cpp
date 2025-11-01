@@ -71,7 +71,7 @@ void r_udp_sender::_configure()
     // This call binds our UDP socket to a particular local interface,
     // OR any local interface if localInterfaceIP == "INADDR_ANY" (the
     // default).
-    if( bind( _sok, addr.get_sock_addr(), addr.sock_addr_size() ) < 0 )
+    if( ::bind( _sok, addr.get_sock_addr(), addr.sock_addr_size() ) < 0 )
         R_STHROW(r_internal_exception, ( "r_udp_sender: Unable to bind to local interface." ));
 }
 

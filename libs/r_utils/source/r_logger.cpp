@@ -29,6 +29,7 @@ static FILE* _log_file = nullptr;
 static uint32_t _approx_bytes_logged = 0;
 static string _log_dir = ".";
 static string _log_prefix = "log_";
+static r_utils::r_logger::log_callback_t _log_callback = nullptr;
 
 static deque<string> _get_file_names(const std::string& log_dir)
 {
@@ -155,14 +156,31 @@ void r_utils::r_logger::write(LOG_LEVEL level,
     _approx_bytes_logged += (uint32_t)msg.length();
     auto lines = r_string_utils::split(msg, "\n");
 
+#ifdef IS_WINDOWS
+    // Add timestamp for Windows (Linux gets it from syslog)
+    auto now = std::chrono::system_clock::now();
+    auto timestamp = r_time_utils::tp_to_iso_8601(now, false);
+#endif
+
+    // Invoke callback if registered
+    if(_log_callback)
+    {
+        for(auto l : lines)
+        {
+#ifdef IS_WINDOWS
+            auto timestamped_msg = timestamp + " " + l;
+            _log_callback(level, timestamped_msg);
+#else
+            _log_callback(level, l);
+#endif
+        }
+    }
+
     if(_log_file)
     {
         for(auto l : lines)
         {
 #ifdef IS_WINDOWS
-            // Add timestamp for Windows (Linux gets it from syslog)
-            auto now = std::chrono::system_clock::now();
-            auto timestamp = r_time_utils::tp_to_iso_8601(now, false);
             fprintf(_log_file, "%s %s\n", timestamp.c_str(), l.c_str());
 #else
             fprintf(_log_file, "%s\n", l.c_str());
@@ -246,4 +264,14 @@ void r_utils::r_logger::uninstall_logger()
 void r_utils::r_logger::install_terminate()
 {
     set_terminate(r_utils_terminate);
+}
+
+void r_utils::r_logger::set_log_callback(log_callback_t callback)
+{
+    _log_callback = callback;
+}
+
+void r_utils::r_logger::clear_log_callback()
+{
+    _log_callback = nullptr;
 }

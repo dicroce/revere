@@ -96,6 +96,12 @@ struct revere_ui_state
 
     bool minimize_requested {false};
 
+    // Log buffer
+    std::vector<std::pair<r_utils::r_logger::LOG_LEVEL, std::string>> log_messages;
+    std::mutex log_mutex;
+    size_t max_log_messages {1000};
+    float log_height {150.0f};
+
     // Cached values for performance optimization
     float recording_largest_label {-1.0f};  // -1 means needs recalculation
     float discovered_largest_label {-1.0f}; // -1 means needs recalculation
@@ -936,6 +942,9 @@ int main(int argc, char** argv)
 
     r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
 
+    // UI state needs to be created before we can register the log callback
+    // We'll register it after creating ui_state
+
 #ifdef IS_WINDOWS
     int argc;
     LPWSTR* argv_p = CommandLineToArgvW(pCmdLine, &argc);
@@ -953,8 +962,6 @@ int main(int argc, char** argv)
 
     r_raw_socket::socket_startup();
 
-    R_LOG_INFO("Revere Starting...");
-
     _set_working_dir();
 
     r_pipeline::gstreamer_init();
@@ -971,9 +978,7 @@ int main(int argc, char** argv)
     agent.set_credential_cb(bind(&r_disco::r_devices::get_credentials, &devices, placeholders::_1));
     agent.set_is_recording_cb(bind(&r_vss::r_stream_keeper::is_recording, &streamKeeper, placeholders::_1));
 
-    streamKeeper.start();
-    devices.start();
-    agent.start();
+    // Note: streamKeeper, devices, and agent will be started after log callback is registered
 
     // Setup window
     glfwSetErrorCallback(glfw_error_callback);
@@ -1054,6 +1059,26 @@ int main(int argc, char** argv)
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     revere_ui_state ui_state;
+
+    // Register log callback to populate UI log panel
+    r_logger::set_log_callback([&ui_state](r_utils::r_logger::LOG_LEVEL level, const std::string& message) {
+        std::lock_guard<std::mutex> lock(ui_state.log_mutex);
+        ui_state.log_messages.push_back({level, message});
+        // Keep only the last N messages
+        if(ui_state.log_messages.size() > ui_state.max_log_messages)
+            ui_state.log_messages.erase(ui_state.log_messages.begin());
+    });
+
+    // Log startup banner after callback is registered
+    R_LOG_INFO("========================================");
+    R_LOG_INFO("Revere Video Surveillance System");
+    R_LOG_INFO("Starting up...");
+    R_LOG_INFO("========================================");
+
+    // Start background services (now that log callback is registered)
+    streamKeeper.start();
+    devices.start();
+    agent.start();
 
     r_ui_utils::texture_loader tl;
     revere::assignment_state as;
@@ -1156,7 +1181,7 @@ int main(int argc, char** argv)
             window_width,
             window_height,
             [&](uint16_t x, uint16_t y, uint16_t w, uint16_t h){
-                revere::thirds(
+                revere::thirds_with_log(
                     x,
                     y,
                     w,
@@ -1266,7 +1291,53 @@ int main(int argc, char** argv)
                             ImGui::Text("retention: %s", ui_state.retention.c_str());
                             ImGui::PopFont();
                         }
-                    }
+                    },
+                    "Log",
+                    [&](uint16_t log_width, uint16_t log_height){
+                        // Log panel content
+                        ImGui::PushFont(r_ui_utils::fonts["14.00"].roboto_regular);
+
+                        // Begin scrolling child window
+                        ImGui::BeginChild("LogScrolling", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+
+                        // Display log messages
+                        {
+                            std::lock_guard<std::mutex> lock(ui_state.log_mutex);
+                            for(const auto& log_entry : ui_state.log_messages)
+                            {
+                                // Color based on log level
+                                ImVec4 color;
+                                switch(log_entry.first)
+                                {
+                                    case r_utils::r_logger::LOG_LEVEL_CRITICAL:
+                                        color = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Red
+                                        break;
+                                    case r_utils::r_logger::LOG_LEVEL_ERROR:
+                                        color = ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // Light red
+                                        break;
+                                    case r_utils::r_logger::LOG_LEVEL_WARNING:
+                                        color = ImVec4(1.0f, 0.8f, 0.0f, 1.0f); // Yellow
+                                        break;
+                                    case r_utils::r_logger::LOG_LEVEL_INFO:
+                                        color = ImVec4(0.7f, 0.7f, 0.7f, 1.0f); // Light gray
+                                        break;
+                                    default:
+                                        color = ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // Gray
+                                        break;
+                                }
+
+                                ImGui::TextColored(color, "%s", log_entry.second.c_str());
+                            }
+                        }
+
+                        // Auto-scroll to bottom if new content
+                        if(ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+                            ImGui::SetScrollHereY(1.0f);
+
+                        ImGui::EndChild();
+                        ImGui::PopFont();
+                    },
+                    ui_state.log_height
                 );
 
             },
@@ -1318,6 +1389,7 @@ int main(int argc, char** argv)
 
     r_raw_socket::socket_cleanup();
 
+    r_logger::clear_log_callback();
     r_logger::uninstall_logger();
 
     return 0;

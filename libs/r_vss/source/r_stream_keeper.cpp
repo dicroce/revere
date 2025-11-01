@@ -411,8 +411,10 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
     {
         if(_streams.count(camera.id) == 0)
         {
-            printf("stream keeper add camera.id=%s\n", camera.id.c_str());
-            fflush(stdout);
+            auto name = camera.friendly_name.is_null() ?
+                (camera.camera_name.is_null() ? camera.id : camera.camera_name.value()) :
+                camera.friendly_name.value();
+            R_LOG_INFO("Starting camera stream: %s (%s)", name.c_str(), camera.id.c_str());
             _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws);
         }
     }
@@ -424,6 +426,10 @@ void r_stream_keeper::_remove_recording_contexts(const std::vector<r_disco::r_ca
     {
         if(_streams.count(camera.id) > 0)
         {
+            auto name = camera.friendly_name.is_null() ?
+                (camera.camera_name.is_null() ? camera.id : camera.camera_name.value()) :
+                camera.friendly_name.value();
+            R_LOG_INFO("Stopping camera stream: %s (%s)", name.c_str(), camera.id.c_str());
             // Stop the recording context and clean up motion engine
             _stop(camera.id);
             // Erase the recording context (this will close all file handles)

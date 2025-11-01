@@ -134,6 +134,64 @@ void thirds(
     ImGui::End();
 }
 
+template<typename FIRST_CB, typename SECOND_CB, typename THIRD_CB, typename LOG_CB>
+void thirds_with_log(
+    uint16_t x,
+    uint16_t y,
+    uint16_t window_width,
+    uint16_t window_height,
+    const std::string& first_label,
+    FIRST_CB first_cb,
+    const std::string& second_label,
+    SECOND_CB second_cb,
+    const std::string& third_label,
+    THIRD_CB third_cb,
+    const std::string& log_label,
+    LOG_CB log_cb,
+    float& log_height
+)
+{
+    // Clamp log_height to reasonable bounds
+    float min_log_height = 100.0f;
+    float max_log_height = window_height - 200.0f;
+    if(log_height < min_log_height) log_height = min_log_height;
+    if(log_height > max_log_height) log_height = max_log_height;
+
+    // Calculate heights for top and bottom sections
+    float top_height = window_height - log_height;
+
+    // Top section: three columns
+    uint16_t panel_width = window_width / 3;
+    ImGui::SetNextWindowPos(ImVec2(x, y));
+    ImGui::SetNextWindowSize(ImVec2(panel_width, top_height));
+    ImGui::Begin(first_label.c_str());
+    first_cb(panel_width);
+    ImGui::End();
+
+    ImGui::SetNextWindowPos(ImVec2((float)(x + panel_width), (float)y));
+    ImGui::SetNextWindowSize(ImVec2(panel_width, top_height));
+    ImGui::Begin(second_label.c_str());
+    second_cb(panel_width);
+    ImGui::End();
+
+    ImGui::SetNextWindowPos(ImVec2(x + ((float)panel_width*2), y));
+    ImGui::SetNextWindowSize(ImVec2(panel_width, top_height));
+    ImGui::Begin(third_label.c_str());
+    third_cb(panel_width);
+    ImGui::End();
+
+    // Bottom section: full width log (resizable from top)
+    ImGui::SetNextWindowPos(ImVec2(x, y + top_height));
+    ImGui::SetNextWindowSize(ImVec2(window_width, log_height));
+    ImGui::Begin(log_label.c_str(), nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
+
+    // Update log_height if window was resized
+    log_height = ImGui::GetWindowHeight();
+
+    log_cb(window_width, (uint16_t)log_height);
+    ImGui::End();
+}
+
 template<typename OK_CB, typename CANCEL_CB>
 void rtsp_credentials_modal(
     ImGuiContext*,
