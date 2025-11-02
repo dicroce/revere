@@ -8,6 +8,7 @@
 #include "r_http/r_client_request.h"
 #include "r_http/r_methods.h"
 #include "r_utils/r_sha1.h"
+#include "r_utils/r_sha256.h"
 #include "r_utils/r_string_utils.h"
 
 #include <string.h>
@@ -604,12 +605,15 @@ static struct in_addr _find_active_network_interface_linux()
 }
 #endif
 
-static void _add_username_digest_header(
+// New function that supports both SHA-256 and SHA-1
+// use_sha256: true = use SHA-256, false = use SHA-1 (default for compatibility)
+static void _add_username_digest_header_with_algorithm(
     pugi::xml_document* doc,
-    pugi::xml_node root, 
-    const std::string& username, 
-    const std::string& password, 
-    int time_offset_seconds
+    pugi::xml_node root,
+    const std::string& username,
+    const std::string& password,
+    int time_offset_seconds,
+    bool use_sha256
 )
 {
     srand((unsigned int)time(NULL));
@@ -661,7 +665,6 @@ static void _add_username_digest_header(
 #endif
 #ifdef IS_LINUX
     time_t then = tv.tv_sec + time_offset_seconds;
-    //time_t then = camera_time;
     this_tm = gmtime((time_t*)&then);
 #endif
     size_t time_buffer_length = strftime(time_buffer, 1024, "%Y-%m-%dT%H:%M:%S.", this_tm);
@@ -681,16 +684,32 @@ static void _add_username_digest_header(
     strcat(time_buffer, milli_buf);
 #endif
 
-    r_sha1 ctx;
-    ctx.update(nonce_buffer, nonce_chunk_size);
-    ctx.update((const unsigned char*)time_buffer, strlen(time_buffer));
-    ctx.update((const unsigned char*)password.c_str(), strlen(password.c_str()));
-    ctx.finalize();
+    unsigned char hash[32];  // Max size for SHA-256
+    unsigned int digest_chunk_size;
 
-    unsigned char hash[20];
-    ctx.get(&hash[0]);
+    if(use_sha256)
+    {
+        // Use SHA-256 authentication
+        r_sha256 ctx;
+        ctx.update(nonce_buffer, nonce_chunk_size);
+        ctx.update((const unsigned char*)time_buffer, strlen(time_buffer));
+        ctx.update((const unsigned char*)password.c_str(), strlen(password.c_str()));
+        ctx.finalize();
+        ctx.get(&hash[0]);
+        digest_chunk_size = 32;
+    }
+    else
+    {
+        // Use SHA-1 authentication (legacy, for compatibility)
+        r_sha1 ctx;
+        ctx.update(nonce_buffer, nonce_chunk_size);
+        ctx.update((const unsigned char*)time_buffer, strlen(time_buffer));
+        ctx.update((const unsigned char*)password.c_str(), strlen(password.c_str()));
+        ctx.finalize();
+        ctx.get(&hash[0]);
+        digest_chunk_size = 20;
+    }
 
-    unsigned int digest_chunk_size = 20;
     unsigned char digest_result[128];
     b64_encoded = r_string_utils::to_base64(&hash[0], digest_chunk_size);
     memset(digest_result, 0, 128);
@@ -708,36 +727,49 @@ static void _add_username_digest_header(
     // Add WSSE and WSU namespaces
     root.append_attribute("xmlns:wsse") = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd";
     root.append_attribute("xmlns:wsu") = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd";
-    
+
     // Create Header element
     pugi::xml_node header = root.prepend_child("SOAP-ENV:Header");
-    
+
     // Create Security element
     pugi::xml_node security = header.append_child("wsse:Security");
     security.append_attribute("SOAP-ENV:mustUnderstand") = "1";
-    
+
     // Create UsernameToken element
     pugi::xml_node usernameToken = security.append_child("wsse:UsernameToken");
-    
+
     // Create Username element
     pugi::xml_node usernameElem = usernameToken.append_child("wsse:Username");
     usernameElem.text().set(username.c_str());
-    
+
     // Create Password element
     pugi::xml_node passwordElem = usernameToken.append_child("wsse:Password");
-    passwordElem.append_attribute("Type") = 
+    passwordElem.append_attribute("Type") =
         "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest";
     passwordElem.text().set(digest_base64);
-    
+
     // Create Nonce element
     pugi::xml_node nonceElem = usernameToken.append_child("wsse:Nonce");
-    nonceElem.append_attribute("EncodingType") = 
+    nonceElem.append_attribute("EncodingType") =
         "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary";
     nonceElem.text().set(nonce_base64);
-    
+
     // Create Created element
     pugi::xml_node createdElem = usernameToken.append_child("wsu:Created");
     createdElem.text().set(time_holder);
+}
+
+// Legacy function - wrapper that uses SHA-1 for backward compatibility
+static void _add_username_digest_header(
+    pugi::xml_document* doc,
+    pugi::xml_node root,
+    const std::string& username,
+    const std::string& password,
+    int time_offset_seconds
+)
+{
+    // Delegate to the new function with SHA-1 (use_sha256 = false)
+    _add_username_digest_header_with_algorithm(doc, root, username, password, time_offset_seconds, false);
 }
 
 vector<string> r_onvif::discover(const string& uuid)

@@ -47,12 +47,40 @@ void r_onvif_provider::interrogate_camera(
         if(_agent && _agent->_is_recording(sc.id))
             return;
 
-        r_onvif::r_onvif_cam cam(sc.ipv4.value(), 80, "http", sc.xaddrs.value(), username, password);
+        // Use discovered port and protocol instead of hardcoding port 80
+        int port = sc.port.is_null() ? 80 : sc.port.value();
+        string protocol = sc.protocol.is_null() ? "http" : sc.protocol.value();
+
+        r_onvif::r_onvif_cam cam(sc.ipv4.value(), port, protocol, sc.xaddrs.value(), username, password);
 
         auto caps = cam.get_camera_capabilities();
         auto oms = cam.get_media_service(caps);
         auto profile_tokens = cam.get_profile_tokens(oms);
-        auto stream_uri = cam.get_stream_uri(oms, profile_tokens[0].token);
+
+        // Select the profile with the highest resolution (main stream, not sub-stream)
+        if(profile_tokens.empty())
+            R_THROW(("No ONVIF profiles available for camera."));
+
+        size_t best_profile_idx = 0;
+        uint32_t best_resolution = 0;
+
+        for(size_t i = 0; i < profile_tokens.size(); ++i)
+        {
+            uint32_t resolution = (uint32_t)profile_tokens[i].width * (uint32_t)profile_tokens[i].height;
+            if(resolution > best_resolution)
+            {
+                best_resolution = resolution;
+                best_profile_idx = i;
+            }
+        }
+
+        R_LOG_INFO("Selected ONVIF profile %zu/%zu: %s (%dx%d)",
+                   best_profile_idx + 1, profile_tokens.size(),
+                   profile_tokens[best_profile_idx].encoding.c_str(),
+                   profile_tokens[best_profile_idx].width,
+                   profile_tokens[best_profile_idx].height);
+
+        auto stream_uri = cam.get_stream_uri(oms, profile_tokens[best_profile_idx].token);
 
         sc.rtsp_url = stream_uri;
 
@@ -117,12 +145,40 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
         if(_agent && _agent->_is_recording(config.id))
             return r_nullable<r_stream_config>();
 
-        r_onvif::r_onvif_cam cam(config.ipv4.value(), 80, "http", xaddrs, username, password);
+        // Use discovered port and protocol instead of hardcoding port 80
+        int port = config.port.is_null() ? 80 : config.port.value();
+        string protocol = config.protocol.is_null() ? "http" : config.protocol.value();
+
+        r_onvif::r_onvif_cam cam(config.ipv4.value(), port, protocol, xaddrs, username, password);
 
         auto caps = cam.get_camera_capabilities();
         auto oms = cam.get_media_service(caps);
         auto profile_tokens = cam.get_profile_tokens(oms);
-        auto stream_uri = cam.get_stream_uri(oms, profile_tokens[0].token);
+
+        // Select the profile with the highest resolution (main stream, not sub-stream)
+        if(profile_tokens.empty())
+            R_THROW(("No ONVIF profiles available for camera."));
+
+        size_t best_profile_idx = 0;
+        uint32_t best_resolution = 0;
+
+        for(size_t i = 0; i < profile_tokens.size(); ++i)
+        {
+            uint32_t resolution = (uint32_t)profile_tokens[i].width * (uint32_t)profile_tokens[i].height;
+            if(resolution > best_resolution)
+            {
+                best_resolution = resolution;
+                best_profile_idx = i;
+            }
+        }
+
+        R_LOG_INFO("Selected ONVIF profile %zu/%zu: %s (%dx%d)",
+                   best_profile_idx + 1, profile_tokens.size(),
+                   profile_tokens[best_profile_idx].encoding.c_str(),
+                   profile_tokens[best_profile_idx].width,
+                   profile_tokens[best_profile_idx].height);
+
+        auto stream_uri = cam.get_stream_uri(oms, profile_tokens[best_profile_idx].token);
 
         config.rtsp_url = stream_uri;
 
@@ -188,6 +244,8 @@ vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir)
             config.id = id;
             config.camera_name.set_value(di.camera_name);
             config.ipv4.set_value(di.host);
+            config.port.set_value(di.port);  // Store discovered port
+            config.protocol.set_value(di.protocol);  // Store discovered protocol
             config.xaddrs.set_value(di.uri);
             config.address.set_value(di.address);
             configs.push_back(config);
