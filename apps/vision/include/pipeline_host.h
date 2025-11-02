@@ -54,8 +54,8 @@ public:
 
     void control_bar_cb(const std::string& name, const std::chrono::system_clock::time_point& pos);
     void control_bar_button_cb(const std::string& name, control_bar_button_type type);
-    void control_bar_update_data_cb(control_bar_state& cbs);
-    void control_bar_export_cb(const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end, control_bar_state& cbs);
+    void control_bar_update_data_cb(const std::string& stream_name, control_bar_state& cbs);
+    void control_bar_export_cb(const std::string& stream_name, const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end, control_bar_state& cbs);
 
     void destroy_video_textures()
     {
@@ -120,7 +120,7 @@ public:
         }
     }
 
-    bool playing() const;
+    bool playing(const std::string& stream_name) const;
 
 private:
     void _entry_point();

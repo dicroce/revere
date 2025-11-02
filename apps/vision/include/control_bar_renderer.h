@@ -75,19 +75,19 @@ public:
     void render_timerange_text(const control_bar_layout& layout, const control_bar_state& cbs, const control_bar_calculated_layout& calc);
     
     template<typename EXPORT_CB>
-    void render_export_controls(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, EXPORT_CB export_cb);
+    void render_export_controls(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, const std::string& stream_name, EXPORT_CB export_cb);
     
     template<typename CONTROL_BAR_BUTTON_CB, typename UPDATE_DATA_CB>
-    void render_play_live_button(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, 
-                                CONTROL_BAR_BUTTON_CB control_bar_button_cb, UPDATE_DATA_CB update_data_cb, bool playing);
-    
+    void render_play_live_button(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc,
+                                const std::string& stream_name, CONTROL_BAR_BUTTON_CB control_bar_button_cb, UPDATE_DATA_CB update_data_cb, bool playing);
+
     template<typename CONTROL_BAR_SLIDER_CB>
     void handle_playhead_interaction(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc,
-                                   CONTROL_BAR_SLIDER_CB control_bar_slider_cb);
-    
+                                   const std::string& stream_name, CONTROL_BAR_SLIDER_CB control_bar_slider_cb);
+
     template<typename UPDATE_DATA_CB>
     void render_navigation_buttons(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc,
-                                 UPDATE_DATA_CB update_data_cb);
+                                 const std::string& stream_name, UPDATE_DATA_CB update_data_cb);
 
     // Layout calculations
     control_bar_calculated_layout calculate_layout(const control_bar_layout& layout) const;
@@ -100,22 +100,22 @@ private:
 // Template method implementations (must be in header)
 
 template<typename EXPORT_CB>
-void control_bar_renderer::render_export_controls(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, EXPORT_CB export_cb)
+void control_bar_renderer::render_export_controls(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, const std::string& stream_name, EXPORT_CB export_cb)
 {
     auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
     auto export_button_x = (calc.center_box_left + calc.center_box_width) - 300;
-    
+
     ImGui::SetCursorScreenPos(ImVec2((float)export_button_x, (float)top_line_top));
     bool export_clicked = false;
     bool finish_export_clicked = false;
-    
+
     if(cbs.exp_state == EXPORT_STATE_CONFIGURING)
     {
         ImGui::PushStyleColor(ImGuiCol_Button, timeline_constants::colors::EXPORT_BUTTON_ACTIVE);
         finish_export_clicked = ImGui::Button("Finish Export");
         ImGui::PopStyleColor();
     }
-    else 
+    else
     {
         export_clicked = ImGui::Button("Export ");
     }
@@ -128,11 +128,11 @@ void control_bar_renderer::render_export_controls(const control_bar_layout& layo
         if(cbs.playhead_pos > timeline_constants::PLAYHEAD_MAX_POSITION)
             cbs.playhead_pos = timeline_constants::PLAYHEAD_MAX_POSITION;
     }
-    
+
     if(finish_export_clicked)
     {
         cbs.exp_state = EXPORT_STATE_STARTED;
-        export_cb(cbs.export_start_time, cbs.tr.time_in_range(0, timeline_constants::PLAYHEAD_MAX_POSITION, cbs.playhead_pos), cbs);
+        export_cb(stream_name, cbs.export_start_time, cbs.tr.time_in_range(0, timeline_constants::PLAYHEAD_MAX_POSITION, cbs.playhead_pos), cbs);
     }
 
     // Cancel button (shown during export configuration)
@@ -150,36 +150,34 @@ void control_bar_renderer::render_export_controls(const control_bar_layout& layo
 }
 
 template<typename CONTROL_BAR_BUTTON_CB, typename UPDATE_DATA_CB>
-void control_bar_renderer::render_play_live_button(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, 
-                                                   CONTROL_BAR_BUTTON_CB control_bar_button_cb, UPDATE_DATA_CB update_data_cb, bool playing)
+void control_bar_renderer::render_play_live_button(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc,
+                                                   const std::string& stream_name, CONTROL_BAR_BUTTON_CB control_bar_button_cb, UPDATE_DATA_CB update_data_cb, bool playing)
 {
     auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
     bool is_at_live = (cbs.playhead_pos >= timeline_constants::PLAYHEAD_MAX_POSITION);
-    
+
     // Calculate button positions based on how many buttons we need
     auto right_edge = calc.center_box_left + calc.center_box_width;
     float play_button_x, live_button_x;
-    
+
     if (!is_at_live && !playing)
     {
         // Show both buttons: Play and Go Live
         play_button_x = right_edge - 120; // Make room for both buttons
         live_button_x = right_edge - 60;
-        
+
         ImGui::SetCursorScreenPos(ImVec2(play_button_x, (float)top_line_top));
         if(ImGui::Button("Play"))
         {
-            auto name = r_utils::r_string_utils::format("%d_onebyone_%d", layout.window, 0);
-            control_bar_button_cb(name, CONTROL_BAR_BUTTON_PLAY);
+            control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_PLAY);
         }
-        
+
         ImGui::SetCursorScreenPos(ImVec2(live_button_x, (float)top_line_top));
         if(ImGui::Button("Go Live"))
         {
             cbs.live();
-            auto name = r_utils::r_string_utils::format("%d_onebyone_%d", layout.window, 0);
-            control_bar_button_cb(name, CONTROL_BAR_BUTTON_LIVE);
-            update_data_cb(cbs);
+            control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_LIVE);
+            update_data_cb(stream_name, cbs);
         }
     }
     else if (!is_at_live && playing)
@@ -190,9 +188,8 @@ void control_bar_renderer::render_play_live_button(const control_bar_layout& lay
         if(ImGui::Button("Go Live"))
         {
             cbs.live();
-            auto name = r_utils::r_string_utils::format("%d_onebyone_%d", layout.window, 0);
-            control_bar_button_cb(name, CONTROL_BAR_BUTTON_LIVE);
-            update_data_cb(cbs);
+            control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_LIVE);
+            update_data_cb(stream_name, cbs);
         }
     }
     // When at live position (is_at_live == true), show no buttons
@@ -200,21 +197,20 @@ void control_bar_renderer::render_play_live_button(const control_bar_layout& lay
 
 template<typename CONTROL_BAR_SLIDER_CB>
 void control_bar_renderer::handle_playhead_interaction(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc,
-                                                      CONTROL_BAR_SLIDER_CB control_bar_slider_cb)
+                                                      const std::string& stream_name, CONTROL_BAR_SLIDER_CB control_bar_slider_cb)
 {
     // Handle playhead interaction
-    if(ImGui::IsMouseHoveringRect(ImVec2(calc.center_box_left, calc.slider_top), 
-                                  ImVec2(calc.center_box_left + calc.center_box_width, calc.slider_top + calc.slider_height)) && 
+    if(ImGui::IsMouseHoveringRect(ImVec2(calc.center_box_left, calc.slider_top),
+                                  ImVec2(calc.center_box_left + calc.center_box_width, calc.slider_top + calc.slider_height)) &&
        ImGui::IsMouseDown(ImGuiMouseButton_Left))
         cbs.dragging = true;
 
     if(cbs.dragging)
     {
-        uint16_t phx = (uint16_t)(std::min)((std::max)(ImGui::GetMousePos().x, calc.center_box_left), 
+        uint16_t phx = (uint16_t)(std::min)((std::max)(ImGui::GetMousePos().x, calc.center_box_left),
                                            (calc.center_box_left + calc.center_box_width)) - (cbs.playhead_width/2);
         cbs.playhead_pos = (uint16_t)(std::max)((std::min)((int)(((double)(phx - calc.center_box_left) / (double)(calc.center_box_width)) * 1000.0), 1000), 0);
-        std::string window_name = r_utils::r_string_utils::format("%d_onebyone_%d", layout.window, 0);
-        control_bar_slider_cb(window_name, cbs.tr.time_in_range(0, 1000, cbs.playhead_pos));
+        control_bar_slider_cb(stream_name, cbs.tr.time_in_range(0, 1000, cbs.playhead_pos));
         if(!ImGui::IsMouseDown(ImGuiMouseButton_Left))
             cbs.dragging = false;
     }
@@ -222,7 +218,7 @@ void control_bar_renderer::handle_playhead_interaction(const control_bar_layout&
 
 template<typename UPDATE_DATA_CB>
 void control_bar_renderer::render_navigation_buttons(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc,
-                                                    UPDATE_DATA_CB update_data_cb)
+                                                    const std::string& stream_name, UPDATE_DATA_CB update_data_cb)
 {
     auto rs_backward_forward_button_dim = calc.text_line_height * 1.25;
     auto center_line_y = calc.event_top + ((calc.event_bottom - calc.event_top) / 2);
@@ -230,7 +226,7 @@ void control_bar_renderer::render_navigation_buttons(const control_bar_layout& l
     auto right_box_left = layout.left + left_box_width + calc.center_box_width;
 
     ImGui::PushFont(r_ui_utils::fonts["14.00"].roboto_regular);
-    
+
     // Backward button
     ImGui::PushID("backward");
     auto backward_button_x = ((layout.left + left_box_width) - rs_backward_forward_button_dim) - (calc.text_line_height / 2);
@@ -239,7 +235,7 @@ void control_bar_renderer::render_navigation_buttons(const control_bar_layout& l
     if(ImGui::Button("<", ImVec2((float)rs_backward_forward_button_dim, (float)rs_backward_forward_button_dim)))
     {
         cbs.backward(std::chrono::minutes(10));
-        update_data_cb(cbs);
+        update_data_cb(stream_name, cbs);
     }
     ImGui::PopID();
 
@@ -251,10 +247,10 @@ void control_bar_renderer::render_navigation_buttons(const control_bar_layout& l
     if(ImGui::Button(">", ImVec2((float)rs_backward_forward_button_dim, (float)rs_backward_forward_button_dim)))
     {
         cbs.forward(std::chrono::minutes(10));
-        update_data_cb(cbs);
+        update_data_cb(stream_name, cbs);
     }
     ImGui::PopID();
-    
+
     ImGui::PopFont();
 }
 

@@ -369,12 +369,12 @@ void pipeline_host::control_bar_button_cb(const string& name, control_bar_button
     }
 }
 
-void pipeline_host::control_bar_update_data_cb(control_bar_state& cbs)
+void pipeline_host::control_bar_update_data_cb(const std::string& stream_name, control_bar_state& cbs)
 {
     lock_guard<mutex> pipes_lock(_internals_lok);
-    auto found_pipe = _pipes.find("0_onebyone_0");
+    auto found_pipe = _pipes.find(stream_name);
 
-    auto found_si = _stream_infos.find("0_onebyone_0");
+    auto found_si = _stream_infos.find(stream_name);
     if(found_si != end(_stream_infos) && found_pipe != end(_pipes))
     {
         try
@@ -382,11 +382,11 @@ void pipeline_host::control_bar_update_data_cb(control_bar_state& cbs)
             auto range = cbs.get_range();
             found_pipe->second->update_range(range.first, range.second);
             cbs.set_contents(query_segments(_cfg, found_si->second.camera_id, range.first, range.second));
-            
+
             // Query motion events
             auto motion_events = query_motion_events(_cfg, found_si->second.camera_id, range.first, range.second);
             cbs.set_motion_events(motion_events);
-            
+
             // Query analytics events
             auto analytics_events = query_analytics(_cfg, found_si->second.camera_id, range.first, range.second);
             cbs.set_analytics_events(analytics_events);
@@ -394,19 +394,19 @@ void pipeline_host::control_bar_update_data_cb(control_bar_state& cbs)
         catch(const std::exception& e)
         {
             R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
-        }        
+        }
     }
     else
     {
-        R_LOG_ERROR("Stream info or pipe not found for 0_onebyone_0");
+        R_LOG_ERROR("Stream info or pipe not found for %s", stream_name.c_str());
     }
 }
 
-void pipeline_host::control_bar_export_cb(const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end, control_bar_state& cbs)
+void pipeline_host::control_bar_export_cb(const std::string& stream_name, const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end, control_bar_state& cbs)
 {
     lock_guard<mutex> pipes_lock(_internals_lok);
 
-    auto found_si = _stream_infos.find("0_onebyone_0");
+    auto found_si = _stream_infos.find(stream_name);
     if(found_si != std::end(_stream_infos))
     {
         auto tmt = system_clock::to_time_t(start);
@@ -463,12 +463,12 @@ void pipeline_host::control_bar_export_cb(const std::chrono::system_clock::time_
     }
 }
 
-bool pipeline_host::playing() const
+bool pipeline_host::playing(const std::string& stream_name) const
 {
     lock_guard<mutex> pipes_lock(_internals_lok);
-    auto found_pipe = _pipes.find("0_onebyone_0");
+    auto found_pipe = _pipes.find(stream_name);
 
-    auto found_si = _stream_infos.find("0_onebyone_0");
+    auto found_si = _stream_infos.find(stream_name);
     if(found_si != end(_stream_infos) && found_pipe != end(_pipes))
         return found_pipe->second->playing();
 

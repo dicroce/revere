@@ -510,7 +510,8 @@ int main(int, char**)
                                 }
                                 
                                 // Update playhead position based on current video timestamp during playback
-                                if (ph.playing() && name == "0_onebyone_0")
+                                // Only update for the currently selected stream
+                                if (ph.playing(ui_state.mcs.selected_stream_name) && name == ui_state.mcs.selected_stream_name)
                                 {
                                     if (rc->pts > 0)
                                     {
@@ -669,9 +670,9 @@ int main(int, char**)
                         },
                         std::bind(&pipeline_host::control_bar_cb, &ph, std::placeholders::_1, std::placeholders::_2),
                         std::bind(&pipeline_host::control_bar_button_cb, &ph, std::placeholders::_1, std::placeholders::_2),
-                        std::bind(&pipeline_host::control_bar_update_data_cb, &ph, std::placeholders::_1),
-                        std::bind(&pipeline_host::control_bar_export_cb, &ph, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3),
-                        ph.playing()
+                        std::bind(&pipeline_host::control_bar_update_data_cb, &ph, std::placeholders::_1, std::placeholders::_2),
+                        std::bind(&pipeline_host::control_bar_export_cb, &ph, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4),
+                        ph.playing(ui_state.mcs.selected_stream_name)
                     );
                 },
                 ui_state.current_revere_update.status_text

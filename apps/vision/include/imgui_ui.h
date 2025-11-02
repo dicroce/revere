@@ -37,6 +37,7 @@ struct one_by_one_state
 struct main_client_state
 {
     one_by_one_state obos;
+    std::string selected_stream_name {"0_onebyone_0"};  // Track selected stream for multi-view timeline
 };
 
 template<typename EXIT_CB, typename SETTINGS_CB, typename ONE_BY_ONE_CB, typename TWO_BY_TWO_CB, typename FOUR_BY_FOUR_CB>
@@ -227,6 +228,7 @@ void control_bar(
     uint16_t window,
     bool show_motion_events,
     control_bar_state& cbs,
+    const std::string& stream_name,
     CONTROL_BAR_SLIDER_CB control_bar_slider_cb,
     CONTROL_BAR_BUTTON_CB control_bar_button_cb,
     UPDATE_DATA_CB update_data_cb,
@@ -238,9 +240,8 @@ void control_bar(
     {
         cbs.playhead_pos = timeline_constants::PLAYHEAD_MAX_POSITION;
         cbs.live();
-        std::string name = r_utils::r_string_utils::format("%d_onebyone_%d", window, 0);
-        control_bar_slider_cb(name, cbs.tr.time_in_range(0, 1000, cbs.playhead_pos));
-        control_bar_button_cb(name, CONTROL_BAR_BUTTON_LIVE);
+        control_bar_slider_cb(stream_name, cbs.tr.time_in_range(0, 1000, cbs.playhead_pos));
+        control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_LIVE);
 
         cbs.entered = true;
     }
@@ -275,7 +276,7 @@ void control_bar(
 
     if(cbs.need_update_data)
     {
-        update_data_cb(cbs);
+        update_data_cb(stream_name, cbs);
         cbs.need_update_data = false;
     }
 
@@ -304,10 +305,10 @@ void control_bar(
     renderer.render_timerange_text(render_layout, cbs, calc);
     
     // Render export controls
-    renderer.render_export_controls(render_layout, cbs, calc, export_cb);
+    renderer.render_export_controls(render_layout, cbs, calc, stream_name, export_cb);
     
     // Render play/live button
-    renderer.render_play_live_button(render_layout, cbs, calc, control_bar_button_cb, update_data_cb, playing);
+    renderer.render_play_live_button(render_layout, cbs, calc, stream_name, control_bar_button_cb, update_data_cb, playing);
 
 
     // Playhead bounds check
@@ -368,10 +369,10 @@ void control_bar(
     }
 
     // Handle playhead interaction using renderer
-    renderer.handle_playhead_interaction(render_layout, cbs, calc, control_bar_slider_cb);
+    renderer.handle_playhead_interaction(render_layout, cbs, calc, stream_name, control_bar_slider_cb);
 
     // Render navigation controls
-    renderer.render_navigation_buttons(render_layout, cbs, calc, update_data_cb);
+    renderer.render_navigation_buttons(render_layout, cbs, calc, stream_name, update_data_cb);
 
     ImGui::End();
 }
@@ -383,7 +384,8 @@ void two_by_two(
     uint16_t width,
     uint16_t height,
     uint16_t window,
-    PANE_CB pane_cb
+    PANE_CB pane_cb,
+    std::string& selected_stream_name
 )
 {
     const std::vector<std::string> labels = {
@@ -408,10 +410,35 @@ void two_by_two(
 
             ImGui::SetNextWindowPos(ImVec2(pos_x, pos_y));
             ImGui::SetNextWindowSize(ImVec2(sub_window_width, sub_window_height));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
             ImGui::Begin(labels[index].c_str(), NULL, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
             std::string window_name = r_utils::r_string_utils::format("%d_twobytwo_%d", window, index);
+
+            // Draw selection border if this is the selected stream
+            if(!selected_stream_name.empty() && window_name == selected_stream_name)
+            {
+                ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                ImVec2 window_pos = ImGui::GetWindowPos();
+                ImVec2 window_size = ImGui::GetWindowSize();
+                draw_list->AddRect(
+                    window_pos,
+                    ImVec2(window_pos.x + window_size.x, window_pos.y + window_size.y),
+                    IM_COL32(0, 150, 255, 255),  // Blue selection border
+                    0.0f,  // No rounding
+                    0,     // All corners
+                    4.0f   // 4px thickness
+                );
+            }
+
+            // Check for click to select this stream
+            if(ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0))
+            {
+                selected_stream_name = window_name;
+            }
+
             pane_cb(pos_x, pos_y, sub_window_width, sub_window_height, window_name);
             ImGui::End();
+            ImGui::PopStyleVar();
 
             ++index;
         }
@@ -425,7 +452,8 @@ void four_by_four(
     uint16_t width,
     uint16_t height,
     uint16_t window,
-    PANE_CB pane_cb
+    PANE_CB pane_cb,
+    std::string& selected_stream_name
 )
 {
     const std::vector<std::string> labels = {
@@ -462,10 +490,35 @@ void four_by_four(
 
             ImGui::SetNextWindowPos(ImVec2(pos_x, pos_y));
             ImGui::SetNextWindowSize(ImVec2(sub_window_width, sub_window_height));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
             ImGui::Begin(labels[index].c_str(), NULL, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
             std::string window_name = r_utils::r_string_utils::format("%d_fourbyfour_%d", window, index);
+
+            // Draw selection border if this is the selected stream
+            if(!selected_stream_name.empty() && window_name == selected_stream_name)
+            {
+                ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                ImVec2 window_pos = ImGui::GetWindowPos();
+                ImVec2 window_size = ImGui::GetWindowSize();
+                draw_list->AddRect(
+                    window_pos,
+                    ImVec2(window_pos.x + window_size.x, window_pos.y + window_size.y),
+                    IM_COL32(0, 150, 255, 255),  // Blue selection border
+                    0.0f,  // No rounding
+                    0,     // All corners
+                    4.0f   // 4px thickness
+                );
+            }
+
+            // Check for click to select this stream
+            if(ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0))
+            {
+                selected_stream_name = window_name;
+            }
+
             pane_cb(pos_x, pos_y, sub_window_width, sub_window_height, window_name);
             ImGui::End();
+            ImGui::PopStyleVar();
 
             ++index;
         }
@@ -490,30 +543,28 @@ void main_client(
     bool playing
 )
 {
+    uint16_t control_bar_height = (uint16_t)(6 * ImGui::GetTextLineHeightWithSpacing());
+    uint16_t video_pane_height = h - control_bar_height;
+
     if(l == LAYOUT_ONE_BY_ONE)
     {
-        uint16_t control_bar_height = (uint16_t)(6 * ImGui::GetTextLineHeightWithSpacing());
-        uint16_t video_pane_height = h - control_bar_height;
         vision::one_by_one(
             x, y, w, video_pane_height,
             window,
             pane_cb
         );
-        auto si = cs.get_stream_info("0_onebyone_0");
+
+        mcs.selected_stream_name = "0_onebyone_0";
+        auto si = cs.get_stream_info(mcs.selected_stream_name);
         bool show_motion_events = (!si.is_null()) ? si.value().do_motion_detection : false;
-        
-        // Debug logging
-        if(si.is_null())
-        {
-            R_LOG_ERROR("No stream info found for 0_onebyone_0");
-        }
-        
+
         vision::control_bar(
             x, y + video_pane_height, w, control_bar_height,
             600,
             window,
             show_motion_events,
             mcs.obos.cbs,
+            mcs.selected_stream_name,
             control_bar_slider_cb,
             control_bar_button_cb,
             update_data_cb,
@@ -523,18 +574,62 @@ void main_client(
     }
     else if(l == LAYOUT_TWO_BY_TWO)
     {
+        // Initialize selected stream if empty or invalid for this layout
+        if(mcs.selected_stream_name.find("twobytwo") == std::string::npos)
+            mcs.selected_stream_name = "0_twobytwo_0";
+
         vision::two_by_two(
-            x, y, w, h,
+            x, y, w, video_pane_height,
             window,
-            pane_cb
+            pane_cb,
+            mcs.selected_stream_name
+        );
+
+        auto si = cs.get_stream_info(mcs.selected_stream_name);
+        bool show_motion_events = (!si.is_null()) ? si.value().do_motion_detection : false;
+
+        vision::control_bar(
+            x, y + video_pane_height, w, control_bar_height,
+            600,
+            window,
+            show_motion_events,
+            mcs.obos.cbs,
+            mcs.selected_stream_name,
+            control_bar_slider_cb,
+            control_bar_button_cb,
+            update_data_cb,
+            export_cb,
+            playing
         );
     }
     else if(l == LAYOUT_FOUR_BY_FOUR)
     {
+        // Initialize selected stream if empty or invalid for this layout
+        if(mcs.selected_stream_name.find("fourbyfour") == std::string::npos)
+            mcs.selected_stream_name = "0_fourbyfour_0";
+
         vision::four_by_four(
-            x, y, w, h,
+            x, y, w, video_pane_height,
             window,
-            pane_cb
+            pane_cb,
+            mcs.selected_stream_name
+        );
+
+        auto si = cs.get_stream_info(mcs.selected_stream_name);
+        bool show_motion_events = (!si.is_null()) ? si.value().do_motion_detection : false;
+
+        vision::control_bar(
+            x, y + video_pane_height, w, control_bar_height,
+            600,
+            window,
+            show_motion_events,
+            mcs.obos.cbs,
+            mcs.selected_stream_name,
+            control_bar_slider_cb,
+            control_bar_button_cb,
+            update_data_cb,
+            export_cb,
+            playing
         );
     }
 }
