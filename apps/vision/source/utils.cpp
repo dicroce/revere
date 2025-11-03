@@ -34,14 +34,27 @@ using json = nlohmann::json;
 string vision::top_dir()
 {
 #ifdef IS_WINDOWS
-    wchar_t szPath[MAX_PATH];
 
-    auto ret = SHGetFolderPathW(NULL, CSIDL_PERSONAL|CSIDL_FLAG_CREATE, NULL, 0, szPath);
-
+    wchar_t* localAppData = nullptr;
+    auto ret = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL, &localAppData);
     if(ret != S_OK)
-        R_THROW(("Could not get path to documents folder."));
+        R_THROW(("Could not get path to LocalAppData folder."));
 
-    return r_string_utils::convert_wide_string_to_multi_byte_string(szPath)  + PATH_SLASH + "revere" + PATH_SLASH + "revere";
+    std::wstring wide_revere_path = std::wstring(localAppData) + L"\\revere";
+
+    auto revere_path = r_string_utils::convert_wide_string_to_multi_byte_string(wide_revere_path.c_str());
+
+    if(!r_fs::file_exists(revere_path))
+        r_fs::mkdir(revere_path);
+
+    revere_path += PATH_SLASH + "revere";
+
+    if(!r_fs::file_exists(revere_path))
+        r_fs::mkdir(revere_path);
+
+    CoTaskMemFree(localAppData);
+
+    return revere_path;
 #endif
 
 #ifdef IS_LINUX
@@ -59,7 +72,7 @@ string vision::top_dir()
         r_fs::mkdir(path);
     path += PATH_SLASH + "revere";
     if(!r_fs::file_exists(path))
-        r_fs::mkdir(path);    
+        r_fs::mkdir(path);
     return path;
 #endif
 }

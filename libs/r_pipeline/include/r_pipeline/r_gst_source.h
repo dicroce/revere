@@ -247,6 +247,10 @@ private:
     mutable std::mutex _state_lok;
     bool _running;
 
+    // retry mechanism for short-header property
+    bool _retry_attempted;
+    bool _use_short_header;
+
     GstH264NalParser* _h264_nal_parser;
     GstH265Parser* _h265_nal_parser;
 

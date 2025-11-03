@@ -220,6 +220,8 @@ r_gst_source::r_gst_source(const string& name_prefix) :
     _a_appsink(nullptr),
     _state_lok(),
     _running(false),
+    _retry_attempted(false),
+    _use_short_header(false),
     _h264_nal_parser(nullptr),
     _h265_nal_parser(nullptr),
     _sample_context(),
@@ -266,13 +268,27 @@ void r_gst_source::play()
 
     if(!_protocols.is_null())
     {
-        g_object_set(G_OBJECT(rtspsrc), "protocols", 0x00000004, NULL);
+        // Protocol flags from GstRTSPLowerTrans:
+        // 0x00000001 = GST_RTSP_LOWER_TRANS_UDP
+        // 0x00000004 = GST_RTSP_LOWER_TRANS_TCP
+        // 0x00000020 = GST_RTSP_LOWER_TRANS_TLS
+        // Allow TCP, UDP, and TLS (TCP preferred, UDP fallback, TLS for RTSPS URLs)
+        g_object_set(G_OBJECT(rtspsrc), "protocols", 0x00000025, NULL);  // TCP | UDP | TLS
         g_object_set(G_OBJECT(rtspsrc), "buffer-mode", 1, NULL);
-        g_object_set(G_OBJECT(rtspsrc), "latency", 50, NULL);
+        // Use GStreamer's default latency (typically 2000ms) for better reliability
+        // across different network conditions (LAN, WAN, cellular, satellite)
+        R_LOG_INFO("RTSP protocols set to TCP|UDP|TLS (TCP preferred, UDP fallback, TLS for RTSPS)");
     }
 
     g_object_set(G_OBJECT(rtspsrc), "do-rtsp-keep-alive", true, NULL);
     g_object_set(G_OBJECT(rtspsrc), "location", _url.value().c_str(), NULL);
+
+    // Set short-header for compatibility with older cameras
+    if(_use_short_header)
+    {
+        R_LOG_INFO("Using short-header=true for RTSP compatibility");
+        g_object_set(G_OBJECT(rtspsrc), "short-header", true, NULL);
+    }
 
     if(!_username.is_null())
         g_object_set(G_OBJECT(rtspsrc), "user-id", _username.value().c_str(), NULL);
@@ -318,6 +334,10 @@ void r_gst_source::stop()
 
         _running = false;
     }
+
+    // Reset retry flags for next connection attempt
+    _retry_attempted = false;
+    _use_short_header = false;
 
     _clear();
 }
@@ -457,8 +477,20 @@ gboolean r_gst_source::_select_stream_callbackS(GstElement* src, guint num, GstC
 gboolean r_gst_source::_select_stream_callback(GstElement* src, guint num, GstCaps* caps)
 {
     GstStructure* new_pad_struct = gst_caps_get_structure(caps, 0);
+    if(!new_pad_struct)
+    {
+        R_LOG_WARNING("select_stream_callback: Unable to get structure from caps");
+        return FALSE;
+    }
 
-    auto media_str = string(gst_structure_get_string(new_pad_struct, "media"));
+    auto temp_s = gst_structure_get_string(new_pad_struct, "media");
+    if(!temp_s)
+    {
+        R_LOG_WARNING("select_stream_callback: No 'media' field in caps structure");
+        return FALSE;
+    }
+
+    auto media_str = string(temp_s);
 
     if(media_str == "video")
         return TRUE;
@@ -541,11 +573,32 @@ void r_gst_source::_pad_added_callback(GstElement* src, GstPad* new_pad)
 
                 auto str = gst_structure_get_string(new_pad_struct, "profile-level-id");
                 h264_info.profile_level_id = (str)?string(str):string();
+
                 str = gst_structure_get_string(new_pad_struct, "sprop-parameter-sets");
                 auto sprop_parameter_sets = (str)?string(str):string();
-                auto parts = r_string_utils::split(sprop_parameter_sets, ',');
-                h264_info.sprop_sps = parts[0];
-                h264_info.sprop_pps = parts[1];
+
+                // Only parse sprop-parameter-sets if it exists and is non-empty
+                if(!sprop_parameter_sets.empty())
+                {
+                    auto parts = r_string_utils::split(sprop_parameter_sets, ',');
+                    if(parts.size() >= 2)
+                    {
+                        h264_info.sprop_sps = parts[0];
+                        h264_info.sprop_pps = parts[1];
+                    }
+                    else
+                    {
+                        R_LOG_WARNING("H264 sprop-parameter-sets field is malformed or incomplete");
+                        h264_info.sprop_sps = string();
+                        h264_info.sprop_pps = string();
+                    }
+                }
+                else
+                {
+                    h264_info.sprop_sps = string();
+                    h264_info.sprop_pps = string();
+                }
+
                 h264_info.packetization_mode = 0;
                 gst_structure_get_int(new_pad_struct, "packetization-mode", &h264_info.packetization_mode);
 
@@ -672,17 +725,10 @@ void r_gst_source::_attach_h264_video_pipeline(GstPad* new_pad)
     gst_element_sync_state_with_parent(v_parser);
     gst_element_sync_state_with_parent(_v_appsink);
 
-    raii_ptr<GstCaps> depay_filter_caps(
-        gst_caps_new_simple(
-            "video/x-h264",
-            "stream-format", G_TYPE_STRING, "avc",
-            "alignment", G_TYPE_STRING, "au",
-            NULL
-        ),
-        [](GstCaps* caps){gst_caps_unref(caps);}
-    );
-
-    gst_element_link_filtered(v_depay, v_parser, depay_filter_caps.get());
+    // Don't force a specific stream-format between depay and parser
+    // Let the depayloader output whatever format it naturally produces (avc or byte-stream)
+    // The parser will normalize it to byte-stream for us
+    gst_element_link(v_depay, v_parser);
 
     raii_ptr<GstCaps> parser_filter_caps(
         gst_caps_new_simple(
@@ -726,17 +772,10 @@ void r_gst_source::_attach_h265_video_pipeline(GstPad* new_pad)
     gst_element_sync_state_with_parent(v_parser);
     gst_element_sync_state_with_parent(_v_appsink);
 
-    raii_ptr<GstCaps> depay_filter_caps(
-        gst_caps_new_simple(
-            "video/x-h265",
-            "stream-format", G_TYPE_STRING, "hvc1",
-            "alignment", G_TYPE_STRING, "au",
-            NULL
-        ),
-        [](GstCaps* caps){gst_caps_unref(caps);}
-    );
-
-    gst_element_link_filtered(v_depay, v_parser, depay_filter_caps.get());
+    // Don't force a specific stream-format between depay and parser
+    // Let the depayloader output whatever format it naturally produces (hvc1, hev1, or byte-stream)
+    // The parser will normalize it to byte-stream for us
+    gst_element_link(v_depay, v_parser);
 
     raii_ptr<GstCaps> parser_filter_caps(
         gst_caps_new_simple(
@@ -1043,6 +1082,43 @@ gboolean r_gst_source::_bus_callback(GstBus* bus, GstMessage* message)
         }
     }
 
+    // Handle errors and retry with short-header if needed
+    // Only retry on errors that occur before streaming starts (before first sample)
+    if(message->type == GST_MESSAGE_ERROR)
+    {
+        GError* err = nullptr;
+        gchar* debug_info = nullptr;
+        gst_message_parse_error(message, &err, &debug_info);
+
+        R_LOG_ERROR("GStreamer error: %s (debug: %s)", err->message, debug_info ? debug_info : "none");
+
+        // Only retry if this is the first attempt AND we haven't received any samples yet
+        if(!_retry_attempted && !_sample_sent)
+        {
+            R_LOG_INFO("Retrying RTSP connection with short-header=true for legacy camera compatibility");
+            _retry_attempted = true;
+            _use_short_header = true;
+
+            // Clean up error info
+            g_error_free(err);
+            g_free(debug_info);
+
+            // Stop current pipeline and retry
+            stop();
+            play();
+        }
+        else
+        {
+            // Already retried or streaming has started, just log the error
+            if(_sample_sent)
+                R_LOG_ERROR("RTSP error after streaming started - not retrying");
+            else
+                R_LOG_ERROR("RTSP connection failed even with short-header=true");
+            g_error_free(err);
+            g_free(debug_info);
+        }
+    }
+
     return TRUE;
 }
 
@@ -1089,7 +1165,14 @@ void r_gst_source::_on_sdp_callback(GstElement* src, GstSDPMessage* sdp)
         for(unsigned int ii = 0; ii < m->fmts->len; ++ii)
         {
             // Note: for a string (gchar*) dont put prefix & on g_array_index
-            media.formats.push_back(stoi(string(g_array_index(m->fmts, gchar*, ii))));
+            try
+            {
+                media.formats.push_back(stoi(string(g_array_index(m->fmts, gchar*, ii))));
+            }
+            catch(const std::exception& e)
+            {
+                R_LOG_WARNING("SDP parsing: Invalid format number, skipping: %s", e.what());
+            }
         }
 
         for(unsigned int ii = 0; ii < m->attributes->len; ++ii)
@@ -1108,18 +1191,42 @@ void r_gst_source::_on_sdp_callback(GstElement* src, GstSDPMessage* sdp)
             if(attr_key == "rtpmap")
             {
                 // a=rtpmap:96 H264/90000
+                try
+                {
+                    auto outer_parts = r_string_utils::split(attr_val, " ");
+                    if(outer_parts.size() < 2)
+                    {
+                        R_LOG_WARNING("SDP parsing: rtpmap malformed, expected 'PT encoding/clock', got: %s", attr_val.c_str());
+                        continue;
+                    }
 
-                auto outer_parts = r_string_utils::split(attr_val, " ");
-                auto inner_parts = r_string_utils::split(outer_parts[1], "/");
+                    auto inner_parts = r_string_utils::split(outer_parts[1], "/");
+                    if(inner_parts.size() < 2)
+                    {
+                        R_LOG_WARNING("SDP parsing: rtpmap encoding malformed, expected 'encoding/clock', got: %s", outer_parts[1].c_str());
+                        continue;
+                    }
 
-                r_rtp_map rtpmap;
-                rtpmap.encoding = str_to_encoding(inner_parts[0]);
-                rtpmap.time_base = stoi(inner_parts[1]);
-                media.rtpmaps.insert(make_pair(stoi(outer_parts[0]), rtpmap));
+                    r_rtp_map rtpmap;
+                    rtpmap.encoding = str_to_encoding(inner_parts[0]);
+                    rtpmap.time_base = stoi(inner_parts[1]);
+                    int payload_type = stoi(outer_parts[0]);
+                    media.rtpmaps.insert(make_pair(payload_type, rtpmap));
+                }
+                catch(const std::exception& e)
+                {
+                    R_LOG_WARNING("SDP parsing: Failed to parse rtpmap '%s': %s", attr_val.c_str(), e.what());
+                }
             }
             else if(attr_key == "fmtp")
             {
                 auto outer_parts = r_string_utils::split(attr_val, " ");
+                if(outer_parts.size() < 2)
+                {
+                    R_LOG_WARNING("SDP parsing: fmtp malformed, expected 'PT params', got: %s", attr_val.c_str());
+                    continue;
+                }
+
                 auto inner_parts = r_string_utils::split(outer_parts[1], ";");
                 for(auto nvp : inner_parts)
                 {

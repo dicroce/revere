@@ -452,7 +452,6 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
 
         g_signal_connect(lrs->a_appsrc, "need-data", (GCallback)_need_live_data_cbs, lrs.get());
     }
-    else R_LOG_ERROR("no audio appsrc");
 
     _live_restreaming_states[media] = lrs;
 }
@@ -818,7 +817,6 @@ void r_recording_context::_playback_restream_media_configure(GstRTSPMediaFactory
 
 //        g_signal_connect(prs->a_appsrc, "seek-data", (GCallback)_seek_playback_data_cbs, prs.get());
     }
-    else R_LOG_ERROR("no audio appsrc");
 
     prs->playback_thread = std::thread(
         _playback_entry_point,
