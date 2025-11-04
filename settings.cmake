@@ -15,24 +15,6 @@ endif()
 set(CMAKE_INSTALL_RPATH "$ORIGIN")
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 
-# Remove runtime-check flag from all configs to avoid /O2 vs /RTC1 conflicts
-string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
-string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
-string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
-string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
-string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
-string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
-
-if(WIN32)
-    # Remove the default /D _DEBUG flag that CMake injects
-    string(REPLACE "/D _DEBUG" "" CMAKE_C_FLAGS_DEBUG   "${CMAKE_C_FLAGS_DEBUG}")
-    string(REPLACE "/D _DEBUG" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
-
-    add_compile_definitions(
-        $<$<CONFIG:Debug>:NDEBUG>
-    )
-endif()
-
 # Apply build flags per platform and configuration
 if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_compile_definitions(IS_LINUX _GLIBCXX_ASSERTIONS)
@@ -75,37 +57,30 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
 
 elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
     add_compile_definitions(IS_WINDOWS)
-    add_compile_options(/W4 /MP /permissive- /Zc:preprocessor)
+    add_compile_options(/W4 /MP /permissive- /Zc:preprocessor /wd4100)
 
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        message(STATUS "Applying debug build flags for Windows")
+    # Debug-specific flags (use generator expressions for multi-config generators like Visual Studio)
+    add_compile_options(
+        $<$<CONFIG:Debug>:/Od>                # disable optimizations
+        $<$<CONFIG:Debug>:/Zi>                # debug info (PDB)
+        $<$<CONFIG:Debug>:/RTC1>              # runtime checks (stack, uninit, etc.)
+        $<$<CONFIG:Debug>:/Gy>                # function-level linking
+        $<$<CONFIG:Debug>:/Zf>                # force inline debug info
+    )
+    add_link_options(
+        $<$<CONFIG:Debug>:/DEBUG>
+        $<$<CONFIG:Debug>:/INCREMENTAL>
+    )
 
-        add_compile_options(
-            /Od                # disable optimizations
-            /Zi                # debug info (PDB)
-            /RTC1              # runtime checks (stack, uninit, etc.)
-            /Gy                # function-level linking
-            /Zf                # force inline debug info
-            /wd4100
-        )
-        add_link_options(
-            /DEBUG
-            /INCREMENTAL
-        )
-
-    elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-        message(STATUS "Applying release build flags for Windows")
-
-        add_compile_options(
-            /O2                # full optimization
-            /Oi                # intrinsic functions
-            /GL                # whole program optimization
-            /Gy                # function-level linking
-            /wd4100
-        )
-        add_link_options(
-            /LTCG              # link-time code generation
-            /INCREMENTAL:NO    # deterministic builds
-        )
-    endif()
+    # Release-specific flags
+    add_compile_options(
+        $<$<CONFIG:Release>:/O2>              # full optimization
+        $<$<CONFIG:Release>:/Oi>              # intrinsic functions
+        $<$<CONFIG:Release>:/GL>              # whole program optimization
+        $<$<CONFIG:Release>:/Gy>              # function-level linking
+    )
+    add_link_options(
+        $<$<CONFIG:Release>:/LTCG>            # link-time code generation
+        $<$<CONFIG:Release>:/INCREMENTAL:NO>  # deterministic builds
+    )
 endif()
