@@ -377,7 +377,7 @@ void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
         // Note: the cases purposefully fall through.
         case 0:
         {
-            r_sqlite_transaction(conn,[&](const r_sqlite_conn& conn){
+            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
                 // perform alter statements here
                 _set_db_version(conn, 1);
             });
@@ -385,7 +385,7 @@ void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
         [[fallthrough]];
         case 1:
         {
-            r_sqlite_transaction(conn,[&](const r_sqlite_conn& conn){
+            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
                 conn.exec(
                     "ALTER TABLE cameras ADD COLUMN do_motion_pruning INTEGER DEFAULT 0;"
                 );
@@ -555,7 +555,7 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
 
 r_devices_cmd_result r_devices::_insert_or_update_devices(const r_db::r_sqlite_conn& conn, const vector<pair<r_stream_config, string>>& stream_configs) const
 {
-    r_sqlite_transaction(conn, [&](const r_sqlite_conn& conn){
+    r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
         for(auto& sc : stream_configs)
         {
             auto q = _create_insert_or_update_query(conn, sc.first, sc.second);
@@ -569,7 +569,7 @@ r_devices_cmd_result r_devices::_insert_or_update_devices(const r_db::r_sqlite_c
 r_devices_cmd_result r_devices::_get_camera_by_id(const r_sqlite_conn& conn, const string& id) const
 {
     r_devices_cmd_result result;
-    r_sqlite_transaction(conn, [&](const r_sqlite_conn& conn){
+    r_sqlite_transaction(conn, false, [&](const r_sqlite_conn& conn){
         auto qr = conn.exec("SELECT * FROM cameras WHERE id='" + id + "';");
         if(!qr.empty())
             result.cameras.push_back(_create_camera(qr.front()));
@@ -580,7 +580,7 @@ r_devices_cmd_result r_devices::_get_camera_by_id(const r_sqlite_conn& conn, con
 r_devices_cmd_result r_devices::_get_all_cameras(const r_sqlite_conn& conn) const
 {
     r_devices_cmd_result result;
-    r_sqlite_transaction(conn, [&](const r_sqlite_conn& conn){
+    r_sqlite_transaction(conn, false, [&](const r_sqlite_conn& conn){
         auto cameras = conn.exec("SELECT * FROM cameras;");
         for(auto& c : cameras)
             result.cameras.push_back(_create_camera(c));
@@ -593,7 +593,7 @@ r_devices_cmd_result r_devices::_get_assigned_cameras(const r_sqlite_conn& conn)
 {
     r_devices_cmd_result result;
 
-    r_sqlite_transaction(conn, [&](const r_sqlite_conn& conn){
+    r_sqlite_transaction(conn, false, [&](const r_sqlite_conn& conn){
         auto cameras = conn.exec("SELECT * FROM cameras WHERE state=\"assigned\";");
         for(auto& c : cameras)
             result.cameras.push_back(_create_camera(c));
@@ -702,7 +702,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             r_string_utils::format("'%s'", hash.c_str()).c_str()
         );
 
-    r_sqlite_transaction(conn, [&](const r_sqlite_conn& conn){
+    r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
         conn.exec(query);
     });
 
@@ -711,7 +711,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
 
 r_devices_cmd_result r_devices::_remove_camera(const r_sqlite_conn& conn, const r_camera& camera) const
 {
-    r_sqlite_transaction(conn, [&](const r_sqlite_conn& conn){
+    r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
         conn.exec("DELETE FROM cameras WHERE id='" + camera.id + "';");
     });
 
@@ -721,7 +721,7 @@ r_devices_cmd_result r_devices::_remove_camera(const r_sqlite_conn& conn, const 
 r_devices_cmd_result r_devices::_get_modified_cameras(const r_sqlite_conn& conn, const vector<r_camera>& cameras) const
 {
     vector<r_camera> out_cameras;
-    r_sqlite_transaction(conn, [&](const r_sqlite_conn& conn){
+    r_sqlite_transaction(conn, false, [&](const r_sqlite_conn& conn){
         for(auto& c : cameras)
         {
             auto query = r_string_utils::format(
@@ -793,7 +793,7 @@ r_devices_cmd_result r_devices::_get_assigned_cameras_removed(const r_sqlite_con
 r_devices_cmd_result r_devices::_get_credentials(const r_sqlite_conn& conn, const string& id)
 {
     r_devices_cmd_result result;
-    r_sqlite_transaction(conn, [&](const r_sqlite_conn& conn){
+    r_sqlite_transaction(conn, false, [&](const r_sqlite_conn& conn){
         auto qr = conn.exec("SELECT rtsp_username, rtsp_password FROM cameras WHERE id='" + id + "';");
         if(!qr.empty())
         {

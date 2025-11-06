@@ -70,7 +70,7 @@ void test_r_db::test_db_paging()
 {
     r_sqlite_conn conn("test.db", true);
 
-    r_sqlite_transaction(conn, [](const r_sqlite_conn& conn){
+    r_sqlite_transaction(conn, true, [](const r_sqlite_conn& conn){
         conn.exec("CREATE TABLE worker_bees(sesa_id TEXT, name TEST, id INTEGER PRIMARY KEY AUTOINCREMENT);");
         conn.exec("CREATE INDEX worker_bees_sesa_id_idx ON worker_bees(sesa_id);");
         conn.exec("INSERT INTO worker_bees(sesa_id, name) VALUES('123456', 'Alan Turing');");

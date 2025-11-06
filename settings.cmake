@@ -21,39 +21,35 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_compile_options(-Wall -Wextra -Wno-unused-parameter -fPIC)
     add_link_options(-rdynamic)
 
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        message(STATUS "Applying debug build flags for Linux")
+    # Debug-specific flags (use generator expressions for consistency)
+    add_compile_options(
+        $<$<CONFIG:Debug>:-g3>
+        $<$<CONFIG:Debug>:-ggdb3>
+        $<$<CONFIG:Debug>:-O0>
+        $<$<CONFIG:Debug>:-fsanitize=address>
+        $<$<CONFIG:Debug>:-fno-omit-frame-pointer>
+        $<$<CONFIG:Debug>:-fasynchronous-unwind-tables>
+    )
+    add_link_options(
+        $<$<CONFIG:Debug>:-g3>
+        $<$<CONFIG:Debug>:-ggdb3>
+        $<$<CONFIG:Debug>:-fsanitize=address>
+        $<$<CONFIG:Debug>:-fno-omit-frame-pointer>
+        $<$<CONFIG:Debug>:-fasynchronous-unwind-tables>
+    )
 
-        add_compile_options(
-            -g3
-            -ggdb3
-            -O0
-            -fsanitize=address
-            -fno-omit-frame-pointer
-            -fasynchronous-unwind-tables
-        )
-        add_link_options(
-            -g3
-            -ggdb3
-            -fsanitize=address
-            -fno-omit-frame-pointer
-            -fasynchronous-unwind-tables
-        )
-    elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-        message(STATUS "Applying release build flags for Linux")
-
-        add_compile_options(
-            -O3
-            -march=native
-            -ffast-math
-            -fno-math-errno
-            -fno-omit-frame-pointer
-        )
-        add_link_options(
-            -O3
-            -march=native
-        )
-    endif()
+    # Release-specific flags
+    add_compile_options(
+        $<$<CONFIG:Release>:-O3>
+        $<$<CONFIG:Release>:-march=native>
+        $<$<CONFIG:Release>:-ffast-math>
+        $<$<CONFIG:Release>:-fno-math-errno>
+        $<$<CONFIG:Release>:-fno-omit-frame-pointer>
+    )
+    add_link_options(
+        $<$<CONFIG:Release>:-O3>
+        $<$<CONFIG:Release>:-march=native>
+    )
 
 elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
     add_compile_definitions(IS_WINDOWS)

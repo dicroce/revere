@@ -1087,6 +1087,13 @@ int main(int argc, char** argv)
     configure_camera_setup_wizard(as, rscc, camera_setup_wizard, tl, agent, devices, streamKeeper, ui_state, window);
 
     _update_list_ui(ui_state, devices);
+
+    // Auto-select first camera in Recording list if any exist
+    if(ui_state.recording_items.size() > 0)
+    {
+        ui_state.recording_selected_item = 0;
+    }
+
     auto last_ui_update_ts = chrono::steady_clock::now();
     bool force_ui_update = false;
 
@@ -1096,16 +1103,11 @@ int main(int argc, char** argv)
     {
         auto now = chrono::steady_clock::now();
 
-        bool update_ui = false;
         if(((now - last_ui_update_ts) > chrono::seconds(5)) || force_ui_update)
         {
-            update_ui = true;
             last_ui_update_ts = now;
             force_ui_update = false;
-        }
 
-        if(update_ui)
-        {
             _update_list_ui(ui_state, devices);
 
             // Also update stream status for selected camera (only every 5 seconds, not every frame)
@@ -1206,7 +1208,7 @@ int main(int argc, char** argv)
                                 ui_state.reset_selection();
                                 ui_state.discovered_selected_item = i;
                                 ui_state.recording_selected_item = -1;
-                                update_ui = true;
+                                force_ui_update = true;
                             },
                             true, // should we include a "forget" button?
                             [&](int i){
@@ -1217,7 +1219,7 @@ int main(int argc, char** argv)
                                     devices.remove_camera(camera.value());
                                     agent.forget(camera_id);
                                     ui_state.reset_selection();
-                                    update_ui = true;
+                                    force_ui_update = true;
                                 }
                             },
                             false, // Dont include the properites button
@@ -1238,6 +1240,7 @@ int main(int argc, char** argv)
                                 // Set up the UI state for the remove dialog
                                 ui_state.recording_selected_item = i;
                                 ui_state.discovered_selected_item = -1;
+                                force_ui_update = true;
 
                                 auto maybe_c = devices.get_camera_by_id(ui_state.recording_items[i].camera_id);
                                 if(!maybe_c.is_null())
@@ -1257,7 +1260,7 @@ int main(int argc, char** argv)
                             [&](int i){
                                 ui_state.recording_selected_item = i;
                                 ui_state.discovered_selected_item = -1;
-                                update_ui = true;
+                                force_ui_update = true;
                             },
                             false, // Dont include forget button
                             [](int){},
@@ -1266,7 +1269,7 @@ int main(int argc, char** argv)
                                 // first update the ui state
                                 ui_state.recording_selected_item = i;
                                 ui_state.discovered_selected_item = -1;
-                                update_ui = true;
+                                force_ui_update = true;
 
                                 // Go to camera properties modal
                                 auto camera = devices.get_camera_by_id(ui_state.selected_camera_id().value()).value();
@@ -1357,11 +1360,12 @@ int main(int argc, char** argv)
             glfwHideWindow(window);
         }
 
-        // Only render if window is visible
+        // Always call Render to complete the frame (required by ImGui)
+        ImGui::Render();
+
+        // Only render to screen if window is visible
         if(glfwGetWindowAttrib(window, GLFW_VISIBLE))
         {
-            // Rendering
-            ImGui::Render();
             int display_w, display_h;
             glfwGetFramebufferSize(window, &display_w, &display_h);
             glViewport(0, 0, display_w, display_h);

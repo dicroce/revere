@@ -87,9 +87,11 @@ private:
 };
 
 template<typename T>
-void r_sqlite_transaction(const r_sqlite_conn& db, T t)
+void r_sqlite_transaction(const r_sqlite_conn& db, bool immediate, T t)
 {
-    db.exec("BEGIN");
+    if(immediate)
+        db.exec("BEGIN IMMEDIATE");
+    else db.exec("BEGIN");
     try
     {
         t(db);
