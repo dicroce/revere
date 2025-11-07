@@ -9,6 +9,9 @@
 #ifdef IS_LINUX
 #include <uuid/uuid.h>
 #endif
+#ifdef IS_MACOS
+#include <uuid/uuid.h>
+#endif
 #ifdef IS_WINDOWS
 #include <Rpc.h>
 #endif

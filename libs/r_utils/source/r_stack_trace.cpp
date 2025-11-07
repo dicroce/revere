@@ -7,7 +7,7 @@
 #include <string.h>
 #include <sstream>
 
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 #include <cxxabi.h>
 #include <execinfo.h>
 #include <dlfcn.h>

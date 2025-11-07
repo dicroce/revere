@@ -19,13 +19,19 @@ endif()
 
 # ---- OpenCV ----
 if(NOT TARGET opencv::opencv)
-    if(CMAKE_SYSTEM_NAME MATCHES "Linux")
-        pkg_search_module(OPENCV REQUIRED opencv4)
+    if(CMAKE_SYSTEM_NAME MATCHES "Linux|Darwin")
+        pkg_search_module(OPENCV opencv4)
 
-        add_library(opencv::opencv INTERFACE IMPORTED GLOBAL)
-        target_include_directories(opencv::opencv INTERFACE ${OPENCV_INCLUDE_DIRS})
-        target_link_directories(opencv::opencv INTERFACE ${OPENCV_LIBRARY_DIRS})
-        target_link_libraries(opencv::opencv INTERFACE ${OPENCV_LIBRARIES})
+        if(OPENCV_FOUND)
+            add_library(opencv::opencv INTERFACE IMPORTED GLOBAL)
+            target_include_directories(opencv::opencv INTERFACE ${OPENCV_INCLUDE_DIRS})
+            target_link_directories(opencv::opencv INTERFACE ${OPENCV_LIBRARY_DIRS})
+            target_link_libraries(opencv::opencv INTERFACE ${OPENCV_LIBRARIES})
+        else()
+            message(WARNING "OpenCV not found - motion detection features will be limited")
+            # Create a dummy target for compatibility
+            add_library(opencv::opencv INTERFACE IMPORTED GLOBAL)
+        endif()
 
     elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
         if(NOT DEFINED ENV{OPENCV_TOP_DIR})
@@ -89,7 +95,7 @@ endif()
 
 # ---- GStreamer ----
 if(NOT TARGET gstreamer::gstreamer)
-    if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+    if(CMAKE_SYSTEM_NAME MATCHES "Linux|Darwin")
         pkg_search_module(GST         REQUIRED gstreamer-1.0)
         pkg_search_module(GST_BASE    REQUIRED gstreamer-base-1.0)
         pkg_search_module(GST_APP     REQUIRED gstreamer-app-1.0)
@@ -167,7 +173,7 @@ endif()
 
 # ---- FFmpeg ----
 if(NOT TARGET ffmpeg::ffmpeg)
-    if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+    if(CMAKE_SYSTEM_NAME MATCHES "Linux|Darwin")
         pkg_search_module(AVCODEC   REQUIRED libavcodec)
         pkg_search_module(AVFORMAT  REQUIRED libavformat)
         pkg_search_module(AVUTIL    REQUIRED libavutil)
@@ -226,10 +232,10 @@ if(NOT TARGET uuid::uuid)
         target_link_directories(uuid::uuid INTERFACE ${UUID_LIBRARY_DIRS})
         target_link_libraries(uuid::uuid INTERFACE ${UUID_LIBRARIES})
 
-    elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
-        # Create a dummy no-op target for Windows compatibility
+    elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin|Windows")
+        # Create a dummy no-op target for macOS/Windows compatibility
         add_library(uuid::uuid INTERFACE IMPORTED GLOBAL)
-        # No includes or libs needed on Windows — uuid used differently
+        # No includes or libs needed on macOS/Windows — uuid used differently
     endif()
 endif()
 
@@ -248,13 +254,16 @@ if(NOT TARGET ncnn::ncnn)
         )
         
         # Library directories
-        if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+        if(CMAKE_SYSTEM_NAME MATCHES "Linux|Darwin")
             target_link_directories(ncnn::ncnn INTERFACE "${NCNN_ROOT}/lib")
             target_link_libraries(ncnn::ncnn INTERFACE
                 ncnn
                 pthread
-                gomp
             )
+            # Only add gomp on Linux (OpenMP)
+            if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+                target_link_libraries(ncnn::ncnn INTERFACE gomp)
+            endif()
         elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
             target_link_directories(ncnn::ncnn INTERFACE 
                 $<$<CONFIG:Debug>:${NCNN_ROOT}/lib>

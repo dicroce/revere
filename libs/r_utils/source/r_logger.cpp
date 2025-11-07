@@ -10,7 +10,7 @@
 #include <cstring>
 #include <chrono>
 
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 #include <fnmatch.h>
 #include <dirent.h>
 #endif
@@ -49,7 +49,7 @@ static deque<string> _get_file_names(const std::string& log_dir)
     } while(0 == _wfindnext(handle, &fs));
     _findclose(handle);
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     if(DIR* d = opendir(log_dir.c_str()))
     {
         while(struct dirent* d_entry = readdir(d))
@@ -117,7 +117,7 @@ static void open_log_file(const string& filename)
 #ifdef IS_WINDOWS
     _log_file = _fsopen(filename.c_str(), "a+", _SH_DENYNO);
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     _log_file = fopen(filename.c_str(), "a+");
 #endif
 

@@ -14,7 +14,7 @@
 #include <shlobj_core.h>
 #endif
 
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 #include <unistd.h>
 #include <sys/types.h>
 #include <pwd.h>
@@ -57,7 +57,7 @@ string vision::top_dir()
     return revere_path;
 #endif
 
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     auto res = sysconf(_SC_GETPW_R_SIZE_MAX);
     if(res == -1)
         R_THROW(("Could not get path to documents folder."));

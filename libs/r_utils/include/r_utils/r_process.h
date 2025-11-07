@@ -4,7 +4,7 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_file.h"
 
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -24,7 +24,7 @@ namespace r_utils
 struct r_pid
 {
 
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     pid_t pid;
 #endif
 #ifdef IS_WINDOWS
@@ -38,7 +38,7 @@ struct r_pid
         pi.dwProcessId = 0;
         pi.dwThreadId = 0;
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
         pid = -1;
 #endif
     }
@@ -46,13 +46,13 @@ struct r_pid
     r_pid(r_pid&&) = default;
     r_pid& operator=(const r_pid&) = default;
     r_pid& operator=(r_pid&&) = default;
-    bool operator==(const r_pid& obj) 
+    bool operator==(const r_pid& obj)
     {
 #ifdef IS_WINDOWS
         return (pi.dwProcessId == obj.pi.dwProcessId)?true:false;
 #endif
-#ifdef IS_LINUX
-        return (pid == obj.pid)?true:false; 
+#if defined(IS_LINUX) || defined(IS_MACOS)
+        return (pid == obj.pid)?true:false;
 #endif
     }
     bool valid() const
@@ -60,7 +60,7 @@ struct r_pid
 #ifdef IS_WINDOWS
         return (pi.dwProcessId > 0)?true:false;
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
         return (pid >= 0)?true:false;
 #endif
     }
@@ -72,8 +72,8 @@ struct r_pid
         pi.dwProcessId = 0;
         pi.dwThreadId = 0;
 #endif
-#ifdef IS_LINUX
-        pid = -1; 
+#if defined(IS_LINUX) || defined(IS_MACOS)
+        pid = -1;
 #endif
     }
 };

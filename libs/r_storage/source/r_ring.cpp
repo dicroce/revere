@@ -129,7 +129,7 @@ void r_ring::allocate(const string& path, size_t element_size, size_t n_elements
         std::unique_ptr<FILE, std::function<void(FILE*)>> f(
         #ifdef IS_WINDOWS
             fp
-        #elif defined(IS_LINUX)
+        #elif defined(IS_LINUX) || defined(IS_MACOS)
             fopen(path.c_str(), "w+")
         #endif
             ,
@@ -153,7 +153,7 @@ void r_ring::allocate(const string& path, size_t element_size, size_t n_elements
         std::unique_ptr<FILE, std::function<void(FILE*)>> f(
         #ifdef IS_WINDOWS
             fp
-        #elif defined(IS_LINUX)
+        #elif defined(IS_LINUX) || defined(IS_MACOS)
             fopen(path.c_str(), "r+")
         #endif
             ,

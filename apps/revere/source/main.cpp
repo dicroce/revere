@@ -28,7 +28,10 @@
 #include "imgui/imgui_impl_glfw.h"
 #include "imgui/imgui_impl_opengl3.h"
 
+// System tray support (not yet available on macOS)
+#if !defined(IS_MACOS)
 #include <tray.hpp>
+#endif
 
 #include <string>
 #include <thread>
@@ -848,7 +851,7 @@ string _get_icon_path()
     );
 #endif
 
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     // Try AppImage-style icon path first
     std::string rel_icon_path = "/../share/icons/hicolor/128x128/apps/revere.png";
     std::string full_icon_path = r_fs::path_join(r_fs::working_directory(), rel_icon_path);
@@ -931,7 +934,7 @@ void _set_window_icon(GLFWwindow* window)
 #ifdef IS_WINDOWS
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 int main(int argc, char** argv)
 #endif
 {
@@ -992,6 +995,14 @@ int main(int argc, char** argv)
     const char* glsl_version = "#version 130";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+#ifdef IS_MACOS
+    // macOS requires at least OpenGL 3.2 with Core Profile
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glsl_version = "#version 150";
+#endif
 
     // Create window with graphics context
     GLFWwindow* window = glfwCreateWindow(960, 540, "Revere", NULL, NULL);
@@ -1023,6 +1034,7 @@ int main(int argc, char** argv)
 
     R_LOG_INFO("icon_path=%s\n",icon_path.c_str());
 
+#if !defined(IS_MACOS)
     Tray::Tray tray("Revere", icon_path);
     tray.addEntry(Tray::Button("Exit", [&]{
         close_requested = true;
@@ -1038,6 +1050,7 @@ int main(int argc, char** argv)
         if(!vision_process.running())
             vision_process.start();
     }));
+#endif
 
     // Configure Dear ImGui (context already created earlier)
     ImGuiIO& io = ImGui::GetIO(); (void)io;
@@ -1133,7 +1146,9 @@ int main(int argc, char** argv)
 
         glfwPollEvents();
 
+#if !defined(IS_MACOS)
         tray.pump();
+#endif
 
         if(maybe_start_minimized)
         {
@@ -1161,7 +1176,9 @@ int main(int argc, char** argv)
         auto client_top = revere::main_menu(
             [&](){
                 close_requested = true;
+#if !defined(IS_MACOS)
                 tray.exit();
+#endif
             },
             [&](){
                 camera_setup_wizard.next("minimize_to_tray");

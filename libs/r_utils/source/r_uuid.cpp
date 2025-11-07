@@ -9,7 +9,7 @@ using namespace std;
 
 void r_utils::r_uuid::generate(uint8_t* uuid)
 {
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     uuid_generate_random(uuid);
 #endif
 #ifdef IS_WINDOWS
@@ -29,7 +29,7 @@ string r_utils::r_uuid::generate()
 
 string r_utils::r_uuid::uuid_to_s(const uint8_t* uuid)
 {
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     char str[69];
     uuid_unparse(uuid, str);
     return str;
@@ -47,7 +47,7 @@ string r_utils::r_uuid::uuid_to_s(const uint8_t* uuid)
 
 void r_utils::r_uuid::s_to_uuid(const string& uuidS, uint8_t* uuid)
 {
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     if(uuid_parse(uuidS.c_str(), uuid) != 0)
         R_STHROW(r_invalid_argument_exception, ("Unable to parse uuid string."));
 #endif
