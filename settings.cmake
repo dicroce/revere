@@ -15,6 +15,16 @@ endif()
 set(CMAKE_INSTALL_RPATH "$ORIGIN")
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 
+# Put all runtime outputs (DLLs and executables) in a common bin directory during build
+# This ensures executables can find their DLL dependencies without manual copying
+# This does NOT affect install destinations (controlled by install() commands)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+# For multi-config generators (Visual Studio, Xcode) - outputs go to bin/Debug or bin/Release
+foreach(CONFIG ${CMAKE_CONFIGURATION_TYPES})
+    string(TOUPPER ${CONFIG} CONFIG_UPPER)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${CONFIG_UPPER} ${CMAKE_BINARY_DIR}/bin/${CONFIG})
+endforeach()
+
 # Apply build flags per platform and configuration
 if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_compile_definitions(IS_LINUX _GLIBCXX_ASSERTIONS)
