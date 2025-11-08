@@ -38,11 +38,9 @@ public:
 
         if(_queue.empty())
         {
-            _asleep = true;
             if(d == std::chrono::milliseconds {})
-                _cond.wait(g, [this](){return !this->_queue.empty() || !this->_asleep;});
-            else _cond.wait_for(g, d,[this](){return !this->_queue.empty() || !this->_asleep;});
-            _asleep = false;
+                _cond.wait(g, [this](){return !this->_queue.empty() || this->_woken;});
+            else _cond.wait_for(g, d,[this](){return !this->_queue.empty() || this->_woken;});
         }
 
         r_utils::r_nullable<std::pair<CMD,std::promise<RESULT>>> result;
@@ -52,6 +50,11 @@ public:
             result.assign(std::move(_queue.back()));
             _queue.pop_back();
         }
+        else
+        {
+            // Queue is still empty after wait - we were woken up, so clear the flag
+            _woken = false;
+        }
 
         return result;
     }
@@ -59,7 +62,7 @@ public:
     R_API void wake()
     {
         std::unique_lock<std::mutex> g(_lock);
-        _asleep = false;
+        _woken = true;
         _cond.notify_one();
     }
 
@@ -73,7 +76,7 @@ private:
     mutable std::mutex _lock;
     std::condition_variable _cond;
     std::list<std::pair<CMD,std::promise<RESULT>>> _queue;
-    bool _asleep {false};
+    bool _woken {false};
 };
 
 }

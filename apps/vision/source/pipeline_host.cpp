@@ -36,7 +36,17 @@ pipeline_host::~pipeline_host()
 {
     stop();
 
-    _pipes.clear();
+    // DEADLOCK FIX: Extract pipes before destroying them to avoid deadlock
+    // Same pattern as update_stream() and disconnect_stream()
+    std::map<std::string, std::shared_ptr<pipeline_state>> old_pipes;
+    {
+        lock_guard<mutex> g(_internals_lok);
+        old_pipes = std::move(_pipes);
+        _pipes.clear();
+    }  // Lock is released here
+
+    // Destroy pipelines outside the critical section
+    old_pipes.clear();
 }
 
 void pipeline_host::start()
@@ -55,17 +65,25 @@ void pipeline_host::stop()
 
 void pipeline_host::change_layout(int window, layout l)
 {
-    lock_guard<mutex> g(_internals_lok);
+    // DEADLOCK FIX: Extract pipes before destroying them
+    std::map<std::string, std::shared_ptr<pipeline_state>> old_pipes;
+    {
+        lock_guard<mutex> g(_internals_lok);
 
-    _stream_infos.clear();
-    _pipes.clear();
-    _render_contexts.clear();
-    _video_frames.clear();
+        _stream_infos.clear();
+        old_pipes = std::move(_pipes);
+        _pipes.clear();
+        _render_contexts.clear();
+        _video_frames.clear();
 
-    auto sis = _cfg.collect_stream_info(window, l);
+        auto sis = _cfg.collect_stream_info(window, l);
 
-    for(auto si : sis)
-        _stream_infos.insert(make_pair(si.name, si));
+        for(auto si : sis)
+            _stream_infos.insert(make_pair(si.name, si));
+    }  // Lock is released here
+
+    // Destroy old pipelines outside the critical section
+    old_pipes.clear();
 }
 
 void pipeline_host::update_stream(int window, stream_info si)

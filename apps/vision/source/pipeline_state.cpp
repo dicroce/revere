@@ -271,7 +271,7 @@ void pipeline_state::_entry_point()
     {
         auto process_q_depth = this->_process_q.size();
 
-        auto maybe_sample = this->_process_q.poll();
+        auto maybe_sample = this->_process_q.poll(std::chrono::milliseconds(100));
         if(!maybe_sample.is_null())
         {
             if(maybe_sample.raw().first.media_type == VIDEO_MEDIA)
@@ -288,45 +288,42 @@ void pipeline_state::_entry_point()
 
                     r_av::r_codec_state decode_state = r_av::R_CODEC_STATE_INITIALIZED;
 
-//                    while(decode_state != r_av::r_av_STATE_HUNGRY)
-//                    {
-                        decode_state = _video_decoder.raw().decode();
+                    decode_state = _video_decoder.raw().decode();
 
-                        if(decode_state == r_av::R_CODEC_STATE_HAS_OUTPUT)
+                    if(decode_state == r_av::R_CODEC_STATE_HAS_OUTPUT)
+                    {
+                        tries = 0;
+
+                        // If we are behind, drop the frame here
+
+                        if(process_q_depth < 2)
                         {
-                            tries = 0;
+                            uint16_t input_width = _video_decoder.raw().input_width();
+                            uint16_t input_height = _video_decoder.raw().input_height();
+                            uint16_t dest_width, dest_height;
 
-                            // If we are behind, drop the frame here
+                            aspect_correct_video_dimensions(
+                                input_width,
+                                input_height,
+                                _w,
+                                _h,
+                                dest_width,
+                                dest_height
+                            );
 
-                            if(process_q_depth < 2)
-                            {
-                                uint16_t input_width = _video_decoder.raw().input_width();
-                                uint16_t input_height = _video_decoder.raw().input_height();
-                                uint16_t dest_width, dest_height;
-
-                                aspect_correct_video_dimensions(
-                                    input_width,
-                                    input_height,
-                                    _w,
-                                    _h,
-                                    dest_width,
-                                    dest_height
-                                );
-
-                                // Use PTS directly - it should already be absolute from the sample callback
-                                
-                                _ph->post_video_frame(
-                                    _si.name,
-                                    _video_decoder.raw().get(AV_PIX_FMT_RGB24, dest_width, dest_height, 1),
-                                    dest_width,
-                                    dest_height,
-                                    input_width,
-                                    input_height,
-                                    _last_v_pts
-                                );
-                            }
+                            // Use PTS directly - it should already be absolute from the sample callback
+                            
+                            _ph->post_video_frame(
+                                _si.name,
+                                _video_decoder.raw().get(AV_PIX_FMT_RGB24, dest_width, dest_height, 1),
+                                dest_width,
+                                dest_height,
+                                input_width,
+                                input_height,
+                                _last_v_pts
+                            );
                         }
-                    //}
+                    }
 
                     --tries;
                 }
