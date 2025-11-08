@@ -37,7 +37,9 @@ r_video_encoder::r_video_encoder(
         uint8_t max_b_frames,
         uint16_t gop_size,
         int profile,
-        int level
+        int level,
+        const std::string& preset,
+        const std::string& tune
     ) :
     _codec_id(codec_id),
     _codec(avcodec_find_encoder(_codec_id)),
@@ -67,7 +69,16 @@ r_video_encoder::r_video_encoder(
 
     _context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-    auto ret = avcodec_open2(_context, _codec, nullptr);
+    // Apply preset and tune options if specified
+    AVDictionary* opts = nullptr;
+    if(!preset.empty())
+        av_dict_set(&opts, "preset", preset.c_str(), 0);
+    if(!tune.empty())
+        av_dict_set(&opts, "tune", tune.c_str(), 0);
+
+    auto ret = avcodec_open2(_context, _codec, &opts);
+    av_dict_free(&opts);
+
     if(ret < 0)
         R_THROW(("Failed to open codec: %s", _ff_rc_to_msg(ret).c_str()));
 }
@@ -110,10 +121,21 @@ r_video_encoder& r_video_encoder::operator=(r_video_encoder&& obj)
     return *this;
 }
 
-void r_video_encoder::attach_buffer(const uint8_t* data, size_t size)
+void r_video_encoder::attach_buffer(const uint8_t* data, size_t size, int64_t pts)
 {
     _buffer.resize(size);
     memcpy(_buffer.data(), data, size);
+    _pts = pts;
+}
+
+void r_video_encoder::set_bitrate(uint32_t bitrate)
+{
+    if(!_context)
+        R_THROW(("Context is not initialized"));
+
+    _context->bit_rate = bitrate;
+    _context->rc_max_rate = bitrate;
+    _context->rc_buffer_size = bitrate * 2; // 2 second buffer
 }
 
 r_codec_state r_video_encoder::encode()
@@ -137,7 +159,6 @@ r_codec_state r_video_encoder::encode()
     frame.get()->width = _context->width;
     frame.get()->height = _context->height;
     frame.get()->pts = _pts;
-    ++_pts;
 
     _pkt = raii_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* p) { av_packet_free(&p); });
 
@@ -169,6 +190,37 @@ r_codec_state r_video_encoder::encode()
         return R_CODEC_STATE_EOF;
     else if(rp_ret < 0)
         R_THROW(("Failed to receive packet: %s", _ff_rc_to_msg(rp_ret).c_str()));
+
+    return R_CODEC_STATE_HAS_OUTPUT;
+}
+
+r_codec_state r_video_encoder::flush()
+{
+    int ret = avcodec_send_frame(_context, nullptr);
+    if(ret == AVERROR(EAGAIN))
+    {
+        _pkt = raii_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* p) { av_packet_free(&p); });
+        auto rp_ret = avcodec_receive_packet(_context, _pkt.get());
+
+        if(rp_ret == AVERROR(EAGAIN) || rp_ret == AVERROR_EOF)
+            return R_CODEC_STATE_EOF;
+        else if(rp_ret < 0)
+            R_THROW(("Failed to flush encoder: %s", _ff_rc_to_msg(rp_ret).c_str()));
+
+        return R_CODEC_STATE_HAS_OUTPUT;
+    }
+    else if(ret == AVERROR_EOF)
+        return R_CODEC_STATE_EOF;
+    else if(ret < 0)
+        R_THROW(("Failed to flush encoder: %s", _ff_rc_to_msg(ret).c_str()));
+
+    _pkt = raii_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* p) { av_packet_free(&p); });
+    auto rp_ret = avcodec_receive_packet(_context, _pkt.get());
+
+    if(rp_ret == AVERROR(EAGAIN) || rp_ret == AVERROR_EOF)
+        return R_CODEC_STATE_EOF;
+    else if(rp_ret < 0)
+        R_THROW(("Failed to flush encoder: %s", _ff_rc_to_msg(rp_ret).c_str()));
 
     return R_CODEC_STATE_HAS_OUTPUT;
 }

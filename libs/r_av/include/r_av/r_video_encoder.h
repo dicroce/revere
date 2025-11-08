@@ -47,7 +47,9 @@ public:
         uint8_t max_b_frames,
         uint16_t gop_size,
         int profile,
-        int level
+        int level,
+        const std::string& preset = "",
+        const std::string& tune = ""
     );
 
     R_API r_video_encoder(const r_video_encoder&) = delete;
@@ -59,9 +61,12 @@ public:
     R_API r_video_encoder& operator=(const r_video_encoder&) = delete;
     R_API r_video_encoder& operator=(r_video_encoder&& obj);
 
-    R_API void attach_buffer(const uint8_t* data, size_t size);
+    R_API void attach_buffer(const uint8_t* data, size_t size, int64_t pts);
+
+    R_API void set_bitrate(uint32_t bitrate);
 
     R_API r_codec_state encode();
+    R_API r_codec_state flush();
 
     R_API r_packet_info get();
 

@@ -1100,7 +1100,7 @@ int main(int argc, char** argv)
 
     // Main loop
     while(!close_requested)
-    {
+    {        
         auto now = chrono::steady_clock::now();
 
         if(((now - last_ui_update_ts) > chrono::seconds(5)) || force_ui_update)

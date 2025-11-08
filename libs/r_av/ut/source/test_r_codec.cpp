@@ -87,6 +87,7 @@ void test_r_codec::test_basic_video_transcode()
         muxer.open();
 
         r_frame_info fi;
+        int64_t frame_num = 0;
 
         while(demuxer.read_frame())
         {
@@ -109,7 +110,8 @@ void test_r_codec::test_basic_video_transcode()
 
     ENCODE_AGAIN_TOP:
                     --encode_attempts;
-                    encoder.attach_buffer(frame->data(), frame->size());
+                    encoder.attach_buffer(frame->data(), frame->size(), frame_num);
+                    frame_num++;
 
                     auto encode_state = encoder.encode();
 
@@ -137,7 +139,8 @@ void test_r_codec::test_basic_video_transcode()
 
     ENCODE_AGAIN_BOTTOM:
             --encode_attempts;
-            encoder.attach_buffer(frame->data(), frame->size());
+            encoder.attach_buffer(frame->data(), frame->size(), frame_num);
+            frame_num++;
 
             auto encode_state = encoder.encode();
 
@@ -148,7 +151,7 @@ void test_r_codec::test_basic_video_transcode()
             {
                 auto pi = encoder.get();
                 muxer.write_video_frame(pi.data, pi.size, pi.pts, pi.dts, pi.time_base, pi.key);
-            }        
+            }
         }
 
         muxer.finalize();
