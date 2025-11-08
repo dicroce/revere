@@ -27,9 +27,11 @@ AVCodecID r_av::encoding_to_av_codec_id(const string& codec_name)
     R_THROW(("Unknown codec name."));
 }
 
-r_muxer::r_muxer(const std::string& path, bool output_to_buffer) :
+r_muxer::r_muxer(const std::string& path, bool output_to_buffer, const std::string& format_name) :
     _path(path),
     _output_to_buffer(output_to_buffer),
+    _format_name(format_name),
+    _output_options(),
     _buffer(),
     _fc([](AVFormatContext* fc){avformat_free_context(fc);}),
     _video_stream(nullptr),
@@ -39,7 +41,8 @@ r_muxer::r_muxer(const std::string& path, bool output_to_buffer) :
     _audio_bsf([](AVBSFContext* bsf){av_bsf_free(&bsf);})
 
 {
-    avformat_alloc_output_context2(&_fc.raw(), NULL, NULL, _path.c_str());
+    const char* format = _format_name.empty() ? NULL : _format_name.c_str();
+    avformat_alloc_output_context2(&_fc.raw(), NULL, format, _path.c_str());
     if(!_fc)
         R_THROW(("Unable to create libavformat output context"));
 
@@ -172,6 +175,11 @@ void r_muxer::set_audio_extradata(const std::vector<uint8_t>& ed)
     }
 }
 
+void r_muxer::set_output_option(const std::string& key, const std::string& value)
+{
+    _output_options[key] = value;
+}
+
 void r_muxer::open()
 {
     if(_fc.get()->nb_streams < 1)
@@ -185,7 +193,14 @@ void r_muxer::open()
     }
     else
     {
-        int res = avio_open(&_fc.get()->pb, _path.c_str(), AVIO_FLAG_WRITE);
+        AVDictionary* opts = nullptr;
+        for(const auto& kv : _output_options)
+            av_dict_set(&opts, kv.first.c_str(), kv.second.c_str(), 0);
+
+        int res = avio_open2(&_fc.get()->pb, _path.c_str(), AVIO_FLAG_WRITE, nullptr, &opts);
+
+        av_dict_free(&opts);
+
         if(res < 0)
             R_THROW(("Unable to open output io context: %s", ff_rc_to_msg(res).c_str()));
     }

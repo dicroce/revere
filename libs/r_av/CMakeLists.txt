@@ -34,4 +34,20 @@ install(TARGETS r_av
     ARCHIVE DESTINATION revere
 )
 
+# Post-build: Copy FFmpeg DLLs to build output directory for testing on Windows
+if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+    file(TO_CMAKE_PATH $ENV{FFMPEG_TOP_DIR} FFMPEG_TOP_DIR)
+
+    add_custom_command(TARGET r_av POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${FFMPEG_TOP_DIR}/bin/avcodec-62.dll"
+            "${FFMPEG_TOP_DIR}/bin/avformat-62.dll"
+            "${FFMPEG_TOP_DIR}/bin/avutil-60.dll"
+            "${FFMPEG_TOP_DIR}/bin/swresample-6.dll"
+            "${FFMPEG_TOP_DIR}/bin/swscale-9.dll"
+            "$<TARGET_FILE_DIR:r_av>"
+        COMMENT "Copying FFmpeg DLLs to build output directory"
+    )
+endif()
+
 add_subdirectory(ut)
