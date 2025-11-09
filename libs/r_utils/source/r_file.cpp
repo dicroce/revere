@@ -9,13 +9,16 @@
 #include <Io.h>
 #include <direct.h>
 #else
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 #include <fcntl.h>
 #include <sys/statvfs.h>
 #include <fnmatch.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <errno.h>
+#endif
+#ifdef IS_MACOS
+#include <mach-o/dyld.h>
 #endif
 #endif
 
@@ -25,7 +28,7 @@ using namespace std;
 #ifdef IS_WINDOWS
 //R_API const string r_utils::r_fs::PATH_SLASH = "\\";
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 //R_API const string r_utils::r_fs::PATH_SLASH = "/";
 #endif
 
@@ -64,6 +67,13 @@ string r_utils::r_fs::current_exe_path()
     ssize_t count = readlink("/proc/self/exe", result, 2048);
     output = string(result, (count > 0) ? count : 0);
 #endif
+#ifdef IS_MACOS
+    char result[2048];
+    uint32_t size = sizeof(result);
+    if (_NSGetExecutablePath(result, &size) == 0) {
+        output = string(result);
+    }
+#endif
     return output;
 }
 
@@ -75,7 +85,7 @@ string r_utils::r_fs::platform_path(const string& path)
 
     replace(begin(s1), end(s1), '/', '\\');
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     // convert backslashes to forward slashes
     auto s1 = regex_replace(path, regex("\\\\"), "\\");
 
@@ -92,7 +102,7 @@ string r_utils::r_fs::working_directory()
     if(_getcwd(buf, sizeof(buf)) != nullptr)
         output = buf;
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     if(getcwd(buf, sizeof(buf)) != nullptr)
         output = buf;
 #endif
@@ -105,7 +115,7 @@ void r_utils::r_fs::change_working_directory(const string& dir)
     if(SetCurrentDirectory(dir.c_str()) == 0)
         R_STHROW(r_not_found_exception, ("Unable to change working directory to: %s", dir.c_str()));
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     if(chdir(dir.c_str()) < 0)
         R_STHROW(r_not_found_exception, ("Unable to change working directory to: %s", dir.c_str()));
 #endif
@@ -117,7 +127,7 @@ string r_utils::r_fs::path_join(const string& path, const string& filename)
 #ifdef IS_WINDOWS
     return path + "\\" + filename;
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     return path + "/" + filename;
 #endif
 }
@@ -136,7 +146,7 @@ int r_utils::r_fs::stat(const string& file_name, struct r_file_info* file_info)
     return -1;
 
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     struct stat sfi;
     if(::stat(file_name.c_str(), &sfi) == 0)
     {
@@ -164,7 +174,7 @@ int r_utils::r_fs::fileno(FILE* f)
 #ifdef IS_WINDOWS
     return _fileno(f);
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     return ::fileno(f);
 #endif
 }
@@ -279,6 +289,10 @@ int r_utils::r_fs::fallocate(FILE* file, uint64_t size)
 #endif
 #ifdef IS_LINUX
     return posix_fallocate64(r_fs::fileno(file), 0, size);
+#endif
+#ifdef IS_MACOS
+    // macOS doesn't have posix_fallocate64, use ftruncate instead
+    return ftruncate(r_fs::fileno(file), size);
 #endif
 }
 

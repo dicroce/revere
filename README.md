@@ -62,6 +62,7 @@ Onvif discoverable cameras should appear in the Discovered list. Once it appears
 |----------|--------|-------|
 | Ubuntu 22.04+ | ✅ Tested | Requires GCC 9+ or Clang 10+ |
 | Windows 10/11 | ✅ Tested | Requires Visual Studio 2019 or newer (MSVC v17/2022 recommended) |
+| macOS 10.15+ | 🟡 Experimental | Requires Xcode Command Line Tools and Homebrew |
 | Other Linux | 🟡 Should work | Any distribution with C++17 compiler and required dependencies |
 
 ## System Requirements

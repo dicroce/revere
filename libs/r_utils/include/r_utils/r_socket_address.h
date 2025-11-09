@@ -10,7 +10,7 @@
 #include <BaseTsd.h>
 #endif
 
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>

@@ -19,7 +19,7 @@ r_process::~r_process() noexcept
 {
     if(_pid.valid())
     {
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
         int status;
         waitpid(_pid.pid, &status, 0);
 #endif
@@ -33,7 +33,7 @@ r_process::~r_process() noexcept
 
 void r_process::start()
 {
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     if (_detached)
     {
         // Use double-fork technique to avoid zombies
@@ -224,7 +224,7 @@ bool r_process::running()
 
 r_wait_status r_process::wait_for(int& code, milliseconds timeout)
 {
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     auto remaining = timeout;
     while(duration_cast<milliseconds>(remaining).count() > 0)
     {
@@ -269,7 +269,7 @@ r_wait_status r_process::wait_for(int& code, milliseconds timeout)
 
 r_wait_status r_process::wait(int& code)
 {
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     int status;
     waitpid(_pid.pid, &status, 0);
 #endif
@@ -284,7 +284,7 @@ r_wait_status r_process::wait(int& code)
 
 void r_process::kill()
 {
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     ::kill(-_pid.pid, SIGKILL); //negated pid means kill entire process group id
 #endif
 #ifdef IS_WINDOWS

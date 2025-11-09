@@ -132,7 +132,7 @@ void r_server_response::write_response(r_socket_base& socket)
 
     time_t now = time(0);
 
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     char* cstr = ctime(&now);
 
     if( cstr == nullptr )
@@ -320,7 +320,7 @@ string r_server_response::_get_status_message(status_code sc) const
 bool r_server_response::_write_header(r_socket_base& socket)
 {
     time_t now = time(0);
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     char* cstr = ctime(&now);
 
     if( cstr == nullptr )

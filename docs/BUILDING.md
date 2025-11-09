@@ -9,6 +9,7 @@ This guide covers building Revere on all supported platforms.
   - [Ubuntu/Debian](#ubuntudebian)
   - [Fedora/RHEL](#fedorarhel)
   - [Arch Linux](#arch-linux)
+- [Building on macOS](#building-on-macos)
 - [Building on Windows](#building-on-windows)
   - [Installing Dependencies](#installing-dependencies)
   - [Setting Environment Variables](#setting-environment-variables)
@@ -36,6 +37,11 @@ This guide covers building Revere on all supported platforms.
 - pkg-config
 - make or ninja
 - Development packages for all dependencies
+
+**macOS:**
+- macOS 10.15 (Catalina) or newer
+- Xcode Command Line Tools
+- Homebrew package manager
 
 **Windows:**
 - Visual Studio 2019 or newer (VS 2022/MSVC v17 recommended)
@@ -135,6 +141,29 @@ TBD (should probably work)
 ### Arch Linux
 
 TBD (should probably work)
+
+## Building on macOS
+
+For detailed macOS build instructions, see [BUILDING_MACOS.md](BUILDING_MACOS.md).
+
+### Quick Start
+
+```bash
+# Install dependencies with Homebrew
+brew install cmake pkg-config opencv gstreamer gst-plugins-base \
+             gst-plugins-good gst-plugins-bad ffmpeg glfw sqlite \
+             mbedtls pugixml
+
+# Clone and build
+git clone https://github.com/dicroce/revere.git
+cd revere
+./build_macos.sh
+
+# Or manually:
+mkdir build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j$(sysctl -n hw.ncpu)
+```
 
 ## Building on Windows
 

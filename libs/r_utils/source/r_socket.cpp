@@ -10,6 +10,14 @@
 #include <sys/time.h>
 #endif
 
+#ifdef IS_MACOS
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <net/if_dl.h>
+#include <sys/ioctl.h>
+#include <sys/time.h>
+#endif
+
 using namespace r_utils;
 using namespace std;
 
@@ -395,7 +403,7 @@ vector<string> r_utils::r_networking::r_resolve( int type, const string& name )
 
 vector<uint8_t> r_utils::r_networking::r_get_hardware_address(
     const string&
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     ifname
 #endif
 )
@@ -403,7 +411,8 @@ vector<uint8_t> r_utils::r_networking::r_get_hardware_address(
     vector<uint8_t> buffer(6);
 
 #ifdef IS_WINDOWS
-#else
+#endif
+#ifdef IS_LINUX
     int fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
     if(fd < 0)
         R_THROW(("Unable to create datagram socket."));
@@ -421,6 +430,26 @@ vector<uint8_t> r_utils::r_networking::r_get_hardware_address(
     close(fd);
 
     memcpy(&buffer[0], &s.ifr_addr.sa_data[0], 6);
+#endif
+#ifdef IS_MACOS
+    // macOS uses getifaddrs to get MAC address
+    struct ifaddrs* iflist;
+    if (getifaddrs(&iflist) == 0)
+    {
+        for (struct ifaddrs* cur = iflist; cur; cur = cur->ifa_next)
+        {
+            if (cur->ifa_addr && cur->ifa_addr->sa_family == AF_LINK &&
+                strcmp(cur->ifa_name, ifname.c_str()) == 0)
+            {
+                struct sockaddr_dl* sdl = (struct sockaddr_dl*)cur->ifa_addr;
+                memcpy(&buffer[0], LLADDR(sdl), 6);
+                freeifaddrs(iflist);
+                return buffer;
+            }
+        }
+        freeifaddrs(iflist);
+    }
+    R_THROW(("Unable to query MAC address."));
 #endif
     return buffer;
 }
