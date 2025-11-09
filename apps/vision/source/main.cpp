@@ -266,7 +266,7 @@ void _set_working_dir()
 #ifdef IS_WINDOWS
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow)
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 int main(int, char**)
 #endif
 {
@@ -306,6 +306,14 @@ int main(int, char**)
     const char* glsl_version = "#version 130";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+#ifdef IS_MACOS
+    // macOS requires at least OpenGL 3.2 with Core Profile
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glsl_version = "#version 150";
+#endif
 
     // Create window with graphics context
     GLFWwindow* window = glfwCreateWindow(1280, 720, "Vision", NULL, NULL);

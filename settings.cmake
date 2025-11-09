@@ -61,6 +61,32 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
         $<$<CONFIG:Release>:-march=native>
     )
 
+elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
+    add_compile_definitions(IS_MACOS)
+    add_compile_options(-Wall -Wextra -Wno-unused-parameter -fPIC)
+
+    # Debug-specific flags
+    add_compile_options(
+        $<$<CONFIG:Debug>:-g3>
+        $<$<CONFIG:Debug>:-O0>
+        $<$<CONFIG:Debug>:-fno-omit-frame-pointer>
+    )
+    add_link_options(
+        $<$<CONFIG:Debug>:-g3>
+        $<$<CONFIG:Debug>:-fno-omit-frame-pointer>
+    )
+
+    # Release-specific flags
+    add_compile_options(
+        $<$<CONFIG:Release>:-O3>
+        $<$<CONFIG:Release>:-ffast-math>
+        $<$<CONFIG:Release>:-fno-math-errno>
+        $<$<CONFIG:Release>:-fno-omit-frame-pointer>
+    )
+    add_link_options(
+        $<$<CONFIG:Release>:-O3>
+    )
+
 elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
     add_compile_definitions(IS_WINDOWS)
     add_compile_options(/W4 /MP /permissive- /Zc:preprocessor /wd4100)

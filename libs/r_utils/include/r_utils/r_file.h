@@ -48,7 +48,7 @@ public:
         return obj;
 #pragma warning(pop)
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
         r_file obj;
         obj._f = fopen(path.c_str(), mode.c_str());
         if(!obj._f)
@@ -69,7 +69,7 @@ namespace r_fs
 #ifdef IS_WINDOWS
 #define PATH_SLASH std::string("\\")
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 #define PATH_SLASH std::string("/")
 #endif
 

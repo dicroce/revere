@@ -8,7 +8,7 @@
 #include <windows.h>
 #endif
 
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 #define R_API
 #endif
 
@@ -22,7 +22,7 @@
 #ifdef IS_WINDOWS
 #define FULL_MEM_BARRIER MemoryBarrier
 #else
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 #define FULL_MEM_BARRIER __sync_synchronize
 #endif
 #endif
