@@ -65,6 +65,8 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 #include "imgui_ui.h"
 #include "assignment_state.h"
 #include "rtsp_source_camera_config.h"
+#include "configure_state.h"
+#include "revere_cloud.h"
 
 #include "R_32x32.h"
 // R_32x32_png && R_32x32_png_len
@@ -166,13 +168,19 @@ static string _make_file_name(string name)
     return name + ".nts";
 }
 
-void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices)
+void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_vss::r_stream_keeper& streamKeeper)
 {
     auto assigned_cameras = devices.get_assigned_cameras();
 
     map<string, r_disco::r_camera> assigned;
     for(auto& c: assigned_cameras)
         assigned[c.id] = c;
+
+    // Get stream status for all cameras to populate kbps and retention
+    auto stream_status = streamKeeper.fetch_stream_status();
+    map<string, decltype(stream_status)::value_type> status_by_id;
+    for(auto& status : stream_status)
+        status_by_id[status.camera.id] = status;
 
     ui_state.recording_items.clear();
     for(auto& c : assigned)
@@ -181,6 +189,21 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices)
         item.label = c.second.friendly_name.value();
         item.sub_label = c.second.ipv4.value();
         item.camera_id = c.first;
+
+        // Populate kbps and retention if stream status is available
+        if(status_by_id.find(c.first) != status_by_id.end())
+        {
+            auto& status = status_by_id[c.first];
+            item.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
+            auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
+            item.retention = r_string_utils::format("%.2f days", retention_days);
+        }
+        else
+        {
+            item.kbps = "N/A";
+            item.retention = "N/A";
+        }
+
         ui_state.recording_items.push_back(item);
     }
 
@@ -314,7 +337,7 @@ void _delete_camera_files(const r_disco::r_camera& camera)
     }
 }
 
-void _on_new_file(revere::assignment_state& as, r_ui_utils::wizard& camera_setup_wizard, r_disco::r_devices& devices, revere_ui_state& ui_state)
+void _on_new_file(revere::assignment_state& as, r_ui_utils::wizard& camera_setup_wizard, r_disco::r_devices& devices, revere_ui_state& ui_state, r_vss::r_stream_keeper& streamKeeper)
 {
     auto video_path = revere::sub_dir("video");
 
@@ -358,7 +381,7 @@ void _on_new_file(revere::assignment_state& as, r_ui_utils::wizard& camera_setup
 
     _assign_camera(as, devices);
 
-    _update_list_ui(ui_state, devices);
+    _update_list_ui(ui_state, devices, streamKeeper);
 }
 
 static AVCodecID _r_encoding_to_avcodec_id(r_pipeline::r_encoding e)
@@ -614,7 +637,7 @@ void configure_camera_setup_wizard(
     );
     camera_setup_wizard.add_step(
         "choose_file",
-        [&as, &camera_setup_wizard, &devices, &ui_state](){
+        [&as, &camera_setup_wizard, &devices, &ui_state, &stream_keeper](){
             ImGuiFileDialog::Instance()->OpenDialog("ChooseFileDlgKey", "Choose File", ".nts", revere::sub_dir("video"));
             if(ImGuiFileDialog::Instance()->Display("ChooseFileDlgKey", ImGuiWindowFlags_None, ImVec2(800, 600))) 
             {
@@ -638,7 +661,7 @@ void configure_camera_setup_wizard(
 
                     ui_state.reset_selection();
 
-                    _update_list_ui(ui_state, devices);
+                    _update_list_ui(ui_state, devices, stream_keeper);
 
                     camera_setup_wizard.cancel();
                 }
@@ -663,14 +686,14 @@ void configure_camera_setup_wizard(
     );
     camera_setup_wizard.add_step(
         "new_file_name",
-        [&as, &camera_setup_wizard, &devices, &ui_state](){
+        [&as, &camera_setup_wizard, &devices, &ui_state, &stream_keeper](){
             as.file_name = _make_file_name(as.camera_friendly_name);
             ImGui::OpenPopup("New File Name");
             revere::new_file_name_modal(
                 GImGui,
                 "New File Name",
                 as.file_name,
-                [&](){_on_new_file(as, camera_setup_wizard, devices, ui_state);},
+                [&](){_on_new_file(as, camera_setup_wizard, devices, ui_state, stream_keeper);},
                 [&](){camera_setup_wizard.cancel();}
             );
         }
@@ -1086,7 +1109,15 @@ int main(int argc, char** argv)
     r_ui_utils::wizard camera_setup_wizard;
     configure_camera_setup_wizard(as, rscc, camera_setup_wizard, tl, agent, devices, streamKeeper, ui_state, window);
 
-    _update_list_ui(ui_state, devices);
+    // Load configuration
+    revere::configure_state config;
+    config.load();
+
+    // Initialize Revere Cloud
+    revere::revere_cloud cloud(config);
+    cloud.start();
+
+    _update_list_ui(ui_state, devices, streamKeeper);
 
     // Auto-select first camera in Recording list if any exist
     if(ui_state.recording_items.size() > 0)
@@ -1108,7 +1139,7 @@ int main(int argc, char** argv)
             last_ui_update_ts = now;
             force_ui_update = false;
 
-            _update_list_ui(ui_state, devices);
+            _update_list_ui(ui_state, devices, streamKeeper);
 
             // Also update stream status for selected camera (only every 5 seconds, not every frame)
             auto maybe_camera_id = ui_state.selected_camera_id();
@@ -1281,19 +1312,37 @@ int main(int argc, char** argv)
                             ui_state.recording_largest_label
                         );
                     },
-                    "Camera Info",
+                    "Revere Cloud",
                     [&](uint16_t){
-                        // Display cached stream status (updated every 5 seconds in main loop)
-                        if(!ui_state.friendly_name.empty())
+                        ImGui::PushFont(r_ui_utils::fonts["18.00"].roboto_regular);
+
+                        // Enable Revere Cloud checkbox
+                        bool cloud_enabled = cloud.enabled();
+                        if (ImGui::Checkbox("Enable Revere Cloud", &cloud_enabled))
                         {
-                            ImGui::PushFont(r_ui_utils::fonts["18.00"].roboto_regular);
-                            ImGui::Text("friendly name: %s", ui_state.friendly_name.c_str());
-                            ImGui::Text("IP: %s", ui_state.ipv4.c_str());
-                            ImGui::Text("restream url: %s",ui_state.restream_url.c_str());
-                            ImGui::Text("kbps: %s", ui_state.kbps.c_str());
-                            ImGui::Text("retention: %s", ui_state.retention.c_str());
-                            ImGui::PopFont();
+                            cloud.set_enabled(cloud_enabled);
                         }
+
+                        ImGui::Spacing();
+
+                        // Authentication status
+                        if (cloud.enabled())
+                        {
+                            if (cloud.authenticated())
+                            {
+                                ImGui::Text("Status: Authenticated");
+                            }
+                            else
+                            {
+                                ImGui::Text("Status: Authenticating...");
+                            }
+                        }
+                        else
+                        {
+                            ImGui::Text("Status: Disabled");
+                        }
+
+                        ImGui::PopFont();
                     },
                     "Log",
                     [&](uint16_t log_width, uint16_t log_height){
@@ -1385,6 +1434,7 @@ int main(int argc, char** argv)
     glfwDestroyWindow(window);
     glfwTerminate();
 
+    cloud.stop();
     streamKeeper.stop();
     agent.stop();
     devices.stop();

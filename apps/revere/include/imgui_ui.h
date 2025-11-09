@@ -241,6 +241,8 @@ struct sidebar_list_ui_item
     std::string label;
     std::string sub_label;
     std::string camera_id;
+    std::string kbps;
+    std::string retention;
 };
 
 template<typename BUTTON_CLICK_CB, typename ITEM_CLICK_CB, typename FORGET_BUTTON_CLICK_CB, typename PROPERTIES_CLICK_CB>
@@ -328,6 +330,44 @@ void sidebar_list(
         if (ImGui::Selectable(name.c_str(), i == selected, 0, ImVec2((float)width, 100))) {
             item_click_cb(i);
         }
+
+        // Show tooltip with kbps and retention info when hovering (with delay and stationary mouse)
+        if (ImGui::IsItemHovered() && !labels[i].kbps.empty() && labels[i].kbps != "N/A")
+        {
+            static int last_hovered_item = -1;
+            static float hover_start_time = 0.0f;
+            static ImVec2 last_mouse_pos = ImVec2(0, 0);
+            const float tooltip_delay = 0.5f; // 0.5 seconds delay
+            const float mouse_move_threshold = 2.0f; // pixels - small threshold to ignore tiny movements
+
+            ImVec2 current_mouse_pos = ImGui::GetMousePos();
+            float mouse_delta_x = current_mouse_pos.x - last_mouse_pos.x;
+            float mouse_delta_y = current_mouse_pos.y - last_mouse_pos.y;
+            float mouse_distance = sqrtf(mouse_delta_x * mouse_delta_x + mouse_delta_y * mouse_delta_y);
+
+            if (last_hovered_item != i || mouse_distance > mouse_move_threshold)
+            {
+                // Started hovering a new item or mouse moved
+                last_hovered_item = i;
+                last_mouse_pos = current_mouse_pos;
+                hover_start_time = (float)ImGui::GetTime();
+            }
+
+            float hover_duration = (float)ImGui::GetTime() - hover_start_time;
+            if (hover_duration >= tooltip_delay)
+            {
+                ImGui::BeginTooltip();
+                ImGui::Text("kbps: %s", labels[i].kbps.c_str());
+                ImGui::Text("retention: %s", labels[i].retention.c_str());
+                ImGui::EndTooltip();
+            }
+        }
+        else
+        {
+            static int last_hovered_item = -1;
+            last_hovered_item = -1; // Reset when not hovering
+        }
+
         ImGui::PopStyleColor();
         ImGui::PopStyleColor();
         ImGui::PopStyleColor();
