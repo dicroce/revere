@@ -1,4 +1,5 @@
 #include "r_utils/r_ssl_socket.h"
+#include "r_utils/r_socket_address.h"
 #include "r_utils/r_exception.h"
 #include <stdexcept>
 #include <cstring>
@@ -6,6 +7,7 @@
 #ifndef IS_WINDOWS
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <errno.h>
 #else
 #include <WinSock2.h>
 #endif
@@ -21,12 +23,38 @@ using namespace r_utils;
 
 static int _mbedtls_send(void* ctx, const unsigned char* buf, size_t len)
 {
-    return static_cast<r_raw_socket*>(ctx)->send(buf, len);
+    int ret = static_cast<r_raw_socket*>(ctx)->send(buf, len);
+    if (ret < 0)
+    {
+#ifdef IS_WINDOWS
+        int err = WSAGetLastError();
+        if (err == WSAEWOULDBLOCK || err == WSAETIMEDOUT)
+            return MBEDTLS_ERR_SSL_WANT_WRITE;
+#else
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT)
+            return MBEDTLS_ERR_SSL_WANT_WRITE;
+#endif
+        return MBEDTLS_ERR_NET_SEND_FAILED;
+    }
+    return ret;
 }
 
 static int _mbedtls_recv(void* ctx, unsigned char* buf, size_t len)
 {
-    return static_cast<r_raw_socket*>(ctx)->recv(buf, len);
+    int ret = static_cast<r_raw_socket*>(ctx)->recv(buf, len);
+    if (ret < 0)
+    {
+#ifdef IS_WINDOWS
+        int err = WSAGetLastError();
+        if (err == WSAEWOULDBLOCK || err == WSAETIMEDOUT)
+            return MBEDTLS_ERR_SSL_WANT_READ;
+#else
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT)
+            return MBEDTLS_ERR_SSL_WANT_READ;
+#endif
+        return MBEDTLS_ERR_NET_RECV_FAILED;
+    }
+    return ret;
 }
 
 r_ssl_socket::r_ssl_socket(bool enable_auth) :
@@ -122,8 +150,10 @@ void r_ssl_socket::connect(const std::string& host, int port)
 {
     _host = host;
 
-    _sok.create(AF_INET);
-    
+    // Create socket with correct address family (IPv4 or IPv6)
+    _sok.create(r_socket_address::get_address_family(host));
+
+    // Set socket timeouts before connecting
     timeval connect_timeout;
     connect_timeout.tv_sec = (long)(_ioTimeOut / 1000);
     connect_timeout.tv_usec = (long)((_ioTimeOut % 1000) * 1000);
@@ -133,7 +163,7 @@ void r_ssl_socket::connect(const std::string& host, int port)
 
     if( ::setsockopt( (SOK)_sok.get_sok_id(), SOL_SOCKET, SO_SNDTIMEO, (const char*)&connect_timeout, sizeof(connect_timeout) ) < 0 )
         R_THROW(("Unable to configure socket send timeout."));
-    
+
     _sok.connect(host, port);
 
     mbedtls_ssl_set_bio(&_ssl, &_sok, _mbedtls_send, _mbedtls_recv, nullptr);
@@ -145,7 +175,12 @@ void r_ssl_socket::connect(const std::string& host, int port)
     while ((ret = mbedtls_ssl_handshake(&_ssl)) != 0)
     {
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
-            R_THROW(("mbedtls_ssl_handshake() failed"));
+        {
+            char error_buf[100];
+            mbedtls_strerror(ret, error_buf, sizeof(error_buf));
+            std::string error_msg = std::string("mbedtls_ssl_handshake() failed: ") + error_buf + " (code: " + std::to_string(ret) + ")";
+            R_THROW((error_msg.c_str()));
+        }
     }
 
     _valid = true;
@@ -167,16 +202,63 @@ bool r_ssl_socket::valid() const
 
 int r_ssl_socket::send(const void* buf, size_t len)
 {
-    return mbedtls_ssl_write(&_ssl, static_cast<const unsigned char*>(buf), len);
+    // Retry loop for WANT_READ/WANT_WRITE with a short timeout per attempt
+    // This handles the case where SSL needs multiple network writes to encrypt and send data
+    uint64_t timeout_ms = 100;  // Short timeout per write attempt
+    const int MAX_RETRIES = 50;  // Allow up to 5 seconds total (50 * 100ms)
+
+    for (int retry = 0; retry < MAX_RETRIES; ++retry)
+    {
+        int ret = mbedtls_ssl_write(&_ssl, static_cast<const unsigned char*>(buf), len);
+
+        // If we sent data or got a real error (not WANT_READ/WRITE), return it
+        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
+            return ret;
+
+        // WANT_READ/WANT_WRITE means we need to wait for the socket
+        // Wait for the underlying socket to be ready, then retry
+        timeout_ms = 100;  // Reset timeout for each wait
+        if (!_sok.wait_till_send_wont_block(timeout_ms))
+            return MBEDTLS_ERR_SSL_WANT_WRITE;  // Timeout waiting for socket
+    }
+
+    // Exceeded max retries
+    return MBEDTLS_ERR_SSL_WANT_WRITE;
 }
 
 int r_ssl_socket::recv(void* buf, size_t len)
 {
-    return mbedtls_ssl_read(&_ssl, static_cast<unsigned char*>(buf), len);
+    // Retry loop for WANT_READ/WANT_WRITE with a short timeout per attempt
+    // This handles the case where SSL needs multiple network reads to decrypt a record
+    uint64_t timeout_ms = 100;  // Short timeout per read attempt
+    const int MAX_RETRIES = 50;  // Allow up to 5 seconds total (50 * 100ms)
+
+    for (int retry = 0; retry < MAX_RETRIES; ++retry)
+    {
+        int ret = mbedtls_ssl_read(&_ssl, static_cast<unsigned char*>(buf), len);
+
+        // If we got data or a real error (not WANT_READ/WRITE), return it
+        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
+            return ret;
+
+        // WANT_READ/WANT_WRITE means we need more network data
+        // Wait for the underlying socket to have data, then retry
+        timeout_ms = 100;  // Reset timeout for each wait
+        if (!_sok.wait_till_recv_wont_block(timeout_ms))
+            return MBEDTLS_ERR_SSL_WANT_READ;  // Timeout waiting for data
+    }
+
+    // Exceeded max retries
+    return MBEDTLS_ERR_SSL_WANT_READ;
 }
 
 bool r_ssl_socket::wait_till_recv_wont_block(uint64_t& millis) const
 {
+    // Check if mbedtls has already buffered decrypted data
+    if (mbedtls_ssl_get_bytes_avail(&_ssl) > 0)
+        return true;
+
+    // Otherwise wait for underlying socket to have data
     return _sok.wait_till_recv_wont_block(millis);
 }
 

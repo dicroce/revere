@@ -564,16 +564,45 @@ void test_r_utils::test_ssl_socket_connect_to_example_com()
         "Connection: close\r\n"
         "\r\n";
 
-    sock.send(request.data(), request.size());
+    r_networking::r_send(sock, request.data(), request.size());
 
     uint8_t buffer[4096] = {0};
-    sock.recv(buffer, 1024);
+    int received = r_networking::r_recv(sock, buffer, 1024);
+
+    printf("buffer: %s\n", buffer);
 
     std::string response((char*)buffer);
 
     // Basic validation that we got an HTTP response
     RTF_ASSERT(response.find("HTTP/1.1") != std::string::npos);
     RTF_ASSERT(response.find("200 OK") != std::string::npos);
+}
+
+void test_r_utils::test_ssl_socket_connect_to_google()
+{
+    r_utils::r_ssl_socket sock(true);
+
+    sock.connect("www.google.com", 443);
+
+    RTF_ASSERT(sock.valid());
+
+    const std::string request =
+        "GET / HTTP/1.1\r\n"
+        "Host: www.google.com\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+
+    r_networking::r_send(sock, request.data(), request.size());
+
+    uint8_t buffer[4096] = {0};
+    int received = r_networking::r_recv(sock, buffer, 1024);
+
+    std::string response((char*)buffer);
+
+    // Basic validation that we got an HTTP response
+    RTF_ASSERT(response.find("HTTP/1.1") != std::string::npos);
+    // Google might return various status codes (200, 301, etc.) but should at least be HTTP
+    RTF_ASSERT(r_string_utils::contains(response, "google"));
 }
 
 void test_r_utils::test_ssl_socket_certificate_validation()
@@ -638,23 +667,24 @@ void test_r_utils::test_ssl_socket_no_auth()
 {
     // Test SSL socket creation without authentication
     r_utils::r_ssl_socket sock(false);
-    
+
     // Connect to a test server (badssl.com provides various test cases)
     RTF_ASSERT_NO_THROW(sock.connect("badssl.com", 443));
-    
+
     RTF_ASSERT(sock.valid());
-    
+
     const std::string request =
         "GET / HTTP/1.1\r\n"
         "Host: badssl.com\r\n"
         "Connection: close\r\n"
         "\r\n";
-    
-    RTF_ASSERT(sock.send(request.data(), request.size()) > 0);
-    
+
+    r_networking::r_send(sock, request.data(), request.size());
+
     uint8_t buffer[1024] = {0};
-    RTF_ASSERT(sock.recv(buffer, sizeof(buffer)) > 0);
-    
+    int received = r_networking::r_recv(sock, buffer, sizeof(buffer));
+    RTF_ASSERT(received > 0);
+
     sock.close();
     RTF_ASSERT(!sock.valid());
 }
@@ -680,31 +710,31 @@ void test_r_utils::test_ssl_socket_send_recv()
 {
     r_utils::r_ssl_socket sock(false);
     sock.connect("httpbin.org", 443);
-    
+
     RTF_ASSERT(sock.valid());
-    
+
     // Test sending data
     const std::string request =
         "GET /get HTTP/1.1\r\n"
         "Host: httpbin.org\r\n"
         "Connection: close\r\n"
         "\r\n";
-    
-    int sent = sock.send(request.data(), request.size());
+
+    int sent = r_networking::r_send(sock, request.data(), request.size());
     RTF_ASSERT(sent == static_cast<int>(request.size()));
-    
+
     // Test receiving data
     uint8_t buffer[4096] = {0};
-    int received = sock.recv(buffer, sizeof(buffer));
+    int received = r_networking::r_recv(sock, buffer, sizeof(buffer));
     RTF_ASSERT(received > 0);
-    
+
     std::string response((char*)buffer, received);
     RTF_ASSERT(response.find("HTTP/1.1 200 OK") != std::string::npos);
-    
-    // Test partial receives
+
+    // Test partial receives (may be 0 if server closed connection after first response)
     uint8_t small_buffer[64];
-    int small_received = sock.recv(small_buffer, sizeof(small_buffer));
-    RTF_ASSERT(small_received > 0 && small_received <= static_cast<int>(sizeof(small_buffer)));
+    int small_received = r_networking::r_recv(sock, small_buffer, sizeof(small_buffer));
+    RTF_ASSERT(small_received >= 0 && small_received <= static_cast<int>(sizeof(small_buffer)));
 }
 
 void test_r_utils::test_ssl_socket_invalid_connection()

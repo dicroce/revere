@@ -25,6 +25,7 @@ public:
       TEST(test_r_utils::test_socket_wont_block);
       TEST(test_r_utils::test_buffered);
       TEST(test_r_utils::test_ssl_socket_connect_to_example_com);
+      TEST(test_r_utils::test_ssl_socket_connect_to_google);
       TEST(test_r_utils::test_ssl_socket_certificate_validation);
       TEST(test_r_utils::test_ssl_socket_no_auth);
       TEST(test_r_utils::test_ssl_socket_destructor);
@@ -80,6 +81,7 @@ public:
     void test_socket_wont_block();
     void test_buffered();
     void test_ssl_socket_connect_to_example_com();
+    void test_ssl_socket_connect_to_google();
     void test_ssl_socket_certificate_validation();
     void test_ssl_socket_no_auth();
     void test_ssl_socket_destructor();

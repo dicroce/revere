@@ -73,16 +73,16 @@ void r_client_request::write_request( r_socket_base& socket ) const
 {
     std::string msgHeader = _get_headers_as_string( socket );
 
-    socket.send( msgHeader.c_str(), msgHeader.length() );
-    if( !socket.valid() )
-        R_STHROW( r_http_io_exception, ("Socket invalid."));
+    int sent = r_networking::r_send(socket, msgHeader.c_str(), msgHeader.length());
+    if( sent != static_cast<int>(msgHeader.length()) )
+        R_STHROW( r_http_io_exception, ("Failed to send request headers."));
 
     if( (_method == METHOD_POST || _method == METHOD_PATCH || _method == METHOD_PUT) &&
         !r_string_utils::contains(_contentType, "x-www-form-urlencoded") && _body.size() )
     {
-        socket.send(&_body[0], _body.size());
-        if( !socket.valid() )
-            R_STHROW( r_http_io_exception, ("Socket invalid."));
+        sent = r_networking::r_send(socket, &_body[0], _body.size());
+        if( sent != static_cast<int>(_body.size()) )
+            R_STHROW( r_http_io_exception, ("Failed to send request body."));
     }
 }
 
@@ -133,7 +133,7 @@ void r_client_request::set_body( const std::string& body )
 std::string r_client_request::_get_headers_as_string( r_socket_base& socket ) const
 {
     std::string msgHeader;
-    msgHeader = method_text( _method ) + " " + _uri.get_full_raw_uri() + " " + (_hostPort == 443 ? "HTTPS" : "HTTP") + "/1.1\r\nHost: " + _host + ":" + r_string_utils::int_to_s( _hostPort ) + "\r\n";
+    msgHeader = method_text( _method ) + " " + _uri.get_full_raw_uri() + " HTTP/1.1\r\nHost: " + _host + ":" + r_string_utils::int_to_s( _hostPort ) + "\r\n";
 
     if (!_acceptType.empty())
         msgHeader += "Accept: " + _acceptType + "\r\n";

@@ -325,7 +325,6 @@ int r_utils::r_networking::r_send(r_socket_base& sok, const void* buf, size_t le
             int bytesJustSent = sok.send(reader, bytesToSend);
             if(bytesJustSent <= 0)
             {
-                sok.close();
                 return (int)(len - bytesToSend);
             }
             else
@@ -352,7 +351,6 @@ int r_utils::r_networking::r_recv(r_socket_base& sok, void* buf, size_t len, uin
             int bytesJustRecv = sok.recv(writer, bytesToRecv);
             if(bytesJustRecv <= 0)
             {
-                sok.close();
                 return (int)(len - bytesToRecv);
             }
             else
