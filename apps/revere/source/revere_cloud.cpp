@@ -588,24 +588,6 @@ void revere_cloud::_on_websocket_message(const r_websocket_frame& frame)
                 R_LOG_WARNING("Revere Cloud: Received unknown WebSocket text frame");
             }
         }
-        else if (frame.opcode == ws_opcode::binary)
-        {
-            if(frame.is_data_frame())
-            {
-                uint8_t* frame_p = (uint8_t*)frame.payload.data();
-
-                uint32_t word = *reinterpret_cast<const uint32_t*>(frame_p);
-                uint32_t json_len = r_ntohl(word);
-
-                string json_str((char*)(frame_p + sizeof(uint32_t)), json_len);
-
-                R_LOG_INFO("Revere Cloud: WebSocket binary JSON message: %s, binary data len: %zu", json_str.c_str(), frame.payload.size() - sizeof(uint32_t) - json_len);
-
-                uint8_t* data_p = frame_p + sizeof(uint32_t) + json_len;
-            }
-
-            R_LOG_INFO("Revere Cloud: WebSocket binary message: %zu bytes", frame.payload.size());
-        }
     }
     catch (const exception& ex)
     {
