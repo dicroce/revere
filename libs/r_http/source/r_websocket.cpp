@@ -2,6 +2,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_sha1.h"
 #include "r_utils/r_string_utils.h"
+#include "r_utils/r_socket.h"
 #include <cstring>
 
 using namespace r_http;
@@ -175,7 +176,9 @@ void r_websocket::read_exact(r_utils::r_socket_base& sock, uint8_t* buffer, size
 {
     size_t total_read = 0;
     while (total_read < length) {
-        int bytes_read = sock.recv(buffer + total_read, length - total_read);
+        // Use r_networking::r_recv() which properly handles SSL WANT_READ/WANT_WRITE states
+        uint64_t timeout_ms = 30000;  // 30 second timeout for WebSocket reads
+        int bytes_read = r_networking::r_recv(sock, buffer + total_read, length - total_read, timeout_ms);
 
         if (bytes_read <= 0)
             R_THROW(("Socket closed or error while reading WebSocket frame"));
@@ -216,8 +219,8 @@ void r_websocket::perform_client_handshake(
         "Sec-WebSocket-Version: 13\r\n"
         "\r\n";
 
-    // Send request
-    int sent = sock.send(request.c_str(), request.length());
+    // Send request using r_networking::r_send for proper retry handling
+    int sent = r_networking::r_send(sock, request.c_str(), request.length());
     if (sent != static_cast<int>(request.length()))
         R_THROW(("Failed to send WebSocket upgrade request"));
 
@@ -227,7 +230,9 @@ void r_websocket::perform_client_handshake(
     bool headers_complete = false;
 
     while (!headers_complete) {
-        int bytes_read = sock.recv(buffer, 1);
+        // Use r_networking::r_recv with timeout for proper retry handling
+        uint64_t timeout_ms = 5000;  // 5 second timeout for handshake
+        int bytes_read = r_networking::r_recv(sock, buffer, 1, timeout_ms);
         if (bytes_read <= 0)
             R_THROW(("Socket closed while reading handshake response"));
 
@@ -247,7 +252,12 @@ void r_websocket::perform_client_handshake(
     // Parse response
     // Check status line
     if (response.find("HTTP/1.1 101") != 0)
-        R_THROW(("WebSocket upgrade failed - expected 101 status"));
+    {
+        // Log the actual response for debugging
+        std::string status_line = response.substr(0, response.find("\r\n"));
+        std::string error_msg = "WebSocket upgrade failed - expected 101 status, got: " + status_line;
+        R_THROW((error_msg.c_str()));
+    }
 
     // Check Upgrade header
     if (response.find("Upgrade: websocket") == std::string::npos &&

@@ -6,6 +6,7 @@
 
 #ifdef IS_WINDOWS
 #include <shlobj_core.h>
+#include <shellapi.h>
 #endif
 
 #if defined(IS_LINUX) || defined(IS_MACOS)
@@ -81,5 +82,27 @@ string revere::sub_dir(const string& subdir)
 std::string revere::join_path(const std::string& path, const std::string& fileName)
 {
     return path + PATH_SLASH + fileName;
+}
+
+bool revere::open_url_in_browser(const std::string& url)
+{
+#ifdef IS_WINDOWS
+    // Windows: Use ShellExecute
+    HINSTANCE result = ShellExecuteA(NULL, "open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+    return (INT_PTR)result > 32;  // ShellExecute returns > 32 on success
+#elif defined(IS_MACOS)
+    // macOS: Use open command
+    std::string command = "open \"" + url + "\"";
+    return system(command.c_str()) == 0;
+#elif defined(IS_LINUX)
+    // Linux: Try xdg-open first, then fallback to other common browsers
+    std::string command = "xdg-open \"" + url + "\" 2>/dev/null || "
+                         "gnome-open \"" + url + "\" 2>/dev/null || "
+                         "kde-open \"" + url + "\" 2>/dev/null || "
+                         "firefox \"" + url + "\" 2>/dev/null &";
+    return system(command.c_str()) == 0;
+#else
+    return false;  // Unsupported platform
+#endif
 }
 

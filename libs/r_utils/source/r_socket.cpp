@@ -411,6 +411,51 @@ vector<uint8_t> r_utils::r_networking::r_get_hardware_address(
     vector<uint8_t> buffer(6);
 
 #ifdef IS_WINDOWS
+    // Get the first active network adapter's MAC address
+    ULONG bufferSize = 15000;  // Recommended initial size
+    vector<uint8_t> adapterInfoBuffer(bufferSize);
+
+    PIP_ADAPTER_INFO pAdapterInfo = reinterpret_cast<PIP_ADAPTER_INFO>(&adapterInfoBuffer[0]);
+    DWORD result = GetAdaptersInfo(pAdapterInfo, &bufferSize);
+
+    if (result == ERROR_BUFFER_OVERFLOW)
+    {
+        // Need larger buffer
+        adapterInfoBuffer.resize(bufferSize);
+        pAdapterInfo = reinterpret_cast<PIP_ADAPTER_INFO>(&adapterInfoBuffer[0]);
+        result = GetAdaptersInfo(pAdapterInfo, &bufferSize);
+    }
+
+    if (result != NO_ERROR)
+        R_THROW(("Unable to query network adapters."));
+
+    // Find the first active adapter with a non-zero MAC
+    PIP_ADAPTER_INFO pAdapter = pAdapterInfo;
+    while (pAdapter)
+    {
+        // Skip loopback and inactive adapters
+        if (pAdapter->Type != MIB_IF_TYPE_LOOPBACK && pAdapter->AddressLength == 6)
+        {
+            bool isZero = true;
+            for (UINT i = 0; i < 6; i++)
+            {
+                if (pAdapter->Address[i] != 0)
+                {
+                    isZero = false;
+                    break;
+                }
+            }
+
+            if (!isZero)
+            {
+                memcpy(&buffer[0], pAdapter->Address, 6);
+                return buffer;
+            }
+        }
+        pAdapter = pAdapter->Next;
+    }
+
+    // If no valid adapter found, return zeros
 #endif
 #ifdef IS_LINUX
     int fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);

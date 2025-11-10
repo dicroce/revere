@@ -92,20 +92,21 @@ void r_websocket_client::stop()
 {
     _connected = false;
 
-    // Join threads
+    // Close socket first to unblock any pending recv() calls in threads
+    if (_socket && _socket->valid())
+        _socket->close();
+
+    // Join threads (they will exit once they detect socket closed or _connected == false)
     if (_receive_thread.joinable())
         _receive_thread.join();
 
     if (_keepalive_thread.joinable())
         _keepalive_thread.join();
-
-    // Close socket
-    if (_socket && _socket->valid())
-        _socket->close();
 }
 
 void r_websocket_client::_receive_loop()
 {
+    try {
     while (_connected) {
         try {
             // Receive frame
@@ -143,16 +144,41 @@ void r_websocket_client::_receive_loop()
             }
         }
         catch (const r_exception& ex) {
-            // Socket error or protocol violation
-            R_LOG_EXCEPTION(ex);
+            // Socket error or protocol violation (expected during shutdown)
+            if (_connected) {
+                // Only log if we weren't intentionally disconnecting
+                R_LOG_EXCEPTION(ex);
+            }
             _connected = false;
             break;
         }
+        catch (const std::exception& ex) {
+            // Standard exception
+            if (_connected) {
+                R_LOG_ERROR("Exception in WebSocket receive loop: %s", ex.what());
+            }
+            _connected = false;
+            break;
+        }
+        catch (...) {
+            // Unknown exception
+            if (_connected) {
+                R_LOG_ERROR("Unknown exception in WebSocket receive loop");
+            }
+            _connected = false;
+            break;
+        }
+    }
+    } catch (...) {
+        // Absolute last resort - catch any exception that escaped inner handlers
+        // This prevents std::terminate() from being called
+        _connected = false;
     }
 }
 
 void r_websocket_client::_keepalive_loop()
 {
+    try {
     while (_connected) {
         // Wait 30 seconds
         for (int i = 0; i < 30 && _connected; i++) {
@@ -173,5 +199,9 @@ void r_websocket_client::_keepalive_loop()
             _connected = false;
             break;
         }
+    }
+    } catch (...) {
+        // Absolute last resort - catch any exception that escaped inner handlers
+        _connected = false;
     }
 }
