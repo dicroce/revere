@@ -13,7 +13,9 @@
 using namespace revere;
 using namespace std;
 using namespace r_utils;
+using namespace r_utils::r_networking;
 using namespace r_http;
+
 using json = nlohmann::json;
 
 // API Configuration
@@ -559,26 +561,49 @@ void revere_cloud::_on_websocket_message(const r_websocket_frame& frame)
             string message = frame.get_payload_as_string();
             R_LOG_INFO("Revere Cloud: WebSocket message: %s", message.c_str());
 
-            // Parse JSON message
-            json msg = json::parse(message);
-
-            // Handle application-level ping messages
-            if (msg.contains("type") && msg["type"] == "ping")
+            if(frame.is_control_frame())
             {
-                // Respond with pong
-                json pong_msg;
-                pong_msg["type"] = "pong";
-                pong_msg["timestamp"] = msg.value("timestamp", "");
+                // Parse JSON message
+                json msg = json::parse(message);
 
-                _ws_client->send_text(pong_msg.dump());
-                R_LOG_INFO("Revere Cloud: Responded to ping with pong");
+                // Handle application-level ping messages
+                if (msg.contains("type") && msg["type"] == "ping")
+                {
+                    // Respond with pong
+                    json pong_msg;
+                    pong_msg["type"] = "pong";
+                    pong_msg["timestamp"] = msg.value("timestamp", "");
+
+                    _ws_client->send_text(pong_msg.dump());
+                    R_LOG_INFO("Revere Cloud: Responded to ping with pong");
+                }
             }
-
-            // TODO: Handle different message types from the cloud
-            // For example: commands, notifications, configuration updates, etc.
+            else if(frame.is_data_frame())
+            {
+                // Handle data frames (application-specific)
+                R_LOG_INFO("Revere Cloud: Received WebSocket data frame: %s", message.c_str());
+            }
+            else
+            {
+                R_LOG_WARNING("Revere Cloud: Received unknown WebSocket text frame");
+            }
         }
         else if (frame.opcode == ws_opcode::binary)
         {
+            if(frame.is_data_frame())
+            {
+                uint8_t* frame_p = (uint8_t*)frame.payload.data();
+
+                uint32_t word = *reinterpret_cast<const uint32_t*>(frame_p);
+                uint32_t json_len = r_ntohl(word);
+
+                string json_str((char*)(frame_p + sizeof(uint32_t)), json_len);
+
+                R_LOG_INFO("Revere Cloud: WebSocket binary JSON message: %s, binary data len: %zu", json_str.c_str(), frame.payload.size() - sizeof(uint32_t) - json_len);
+
+                uint8_t* data_p = frame_p + sizeof(uint32_t) + json_len;
+            }
+
             R_LOG_INFO("Revere Cloud: WebSocket binary message: %zu bytes", frame.payload.size());
         }
     }
