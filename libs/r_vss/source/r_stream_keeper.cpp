@@ -33,6 +33,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
     _factories(),
     _meph(_devices, _top_dir, *this),
     _motionEngine(_devices, top_dir, _meph),
+    _system_plugin_host(top_dir),
     _ws(top_dir, _devices),
     _prune(_top_dir, _devices)
 {
@@ -48,6 +49,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
     _mounts = gst_rtsp_server_get_mount_points(_server);
 
     _motionEngine.start();
+    _system_plugin_host.start_all();
 }
 
 r_stream_keeper::~r_stream_keeper() noexcept
@@ -55,6 +57,7 @@ r_stream_keeper::~r_stream_keeper() noexcept
     if(_running)
         stop();
 
+    _system_plugin_host.stop_all();
     _motionEngine.stop();
 
     // Clear the streams map BEFORE destroying server objects

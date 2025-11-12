@@ -68,8 +68,6 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 #include "imgui_ui.h"
 #include "assignment_state.h"
 #include "rtsp_source_camera_config.h"
-#include "configure_state.h"
-#include "revere_cloud.h"
 
 #include "R_32x32.h"
 // R_32x32_png && R_32x32_png_len
@@ -1122,14 +1120,6 @@ int main(int argc, char** argv)
     r_ui_utils::wizard camera_setup_wizard;
     configure_camera_setup_wizard(as, rscc, camera_setup_wizard, tl, agent, devices, streamKeeper, ui_state, window);
 
-    // Load configuration
-    revere::configure_state config;
-    config.load();
-
-    // Initialize Revere Cloud
-    revere::revere_cloud cloud(config);
-    cloud.start();
-
     _update_list_ui(ui_state, devices, streamKeeper);
 
     // Auto-select first camera in Recording list if any exist
@@ -1332,7 +1322,7 @@ int main(int argc, char** argv)
                     "Revere Cloud",
                     [&](uint16_t){
                         ImGui::PushFont(r_ui_utils::fonts["18.00"].roboto_regular);
-
+#if 0
                         // Enable Revere Cloud checkbox
                         bool cloud_enabled = cloud.enabled();
                         if (ImGui::Checkbox("Enable Revere Cloud", &cloud_enabled))
@@ -1358,7 +1348,7 @@ int main(int argc, char** argv)
                         {
                             ImGui::Text("Status: Disabled");
                         }
-
+#endif
                         ImGui::PopFont();
                     },
                     "Log",
@@ -1451,7 +1441,6 @@ int main(int argc, char** argv)
     glfwDestroyWindow(window);
     glfwTerminate();
 
-    cloud.stop();
     streamKeeper.stop();
     agent.stop();
     devices.stop();

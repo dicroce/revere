@@ -4,6 +4,7 @@
 
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_motion_event_plugin_host.h"
+#include "r_vss/r_system_plugin_host.h"
 #include "r_vss/r_ws.h"
 #include "r_vss/r_prune.h"
 #include "r_disco/r_devices.h"
@@ -142,6 +143,7 @@ private:
     std::vector<GstRTSPMediaFactory*> _factories;
     r_motion_event_plugin_host _meph;
     r_motion_engine _motionEngine;
+    r_system_plugin_host _system_plugin_host;
     r_ws _ws;
     r_prune _prune;
 };
