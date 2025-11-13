@@ -1319,36 +1319,26 @@ int main(int argc, char** argv)
                             ui_state.recording_largest_label
                         );
                     },
-                    "Revere Cloud",
+                    "Loaded System Plugins",
                     [&](uint16_t){
                         ImGui::PushFont(r_ui_utils::fonts["18.00"].roboto_regular);
-#if 0
-                        // Enable Revere Cloud checkbox
-                        bool cloud_enabled = cloud.enabled();
-                        if (ImGui::Checkbox("Enable Revere Cloud", &cloud_enabled))
-                        {
-                            cloud.set_enabled(cloud_enabled);
-                        }
 
-                        ImGui::Spacing();
+                        auto loaded_plugins = streamKeeper.get_loaded_system_plugins();
 
-                        // Authentication status
-                        if (cloud.enabled())
+                        if (loaded_plugins.empty())
                         {
-                            if (cloud.authenticated())
-                            {
-                                ImGui::Text("Status: Authenticated");
-                            }
-                            else
-                            {
-                                ImGui::Text("Status: Authenticating...");
-                            }
+                            ImGui::Text("No system plugins loaded");
                         }
                         else
                         {
-                            ImGui::Text("Status: Disabled");
+                            ImGui::Text("Loaded plugins:");
+                            ImGui::Spacing();
+                            for (const auto& plugin_name : loaded_plugins)
+                            {
+                                ImGui::BulletText("%s", plugin_name.c_str());
+                            }
                         }
-#endif
+
                         ImGui::PopFont();
                     },
                     "Log",

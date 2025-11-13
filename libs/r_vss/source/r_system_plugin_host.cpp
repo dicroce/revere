@@ -175,3 +175,12 @@ void r_system_plugin_host::stop_all()
     }
 }
 
+std::vector<std::string> r_system_plugin_host::get_loaded_plugins() const
+{
+    std::vector<std::string> plugin_names;
+    for(const auto& p : _plugins)
+    {
+        plugin_names.push_back(p.name);
+    }
+    return plugin_names;
+}

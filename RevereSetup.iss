@@ -39,7 +39,14 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "C:\Program Files (x86)\revere\revere\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Program Files (x86)\revere\revere\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\Program Files (x86)\revere\revere\*"; DestDir: "{app}"; Flags: ignoreversion
+Source: "C:\Program Files (x86)\revere\revere\gstreamer_plugins"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\Program Files (x86)\revere\revere\gstreamer_plugins\*"; DestDir: "{app}\gstreamer_plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\Program Files (x86)\revere\revere\models"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\Program Files (x86)\revere\revere\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\Program Files (x86)\revere\revere\motion_plugins"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\Program Files (x86)\revere\revere\motion_plugins\*"; DestDir: "{app}\motion_plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
+
 Source: "C:\dev\VC_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 

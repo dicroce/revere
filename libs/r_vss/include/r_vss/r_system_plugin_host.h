@@ -9,6 +9,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace r_vss
 {
@@ -24,6 +25,9 @@ public:
 
     // Stop all loaded plugins
     R_API void stop_all();
+
+    // Get list of loaded plugin names
+    R_API std::vector<std::string> get_loaded_plugins() const;
 
 private:
     struct plugin_info

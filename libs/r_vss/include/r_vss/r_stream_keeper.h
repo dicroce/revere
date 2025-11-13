@@ -115,6 +115,8 @@ public:
 
     R_API void write_metadata(const std::string& camera_id, const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);
 
+    R_API std::vector<std::string> get_loaded_system_plugins() const;
+
 private:
     void _entry_point();
     void _rtsp_server_entry_point();

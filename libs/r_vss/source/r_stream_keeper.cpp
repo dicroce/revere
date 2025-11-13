@@ -281,6 +281,11 @@ void r_stream_keeper::write_metadata(const string& camera_id, const string& stre
     }
 }
 
+std::vector<std::string> r_stream_keeper::get_loaded_system_plugins() const
+{
+    return _system_plugin_host.get_loaded_plugins();
+}
+
 void r_stream_keeper::bounce(const std::string& camera_id)
 {
     r_stream_keeper_cmd cmd;
