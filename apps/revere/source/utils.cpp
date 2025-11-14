@@ -48,7 +48,7 @@ string revere::top_dir()
     return revere_path;
 #endif
 
-#if defined(IS_LINUX) || defined(IS_MACOS)
+#ifdef IS_LINUX
     auto res = sysconf(_SC_GETPW_R_SIZE_MAX);
     if(res == -1)
         R_THROW(("Could not get path to documents folder."));
@@ -59,6 +59,25 @@ string revere::top_dir()
     if(ret != 0)
         R_THROW(("Could not get path to documents folder."));
     string path = string(pwd.pw_dir) + PATH_SLASH + "Documents" + PATH_SLASH + "revere";
+    if(!r_fs::file_exists(path))
+        r_fs::mkdir(path);
+    path += PATH_SLASH + "revere";
+    if(!r_fs::file_exists(path))
+        r_fs::mkdir(path);
+    return path;
+#endif
+
+#ifdef IS_MACOS
+    auto res = sysconf(_SC_GETPW_R_SIZE_MAX);
+    if(res == -1)
+        R_THROW(("Could not get path to application support folder."));
+    vector<char> buffer(res);
+    passwd pwd;
+    passwd* result;
+    auto ret = getpwuid_r(getuid(), &pwd, buffer.data(), buffer.size(), &result);
+    if(ret != 0)
+        R_THROW(("Could not get path to application support folder."));
+    string path = string(pwd.pw_dir) + PATH_SLASH + "Library" + PATH_SLASH + "Application Support" + PATH_SLASH + "Revere";
     if(!r_fs::file_exists(path))
         r_fs::mkdir(path);
     path += PATH_SLASH + "revere";

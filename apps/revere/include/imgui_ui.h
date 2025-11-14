@@ -206,13 +206,13 @@ void rtsp_credentials_modal(
     {
         ImGui::Text("Please provide the credentials for the Onvif user you wish\nto connect to this camera as:");
 
-        char username[64] = {0};
+        static char username[64] = {0};
         if(!u.is_null())
             r_ui_utils::copy_s(username, 64, u.value());
         if(ImGui::InputText("Username", username, 64))
             u.set_value(std::string(username));
 
-        char password[64] = {0};
+        static char password[64] = {0};
         if(!p.is_null())
             r_ui_utils::copy_s(password, 64, p.value());
         if(ImGui::InputText("Password", password, 64, ImGuiInputTextFlags_Password))
@@ -428,7 +428,7 @@ void friendly_name_modal(
         ImGui::SetCursorPos(ImVec2(350 - (320/2), 40));
         ImGui::Image((void*)(intptr_t)as.key_frame_texture, ImVec2(320, 240));
 
-        char friendly_name[64] = {0};
+        static char friendly_name[64] = {0};
         r_ui_utils::copy_s(friendly_name, 64, fn);
         if(ImGui::InputText("Camera Friendly Name", friendly_name, 64))
             fn = std::string(friendly_name);
@@ -559,7 +559,7 @@ void new_file_name_modal(
 {
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        char new_file_name[64] = {0};
+        static char new_file_name[64] = {0};
         r_ui_utils::copy_s(new_file_name, 64, file_name);
         if(ImGui::InputText("New File Name", new_file_name, 64))
             file_name = std::string(new_file_name);
@@ -595,7 +595,7 @@ void retention_modal(
     {
         ImGui::Text("%s",(as.camera_friendly_name + " at " + std::to_string((as.byte_rate * 8) / 1024) + " kbps").c_str());
 
-        char continuous_retention_days_buffer[64] = {0};
+        static char continuous_retention_days_buffer[64] = {0};
         r_ui_utils::copy_s(continuous_retention_days_buffer, 64, std::to_string(as.continuous_retention_days));
         if(ImGui::InputText("Continous Retention Days", continuous_retention_days_buffer, 64))
         {
@@ -603,7 +603,7 @@ void retention_modal(
             as.continuous_retention_days = std::stoi((!s_continuous_retention_days.empty())?s_continuous_retention_days:"0");
         }
 
-        char days_motion_retention_buffer[64] = {0};
+        static char days_motion_retention_buffer[64] = {0};
         r_ui_utils::copy_s(days_motion_retention_buffer, 64, std::to_string(as.motion_retention_days));
         if(ImGui::InputText("Motion Retention Days", days_motion_retention_buffer, 64))
         {
@@ -611,7 +611,7 @@ void retention_modal(
             as.motion_retention_days = std::stoi((!s_motion_retention_days.empty())?s_motion_retention_days:"0");
         }
 
-        char motion_percentage_estimate_buffer[64] = {0};
+        static char motion_percentage_estimate_buffer[64] = {0};
         r_ui_utils::copy_s(motion_percentage_estimate_buffer, 64, std::to_string(as.motion_percentage_estimate));
         if(ImGui::InputText("Motion Percentage Estimate", motion_percentage_estimate_buffer, 64))
         {
@@ -693,31 +693,31 @@ void configure_rtsp_source_camera_modal(
 {
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        char camera_model_buffer[64] = {0};
+        static char camera_model_buffer[64] = {0};
         r_ui_utils::copy_s(camera_model_buffer, 64, rscc.camera_name);
 
         if(ImGui::InputText("Camera Model", camera_model_buffer, 64))
             rscc.camera_name = std::string(camera_model_buffer);
 
-        char ipv4_buffer[64] = {0};
+        static char ipv4_buffer[64] = {0};
         r_ui_utils::copy_s(ipv4_buffer, 64, rscc.ipv4);
 
         if(ImGui::InputText("IPv4", ipv4_buffer, 64))
             rscc.ipv4 = std::string(ipv4_buffer);
 
-        char rtsp_url_buffer[64] = {0};
+        static char rtsp_url_buffer[64] = {0};
         r_ui_utils::copy_s(rtsp_url_buffer, 64, rscc.rtsp_url);
 
         if(ImGui::InputText("RTSP URL", rtsp_url_buffer, 64))
             rscc.rtsp_url = std::string(rtsp_url_buffer);
 
-        char rtsp_username_buffer[64] = {0};
+        static char rtsp_username_buffer[64] = {0};
         r_ui_utils::copy_s(rtsp_username_buffer, 64, rscc.rtsp_username);
 
         if(ImGui::InputText("RTSP Username", rtsp_username_buffer, 64))
             rscc.rtsp_username = std::string(rtsp_username_buffer);
 
-        char rtsp_password_buffer[64] = {0};
+        static char rtsp_password_buffer[64] = {0};
         r_ui_utils::copy_s(rtsp_password_buffer, 64, rscc.rtsp_password);
 
         if(ImGui::InputText("RTSP Password", rtsp_password_buffer, 64))
@@ -758,7 +758,7 @@ void camera_properties_modal(
 
         ImGui::Checkbox("Prune Still Video", &do_motion_pruning);
 
-        char retention_hours[64] = {0};
+        static char retention_hours[64] = {0};
         r_ui_utils::copy_s(retention_hours, 64, min_continuous_retention_hours);
         if(ImGui::InputText("Minimum continuous retention hours", retention_hours, 64))
             min_continuous_retention_hours = std::string(retention_hours);

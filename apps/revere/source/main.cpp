@@ -1045,7 +1045,9 @@ int main(int argc, char** argv)
 
     r_process vision_process(vision_cmd); // Use detached process
 
+#if !defined(IS_MACOS)
     _set_window_icon(window);
+#endif
 
     bool close_requested = false;
 

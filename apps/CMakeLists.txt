@@ -62,6 +62,16 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     include(GNUInstallDirs)
 endif()
 
+# ---- macOS-specific CPack Settings ----
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    set(CPACK_GENERATOR "DragNDrop")
+    set(CPACK_DMG_VOLUME_NAME "${CMAKE_PROJECT_NAME}")
+    set(CPACK_PACKAGE_INSTALL_DIRECTORY ${CPACK_PACKAGE_NAME})
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/Applications/${CPACK_PACKAGE_NAME}.app/Contents/MacOS")
+
+    include(CPack)
+endif()
+
 install(
     TARGETS revere
     RUNTIME DESTINATION revere
@@ -72,10 +82,12 @@ install(
     RUNTIME DESTINATION revere
 )
 
+if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 install(
     FILES vision/vision.desktop revere/revere.desktop
     DESTINATION /usr/share/applications
 )
+endif()
 
 install(
     FILES vision/V.png vision/V.ico revere/R.png revere/R.ico
@@ -212,4 +224,109 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
         ${GSTREAMER_PLUGIN_DIR}/libgstvideoparsersbad.so
         DESTINATION revere/gstreamer_plugins
     )
+endif()
+
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    # Try to find Homebrew prefix
+    execute_process(
+        COMMAND brew --prefix
+        OUTPUT_VARIABLE HOMEBREW_PREFIX
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+
+    if(NOT HOMEBREW_PREFIX)
+        # Fallback to common Homebrew locations
+        if(EXISTS "/opt/homebrew")
+            set(HOMEBREW_PREFIX "/opt/homebrew")
+        elseif(EXISTS "/usr/local")
+            set(HOMEBREW_PREFIX "/usr/local")
+        else()
+            message(WARNING "Could not find Homebrew installation")
+        endif()
+    endif()
+
+    if(HOMEBREW_PREFIX)
+        message(STATUS "Using Homebrew prefix: ${HOMEBREW_PREFIX}")
+
+        set(GSTREAMER_PLUGIN_DIR "${HOMEBREW_PREFIX}/lib/gstreamer-1.0")
+        set(GSTREAMER_LIB_DIR "${HOMEBREW_PREFIX}/lib")
+
+        # Define OpenCV modules list (matching Windows)
+        set(OPENCV_MODULES
+            opencv_bgsegm
+            opencv_calib3d
+            opencv_core
+            opencv_features2d
+            opencv_flann
+            opencv_imgcodecs
+            opencv_imgproc
+            opencv_optflow
+            opencv_plot
+            opencv_tracking
+            opencv_video
+            opencv_xfeatures2d
+            opencv_ximgproc
+        )
+
+        # Install FFmpeg libraries
+        file(GLOB FFMPEG_LIBS
+            "${GSTREAMER_LIB_DIR}/libavcodec*.dylib"
+            "${GSTREAMER_LIB_DIR}/libavformat*.dylib"
+            "${GSTREAMER_LIB_DIR}/libavutil*.dylib"
+            "${GSTREAMER_LIB_DIR}/libswresample*.dylib"
+            "${GSTREAMER_LIB_DIR}/libswscale*.dylib"
+        )
+
+        if(FFMPEG_LIBS)
+            install(
+                FILES ${FFMPEG_LIBS}
+                DESTINATION revere
+            )
+        endif()
+
+        # Install OpenCV libraries
+        foreach(module ${OPENCV_MODULES})
+            file(GLOB OPENCV_MODULE_LIBS "${GSTREAMER_LIB_DIR}/lib${module}*.dylib")
+            if(OPENCV_MODULE_LIBS)
+                install(
+                    FILES ${OPENCV_MODULE_LIBS}
+                    DESTINATION revere
+                )
+            endif()
+        endforeach()
+
+        # Install GStreamer core libraries
+        file(GLOB GSTREAMER_LIBS
+            "${GSTREAMER_LIB_DIR}/libgst*.dylib"
+            "${GSTREAMER_LIB_DIR}/libgio*.dylib"
+            "${GSTREAMER_LIB_DIR}/libglib*.dylib"
+            "${GSTREAMER_LIB_DIR}/libgmodule*.dylib"
+            "${GSTREAMER_LIB_DIR}/libgobject*.dylib"
+            "${GSTREAMER_LIB_DIR}/libintl*.dylib"
+        )
+
+        if(GSTREAMER_LIBS)
+            install(
+                FILES ${GSTREAMER_LIBS}
+                DESTINATION revere
+            )
+        endif()
+
+        # Install GStreamer plugins
+        install(
+            FILES
+            ${GSTREAMER_PLUGIN_DIR}/libgstapp.dylib
+            ${GSTREAMER_PLUGIN_DIR}/libgstaudioparsers.dylib
+            ${GSTREAMER_PLUGIN_DIR}/libgstcoreelements.dylib
+            ${GSTREAMER_PLUGIN_DIR}/libgstrtp.dylib
+            ${GSTREAMER_PLUGIN_DIR}/libgstrtpmanager.dylib
+            ${GSTREAMER_PLUGIN_DIR}/libgstrtsp.dylib
+            ${GSTREAMER_PLUGIN_DIR}/libgsttcp.dylib
+            ${GSTREAMER_PLUGIN_DIR}/libgstudp.dylib
+            ${GSTREAMER_PLUGIN_DIR}/libgstvideoparsersbad.dylib
+            DESTINATION revere/gstreamer_plugins
+            OPTIONAL
+        )
+    endif()
 endif()

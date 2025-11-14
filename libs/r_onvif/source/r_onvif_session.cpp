@@ -125,8 +125,11 @@ static time_t _portable_timegm(struct tm* t)
 #ifdef IS_WINDOWS
     // Windows implementation
     return _mkgmtime(t); // Windows has _mkgmtime for UTC time
+#elif defined(IS_MACOS)
+    // macOS has timegm
+    return timegm(t);
 #else
-    // POSIX implementation
+    // Linux/POSIX implementation
     char* tz = getenv("TZ");
     setenv("TZ", "UTC", 1);
     tzset();
@@ -562,8 +565,8 @@ static IN_ADDR _find_active_network_interface_windows()
 }
 #endif
 
-// Helper function to find active network interface on Linux
-#ifdef IS_LINUX
+// Helper function to find active network interface on Linux/macOS
+#if defined(IS_LINUX) || defined(IS_MACOS)
 static struct in_addr _find_active_network_interface_linux()
 {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -640,7 +643,7 @@ static void _add_username_digest_header_with_algorithm(
 #ifdef IS_WINDOWS
     strcpy_s(nonce_base64, 1024, (char*)nonce_result);
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     strcpy(nonce_base64, (char*)nonce_result);
 #endif
 
@@ -663,7 +666,7 @@ static void _add_username_digest_header_with_algorithm(
         R_THROW(("gmtime_s failed"));
     this_tm = &tm_storage;
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     time_t then = tv.tv_sec + time_offset_seconds;
     this_tm = gmtime((time_t*)&then);
 #endif
@@ -674,13 +677,13 @@ static void _add_username_digest_header_with_algorithm(
 #ifdef IS_WINDOWS
     sprintf_s(milli_buf, 16, "%03dZ", millisec);
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     sprintf(milli_buf, "%03dZ", millisec);
 #endif
 #ifdef IS_WINDOWS
     strcat_s(time_buffer, 1024, milli_buf);
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     strcat(time_buffer, milli_buf);
 #endif
 
@@ -719,7 +722,7 @@ static void _add_username_digest_header_with_algorithm(
     strcpy_s(time_holder, 1024, time_buffer);
     strcpy_s(digest_base64, 1024, (char*)digest_result);
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     strcpy(time_holder, time_buffer);
     strcpy(digest_base64, (const char *)digest_result);
 #endif
@@ -887,8 +890,8 @@ vector<string> r_onvif::discover(const string& uuid)
     closesocket(sock);
 #endif
 
-#if defined(IS_LINUX)
-    // Linux-specific implementation
+#if defined(IS_LINUX) || defined(IS_MACOS)
+    // Linux/macOS-specific implementation
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
         perror("Socket creation failed");
@@ -921,7 +924,7 @@ vector<string> r_onvif::discover(const string& uuid)
     localAddr.sin_port = htons(0); // Dynamic port
     localAddr.sin_addr.s_addr = INADDR_ANY;
     
-    if (bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) < 0) {
+    if (::bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) < 0) {
         perror("Bind failed");
         close(sock);
         return discovered;
