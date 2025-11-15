@@ -483,20 +483,43 @@ vector<uint8_t> r_utils::r_networking::r_get_hardware_address(
     {
         for (struct ifaddrs* cur = iflist; cur; cur = cur->ifa_next)
         {
-            if (cur->ifa_addr && cur->ifa_addr->sa_family == AF_LINK &&
-                strcmp(cur->ifa_name, ifname.c_str()) == 0)
+            if (cur->ifa_addr && cur->ifa_addr->sa_family == AF_LINK)
             {
-                struct sockaddr_dl* sdl = (struct sockaddr_dl*)cur->ifa_addr;
-                memcpy(&buffer[0], LLADDR(sdl), 6);
-                freeifaddrs(iflist);
-                return buffer;
+                // If ifname is empty, find first active non-loopback interface with non-zero MAC
+                // Otherwise, match the specific interface name
+                if (ifname.empty() || strcmp(cur->ifa_name, ifname.c_str()) == 0)
+                {
+                    // Skip loopback interface
+                    if (cur->ifa_flags & IFF_LOOPBACK)
+                        continue;
+
+                    struct sockaddr_dl* sdl = (struct sockaddr_dl*)cur->ifa_addr;
+                    unsigned char* mac = (unsigned char*)LLADDR(sdl);
+
+                    // Check if MAC is non-zero
+                    bool isZero = true;
+                    for (int i = 0; i < 6; i++)
+                    {
+                        if (mac[i] != 0)
+                        {
+                            isZero = false;
+                            break;
+                        }
+                    }
+
+                    if (!isZero)
+                    {
+                        memcpy(&buffer[0], mac, 6);
+                        freeifaddrs(iflist);
+                        return buffer;
+                    }
+                }
             }
         }
         freeifaddrs(iflist);
     }
     R_THROW(("Unable to query MAC address."));
 #endif
-    return buffer;
 }
 
 string r_utils::r_networking::r_get_device_uuid(const std::string& ifname)

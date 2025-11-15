@@ -127,6 +127,15 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
             string(REPLACE \"_plugin\" \"\" MODEL_NAME \"\${PLUGIN_NAME}\")
             file(INSTALL \${MODEL_DIR}/ DESTINATION \"\${CMAKE_INSTALL_PREFIX}/Revere.app/Contents/MacOS/models/\${MODEL_NAME}\")
         endforeach()
+
+        # Copy system plugins into Revere.app only
+        if(EXISTS \"${CMAKE_BINARY_DIR}/system_plugins\")
+            file(GLOB SYSTEM_PLUGINS \"${CMAKE_BINARY_DIR}/system_plugins/*\")
+            file(MAKE_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}/Revere.app/Contents/MacOS/system_plugins\")
+            foreach(PLUGIN \${SYSTEM_PLUGINS})
+                file(INSTALL \${PLUGIN} DESTINATION \"\${CMAKE_INSTALL_PREFIX}/Revere.app/Contents/MacOS/system_plugins\")
+            endforeach()
+        endif()
     ")
 else()
     # Regular install for Windows and Linux
@@ -257,6 +266,16 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
         ${GST_TOP_DIR}/lib/gstreamer-1.0/gstvideoparsersbad.pdb
         DESTINATION revere/gstreamer_plugins
     )
+
+    # Install system plugins if they were built
+    install(CODE "
+        if(EXISTS \"${CMAKE_BINARY_DIR}/system_plugins\")
+            file(GLOB SYSTEM_PLUGINS \"${CMAKE_BINARY_DIR}/system_plugins/*\")
+            foreach(PLUGIN \${SYSTEM_PLUGINS})
+                file(INSTALL \${PLUGIN} DESTINATION \"\${CMAKE_INSTALL_PREFIX}/revere/system_plugins\")
+            endforeach()
+        endif()
+    ")
 endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
@@ -296,6 +315,16 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
         ${GSTREAMER_PLUGIN_DIR}/libgstvideoparsersbad.so
         DESTINATION revere/gstreamer_plugins
     )
+
+    # Install system plugins if they were built
+    install(CODE "
+        if(EXISTS \"${CMAKE_BINARY_DIR}/system_plugins\")
+            file(GLOB SYSTEM_PLUGINS \"${CMAKE_BINARY_DIR}/system_plugins/*\")
+            foreach(PLUGIN \${SYSTEM_PLUGINS})
+                file(INSTALL \${PLUGIN} DESTINATION \"\${CMAKE_INSTALL_PREFIX}/revere/system_plugins\")
+            endforeach()
+        endif()
+    ")
 endif()
 
 # macOS: All libraries, plugins, and resources are bundled into the .app bundles

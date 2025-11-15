@@ -53,10 +53,12 @@ install(TARGETS yolov8_person_plugin
 )
 endif()
 
-# Install model files
+# Install model files (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/model/
     DESTINATION revere/models/yolov8_person
     FILES_MATCHING
     PATTERN "*.bin"
     PATTERN "*.param"
 )
+endif()
