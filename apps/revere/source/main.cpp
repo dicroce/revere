@@ -910,8 +910,14 @@ void _set_adaptive_window_size(GLFWwindow* window)
     R_LOG_INFO("Monitor workarea: %dx%d at (%d, %d)", monitor_width, monitor_height, monitor_x, monitor_y);
 
     // Target window should be approximately 1/3 of monitor width and 1/3 of monitor height
+    // On macOS, use a larger initial window size (75% instead of 1/3)
+#ifdef IS_MACOS
+    int target_width = (monitor_width * 3) / 4;
+    int target_height = (monitor_height * 3) / 4;
+#else
     int target_width = monitor_width / 3;
     int target_height = monitor_height / 3;
+#endif
 
     // Ensure minimum usable size (640x360 is reasonable minimum)
     const int min_width = 640;
@@ -1041,9 +1047,12 @@ int main(int argc, char** argv)
     string vision_cmd = "vision";
 #ifdef IS_WINDOWS
     vision_cmd = "vision.exe";
+#elif defined(IS_MACOS)
+    // On macOS, use 'open' command to launch the app bundle
+    vision_cmd = "open -n /Applications/Vision.app";
 #endif
 
-    r_process vision_process(vision_cmd); // Use detached process
+    r_process vision_process(vision_cmd, true); // Use detached process
 
 #if !defined(IS_MACOS)
     _set_window_icon(window);
@@ -1087,10 +1096,33 @@ int main(int argc, char** argv)
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
-    r_ui_utils::load_fonts(io, 24, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, 22, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, 20, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, 18, r_ui_utils::fonts);
+    // Platform-specific font sizes (macOS renders fonts larger, so we use smaller sizes)
+#ifdef IS_MACOS
+    const float FONT_SIZE_24 = 18.0f;
+    const float FONT_SIZE_22 = 16.0f;
+    const float FONT_SIZE_20 = 15.0f;
+    const float FONT_SIZE_18 = 14.0f;
+    const float FONT_SIZE_14 = 15.0f;
+#else
+    const float FONT_SIZE_24 = 24.0f;
+    const float FONT_SIZE_22 = 22.0f;
+    const float FONT_SIZE_20 = 20.0f;
+    const float FONT_SIZE_18 = 18.0f;
+    const float FONT_SIZE_14 = 14.0f;
+#endif
+
+    r_ui_utils::load_fonts(io, FONT_SIZE_24, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_22, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_20, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_18, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_14, r_ui_utils::fonts);
+
+    // Generate font key strings for the loaded sizes
+    auto FONT_KEY_24 = r_string_utils::float_to_s(FONT_SIZE_24, 2);
+    auto FONT_KEY_22 = r_string_utils::float_to_s(FONT_SIZE_22, 2);
+    auto FONT_KEY_20 = r_string_utils::float_to_s(FONT_SIZE_20, 2);
+    auto FONT_KEY_18 = r_string_utils::float_to_s(FONT_SIZE_18, 2);
+    auto FONT_KEY_14 = r_string_utils::float_to_s(FONT_SIZE_14, 2);
 
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
@@ -1194,7 +1226,7 @@ int main(int argc, char** argv)
         auto window_width = (uint16_t)window_size.x;
         auto window_height = (uint16_t)window_size.y;
 
-        ImGui::PushFont(r_ui_utils::fonts["24.00"].roboto_regular);
+        ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_24].roboto_regular);
 
         auto client_top = revere::main_menu(
             [&](){
@@ -1264,7 +1296,9 @@ int main(int argc, char** argv)
                             },
                             false, // Dont include the properites button
                             [](int){},
-                            ui_state.discovered_largest_label
+                            ui_state.discovered_largest_label,
+                            FONT_KEY_24,
+                            FONT_KEY_22
                         );
                     },
                     "Recording",
@@ -1318,12 +1352,14 @@ int main(int argc, char** argv)
                                 ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());
                                 camera_setup_wizard.next("camera_properties_modal");
                             },
-                            ui_state.recording_largest_label
+                            ui_state.recording_largest_label,
+                            FONT_KEY_24,
+                            FONT_KEY_22
                         );
                     },
                     "Loaded System Plugins",
                     [&](uint16_t){
-                        ImGui::PushFont(r_ui_utils::fonts["18.00"].roboto_regular);
+                        ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_18].roboto_regular);
 
                         auto loaded_plugins = streamKeeper.get_loaded_system_plugins();
 
@@ -1346,7 +1382,7 @@ int main(int argc, char** argv)
                     "Log",
                     [&](uint16_t log_width, uint16_t log_height){
                         // Log panel content
-                        ImGui::PushFont(r_ui_utils::fonts["14.00"].roboto_regular);
+                        ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_14].roboto_regular);
 
                         // Begin scrolling child window
                         ImGui::BeginChild("LogScrolling", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
@@ -1392,7 +1428,8 @@ int main(int argc, char** argv)
                 );
 
             },
-            main_status
+            main_status,
+            FONT_KEY_18
         );
 
 

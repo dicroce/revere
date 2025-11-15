@@ -272,7 +272,7 @@ private:
         localtime_s(&bdt, &t);
         std::strftime(buf, 64, "%b %d, %Y\n%r", &bdt);
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
         auto bdt = std::localtime(&t);
         std::strftime(buf, 64, "%b %d, %Y\n%r", bdt);
 #endif

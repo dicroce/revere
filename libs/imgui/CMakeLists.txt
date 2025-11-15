@@ -46,7 +46,9 @@ target_link_libraries(
     ${OPENGL_LIBRARIES}
 )
 
-# Install the static library
-install(TARGETS imgui
-    ARCHIVE DESTINATION revere
-)
+# Install the static library (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    install(TARGETS imgui
+        ARCHIVE DESTINATION revere
+    )
+endif()

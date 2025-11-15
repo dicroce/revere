@@ -27,11 +27,13 @@ target_link_libraries(
     r_utils
 )
 
-# Install the shared library
-install(TARGETS r_db
-    RUNTIME DESTINATION revere
-    LIBRARY DESTINATION revere
-    ARCHIVE DESTINATION revere
-)
+# Install the shared library (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    install(TARGETS r_db
+        RUNTIME DESTINATION revere
+        LIBRARY DESTINATION revere
+        ARCHIVE DESTINATION revere
+    )
+endif()
 
 add_subdirectory(ut)

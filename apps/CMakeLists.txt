@@ -66,21 +66,80 @@ endif()
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set(CPACK_GENERATOR "DragNDrop")
     set(CPACK_DMG_VOLUME_NAME "${CMAKE_PROJECT_NAME}")
-    set(CPACK_PACKAGE_INSTALL_DIRECTORY ${CPACK_PACKAGE_NAME})
-    set(CPACK_PACKAGING_INSTALL_PREFIX "/Applications/${CPACK_PACKAGE_NAME}.app/Contents/MacOS")
+    set(CPACK_DMG_FORMAT "UDBZ")  # Compressed DMG
+    set(CPACK_DMG_BACKGROUND_IMAGE "${CMAKE_CURRENT_SOURCE_DIR}/dmg_background.png")
+    # Create a nice DMG with Applications folder link
+    set(CPACK_DMG_DS_STORE_SETUP_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/DMGSetup.scpt")
+
+    # App bundles will be installed at the root of the DMG
+    set(CPACK_PACKAGE_INSTALL_DIRECTORY ".")
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/")
 
     include(CPack)
 endif()
 
-install(
-    TARGETS revere
-    RUNTIME DESTINATION revere
-)
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    # Set default install location to /Applications on macOS
+    if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+        set(CMAKE_INSTALL_PREFIX "/Applications" CACHE PATH "Install path prefix" FORCE)
+    endif()
 
-install(
-    TARGETS vision
-    RUNTIME DESTINATION revere
-)
+    # Install as app bundles on macOS
+    install(
+        TARGETS revere
+        BUNDLE DESTINATION .
+    )
+
+    install(
+        TARGETS vision
+        BUNDLE DESTINATION .
+    )
+
+    # Bundle shared libraries, plugins, and models into each app
+    install(CODE "
+        # Copy all project dylibs from the build directory into both app bundles
+        file(GLOB_RECURSE DYLIBS
+            \"${CMAKE_BINARY_DIR}/libs/*/lib*.dylib\"
+            \"${CMAKE_BINARY_DIR}/_deps/*/lib*.dylib\"
+        )
+        foreach(DYLIB \${DYLIBS})
+            get_filename_component(DYLIB_NAME \${DYLIB} NAME)
+            file(INSTALL \${DYLIB} DESTINATION \"\${CMAKE_INSTALL_PREFIX}/Revere.app/Contents/MacOS\")
+            file(INSTALL \${DYLIB} DESTINATION \"\${CMAKE_INSTALL_PREFIX}/Vision.app/Contents/MacOS\")
+        endforeach()
+
+        # Copy motion plugins into Revere.app only (Vision doesn't use them)
+        if(EXISTS \"${CMAKE_BINARY_DIR}/motion_plugins\")
+            file(GLOB PLUGINS \"${CMAKE_BINARY_DIR}/motion_plugins/*\")
+            file(MAKE_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}/Revere.app/Contents/MacOS/motion_plugins\")
+            foreach(PLUGIN \${PLUGINS})
+                file(INSTALL \${PLUGIN} DESTINATION \"\${CMAKE_INSTALL_PREFIX}/Revere.app/Contents/MacOS/motion_plugins\")
+            endforeach()
+        endif()
+
+        # Copy model files into Revere.app only
+        file(GLOB MODEL_DIRS \"${CMAKE_SOURCE_DIR}/libs/r_vss/motion_plugins/*/model\")
+        file(MAKE_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}/Revere.app/Contents/MacOS/models\")
+        foreach(MODEL_DIR \${MODEL_DIRS})
+            get_filename_component(PLUGIN_DIR \${MODEL_DIR} DIRECTORY)
+            get_filename_component(PLUGIN_NAME \${PLUGIN_DIR} NAME)
+            # Extract plugin name without _plugin suffix for model directory
+            string(REPLACE \"_plugin\" \"\" MODEL_NAME \"\${PLUGIN_NAME}\")
+            file(INSTALL \${MODEL_DIR}/ DESTINATION \"\${CMAKE_INSTALL_PREFIX}/Revere.app/Contents/MacOS/models/\${MODEL_NAME}\")
+        endforeach()
+    ")
+else()
+    # Regular install for Windows and Linux
+    install(
+        TARGETS revere
+        RUNTIME DESTINATION revere
+    )
+
+    install(
+        TARGETS vision
+        RUNTIME DESTINATION revere
+    )
+endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 install(
@@ -89,10 +148,23 @@ install(
 )
 endif()
 
-install(
-    FILES vision/V.png vision/V.ico revere/R.png revere/R.ico
-    DESTINATION revere
-)
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    # Install resources into app bundles on macOS
+    install(
+        FILES revere/R.png
+        DESTINATION Revere.app/Contents/Resources
+    )
+    install(
+        FILES vision/V.png
+        DESTINATION Vision.app/Contents/Resources
+    )
+else()
+    # Regular install for Windows and Linux
+    install(
+        FILES vision/V.png vision/V.ico revere/R.png revere/R.ico
+        DESTINATION revere
+    )
+endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     file(TO_CMAKE_PATH $ENV{FFMPEG_TOP_DIR} FFMPEG_TOP_DIR)
@@ -226,107 +298,5 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     )
 endif()
 
-if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    # Try to find Homebrew prefix
-    execute_process(
-        COMMAND brew --prefix
-        OUTPUT_VARIABLE HOMEBREW_PREFIX
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-    )
-
-    if(NOT HOMEBREW_PREFIX)
-        # Fallback to common Homebrew locations
-        if(EXISTS "/opt/homebrew")
-            set(HOMEBREW_PREFIX "/opt/homebrew")
-        elseif(EXISTS "/usr/local")
-            set(HOMEBREW_PREFIX "/usr/local")
-        else()
-            message(WARNING "Could not find Homebrew installation")
-        endif()
-    endif()
-
-    if(HOMEBREW_PREFIX)
-        message(STATUS "Using Homebrew prefix: ${HOMEBREW_PREFIX}")
-
-        set(GSTREAMER_PLUGIN_DIR "${HOMEBREW_PREFIX}/lib/gstreamer-1.0")
-        set(GSTREAMER_LIB_DIR "${HOMEBREW_PREFIX}/lib")
-
-        # Define OpenCV modules list (matching Windows)
-        set(OPENCV_MODULES
-            opencv_bgsegm
-            opencv_calib3d
-            opencv_core
-            opencv_features2d
-            opencv_flann
-            opencv_imgcodecs
-            opencv_imgproc
-            opencv_optflow
-            opencv_plot
-            opencv_tracking
-            opencv_video
-            opencv_xfeatures2d
-            opencv_ximgproc
-        )
-
-        # Install FFmpeg libraries
-        file(GLOB FFMPEG_LIBS
-            "${GSTREAMER_LIB_DIR}/libavcodec*.dylib"
-            "${GSTREAMER_LIB_DIR}/libavformat*.dylib"
-            "${GSTREAMER_LIB_DIR}/libavutil*.dylib"
-            "${GSTREAMER_LIB_DIR}/libswresample*.dylib"
-            "${GSTREAMER_LIB_DIR}/libswscale*.dylib"
-        )
-
-        if(FFMPEG_LIBS)
-            install(
-                FILES ${FFMPEG_LIBS}
-                DESTINATION revere
-            )
-        endif()
-
-        # Install OpenCV libraries
-        foreach(module ${OPENCV_MODULES})
-            file(GLOB OPENCV_MODULE_LIBS "${GSTREAMER_LIB_DIR}/lib${module}*.dylib")
-            if(OPENCV_MODULE_LIBS)
-                install(
-                    FILES ${OPENCV_MODULE_LIBS}
-                    DESTINATION revere
-                )
-            endif()
-        endforeach()
-
-        # Install GStreamer core libraries
-        file(GLOB GSTREAMER_LIBS
-            "${GSTREAMER_LIB_DIR}/libgst*.dylib"
-            "${GSTREAMER_LIB_DIR}/libgio*.dylib"
-            "${GSTREAMER_LIB_DIR}/libglib*.dylib"
-            "${GSTREAMER_LIB_DIR}/libgmodule*.dylib"
-            "${GSTREAMER_LIB_DIR}/libgobject*.dylib"
-            "${GSTREAMER_LIB_DIR}/libintl*.dylib"
-        )
-
-        if(GSTREAMER_LIBS)
-            install(
-                FILES ${GSTREAMER_LIBS}
-                DESTINATION revere
-            )
-        endif()
-
-        # Install GStreamer plugins
-        install(
-            FILES
-            ${GSTREAMER_PLUGIN_DIR}/libgstapp.dylib
-            ${GSTREAMER_PLUGIN_DIR}/libgstaudioparsers.dylib
-            ${GSTREAMER_PLUGIN_DIR}/libgstcoreelements.dylib
-            ${GSTREAMER_PLUGIN_DIR}/libgstrtp.dylib
-            ${GSTREAMER_PLUGIN_DIR}/libgstrtpmanager.dylib
-            ${GSTREAMER_PLUGIN_DIR}/libgstrtsp.dylib
-            ${GSTREAMER_PLUGIN_DIR}/libgsttcp.dylib
-            ${GSTREAMER_PLUGIN_DIR}/libgstudp.dylib
-            ${GSTREAMER_PLUGIN_DIR}/libgstvideoparsersbad.dylib
-            DESTINATION revere/gstreamer_plugins
-            OPTIONAL
-        )
-    endif()
-endif()
+# macOS: All libraries, plugins, and resources are bundled into the .app bundles
+# See the install(CODE ...) section above for macOS app bundle installation

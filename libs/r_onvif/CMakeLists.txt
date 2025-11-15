@@ -42,11 +42,13 @@ target_link_libraries(
     pugixml::static
 )
 
-# Install the shared library
-install(TARGETS r_onvif
-    RUNTIME DESTINATION revere
-    LIBRARY DESTINATION revere
-    ARCHIVE DESTINATION revere
-)
+# Install the shared library (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    install(TARGETS r_onvif
+        RUNTIME DESTINATION revere
+        LIBRARY DESTINATION revere
+        ARCHIVE DESTINATION revere
+    )
+endif()
 
 add_subdirectory(ut)

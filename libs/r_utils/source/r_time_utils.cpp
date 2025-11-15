@@ -60,12 +60,42 @@ system_clock::time_point r_utils::r_time_utils::iso_8601_to_tp(const string& str
     if (!ss.fail())
         return tp;
 
+    // Format 4: Malformed format without colons - e.g., "2025-11-14T160437.070"
+    // This handles the macOS bug where colons are missing from the time portion
+    ss.clear();
+    ss.str(str);
+    ss >> date::parse("%FT%H%M%S", tp);
+    if (!ss.fail())
+        return tp;
+
     // If all parsing attempts failed, throw an exception
     R_THROW(("Failed to parse ISO 8601 timestamp: %s", str.c_str()));
 }
 
 string r_utils::r_time_utils::tp_to_iso_8601(const system_clock::time_point& tp, bool UTC)
 {
+#ifdef IS_MACOS
+    // macOS workaround: The date library format string with colons doesn't work correctly on macOS
+    // Use manual formatting instead. Always use UTC with 'Z' suffix to avoid timezone ambiguity.
+    auto tp_millis = floor<milliseconds>(tp);
+    auto tp_seconds = floor<seconds>(tp_millis);
+    auto millis = duration_cast<milliseconds>(tp_millis - tp_seconds).count();
+
+    time_t tt = system_clock::to_time_t(tp_seconds);
+    struct tm timeinfo;
+    gmtime_r(&tt, &timeinfo);
+
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02d.%03lldZ",
+             timeinfo.tm_year + 1900,
+             timeinfo.tm_mon + 1,
+             timeinfo.tm_mday,
+             timeinfo.tm_hour,
+             timeinfo.tm_min,
+             timeinfo.tm_sec,
+             millis);
+    return string(buffer);
+#else
     if (UTC) {
         // Format with UTC 'Z' suffix
         // %F = %Y-%m-%d, %H:%M:%S includes hours:minutes:seconds, %S includes fractional seconds
@@ -76,6 +106,7 @@ string r_utils::r_time_utils::tp_to_iso_8601(const system_clock::time_point& tp,
         // Note: To include timezone offset, you'd need the tz.h header and compiled timezone support
         return date::format("%FT%H:%M:%S", floor<milliseconds>(tp));
     }
+#endif
 }
 
 milliseconds r_utils::r_time_utils::iso_8601_period_to_duration(const string& str)
@@ -247,7 +278,7 @@ bool r_utils::r_time_utils::is_tz_utc()
     if(localtime_s(&timeInfo, &ofs) != 0)
         R_THROW(("Unable to query local time."));
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 	timeInfo = *localtime(&ofs);
 #endif
     return (timeInfo.tm_hour == 0);

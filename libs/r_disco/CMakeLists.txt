@@ -32,9 +32,11 @@ target_link_libraries(
     gstreamer::gstreamer
 )
 
-# Install the shared library
-install(TARGETS r_disco
-    RUNTIME DESTINATION revere
-    LIBRARY DESTINATION revere
-    ARCHIVE DESTINATION revere
-)
+# Install the shared library (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    install(TARGETS r_disco
+        RUNTIME DESTINATION revere
+        LIBRARY DESTINATION revere
+        ARCHIVE DESTINATION revere
+    )
+endif()

@@ -10,12 +10,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nanots)
 
-# Install nanots shared library since it's a dependency
-install(TARGETS nanots
-    RUNTIME DESTINATION revere
-    LIBRARY DESTINATION revere
-    ARCHIVE DESTINATION revere
-)
+# Install nanots shared library since it's a dependency (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    install(TARGETS nanots
+        RUNTIME DESTINATION revere
+        LIBRARY DESTINATION revere
+        ARCHIVE DESTINATION revere
+    )
+endif()
 
 file(GLOB R_STORAGE_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/r_storage/*.h
@@ -44,11 +46,13 @@ target_link_libraries(
     nanots
 )
 
-# Install the shared library
-install(TARGETS r_storage
-    RUNTIME DESTINATION revere
-    LIBRARY DESTINATION revere
-    ARCHIVE DESTINATION revere
-)
+# Install the shared library (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    install(TARGETS r_storage
+        RUNTIME DESTINATION revere
+        LIBRARY DESTINATION revere
+        ARCHIVE DESTINATION revere
+    )
+endif()
 
 add_subdirectory(ut)

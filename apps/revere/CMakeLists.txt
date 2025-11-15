@@ -49,6 +49,12 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
         ${REVERE_SOURCES}
         revere.rc
     )
+elseif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    add_executable(
+        revere MACOSX_BUNDLE
+        ${REVERE_HEADERS}
+        ${REVERE_SOURCES}
+    )
 else()
     add_executable(
         revere
@@ -102,5 +108,25 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     if (CMAKE_BUILD_TYPE STREQUAL "Debug")
         target_compile_options(revere PUBLIC -rdynamic -ggdb3 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fasynchronous-unwind-tables -Wl,--whole-archive)
     endif()
+endif()
+
+# macOS app bundle configuration
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    set_target_properties(revere PROPERTIES
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.revere.app"
+        MACOSX_BUNDLE_BUNDLE_NAME "Revere"
+        MACOSX_BUNDLE_BUNDLE_VERSION "0.0.1"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.0.1"
+        MACOSX_BUNDLE_INFO_STRING "Revere Surveillance System"
+    )
+
+    # TODO: Add icon file when available
+    # set_target_properties(revere PROPERTIES
+    #     MACOSX_BUNDLE_ICON_FILE "revere.icns"
+    # )
+    # set(APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/revere.icns")
+    # set_source_files_properties(${APP_ICON} PROPERTIES
+    #     MACOSX_PACKAGE_LOCATION "Resources")
+    # target_sources(revere PRIVATE ${APP_ICON})
 endif()
 

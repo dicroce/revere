@@ -41,8 +41,10 @@ add_custom_command(TARGET test_plugin POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:test_plugin> ${CMAKE_BINARY_DIR}/motion_plugins/
 )
 
-# Install the plugin to motion_plugins subdirectory relative to the executable
-install(TARGETS test_plugin
-    LIBRARY DESTINATION revere/motion_plugins
-    RUNTIME DESTINATION revere/motion_plugins
-)
+# Install the plugin to motion_plugins subdirectory relative to the executable (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    install(TARGETS test_plugin
+        LIBRARY DESTINATION revere/motion_plugins
+        RUNTIME DESTINATION revere/motion_plugins
+    )
+endif()

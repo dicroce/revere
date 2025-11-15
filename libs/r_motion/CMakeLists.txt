@@ -29,11 +29,13 @@ target_link_libraries(
     platform::platform
 )
 
-# Install the shared library
-install(TARGETS r_motion
-    RUNTIME DESTINATION revere
-    LIBRARY DESTINATION revere
-    ARCHIVE DESTINATION revere
-)
+# Install the shared library (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    install(TARGETS r_motion
+        RUNTIME DESTINATION revere
+        LIBRARY DESTINATION revere
+        ARCHIVE DESTINATION revere
+    )
+endif()
 
 add_subdirectory(ut)

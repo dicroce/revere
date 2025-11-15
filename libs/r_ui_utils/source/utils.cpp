@@ -13,7 +13,8 @@ void r_ui_utils::copy_s(char* p, size_t len, const std::string& s)
     if(res != 0)
         R_THROW(("Unable to copy string to buffer."));
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     strncpy(p, s.c_str(), (s.length()<len)?s.length():len);
+    p[len-1] = '\0';  // Ensure null termination
 #endif
 }

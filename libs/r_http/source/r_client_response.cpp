@@ -351,7 +351,7 @@ void r_client_response::_read_chunked_body(r_socket_base& socket)
 #ifdef IS_WINDOWS
             sscanf_s(chunkLenS.c_str(), "%x", &chunkLen);
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
             sscanf(chunkLenS.c_str(), "%x", &chunkLen);
 #endif
             // We read our chunk into a temporary "chunk" ck_memory object, we then optionally

@@ -570,8 +570,8 @@ bool control_bar_renderer::render_tick_marks(ImDrawList* draw_list, const contro
 void control_bar_renderer::render_timerange_text(const control_bar_layout& layout, const control_bar_state& cbs, const control_bar_calculated_layout& calc)
 {
     auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-    
-    ImGui::PushFont(r_ui_utils::fonts["16.00"].roboto_regular);
+
+    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].roboto_regular);
     ImGui::SetCursorScreenPos(ImVec2(calc.center_box_left, (float)top_line_top));
     auto timerange_s = r_utils::r_string_utils::format("%u minute time range", cbs.get_timerange_minutes());
     ImGui::Text("%s", timerange_s.c_str());

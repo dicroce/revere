@@ -25,6 +25,12 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
         ${VISION_SOURCES}
         vision.rc
     )
+elseif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    add_executable(
+        vision MACOSX_BUNDLE
+        ${VISION_HEADERS}
+        ${VISION_SOURCES}
+    )
 else()
     add_executable(
         vision
@@ -64,5 +70,25 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     if (CMAKE_BUILD_TYPE STREQUAL "Debug")
         target_compile_options(vision PUBLIC -rdynamic -ggdb3 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fasynchronous-unwind-tables -Wl,--whole-archive)
     endif()
+endif()
+
+# macOS app bundle configuration
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    set_target_properties(vision PROPERTIES
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.revere.vision"
+        MACOSX_BUNDLE_BUNDLE_NAME "Vision"
+        MACOSX_BUNDLE_BUNDLE_VERSION "0.0.1"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.0.1"
+        MACOSX_BUNDLE_INFO_STRING "Revere Vision"
+    )
+
+    # TODO: Add icon file when available
+    # set_target_properties(vision PROPERTIES
+    #     MACOSX_BUNDLE_ICON_FILE "vision.icns"
+    # )
+    # set(APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/vision.icns")
+    # set_source_files_properties(${APP_ICON} PROPERTIES
+    #     MACOSX_PACKAGE_LOCATION "Resources")
+    # target_sources(vision PRIVATE ${APP_ICON})
 endif()
 

@@ -25,9 +25,11 @@
 #include "control_bar_renderer.h"
 #include "timeline_constants.h"
 #include "error_handling.h"
+#include "font_keys.h"
 
 namespace vision
 {
+
 
 struct one_by_one_state
 {
@@ -173,7 +175,7 @@ void main_layout(
 
     open = true;
     uint16_t line_height = (uint16_t)ImGui::GetTextLineHeightWithSpacing();
-    ImGui::PushFont(r_ui_utils::fonts["18.00"].roboto_regular);
+    ImGui::PushFont(r_ui_utils::fonts[get_font_key_18()].roboto_regular);
     ImGui::SetNextWindowPos(ImVec2(0, (float)(window_height - line_height)));
     ImGui::SetNextWindowSize(ImVec2(window_width, line_height));
     ImGui::Begin("##status", &open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
@@ -698,7 +700,7 @@ void sidebar_list(
         std::string label = labels[i].label;
         std::string sub_label = labels[i].sub_label;
 
-        ImGui::PushFont(r_ui_utils::fonts["24.00"].roboto_bold);
+        ImGui::PushFont(r_ui_utils::fonts[get_font_key_24()].roboto_bold);
         ImGui::SetCursorPos(ImVec2(pos.x+15, pos.y+10));
         ImGui::Text("%s", label.c_str());
         ImGui::PopFont();

@@ -250,7 +250,7 @@ string r_utils::r_string_utils::uri_decode(const string& str)
 #ifdef IS_WINDOWS
                     sscanf_s(hexStr.c_str(), "%x", &val);
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
                     sscanf(hexStr.c_str(), "%x", &val);
 #endif
                     retval += r_string_utils::format("%c", (char)val);

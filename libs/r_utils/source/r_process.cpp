@@ -36,11 +36,21 @@ void r_process::start()
 #if defined(IS_LINUX) || defined(IS_MACOS)
     if (_detached)
     {
+#ifdef IS_MACOS
+        // On macOS, if using 'open' command, just use system() - it handles detachment perfectly
+        if(_cmd.find("open ") == 0) {
+            // Append & to run in background and redirect output to /dev/null to fully detach
+            string cmd = _cmd + " > /dev/null 2>&1 &";
+            system(cmd.c_str());
+            _pid.clear(); // Can't track this process
+            return;
+        }
+#endif
         // Use double-fork technique to avoid zombies
         _pid.pid = fork();
         if(_pid.pid < 0)
             R_THROW(("Unable to fork()."));
-        
+
         if(_pid.pid == 0) // First child
         {
             if(fork() == 0) // Second child (grandchild)
@@ -99,7 +109,16 @@ void r_process::start()
                 for( auto& p : parts )
                     partPtrs.push_back(p.c_str());
                 partPtrs.push_back(NULL);
+#ifdef IS_MACOS
+                // On macOS, if the command starts with "open", use sh -c to execute it
+                if(parts.size() > 0 && parts[0] == "open") {
+                    execl("/bin/sh", "sh", "-c", _cmd.c_str(), NULL);
+                } else {
+                    execv(parts[0].c_str(), (char* const*)&partPtrs[0]);
+                }
+#else
                 execv(parts[0].c_str(), (char* const*)&partPtrs[0]);
+#endif
                 R_THROW(("Failed to execve()."));
             }
             else
@@ -176,7 +195,16 @@ void r_process::start()
             for( auto& p : parts )
                 partPtrs.push_back(p.c_str());
             partPtrs.push_back(NULL);
+#ifdef IS_MACOS
+            // On macOS, if the command starts with "open", use sh -c to execute it
+            if(parts.size() > 0 && parts[0] == "open") {
+                execl("/bin/sh", "sh", "-c", _cmd.c_str(), NULL);
+            } else {
+                execv(parts[0].c_str(), (char* const*)&partPtrs[0]);
+            }
+#else
             execv(parts[0].c_str(), (char* const*)&partPtrs[0]);
+#endif
             R_THROW(("Failed to execve()."));
         }
     }

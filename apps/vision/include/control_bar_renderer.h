@@ -7,6 +7,7 @@
 #include "timeline_constants.h"
 #include "r_utils/r_string_utils.h"
 #include "r_ui_utils/font_catalog.h"
+#include "font_keys.h"
 #include <cstdint>
 #include <functional>
 #include <chrono>
@@ -225,7 +226,7 @@ void control_bar_renderer::render_navigation_buttons(const control_bar_layout& l
     auto left_box_width = layout.width * timeline_constants::LEFT_PANEL_WIDTH_RATIO;
     auto right_box_left = layout.left + left_box_width + calc.center_box_width;
 
-    ImGui::PushFont(r_ui_utils::fonts["14.00"].roboto_regular);
+    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_14()].roboto_regular);
 
     // Backward button
     ImGui::PushID("backward");

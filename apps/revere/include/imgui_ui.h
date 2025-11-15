@@ -74,7 +74,8 @@ void main_layout(
     uint16_t window_width,
     uint16_t window_height,
     MAIN_CB main_cb,
-    r_utils::r_nullable<std::string> status_text
+    r_utils::r_nullable<std::string> status_text,
+    const std::string& font_key_18 = "18.00"
 )
 {
     ImGui::SetNextWindowPos(ImVec2(0, client_top));
@@ -87,7 +88,7 @@ void main_layout(
 
     bool open = true;
     uint16_t line_height = (uint16_t)ImGui::GetTextLineHeightWithSpacing();
-    ImGui::PushFont(r_ui_utils::fonts["18.00"].roboto_regular);
+    ImGui::PushFont(r_ui_utils::fonts[font_key_18].roboto_regular);
     ImGui::SetNextWindowPos(ImVec2(0, (float)(window_height - line_height)));
     ImGui::SetNextWindowSize(ImVec2(window_width, line_height));
     ImGui::Begin("##status", &open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
@@ -259,7 +260,9 @@ void sidebar_list(
     FORGET_BUTTON_CLICK_CB forget_button_click_cb,
     bool show_properties_button,
     PROPERTIES_CLICK_CB properties_click_cb,
-    float& cached_largest_label
+    float& cached_largest_label,
+    const std::string& font_key_24 = "24.00",
+    const std::string& font_key_22 = "22.00"
 )
 {
     auto pos = ImGui::GetCursorPos();
@@ -389,7 +392,7 @@ void sidebar_list(
     }
 
     // Second pass: batch render all text with same font together
-    ImGui::PushFont(r_ui_utils::fonts["24.00"].roboto_bold);
+    ImGui::PushFont(r_ui_utils::fonts[font_key_24].roboto_bold);
     for(const auto& text_info : text_to_render)
     {
         if(text_info.is_bold)
@@ -400,7 +403,7 @@ void sidebar_list(
     }
     ImGui::PopFont();
 
-    ImGui::PushFont(r_ui_utils::fonts["22.00"].roboto_regular);
+    ImGui::PushFont(r_ui_utils::fonts[font_key_22].roboto_regular);
     for(const auto& text_info : text_to_render)
     {
         if(!text_info.is_bold)
@@ -560,7 +563,15 @@ void new_file_name_modal(
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
         static char new_file_name[64] = {0};
-        r_ui_utils::copy_s(new_file_name, 64, file_name);
+        static std::string last_file_name = "";
+
+        // Always copy when modal appears or when value changes
+        if (ImGui::IsWindowAppearing() || last_file_name != file_name)
+        {
+            r_ui_utils::copy_s(new_file_name, 64, file_name);
+            last_file_name = file_name;
+        }
+
         if(ImGui::InputText("New File Name", new_file_name, 64))
             file_name = std::string(new_file_name);
 
@@ -596,23 +607,38 @@ void retention_modal(
         ImGui::Text("%s",(as.camera_friendly_name + " at " + std::to_string((as.byte_rate * 8) / 1024) + " kbps").c_str());
 
         static char continuous_retention_days_buffer[64] = {0};
-        r_ui_utils::copy_s(continuous_retention_days_buffer, 64, std::to_string(as.continuous_retention_days));
+        static char days_motion_retention_buffer[64] = {0};
+        static char motion_percentage_estimate_buffer[64] = {0};
+        static int last_continuous_retention_days = -1;
+        static int last_motion_retention_days = -1;
+        static int last_motion_percentage_estimate = -1;
+
+        // Always copy values when modal appears or when they change
+        if (ImGui::IsWindowAppearing() ||
+            last_continuous_retention_days != as.continuous_retention_days ||
+            last_motion_retention_days != as.motion_retention_days ||
+            last_motion_percentage_estimate != as.motion_percentage_estimate)
+        {
+            r_ui_utils::copy_s(continuous_retention_days_buffer, 64, std::to_string(as.continuous_retention_days));
+            r_ui_utils::copy_s(days_motion_retention_buffer, 64, std::to_string(as.motion_retention_days));
+            r_ui_utils::copy_s(motion_percentage_estimate_buffer, 64, std::to_string(as.motion_percentage_estimate));
+            last_continuous_retention_days = as.continuous_retention_days;
+            last_motion_retention_days = as.motion_retention_days;
+            last_motion_percentage_estimate = as.motion_percentage_estimate;
+        }
+
         if(ImGui::InputText("Continous Retention Days", continuous_retention_days_buffer, 64))
         {
             auto s_continuous_retention_days = std::string(continuous_retention_days_buffer);
             as.continuous_retention_days = std::stoi((!s_continuous_retention_days.empty())?s_continuous_retention_days:"0");
         }
 
-        static char days_motion_retention_buffer[64] = {0};
-        r_ui_utils::copy_s(days_motion_retention_buffer, 64, std::to_string(as.motion_retention_days));
         if(ImGui::InputText("Motion Retention Days", days_motion_retention_buffer, 64))
         {
             auto s_motion_retention_days = std::string(days_motion_retention_buffer);
             as.motion_retention_days = std::stoi((!s_motion_retention_days.empty())?s_motion_retention_days:"0");
         }
 
-        static char motion_percentage_estimate_buffer[64] = {0};
-        r_ui_utils::copy_s(motion_percentage_estimate_buffer, 64, std::to_string(as.motion_percentage_estimate));
         if(ImGui::InputText("Motion Percentage Estimate", motion_percentage_estimate_buffer, 64))
         {
             auto s_motion_percentage_estimate = std::string(motion_percentage_estimate_buffer);

@@ -120,6 +120,28 @@ r_ssl_socket::r_ssl_socket(bool enable_auth) :
             }
         }
 #endif
+#ifdef IS_MACOS
+        const char* candidates[] = {
+            "/etc/ssl/cert.pem",
+            "/usr/local/etc/openssl/cert.pem",
+            "/usr/local/etc/openssl@1.1/cert.pem",
+            "/System/Library/OpenSSL/certs/cert.pem"
+        };
+
+        for (const auto& path : candidates)
+        {
+            std::ifstream f(path);
+            if (!f)
+                continue;
+
+            int rc = mbedtls_x509_crt_parse_file(&_ca_cert, path);
+            if (rc == 0)
+            {
+                loaded = true;
+                break;
+            }
+        }
+#endif
 
         if (!loaded)
             throw std::runtime_error("Failed to load system root certificates");

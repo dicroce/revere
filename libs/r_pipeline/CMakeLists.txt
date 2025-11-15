@@ -27,12 +27,14 @@ target_link_libraries(
     gstreamer::gstreamer
 )
 
-# Install the shared library
-install(TARGETS r_pipeline
-    RUNTIME DESTINATION revere
-    LIBRARY DESTINATION revere
-    ARCHIVE DESTINATION revere
-)
+# Install the shared library (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    install(TARGETS r_pipeline
+        RUNTIME DESTINATION revere
+        LIBRARY DESTINATION revere
+        ARCHIVE DESTINATION revere
+    )
+endif()
 
 # Post-build: Copy GStreamer DLLs to build output directory for testing on Windows
 if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")

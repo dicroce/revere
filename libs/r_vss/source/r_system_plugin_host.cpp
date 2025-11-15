@@ -31,6 +31,8 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
         // Determine the plugin extension based on platform
 #ifdef IS_WINDOWS
         const std::string plugin_ext = ".dll";
+#elif defined(IS_MACOS)
+        const std::string plugin_ext = ".dylib";
 #else
         const std::string plugin_ext = ".so";
 #endif

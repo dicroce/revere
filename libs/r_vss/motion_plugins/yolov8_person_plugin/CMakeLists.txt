@@ -45,11 +45,13 @@ add_custom_command(TARGET yolov8_person_plugin POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:yolov8_person_plugin> ${CMAKE_BINARY_DIR}/motion_plugins/
 )
 
-# Install the plugin to motion_plugins subdirectory relative to the executable
+# Install the plugin to motion_plugins subdirectory relative to the executable (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 install(TARGETS yolov8_person_plugin
     LIBRARY DESTINATION revere/motion_plugins
     RUNTIME DESTINATION revere/motion_plugins
 )
+endif()
 
 # Install model files
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/model/

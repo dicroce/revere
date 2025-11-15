@@ -4,7 +4,7 @@
 
 #include "r_utils/r_macro.h"
 #include <cstdarg>
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 #include <syslog.h>
 #endif
 #include <string>

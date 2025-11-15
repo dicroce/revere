@@ -27,12 +27,14 @@ target_link_libraries(
     ffmpeg::ffmpeg
 )
 
-# Install the shared library
-install(TARGETS r_av
-    RUNTIME DESTINATION revere
-    LIBRARY DESTINATION revere
-    ARCHIVE DESTINATION revere
-)
+# Install the shared library (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    install(TARGETS r_av
+        RUNTIME DESTINATION revere
+        LIBRARY DESTINATION revere
+        ARCHIVE DESTINATION revere
+    )
+endif()
 
 # Post-build: Copy FFmpeg DLLs to build output directory for testing on Windows
 if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")

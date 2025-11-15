@@ -33,7 +33,7 @@ std::string get_env(const string& name)
         free(s);
     }
 #endif
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     char* env = getenv(name.c_str());
     if(env)
         output = string(env);

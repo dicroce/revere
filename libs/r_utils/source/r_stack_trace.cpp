@@ -281,7 +281,11 @@ string r_utils::r_stack_trace::get_stack(char sep)
         uintptr_t offset = addr - base;
 
         char cmd[512];
+#ifdef IS_MACOS
+        snprintf(cmd, sizeof(cmd), "atos -o %s -l 0x%lx 0x%lx", info.dli_fname, base, addr);
+#else
         snprintf(cmd, sizeof(cmd), "addr2line -f -p -e %s 0x%lx", info.dli_fname, offset);
+#endif
         FILE* fp = popen(cmd, "r");
 
         std::string location = "?? ??:0";

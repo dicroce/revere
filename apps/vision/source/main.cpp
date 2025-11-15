@@ -252,6 +252,9 @@ void _pop_export_folder()
 #ifdef IS_LINUX
     system(r_string_utils::format("xdg-open %s", export_dir.c_str()).c_str());
 #endif
+#ifdef IS_MACOS
+    system(r_string_utils::format("open %s", export_dir.c_str()).c_str());
+#endif
 }
 
 void _set_working_dir()
@@ -348,12 +351,37 @@ int main(int, char**)
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
-    r_ui_utils::load_fonts(io, 24, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, 22, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, 20, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, 18, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, 16, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, 14, r_ui_utils::fonts);
+    // Platform-specific font sizes (macOS renders fonts larger, so we use smaller sizes)
+#ifdef IS_MACOS
+    const float FONT_SIZE_24 = 18.0f;
+    const float FONT_SIZE_22 = 16.0f;
+    const float FONT_SIZE_20 = 15.0f;
+    const float FONT_SIZE_18 = 14.0f;
+    const float FONT_SIZE_16 = 13.0f;
+    const float FONT_SIZE_14 = 12.0f;
+#else
+    const float FONT_SIZE_24 = 24.0f;
+    const float FONT_SIZE_22 = 22.0f;
+    const float FONT_SIZE_20 = 20.0f;
+    const float FONT_SIZE_18 = 18.0f;
+    const float FONT_SIZE_16 = 16.0f;
+    const float FONT_SIZE_14 = 14.0f;
+#endif
+
+    r_ui_utils::load_fonts(io, FONT_SIZE_24, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_22, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_20, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_18, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_16, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_14, r_ui_utils::fonts);
+
+    // Generate font key strings for the loaded sizes
+    auto FONT_KEY_24 = r_string_utils::float_to_s(FONT_SIZE_24, 2);
+    auto FONT_KEY_22 = r_string_utils::float_to_s(FONT_SIZE_22, 2);
+    auto FONT_KEY_20 = r_string_utils::float_to_s(FONT_SIZE_20, 2);
+    auto FONT_KEY_18 = r_string_utils::float_to_s(FONT_SIZE_18, 2);
+    auto FONT_KEY_16 = r_string_utils::float_to_s(FONT_SIZE_16, 2);
+    auto FONT_KEY_14 = r_string_utils::float_to_s(FONT_SIZE_14, 2);
 
     {
         vision_ui_state ui_state;
@@ -424,7 +452,7 @@ int main(int, char**)
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
 
-            ImGui::PushFont(r_ui_utils::fonts["24.00"].roboto_regular);
+            ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_24].roboto_regular);
 
             auto client_top = vision::main_menu(
                 [&close_requested](){
