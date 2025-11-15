@@ -1,21 +1,4 @@
 
-// Revere
-
-// TODO
-// - Add "do motion detection" checkbox to camera properties dialog
-//   - If checked and event files doesn't exist, create it
-// - Make "do motion pruning" conditional on "do motion detection" being checked
-//   - figure out how to make disabled controls
-// - Update imgui lib so that we use the win32 backend on windows, and whatever the most compatible is on linux
-//
-// - Empty Contents Bar Bug
-//   - Theory: What if they ask for a period completely inside of a segment? What happens?
-//     - Should contents query return the segment start even if its before start_time? Should it return segment end even if its after the end_time?
-//
-// - Mar  7 06:52:42 trantor vision: Querying segments: /contents?camera_id=6b7c96c0-2872-dd5a-7e0a-d4a99101337c&start_time=2023-03-07T06:22:42.005&end_time=2023-03-07T06:52:42.005
-// - Mar  7 06:52:42 trantor vision: {"first_ts":"1969-12-31T19:00:00.001","last_ts":"1969-12-31T19:00:00.001","segments":[]}
-
-
 #include "r_utils/r_file.h"
 
 #ifdef IS_WINDOWS
@@ -28,10 +11,7 @@
 #include "imgui/imgui_impl_glfw.h"
 #include "imgui/imgui_impl_opengl3.h"
 
-// System tray support (not yet available on macOS)
-#if !defined(IS_MACOS)
 #include <tray.hpp>
-#endif
 
 #include <string>
 #include <thread>
@@ -1066,7 +1046,6 @@ int main(int argc, char** argv)
 
     R_LOG_INFO("icon_path=%s\n",icon_path.c_str());
 
-#if !defined(IS_MACOS)
     Tray::Tray tray("Revere", icon_path);
     tray.addEntry(Tray::Button("Exit", [&]{
         close_requested = true;
@@ -1082,7 +1061,6 @@ int main(int argc, char** argv)
         if(!vision_process.running())
             vision_process.start();
     }));
-#endif
 
     // Configure Dear ImGui (context already created earlier)
     ImGuiIO& io = ImGui::GetIO(); (void)io;
@@ -1201,9 +1179,7 @@ int main(int argc, char** argv)
 
         glfwPollEvents();
 
-#if !defined(IS_MACOS)
         tray.pump();
-#endif
 
         if(maybe_start_minimized)
         {
@@ -1231,9 +1207,7 @@ int main(int argc, char** argv)
         auto client_top = revere::main_menu(
             [&](){
                 close_requested = true;
-#if !defined(IS_MACOS)
                 tray.exit();
-#endif
             },
             [&](){
                 camera_setup_wizard.next("minimize_to_tray");

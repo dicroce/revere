@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.14)
-project(revere VERSION 0.0.1)
+
+if(APPLE)
+    project(revere VERSION 0.0.1 LANGUAGES C CXX OBJC OBJCXX)
+else()
+    project(revere VERSION 0.0.1)
+endif()
 
 include(settings.cmake)
 include(dependencies.cmake)

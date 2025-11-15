@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.14)
-project(revere VERSION 0.0.1)
+
+if(APPLE)
+    project(revere VERSION 0.0.1 LANGUAGES CXX OBJCXX)
+else()
+    project(revere VERSION 0.0.1)
+endif()
 
 include(FetchContent)
 
@@ -10,16 +15,13 @@ else()
     set(CMAKE_INSTALL_RPATH $ORIGIN)
 endif()
 
-# System tray support (not yet available on macOS)
-if(NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
-    FetchContent_Declare(
-      traypp
-      GIT_REPOSITORY https://github.com/dicroce/traypp
-      GIT_TAG master
-    )
+FetchContent_Declare(
+    traypp
+    GIT_REPOSITORY https://github.com/dicroce/traypp
+    GIT_TAG master
+)
 
-    FetchContent_MakeAvailable(traypp)
-endif()
+FetchContent_MakeAvailable(traypp)
 
 FetchContent_Declare(
     pugixml
@@ -99,10 +101,8 @@ target_link_libraries(
     platform::platform
 )
 
-# Link tray library only on platforms where it's available
-if(NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
-    target_link_libraries(revere tray)
-endif()
+# Link tray library on all platforms
+target_link_libraries(revere tray)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     if (CMAKE_BUILD_TYPE STREQUAL "Debug")
