@@ -133,7 +133,13 @@ void r_client_request::set_body( const std::string& body )
 std::string r_client_request::_get_headers_as_string( r_socket_base& socket ) const
 {
     std::string msgHeader;
-    msgHeader = method_text( _method ) + " " + _uri.get_full_raw_uri() + " HTTP/1.1\r\nHost: " + _host + ":" + r_string_utils::int_to_s( _hostPort ) + "\r\n";
+
+    // Only include port in Host header if it's non-standard (not 80 for HTTP, not 443 for HTTPS)
+    std::string hostHeader = _host;
+    if (_hostPort != 80 && _hostPort != 443)
+        hostHeader += ":" + r_string_utils::int_to_s(_hostPort);
+
+    msgHeader = method_text( _method ) + " " + _uri.get_full_raw_uri() + " HTTP/1.1\r\nHost: " + hostHeader + "\r\n";
 
     if (!_acceptType.empty())
         msgHeader += "Accept: " + _acceptType + "\r\n";

@@ -37,7 +37,11 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
 
     r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
 
-    auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, r_time_utils::tp_to_epoch_millis(ts));
+    auto epoch_millis = r_time_utils::tp_to_epoch_millis(ts);
+
+    epoch_millis -= 20000;
+
+    auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, epoch_millis);
 
     uint32_t version = 0;
     auto bt = r_blob_tree::deserialize(&key_bt[0], key_bt.size(), version);
@@ -53,8 +57,6 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
 
     auto frame = bt["frames"][0]["data"].get_blob();
 
-    R_LOG_ERROR("frame size: %d", (int)frame.size());
-
     r_video_decoder decoder(r_av::encoding_to_av_codec_id(video_codec_name));
     decoder.set_extradata(r_pipeline::get_video_codec_extradata(video_codec_name, video_codec_parameters));
     decoder.attach_buffer(frame.data(), frame.size());
@@ -69,9 +71,9 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
 
     if(ds == R_CODEC_STATE_HAS_OUTPUT)
     {
-        auto decoded = decoder.get(AV_PIX_FMT_YUV420P, w, h, 1);
+        auto decoded = decoder.get(AV_PIX_FMT_YUVJ420P, w, h, 1);
 
-        r_video_encoder encoder(AV_CODEC_ID_MJPEG, 100000, w, h, {1,1}, AV_PIX_FMT_YUV420P, 0, 1, 0, 0);
+        r_video_encoder encoder(AV_CODEC_ID_MJPEG, 100000, w, h, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
         encoder.attach_buffer(decoded->data(), decoded->size(), 0);
         auto es = encoder.encode();
         if(es == R_CODEC_STATE_HAS_OUTPUT)

@@ -1406,7 +1406,6 @@ int main(int argc, char** argv)
             FONT_KEY_18
         );
 
-
         camera_setup_wizard();
 
         ImGui::PopFont();

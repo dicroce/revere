@@ -16,7 +16,7 @@ void r_websocket::send_text(r_utils::r_socket_base& sock, const std::string& mes
     std::vector<uint8_t> payload(message.begin(), message.end());
     auto frame_data = build_websocket_frame(ws_opcode::text, payload, true, mask_frame);
 
-    int sent = sock.send(&frame_data[0], frame_data.size());
+    int sent = r_networking::r_send(sock, &frame_data[0], frame_data.size());
     if (sent != static_cast<int>(frame_data.size()))
         R_THROW(("Failed to send complete WebSocket text frame"));
 }
@@ -25,9 +25,9 @@ void r_websocket::send_binary(r_utils::r_socket_base& sock, const std::vector<ui
 {
     auto frame_data = build_websocket_frame(ws_opcode::binary, data, true, mask_frame);
 
-    int sent = sock.send(&frame_data[0], frame_data.size());
+    int sent = r_networking::r_send(sock, &frame_data[0], frame_data.size());
     if (sent != static_cast<int>(frame_data.size()))
-        R_THROW(("Failed to send complete WebSocket binary frame"));
+        R_THROW(("Failed to send complete WebSocket binary frame SENT: %d EXPECTED: %zu", sent, frame_data.size()));
 }
 
 void r_websocket::send_ping(r_utils::r_socket_base& sock, const std::vector<uint8_t>& payload, bool mask_frame)
@@ -37,7 +37,7 @@ void r_websocket::send_ping(r_utils::r_socket_base& sock, const std::vector<uint
 
     auto frame_data = build_websocket_frame(ws_opcode::ping, payload, true, mask_frame);
 
-    int sent = sock.send(&frame_data[0], frame_data.size());
+    int sent = r_networking::r_send(sock, &frame_data[0], frame_data.size());
     if (sent != static_cast<int>(frame_data.size()))
         R_THROW(("Failed to send complete WebSocket ping frame"));
 }
@@ -49,7 +49,7 @@ void r_websocket::send_pong(r_utils::r_socket_base& sock, const std::vector<uint
 
     auto frame_data = build_websocket_frame(ws_opcode::pong, payload, true, mask_frame);
 
-    int sent = sock.send(&frame_data[0], frame_data.size());
+    int sent = r_networking::r_send(sock, &frame_data[0], frame_data.size());
     if (sent != static_cast<int>(frame_data.size()))
         R_THROW(("Failed to send complete WebSocket pong frame"));
 }
@@ -75,7 +75,7 @@ void r_websocket::send_close(r_utils::r_socket_base& sock, ws_close_code code, c
 
     // Note: Don't throw on send failure for close frames
     // The connection may already be half-closed
-    sock.send(&frame_data[0], frame_data.size());
+    r_networking::r_send(sock, &frame_data[0], frame_data.size());
 }
 
 r_websocket_frame r_websocket::recv_frame(r_utils::r_socket_base& sock)
@@ -167,7 +167,7 @@ void r_websocket::send_frame(r_utils::r_socket_base& sock, const r_websocket_fra
 {
     auto frame_data = build_websocket_frame(frame);
 
-    int sent = sock.send(&frame_data[0], frame_data.size());
+    int sent = r_networking::r_send(sock, &frame_data[0], frame_data.size());
     if (sent != static_cast<int>(frame_data.size()))
         R_THROW(("Failed to send complete WebSocket frame"));
 }
