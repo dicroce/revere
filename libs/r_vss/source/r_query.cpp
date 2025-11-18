@@ -89,6 +89,73 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
     R_THROW(("Unable to JPG fail."));
 }
 
+vector<uint8_t> r_vss::query_get_webp(const string& top_dir, r_devices& devices, const string& camera_id, chrono::system_clock::time_point ts, uint16_t w, uint16_t h)
+{
+    auto maybe_camera = devices.get_camera_by_id(camera_id);
+
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    if(maybe_camera.value().record_file_path.is_null())
+        R_THROW(("Camera has no recording file!"));
+
+    r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+
+    auto epoch_millis = r_time_utils::tp_to_epoch_millis(ts);
+
+    epoch_millis -= 20000;
+
+    auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, epoch_millis);
+
+    uint32_t version = 0;
+    auto bt = r_blob_tree::deserialize(&key_bt[0], key_bt.size(), version);
+
+    auto video_codec_name = bt["video_codec_name"].get_string();
+    auto video_codec_parameters = bt["video_codec_parameters"].get_string();
+
+    if(bt["frames"].size() != 1)
+        R_THROW(("Expected exactly one frame in blob tree."));
+
+    if(!bt["frames"][0].has_key("data"))
+        R_THROW(("Expected frame to have data."));
+
+    auto frame = bt["frames"][0]["data"].get_blob();
+
+    r_video_decoder decoder(r_av::encoding_to_av_codec_id(video_codec_name));
+    decoder.set_extradata(r_pipeline::get_video_codec_extradata(video_codec_name, video_codec_parameters));
+    decoder.attach_buffer(frame.data(), frame.size());
+    auto ds = decoder.decode();
+
+    int attempts = 10;
+    while(ds != R_CODEC_STATE_HAS_OUTPUT && attempts > 0)
+    {
+        ds = decoder.decode();
+        attempts--;
+    }
+
+    if(ds == R_CODEC_STATE_HAS_OUTPUT)
+    {
+        auto decoded = decoder.get(AV_PIX_FMT_YUV420P, w, h, 1);
+
+        r_video_encoder encoder(AV_CODEC_ID_WEBP, 100000, w, h, {1,1}, AV_PIX_FMT_YUV420P, 0, 1, 0, 0);
+        encoder.attach_buffer(decoded->data(), decoded->size(), 0);
+        auto es = encoder.encode();
+
+        es = encoder.flush();
+
+        if(es == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto pi = encoder.get();
+
+            vector<uint8_t> result(pi.size);
+            memcpy(result.data(), pi.data, pi.size);
+            return result;
+        }
+    }
+
+    R_THROW(("Unable to webp fail."));
+}
+
 chrono::hours r_vss::query_get_retention_hours(const std::string& top_dir, r_devices& devices, const std::string& camera_id)
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);

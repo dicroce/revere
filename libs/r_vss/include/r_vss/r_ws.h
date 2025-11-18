@@ -30,6 +30,10 @@ private:
                                        r_utils::r_buffered_socket<r_utils::r_socket>& conn,
                                        const r_http::r_server_request& request);
 
+    r_http::r_server_response _get_webp(const r_http::r_web_server<r_utils::r_socket>& r_ws,
+                                        r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                        const r_http::r_server_request& request);
+
     r_http::r_server_response _get_key_frame(const r_http::r_web_server<r_utils::r_socket>& r_ws,
                                              r_utils::r_buffered_socket<r_utils::r_socket>& conn,
                                              const r_http::r_server_request& request);

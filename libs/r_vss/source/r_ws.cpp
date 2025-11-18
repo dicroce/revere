@@ -38,6 +38,7 @@ r_ws::r_ws(const string& top_dir, r_devices& devices) :
     _server(WEB_SERVER_PORT)
 {
     _server.add_route(METHOD_GET, "/jpg", std::bind(&r_ws::_get_jpg, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/webp", std::bind(&r_ws::_get_webp, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/contents", std::bind(&r_ws::_get_contents, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/cameras", std::bind(&r_ws::_get_cameras, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/export", std::bind(&r_ws::_get_export, this, _1, _2, _3));
@@ -101,6 +102,50 @@ r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_s
     }
 
     R_STHROW(r_http_500_exception, ("Failed to create jpg."));
+}
+
+r_http::r_server_response r_ws::_get_webp(const r_http::r_web_server<r_utils::r_socket>&,
+                                          r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                          const r_http::r_server_request& request)
+{
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+
+        if(args.find("camera_id") == end(args))
+            R_THROW(("Missing camera_id."));
+
+        if(args.find("start_time") == end(args))
+            R_THROW(("Missing start_time."));
+
+        uint16_t w = 640;
+        if(args.find("width") != end(args))
+            w = r_string_utils::s_to_uint16(args["width"]);
+
+        uint16_t h = 480;
+        if(args.find("height") != end(args))
+            h = r_string_utils::s_to_uint16(args["height"]);
+
+        auto result = query_get_webp(
+            _top_dir,
+            _devices,
+            args["camera_id"],
+            r_time_utils::iso_8601_to_tp(args["start_time"]),
+            w,
+            h
+        );
+
+        r_server_response response;
+        response.set_content_type("image/webp");
+        response.set_body(result.size(), result.data());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+
+    R_STHROW(r_http_500_exception, ("Failed to create webp."));
 }
 
 r_http::r_server_response r_ws::_get_key_frame(const r_http::r_web_server<r_utils::r_socket>&,
