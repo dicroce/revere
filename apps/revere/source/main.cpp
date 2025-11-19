@@ -1086,7 +1086,7 @@ int main(int argc, char** argv)
     const float FONT_SIZE_22 = 22.0f;
     const float FONT_SIZE_20 = 20.0f;
     const float FONT_SIZE_18 = 18.0f;
-    const float FONT_SIZE_14 = 14.0f;
+    const float FONT_SIZE_14 = 16.0f;
 #endif
 
     r_ui_utils::load_fonts(io, FONT_SIZE_24, r_ui_utils::fonts);
