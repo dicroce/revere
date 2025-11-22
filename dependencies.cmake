@@ -59,11 +59,11 @@ if(NOT TARGET opencv::opencv)
             $<$<CONFIG:MinSizeRel>:${OPENCV_ROOT}/x64/vc17/lib>
         )
 
-        # Use generator expressions to link against debug or release libraries based on the build configuration
         set(OPENCV_MODULES
             opencv_bgsegm
             opencv_calib3d
             opencv_core
+            opencv_dnn
             opencv_features2d
             opencv_flann
             opencv_imgcodecs

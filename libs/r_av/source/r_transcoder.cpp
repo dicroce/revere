@@ -13,12 +13,14 @@ r_transcoder::r_transcoder(
     const std::string& output_format,
     AVCodecID input_codec,
     const std::vector<uint8_t>& input_extradata,
+    AVRational input_timebase,
     uint16_t output_width,
     uint16_t output_height,
     AVRational framerate,
     uint32_t initial_bitrate,
     uint32_t max_bitrate,
-    uint32_t min_bitrate
+    uint32_t min_bitrate,
+    bool enable_dynamic_bitrate
 ) :
     _running(false),
     _max_queue_size(30),
@@ -28,13 +30,17 @@ r_transcoder::r_transcoder(
     _current_bitrate(initial_bitrate),
     _max_bitrate(max_bitrate),
     _min_bitrate(min_bitrate),
+    _enable_dynamic_bitrate(enable_dynamic_bitrate),
     _bytes_encoded_this_window(0),
     _output_width(output_width),
     _output_height(output_height),
     _framerate(framerate),
     _profile(AV_PROFILE_H264_MAIN),
     _level(41),
-    _frame_count(0)
+    _frame_count(0),
+    _input_timebase(input_timebase),
+    _next_pts(-1),
+    _last_decoded_frame(nullptr)
 {
     // Set extradata on decoder
     if (!input_extradata.empty())
@@ -77,6 +83,8 @@ void r_transcoder::start()
     _last_bitrate_check = std::chrono::steady_clock::now();
     _bytes_encoded_this_window = 0;
     _frame_count = 0;
+    _next_pts = -1;
+    _last_decoded_frame = nullptr;
 
     _worker = std::thread(&r_transcoder::_worker_thread, this);
 }
@@ -117,6 +125,10 @@ void r_transcoder::_worker_thread()
 {
     try
     {
+        AVRational encoder_tb;
+        encoder_tb.num = _framerate.den;
+        encoder_tb.den = _framerate.num;
+
         while (_running)
         {
             queued_frame frame;
@@ -159,33 +171,66 @@ void r_transcoder::_worker_thread()
                 1
             );
 
-            // 4. Encode
-            _encoder.attach_buffer(decoded->data(), decoded->size(), _frame_count++);
+            // 4. Resampling Logic
+            // Convert input PTS to encoder timebase
+            int64_t rescaled_pts = av_rescale_q(frame.pts, _input_timebase, encoder_tb);
 
+            if (_next_pts == -1)
+                _next_pts = rescaled_pts;
+
+            // If input is behind expected, drop it (except if it's the very first one, but we handled that)
+            if (rescaled_pts < _next_pts)
+            {
+                // Drop frame to catch up
+                continue;
+            }
+
+            // If input is ahead, duplicate previous frame to fill gap
+            while (rescaled_pts > _next_pts)
+            {
+                if (_last_decoded_frame)
+                {
+                    _encoder.attach_buffer(_last_decoded_frame->data(), _last_decoded_frame->size(), _next_pts);
+                    auto encode_state = _encoder.encode();
+                    if (encode_state == R_CODEC_STATE_HAS_OUTPUT)
+                    {
+                        auto pi = _encoder.get();
+                        _muxer.write_video_frame(pi.data, pi.size, pi.pts, pi.dts, pi.time_base, pi.key);
+                        _bytes_encoded_this_window += pi.size;
+                    }
+                }
+                _next_pts++;
+            }
+
+            // Encode current frame
+            _encoder.attach_buffer(decoded->data(), decoded->size(), _next_pts);
             auto encode_state = _encoder.encode();
 
             if (encode_state == R_CODEC_STATE_HAS_OUTPUT)
             {
-                // 5. Write to muxer
                 auto pi = _encoder.get();
                 _muxer.write_video_frame(pi.data, pi.size, pi.pts, pi.dts, pi.time_base, pi.key);
-
-                // 6. Track output size for bitrate adjustment
                 _bytes_encoded_this_window += pi.size;
 
-                // 7. Check if we need to adjust bitrate
-                auto now = std::chrono::steady_clock::now();
-                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                    now - _last_bitrate_check
-                ).count();
-
-                if (elapsed >= 2) // Every 2 seconds
+                // Check bitrate adjustment
+                if (_enable_dynamic_bitrate)
                 {
-                    _adjust_bitrate();
-                    _last_bitrate_check = now;
-                    _bytes_encoded_this_window = 0;
+                    auto now = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                        now - _last_bitrate_check
+                    ).count();
+
+                    if (elapsed >= 2)
+                    {
+                        _adjust_bitrate();
+                        _last_bitrate_check = now;
+                        _bytes_encoded_this_window = 0;
+                    }
                 }
             }
+
+            _last_decoded_frame = decoded;
+            _next_pts++;
         }
 
         // Flush encoder

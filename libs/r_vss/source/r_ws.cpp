@@ -46,6 +46,7 @@ r_ws::r_ws(const string& top_dir, r_devices& devices) :
     _server.add_route(METHOD_GET, "/motion_events", std::bind(&r_ws::_get_motion_events, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/key_frame", std::bind(&r_ws::_get_key_frame, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/analytics", std::bind(&r_ws::_get_analytics, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/video", std::bind(&r_ws::_get_video, this, _1, _2, _3));
 
     _server.start();
 }
@@ -796,4 +797,41 @@ r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_
     }
 
     R_STHROW(r_http_500_exception, ("Failed to query motions."));
+}
+
+r_http::r_server_response r_ws::_get_video(const r_http::r_web_server<r_utils::r_socket>&,
+                                           r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                           const r_http::r_server_request& request)
+{
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+
+        if(args.find("camera_id") == args.end())
+            R_THROW(("Missing camera_id."));
+
+        if(args.find("start_time") == args.end())
+            R_THROW(("Missing start_time."));
+
+        if(args.find("end_time") == args.end())
+            R_THROW(("Missing end_time."));
+
+        auto qr_buffer = query_get_video(
+            _top_dir,
+            _devices,
+            args["camera_id"],
+            r_time_utils::iso_8601_to_tp(args["start_time"]),
+            r_time_utils::iso_8601_to_tp(args["end_time"])
+        );
+
+        r_server_response response;
+        response.set_content_type("application/vnd.revere.blobtree.v1");
+        response.set_body(qr_buffer.size(), qr_buffer.data());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to get video."));
 }

@@ -56,14 +56,10 @@ private:
     // statistics
     r_utils::r_exp_avg<uint64_t> _avg_motion;
 
-    // background model (CV_32F running average)
-    cv::Mat _bgFloat;
-    bool    _bgInit {false};
+    // MOG2 background subtractor
+    cv::Ptr<cv::BackgroundSubtractorMOG2> _mog2;
 
     // tuning parameters
-    const double _learningRate      = 0.002;  // slow, stable
-    const double _fastLearnRate     = 0.10;   // one‑shot to absorb lighting jump
-    const double _adaptiveK         = 2.0;    // mean + k·σ threshold
     const double _illumChangeThresh = 0.25;   // % of pixels changed ⇒ treat as illumination event
     const double _minAreaFraction   = 0.003;   // 1% of frame (adjustable)
     
@@ -81,8 +77,7 @@ private:
     // reusable buffers to avoid reallocs
     cv::Mat _currGray;
     cv::Mat _blurred;
-    cv::Mat _diff;
-    cv::Mat _thresh;
+    cv::Mat _fgMask;
     cv::Mat _morphKernel;
 };
 

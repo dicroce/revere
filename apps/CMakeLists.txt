@@ -185,6 +185,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
         opencv_bgsegm
         opencv_calib3d
         opencv_core
+        opencv_dnn
         opencv_features2d
         opencv_flann
         opencv_imgcodecs

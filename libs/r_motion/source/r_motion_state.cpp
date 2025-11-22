@@ -11,6 +11,7 @@ r_motion_state::r_motion_state(size_t memory,
                                size_t minObservationFrames,
                                bool enableMasking)
 : _avg_motion(0, memory)
+, _mog2(cv::createBackgroundSubtractorMOG2(500, 16, true))
 , _motionFreqThresh(motionFreqThresh)
 , _freqDecayRate(freqDecayRate)
 , _minObservationFrames(minObservationFrames)
@@ -70,56 +71,46 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& input)
     }
     cv::GaussianBlur(_currGray, _blurred, Size(5,5), 0);
 
-    // --- BACKGROUND INITIALISATION --------------------------------------------------
-    if(!_bgInit)
-    {
-        _blurred.convertTo(_bgFloat, CV_32F);
-        
-        // Initialize motion frequency map
-        _motionFreqMap = cv::Mat::zeros(_blurred.size(), CV_32F);
-        _staticMask = cv::Mat::ones(_blurred.size(), CV_8U);
-        
-        _bgInit = true;
-        return result;                       // need two frames for diff
-    }
+    // --- MOG2 BACKGROUND SUBTRACTION -----------------------------------------------
+    // apply() automatically updates the background model
+    // learningRate of -1 means "auto" (usually 1/history)
+    _mog2->apply(_blurred, _fgMask, -1);
 
-    // --- BACKGROUND UPDATE & ABS-DIFF ----------------------------------------------
-    cv::accumulateWeighted(_blurred, _bgFloat, _learningRate);
-
-    cv::Mat bg8u;
-    _bgFloat.convertTo(bg8u, CV_8U);
-    cv::absdiff(_blurred, bg8u, _diff);
+    // --- SHADOW REMOVAL -----------------------------------------------------------
+    // MOG2 marks shadows as 127 (gray). We only want actual motion (255).
+    // Threshold at 250 to keep only white pixels.
+    cv::threshold(_fgMask, _fgMask, 250, 255, cv::THRESH_BINARY);
 
     // --- ILLUMINATION CHANGE VETO ---------------------------------------------------
-    // Use a higher threshold to be more selective about lighting changes
-    const double illumRatio = cv::countNonZero(_diff > 35) / static_cast<double>(_diff.total());
-    if(illumRatio > _illumChangeThresh)
+    // If a huge portion of the screen changed, it's likely a light switch or camera gain adjustment.
+    // We veto this frame to avoid a massive false positive event.
+    const double changeRatio = cv::countNonZero(_fgMask) / static_cast<double>(_fgMask.total());
+    if(changeRatio > _illumChangeThresh)
     {
-        // massive change – treat as lighting event, absorb quickly, skip motion emit
-        cv::accumulateWeighted(_blurred, _bgFloat, _fastLearnRate);
         return result;  // nothing emitted
     }
 
-    // --- ADAPTIVE THRESHOLD ---------------------------------------------------------
-    cv::Scalar mean, stddev;
-    cv::meanStdDev(_diff, mean, stddev);
-    double thr = mean[0] + _adaptiveK * stddev[0];
-    cv::threshold(_diff, _thresh, thr, 255, cv::THRESH_BINARY);
-
     // --- MORPHOLOGICAL CLEANUP (closing) -------------------------------------------
-    cv::dilate(_thresh, _thresh, _morphKernel, cv::Point(-1,-1), 1);
-    cv::erode (_thresh, _thresh, _morphKernel, cv::Point(-1,-1), 1);
+    cv::dilate(_fgMask, _fgMask, _morphKernel, cv::Point(-1,-1), 1);
+    cv::erode (_fgMask, _fgMask, _morphKernel, cv::Point(-1,-1), 1);
 
     // --- MOTION FREQUENCY MAP UPDATE -----------------------------------------------
     _frameCount++;
     
     // Track motion before masking for statistics
-    uint64_t motion_before_mask = cv::countNonZero(_thresh);
+    uint64_t motion_before_mask = cv::countNonZero(_fgMask);
     
     // Update motion frequency map using exponential moving average to keep values in range (0-1)
     cv::Mat motionNormalized;
-    _thresh.convertTo(motionNormalized, CV_32F, 1.0/255.0);
+    _fgMask.convertTo(motionNormalized, CV_32F, 1.0/255.0);
     
+    // Initialize frequency map if needed
+    if(_motionFreqMap.empty() || _motionFreqMap.size() != _fgMask.size())
+    {
+        _motionFreqMap = cv::Mat::zeros(_fgMask.size(), CV_32F);
+        _staticMask = cv::Mat::ones(_fgMask.size(), CV_8U);
+    }
+
     // Exponential moving average: freq = freq * decay + motion * (1 - decay)
     _motionFreqMap = _motionFreqMap * _freqDecayRate + motionNormalized * (1.0 - _freqDecayRate);
     
@@ -134,18 +125,18 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& input)
         
         // Calculate how many pixels will be masked
         cv::Mat maskedMotion;
-        cv::bitwise_and(_thresh, _staticMask, maskedMotion);
+        cv::bitwise_and(_fgMask, _staticMask, maskedMotion);
         masked_pixels = motion_before_mask - cv::countNonZero(maskedMotion);
         
         // Apply static mask to suppress motion in continuously moving areas
-        _thresh = maskedMotion;
+        _fgMask = maskedMotion;
     }
 
     // --- CONTOUR FILTERING ----------------------------------------------------------
     std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(_thresh, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    cv::findContours(_fgMask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
-    const double minAreaPx = _minAreaFraction * _thresh.total();
+    const double minAreaPx = _minAreaFraction * _fgMask.total();
     uint64_t motion_pixels = 0;
     
     // Calculate motion bounding box

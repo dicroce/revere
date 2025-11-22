@@ -62,6 +62,7 @@ r_video_encoder::r_video_encoder(
     _context->time_base.den = framerate.num;
     _context->framerate = framerate;
     _context->gop_size = gop_size;
+    _context->keyint_min = gop_size;
     _context->max_b_frames = max_b_frames;
     _context->pix_fmt = pix_fmt;
     _context->profile = profile;

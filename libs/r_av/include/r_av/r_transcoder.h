@@ -21,6 +21,7 @@ extern "C"
 #include <atomic>
 #include <functional>
 #include <chrono>
+#include <memory> // For std::shared_ptr
 
 namespace r_av
 {
@@ -33,12 +34,14 @@ public:
         const std::string& output_format,
         AVCodecID input_codec,
         const std::vector<uint8_t>& input_extradata,
+        AVRational input_timebase,
         uint16_t output_width,
         uint16_t output_height,
         AVRational framerate,
         uint32_t initial_bitrate,
         uint32_t max_bitrate,
-        uint32_t min_bitrate
+        uint32_t min_bitrate,
+        bool enable_dynamic_bitrate = true
     );
 
     R_API ~r_transcoder();
@@ -46,7 +49,6 @@ public:
     R_API r_transcoder(const r_transcoder&) = delete;
     R_API r_transcoder& operator=(const r_transcoder&) = delete;
 
-    // Called from need_data_callback to push frames into the transcoder
     R_API void write_frame(const uint8_t* data, size_t size, int64_t pts);
 
     // Start/stop transcoding
@@ -80,6 +82,7 @@ private:
     uint32_t _current_bitrate;
     uint32_t _max_bitrate;
     uint32_t _min_bitrate;
+    bool _enable_dynamic_bitrate;
 
     // Timing & rate control
     std::chrono::steady_clock::time_point _last_bitrate_check;
@@ -92,6 +95,11 @@ private:
     int _profile;
     int _level;
     int64_t _frame_count;
+
+    // Resampling
+    AVRational _input_timebase;
+    int64_t _next_pts;
+    std::shared_ptr<std::vector<uint8_t>> _last_decoded_frame;
 };
 
 }
