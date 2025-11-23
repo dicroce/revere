@@ -42,7 +42,8 @@ r_video_decoder::r_video_decoder() :
     _pos(nullptr),
     _remaining_size(0),
     _frame(nullptr),
-    _scalers()
+    _scalers(),
+    _codec_opened(false)
 {
 }
 
@@ -57,7 +58,8 @@ r_video_decoder::r_video_decoder(AVCodecID codec_id, bool parse_input) :
     _pos(nullptr),
     _remaining_size(0),
     _frame(av_frame_alloc()),
-    _scalers()
+    _scalers(),
+    _codec_opened(false)
 {
     if(!_codec)
         R_THROW(("Failed to find codec"));
@@ -79,17 +81,9 @@ r_video_decoder::r_video_decoder(AVCodecID codec_id, bool parse_input) :
     _context->workaround_bugs = FF_BUG_AUTODETECT;  // Enable autodetection of bugs
 
     // Critical for H.264
-    if (_codec->id == AV_CODEC_ID_H264) {
-        _context->flags2 |= AV_CODEC_FLAG2_CHUNKS;  // Process incomplete frames
-    }
-
-    // Open the codec with explicit parameters
-    AVDictionary* opts = nullptr;
-    av_dict_set(&opts, "strict", "experimental", 0);  // Be more lenient with decoding
-    int ret = avcodec_open2(_context, _codec, &opts);
-    av_dict_free(&opts);
-    if(ret < 0)
-        R_THROW(("Failed to open codec: %s", _ff_rc_to_msg(ret).c_str()));
+    // if (_codec->id == AV_CODEC_ID_H264) {
+    //    _context->flags2 |= AV_CODEC_FLAG2_CHUNKS;  // Process incomplete frames
+    // }
 }
 
 r_video_decoder::r_video_decoder(r_video_decoder&& obj) :
@@ -103,7 +97,8 @@ r_video_decoder::r_video_decoder(r_video_decoder&& obj) :
     _pos(std::move(obj._pos)),
     _remaining_size(std::move(obj._remaining_size)),
     _frame(std::move(obj._frame)),
-    _scalers(std::move(obj._scalers))
+    _scalers(std::move(obj._scalers)),
+    _codec_opened(std::move(obj._codec_opened))
 {
     obj._codec_id = AV_CODEC_ID_NONE;
     obj._codec = nullptr;
@@ -145,6 +140,7 @@ r_video_decoder& r_video_decoder::operator=(r_video_decoder&& obj)
         _frame = std::move(obj._frame);
         obj._frame = nullptr;
         _scalers = std::move(obj._scalers);
+        _codec_opened = std::move(obj._codec_opened);
     }
 
     return *this;
@@ -167,6 +163,22 @@ void r_video_decoder::set_extradata(const vector<uint8_t>& ed)
     memcpy(_context->extradata, ed.data(), ed.size());
 }
 
+void r_video_decoder::_open_codec()
+{
+    if(_codec_opened)
+        return;
+
+    // Open the codec with explicit parameters
+    AVDictionary* opts = nullptr;
+    av_dict_set(&opts, "strict", "experimental", 0);  // Be more lenient with decoding
+    int ret = avcodec_open2(_context, _codec, &opts);
+    av_dict_free(&opts);
+    if(ret < 0)
+        R_THROW(("Failed to open codec: %s", _ff_rc_to_msg(ret).c_str()));
+
+    _codec_opened = true;
+}
+
 void r_video_decoder::attach_buffer(const uint8_t* data, size_t size)
 {
     _buffer = data;
@@ -177,6 +189,8 @@ void r_video_decoder::attach_buffer(const uint8_t* data, size_t size)
 
 r_codec_state r_video_decoder::decode()
 {
+    _open_codec();
+
     // Create packet directly from your input buffer
     auto packet = shared_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* pkt) { av_packet_free(&pkt); });    
     // Point directly to your input buffer
@@ -185,7 +199,7 @@ r_codec_state r_video_decoder::decode()
     
     // Send the packet directly to the decoder
     int send_result = avcodec_send_packet(_context, packet.get());
-    
+
     if (send_result >= 0) {
         // Entire packet was consumed
         _pos += _remaining_size;
@@ -225,6 +239,8 @@ r_codec_state r_video_decoder::decode()
 
 r_codec_state r_video_decoder::flush()
 {
+    _open_codec();
+
     int ret = avcodec_send_packet(_context, nullptr);
     if(ret == AVERROR(EAGAIN))
     {

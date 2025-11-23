@@ -7,6 +7,8 @@ add_executable(
     source/test_r_mux.cpp
     include/test_r_codec.h
     source/test_r_codec.cpp
+    include/test_r_transcoder_repro.h
+    source/test_r_transcoder_repro.cpp
 )
 
 target_include_directories(

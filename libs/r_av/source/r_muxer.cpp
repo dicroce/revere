@@ -1,9 +1,7 @@
 
 #include "r_av/r_muxer.h"
-#include "r_av/r_format_utils.h"
-#include "r_utils/r_string_utils.h"
 #include "r_utils/r_exception.h"
-#include <stdexcept>
+#include "r_utils/r_string_utils.h"
 
 using namespace std;
 using namespace r_av;

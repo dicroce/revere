@@ -22,6 +22,7 @@ r_video_encoder::r_video_encoder() :
     _codec(nullptr),
     _context(nullptr),
     _pts(0),
+    _frame_sent(false),
     _buffer(),
     _pkt()
 {
@@ -45,6 +46,7 @@ r_video_encoder::r_video_encoder(
     _codec(avcodec_find_encoder(_codec_id)),
     _context(avcodec_alloc_context3(_codec)),
     _pts(0),
+    _frame_sent(false),
     _buffer(),
     _pkt()
 {
@@ -127,6 +129,7 @@ void r_video_encoder::attach_buffer(const uint8_t* data, size_t size, int64_t pt
     _buffer.resize(size);
     memcpy(_buffer.data(), data, size);
     _pts = pts;
+    _frame_sent = false;
 }
 
 void r_video_encoder::set_bitrate(uint32_t bitrate)
@@ -163,25 +166,30 @@ r_codec_state r_video_encoder::encode()
 
     _pkt = raii_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* p) { av_packet_free(&p); });
 
-    int sf_ret = avcodec_send_frame(_context, frame.get());
-
-    if(sf_ret == AVERROR(EAGAIN))
+    if(!_frame_sent)
     {
-        auto rp_ret = avcodec_receive_packet(_context, _pkt.get());
+        int sf_ret = avcodec_send_frame(_context, frame.get());
 
-        if(rp_ret == AVERROR(EAGAIN))
-            return R_CODEC_STATE_AGAIN;
-        else if(rp_ret == AVERROR_EOF)
+        if(sf_ret == AVERROR(EAGAIN))
+        {
+            auto rp_ret = avcodec_receive_packet(_context, _pkt.get());
+
+            if(rp_ret == AVERROR(EAGAIN))
+                return R_CODEC_STATE_AGAIN;
+            else if(rp_ret == AVERROR_EOF)
+                return R_CODEC_STATE_EOF;
+            else if(rp_ret < 0)
+                R_THROW(("Failed to receive packet: %s", _ff_rc_to_msg(rp_ret).c_str()));
+
+            return R_CODEC_STATE_HAS_OUTPUT;
+        }
+        else if(sf_ret == AVERROR_EOF)
             return R_CODEC_STATE_EOF;
-        else if(rp_ret < 0)
-            R_THROW(("Failed to receive packet: %s", _ff_rc_to_msg(rp_ret).c_str()));
-
-        return R_CODEC_STATE_HAS_OUTPUT;
+        else if(sf_ret < 0)
+            R_THROW(("Failed to send frame: %s", _ff_rc_to_msg(sf_ret).c_str()));
+        
+        _frame_sent = true;
     }
-    else if(sf_ret == AVERROR_EOF)
-        return R_CODEC_STATE_EOF;
-    else if(sf_ret < 0)
-        R_THROW(("Failed to send frame: %s", _ff_rc_to_msg(sf_ret).c_str()));
 
     auto rp_ret = avcodec_receive_packet(_context, _pkt.get());
 

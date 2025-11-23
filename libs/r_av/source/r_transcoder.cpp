@@ -191,12 +191,16 @@ void r_transcoder::_worker_thread()
                 if (_last_decoded_frame)
                 {
                     _encoder.attach_buffer(_last_decoded_frame->data(), _last_decoded_frame->size(), _next_pts);
-                    auto encode_state = _encoder.encode();
-                    if (encode_state == R_CODEC_STATE_HAS_OUTPUT)
+                    while(true)
                     {
-                        auto pi = _encoder.get();
-                        _muxer.write_video_frame(pi.data, pi.size, pi.pts, pi.dts, pi.time_base, pi.key);
-                        _bytes_encoded_this_window += pi.size;
+                        auto encode_state = _encoder.encode();
+                        if (encode_state == R_CODEC_STATE_HAS_OUTPUT)
+                        {
+                            auto pi = _encoder.get();
+                            _muxer.write_video_frame(pi.data, pi.size, pi.pts, pi.dts, pi.time_base, pi.key);
+                            _bytes_encoded_this_window += pi.size;
+                        }
+                        else break;
                     }
                 }
                 _next_pts++;
@@ -204,13 +208,19 @@ void r_transcoder::_worker_thread()
 
             // Encode current frame
             _encoder.attach_buffer(decoded->data(), decoded->size(), _next_pts);
-            auto encode_state = _encoder.encode();
-
-            if (encode_state == R_CODEC_STATE_HAS_OUTPUT)
+            
+            while(true)
             {
-                auto pi = _encoder.get();
-                _muxer.write_video_frame(pi.data, pi.size, pi.pts, pi.dts, pi.time_base, pi.key);
-                _bytes_encoded_this_window += pi.size;
+                auto encode_state = _encoder.encode();
+
+                if (encode_state == R_CODEC_STATE_HAS_OUTPUT)
+                {
+                    auto pi = _encoder.get();
+                    _muxer.write_video_frame(pi.data, pi.size, pi.pts, pi.dts, pi.time_base, pi.key);
+                    _bytes_encoded_this_window += pi.size;
+                }
+                else break;
+            }
 
                 // Check bitrate adjustment
                 if (_enable_dynamic_bitrate)
@@ -227,7 +237,6 @@ void r_transcoder::_worker_thread()
                         _bytes_encoded_this_window = 0;
                     }
                 }
-            }
 
             _last_decoded_frame = decoded;
             _next_pts++;

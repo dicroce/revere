@@ -57,7 +57,6 @@ public:
     R_API r_video_encoder(r_video_encoder&& obj);
 
     R_API ~r_video_encoder();
-
     R_API r_video_encoder& operator=(const r_video_encoder&) = delete;
     R_API r_video_encoder& operator=(r_video_encoder&& obj);
 
@@ -79,6 +78,7 @@ private:
     const AVCodec* _codec;
     AVCodecContext* _context;
     int64_t _pts;
+    bool _frame_sent;
     std::vector<uint8_t> _buffer;
     r_utils::r_std_utils::raii_ptr<AVPacket> _pkt;
 };

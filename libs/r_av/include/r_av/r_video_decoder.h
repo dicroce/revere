@@ -73,6 +73,9 @@ private:
     int _remaining_size;
     AVFrame* _frame;
     std::map<r_scaler_state, SwsContext*> _scalers;
+    bool _codec_opened;
+
+    void _open_codec();
 };
 
 }
