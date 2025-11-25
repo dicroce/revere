@@ -7,6 +7,8 @@ public:
     RTF_FIXTURE(test_r_codec);
       TEST(test_r_codec::test_basic_video_decode);
       TEST(test_r_codec::test_basic_video_transcode);
+      TEST(test_r_codec::test_basic_audio_decode);
+      TEST(test_r_codec::test_basic_audio_transcode);
     RTF_FIXTURE_END();
 
     virtual ~test_r_codec() throw() {}
@@ -16,4 +18,6 @@ public:
 
     void test_basic_video_decode();
     void test_basic_video_transcode();
+    void test_basic_audio_decode();
+    void test_basic_audio_transcode();
 };

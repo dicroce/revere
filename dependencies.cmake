@@ -178,6 +178,7 @@ if(NOT TARGET ffmpeg::ffmpeg)
         pkg_search_module(AVFORMAT  REQUIRED libavformat)
         pkg_search_module(AVUTIL    REQUIRED libavutil)
         pkg_search_module(SWSCALE   REQUIRED libswscale)
+        pkg_search_module(SWRESAMPLE REQUIRED libswresample)
 
         add_library(ffmpeg::ffmpeg INTERFACE IMPORTED GLOBAL)
 
@@ -186,6 +187,7 @@ if(NOT TARGET ffmpeg::ffmpeg)
             ${AVFORMAT_INCLUDE_DIRS}
             ${AVUTIL_INCLUDE_DIRS}
             ${SWSCALE_INCLUDE_DIRS}
+            ${SWRESAMPLE_INCLUDE_DIRS}
         )
 
         target_link_directories(ffmpeg::ffmpeg INTERFACE
@@ -193,6 +195,7 @@ if(NOT TARGET ffmpeg::ffmpeg)
             ${AVFORMAT_LIBRARY_DIRS}
             ${AVUTIL_LIBRARY_DIRS}
             ${SWSCALE_LIBRARY_DIRS}
+            ${SWRESAMPLE_LIBRARY_DIRS}
         )
 
         target_link_libraries(ffmpeg::ffmpeg INTERFACE
@@ -200,9 +203,10 @@ if(NOT TARGET ffmpeg::ffmpeg)
             ${AVFORMAT_LIBRARIES}
             ${AVUTIL_LIBRARIES}
             ${SWSCALE_LIBRARIES}
+            ${SWRESAMPLE_LIBRARIES}
         )
 
-        message(STATUS "FFmpeg libs: ${AVCODEC_LIBRARIES} ${AVFORMAT_LIBRARIES} ${AVUTIL_LIBRARIES} ${SWSCALE_LIBRARIES}")
+        message(STATUS "FFmpeg libs: ${AVCODEC_LIBRARIES} ${AVFORMAT_LIBRARIES} ${AVUTIL_LIBRARIES} ${SWSCALE_LIBRARIES} ${SWRESAMPLE_LIBRARIES}")
 
     elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
         if(NOT DEFINED ENV{FFMPEG_TOP_DIR})
@@ -218,6 +222,7 @@ if(NOT TARGET ffmpeg::ffmpeg)
             avformat.lib
             avutil.lib
             swscale.lib
+            swresample.lib
         )
     endif()
 endif()

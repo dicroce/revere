@@ -97,6 +97,10 @@ void r_muxer::add_audio_stream(AVCodecID codec_id, uint8_t channels, uint32_t sa
     _audio_stream->codecpar->sample_rate = sample_rate;
     _audio_stream->time_base.num = 1;
     _audio_stream->time_base.den = sample_rate;
+
+    // Set frame_size for codecs that require it (like AAC)
+    if(codec_id == AV_CODEC_ID_AAC)
+        _audio_stream->codecpar->frame_size = 1024;
 }
 
 void r_muxer::set_video_bitstream_filter(const std::string& filter_name)
