@@ -39,7 +39,10 @@ target_link_libraries(
     platform::platform
 )
 
-if(NOT WIN32)
+if(WIN32)
+    # Windows-specific libraries for r_secure_store (DPAPI and SHGetFolderPath)
+    target_link_libraries(r_utils PUBLIC crypt32 shell32)
+else()
     target_link_libraries(r_utils PUBLIC dl)
 endif()
 

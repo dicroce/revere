@@ -4,6 +4,8 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_functional.h"
+#include "r_utils/r_secure_store.h"
+#include "r_utils/r_credential_crypto.h"
 #include <thread>
 #include <algorithm>
 #include <iterator>
@@ -19,7 +21,9 @@ using namespace std;
 r_devices::r_devices(const string& top_dir) :
     _th(),
     _running(false),
-    _top_dir(top_dir)
+    _top_dir(top_dir),
+    _master_key(),
+    _master_key_loaded(false)
 {
 }
 
@@ -516,9 +520,25 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
     if(!row.at("rtsp_url").is_null())
         camera.rtsp_url = row.at("rtsp_url").value();
     if(!row.at("rtsp_username").is_null())
-        camera.rtsp_username = row.at("rtsp_username").value();
+    {
+        // Decrypt username
+        try {
+            camera.rtsp_username = _decrypt_credential(row.at("rtsp_username").value());
+        } catch (const r_exception& e) {
+            R_LOG_WARNING("Failed to decrypt username for camera %s: %s", camera.id.c_str(), e.what());
+            camera.rtsp_username = row.at("rtsp_username").value(); // Return as-is if decryption fails
+        }
+    }
     if(!row.at("rtsp_password").is_null())
-        camera.rtsp_password = row.at("rtsp_password").value();
+    {
+        // Decrypt password
+        try {
+            camera.rtsp_password = _decrypt_credential(row.at("rtsp_password").value());
+        } catch (const r_exception& e) {
+            R_LOG_WARNING("Failed to decrypt password for camera %s: %s", camera.id.c_str(), e.what());
+            camera.rtsp_password = row.at("rtsp_password").value(); // Return as-is if decryption fails
+        }
+    }
     if(!row.at("video_codec").is_null())
         camera.video_codec = row.at("video_codec").value();
     if(!row.at("video_codec_parameters").is_null())
@@ -622,6 +642,27 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
 
     r_devices_cmd_result result;
 
+    // Encrypt credentials before saving
+    r_camera encrypted_camera = camera;
+    if(!encrypted_camera.rtsp_username.is_null())
+    {
+        try {
+            encrypted_camera.rtsp_username = _encrypt_credential(encrypted_camera.rtsp_username.value());
+        } catch (const r_exception& e) {
+            R_LOG_ERROR("Failed to encrypt username for camera %s: %s", camera.id.c_str(), e.what());
+            throw;
+        }
+    }
+    if(!encrypted_camera.rtsp_password.is_null())
+    {
+        try {
+            encrypted_camera.rtsp_password = _encrypt_credential(encrypted_camera.rtsp_password.value());
+        } catch (const r_exception& e) {
+            R_LOG_ERROR("Failed to encrypt password for camera %s: %s", camera.id.c_str(), e.what());
+            throw;
+        }
+    }
+
     auto query = r_string_utils::format(
             "REPLACE INTO cameras("
                 "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%slast_update_time, stream_config_hash) "
@@ -681,8 +722,8 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.xaddrs.is_null())?r_string_utils::format("'%s', ", camera.xaddrs.value().c_str()).c_str():"",
             (!camera.address.is_null())?r_string_utils::format("'%s', ", camera.address.value().c_str()).c_str():"",
             (!camera.rtsp_url.is_null())?r_string_utils::format("'%s', ", camera.rtsp_url.value().c_str()).c_str():"",
-            (!camera.rtsp_username.is_null())?r_string_utils::format("'%s', ", camera.rtsp_username.value().c_str()).c_str():"",
-            (!camera.rtsp_password.is_null())?r_string_utils::format("'%s', ", camera.rtsp_password.value().c_str()).c_str():"",
+            (!encrypted_camera.rtsp_username.is_null())?r_string_utils::format("'%s', ", encrypted_camera.rtsp_username.value().c_str()).c_str():"",
+            (!encrypted_camera.rtsp_password.is_null())?r_string_utils::format("'%s', ", encrypted_camera.rtsp_password.value().c_str()).c_str():"",
             (!camera.video_codec.is_null())?r_string_utils::format("'%s', ", camera.video_codec.value().c_str()).c_str():"",
             (!camera.video_codec_parameters.is_null())?r_string_utils::format("'%s', ", camera.video_codec_parameters.value().c_str()).c_str():"",
             (!camera.video_timebase.is_null())?r_string_utils::format("%d, ", camera.video_timebase.value()).c_str():"",
@@ -801,12 +842,67 @@ r_devices_cmd_result r_devices::_get_credentials(const r_sqlite_conn& conn, cons
 
             auto found = row.find("rtsp_username");
             if(found != row.end() && !found->second.is_null())
-                result.credentials.first = found->second.value();
+            {
+                // Decrypt username
+                try {
+                    result.credentials.first = _decrypt_credential(found->second.value());
+                } catch (const r_exception& e) {
+                    R_LOG_WARNING("Failed to decrypt username for camera %s: %s", id.c_str(), e.what());
+                    result.credentials.first = found->second.value(); // Return as-is if decryption fails
+                }
+            }
 
             found = row.find("rtsp_password");
             if(found != row.end() && !found->second.is_null())
-                result.credentials.second = found->second.value();
+            {
+                // Decrypt password
+                try {
+                    result.credentials.second = _decrypt_credential(found->second.value());
+                } catch (const r_exception& e) {
+                    R_LOG_WARNING("Failed to decrypt password for camera %s: %s", id.c_str(), e.what());
+                    result.credentials.second = found->second.value(); // Return as-is if decryption fails
+                }
+            }
         }
     });
     return result;
+}
+
+vector<uint8_t> r_devices::_get_master_key() const
+{
+    if(!_master_key_loaded)
+    {
+        r_secure_store store;
+        _master_key = store.get_master_key();
+        _master_key_loaded = true;
+    }
+    return _master_key;
+}
+
+string r_devices::_encrypt_credential(const string& plaintext) const
+{
+    if(plaintext.empty())
+        return plaintext;
+
+    try {
+        auto master_key = _get_master_key();
+        return r_credential_crypto::encrypt_credential(plaintext, master_key);
+    } catch (const r_exception& e) {
+        R_LOG_ERROR("Failed to encrypt credential: %s", e.what());
+        throw;
+    }
+}
+
+string r_devices::_decrypt_credential(const string& encrypted) const
+{
+    if(encrypted.empty())
+        return encrypted;
+
+    try {
+        auto master_key = _get_master_key();
+        return r_credential_crypto::decrypt_credential(encrypted, master_key);
+    } catch (const r_exception& e) {
+        R_LOG_ERROR("Failed to decrypt credential: %s", e.what());
+        throw;
+    }
 }

@@ -229,17 +229,17 @@ mkdir build
 cd build
 
 # Configure
-cmake -DCMAKE_BUILD_TYPE=Release ..
+cmake ..
 
-# Build
-cmake --build .
+# Note: on windows Release is done while compiling not during previous configure step
+cmake --build . --config Release
 
 ```
 #### Installing
 - Then open x64 Native Tools Command Prompt by right clicking and choosing "Run as Administrator"
 - cd to the revere/build dir. Then:
 ```bash
-cmake --build . --target install
+cmake --build . --config Reelase --target install
 ```
 
 ## Verified Build Configurations

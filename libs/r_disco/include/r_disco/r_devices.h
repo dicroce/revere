@@ -91,10 +91,19 @@ private:
     r_devices_cmd_result _get_assigned_cameras_removed(const r_db::r_sqlite_conn& conn, const std::vector<r_camera>& cameras) const;
     r_devices_cmd_result _get_credentials(const r_db::r_sqlite_conn& conn, const std::string& id);
 
+    // Credential encryption helpers
+    std::string _encrypt_credential(const std::string& plaintext) const;
+    std::string _decrypt_credential(const std::string& encrypted) const;
+    std::vector<uint8_t> _get_master_key() const;
+
     std::thread _th;
     bool _running;
     std::string _top_dir;
     r_utils::r_work_q<r_devices_cmd, r_devices_cmd_result> _db_work_q;
+
+    // Cached master key for encryption/decryption
+    mutable std::vector<uint8_t> _master_key;
+    mutable bool _master_key_loaded;
 };
 
 }
