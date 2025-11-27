@@ -15,6 +15,7 @@ using namespace std;
 static const uint64_t DEFAULT_RECV_TIMEOUT = 10000; // 10 seconds
 
 static const unsigned int MAX_HEADER_LINE = 2048;
+static const size_t MAX_TOTAL_HEADERS_SIZE = 1024 * 1024; // 1MB limit for all headers
 
 r_client_response::r_client_response() :
     _initialLine(),
@@ -25,7 +26,8 @@ r_client_response::r_client_response() :
     _chunkCallback(),
     _partCallback(),
     _chunk(),
-    _streaming(false)
+    _streaming(false),
+    _headerOverRead()
 {
 }
 
@@ -34,11 +36,12 @@ r_client_response::r_client_response(const r_client_response& rhs)
       _headerParts(rhs._headerParts),
       _bodyContents(rhs._bodyContents),
       _success(rhs._success),
-      _statusCode(-1),
+      _statusCode(rhs._statusCode),
       _chunkCallback(rhs._chunkCallback),
       _partCallback(rhs._partCallback),
       _chunk(rhs._chunk),
-      _streaming(rhs._streaming)
+      _streaming(rhs._streaming),
+      _headerOverRead(rhs._headerOverRead)
 {
 }
 
@@ -54,41 +57,45 @@ r_client_response& r_client_response::operator = (const r_client_response& rhs)
         _headerParts = rhs._headerParts;
         _bodyContents = rhs._bodyContents;
         _success = rhs._success;
-        _statusCode = -1;
+        _statusCode = rhs._statusCode;
         _chunkCallback = rhs._chunkCallback;
         _partCallback = rhs._partCallback;
         _chunk = rhs._chunk;
         _streaming = rhs._streaming;
+        _headerOverRead = rhs._headerOverRead;
     }
     return *this;
 }
 
-void r_client_response::read_response(r_utils::r_socket_base& socket)
+void r_client_response::read_response(r_utils::r_socket_base& socket, uint64_t timeout_millis)
 {
 READ_BEGIN:
+    _headerOverRead.clear();
+
+    string headerBlock = _read_headers(socket, timeout_millis);
+
+    // Split header block into lines
+    vector<string> lines = r_string_utils::split(headerBlock, "\n");
+
+    if(lines.empty())
+        R_STHROW(r_http_exception_generic, ("Empty HTTP response"));
+
+    // First line is the initial/status line
+    _initialLine = lines[0];
+    if(!_initialLine.empty() && _initialLine.back() == '\r')
+        _initialLine.pop_back();
+
+    // Process remaining lines as headers
     list<string> requestLines;
-
+    for(size_t i = 1; i < lines.size(); ++i)
     {
-        char lineBuf[MAX_HEADER_LINE+1];
-        memset(lineBuf, 0, MAX_HEADER_LINE+1);
-
-        {
-            char* writer = &lineBuf[0];
-//            _clean_socket(socket, &writer);
-
-            // Get initial header line
-            _read_header_line(socket, writer, true);
-        }
-
-        _initialLine = r_string_utils::strip_eol(string(lineBuf));
-
-        /// Now, read the rest of the header lines...
-        do
-        {
-            memset(lineBuf, 0, MAX_HEADER_LINE+1);
-            _read_header_line(socket, lineBuf, false);
-
-        } while(!_add_line(requestLines, lineBuf));
+        string line = lines[i];
+        // Remove trailing \r (from \r\n line endings after splitting on \n)
+        if(!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if(line.empty())
+            continue;
+        _add_line(requestLines, line);
     }
 
     /// Now, populate our header hash...
@@ -130,10 +137,10 @@ READ_BEGIN:
         goto READ_BEGIN;
 
     _process_request_lines(requestLines);
-    _process_body(socket);
+    _process_body(socket, timeout_millis);
 }
 
-void r_client_response::_clean_socket(r_socket_base& socket, char** writer)
+void r_client_response::_clean_socket(r_socket_base& socket, char** writer, uint64_t timeout_millis)
 {
     if(!socket.valid())
         R_STHROW(r_http_exception_generic, ("Invalid Socket"));
@@ -143,8 +150,7 @@ void r_client_response::_clean_socket(r_socket_base& socket, char** writer)
     // Clear junk off the socket
     while(true)
     {
-        uint64_t timeout = DEFAULT_RECV_TIMEOUT;
-        r_networking::r_recv(socket, tempBuffer, 1, timeout);
+        r_networking::r_recv(socket, tempBuffer, 1, timeout_millis);
 
         if(!r_string_utils::is_space(tempBuffer[0]))
         {
@@ -155,7 +161,57 @@ void r_client_response::_clean_socket(r_socket_base& socket, char** writer)
     }
 }
 
-void r_client_response::_read_header_line(r_socket_base& socket, char* writer, bool firstLine)
+string r_client_response::_read_headers(r_socket_base& socket, uint64_t timeout_millis)
+{
+    static const size_t CHUNK_SIZE = 4096;
+    string buffer;
+    buffer.reserve(CHUNK_SIZE);
+
+    char chunk[CHUNK_SIZE];
+    uint64_t remaining_millis = timeout_millis;
+
+    while(buffer.size() < MAX_TOTAL_HEADERS_SIZE && remaining_millis > 0)
+    {
+        if(!socket.wait_till_recv_wont_block(remaining_millis))
+            R_STHROW(r_http_exception_generic, ("Timeout while reading headers."));
+
+        int received = socket.recv(chunk, CHUNK_SIZE);
+        if(!socket.valid())
+            R_STHROW(r_http_exception_generic, ("Socket invalid."));
+
+        if(received <= 0)
+            R_STHROW(r_http_exception_generic, ("Connection closed while reading headers."));
+
+        buffer.append(chunk, received);
+
+        // Look for end of headers: \r\n\r\n or \n\n
+        size_t endPos = buffer.find("\r\n\r\n");
+        size_t endLen = 4;
+        if(endPos == string::npos)
+        {
+            endPos = buffer.find("\n\n");
+            endLen = 2;
+        }
+
+        if(endPos != string::npos)
+        {
+            // Found end of headers - save any leftover bytes for body
+            size_t headerEnd = endPos + endLen;
+            if(headerEnd < buffer.size())
+            {
+                size_t leftoverSize = buffer.size() - headerEnd;
+                _headerOverRead.resize(leftoverSize);
+                memcpy(_headerOverRead.data(), buffer.data() + headerEnd, leftoverSize);
+            }
+
+            return buffer.substr(0, endPos);
+        }
+    }
+
+    R_STHROW(r_http_exception_generic, ("HTTP headers exceeded maximum size."));
+}
+
+void r_client_response::_read_header_line(r_socket_base& socket, char* writer, bool firstLine, uint64_t timeout_millis)
 {
     char lastTwoChars[2] = {0, 0};
     size_t bytesReadThisLine = 0;
@@ -164,8 +220,7 @@ void r_client_response::_read_header_line(r_socket_base& socket, char* writer, b
     while(!lineDone)
     {
         lastTwoChars[0] = lastTwoChars[1];
-        uint64_t timeout = DEFAULT_RECV_TIMEOUT;
-        r_networking::r_recv(socket, writer, 1, timeout);
+        r_networking::r_recv(socket, writer, 1, timeout_millis);
         ++bytesReadThisLine;
         if(bytesReadThisLine > MAX_HEADER_LINE)
             R_STHROW(r_http_exception_generic, ("Header line too long."));
@@ -214,7 +269,7 @@ void r_client_response::_process_request_lines(const list<string>& requestLines)
     }
 }
 
-void r_client_response::_process_body(r_socket_base& socket)
+void r_client_response::_process_body(r_socket_base& socket, uint64_t timeout_millis)
 {
     /// Get the body if we were given a Content Length
     auto found = _headerParts.find( "content-length" );
@@ -225,18 +280,39 @@ void r_client_response::_process_body(r_socket_base& socket)
         if(contentLength > 0)
         {
             _bodyContents.resize( contentLength );
-            uint64_t timeout = DEFAULT_RECV_TIMEOUT;
-            int received = r_networking::r_recv(socket, &_bodyContents[0], contentLength, timeout);
-            if (received < (int)contentLength) {
-                _bodyContents.resize(received);
+
+            size_t totalReceived = 0;
+
+            // First, use any leftover bytes from header reading
+            if(!_headerOverRead.empty())
+            {
+                size_t toCopy = min(_headerOverRead.size(), (size_t)contentLength);
+                memcpy(_bodyContents.data(), _headerOverRead.data(), toCopy);
+                totalReceived = toCopy;
+                _headerOverRead.clear();
             }
+
+            // Read remaining bytes from socket if needed
+            if(totalReceived < contentLength)
+            {
+                size_t remaining = contentLength - totalReceived;
+                int received = r_networking::r_recv(socket, &_bodyContents[totalReceived], remaining, timeout_millis);
+                if(received > 0)
+                    totalReceived += received;
+            }
+
+            if(totalReceived < contentLength)
+                _bodyContents.resize(totalReceived);
         }
     }
     else if( (found = _headerParts.find( "transfer-encoding" )) != _headerParts.end() )
     {
         if(r_string_utils::contains(r_string_utils::to_lower((*found).second.front()), "chunked"))
         {
-            _read_chunked_body(socket);
+            // Note: chunked encoding doesn't support leftover optimization yet
+            // since it interleaves reading chunk headers and data
+            _headerOverRead.clear();
+            _read_chunked_body(socket, timeout_millis);
             return;
         }
     }
@@ -245,13 +321,17 @@ void r_client_response::_process_body(r_socket_base& socket)
     {
         if(r_string_utils::contains(r_string_utils::to_lower((*found).second.front()), "multipart"))
         {
-            _read_multi_part(socket);
+            _headerOverRead.clear();
+            _read_multi_part(socket, timeout_millis);
             return;
         }
     }
 
     if(r_string_utils::contains(r_string_utils::to_lower(get_header("content-type")), "multipart"))
-        _read_multi_part(socket);
+    {
+        _headerOverRead.clear();
+        _read_multi_part(socket, timeout_millis);
+    }
 }
 
 vector<uint8_t> r_client_response::release_body()
@@ -326,7 +406,7 @@ void r_client_response::register_part_callback( part_callback pb )
     _partCallback = pb;
 }
 
-void r_client_response::_read_chunked_body(r_socket_base& socket)
+void r_client_response::_read_chunked_body(r_socket_base& socket, uint64_t timeout_millis)
 {
     char lineBuf[MAX_HEADER_LINE+1];
     bool moreChunks = true;
@@ -335,11 +415,11 @@ void r_client_response::_read_chunked_body(r_socket_base& socket)
     {
         memset(lineBuf, 0, MAX_HEADER_LINE+1);
 
-        _read_header_line(socket, lineBuf, false);
+        _read_header_line(socket, lineBuf, false, timeout_millis);
 
         if(lineBuf[0] == '0')
         {
-            _consume_footer(socket);
+            _consume_footer(socket, timeout_millis);
             return;
         }
 
@@ -359,8 +439,7 @@ void r_client_response::_read_chunked_body(r_socket_base& socket)
             // main body contents object.
 
             _chunk.resize( chunkLen );
-            uint64_t timeout = DEFAULT_RECV_TIMEOUT;
-            int received = r_networking::r_recv(socket, &_chunk[0], chunkLen, timeout);
+            int received = r_networking::r_recv(socket, &_chunk[0], chunkLen, timeout_millis);
             if (received < (int)chunkLen) {
                 _chunk.resize(received);
                 chunkLen = received;
@@ -381,7 +460,7 @@ void r_client_response::_read_chunked_body(r_socket_base& socket)
             if(!_streaming)
                 memcpy( &_bodyContents[oldSize], &_chunk[0], chunkLen);
 
-            _read_end_of_line(socket);
+            _read_end_of_line(socket, timeout_millis);
         }
     }
 }
@@ -401,7 +480,7 @@ bool r_client_response::_embed_null(char* lineBuf)
     return false;
 }
 
-void r_client_response::_read_multi_part(r_socket_base& socket)
+void r_client_response::_read_multi_part(r_socket_base& socket, uint64_t timeout_millis)
 {
     char lineBuf[MAX_HEADER_LINE+1];
     bool moreParts = true;
@@ -411,12 +490,12 @@ void r_client_response::_read_multi_part(r_socket_base& socket)
         // First, read the boundary line...
         memset(lineBuf, 0, MAX_HEADER_LINE);
 
-        _read_header_line(socket, lineBuf, false);
+        _read_header_line(socket, lineBuf, false, timeout_millis);
 
         if(r_string_utils::ends_with(r_string_utils::strip_eol(string(lineBuf)), "--"))
             break;
 
-        map<string,string> partHeaders = _read_multi_header_lines(socket, lineBuf);
+        map<string,string> partHeaders = _read_multi_header_lines(socket, lineBuf, timeout_millis);
 
         auto i = partHeaders.find( "content-length" );
         if( i != partHeaders.end() )
@@ -425,8 +504,7 @@ void r_client_response::_read_multi_part(r_socket_base& socket)
 
             _chunk.resize(partContentLength);
 
-            uint64_t timeout = DEFAULT_RECV_TIMEOUT;
-            int received = r_networking::r_recv(socket, &_chunk[0], partContentLength, timeout);
+            int received = r_networking::r_recv(socket, &_chunk[0], partContentLength, timeout_millis);
             if (received < partContentLength) {
                 _chunk.resize(received);
             }
@@ -435,30 +513,27 @@ void r_client_response::_read_multi_part(r_socket_base& socket)
             if( _partCallback )
                 _partCallback( _chunk, partHeaders, *this );
 
-            _read_end_of_line(socket);
+            _read_end_of_line(socket, timeout_millis);
         }
         else
             R_STHROW(r_http_exception_generic, ("Oops. Mime multipart without a Content-Length!"));
     }
 }
 
-void r_client_response::_read_end_of_line(r_socket_base& socket)
+void r_client_response::_read_end_of_line(r_socket_base& socket, uint64_t timeout_millis)
 {
     char lineEnd[2] = {0, 0};
 
-    uint64_t timeout = DEFAULT_RECV_TIMEOUT;
-    r_networking::r_recv(socket, &lineEnd[0], 1, timeout);
+    r_networking::r_recv(socket, &lineEnd[0], 1, timeout_millis);
 
     if(lineEnd[0] == '\r')
-        timeout = DEFAULT_RECV_TIMEOUT;
-    
-    r_networking::r_recv(socket, &lineEnd[1], 1, timeout);
+        r_networking::r_recv(socket, &lineEnd[1], 1, timeout_millis);
 
     if(!_is_end_of_line(lineEnd))
         R_STHROW(r_http_exception_generic, ("A chunk line didn't end with appropriate terminator."));
 }
 
-map<string,string> r_client_response::_read_multi_header_lines(r_socket_base& socket, char* lineBuf)
+map<string,string> r_client_response::_read_multi_header_lines(r_socket_base& socket, char* lineBuf, uint64_t timeout_millis)
 {
     std::list<string> partLines;
 
@@ -467,7 +542,7 @@ map<string,string> r_client_response::_read_multi_header_lines(r_socket_base& so
     {
         memset(lineBuf, 0, MAX_HEADER_LINE);
 
-        _read_header_line(socket, lineBuf, false);
+        _read_header_line(socket, lineBuf, false, timeout_millis);
 
         if(_add_line(partLines, lineBuf))
             break;
@@ -495,7 +570,7 @@ void r_client_response::debug_print_request()
     fflush(stdout);
 }
 
-void r_client_response::_consume_footer(r_socket_base& socket)
+void r_client_response::_consume_footer(r_socket_base& socket, uint64_t timeout_millis)
 {
     char lineBuf[MAX_HEADER_LINE+1];
 
@@ -504,7 +579,7 @@ void r_client_response::_consume_footer(r_socket_base& socket)
     {
         memset(lineBuf, 0, MAX_HEADER_LINE);
 
-        _read_header_line(socket, lineBuf, false);
+        _read_header_line(socket, lineBuf, false, timeout_millis);
 
         if(_is_end_of_line(lineBuf))
             break;

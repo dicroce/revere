@@ -430,11 +430,12 @@ static r_nullable<shared_ptr<vector<uint8_t>>> _decode_frame(const r_pipeline::r
     if(ed.size() > 0)
         decoder.set_extradata(ed);
 
+    decoder.attach_buffer(&key_frame[0], key_frame.size());
+
     int attempt = 0;
     r_av::r_codec_state state = r_av::R_CODEC_STATE_INITIALIZED;
     while(attempt < 10 && state != r_av::R_CODEC_STATE_HAS_OUTPUT)
     {
-        decoder.attach_buffer(&key_frame[0], key_frame.size());
         state = decoder.decode();
         ++attempt;
     }

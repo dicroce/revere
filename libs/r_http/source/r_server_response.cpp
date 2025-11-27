@@ -126,7 +126,7 @@ string r_server_response::get_additional_header(const string& headerName)
     return string();
 }
 
-void r_server_response::write_response(r_socket_base& socket)
+void r_server_response::write_response(r_socket_base& socket, uint64_t timeout_millis)
 {
     _responseWritten = true;
 
@@ -174,44 +174,44 @@ void r_server_response::write_response(r_socket_base& socket)
 
     responseHeader += r_string_utils::format("\r\n");
 
-    r_networking::r_send(socket, responseHeader.c_str(), responseHeader.length(), DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, responseHeader.c_str(), responseHeader.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 
     if(_body.size() > 0)
     {
-        r_networking::r_send(socket, &_body[0], _body.size(), DEFAULT_SEND_TIMEOUT);
+        r_networking::r_send(socket, &_body[0], _body.size(), timeout_millis);
         if( !socket.valid() )
             R_STHROW( r_http_io_exception, ("Socket invalid."));
     }
 }
 
-void r_server_response::write_chunk(r_socket_base& socket, size_t sizeChunk, const void* bits)
+void r_server_response::write_chunk(r_socket_base& socket, size_t sizeChunk, const void* bits, uint64_t timeout_millis)
 {
     _responseWritten = true;
 
     if(!_headerWritten)
-        _write_header(socket);
+        _write_header(socket, timeout_millis);
 
     auto chunkSizeString = r_string_utils::format("%s;\r\n", r_string_utils::format("%x", (unsigned int)sizeChunk).c_str());
-    r_networking::r_send(socket, chunkSizeString.c_str(), chunkSizeString.length(), DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, chunkSizeString.c_str(), chunkSizeString.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 
-    r_networking::r_send(socket, bits, sizeChunk, DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, bits, sizeChunk, timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 
     string newLine("\r\n");
-    r_networking::r_send(socket, newLine.c_str(), newLine.length(), DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, newLine.c_str(), newLine.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 }
 
-void r_server_response::write_chunk_finalizer(r_socket_base& socket)
+void r_server_response::write_chunk_finalizer(r_socket_base& socket, uint64_t timeout_millis)
 {
     string finalizer("0\r\n\r\n");
-    r_networking::r_send(socket, finalizer.c_str(), finalizer.length(), DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, finalizer.c_str(), finalizer.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 }
@@ -220,12 +220,13 @@ void r_server_response::write_part(r_socket_base& socket,
                                    const string& boundary,
                                    const map<string,string>& partHeaders,
                                    void* chunk,
-                                   uint32_t size)
+                                   uint32_t size,
+                                   uint64_t timeout_millis)
 {
     _responseWritten = true;
 
     auto boundaryLine = r_string_utils::format("--%s\r\n", boundary.c_str());
-    r_networking::r_send(socket, boundaryLine.c_str(), boundaryLine.length(), DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, boundaryLine.c_str(), boundaryLine.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 
@@ -235,34 +236,34 @@ void r_server_response::write_part(r_socket_base& socket,
         string headerValue = (*i).second;
         string headerLine = r_string_utils::format("%s: %s\r\n",headerName.c_str(),headerValue.c_str());
 
-        r_networking::r_send(socket, headerLine.c_str(), headerLine.length(), DEFAULT_SEND_TIMEOUT);
+        r_networking::r_send(socket, headerLine.c_str(), headerLine.length(), timeout_millis);
         if( !socket.valid() )
             R_STHROW( r_http_io_exception, ("Socket invalid."));
     }
 
     auto contentLength = r_string_utils::format("Content-Length: %d\r\n", size);
-    r_networking::r_send(socket, contentLength.c_str(), contentLength.length(), DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, contentLength.c_str(), contentLength.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 
     string newLine("\r\n");
-    r_networking::r_send(socket, newLine.c_str(), newLine.length(), DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, newLine.c_str(), newLine.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 
-    r_networking::r_send(socket, chunk, size, DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, chunk, size, timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 
-    r_networking::r_send(socket, newLine.c_str(), newLine.length(), DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, newLine.c_str(), newLine.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 }
 
-void r_server_response::write_part_finalizer(r_socket_base& socket, const string& boundary)
+void r_server_response::write_part_finalizer(r_socket_base& socket, const string& boundary, uint64_t timeout_millis)
 {
     auto finalizerLine = r_string_utils::format("--%s--\r\n", boundary.c_str());
-    r_networking::r_send(socket, finalizerLine.c_str(), finalizerLine.length(), DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, finalizerLine.c_str(), finalizerLine.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 }
@@ -317,7 +318,7 @@ string r_server_response::_get_status_message(status_code sc) const
     R_STHROW(r_http_exception_generic, ("Unknown status code."));
 }
 
-bool r_server_response::_write_header(r_socket_base& socket)
+bool r_server_response::_write_header(r_socket_base& socket, uint64_t timeout_millis)
 {
     time_t now = time(0);
 #if defined(IS_LINUX) || defined(IS_MACOS)
@@ -352,7 +353,7 @@ bool r_server_response::_write_header(r_socket_base& socket)
 
     responseHeader += r_string_utils::format("\r\n");
 
-    r_networking::r_send(socket, responseHeader.c_str(), responseHeader.length(), DEFAULT_SEND_TIMEOUT);
+    r_networking::r_send(socket, responseHeader.c_str(), responseHeader.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
 

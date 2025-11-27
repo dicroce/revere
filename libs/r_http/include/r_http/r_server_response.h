@@ -58,11 +58,11 @@ public:
 
     bool written() const { return _responseWritten; }
 
-    R_API void write_response(r_utils::r_socket_base& socket);
+    R_API void write_response(r_utils::r_socket_base& socket, uint64_t timeout_millis = 10000);
 
     // Chunked transfer encoding support...
-    R_API void write_chunk(r_utils::r_socket_base& socket, size_t sizeChunk, const void* bits);
-    R_API void write_chunk_finalizer(r_utils::r_socket_base& socket);
+    R_API void write_chunk(r_utils::r_socket_base& socket, size_t sizeChunk, const void* bits, uint64_t timeout_millis = 10000);
+    R_API void write_chunk_finalizer(r_utils::r_socket_base& socket, uint64_t timeout_millis = 10000);
 
     // Multipart mimetype support
     // WritePart() will automaticaly add a Content-Length header per
@@ -72,13 +72,14 @@ public:
                      const std::string& boundary,
                      const std::map<std::string,std::string>& partHeaders,
                      void* chunk,
-                     uint32_t size );
+                     uint32_t size,
+                     uint64_t timeout_millis = 10000 );
 
-    R_API void write_part_finalizer(r_utils::r_socket_base& socket, const std::string& boundary);
+    R_API void write_part_finalizer(r_utils::r_socket_base& socket, const std::string& boundary, uint64_t timeout_millis = 10000);
 
 private:
     std::string _get_status_message(status_code sc) const;
-    bool _write_header(r_utils::r_socket_base& socket);
+    bool _write_header(r_utils::r_socket_base& socket, uint64_t timeout_millis);
 
     status_code _status;
     bool _connectionClose;

@@ -69,18 +69,18 @@ void r_client_request::set_method( int method )
     _method = method;
 }
 
-void r_client_request::write_request( r_socket_base& socket ) const
+void r_client_request::write_request( r_socket_base& socket, uint64_t timeout_millis ) const
 {
     std::string msgHeader = _get_headers_as_string( socket );
 
-    int sent = r_networking::r_send(socket, msgHeader.c_str(), msgHeader.length());
+    int sent = r_networking::r_send(socket, msgHeader.c_str(), msgHeader.length(), timeout_millis);
     if( sent != static_cast<int>(msgHeader.length()) )
         R_STHROW( r_http_io_exception, ("Failed to send request headers."));
 
     if( (_method == METHOD_POST || _method == METHOD_PATCH || _method == METHOD_PUT) &&
         !r_string_utils::contains(_contentType, "x-www-form-urlencoded") && _body.size() )
     {
-        sent = r_networking::r_send(socket, &_body[0], _body.size());
+        sent = r_networking::r_send(socket, &_body[0], _body.size(), timeout_millis);
         if( sent != static_cast<int>(_body.size()) )
             R_STHROW( r_http_io_exception, ("Failed to send request body."));
     }

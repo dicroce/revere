@@ -86,7 +86,7 @@ retry:
     request.set_uri(uri);
     request.set_body(body);
 
-    request.write_request(*sock);
+    request.write_request(*sock, 30000);
 
     r_http::r_client_response response;
     response.read_response(*sock);

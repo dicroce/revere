@@ -27,7 +27,7 @@ public:
 
     R_API r_server_request& operator = (const r_server_request& rhs);
 
-    R_API void read_request(r_utils::r_socket_base& socket);
+    R_API void read_request(r_utils::r_socket_base& socket, uint64_t timeout_millis = 10000);
 
     R_API int get_method() const;
 
@@ -52,16 +52,17 @@ public:
 
 private:
     void _set_header(const std::string& name, const std::string& value);
-    void _read_header_line(r_utils::r_socket_base& socket, char* writer);
+    std::string _read_headers(r_utils::r_socket_base& socket, uint64_t timeout_millis);
     bool _add_line(std::list<std::string>& lines, const std::string& line);
     void _process_request_lines(const std::list<std::string>& requestLines);
-    void _process_body(r_utils::r_socket_base& socket);
+    void _process_body(r_utils::r_socket_base& socket, uint64_t timeout_millis);
 
     std::string _initialLine;
     std::map<std::string,std::string> _headerParts;
     std::map<std::string,std::string> _postVars;
     std::vector<uint8_t> _body;
     std::string _contentType;
+    std::vector<uint8_t> _headerOverRead;
 };
 
 }

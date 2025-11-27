@@ -111,6 +111,8 @@ void r_motion_engine::_entry_point()
 
                 int max_decode_attempts = 10;
 
+                found_wc->second->decoder().attach_buffer(mi.data(), mi.size());
+
                 bool decode_again = true;
                 while(decode_again)
                 {
@@ -118,7 +120,6 @@ void r_motion_engine::_entry_point()
                         R_THROW(("Unable to decode!"));
                     --max_decode_attempts;
 
-                    found_wc->second->decoder().attach_buffer(mi.data(), mi.size());
                     auto ds = found_wc->second->decoder().decode();
                     if(ds == r_av::R_CODEC_STATE_HAS_OUTPUT || ds == r_av::R_CODEC_STATE_AGAIN_HAS_OUTPUT)
                     {

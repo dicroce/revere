@@ -230,7 +230,7 @@ void r_transcoder::_worker_thread()
                         now - _last_bitrate_check
                     ).count();
 
-                    if (elapsed >= 2)
+                    if (elapsed >= 5)
                     {
                         _adjust_bitrate();
                         _last_bitrate_check = now;
@@ -260,7 +260,7 @@ void r_transcoder::_worker_thread()
 void r_transcoder::_adjust_bitrate()
 {
     // Calculate actual bitrate over the last window
-    uint32_t actual_bitrate = (_bytes_encoded_this_window * 8) / 2; // bits per second
+    uint32_t actual_bitrate = static_cast<uint32_t>((_bytes_encoded_this_window * 8) / 5); // bits per second
 
     // Calculate how far we are from target
     float ratio = (float)actual_bitrate / (float)_current_bitrate;
@@ -268,22 +268,22 @@ void r_transcoder::_adjust_bitrate()
     uint32_t new_bitrate = _current_bitrate;
 
     // If we're consistently under target, we can increase
-    if (ratio < 0.9f && _current_bitrate < _max_bitrate)
+    if (ratio < 0.85f && _current_bitrate < _max_bitrate)
     {
-        // Increase by 10%
+        // Increase by 25%
         new_bitrate = (std::min)(_max_bitrate,
-                                 (uint32_t)(_current_bitrate * 1.1f));
+                                 (uint32_t)(_current_bitrate * 1.25f));
     }
     // If we're over target, we need to decrease
-    else if (ratio > 1.1f)
+    else if (ratio > 1.15f)
     {
-        // Decrease by 15% (more aggressive)
+        // Decrease by 30%
         new_bitrate = (std::max)(_min_bitrate,
-                                 (uint32_t)(_current_bitrate * 0.85f));
+                                 (uint32_t)(_current_bitrate * 0.70f));
     }
 
-    // Only adjust if bitrate changed significantly (>5%)
-    if (std::abs((int)new_bitrate - (int)_current_bitrate) > (int)(_current_bitrate * 0.05f))
+    // Only adjust if bitrate changed significantly (>10%)
+    if (std::abs((int)new_bitrate - (int)_current_bitrate) > (int)(_current_bitrate * 0.10f))
     {
         R_LOG_INFO("Adjusting bitrate: %u -> %u (actual: %u)", _current_bitrate, new_bitrate, actual_bitrate);
 

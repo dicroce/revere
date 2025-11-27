@@ -28,7 +28,7 @@ public:
 
     R_API r_client_response& operator = (const r_client_response& obj);
 
-    R_API void read_response(r_utils::r_socket_base& socket);
+    R_API void read_response(r_utils::r_socket_base& socket, uint64_t timeout_millis = 10000);
 
     R_API std::string get_message();
 
@@ -56,22 +56,23 @@ public:
     R_API void register_part_callback( part_callback pb );
 
 private:
-    void _read_chunked_body(r_utils::r_socket_base& socket);
-    void _read_multi_part(r_utils::r_socket_base& socket);
-    std::map<std::string, std::string> _read_multi_header_lines(r_utils::r_socket_base& socket, char* lineBuf);
-    void _read_end_of_line(r_utils::r_socket_base& socket);
+    void _read_chunked_body(r_utils::r_socket_base& socket, uint64_t timeout_millis);
+    void _read_multi_part(r_utils::r_socket_base& socket, uint64_t timeout_millis);
+    std::map<std::string, std::string> _read_multi_header_lines(r_utils::r_socket_base& socket, char* lineBuf, uint64_t timeout_millis);
+    void _read_end_of_line(r_utils::r_socket_base& socket, uint64_t timeout_millis);
 
     bool _is_legal_chunk_size_char(char ch) { return isxdigit(ch) ? true : false; } // VS warning: forcing int to bool.
     bool _embed_null(char* lineBuf);
-    void _consume_footer(r_utils::r_socket_base& socket);
+    void _consume_footer(r_utils::r_socket_base& socket, uint64_t timeout_millis);
 
     void _add_header(const std::string& name, const std::string& value);
 
-    void _clean_socket(r_utils::r_socket_base& socket, char** writer);
-    void _read_header_line(r_utils::r_socket_base& socket, char* writer, bool firstLine);
+    void _clean_socket(r_utils::r_socket_base& socket, char** writer, uint64_t timeout_millis);
+    std::string _read_headers(r_utils::r_socket_base& socket, uint64_t timeout_millis);
+    void _read_header_line(r_utils::r_socket_base& socket, char* writer, bool firstLine, uint64_t timeout_millis);
     bool _add_line(std::list<std::string>& lines, const std::string& line);
     void _process_request_lines(const std::list<std::string>& requestLines);
-    void _process_body(r_utils::r_socket_base& socket);
+    void _process_body(r_utils::r_socket_base& socket, uint64_t timeout_millis);
 
     bool _is_end_of_line(char* buffer)
     {
@@ -87,6 +88,7 @@ private:
     part_callback _partCallback;
     std::vector<uint8_t> _chunk;
     bool _streaming;
+    std::vector<uint8_t> _headerOverRead;
 };
 
 }

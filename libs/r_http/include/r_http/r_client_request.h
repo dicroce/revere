@@ -39,7 +39,7 @@ public:
 
     R_API void set_method( int method );
 
-    R_API void write_request( r_utils::r_socket_base& socket ) const;
+    R_API void write_request( r_utils::r_socket_base& socket, uint64_t timeout_millis = 5000 ) const;
 
     R_API void set_accept_type( const std::string& acceptType );
 
