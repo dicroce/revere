@@ -5,6 +5,12 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "(Windows) Attach Revere",
+            "type": "cppvsdbg",
+            "request": "attach",
+            "processId": "${command:pickProcess}"
+        },
+        {
             "name": "(Windows) Launch Revere",
             "type": "cppvsdbg",
             "request": "launch",
@@ -19,7 +25,18 @@
             "name": "(Windows) r_http_ut",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}\\build\\libs\\r_http\\ut\\Debug\\r_http_ut.exe",
+            "program": "${workspaceFolder}\\build\\bin\\Debug\\r_http_ut.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}\\build",
+            "environment": [],
+            "console": "externalTerminal"
+        },
+        {
+            "name": "(Windows) r_av_ut",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}\\build\\bin\\Debug\\r_av_ut.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}\\build",
