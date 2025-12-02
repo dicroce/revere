@@ -11,17 +11,14 @@ extern "C" {
 // Opaque handle
 typedef void* r_system_plugin_handle;
 
-// Log callback function type
-typedef void (*system_plugin_log_func)(const char* message);
-
 // Required exports from each plugin shared library
 
 // Load and initialize the plugin
 // Called once at Revere startup
 // top_dir: Revere's top-level data directory
-// log_func: Function pointer for logging messages to Revere's logger
+// logger_state: Pointer to host's r_logger::logger_state, plugin should call set_logger_state() with this
 // Returns: Plugin handle (opaque pointer to plugin instance)
-R_API r_system_plugin_handle load_system_plugin(const char* top_dir, system_plugin_log_func log_func);
+R_API r_system_plugin_handle load_system_plugin(const char* top_dir, void* logger_state);
 
 // Start the plugin's operations
 // Called after all plugins are loaded

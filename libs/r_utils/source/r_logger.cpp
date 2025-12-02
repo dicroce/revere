@@ -25,11 +25,12 @@ using namespace std;
 
 static const uint32_t MAX_LOG_FILE_SIZE = ((1024*1024) * 10);
 
-static FILE* _log_file = nullptr;
-static uint32_t _approx_bytes_logged = 0;
-static string _log_dir = ".";
-static string _log_prefix = "log_";
-static r_utils::r_logger::log_callback_t _log_callback = nullptr;
+// The actual state - owned by whichever module is the "host"
+static r_logger::logger_state _owned_state;
+
+// Pointer to the active state (points to _owned_state by default,
+// but plugins will point this to the host's state)
+static r_logger::logger_state* _state = &_owned_state;
 
 static deque<string> _get_file_names(const std::string& log_dir)
 {
@@ -108,20 +109,20 @@ static string _next_log_name(const string& log_dir, const string& log_prefix, bo
 
 static void open_log_file(const string& filename)
 {
-    if(_log_file)
+    if(_state->log_file)
     {
-        fclose(_log_file);
-        _log_file = nullptr;
+        fclose(_state->log_file);
+        _state->log_file = nullptr;
     }
 
 #ifdef IS_WINDOWS
-    _log_file = _fsopen(filename.c_str(), "a+", _SH_DENYNO);
+    _state->log_file = _fsopen(filename.c_str(), "a+", _SH_DENYNO);
 #endif
 #if defined(IS_LINUX) || defined(IS_MACOS)
-    _log_file = fopen(filename.c_str(), "a+");
+    _state->log_file = fopen(filename.c_str(), "a+");
 #endif
 
-    if(_log_file == nullptr)
+    if(_state->log_file == nullptr)
         R_THROW(("Unable to open logger."));
 }
 
@@ -131,11 +132,11 @@ void r_utils::r_logger::write(LOG_LEVEL level,
                               const char* format,
                               ...)
 {
-    if(_approx_bytes_logged > MAX_LOG_FILE_SIZE)
+    if(_state->approx_bytes_logged > MAX_LOG_FILE_SIZE)
     {
-        _approx_bytes_logged = 0;
-        auto v = _next_log_name(_log_dir, _log_prefix);
-        auto log_path = r_string_utils::format("%s%s%s", _log_dir.c_str(), PATH_SLASH.c_str(), v.c_str());
+        _state->approx_bytes_logged = 0;
+        auto v = _next_log_name(_state->log_dir, _state->log_prefix);
+        auto log_path = r_string_utils::format("%s%s%s", _state->log_dir.c_str(), PATH_SLASH.c_str(), v.c_str());
 
         open_log_file(log_path);
     }
@@ -153,7 +154,7 @@ void r_utils::r_logger::write(LOG_LEVEL level,
                               va_list& args)
 {
     auto msg = r_string_utils::format(format, args);
-    _approx_bytes_logged += (uint32_t)msg.length();
+    _state->approx_bytes_logged += (uint32_t)msg.length();
     auto lines = r_string_utils::split(msg, "\n");
 
 #ifdef IS_WINDOWS
@@ -163,30 +164,30 @@ void r_utils::r_logger::write(LOG_LEVEL level,
 #endif
 
     // Invoke callback if registered
-    if(_log_callback)
+    if(_state->log_callback)
     {
         for(auto l : lines)
         {
 #ifdef IS_WINDOWS
             auto timestamped_msg = timestamp + " " + l;
-            _log_callback(level, timestamped_msg);
+            _state->log_callback(level, timestamped_msg);
 #else
-            _log_callback(level, l);
+            _state->log_callback(level, l);
 #endif
         }
     }
 
-    if(_log_file)
+    if(_state->log_file)
     {
         for(auto l : lines)
         {
 #ifdef IS_WINDOWS
-            fprintf(_log_file, "%s %s\n", timestamp.c_str(), l.c_str());
+            fprintf(_state->log_file, "%s %s\n", timestamp.c_str(), l.c_str());
 #else
-            fprintf(_log_file, "%s\n", l.c_str());
+            fprintf(_state->log_file, "%s\n", l.c_str());
 #endif
         }
-        fflush(_log_file);
+        fflush(_state->log_file);
     }
 
 #ifdef IS_LINUX
@@ -241,23 +242,23 @@ void r_utils_terminate()
 
 void r_utils::r_logger::install_logger(const std::string& log_dir, const std::string& log_prefix)
 {
-    _log_dir = log_dir;
-    _log_prefix = log_prefix;
+    _state->log_dir = log_dir;
+    _state->log_prefix = log_prefix;
 
-    auto v = _next_log_name(_log_dir, _log_prefix, true);
-    auto log_path = r_string_utils::format("%s%s%s", _log_dir.c_str(), PATH_SLASH.c_str(), v.c_str());
+    auto v = _next_log_name(_state->log_dir, _state->log_prefix, true);
+    auto log_path = r_string_utils::format("%s%s%s", _state->log_dir.c_str(), PATH_SLASH.c_str(), v.c_str());
 
-    _approx_bytes_logged = (r_fs::file_exists(log_path))?(uint32_t)r_fs::file_size(log_path):0;
+    _state->approx_bytes_logged = (r_fs::file_exists(log_path))?(uint32_t)r_fs::file_size(log_path):0;
 
     open_log_file(log_path);
 }
 
 void r_utils::r_logger::uninstall_logger()
 {
-    if(_log_file)
+    if(_state->log_file)
     {
-        fclose(_log_file);
-        _log_file = nullptr;
+        fclose(_state->log_file);
+        _state->log_file = nullptr;
     }
 }
 
@@ -268,10 +269,20 @@ void r_utils::r_logger::install_terminate()
 
 void r_utils::r_logger::set_log_callback(log_callback_t callback)
 {
-    _log_callback = callback;
+    _state->log_callback = callback;
 }
 
 void r_utils::r_logger::clear_log_callback()
 {
-    _log_callback = nullptr;
+    _state->log_callback = nullptr;
+}
+
+r_logger::logger_state* r_utils::r_logger::get_logger_state()
+{
+    return _state;
+}
+
+void r_utils::r_logger::set_logger_state(logger_state* state)
+{
+    _state = state;
 }

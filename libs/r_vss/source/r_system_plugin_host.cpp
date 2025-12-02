@@ -10,16 +10,10 @@ using namespace r_utils;
 namespace fs = std::filesystem;
 
 // C API function pointer types
-typedef r_system_plugin_handle (*load_system_plugin_func)(const char*, system_plugin_log_func);
+typedef r_system_plugin_handle (*load_system_plugin_func)(const char*, void*);
 typedef void (*start_system_plugin_func)(r_system_plugin_handle);
 typedef void (*stop_system_plugin_func)(r_system_plugin_handle);
 typedef void (*destroy_system_plugin_func)(r_system_plugin_handle);
-
-// Log callback wrapper
-static void plugin_log_callback(const char* message)
-{
-    R_LOG_INFO("[SystemPlugin] %s", message);
-}
 
 r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
     : _top_dir(top_dir)
@@ -75,8 +69,8 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                 stop_system_plugin_func stop_func = reinterpret_cast<stop_system_plugin_func>(stop_symbol);
                                 destroy_system_plugin_func destroy_func = reinterpret_cast<destroy_system_plugin_func>(destroy_symbol);
 
-                                // Call load_system_plugin with top_dir and log callback
-                                r_system_plugin_handle plugin_handle = load_func(_top_dir.c_str(), plugin_log_callback);
+                                // Call load_system_plugin with top_dir and logger state
+                                r_system_plugin_handle plugin_handle = load_func(_top_dir.c_str(), r_logger::get_logger_state());
 
                                 if (plugin_handle)
                                 {

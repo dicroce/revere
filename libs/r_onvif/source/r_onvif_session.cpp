@@ -89,7 +89,7 @@ retry:
     request.write_request(*sock, 30000);
 
     r_http::r_client_response response;
-    response.read_response(*sock);
+    response.read_response(*sock, 30000);
 
     //sock->close();
 

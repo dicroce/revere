@@ -179,8 +179,8 @@ string r_client_response::_read_headers(r_socket_base& socket, uint64_t timeout_
         if(!socket.valid())
             R_STHROW(r_http_exception_generic, ("Socket invalid."));
 
-        if(received <= 0)
-            R_STHROW(r_http_exception_generic, ("Connection closed while reading headers."));
+        if(received < 0)
+            R_STHROW(r_http_exception_generic, ("Connection closed while reading headers. received = %d", received));
 
         buffer.append(chunk, received);
 

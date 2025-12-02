@@ -108,20 +108,27 @@ bool revere::open_url_in_browser(const std::string& url)
 #ifdef IS_WINDOWS
     // Windows: Use ShellExecute
     HINSTANCE result = ShellExecuteA(NULL, "open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
-    return (INT_PTR)result > 32;  // ShellExecute returns > 32 on success
+    if(result <= (HINSTANCE)32)
+        R_THROW(("Failed to open URL in browser. Error code: %d (%s)", (INT_PTR)result, r_utils::last_error_to_string().c_str()));
+    return true;
 #elif defined(IS_MACOS)
     // macOS: Use open command
     std::string command = "open \"" + url + "\"";
-    return system(command.c_str()) == 0;
+    int result = system(command.c_str());
+    if(result != 0)
+        R_THROW(("Failed to open URL in browser. Error code: %d", result));
 #elif defined(IS_LINUX)
     // Linux: Try xdg-open first, then fallback to other common browsers
     std::string command = "xdg-open \"" + url + "\" 2>/dev/null || "
                          "gnome-open \"" + url + "\" 2>/dev/null || "
                          "kde-open \"" + url + "\" 2>/dev/null || "
                          "firefox \"" + url + "\" 2>/dev/null &";
-    return system(command.c_str()) == 0;
+    int result = system(command.c_str());
+    if(result != 0)
+        R_THROW(("Failed to open URL in browser. Error code: %d", result));
 #else
     return false;  // Unsupported platform
 #endif
+    return true;
 }
 

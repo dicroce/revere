@@ -441,7 +441,7 @@ static r_nullable<shared_ptr<vector<uint8_t>>> _decode_frame(const r_pipeline::r
     }
     
     r_nullable<shared_ptr<vector<uint8_t>>> output;
-    if(state == r_av::R_CODEC_STATE_HAS_OUTPUT)
+    if(state == r_av::R_CODEC_STATE_HAS_OUTPUT || state == r_av::R_CODEC_STATE_AGAIN_HAS_OUTPUT)
         output.set_value(decoder.get(fmt, output_width, output_height, 1));
 
     return output;

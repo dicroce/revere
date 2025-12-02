@@ -4,6 +4,7 @@
 
 #include "r_utils/r_macro.h"
 #include <cstdarg>
+#include <cstdio>
 #if defined(IS_LINUX) || defined(IS_MACOS)
 #include <syslog.h>
 #endif
@@ -29,6 +30,16 @@ enum LOG_LEVEL
 
 using log_callback_t = std::function<void(LOG_LEVEL level, const std::string& message)>;
 
+// All mutable logger state lives here
+struct logger_state
+{
+    FILE* log_file = nullptr;
+    uint32_t approx_bytes_logged = 0;
+    std::string log_dir = ".";
+    std::string log_prefix = "log_";
+    log_callback_t log_callback = nullptr;
+};
+
 #define R_LOG_CRITICAL(format, ...) r_utils::r_logger::write(r_utils::r_logger::LOG_LEVEL_CRITICAL, __LINE__, __FILE__, format,  ##__VA_ARGS__)
 #define R_LOG_ERROR(format, ...) r_utils::r_logger::write(r_utils::r_logger::LOG_LEVEL_ERROR, __LINE__, __FILE__, format,  ##__VA_ARGS__)
 #define R_LOG_WARNING(format, ...) r_utils::r_logger::write(r_utils::r_logger::LOG_LEVEL_WARNING, __LINE__, __FILE__, format,  ##__VA_ARGS__)
@@ -46,6 +57,10 @@ R_API void install_terminate();
 
 R_API void set_log_callback(log_callback_t callback);
 R_API void clear_log_callback();
+
+// Cross-DLL state sharing: host calls get_logger_state(), plugin calls set_logger_state()
+R_API logger_state* get_logger_state();
+R_API void set_logger_state(logger_state* state);
 
 }
 

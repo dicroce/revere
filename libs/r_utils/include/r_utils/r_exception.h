@@ -12,6 +12,8 @@
 namespace r_utils
 {
 
+R_API std::string last_error_to_string();
+
 class r_exception : public std::exception
 {
 public:
