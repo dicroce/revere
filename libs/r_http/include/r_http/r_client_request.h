@@ -41,6 +41,9 @@ public:
 
     R_API void write_request( r_utils::r_socket_base& socket, uint64_t timeout_millis = 5000 ) const;
 
+    R_API void write_chunk( r_utils::r_socket_base& socket, size_t sizeChunk, const void* bits, uint64_t timeout_millis = 5000 );
+    R_API void write_chunk_finalizer( r_utils::r_socket_base& socket, uint64_t timeout_millis = 5000 );
+
     R_API void set_accept_type( const std::string& acceptType );
 
     R_API void set_content_type( const std::string& contentType );
@@ -58,6 +61,7 @@ public:
 
 private:
     std::string _get_headers_as_string( r_utils::r_socket_base& socket ) const;
+    void _write_chunked_header( r_utils::r_socket_base& socket, uint64_t timeout_millis );
 
     r_uri _uri;
     std::string _acceptType;
@@ -70,6 +74,7 @@ private:
     mutable std::vector<uint8_t> _body;
     std::string _host;
     int _hostPort;
+    bool _headerWritten;
 };
 
 }

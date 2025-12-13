@@ -24,7 +24,9 @@ r_server_request::r_server_request() :
     _postVars(),
     _body(),
     _contentType(),
-    _headerOverRead()
+    _headerOverRead(),
+    _chunkCallback(),
+    _chunk()
 {
 }
 
@@ -34,7 +36,9 @@ r_server_request::r_server_request(const r_server_request& obj) :
     _postVars(obj._postVars),
     _body(obj._body),
     _contentType(obj._contentType),
-    _headerOverRead(obj._headerOverRead)
+    _headerOverRead(obj._headerOverRead),
+    _chunkCallback(obj._chunkCallback),
+    _chunk(obj._chunk)
 {
 }
 
@@ -50,6 +54,8 @@ r_server_request& r_server_request::operator = (const r_server_request& obj)
     _body = obj._body;
     _contentType = obj._contentType;
     _headerOverRead = obj._headerOverRead;
+    _chunkCallback = obj._chunkCallback;
+    _chunk = obj._chunk;
 
     return *this;
 }
@@ -179,7 +185,7 @@ map<string,string> r_server_request::get_headers() const
 
 const uint8_t* r_server_request::get_body() const
 {
-    return &_body[0];
+    return _body.empty() ? nullptr : _body.data();
 }
 
 size_t r_server_request::get_body_size() const
@@ -189,7 +195,9 @@ size_t r_server_request::get_body_size() const
 
 string r_server_request::get_body_as_string() const
 {
-    return string((char*)&_body[0], _body.size());
+    if(_body.empty())
+        return string();
+    return string((char*)_body.data(), _body.size());
 }
 
 map<string,string> r_server_request::get_post_vars() const
@@ -280,6 +288,14 @@ void r_server_request::_process_request_lines(const list<string>& requestLines)
 
 void r_server_request::_process_body(r_socket_base& socket, uint64_t timeout_millis)
 {
+    // Check for chunked transfer encoding first
+    auto te = get_header("Transfer-Encoding");
+    if(!te.is_null() && r_string_utils::contains(r_string_utils::to_lower(te.value()), "chunked"))
+    {
+        _read_chunked_body(socket, timeout_millis);
+        return;
+    }
+
     auto cl = get_header("Content-Length");
 
     if(!cl.is_null())
@@ -343,5 +359,132 @@ void r_server_request::_process_body(r_socket_base& socket, uint64_t timeout_mil
                 }
             }
         }
+    }
+}
+
+void r_server_request::register_chunk_callback(server_chunk_callback cb)
+{
+    _chunkCallback = cb;
+}
+
+bool r_server_request::_read_line(r_socket_base& socket, string& line, uint64_t timeout_millis)
+{
+    line.clear();
+    char ch;
+
+    // First consume any leftover bytes from header reading
+    while(!_headerOverRead.empty())
+    {
+        ch = _headerOverRead[0];
+        _headerOverRead.erase(_headerOverRead.begin());
+
+        if(ch == '\n')
+            return true;
+        if(ch != '\r')
+            line += ch;
+    }
+
+    // Read from socket
+    while(socket.valid())
+    {
+        int received = r_networking::r_recv(socket, &ch, 1, timeout_millis);
+        if(received <= 0)
+            return false;
+
+        if(ch == '\n')
+            return true;
+        if(ch != '\r')
+            line += ch;
+
+        if(line.size() > MAX_HEADER_LINE)
+            R_STHROW(r_http_exception_generic, ("Chunk size line too long."));
+    }
+
+    return false;
+}
+
+void r_server_request::_consume_footer(r_socket_base& socket, uint64_t timeout_millis)
+{
+    // After the final 0-size chunk, there's a trailing CRLF that terminates the chunked body.
+    // Per HTTP/1.1 spec, there may also be trailer headers before this final CRLF, but they're rare.
+    // We need to consume at least the final CRLF.
+    string line;
+    if(_read_line(socket, line, timeout_millis))
+    {
+        // If we got a non-empty line, it's a trailer header - keep reading until empty line
+        while(!line.empty() && _read_line(socket, line, timeout_millis))
+        {
+            // Continue consuming trailer headers
+        }
+    }
+}
+
+void r_server_request::_read_chunked_body(r_socket_base& socket, uint64_t timeout_millis)
+{
+    string line;
+
+    while(true)
+    {
+        // Read chunk size line
+        if(!_read_line(socket, line, timeout_millis))
+            R_STHROW(r_http_io_exception, ("Failed to read chunk size line."));
+
+        // Strip any chunk extensions (everything after semicolon)
+        size_t semicolonPos = line.find(';');
+        if(semicolonPos != string::npos)
+            line = line.substr(0, semicolonPos);
+
+        // Parse hex chunk size
+        uint32_t chunkLen = 0;
+#ifdef IS_WINDOWS
+        sscanf_s(line.c_str(), "%x", &chunkLen);
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+        sscanf(line.c_str(), "%x", &chunkLen);
+#endif
+
+        // Zero-length chunk signals end of body
+        if(chunkLen == 0)
+        {
+            _consume_footer(socket, timeout_millis);
+            return;
+        }
+
+        // Read chunk data
+        _chunk.resize(chunkLen);
+        size_t totalReceived = 0;
+
+        // Use any leftover bytes first
+        while(!_headerOverRead.empty() && totalReceived < chunkLen)
+        {
+            _chunk[totalReceived++] = _headerOverRead[0];
+            _headerOverRead.erase(_headerOverRead.begin());
+        }
+
+        // Read remaining from socket - loop until all bytes received
+        while(totalReceived < chunkLen && socket.valid())
+        {
+            int received = r_networking::r_recv(socket, &_chunk[totalReceived], chunkLen - totalReceived, timeout_millis);
+            if(received <= 0)
+                break;
+            totalReceived += received;
+        }
+
+        if(totalReceived < chunkLen)
+            R_STHROW(r_http_io_exception, ("Failed to read complete chunk data."));
+
+        // Call callback if registered, otherwise accumulate
+        if(_chunkCallback)
+            _chunkCallback(_chunk, *this);
+        else
+        {
+            size_t oldSize = _body.size();
+            _body.resize(oldSize + _chunk.size());
+            memcpy(&_body[oldSize], &_chunk[0], _chunk.size());
+        }
+
+        // Consume trailing CRLF after chunk data
+        if(!_read_line(socket, line, timeout_millis))
+            R_STHROW(r_http_io_exception, ("Failed to read chunk trailing line."));
     }
 }

@@ -14,6 +14,10 @@ public:
       TEST(test_r_http::test_client_response_streaming);
       TEST(test_r_http::test_client_response_100_continue);
       TEST(test_r_http::test_client_response_multi_part);
+      TEST(test_r_http::test_client_request_chunked_single);
+      TEST(test_r_http::test_client_request_chunked_multiple);
+      TEST(test_r_http::test_server_request_chunked_accumulate);
+      TEST(test_r_http::test_server_request_chunked_callback);
     RTF_FIXTURE_END();
 
     virtual ~test_r_http() throw() {}
@@ -30,4 +34,8 @@ public:
     void test_client_response_streaming();
     void test_client_response_100_continue();
     void test_client_response_multi_part();
+    void test_client_request_chunked_single();
+    void test_client_request_chunked_multiple();
+    void test_server_request_chunked_accumulate();
+    void test_server_request_chunked_callback();
 };

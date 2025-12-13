@@ -23,7 +23,8 @@ r_client_request::r_client_request( const std::string& host, int hostPort ) :
     _headerParts(),
     _body(),
     _host( host ),
-    _hostPort( hostPort )
+    _hostPort( hostPort ),
+    _headerWritten( false )
 {
 }
 
@@ -37,7 +38,8 @@ r_client_request::r_client_request(const r_client_request& rhs) :
     _headerParts(rhs._headerParts),
     _body(rhs._body),
     _host(rhs._host),
-    _hostPort(rhs._hostPort)
+    _hostPort(rhs._hostPort),
+    _headerWritten(rhs._headerWritten)
 {
 }
 
@@ -59,6 +61,7 @@ r_client_request& r_client_request::operator = (const r_client_request& rhs)
         _body = rhs._body;
         _host = rhs._host;
         _hostPort = rhs._hostPort;
+        _headerWritten = rhs._headerWritten;
     }
 
     return *this;
@@ -197,4 +200,73 @@ std::string r_client_request::_get_headers_as_string( r_socket_base& socket ) co
     }
 
     return msgHeader;
+}
+
+void r_client_request::_write_chunked_header(r_socket_base& socket, uint64_t timeout_millis)
+{
+    if(_headerWritten)
+        return;
+
+    if(_method != METHOD_POST && _method != METHOD_PATCH && _method != METHOD_PUT)
+        R_STHROW(r_http_exception_generic, ("Chunked encoding only valid for POST, PUT, or PATCH requests."));
+
+    std::string hostHeader = _host;
+    if (_hostPort != 80 && _hostPort != 443)
+        hostHeader += ":" + r_string_utils::int_to_s(_hostPort);
+
+    std::string msgHeader = method_text(_method) + " " + _uri.get_full_raw_uri() + " HTTP/1.1\r\nHost: " + hostHeader + "\r\n";
+
+    if (!_acceptType.empty())
+        msgHeader += "Accept: " + _acceptType + "\r\n";
+
+    if (!_contentType.empty())
+        msgHeader += "Content-Type: " + _contentType + "\r\n";
+
+    if (!_authData.empty())
+        msgHeader += "Authorization: Basic " + _authData + "\r\n";
+
+    for (auto& kv : _headerParts)
+    {
+        msgHeader += r_string_utils::format("%s: %s\r\n", kv.first.c_str(), kv.second.c_str());
+    }
+
+    msgHeader += "Transfer-Encoding: chunked\r\n";
+    msgHeader += "\r\n";
+
+    int sent = r_networking::r_send(socket, msgHeader.c_str(), msgHeader.length(), timeout_millis);
+    if (sent != static_cast<int>(msgHeader.length()))
+        R_STHROW(r_http_io_exception, ("Failed to send chunked request headers."));
+
+    _headerWritten = true;
+}
+
+void r_client_request::write_chunk(r_socket_base& socket, size_t sizeChunk, const void* bits, uint64_t timeout_millis)
+{
+    if (!_headerWritten)
+        _write_chunked_header(socket, timeout_millis);
+
+    auto chunkSizeString = r_string_utils::format("%x\r\n", (unsigned int)sizeChunk);
+    r_networking::r_send(socket, chunkSizeString.c_str(), chunkSizeString.length(), timeout_millis);
+    if (!socket.valid())
+        R_STHROW(r_http_io_exception, ("Socket invalid after sending chunk size."));
+
+    r_networking::r_send(socket, bits, sizeChunk, timeout_millis);
+    if (!socket.valid())
+        R_STHROW(r_http_io_exception, ("Socket invalid after sending chunk data."));
+
+    std::string newLine("\r\n");
+    r_networking::r_send(socket, newLine.c_str(), newLine.length(), timeout_millis);
+    if (!socket.valid())
+        R_STHROW(r_http_io_exception, ("Socket invalid after sending chunk trailer."));
+}
+
+void r_client_request::write_chunk_finalizer(r_socket_base& socket, uint64_t timeout_millis)
+{
+    if (!_headerWritten)
+        _write_chunked_header(socket, timeout_millis);
+
+    std::string finalizer("0\r\n\r\n");
+    r_networking::r_send(socket, finalizer.c_str(), finalizer.length(), timeout_millis);
+    if (!socket.valid())
+        R_STHROW(r_http_io_exception, ("Socket invalid after sending chunk finalizer."));
 }

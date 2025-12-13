@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <vector>
+#include <functional>
 #include "r_utils/interfaces/r_socket_base.h"
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_nullable.h"
@@ -15,6 +16,10 @@
 
 namespace r_http
 {
+
+class r_server_request;
+
+typedef std::function<void(const std::vector<uint8_t>&, const r_server_request&)> server_chunk_callback;
 
 class r_server_request
 {
@@ -50,12 +55,17 @@ public:
     R_API bool is_get_request() const;
     R_API bool is_delete_request() const;
 
+    R_API void register_chunk_callback(server_chunk_callback cb);
+
 private:
     void _set_header(const std::string& name, const std::string& value);
     std::string _read_headers(r_utils::r_socket_base& socket, uint64_t timeout_millis);
     bool _add_line(std::list<std::string>& lines, const std::string& line);
     void _process_request_lines(const std::list<std::string>& requestLines);
     void _process_body(r_utils::r_socket_base& socket, uint64_t timeout_millis);
+    void _read_chunked_body(r_utils::r_socket_base& socket, uint64_t timeout_millis);
+    bool _read_line(r_utils::r_socket_base& socket, std::string& line, uint64_t timeout_millis);
+    void _consume_footer(r_utils::r_socket_base& socket, uint64_t timeout_millis);
 
     std::string _initialLine;
     std::map<std::string,std::string> _headerParts;
@@ -63,6 +73,8 @@ private:
     std::vector<uint8_t> _body;
     std::string _contentType;
     std::vector<uint8_t> _headerOverRead;
+    server_chunk_callback _chunkCallback;
+    std::vector<uint8_t> _chunk;
 };
 
 }

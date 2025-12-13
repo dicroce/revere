@@ -69,7 +69,7 @@ private:
 
     void _clean_socket(r_utils::r_socket_base& socket, char** writer, uint64_t timeout_millis);
     std::string _read_headers(r_utils::r_socket_base& socket, uint64_t timeout_millis);
-    void _read_header_line(r_utils::r_socket_base& socket, char* writer, bool firstLine, uint64_t timeout_millis);
+    bool _read_header_line(r_utils::r_socket_base& socket, char* writer, bool firstLine, uint64_t timeout_millis);
     bool _add_line(std::list<std::string>& lines, const std::string& line);
     void _process_request_lines(const std::list<std::string>& requestLines);
     void _process_body(r_utils::r_socket_base& socket, uint64_t timeout_millis);

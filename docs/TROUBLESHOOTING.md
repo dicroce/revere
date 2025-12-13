@@ -87,17 +87,6 @@ top -H -p $(pgrep revere)
 
 ---
 
-### High Memory Usage
-
-**Symptoms:**
-[Description]
-
-**Diagnosis:**
-[How to diagnose]
-
-**Solutions:**
-[Solutions]
-
 ## Build Issues
 
 ### CMake Can't Find Dependencies
@@ -164,24 +153,6 @@ clang++ --version  # Should be 10.x or higher
 
 ---
 
-### Windows-Specific Build Issues
-
-#### MSVC Version Mismatch
-
-**Symptoms:**
-[Description]
-
-**Solution:**
-[Solution]
-
-#### Missing Windows SDK
-
-**Symptoms:**
-[Description]
-
-**Solution:**
-[Solution]
-
 ## Camera Issues
 
 ### Camera Not Discovered
@@ -214,62 +185,6 @@ nc -zv <camera-ip> 80
 
 **Check ONVIF Settings:**
 [Camera-specific instructions]
-
-**Firewall Rules:**
-```bash
-# Linux - allow ONVIF discovery
-sudo ufw allow from <camera-subnet> to any port 3702 proto udp
-
-# Windows
-[PowerShell firewall commands]
-```
-
----
-
-### Camera Connection Lost
-
-**Symptoms:**
-Camera was working but now shows disconnected
-
-**Common Causes:**
-- Network issues
-- Camera reboot
-- Credential change
-- DHCP address change
-
-**Solutions:**
-
-**Check Camera Status:**
-```bash
-ping <camera-ip>
-```
-
-**Verify Credentials:**
-Re-configure the camera in Revere with the correct username and password. If credentials have changed on the camera, you'll need to update them in Revere.
-
-**Check for IP Change:**
-If using DHCP, the camera's IP address may have changed. Either:
-- Configure your router to assign a static DHCP lease
-- Configure a static IP on the camera
-- Re-discover the camera with its new IP address
-
-**Review Logs:**
-Check the Revere log output for connection errors. Logs show ONVIF communication attempts and failures.
-
----
-
-### Authentication Failed
-
-**Symptoms:**
-```
-Error: Authentication failed for camera <name>
-```
-
-**Solutions:**
-- Verify username and password
-- Check for special characters in password
-- Try digest authentication vs basic
-- Reset camera credentials if necessary
 
 ---
 
@@ -316,49 +231,6 @@ Video is pixelated or low quality
 
 ---
 
-### PTZ Not Working
-
-**Symptoms:**
-Pan/Tilt/Zoom controls don't work
-
-**Solutions:**
-- Verify camera supports PTZ
-- Check ONVIF PTZ support
-- Test PTZ from camera's web interface
-- Review PTZ permissions
-
-## Recording Issues
-
-### Recording Not Starting
-
-**Symptoms:**
-[Description]
-
-**Diagnosis Checklist:**
-- [ ] Recording is enabled for the camera
-- [ ] Storage path is configured
-- [ ] Sufficient disk space available
-- [ ] Write permissions on storage path
-
-**Solutions:**
-
-**Check Storage Path:**
-```bash
-# Verify path exists and is writable
-ls -ld /path/to/storage
-touch /path/to/storage/test_write && rm /path/to/storage/test_write
-```
-
-**Check Disk Space:**
-```bash
-df -h /path/to/storage
-```
-
-**Review Error Logs:**
-[Log location and what to look for]
-
----
-
 ### Recording Stops Unexpectedly
 
 **Symptoms:**
@@ -369,25 +241,6 @@ df -h /path/to/storage
 - Network interruption
 - Camera stream interrupted
 - Process crash
-
-**Solutions:**
-[Solutions]
-
----
-
-### Gaps in Recording
-
-**Symptoms:**
-Timeline shows missing segments
-
-**Causes:**
-- Camera was offline
-- Network issues
-- Motion detection gaps (if using motion-based recording)
-- Storage errors
-
-**Diagnosis:**
-[How to diagnose]
 
 **Solutions:**
 [Solutions]

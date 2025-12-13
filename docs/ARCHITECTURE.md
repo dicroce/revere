@@ -76,10 +76,6 @@ The playback and analytics viewer application.
 
 **Relationship to revere:** Acts as a client to the revere HTTP API (connects to port 10080)
 
-### Core Services
-
-[Overview of the main service components]
-
 ## Core Libraries
 
 ### r_av (Audio/Video Processing)
@@ -445,35 +441,7 @@ The plugin system uses a C interface for maximum compatibility:
 - Width and height provided
 - Motion region bounding box included
 
-**Creating a Custom Plugin:**
-
-1. Implement the three required C functions
-2. Link against r_utils and any detection libraries
-3. Build as shared library (.so/.dll)
-4. Place in `motion_plugins/` directory
-5. Plugin automatically loaded by r_motion_event_plugin_host
-
-**Plugin Lifecycle:**
-1. r_vss startup → r_motion_event_plugin_host scans plugin directory
-2. Plugins loaded via r_dynamic_library
-3. `load_plugin()` called for each plugin
-4. During recording: motion events trigger `post_motion_event()` calls
-5. Plugins receive frame data and motion regions
-6. On shutdown: `destroy_plugin()` called for cleanup
-
 ## Network Architecture
-
-### RTSP Streaming
-
-[How RTSP streams are handled]
-
-### ONVIF Communication
-
-[Network topology for ONVIF discovery and control]
-
-### Web API
-
-[REST API architecture]
 
 ### Port Usage
 
@@ -485,100 +453,24 @@ The plugin system uses a C interface for maximum compatibility:
 | 10080 | TCP | Revere HTTP API server (for vision app) |
 | 10554 | TCP | Revere RTSP restreaming server (outbound) |
 
-## Threading Model
-
-### Thread Pool Architecture
-
-[Description of threading strategy]
-
-### Per-Camera Threads
-
-[How camera processing is threaded]
-
-### Synchronization
-
-[How data is synchronized across threads]
-
-### Performance Considerations
-
-[Threading best practices and performance notes]
-
 ## Design Decisions
 
 ### Why C++?
 
-[Rationale for C++ choice]
+C++ is a reasonable choice for performance critical code, and it happens to be the language I am most familar with. Its also well supported on all the platforms I cared about.
 
 ### Why GStreamer AND FFmpeg?
 
-[Explanation of why both are used]
+Sometimes when working with videos you want a pipeline (for long/unknown duration video processing, e.g. recording pipelines) and sometimes you want to convert a file. I use gstreamer for the former and ffmpeg for the latter.
 
 ### Storage Format Choice
 
-[Why the chosen storage format]
-
-### Stateful vs Stateless Components
-
-[Architectural decisions around state management]
+I have built a number of video storage engines over the years. The storage engine here was optimized for desktop computers where the desire is to never be surprised by the disk usage. To that end camera storage is 100% preallocated.
 
 ### Error Handling Strategy
 
-[How errors are handled across the system]
-
-### [Other Key Decisions]
-
-[Continue pattern]
-
-## Extension Points
-
-### Adding New Camera Types
-
-[Guide to extending camera support]
-
-### Custom Motion Detection Algorithms
-
-[Guide to adding new motion detection]
-
-### Custom Storage Backends
-
-[Guide to implementing alternative storage]
-
-### API Extensions
-
-[Guide to extending the REST API]
-
-## Performance Characteristics
-
-### Expected Performance
-
-[Performance expectations for various configurations]
-
-### Bottlenecks
-
-[Known performance bottlenecks]
-
-### Optimization Opportunities
-
-[Areas for future optimization]
-
-## Security Considerations
-
-### Authentication
-
-[How authentication is handled]
+Revere uses C++ exceptions for actual errors. In general this means some underlying operating system feature returned an error to us. Hopefully all exceptions are caught and as much useful information is written to the log as possible.
 
 ### Camera Credentials
 
-[How camera credentials are stored/managed]
-
-### Network Security
-
-[Network security considerations]
-
-### Data Protection
-
-[How recorded data is protected]
-
-## Future Architecture Plans
-
-[Planned architectural changes or improvements]
+Camera credentials are encrypted and stored in our camera database.
