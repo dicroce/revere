@@ -39,8 +39,6 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
 
     auto epoch_millis = r_time_utils::tp_to_epoch_millis(ts);
 
-    epoch_millis -= 20000;
-
     auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, epoch_millis);
 
     uint32_t version = 0;
@@ -102,8 +100,6 @@ vector<uint8_t> r_vss::query_get_webp(const string& top_dir, r_devices& devices,
     r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
 
     auto epoch_millis = r_time_utils::tp_to_epoch_millis(ts);
-
-    epoch_millis -= 20000;
 
     auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, epoch_millis);
 
