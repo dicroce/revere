@@ -277,6 +277,12 @@ void r_utils::r_logger::clear_log_callback()
     _state->log_callback = nullptr;
 }
 
+std::string r_utils::r_logger::get_log_file_path()
+{
+    auto v = _next_log_name(_state->log_dir, _state->log_prefix, true);
+    return r_string_utils::format("%s%s%s", _state->log_dir.c_str(), PATH_SLASH.c_str(), v.c_str());
+}
+
 r_logger::logger_state* r_utils::r_logger::get_logger_state()
 {
     return _state;

@@ -16,6 +16,7 @@
 #include <map>
 #include <vector>
 #include <thread>
+#include <mutex>
 #include <memory>
 #include <functional>
 #include <chrono>
@@ -124,6 +125,8 @@ private:
     void _add_recording_contexts(const std::vector<r_disco::r_camera>& cameras);
     void _remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras);
     std::vector<r_stream_status> _fetch_stream_status() const;
+    void _update_status_cache();
+    void _update_retention_cache();
     static void _live_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, gpointer user_data);
     void _stop(const std::string& id);
     static void _client_connected_cbs(GstRTSPServer* server, GstRTSPClient* client, r_stream_keeper* sk);
@@ -137,6 +140,15 @@ private:
     bool _running;
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
     r_utils::r_work_q<r_stream_keeper_cmd, r_stream_keeper_result> _cmd_q;
+
+    // Cached stream status for non-blocking reads from GUI thread
+    mutable std::mutex _status_cache_mutex;
+    std::vector<r_stream_status> _status_cache;
+
+    // Cached retention hours for non-blocking reads from GUI thread (updated hourly)
+    mutable std::mutex _retention_cache_mutex;
+    std::map<std::string, std::chrono::hours> _retention_cache;
+    std::chrono::steady_clock::time_point _last_retention_update;
 
     std::thread _rtsp_server_th;
     GMainLoop* _loop;

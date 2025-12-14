@@ -142,10 +142,15 @@ void r_stream_keeper::stop()
 
 vector<r_stream_status> r_stream_keeper::fetch_stream_status()
 {
-    r_stream_keeper_cmd cmd;
-    cmd.cmd = R_SK_FETCH_STREAM_STATUS;
+    std::lock_guard<std::mutex> lock(_status_cache_mutex);
+    return _status_cache;
+}
 
-    return _cmd_q.post(cmd).get().stream_infos;
+void r_stream_keeper::_update_status_cache()
+{
+    auto status = _fetch_stream_status();
+    std::lock_guard<std::mutex> lock(_status_cache_mutex);
+    _status_cache = std::move(status);
 }
 
 bool r_stream_keeper::is_recording(const string& id)
@@ -260,7 +265,45 @@ vector<uint8_t> r_stream_keeper::get_jpg(const string& camera_id, int64_t ts, ui
 
 std::chrono::hours r_stream_keeper::get_retention_hours(const string& camera_id)
 {
-    return query_get_retention_hours(_top_dir, _devices, camera_id);
+    std::lock_guard<std::mutex> lock(_retention_cache_mutex);
+    auto it = _retention_cache.find(camera_id);
+    if(it != _retention_cache.end())
+        return it->second;
+    return std::chrono::hours(0);
+}
+
+void r_stream_keeper::_update_retention_cache()
+{
+    auto now = std::chrono::steady_clock::now();
+
+    // Update hourly, or immediately on first run (when _last_retention_update is epoch)
+    if(_last_retention_update.time_since_epoch().count() != 0 &&
+       (now - _last_retention_update) < std::chrono::hours(1))
+        return;
+
+    _last_retention_update = now;
+
+    // Build new cache from all current streams
+    std::map<std::string, std::chrono::hours> new_cache;
+    for(const auto& stream : _streams)
+    {
+        try
+        {
+            auto retention = query_get_retention_hours(_top_dir, _devices, stream.first);
+            new_cache[stream.first] = retention;
+        }
+        catch(const std::exception& e)
+        {
+            R_LOG_WARNING("Failed to get retention for camera %s: %s", stream.first.c_str(), e.what());
+            new_cache[stream.first] = std::chrono::hours(0);
+        }
+    }
+
+    // Swap in the new cache
+    {
+        std::lock_guard<std::mutex> lock(_retention_cache_mutex);
+        _retention_cache = std::move(new_cache);
+    }
 }
 
 r_devices& r_stream_keeper::get_devices()
@@ -354,13 +397,7 @@ void r_stream_keeper::_entry_point()
             {
                 auto cmd = c.take();
 
-                if(cmd.first.cmd == R_SK_FETCH_STREAM_STATUS)
-                {
-                    r_stream_keeper_result result;
-                    result.stream_infos = _fetch_stream_status();
-                    cmd.second.set_value(result);
-                }
-                else if(cmd.first.cmd == R_SK_IS_RECORDING)
+                if(cmd.first.cmd == R_SK_IS_RECORDING)
                 {
                     r_stream_keeper_result result;
                     result.is_recording = _streams.find(cmd.first.id) != _streams.end();
@@ -380,6 +417,10 @@ void r_stream_keeper::_entry_point()
                 }
                 else R_THROW(("Unknown command sent to stream keeper!"));
             }
+
+            // Update caches for non-blocking reads from GUI thread
+            _update_status_cache();
+            _update_retention_cache();
         }
         catch(const std::exception& e)
         {

@@ -58,6 +58,8 @@ R_API void install_terminate();
 R_API void set_log_callback(log_callback_t callback);
 R_API void clear_log_callback();
 
+R_API std::string get_log_file_path();
+
 // Cross-DLL state sharing: host calls get_logger_state(), plugin calls set_logger_state()
 R_API logger_state* get_logger_state();
 R_API void set_logger_state(logger_state* state);
