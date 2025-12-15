@@ -163,9 +163,11 @@ r_camera_params r_pipeline::fetch_camera_params(
     });
 
     bool stream_start_time_set = false;
-    system_clock::time_point stream_start_time;    
+    system_clock::time_point stream_start_time;
 
     vector<uint8_t> video_key_frame;
+    sample_context captured_sample_ctx;
+    int key_frame_count = 0;
 
     int64_t video_byte_total = 0;
     src.set_video_sample_cb([&](const sample_context& sc, const r_gst_buffer& buffer, bool key, int64_t pts){
@@ -174,9 +176,19 @@ r_camera_params r_pipeline::fetch_camera_params(
         {
             stream_start_time_set = true;
             stream_start_time = system_clock::now();
+        }
 
-            video_key_frame.resize(mi.size());
-            memcpy(&video_key_frame[0], mi.data(), mi.size());
+        // Capture the second keyframe - the first one from some cameras has unusual
+        // NAL structure (duplicate SPS/PPS, etc.) that can confuse decoders
+        if(key)
+        {
+            ++key_frame_count;
+            if(key_frame_count == 2)
+            {
+                video_key_frame.resize(mi.size());
+                memcpy(&video_key_frame[0], mi.data(), mi.size());
+                captured_sample_ctx = sc;
+            }
         }
 
         if(!done)
@@ -197,6 +209,7 @@ r_camera_params r_pipeline::fetch_camera_params(
     cp.bytes_per_second = (int64_t)(((double)(audio_byte_total + video_byte_total)) / (double)duration_cast<seconds>(delta).count());
     cp.sdp_medias = medias;
     cp.video_key_frame = video_key_frame;
+    cp.sample_ctx = captured_sample_ctx;
     return cp;
 }
 
@@ -1232,7 +1245,23 @@ void r_gst_source::_on_sdp_callback(GstElement* src, GstSDPMessage* sdp)
                 {
                     auto parts = r_string_utils::split(nvp, "=");
                     if(parts.size() == 2)
-                        media.attributes.insert(make_pair(r_string_utils::strip(parts[0]), r_string_utils::strip(parts[1])));
+                    {
+                        auto key = r_string_utils::strip(parts[0]);
+                        auto val = r_string_utils::strip(parts[1]);
+                        // Normalize H.264 sprop-parameter-sets into sprop-sps and sprop-pps
+                        // to match H.265 attribute naming convention
+                        if(key == "sprop-parameter-sets")
+                        {
+                            auto sprop_parts = r_string_utils::split(val, ",");
+                            if(sprop_parts.size() >= 2)
+                            {
+                                media.attributes.insert(make_pair("sprop-sps", sprop_parts[0]));
+                                media.attributes.insert(make_pair("sprop-pps", sprop_parts[1]));
+                            }
+                        }
+                        else
+                            media.attributes.insert(make_pair(key, val));
+                    }
                 }
             }
             else media.attributes.insert(make_pair(r_string_utils::strip(attr_key), r_string_utils::strip(attr_val)));

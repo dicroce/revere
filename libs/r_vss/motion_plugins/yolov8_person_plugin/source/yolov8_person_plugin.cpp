@@ -76,9 +76,9 @@ yolov8_person_plugin::~yolov8_person_plugin()
     if (_running) {
         _running = false;
 
-        // Wake up the thread by posting an empty message
-        MotionEventMessage wake_msg;
-        _event_queue.post(wake_msg);
+        FULL_MEM_BARRIER();
+
+        _event_queue.wake();
 
         if (_thread.joinable()) {
             _thread.join();

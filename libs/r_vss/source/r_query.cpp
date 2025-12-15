@@ -25,6 +25,64 @@ using namespace r_motion;
 using namespace std;
 using namespace std::chrono;
 
+// Helper: check if frame data has inline SPS (H.264 NAL type 7)
+static bool _has_inline_sps(const vector<uint8_t>& frame)
+{
+    for(size_t i = 0; i + 4 < frame.size() && i < 500; ++i)
+    {
+        if(frame[i] == 0x00 && frame[i+1] == 0x00 &&
+           frame[i+2] == 0x00 && frame[i+3] == 0x01)
+        {
+            uint8_t nal_type = frame[i+4] & 0x1F;
+            if(nal_type == 7) // SPS
+                return true;
+        }
+    }
+    return false;
+}
+
+// Helper: decode a single frame with proper parser and flush support
+static shared_ptr<vector<uint8_t>> _decode_single_frame(
+    const string& video_codec_name,
+    const string& video_codec_parameters,
+    const vector<uint8_t>& frame,
+    AVPixelFormat output_format,
+    uint16_t w,
+    uint16_t h)
+{
+    // Enable parsing to properly handle Annex B streams with multiple NAL units
+    r_video_decoder decoder(r_av::encoding_to_av_codec_id(video_codec_name), true);
+
+    // Only set extradata if stream doesn't have inline SPS/PPS
+    if(!_has_inline_sps(frame))
+        decoder.set_extradata(r_pipeline::get_video_codec_extradata(video_codec_name, video_codec_parameters));
+
+    decoder.attach_buffer(frame.data(), frame.size());
+
+    int attempts = 0;
+    auto ds = decoder.decode();
+    while(ds != R_CODEC_STATE_HAS_OUTPUT && ds != R_CODEC_STATE_AGAIN_HAS_OUTPUT && attempts < 10)
+    {
+        ds = decoder.decode();
+        ++attempts;
+    }
+
+    // If decoder accepted data but hasn't produced output yet, flush to force output
+    if(ds == R_CODEC_STATE_HUNGRY)
+    {
+        while(ds != R_CODEC_STATE_HAS_OUTPUT && ds != R_CODEC_STATE_AGAIN_HAS_OUTPUT && attempts < 20)
+        {
+            ds = decoder.flush();
+            ++attempts;
+        }
+    }
+
+    if(ds == R_CODEC_STATE_HAS_OUTPUT || ds == R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+        return decoder.get(output_format, w, h, 1);
+
+    return nullptr;
+}
+
 vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h)
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
@@ -55,22 +113,10 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
 
     auto frame = bt["frames"][0]["data"].get_blob();
 
-    r_video_decoder decoder(r_av::encoding_to_av_codec_id(video_codec_name));
-    decoder.set_extradata(r_pipeline::get_video_codec_extradata(video_codec_name, video_codec_parameters));
-    decoder.attach_buffer(frame.data(), frame.size());
-    auto ds = decoder.decode();
+    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_YUVJ420P, w, h);
 
-    int attempts = 10;
-    while(ds != R_CODEC_STATE_HAS_OUTPUT && attempts > 0)
+    if(decoded)
     {
-        ds = decoder.decode();
-        attempts--;
-    }
-
-    if(ds == R_CODEC_STATE_HAS_OUTPUT)
-    {
-        auto decoded = decoder.get(AV_PIX_FMT_YUVJ420P, w, h, 1);
-
         r_video_encoder encoder(AV_CODEC_ID_MJPEG, 100000, w, h, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
         encoder.attach_buffer(decoded->data(), decoded->size(), 0);
         auto es = encoder.encode();
@@ -117,22 +163,10 @@ vector<uint8_t> r_vss::query_get_webp(const string& top_dir, r_devices& devices,
 
     auto frame = bt["frames"][0]["data"].get_blob();
 
-    r_video_decoder decoder(r_av::encoding_to_av_codec_id(video_codec_name));
-    decoder.set_extradata(r_pipeline::get_video_codec_extradata(video_codec_name, video_codec_parameters));
-    decoder.attach_buffer(frame.data(), frame.size());
-    auto ds = decoder.decode();
+    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_YUV420P, w, h);
 
-    int attempts = 10;
-    while(ds != R_CODEC_STATE_HAS_OUTPUT && attempts > 0)
+    if(decoded)
     {
-        ds = decoder.decode();
-        attempts--;
-    }
-
-    if(ds == R_CODEC_STATE_HAS_OUTPUT)
-    {
-        auto decoded = decoder.get(AV_PIX_FMT_YUV420P, w, h, 1);
-
         r_video_encoder encoder(AV_CODEC_ID_WEBP, 100000, w, h, {1,1}, AV_PIX_FMT_YUV420P, 0, 1, 0, 0);
         encoder.attach_buffer(decoded->data(), decoded->size(), 0);
         auto es = encoder.encode();
@@ -215,22 +249,10 @@ vector<uint8_t> r_vss::query_get_bgr24_frame(const std::string& top_dir, r_devic
 
     auto frame = bt["frames"][0]["data"].get_blob();
 
-    r_video_decoder decoder(r_av::encoding_to_av_codec_id(video_codec_name));
-    decoder.set_extradata(r_pipeline::get_video_codec_extradata(video_codec_name, video_codec_parameters));
-    decoder.attach_buffer(frame.data(), frame.size());
-    auto ds = decoder.decode();
+    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_BGR24, w, h);
 
-    int attempts = 10;
-    while(ds != R_CODEC_STATE_HAS_OUTPUT && attempts > 0)
+    if(decoded)
     {
-        ds = decoder.decode();
-        attempts--;
-    }
-
-    if(ds == R_CODEC_STATE_HAS_OUTPUT)
-    {
-        auto decoded = decoder.get(AV_PIX_FMT_BGR24, w, h, 1);
-        
         vector<uint8_t> result(decoded->size());
         memcpy(result.data(), decoded->data(), decoded->size());
         return result;
@@ -267,22 +289,10 @@ vector<uint8_t> r_vss::query_get_rgb24_frame(const std::string& top_dir, r_devic
 
     auto frame = bt["frames"][0]["data"].get_blob();
 
-    r_video_decoder decoder(r_av::encoding_to_av_codec_id(video_codec_name));
-    decoder.set_extradata(r_pipeline::get_video_codec_extradata(video_codec_name, video_codec_parameters));
-    decoder.attach_buffer(frame.data(), frame.size());
-    auto ds = decoder.decode();
+    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_RGB24, w, h);
 
-    int attempts = 10;
-    while(ds != R_CODEC_STATE_HAS_OUTPUT && attempts > 0)
+    if(decoded)
     {
-        ds = decoder.decode();
-        attempts--;
-    }
-
-    if(ds == R_CODEC_STATE_HAS_OUTPUT)
-    {
-        auto decoded = decoder.get(AV_PIX_FMT_RGB24, w, h, 1);
-        
         vector<uint8_t> result(decoded->size());
         memcpy(result.data(), decoded->data(), decoded->size());
         return result;

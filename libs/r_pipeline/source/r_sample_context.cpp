@@ -70,17 +70,27 @@ r_nullable<string> sample_context::sprop_sps() const
 {
     r_nullable<string> result;
 
+    // First try pad info (GStreamer parsed)
     auto pi = _src_pad_info.find(VIDEO_MEDIA);
-
     if(pi != _src_pad_info.end())
     {
         auto rpi = pi->second;
-
-        if(!rpi.h264.is_null())
+        if(!rpi.h264.is_null() && !rpi.h264.value().sprop_sps.empty())
             result.set_value(rpi.h264.value().sprop_sps);
-        else if(!rpi.h265.is_null())
+        else if(!rpi.h265.is_null() && !rpi.h265.value().sprop_sps.empty())
             result.set_value(rpi.h265.value().sprop_sps);
-        else R_THROW(("No SPS!"));
+    }
+
+    // Fall back to SDP attributes if pad info didn't have it
+    if(result.is_null())
+    {
+        auto sdp_it = _sdp_medias.find("video");
+        if(sdp_it != _sdp_medias.end())
+        {
+            auto attr_it = sdp_it->second.attributes.find("sprop-sps");
+            if(attr_it != sdp_it->second.attributes.end())
+                result.set_value(attr_it->second);
+        }
     }
 
     return result;
@@ -90,17 +100,27 @@ r_nullable<string> sample_context::sprop_pps() const
 {
     r_nullable<string> result;
 
+    // First try pad info (GStreamer parsed)
     auto pi = _src_pad_info.find(VIDEO_MEDIA);
-
     if(pi != _src_pad_info.end())
     {
         auto rpi = pi->second;
-
-        if(!rpi.h264.is_null())
+        if(!rpi.h264.is_null() && !rpi.h264.value().sprop_pps.empty())
             result.set_value(rpi.h264.value().sprop_pps);
-        else if(!rpi.h265.is_null())
+        else if(!rpi.h265.is_null() && !rpi.h265.value().sprop_pps.empty())
             result.set_value(rpi.h265.value().sprop_pps);
-        else R_THROW(("No PPS!"));
+    }
+
+    // Fall back to SDP attributes if pad info didn't have it
+    if(result.is_null())
+    {
+        auto sdp_it = _sdp_medias.find("video");
+        if(sdp_it != _sdp_medias.end())
+        {
+            auto attr_it = sdp_it->second.attributes.find("sprop-pps");
+            if(attr_it != sdp_it->second.attributes.end())
+                result.set_value(attr_it->second);
+        }
     }
 
     return result;
@@ -110,15 +130,25 @@ r_nullable<string> sample_context::sprop_vps() const
 {
     r_nullable<string> result;
 
+    // First try pad info (GStreamer parsed)
     auto pi = _src_pad_info.find(VIDEO_MEDIA);
-
     if(pi != _src_pad_info.end())
     {
         auto rpi = pi->second;
-
-        if(!rpi.h265.is_null())
+        if(!rpi.h265.is_null() && !rpi.h265.value().sprop_vps.empty())
             result.set_value(rpi.h265.value().sprop_vps);
-        else R_THROW(("No VPS!"));
+    }
+
+    // Fall back to SDP attributes if pad info didn't have it
+    if(result.is_null())
+    {
+        auto sdp_it = _sdp_medias.find("video");
+        if(sdp_it != _sdp_medias.end())
+        {
+            auto attr_it = sdp_it->second.attributes.find("sprop-vps");
+            if(attr_it != sdp_it->second.attributes.end())
+                result.set_value(attr_it->second);
+        }
     }
 
     return result;

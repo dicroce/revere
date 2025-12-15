@@ -44,6 +44,7 @@ struct r_camera_params
     int64_t bytes_per_second;
     std::map<std::string, r_sdp_media> sdp_medias;
     std::vector<uint8_t> video_key_frame;
+    sample_context sample_ctx;
 };
 
 R_API std::map<std::string, r_sdp_media> fetch_sdp_media(

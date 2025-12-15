@@ -191,29 +191,78 @@ r_codec_state r_video_decoder::decode()
 {
     _open_codec();
 
-    // Create packet directly from your input buffer
-    auto packet = shared_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* pkt) { av_packet_free(&pkt); });    
-    // Point directly to your input buffer
-    packet->data = const_cast<uint8_t*>(_pos);
-    packet->size = _remaining_size;
-    
-    // Send the packet directly to the decoder
+    auto packet = shared_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* pkt) { av_packet_free(&pkt); });
+
+    if(_parse_input && _parser)
+    {
+        // Use the parser to split Annex B stream into proper access units
+        uint8_t* out_data = nullptr;
+        int out_size = 0;
+
+        int consumed = av_parser_parse2(
+            _parser,
+            _context,
+            &out_data,
+            &out_size,
+            _pos,
+            _remaining_size,
+            AV_NOPTS_VALUE,
+            AV_NOPTS_VALUE,
+            0
+        );
+
+        if(consumed < 0)
+        {
+            R_LOG_ERROR("Parser error");
+            return R_CODEC_STATE_HUNGRY;
+        }
+
+        _pos += consumed;
+        _remaining_size -= consumed;
+
+        if(out_size == 0)
+        {
+            // Parser needs more data or hasn't output a frame yet
+            if(_remaining_size > 0)
+                return decode(); // Recursively try to parse more
+            return R_CODEC_STATE_HUNGRY;
+        }
+
+        packet->data = out_data;
+        packet->size = out_size;
+    }
+    else
+    {
+        // Direct mode - send buffer as-is
+        packet->data = const_cast<uint8_t*>(_pos);
+        packet->size = _remaining_size;
+    }
+
+    // Send the packet to the decoder
     int send_result = avcodec_send_packet(_context, packet.get());
 
     if (send_result >= 0) {
-        // Entire packet was consumed
-        _pos += _remaining_size;
-        _remaining_size = 0;
-        
+        if(!_parse_input)
+        {
+            // In direct mode, entire packet was consumed
+            _pos += _remaining_size;
+            _remaining_size = 0;
+        }
+
         // Try to receive a frame
         int recv_result = avcodec_receive_frame(_context, _frame);
-        
+
         if (recv_result >= 0)
             return R_CODEC_STATE_HAS_OUTPUT;
         else if (recv_result == AVERROR_EOF)
             return R_CODEC_STATE_EOF;
         else if (recv_result == AVERROR(EAGAIN))
+        {
+            // Decoder needs more data - if parsing, try to feed more
+            if(_parse_input && _remaining_size > 0)
+                return decode();
             return R_CODEC_STATE_HUNGRY;
+        }
         else {
             R_LOG_ERROR("Failed to receive frame: %s", _ff_rc_to_msg(recv_result).c_str());
             return R_CODEC_STATE_HUNGRY;
@@ -222,7 +271,7 @@ r_codec_state r_video_decoder::decode()
     else if (send_result == AVERROR(EAGAIN)) {
         // Decoder buffers full, try to get a frame first
         int recv_result = avcodec_receive_frame(_context, _frame);
-        
+
         if (recv_result >= 0)
             return R_CODEC_STATE_AGAIN_HAS_OUTPUT;
         else

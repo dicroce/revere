@@ -380,60 +380,79 @@ static AVCodecID _r_encoding_to_avcodec_id(r_pipeline::r_encoding e)
     }
 }
 
-static AVCodecID _find_codec_id(const r_pipeline::r_sdp_media& video_media)
+static void _append_extradata(std::vector<uint8_t>& ed, const std::vector<uint8_t>& start_code, const std::string& base64_data)
 {
-    if(video_media.formats.size() <= 0)
-        R_THROW(("Unable to find video format!"));
-    return _r_encoding_to_avcodec_id(video_media.rtpmaps.at(video_media.formats.front()).encoding);
+    auto sprop_buffer = r_string_utils::from_base64(base64_data);
+    auto current_size = ed.size();
+    ed.resize(current_size + sprop_buffer.size() + start_code.size());
+    memcpy(&ed[current_size], &start_code[0], start_code.size());
+    memcpy(&ed[current_size + start_code.size()], sprop_buffer.data(), sprop_buffer.size());
 }
 
-static r_nullable<shared_ptr<vector<uint8_t>>> _decode_frame(const r_pipeline::r_sdp_media& video_media, const vector<uint8_t> key_frame, uint16_t output_width, uint16_t output_height, AVPixelFormat fmt)
+static r_nullable<shared_ptr<vector<uint8_t>>> _decode_frame(const r_pipeline::sample_context& sample_ctx, const vector<uint8_t>& key_frame, uint16_t output_width, uint16_t output_height, AVPixelFormat fmt)
 {
-    r_av::r_video_decoder decoder(_find_codec_id(video_media));
+    auto video_enc = sample_ctx.video_encoding();
+    if(video_enc.is_null())
+        return r_nullable<shared_ptr<vector<uint8_t>>>();
 
-    auto attributes = video_media.attributes;
+    // Enable parsing to properly handle Annex B streams with multiple NAL units
+    r_av::r_video_decoder decoder(_r_encoding_to_avcodec_id(video_enc.value()), true);
 
     std::vector<uint8_t> ed;
     std::vector<uint8_t> start_code = {0x00, 0x00, 0x00, 0x01};
 
-    if(attributes.find("sprop-vps") != attributes.end())
+    auto vps = sample_ctx.sprop_vps();
+    auto sps = sample_ctx.sprop_sps();
+    auto pps = sample_ctx.sprop_pps();
+
+    if(!vps.is_null() && !vps.value().empty())
+        _append_extradata(ed, start_code, vps.value());
+    if(!sps.is_null() && !sps.value().empty())
+        _append_extradata(ed, start_code, sps.value());
+    if(!pps.is_null() && !pps.value().empty())
+        _append_extradata(ed, start_code, pps.value());
+
+    // Check if keyframe has inline SPS (NAL type 7)
+    bool has_inline_sps = false;
+    for(size_t i = 0; i + 4 < key_frame.size() && i < 500; ++i)
     {
-        auto sprop_buffer = r_string_utils::from_base64(attributes["sprop-vps"]);
-        auto current_size = ed.size();
-        ed.resize(current_size + sprop_buffer.size() + start_code.size());
-        memcpy(&ed[current_size], &start_code[0], start_code.size());
-        memcpy(&ed[current_size + start_code.size()], sprop_buffer.data(), sprop_buffer.size());
-    }
-    if(attributes.find("sprop-sps") != attributes.end())
-    {
-        auto sprop_buffer = r_string_utils::from_base64(attributes["sprop-sps"]);
-        auto current_size = ed.size();
-        ed.resize(current_size + sprop_buffer.size() + start_code.size());
-        memcpy(&ed[current_size], &start_code[0], start_code.size());
-        memcpy(&ed[current_size + start_code.size()], sprop_buffer.data(), sprop_buffer.size());
-    }
-    if(attributes.find("sprop-pps") != attributes.end())
-    {
-        auto sprop_buffer = r_string_utils::from_base64(attributes["sprop-pps"]);
-        auto current_size = ed.size();
-        ed.resize(current_size + sprop_buffer.size() + start_code.size());
-        memcpy(&ed[current_size], &start_code[0], start_code.size());
-        memcpy(&ed[current_size + start_code.size()], sprop_buffer.data(), sprop_buffer.size());
+        if(key_frame[i] == 0x00 && key_frame[i+1] == 0x00 &&
+           key_frame[i+2] == 0x00 && key_frame[i+3] == 0x01)
+        {
+            uint8_t nal_type = key_frame[i+4] & 0x1F;
+            if(nal_type == 7) // SPS
+            {
+                has_inline_sps = true;
+                break;
+            }
+        }
     }
 
-    if(ed.size() > 0)
+    // Only set extradata if stream doesn't have inline SPS/PPS
+    // When parsing is enabled and stream has inline params, let the parser handle them
+    if(ed.size() > 0 && !has_inline_sps)
         decoder.set_extradata(ed);
 
     decoder.attach_buffer(&key_frame[0], key_frame.size());
 
     int attempt = 0;
     r_av::r_codec_state state = r_av::R_CODEC_STATE_INITIALIZED;
-    while(attempt < 10 && state != r_av::R_CODEC_STATE_HAS_OUTPUT)
+    while(attempt < 10 && state != r_av::R_CODEC_STATE_HAS_OUTPUT && state != r_av::R_CODEC_STATE_AGAIN_HAS_OUTPUT)
     {
         state = decoder.decode();
         ++attempt;
     }
-    
+
+    // If decoder accepted data but hasn't produced output yet, flush to force output
+    if(state == r_av::R_CODEC_STATE_HUNGRY)
+    {
+        while(attempt < 20 && state != r_av::R_CODEC_STATE_HAS_OUTPUT && state != r_av::R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+        {
+            state = decoder.flush();
+            ++attempt;
+        }
+    }
+
     r_nullable<shared_ptr<vector<uint8_t>>> output;
     if(state == r_av::R_CODEC_STATE_HAS_OUTPUT || state == r_av::R_CODEC_STATE_AGAIN_HAS_OUTPUT)
         output.set_value(decoder.get(fmt, output_width, output_height, 1));
@@ -505,7 +524,7 @@ void configure_camera_setup_wizard(
 
                                 as.byte_rate = cp.bytes_per_second;
                                 as.sdp_medias = cp.sdp_medias;    
-                                as.maybe_key_frame = _decode_frame(as.sdp_medias.at("video"), cp.video_key_frame, 320, 240, AV_PIX_FMT_RGB24);
+                                as.maybe_key_frame = _decode_frame(cp.sample_ctx, cp.video_key_frame, 320, 240, AV_PIX_FMT_RGB24);
 
                                 if(as.key_frame_texture != 0)
                                 {
