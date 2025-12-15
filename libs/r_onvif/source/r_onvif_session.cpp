@@ -442,6 +442,14 @@ static r_nullable<string> _get_scope_field(const string& scope, const string& fi
     return output;
 }
 
+// Helper to check if an IP address is in the link-local range (169.254.0.0/16)
+// These addresses are auto-assigned when DHCP fails and are usually not routable
+static bool _is_link_local_address(const string& host)
+{
+    // Check if it starts with "169.254."
+    return host.find("169.254.") == 0;
+}
+
 // Helper function to discover ONVIF devices on a specific interface
 static vector<string> _discover_on_interface(const string& interface_ip, const string& broadcast_message)
 {
@@ -945,8 +953,9 @@ std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::s
             if (xaddrs_services.empty())
                 throw std::runtime_error("No ONVIF services found1.");
 
-            // Find first http/https service
+            // Find first http/https service, preferring non-link-local addresses
             int first_valid_index = -1;
+            int first_link_local_index = -1;  // Fallback if only link-local is available
             for(size_t i = 0; i < xaddrs_services.size(); ++i)
             {
                 auto service = xaddrs_services[i];
@@ -955,10 +964,24 @@ std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::s
                 r_http::parse_url_parts(service, host, port, protocol, uri);
                 if(protocol == "http" || protocol == "https")
                 {
-                    first_valid_index = (int)i;
-                    break;
+                    if(_is_link_local_address(host))
+                    {
+                        // Remember link-local as fallback, but keep looking for better
+                        if(first_link_local_index == -1)
+                            first_link_local_index = (int)i;
+                    }
+                    else
+                    {
+                        // Found a non-link-local address - use it
+                        first_valid_index = (int)i;
+                        break;
+                    }
                 }
             }
+
+            // If no non-link-local address found, fall back to link-local
+            if(first_valid_index == -1)
+                first_valid_index = first_link_local_index;
 
 #if 0
             // Connection test disabled - accept all parseable XAddrs
