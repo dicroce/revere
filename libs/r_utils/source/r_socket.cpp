@@ -567,3 +567,111 @@ uint64_t r_utils::r_networking::r_htonll(uint64_t x)
 {
     return (((uint64_t) htonl(x & 0xFFFFFFFF)) << 32LL) + htonl(x >> 32);
 }
+
+vector<r_networking::r_adapter_info> r_utils::r_networking::r_get_adapters()
+{
+    vector<r_adapter_info> adapters;
+
+#ifdef IS_WINDOWS
+    ULONG bufferSize = 15000;
+    vector<uint8_t> buffer(bufferSize);
+
+    PIP_ADAPTER_ADDRESSES pAddresses = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(&buffer[0]);
+
+    // GAA_FLAG_INCLUDE_PREFIX is needed for proper address info
+    ULONG flags = GAA_FLAG_INCLUDE_PREFIX;
+    DWORD result = GetAdaptersAddresses(AF_INET, flags, nullptr, pAddresses, &bufferSize);
+
+    if (result == ERROR_BUFFER_OVERFLOW)
+    {
+        buffer.resize(bufferSize);
+        pAddresses = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(&buffer[0]);
+        result = GetAdaptersAddresses(AF_INET, flags, nullptr, pAddresses, &bufferSize);
+    }
+
+    if (result != NO_ERROR)
+        return adapters;
+
+    for (PIP_ADAPTER_ADDRESSES pAdapter = pAddresses; pAdapter != nullptr; pAdapter = pAdapter->Next)
+    {
+        // Check if adapter is UP
+        if (pAdapter->OperStatus != IfOperStatusUp)
+            continue;
+
+        // Skip loopback
+        if (pAdapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK)
+            continue;
+
+        // Check for multicast capability (not NoMulticast)
+        if (pAdapter->Flags & IP_ADAPTER_NO_MULTICAST)
+            continue;
+
+        // Look for IPv4 unicast addresses
+        for (PIP_ADAPTER_UNICAST_ADDRESS pUnicast = pAdapter->FirstUnicastAddress;
+             pUnicast != nullptr;
+             pUnicast = pUnicast->Next)
+        {
+            if (pUnicast->Address.lpSockaddr->sa_family == AF_INET)
+            {
+                sockaddr_in* sa_in = reinterpret_cast<sockaddr_in*>(pUnicast->Address.lpSockaddr);
+                char ipStr[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &sa_in->sin_addr, ipStr, INET_ADDRSTRLEN);
+
+                r_adapter_info info;
+                // Convert wide string adapter name to narrow string
+                int len = WideCharToMultiByte(CP_UTF8, 0, pAdapter->FriendlyName, -1, nullptr, 0, nullptr, nullptr);
+                if (len > 0)
+                {
+                    vector<char> nameBuf(len);
+                    WideCharToMultiByte(CP_UTF8, 0, pAdapter->FriendlyName, -1, &nameBuf[0], len, nullptr, nullptr);
+                    info.name = &nameBuf[0];
+                }
+                info.ipv4_addr = ipStr;
+                adapters.push_back(info);
+            }
+        }
+    }
+#endif
+
+#if defined(IS_LINUX) || defined(IS_MACOS)
+    struct ifaddrs* iflist = nullptr;
+    if (getifaddrs(&iflist) != 0)
+        return adapters;
+
+    for (struct ifaddrs* ifa = iflist; ifa != nullptr; ifa = ifa->ifa_next)
+    {
+        // Skip if no address
+        if (ifa->ifa_addr == nullptr)
+            continue;
+
+        // Only interested in IPv4
+        if (ifa->ifa_addr->sa_family != AF_INET)
+            continue;
+
+        // Check if interface is UP
+        if (!(ifa->ifa_flags & IFF_UP))
+            continue;
+
+        // Skip loopback
+        if (ifa->ifa_flags & IFF_LOOPBACK)
+            continue;
+
+        // Check for multicast capability
+        if (!(ifa->ifa_flags & IFF_MULTICAST))
+            continue;
+
+        sockaddr_in* sa_in = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
+        char ipStr[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &sa_in->sin_addr, ipStr, INET_ADDRSTRLEN);
+
+        r_adapter_info info;
+        info.name = ifa->ifa_name;
+        info.ipv4_addr = ipStr;
+        adapters.push_back(info);
+    }
+
+    freeifaddrs(iflist);
+#endif
+
+    return adapters;
+}

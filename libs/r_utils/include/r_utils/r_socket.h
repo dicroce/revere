@@ -339,6 +339,15 @@ R_API uint64_t r_ntohll(uint64_t x);
 
 R_API uint64_t r_htonll(uint64_t x);
 
+struct r_adapter_info
+{
+    std::string name;        // interface name (e.g., "eth0", "Ethernet")
+    std::string ipv4_addr;   // IPv4 address as string
+};
+
+// Returns network adapters that are: UP, not loopback, multicast capable, and have an IPv4 address
+R_API std::vector<r_adapter_info> r_get_adapters();
+
 }
 
 }

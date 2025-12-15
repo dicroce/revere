@@ -61,15 +61,24 @@ using namespace r_utils;
 using namespace r_utils::r_std_utils;
 using namespace std;
 
+static const int MAX_REDIRECTS = 5;
+
 static pair<int, string> _http_interact(
     string host,
     int port,
     string http_method,
     string uri,
-    string body
+    string body,
+    soap_version soap_ver = soap_version::unknown,
+    const string& soap_action = ""
 )
 {
+    int redirect_count = 0;
+
 retry:
+    if (redirect_count >= MAX_REDIRECTS)
+        throw std::runtime_error("Too many redirects (max " + std::to_string(MAX_REDIRECTS) + ")");
+
     R_LOG_INFO("HTTP interact: %s(%d)(%s)", host.c_str(), port, uri.c_str());
 
     std::unique_ptr<r_utils::r_socket_base> sock;
@@ -86,6 +95,29 @@ retry:
     request.set_uri(uri);
     request.set_body(body);
 
+    // Set SOAP-specific headers
+    if (soap_ver == soap_version::soap_1_2)
+    {
+        // SOAP 1.2: Content-Type with action parameter
+        if (!soap_action.empty())
+            request.add_header("Content-Type", "application/soap+xml; charset=utf-8; action=\"" + soap_action + "\"");
+        else
+            request.add_header("Content-Type", "application/soap+xml; charset=utf-8");
+    }
+    else if (soap_ver == soap_version::soap_1_1)
+    {
+        // SOAP 1.1: text/xml + SOAPAction header
+        request.add_header("Content-Type", "text/xml; charset=utf-8");
+        if (!soap_action.empty())
+            request.add_header("SOAPAction", "\"" + soap_action + "\"");
+    }
+
+    // Connection: close - some cameras don't handle keep-alive well
+    request.add_header("Connection", "close");
+
+    // User-Agent - some stacks behave differently with empty UA
+    request.add_header("User-Agent", "ONVIF-Client/1.0");
+
     request.write_request(*sock, 30000);
 
     r_http::r_client_response response;
@@ -93,22 +125,39 @@ retry:
 
     //sock->close();
 
-    if(response.get_status() == 302)
+    if(response.get_status() == 302 || response.get_status() == 301 || response.get_status() == 307)
     {
         string location = response.get_header("Location");
         R_LOG_INFO("Redirect response to %s", location.c_str());
         if(location.empty())
             throw std::runtime_error("Redirect response but no Location header");
 
-        string protocol, new_uri;
-        r_http::parse_url_parts(location, host, port, protocol, new_uri);
-
-        // If the new URI is not the same as the original URI, update the URI
-        if(new_uri != "/")
+        // Check if Location is absolute or relative
+        if (location.find("://") != string::npos)
+        {
+            // Absolute URL - parse all parts
+            string protocol, new_uri;
+            r_http::parse_url_parts(location, host, port, protocol, new_uri);
             uri = new_uri;
+        }
+        else if (location[0] == '/')
+        {
+            // Absolute path - keep host/port, use new path
+            uri = location;
+        }
+        else
+        {
+            // Relative path - resolve against current URI
+            size_t last_slash = uri.rfind('/');
+            if (last_slash != string::npos)
+                uri = uri.substr(0, last_slash + 1) + location;
+            else
+                uri = "/" + location;
+        }
 
         R_LOG_INFO("Redirecting to (%s)(%d)(%s)", host.c_str(), port, uri.c_str());
 
+        redirect_count++;
         goto retry;
     }
 
@@ -142,6 +191,14 @@ static time_t _portable_timegm(struct tm* t)
 #endif
 }
 
+// Forward declarations for namespace-agnostic XPath helpers (defined later)
+static string _xpath_local(const string& local_name, const string& ns_uri = "");
+static pugi::xpath_node _select_node_local(const pugi::xml_node& parent, const string& local_name, const string& ns_uri = "");
+static pugi::xpath_node _select_node_local_abs(const pugi::xml_document& doc, const string& local_name, const string& ns_uri = "");
+
+// Namespace constant - defined here, used throughout
+static const char* NS_SCHEMA = "http://www.onvif.org/ver10/schema";
+
 static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
 {
     r_nullable<time_t> response;
@@ -149,42 +206,42 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
     pugi::xml_document doc;
     doc.load_string(xmlResponse.c_str());
 
-    // Check for DaylightSavings
+    // Check for DaylightSavings using namespace-agnostic XPath
     bool daylightSavings = false;
-    pugi::xpath_node dstNode = doc.select_node("//tt:DaylightSavings");
+    pugi::xpath_node dstNode = _select_node_local_abs(doc, "DaylightSavings", NS_SCHEMA);
     if (dstNode)
     {
         std::string dstValue = dstNode.node().child_value();
         daylightSavings = (dstValue == "true" || dstValue == "1");
     }
-    
+
     // Try to get timezone information
     std::string timezone;
-    pugi::xpath_node tzNode = doc.select_node("//tt:TZ");
+    pugi::xpath_node tzNode = _select_node_local_abs(doc, "TZ", NS_SCHEMA);
     if (tzNode)
     {
         timezone = tzNode.node().child_value();
     }
-    
+
     // First try to get UTCDateTime
     struct tm timeinfo = {};
     bool useUtc = false;
-    
-    pugi::xpath_node utcNode = doc.select_node("//tt:UTCDateTime");
+
+    pugi::xpath_node utcNode = _select_node_local_abs(doc, "UTCDateTime", NS_SCHEMA);
     if (utcNode)
     {
         pugi::xml_node utcElement = utcNode.node();
-        
+
         // Get year, month, day
-        pugi::xpath_node dateNode = utcElement.select_node(".//tt:Date");
+        pugi::xpath_node dateNode = _select_node_local(utcElement, "Date", NS_SCHEMA);
         if (dateNode)
         {
             pugi::xml_node dateElement = dateNode.node();
-            
-            pugi::xpath_node yearNode = dateElement.select_node(".//tt:Year");
-            pugi::xpath_node monthNode = dateElement.select_node(".//tt:Month");
-            pugi::xpath_node dayNode = dateElement.select_node(".//tt:Day");
-            
+
+            pugi::xpath_node yearNode = _select_node_local(dateElement, "Year", NS_SCHEMA);
+            pugi::xpath_node monthNode = _select_node_local(dateElement, "Month", NS_SCHEMA);
+            pugi::xpath_node dayNode = _select_node_local(dateElement, "Day", NS_SCHEMA);
+
             if (yearNode && monthNode && dayNode)
             {
                 timeinfo.tm_year = std::stoi(yearNode.node().child_value()) - 1900;
@@ -192,17 +249,17 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
                 timeinfo.tm_mday = std::stoi(dayNode.node().child_value());
             }
         }
-        
+
         // Get hour, minute, second
-        pugi::xpath_node timeNode = utcElement.select_node(".//tt:Time");
+        pugi::xpath_node timeNode = _select_node_local(utcElement, "Time", NS_SCHEMA);
         if (timeNode)
         {
             pugi::xml_node timeElement = timeNode.node();
-            
-            pugi::xpath_node hourNode = timeElement.select_node(".//tt:Hour");
-            pugi::xpath_node minuteNode = timeElement.select_node(".//tt:Minute");
-            pugi::xpath_node secondNode = timeElement.select_node(".//tt:Second");
-            
+
+            pugi::xpath_node hourNode = _select_node_local(timeElement, "Hour", NS_SCHEMA);
+            pugi::xpath_node minuteNode = _select_node_local(timeElement, "Minute", NS_SCHEMA);
+            pugi::xpath_node secondNode = _select_node_local(timeElement, "Second", NS_SCHEMA);
+
             if (hourNode && minuteNode && secondNode)
             {
                 timeinfo.tm_hour = std::stoi(hourNode.node().child_value());
@@ -210,28 +267,28 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
                 timeinfo.tm_sec = std::stoi(secondNode.node().child_value());
             }
         }
-        
+
         useUtc = true;
     }
-    
+
     // If no UTCDateTime, try LocalDateTime
     if (!useUtc)
     {
-        pugi::xpath_node localNode = doc.select_node("//tt:LocalDateTime");
+        pugi::xpath_node localNode = _select_node_local_abs(doc, "LocalDateTime", NS_SCHEMA);
         if (localNode)
         {
             pugi::xml_node localElement = localNode.node();
-            
+
             // Get year, month, day
-            pugi::xpath_node dateNode = localElement.select_node(".//tt:Date");
+            pugi::xpath_node dateNode = _select_node_local(localElement, "Date", NS_SCHEMA);
             if (dateNode)
             {
                 pugi::xml_node dateElement = dateNode.node();
-                
-                pugi::xpath_node yearNode = dateElement.select_node(".//tt:Year");
-                pugi::xpath_node monthNode = dateElement.select_node(".//tt:Month");
-                pugi::xpath_node dayNode = dateElement.select_node(".//tt:Day");
-                
+
+                pugi::xpath_node yearNode = _select_node_local(dateElement, "Year", NS_SCHEMA);
+                pugi::xpath_node monthNode = _select_node_local(dateElement, "Month", NS_SCHEMA);
+                pugi::xpath_node dayNode = _select_node_local(dateElement, "Day", NS_SCHEMA);
+
                 if (yearNode && monthNode && dayNode)
                 {
                     timeinfo.tm_year = std::stoi(yearNode.node().child_value()) - 1900;
@@ -239,17 +296,17 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
                     timeinfo.tm_mday = std::stoi(dayNode.node().child_value());
                 }
             }
-            
+
             // Get hour, minute, second
-            pugi::xpath_node timeNode = localElement.select_node(".//tt:Time");
+            pugi::xpath_node timeNode = _select_node_local(localElement, "Time", NS_SCHEMA);
             if (timeNode)
             {
                 pugi::xml_node timeElement = timeNode.node();
-                
-                pugi::xpath_node hourNode = timeElement.select_node(".//tt:Hour");
-                pugi::xpath_node minuteNode = timeElement.select_node(".//tt:Minute");
-                pugi::xpath_node secondNode = timeElement.select_node(".//tt:Second");
-                
+
+                pugi::xpath_node hourNode = _select_node_local(timeElement, "Hour", NS_SCHEMA);
+                pugi::xpath_node minuteNode = _select_node_local(timeElement, "Minute", NS_SCHEMA);
+                pugi::xpath_node secondNode = _select_node_local(timeElement, "Second", NS_SCHEMA);
+
                 if (hourNode && minuteNode && secondNode)
                 {
                     timeinfo.tm_hour = std::stoi(hourNode.node().child_value());
@@ -323,187 +380,48 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
     return response;
 }
 
-static string _find_element_value(const string& xml, const vector<string>& path, const map<string, string>& namespaces)
+// Build namespace-agnostic XPath query using local-name() and namespace-uri()
+// Example: _xpath_local("Media", "http://www.onvif.org/ver10/device/wsdl")
+//   returns: "*[local-name()='Media' and namespace-uri()='http://www.onvif.org/ver10/device/wsdl']"
+static string _xpath_local(const string& local_name, const string& ns_uri)
 {
-    // Parse the XML document
-    pugi::xml_document doc;
-    pugi::xml_parse_result result = doc.load_string(xml.c_str());
-    if (!result)
-        throw std::runtime_error("XML parsing failed: " + string(result.description()));
-
-    // Start at document element
-    pugi::xml_node currentNode = doc.document_element();
-
-    // Helper function to check if element matches a name with namespace
-    auto matchesElement = [&namespaces](const pugi::xml_node& element, const string& pathPart)
-    {
-        // Check if path part contains namespace prefix
-        size_t colonPos = pathPart.find(':');
-        if (colonPos != string::npos)
-        {
-            string nsPrefix = pathPart.substr(0, colonPos);
-            string localName = pathPart.substr(colonPos + 1);
-
-            // Look up namespace URI
-            auto nsIter = namespaces.find(nsPrefix);
-            if (nsIter != namespaces.end())
-            {
-                // PugiXML: Check namespace and local name
-                string elementName = element.name();
-                string elementPrefix;
-                size_t elemColonPos = elementName.find(':');
-                if (elemColonPos != string::npos)
-                    elementPrefix = elementName.substr(0, elemColonPos);
-
-                // Get namespace from element
-                string elementNsUri = element.attribute("xmlns:" + elementPrefix).value();
-                if (elementNsUri.empty())
-                {
-                    // Look for namespace in parent hierarchy
-                    pugi::xml_node parent = element.parent();
-                    while (parent && elementNsUri.empty())
-                    {
-                        elementNsUri = parent.attribute("xmlns:" + elementPrefix).value();
-                        parent = parent.parent();
-                    }
-                }
-
-                // Check if namespace matches and element name matches the local name
-                if (elementNsUri == nsIter->second)
-                {
-                    string elemLocalName = (elemColonPos != string::npos) ? 
-                        elementName.substr(elemColonPos + 1) : elementName;
-                    return elemLocalName == localName;
-                }
-                return false;
-            }
-            return false;
-        }
-        else
-        {
-            // Just check node name directly if no namespace
-            string elementName = element.name();
-            size_t elemColonPos = elementName.find(':');
-            string elemLocalName = (elemColonPos != string::npos) ? 
-                elementName.substr(elemColonPos + 1) : elementName;
-            
-            return elemLocalName == pathPart || elementName == pathPart;
-        }
-    };
-
-    // Navigate through each level of the path
-    for (size_t i = 0; i < path.size(); i++)
-    {
-        const string& pathPart = path[i];
-        bool found = false;
-
-        // Check if current element matches this path part
-        if (matchesElement(currentNode, pathPart))
-        {
-            found = true;
-            // If this is the last part of the path, we've found our target
-            if (i == path.size() - 1)
-            {
-                // Return the text content
-                return currentNode.child_value();
-            }
-
-            // Navigate to first child for next iteration
-            pugi::xml_node child = currentNode.first_child();
-            while (child)
-            {
-                if (child.type() == pugi::node_element)
-                {
-                    currentNode = child;
-                    break;
-                }
-                child = child.next_sibling();
-            }
-            if (!child)
-                return ""; // No child elements to continue path
-            continue; // Skip to next path part
-        }
-
-        // Look for matching child element
-        pugi::xml_node child = currentNode.first_child();
-        while (child)
-        {
-            if (child.type() == pugi::node_element)
-            {
-                if (matchesElement(child, pathPart))
-                {
-                    currentNode = child;
-                    found = true;
-                    break;
-                }
-            }
-            child = child.next_sibling();
-        }
-
-        if (!found)
-        {
-            // Try to find any descendant that matches
-            // PugiXML doesn't have a direct equivalent to getElementsByTagName
-            // so we'll use a recursive approach or XPath
-            string xpathQuery = ".//" + pathPart;
-            pugi::xpath_node descendant = currentNode.select_node(xpathQuery.c_str());
-            if (descendant)
-            {
-                currentNode = descendant.node();
-                found = true;
-            }
-        }
-
-        if (!found)
-            return ""; // Path part not found
-
-        // If this is the last part of the path, we've found our target
-        if (i == path.size() - 1)
-        {
-            // Return the text content
-            return currentNode.child_value();
-        }
-    }
-
-    return ""; // Should not reach here if path is non-empty
+    if (ns_uri.empty())
+        return "*[local-name()='" + local_name + "']";
+    else
+        return "*[local-name()='" + local_name + "' and namespace-uri()='" + ns_uri + "']";
 }
 
-static string _extract_value(const string& xmlDocument, const string& path, const map<string, string>& namespaces)
+// Common ONVIF namespace URIs (NS_SCHEMA defined earlier for use by _parse_onvif_date_time)
+static const char* NS_DEVICE = "http://www.onvif.org/ver10/device/wsdl";
+static const char* NS_MEDIA = "http://www.onvif.org/ver10/media/wsdl";
+static const char* NS_SOAP12 = "http://www.w3.org/2003/05/soap-envelope";
+static const char* NS_SOAP11 = "http://schemas.xmlsoap.org/soap/envelope/";
+
+// Helper to select node with namespace-agnostic XPath, with fallback
+static pugi::xpath_node _select_node_local(const pugi::xml_node& parent, const string& local_name, const string& ns_uri)
 {
-    vector<string> elementPath;
-    size_t start = 0;
-    size_t pos = 0;
- 
-    // Split path by '//' to create element path
-    while ((pos = path.find("//", start)) != string::npos)
+    string xpath = ".//" + _xpath_local(local_name, ns_uri);
+    pugi::xpath_node node = parent.select_node(xpath.c_str());
+    if (!node && !ns_uri.empty())
     {
-        if (pos > start)
-            elementPath.push_back(path.substr(start, pos - start));
-        start = pos + 2;
+        // Fallback without namespace constraint
+        xpath = ".//" + _xpath_local(local_name, "");
+        node = parent.select_node(xpath.c_str());
     }
- 
-    // Add last element
-    if (start < path.length())
-        elementPath.push_back(path.substr(start));
- 
-    return _find_element_value(xmlDocument, elementPath, namespaces);
+    return node;
 }
 
-static string _extract_onvif_value(const string& xmlDocument, const string& path)
+static pugi::xpath_node _select_node_local_abs(const pugi::xml_document& doc, const string& local_name, const string& ns_uri)
 {
-    map<string, string> namespaces =
+    string xpath = "//" + _xpath_local(local_name, ns_uri);
+    pugi::xpath_node node = doc.select_node(xpath.c_str());
+    if (!node && !ns_uri.empty())
     {
-        {"s", "http://www.w3.org/2003/05/soap-envelope"},
-        {"tds", "http://www.onvif.org/ver10/device/wsdl"},
-        {"tt", "http://www.onvif.org/ver10/schema"},
-        {"trt", "http://www.onvif.org/ver10/media/wsdl"},
-        {"timg", "http://www.onvif.org/ver20/imaging/wsdl"},
-        {"tev", "http://www.onvif.org/ver10/events/wsdl"},
-        {"tan", "http://www.onvif.org/ver20/analytics/wsdl"},
-        {"tptz", "http://www.onvif.org/ver20/ptz/wsdl"}
-    };
- 
-    return _extract_value(xmlDocument, path, namespaces);
+        // Fallback without namespace constraint
+        xpath = "//" + _xpath_local(local_name, "");
+        node = doc.select_node(xpath.c_str());
+    }
+    return node;
 }
 
 static r_nullable<string> _get_scope_field(const string& scope, const string& field_name)
@@ -524,89 +442,178 @@ static r_nullable<string> _get_scope_field(const string& scope, const string& fi
     return output;
 }
 
-#ifdef IS_WINDOWS
-static IN_ADDR _find_active_network_interface_windows()
+// Helper function to discover ONVIF devices on a specific interface
+static vector<string> _discover_on_interface(const string& interface_ip, const string& broadcast_message)
 {
-    SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock == INVALID_SOCKET) {
-        // Return default interface if socket creation fails
-        IN_ADDR defaultAddr;
-        defaultAddr.s_addr = INADDR_ANY;
-        return defaultAddr;
-    }
-    
-    // Connect to Google's DNS to determine active interface
-    sockaddr_in googleDns = {};
-    googleDns.sin_family = AF_INET;
-    googleDns.sin_port = htons(53);
-    inet_pton(AF_INET, "8.8.8.8", &googleDns.sin_addr);
-    
-    if (connect(sock, (sockaddr*)&googleDns, sizeof(googleDns)) == SOCKET_ERROR) {
+    vector<string> discovered;
+
+#ifdef IS_WINDOWS
+    SOCKET sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET)
+        return discovered;
+
+    // Enable address reuse
+    BOOL reuse = TRUE;
+    ::setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+
+    // Set receive timeout
+    DWORD recvTimeout = 5000; // 5 seconds
+    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recvTimeout, sizeof(recvTimeout));
+
+    // Convert interface IP string to IN_ADDR
+    IN_ADDR iface_addr;
+    inet_pton(AF_INET, interface_ip.c_str(), &iface_addr);
+
+    // Bind to ANY address on a dynamic port
+    struct sockaddr_in localAddr;
+    memset(&localAddr, 0, sizeof(localAddr));
+    localAddr.sin_family = AF_INET;
+    localAddr.sin_port = htons(0);
+    localAddr.sin_addr.s_addr = INADDR_ANY;
+
+    if (::bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) != 0) {
         closesocket(sock);
-        // Return default interface if connection fails
-        IN_ADDR defaultAddr;
-        defaultAddr.s_addr = INADDR_ANY;
-        return defaultAddr;
+        return discovered;
     }
-    
-    // Get local address
-    sockaddr_in localAddr;
-    int localAddrLen = sizeof(localAddr);
-    if (getsockname(sock, (sockaddr*)&localAddr, &localAddrLen) == SOCKET_ERROR) {
+
+    // Set multicast interface
+    ::setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, (const char*)&iface_addr, sizeof(iface_addr));
+
+    // Join multicast group on this interface
+    struct ip_mreq mreq;
+    mreq.imr_multiaddr.s_addr = inet_addr("239.255.255.250");
+    mreq.imr_interface = iface_addr;
+    ::setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char*)&mreq, sizeof(mreq));
+
+    // Set multicast TTL
+    DWORD ttl = 1;
+    ::setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, (const char*)&ttl, sizeof(ttl));
+
+    // Multicast destination
+    struct sockaddr_in multicastAddr;
+    memset(&multicastAddr, 0, sizeof(multicastAddr));
+    multicastAddr.sin_family = AF_INET;
+    multicastAddr.sin_port = htons(3702);
+    multicastAddr.sin_addr.s_addr = inet_addr("239.255.255.250");
+
+    // Send discovery message
+    int bytesSent = ::sendto(sock, broadcast_message.c_str(), (int)broadcast_message.length(), 0,
+                            (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
+
+    if (bytesSent < 0) {
         closesocket(sock);
-        // Return default interface if getsockname fails
-        IN_ADDR defaultAddr;
-        defaultAddr.s_addr = INADDR_ANY;
-        return defaultAddr;
+        return discovered;
     }
-    
+
+    // Receive responses
+    char buf[8192];
+    int timeoutCounts = 0;
+    while (timeoutCounts < 2) {
+        struct sockaddr_in fromAddr;
+        int fromAddrLen = sizeof(fromAddr);
+        int len = ::recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
+
+        if (len < 0) {
+            int error = WSAGetLastError();
+            if (error == WSAETIMEDOUT)
+                timeoutCounts++;
+            else
+                break;
+        }
+        else if (len > 0) {
+            buf[len] = '\0';
+            discovered.push_back(string(buf, len));
+        }
+    }
+
     closesocket(sock);
-    return localAddr.sin_addr;
-}
 #endif
 
-// Helper function to find active network interface on Linux/macOS
 #if defined(IS_LINUX) || defined(IS_MACOS)
-static struct in_addr _find_active_network_interface_linux()
-{
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        // Return default interface if socket creation fails
-        struct in_addr defaultAddr;
-        defaultAddr.s_addr = INADDR_ANY;
-        return defaultAddr;
-    }
-    
-    // Connect to Google's DNS to determine active interface
-    struct sockaddr_in googleDns;
-    memset(&googleDns, 0, sizeof(googleDns));
-    googleDns.sin_family = AF_INET;
-    googleDns.sin_port = htons(53);
-    inet_pton(AF_INET, "8.8.8.8", &googleDns.sin_addr);
-    
-    if (connect(sock, (struct sockaddr*)&googleDns, sizeof(googleDns)) < 0) {
-        close(sock);
-        // Return default interface if connection fails
-        struct in_addr defaultAddr;
-        defaultAddr.s_addr = INADDR_ANY;
-        return defaultAddr;
-    }
-    
-    // Get local address
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0)
+        return discovered;
+
+    // Enable address reuse
+    int reuse = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    // Set receive timeout
+    struct timeval recvTimeout;
+    recvTimeout.tv_sec = 5;
+    recvTimeout.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout));
+
+    // Convert interface IP string to in_addr
+    struct in_addr iface_addr;
+    inet_pton(AF_INET, interface_ip.c_str(), &iface_addr);
+
+    // Bind to ANY address on a dynamic port
     struct sockaddr_in localAddr;
-    socklen_t localAddrLen = sizeof(localAddr);
-    if (getsockname(sock, (struct sockaddr*)&localAddr, &localAddrLen) < 0) {
+    memset(&localAddr, 0, sizeof(localAddr));
+    localAddr.sin_family = AF_INET;
+    localAddr.sin_port = htons(0);
+    localAddr.sin_addr.s_addr = INADDR_ANY;
+
+    if (::bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) < 0) {
         close(sock);
-        // Return default interface if getsockname fails
-        struct in_addr defaultAddr;
-        defaultAddr.s_addr = INADDR_ANY;
-        return defaultAddr;
+        return discovered;
     }
-    
+
+    // Set multicast interface
+    setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, &iface_addr, sizeof(iface_addr));
+
+    // Join multicast group on this interface
+    struct ip_mreq mreq;
+    mreq.imr_multiaddr.s_addr = inet_addr("239.255.255.250");
+    mreq.imr_interface = iface_addr;
+    setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+
+    // Set multicast TTL
+    int ttl = 1;
+    setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+
+    // Multicast destination
+    struct sockaddr_in multicastAddr;
+    memset(&multicastAddr, 0, sizeof(multicastAddr));
+    multicastAddr.sin_family = AF_INET;
+    multicastAddr.sin_port = htons(3702);
+    multicastAddr.sin_addr.s_addr = inet_addr("239.255.255.250");
+
+    // Send discovery message
+    int bytesSent = sendto(sock, broadcast_message.c_str(), broadcast_message.length(), 0,
+                          (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
+
+    if (bytesSent < 0) {
+        close(sock);
+        return discovered;
+    }
+
+    // Receive responses
+    char buf[8192];
+    int timeoutCounts = 0;
+    while (timeoutCounts < 2) {
+        struct sockaddr_in fromAddr;
+        socklen_t fromAddrLen = sizeof(fromAddr);
+        int len = recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
+
+        if (len < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                timeoutCounts++;
+            else
+                break;
+        }
+        else if (len > 0) {
+            buf[len] = '\0';
+            discovered.push_back(string(buf, len));
+        }
+    }
+
     close(sock);
-    return localAddr.sin_addr;
-}
 #endif
+
+    return discovered;
+}
 
 // New function that supports both SHA-256 and SHA-1
 // use_sha256: true = use SHA-256, false = use SHA-1 (default for compatibility)
@@ -775,230 +782,101 @@ static void _add_username_digest_header(
     _add_username_digest_header_with_algorithm(doc, root, username, password, time_offset_seconds, false);
 }
 
+// PasswordText authentication - for cameras with buggy digest implementations
+static void _add_username_text_header(
+    pugi::xml_document* doc,
+    pugi::xml_node root,
+    const std::string& username,
+    const std::string& password,
+    int time_offset_seconds
+)
+{
+    // Generate timestamp
+    auto now = chrono::system_clock::now();
+    auto delta = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch());
+
+    struct timeval tv;
+    tv.tv_sec = (long)(delta.count() / 1000);
+    tv.tv_usec = (delta.count() % 1000) * 1000;
+
+    int millisec = tv.tv_usec / 1000;
+
+    char time_buffer[1024];
+    struct tm* this_tm = nullptr;
+#ifdef IS_WINDOWS
+    struct tm tm_storage;
+    time_t then = tv.tv_sec + time_offset_seconds;
+    auto err = gmtime_s(&tm_storage, &then);
+    if(err != 0)
+        R_THROW(("gmtime_s failed"));
+    this_tm = &tm_storage;
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+    time_t then = tv.tv_sec + time_offset_seconds;
+    this_tm = gmtime((time_t*)&then);
+#endif
+    size_t time_buffer_length = strftime(time_buffer, 1024, "%Y-%m-%dT%H:%M:%S.", this_tm);
+    time_buffer[time_buffer_length] = '\0';
+
+    char milli_buf[16] = {0};
+#ifdef IS_WINDOWS
+    sprintf_s(milli_buf, 16, "%03dZ", millisec);
+    strcat_s(time_buffer, 1024, milli_buf);
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+    sprintf(milli_buf, "%03dZ", millisec);
+    strcat(time_buffer, milli_buf);
+#endif
+
+    // Add WSSE and WSU namespaces
+    root.append_attribute("xmlns:wsse") = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd";
+    root.append_attribute("xmlns:wsu") = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd";
+
+    // Create Header element
+    pugi::xml_node header = root.prepend_child("SOAP-ENV:Header");
+
+    // Create Security element
+    pugi::xml_node security = header.append_child("wsse:Security");
+    security.append_attribute("SOAP-ENV:mustUnderstand") = "1";
+
+    // Create UsernameToken element
+    pugi::xml_node usernameToken = security.append_child("wsse:UsernameToken");
+
+    // Create Username element
+    pugi::xml_node usernameElem = usernameToken.append_child("wsse:Username");
+    usernameElem.text().set(username.c_str());
+
+    // Create Password element with PasswordText type
+    pugi::xml_node passwordElem = usernameToken.append_child("wsse:Password");
+    passwordElem.append_attribute("Type") =
+        "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText";
+    passwordElem.text().set(password.c_str());
+
+    // Create Created element
+    pugi::xml_node createdElem = usernameToken.append_child("wsu:Created");
+    createdElem.text().set(time_buffer);
+}
+
 vector<string> r_onvif::discover(const string& uuid)
 {
     auto id = r_string_utils::format("urn:uuid:%s", uuid.c_str());
-    vector<string> discovered;
 
     string broadcast_message =
     "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:a=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\"><SOAP-ENV:Header><a:Action SOAP-ENV:mustUnderstand=\"1\">http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action><a:MessageID>" + id + "</a:MessageID><a:ReplyTo><a:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</a:Address></a:ReplyTo><a:To SOAP-ENV:mustUnderstand=\"1\">urn:schemas-xmlsoap-org:ws:2005:04:discovery</a:To></SOAP-ENV:Header><SOAP-ENV:Body><p:Probe xmlns:p=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\"><d:Types xmlns:d=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\" xmlns:dp0=\"http://www.onvif.org/ver10/network/wsdl\">dp0:NetworkVideoTransmitter</d:Types></p:Probe></SOAP-ENV:Body></SOAP-ENV:Envelope>";
 
-#ifdef IS_WINDOWS
-    // Windows-specific implementation
-    SOCKET sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET) {
-        printf("Socket creation failed: %d\n", WSAGetLastError());
-        return discovered;
-    }
-    
-    // Enable address reuse
-    BOOL reuse = TRUE;
-    if (::setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse)) != 0) {
-        printf("Set reuse address failed: %d\n", WSAGetLastError());
-        closesocket(sock);
-        return discovered;
-    }
-    
-    // Set receive timeout
-    DWORD recvTimeout = 5000; // 5 seconds
-    if (::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recvTimeout, sizeof(recvTimeout)) != 0) {
-        printf("Set receive timeout failed: %d\n", WSAGetLastError());
-    }
-    
-    // Find active interface
-    IN_ADDR routable_addr = _find_active_network_interface_windows();
-    
-    // Bind to ANY address on a dynamic port
-    struct sockaddr_in localAddr;
-    memset(&localAddr, 0, sizeof(localAddr));
-    localAddr.sin_family = AF_INET;
-    localAddr.sin_port = htons(0); // Dynamic port
-    localAddr.sin_addr.s_addr = INADDR_ANY;
-    
-    if (::bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) != 0) {
-        printf("Bind failed: %d\n", WSAGetLastError());
-        closesocket(sock);
-        return discovered;
-    }
-    
-    // Set multicast interface
-    if (::setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, (const char*)&routable_addr, sizeof(routable_addr)) != 0) {
-        printf("Set multicast interface failed: %d\n", WSAGetLastError());
-    }
-    
-    // Join multicast group
-    struct ip_mreq mreq;
-    mreq.imr_multiaddr.s_addr = inet_addr("239.255.255.250");
-    mreq.imr_interface = routable_addr;
-    
-    if (::setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char*)&mreq, sizeof(mreq)) != 0) {
-        printf("Failed to join multicast group: %d\n", WSAGetLastError());
-    }
-    
-    // Set multicast TTL
-    DWORD ttl = 1;
-    if (::setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, (const char*)&ttl, sizeof(ttl)) != 0) {
-        printf("Set multicast TTL failed: %d\n", WSAGetLastError());
-    }
-    
-    // Multicast destination
-    struct sockaddr_in multicastAddr;
-    memset(&multicastAddr, 0, sizeof(multicastAddr));
-    multicastAddr.sin_family = AF_INET;
-    multicastAddr.sin_port = htons(3702);
-    multicastAddr.sin_addr.s_addr = inet_addr("239.255.255.250");
-    
-    // Send discovery message
-    int bytesSent = ::sendto(sock, broadcast_message.c_str(), (int)broadcast_message.length(), 0, 
-                            (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
-    
-    if (bytesSent < 0) {
-        printf("Send failed: %d\n", WSAGetLastError());
-        closesocket(sock);
-        return discovered;
-    }
-    
-    printf("Sent discovery message (%d bytes)\n", bytesSent);
-    
-    // Receive responses
-    printf("Waiting for responses...\n");
-    
-    char buf[8192];
-    int timeoutCounts = 0;
-    while (timeoutCounts < 2) {
-        struct sockaddr_in fromAddr;
-        int fromAddrLen = sizeof(fromAddr);
-        int len = ::recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
-        
-        if (len < 0) {
-            int error = WSAGetLastError();
-            if (error == WSAETIMEDOUT) {
-                printf("Receive timed out\n");
-                timeoutCounts++;
-            } else {
-                printf("Receive error: %d\n", error);
-                break;
-            }
-        } 
-        else if (len > 0) {
-            buf[len] = '\0';
-            string response(buf, len);
-            discovered.push_back(response);
-        }
-    }
-    
-    closesocket(sock);
-#endif
+    vector<string> all_discovered;
 
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    // Linux/macOS-specific implementation
-    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock < 0) {
-        perror("Socket creation failed");
-        return discovered;
-    }
-    
-    // Enable address reuse
-    int reuse = 1;
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        perror("Set reuse address failed");
-        close(sock);
-        return discovered;
-    }
-    
-    // Set receive timeout
-    struct timeval recvTimeout;
-    recvTimeout.tv_sec = 5;  // 5 seconds
-    recvTimeout.tv_usec = 0;
-    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout)) < 0) {
-        perror("Set receive timeout failed");
-    }
-    
-    // Find active interface
-    struct in_addr routable_addr = _find_active_network_interface_linux();
-    
-    // Bind to ANY address on a dynamic port
-    struct sockaddr_in localAddr;
-    memset(&localAddr, 0, sizeof(localAddr));
-    localAddr.sin_family = AF_INET;
-    localAddr.sin_port = htons(0); // Dynamic port
-    localAddr.sin_addr.s_addr = INADDR_ANY;
-    
-    if (::bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) < 0) {
-        perror("Bind failed");
-        close(sock);
-        return discovered;
-    }
-    
-    // Set multicast interface
-    if (setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, &routable_addr, sizeof(routable_addr)) < 0) {
-        perror("Set multicast interface failed");
-    }
-    
-    // Join multicast group
-    struct ip_mreq mreq;
-    mreq.imr_multiaddr.s_addr = inet_addr("239.255.255.250");
-    mreq.imr_interface = routable_addr;
-    
-    if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
-        perror("Failed to join multicast group");
-    }
-    
-    // Set multicast TTL
-    int ttl = 1;
-    if (setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) < 0) {
-        perror("Set multicast TTL failed");
-    }
-    
-    // Multicast destination
-    struct sockaddr_in multicastAddr;
-    memset(&multicastAddr, 0, sizeof(multicastAddr));
-    multicastAddr.sin_family = AF_INET;
-    multicastAddr.sin_port = htons(3702);
-    multicastAddr.sin_addr.s_addr = inet_addr("239.255.255.250");
-    
-    // Send discovery message
-    int bytesSent = sendto(sock, broadcast_message.c_str(), broadcast_message.length(), 0, 
-                          (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
-    
-    if (bytesSent < 0) {
-        perror("Send failed");
-        close(sock);
-        return discovered;
-    }
-    
-    printf("Sent discovery message (%d bytes)\n", bytesSent);
-    
-    // Receive responses
-    printf("Waiting for responses...\n");
-    
-    char buf[8192];
-    int timeoutCounts = 0;
-    while (timeoutCounts < 2) {
-        struct sockaddr_in fromAddr;
-        socklen_t fromAddrLen = sizeof(fromAddr);
-        int len = recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
-        
-        if (len < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                printf("Receive timed out\n");
-                timeoutCounts++;
-            } else {
-                perror("Receive error");
-                break;
-            }
-        } 
-        else if (len > 0) {
-            buf[len] = '\0';
-            string response(buf, len);
-            discovered.push_back(response);
-        }
-    }
-    
-    close(sock);
-#endif
+    // Get all available network adapters (UP, not loopback, multicast capable, with IPv4)
+    auto adapters = r_utils::r_networking::r_get_adapters();
 
-    return discovered;
+    // Send discovery probe on each interface and collect responses
+    for (const auto& adapter : adapters)
+    {
+        auto responses = _discover_on_interface(adapter.ipv4_addr, broadcast_message);
+        all_discovered.insert(all_discovered.end(), responses.begin(), responses.end());
+    }
+
+    return all_discovered;
 }
 
 std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::string>& discovered)
@@ -1066,6 +944,24 @@ std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::s
             }
             if (xaddrs_services.empty())
                 throw std::runtime_error("No ONVIF services found1.");
+
+            // Find first http/https service
+            int first_valid_index = -1;
+            for(size_t i = 0; i < xaddrs_services.size(); ++i)
+            {
+                auto service = xaddrs_services[i];
+                string url, host, protocol, uri;
+                int port;
+                r_http::parse_url_parts(service, host, port, protocol, uri);
+                if(protocol == "http" || protocol == "https")
+                {
+                    first_valid_index = (int)i;
+                    break;
+                }
+            }
+
+#if 0
+            // Connection test disabled - accept all parseable XAddrs
             int first_connnected_index = -1;
             for(size_t i = 0; i < xaddrs_services.size(); ++i)
             {
@@ -1075,7 +971,7 @@ std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::s
                 r_http::parse_url_parts(service, host, port, protocol, uri);
                 if(protocol != "http" && protocol != "https")
                     continue;
-                
+
                 try
                 {
                     if(protocol == "http")
@@ -1105,8 +1001,12 @@ std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::s
             // But, we do need to throw if we couldn't connect to ANY of the services.
             if(first_connnected_index == -1)
                 throw std::runtime_error("No ONVIF services found2.");
+#endif
+
+            if(first_valid_index == -1)
+                throw std::runtime_error("No ONVIF services found2.");
             discovered_info di;
-            r_http::parse_url_parts(xaddrs_services[first_connnected_index], di.host, di.port, di.protocol, di.uri);
+            r_http::parse_url_parts(xaddrs_services[first_valid_index], di.host, di.port, di.protocol, di.uri);
             di.address = address; // Assign the extracted address to the discovered_info struct
 
             auto mfgr = _get_scope_field(scopes, (char*)"onvif://www.onvif.org/name/");
@@ -1146,6 +1046,8 @@ r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::
     _service_port = port;
     _service_protocol = protocol;
     _service_uri = uri;
+    _soap_ver = soap_version::unknown;
+    _auth_mode = auth_mode::unknown;
 
     auto now = chrono::system_clock::to_time_t(chrono::system_clock::now());
     auto camera_time = get_camera_system_date_and_time();
@@ -1156,9 +1058,33 @@ r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::
     _password = password;
 }
 
-time_t r_onvif::r_onvif_cam::get_camera_system_date_and_time() const
+// Helper to check if response indicates SOAP version mismatch
+static bool _is_soap_version_error(int status, const string& body)
 {
-    // Create the equivalent SOAP XML document using PugiXML
+    // HTTP 400 (Bad Request) or 415 (Unsupported Media Type) often indicate version mismatch
+    if (status == 400 || status == 415)
+        return true;
+
+    // Check for SOAP Fault about envelope/namespace
+    if (body.find("VersionMismatch") != string::npos ||
+        body.find("MustUnderstand") != string::npos ||
+        body.find("InvalidEnvelopeNamespace") != string::npos ||
+        (body.find("Fault") != string::npos && body.find("envelope") != string::npos))
+        return true;
+
+    return false;
+}
+
+// Helper to build SOAP envelope with specified version and auth mode
+static string _build_soap_envelope(
+    soap_version ver,
+    auth_mode auth,
+    const function<void(pugi::xml_node&)>& build_body,
+    const r_nullable<string>& username,
+    const r_nullable<string>& password,
+    int time_offset_seconds
+)
+{
     pugi::xml_document doc;
 
     // Add XML declaration
@@ -1166,22 +1092,144 @@ time_t r_onvif::r_onvif_cam::get_camera_system_date_and_time() const
     declaration.append_attribute("version") = "1.0";
     declaration.append_attribute("encoding") = "UTF-8";
 
-    // Create the envelope element with namespace
+    // Create envelope with version-specific namespace
     pugi::xml_node envelope = doc.append_child("SOAP-ENV:Envelope");
-    envelope.append_attribute("xmlns:SOAP-ENV") = "http://www.w3.org/2003/05/soap-envelope";
+
+    if (ver == soap_version::soap_1_2)
+        envelope.append_attribute("xmlns:SOAP-ENV") = "http://www.w3.org/2003/05/soap-envelope";
+    else
+        envelope.append_attribute("xmlns:SOAP-ENV") = "http://schemas.xmlsoap.org/soap/envelope/";
+
+    // Common ONVIF namespaces
     envelope.append_attribute("xmlns:tds") = "http://www.onvif.org/ver10/device/wsdl";
+    envelope.append_attribute("xmlns:trt") = "http://www.onvif.org/ver10/media/wsdl";
+    envelope.append_attribute("xmlns:tt") = "http://www.onvif.org/ver10/schema";
 
-    // Create the body element with namespace
+    // Add authentication header if credentials are provided
+    if (username && password)
+    {
+        if (auth == auth_mode::text)
+            _add_username_text_header(&doc, envelope, username.value(), password.value(), time_offset_seconds);
+        else
+            _add_username_digest_header(&doc, envelope, username.value(), password.value(), time_offset_seconds);
+    }
+
+    // Create body and let caller populate it
     pugi::xml_node body = envelope.append_child("SOAP-ENV:Body");
+    build_body(body);
 
-    // Create the GetSystemDateAndTime element with namespace
-    body.append_child("tds:GetSystemDateAndTime");
+    // Serialize
+    ostringstream oss;
+    doc.save(oss, "", pugi::format_raw);
+    return oss.str();
+}
 
-    // Convert to string
-    std::stringstream ss;
-    doc.save(ss, "", pugi::format_raw); // format_raw for minimal formatting
+// Helper to check if response indicates authentication failure
+static bool _is_auth_error(int status, const string& body)
+{
+    // HTTP 401 (Unauthorized) is a clear auth failure
+    if (status == 401)
+        return true;
 
-    auto result = _http_interact(_service_host, _service_port, "POST", _service_uri, ss.str());
+    // Check for SOAP Fault about authentication
+    if (body.find("NotAuthorized") != string::npos ||
+        body.find("InvalidSecurity") != string::npos ||
+        body.find("FailedAuthentication") != string::npos ||
+        body.find("AuthenticationFailed") != string::npos ||
+        body.find("InvalidSecurityToken") != string::npos ||
+        body.find("FailedCheck") != string::npos)
+        return true;
+
+    return false;
+}
+
+// SOAP request with automatic SOAP 1.2->1.1 and Digest->Text fallback
+pair<int, string> r_onvif::r_onvif_cam::_soap_request(
+    const string& host,
+    int port,
+    const string& uri,
+    const string& soap_action,
+    const function<void(pugi::xml_node&)>& build_body
+)
+{
+    // Determine which SOAP version(s) to try
+    vector<soap_version> versions_to_try;
+    if (_soap_ver == soap_version::unknown)
+        versions_to_try = {soap_version::soap_1_2, soap_version::soap_1_1};
+    else
+        versions_to_try = {_soap_ver};
+
+    // Determine which auth mode(s) to try
+    vector<auth_mode> auth_modes_to_try;
+    if (_auth_mode == auth_mode::unknown)
+        auth_modes_to_try = {auth_mode::digest, auth_mode::text};
+    else
+        auth_modes_to_try = {_auth_mode};
+
+    pair<int, string> result;
+
+    // Try each SOAP version
+    for (auto ver : versions_to_try)
+    {
+        // Try each auth mode for this SOAP version
+        for (auto auth : auth_modes_to_try)
+        {
+            string body = _build_soap_envelope(ver, auth, build_body, _username, _password, _time_offset_seconds);
+
+            // Pass SOAP version and action to set appropriate headers
+            result = _http_interact(host, port, "POST", uri, body, ver, soap_action);
+
+            // Check if successful
+            if (result.first == 200)
+            {
+                // Success - remember these settings for future requests
+                if (_soap_ver == soap_version::unknown)
+                    _soap_ver = ver;
+                if (_auth_mode == auth_mode::unknown)
+                    _auth_mode = auth;
+                return result;
+            }
+
+            // Check if this is an auth error - try next auth mode
+            if (_is_auth_error(result.first, result.second))
+            {
+                R_LOG_INFO("Auth mode %s rejected, trying fallback...",
+                           auth == auth_mode::digest ? "Digest" : "Text");
+                continue;
+            }
+
+            // Check if this is a SOAP version error - break inner loop, try next version
+            if (_is_soap_version_error(result.first, result.second))
+            {
+                R_LOG_INFO("SOAP %s rejected, trying fallback...",
+                           ver == soap_version::soap_1_2 ? "1.2" : "1.1");
+                break;
+            }
+
+            // Some other error - return immediately
+            return result;
+        }
+
+        // If we broke out of auth loop due to version error, continue to next version
+        if (_is_soap_version_error(result.first, result.second))
+            continue;
+
+        // If auth loop exhausted without success, don't try other versions
+        break;
+    }
+
+    return result;
+}
+
+time_t r_onvif::r_onvif_cam::get_camera_system_date_and_time()
+{
+    auto result = _soap_request(
+        _service_host, _service_port, _service_uri,
+        "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime",
+        [](pugi::xml_node& body) {
+            body.append_child("tds:GetSystemDateAndTime");
+        }
+    );
 
     auto maybe_parsed_ts = _parse_onvif_date_time(result.second);
 
@@ -1191,102 +1239,87 @@ time_t r_onvif::r_onvif_cam::get_camera_system_date_and_time() const
     return maybe_parsed_ts.value();
 }
 
-r_onvif::onvif_capabilities r_onvif::r_onvif_cam::get_camera_capabilities() const
+r_onvif::onvif_capabilities r_onvif::r_onvif_cam::get_camera_capabilities()
 {
-    // Create XML document
-    pugi::xml_document doc;
-    
-    // Add XML declaration
-    pugi::xml_node declaration = doc.append_child(pugi::node_declaration);
-    declaration.append_attribute("version") = "1.0";
-    declaration.append_attribute("encoding") = "UTF-8";
-    
-    // Create root SOAP envelope element with namespace
-    pugi::xml_node root = doc.append_child("SOAP-ENV:Envelope");
-    root.append_attribute("xmlns:SOAP-ENV") = "http://www.w3.org/2003/05/soap-envelope";
-    root.append_attribute("xmlns:tds") = "http://www.onvif.org/ver10/device/wsdl";
-    
-    // Add authentication header if credentials are provided
-    if (_username && _password)
-        _add_username_digest_header(&doc, root, _username.value(), _password.value(), _time_offset_seconds);
-    
-    // Create SOAP body
-    pugi::xml_node body = root.append_child("SOAP-ENV:Body");
-    
-    // Create GetCapabilities element
-    pugi::xml_node capabilities = body.append_child("tds:GetCapabilities");
-    
-    // Create Category element
-    pugi::xml_node category = capabilities.append_child("tds:Category");
-    
-    // Set category text to "All"
-    category.text().set("All");
-    
-    // Write XML to string
-    std::ostringstream oss;
-    doc.save(oss, "  ", pugi::format_default | pugi::format_indent);
-    
-    // Send HTTP request
-    auto result = _http_interact(_service_host, _service_port, "POST", _service_uri, oss.str());
-    
-    // Check status code
+    auto result = _soap_request(
+        _service_host, _service_port, _service_uri,
+        "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
+        [](pugi::xml_node& body) {
+            pugi::xml_node capabilities = body.append_child("tds:GetCapabilities");
+            pugi::xml_node category = capabilities.append_child("tds:Category");
+            category.text().set("All");
+        }
+    );
+
     if (result.first != 200)
         throw std::runtime_error("Failed to get camera capabilities: " + std::to_string(result.first));
-    
+
     return result.second;
 }
 
 r_onvif::onvif_media_service r_onvif::r_onvif_cam::get_media_service(const r_onvif::onvif_capabilities& capabilities) const
 {
-    return _extract_onvif_value(capabilities, "//tt:Media//tt:XAddr");
-#if 0
-    auto media_service = _extract_onvif_value(capabilities, "//tt:Media//tt:XAddr");
+    pugi::xml_document doc;
+    if (!doc.load_string(capabilities.c_str()))
+        throw std::runtime_error("Failed to parse capabilities XML");
 
-    string host, protocol, uri;
-    int port;
-    r_http::parse_url_parts(media_service, host, port, protocol, uri);
+    // Use namespace-agnostic XPath: find Media element then XAddr within it
+    // Try multiple namespace combinations since cameras vary
 
-    return uri;
-#endif
+    pugi::xpath_node node;
+
+    // Try 1: Media in schema namespace (most common in GetCapabilitiesResponse)
+    string xpath = "//" + _xpath_local("Media", NS_SCHEMA) + "//" + _xpath_local("XAddr", NS_SCHEMA);
+    node = doc.select_node(xpath.c_str());
+
+    // Try 2: Media in device namespace
+    if (!node)
+    {
+        xpath = "//" + _xpath_local("Media", NS_DEVICE) + "//" + _xpath_local("XAddr", NS_SCHEMA);
+        node = doc.select_node(xpath.c_str());
+    }
+
+    // Try 3: Media in schema namespace, XAddr without namespace
+    if (!node)
+    {
+        xpath = "//" + _xpath_local("Media", NS_SCHEMA) + "//" + _xpath_local("XAddr");
+        node = doc.select_node(xpath.c_str());
+    }
+
+    // Try 4: Media in device namespace, XAddr without namespace
+    if (!node)
+    {
+        xpath = "//" + _xpath_local("Media", NS_DEVICE) + "//" + _xpath_local("XAddr");
+        node = doc.select_node(xpath.c_str());
+    }
+
+    // Try 5: No namespace constraints at all
+    if (!node)
+    {
+        xpath = "//" + _xpath_local("Media") + "//" + _xpath_local("XAddr");
+        node = doc.select_node(xpath.c_str());
+    }
+
+    if (!node)
+        throw std::runtime_error("Media XAddr not found in capabilities");
+
+    return node.node().child_value();
 }
 
 std::vector<r_onvif::onvif_profile_info> r_onvif::r_onvif_cam::get_profile_tokens(r_onvif::onvif_media_service media_service)
 {
-    // Create the SOAP request document
-    pugi::xml_document doc;
-
-    // Add XML declaration
-    pugi::xml_node declaration = doc.append_child(pugi::node_declaration);
-    declaration.append_attribute("version") = "1.0";
-    declaration.append_attribute("encoding") = "UTF-8";
-
-    // Create root element with namespace
-    pugi::xml_node root = doc.append_child("SOAP-ENV:Envelope");
-    root.append_attribute("xmlns:SOAP-ENV") = "http://www.w3.org/2003/05/soap-envelope";
-    root.append_attribute("xmlns:trt") = "http://www.onvif.org/ver10/media/wsdl";
-    root.append_attribute("xmlns:tt") = "http://www.onvif.org/ver10/schema"; // Add this line
-
-    // Add authentication header if credentials are provided
-    if(_username && _password)
-        _add_username_digest_header(&doc, root, _username.value(), _password.value(), _time_offset_seconds);
-
-    // Create SOAP body
-    pugi::xml_node body = root.append_child("SOAP-ENV:Body");
-
-    // Create GetProfiles element
-    body.append_child("trt:GetProfiles");
-
-    // Serialize to string with pretty printing
-    std::ostringstream oss;
-    doc.save(oss, "  ", pugi::format_default | pugi::format_indent);
-    auto request = oss.str();
-
     string host, protocol, uri;
     int port;
     r_http::parse_url_parts(media_service, host, port, protocol, uri);
 
-    // Send HTTP request
-    auto result = _http_interact(host, port, "POST", uri, request);
+    auto result = _soap_request(
+        host, port, uri,
+        "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
+        [](pugi::xml_node& body) {
+            body.append_child("trt:GetProfiles");
+        }
+    );
+
     if(result.first != 200)
         throw std::runtime_error("Failed to get camera profiles");
 
@@ -1299,54 +1332,93 @@ std::vector<r_onvif::onvif_profile_info> r_onvif::r_onvif_cam::get_profile_token
         if (!parse_result)
             throw std::runtime_error("XML parsing failed: " + std::string(parse_result.description()));
 
-        // Try multiple namespace patterns
-        pugi::xpath_node_set profileNodes = response_doc.select_nodes("//tt:Profiles");
+        // Use namespace-agnostic XPath to find Profiles elements
+        string profiles_xpath = "//" + _xpath_local("Profiles", NS_MEDIA);
+        pugi::xpath_node_set profileNodes = response_doc.select_nodes(profiles_xpath.c_str());
+
         if (profileNodes.empty())
-            profileNodes = response_doc.select_nodes("//trt:Profiles");
-        if (profileNodes.empty())
-            profileNodes = response_doc.select_nodes("//Profiles");
+        {
+            // Fallback without namespace constraint
+            profiles_xpath = "//" + _xpath_local("Profiles");
+            profileNodes = response_doc.select_nodes(profiles_xpath.c_str());
+        }
 
         // Process each profile
         for (const auto& profileNode : profileNodes)
         {
             pugi::xml_node profileElement = profileNode.node();
             onvif_profile_info profile;
-            
+
             // Get profile token
             profile.token = profileElement.attribute("token").value();
-            
+
             // Default values in case we can't find the data
             profile.encoding = "Unknown";
             profile.width = 0;
             profile.height = 0;
-            
-            // Get video encoder configuration
-            pugi::xpath_node videoEncoderConfigNode = profileElement.select_node(".//tt:VideoEncoderConfiguration");
+
+            // Get video encoder configuration using namespace-agnostic XPath
+            string vec_xpath = ".//" + _xpath_local("VideoEncoderConfiguration", NS_SCHEMA);
+            pugi::xpath_node videoEncoderConfigNode = profileElement.select_node(vec_xpath.c_str());
+
+            if (!videoEncoderConfigNode)
+            {
+                // Fallback without namespace
+                vec_xpath = ".//" + _xpath_local("VideoEncoderConfiguration");
+                videoEncoderConfigNode = profileElement.select_node(vec_xpath.c_str());
+            }
+
             if (videoEncoderConfigNode)
             {
                 pugi::xml_node videoEncoderConfigElement = videoEncoderConfigNode.node();
-                
+
                 // Get encoding
-                pugi::xpath_node encodingNode = videoEncoderConfigElement.select_node(".//tt:Encoding");
+                string enc_xpath = ".//" + _xpath_local("Encoding", NS_SCHEMA);
+                pugi::xpath_node encodingNode = videoEncoderConfigElement.select_node(enc_xpath.c_str());
+                if (!encodingNode)
+                {
+                    enc_xpath = ".//" + _xpath_local("Encoding");
+                    encodingNode = videoEncoderConfigElement.select_node(enc_xpath.c_str());
+                }
                 if (encodingNode)
                     profile.encoding = encodingNode.node().child_value();
-                
+
                 // Get resolution
-                pugi::xpath_node resolutionNode = videoEncoderConfigElement.select_node(".//tt:Resolution");
+                string res_xpath = ".//" + _xpath_local("Resolution", NS_SCHEMA);
+                pugi::xpath_node resolutionNode = videoEncoderConfigElement.select_node(res_xpath.c_str());
+                if (!resolutionNode)
+                {
+                    res_xpath = ".//" + _xpath_local("Resolution");
+                    resolutionNode = videoEncoderConfigElement.select_node(res_xpath.c_str());
+                }
+
                 if (resolutionNode)
                 {
                     pugi::xml_node resolutionElement = resolutionNode.node();
-                    
-                    pugi::xpath_node widthNode = resolutionElement.select_node(".//tt:Width");
-                    pugi::xpath_node heightNode = resolutionElement.select_node(".//tt:Height");
-                    
+
+                    string w_xpath = ".//" + _xpath_local("Width", NS_SCHEMA);
+                    string h_xpath = ".//" + _xpath_local("Height", NS_SCHEMA);
+                    pugi::xpath_node widthNode = resolutionElement.select_node(w_xpath.c_str());
+                    pugi::xpath_node heightNode = resolutionElement.select_node(h_xpath.c_str());
+
+                    if (!widthNode)
+                    {
+                        w_xpath = ".//" + _xpath_local("Width");
+                        widthNode = resolutionElement.select_node(w_xpath.c_str());
+                    }
+                    if (!heightNode)
+                    {
+                        h_xpath = ".//" + _xpath_local("Height");
+                        heightNode = resolutionElement.select_node(h_xpath.c_str());
+                    }
+
                     if (widthNode)
                         profile.width = static_cast<uint16_t>(std::stoi(widthNode.node().child_value()));
                     if (heightNode)
                         profile.height = static_cast<uint16_t>(std::stoi(heightNode.node().child_value()));
                 }
             }
-            
+
             // Add the profile to our list
             profiles.push_back(profile);
         }
@@ -1361,61 +1433,51 @@ std::vector<r_onvif::onvif_profile_info> r_onvif::r_onvif_cam::get_profile_token
 
 string r_onvif::r_onvif_cam::get_stream_uri(onvif_media_service media_service, onvif_profile_token profile_token)
 {
-    // Create a new XML document
-    pugi::xml_document doc;
-    
-    // Add XML declaration
-    pugi::xml_node declaration = doc.append_child(pugi::node_declaration);
-    declaration.append_attribute("version") = "1.0";
-    declaration.append_attribute("encoding") = "UTF-8";
-    
-    // Create root element with namespace
-    pugi::xml_node root = doc.append_child("SOAP-ENV:Envelope");
-    root.append_attribute("xmlns:SOAP-ENV") = "http://www.w3.org/2003/05/soap-envelope";
-    root.append_attribute("xmlns:trt") = "http://www.onvif.org/ver10/media/wsdl";
-    root.append_attribute("xmlns:tt") = "http://www.onvif.org/ver10/schema";
-    
-    // Add authentication header if credentials are provided
-    if(_username && _password)
-        _add_username_digest_header(&doc, root, _username.value(), _password.value(), _time_offset_seconds);
-    
-    // Create Body element
-    pugi::xml_node body = root.append_child("SOAP-ENV:Body");
-    
-    // Create GetStreamUri element
-    pugi::xml_node getStreamUri = body.append_child("trt:GetStreamUri");
-    
-    // Create StreamSetup element
-    pugi::xml_node streamSetup = getStreamUri.append_child("trt:StreamSetup");
-    
-    // Create Stream element
-    pugi::xml_node stream = streamSetup.append_child("tt:Stream");
-    stream.text().set("RTP-Unicast");
-    
-    // Create Transport element
-    pugi::xml_node transport = streamSetup.append_child("tt:Transport");
-    
-    // Create Protocol element
-    pugi::xml_node protocol = transport.append_child("tt:Protocol");
-    protocol.text().set("RTSP");
-    
-    // Create ProfileToken element
-    pugi::xml_node profileTokenElem = getStreamUri.append_child("trt:ProfileToken");
-    profileTokenElem.text().set(profile_token.c_str());
-    
-    // Convert the document to a string for transmission
-    std::ostringstream oss;
-    doc.save(oss, "  ", pugi::format_default | pugi::format_indent);
-    auto request = oss.str();
-
     string host, http_protocol, uri;
     int port;
     r_http::parse_url_parts(media_service, host, port, http_protocol, uri);
 
-    auto result = _http_interact(host, port, "POST", uri, request);
-    
+    auto result = _soap_request(
+        host, port, uri,
+        "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
+        [&profile_token](pugi::xml_node& body) {
+            pugi::xml_node getStreamUri = body.append_child("trt:GetStreamUri");
+
+            pugi::xml_node streamSetup = getStreamUri.append_child("trt:StreamSetup");
+
+            pugi::xml_node stream = streamSetup.append_child("tt:Stream");
+            stream.text().set("RTP-Unicast");
+
+            pugi::xml_node transport = streamSetup.append_child("tt:Transport");
+
+            pugi::xml_node protocol = transport.append_child("tt:Protocol");
+            protocol.text().set("RTSP");
+
+            pugi::xml_node profileTokenElem = getStreamUri.append_child("trt:ProfileToken");
+            profileTokenElem.text().set(profile_token.c_str());
+        }
+    );
+
     if(result.first != 200)
         throw std::runtime_error("Failed to get stream uri");
-    
-    return _extract_onvif_value(result.second, "s:Body//trt:GetStreamUriResponse//tt:Uri");
+
+    // Use namespace-agnostic XPath
+    pugi::xml_document doc;
+    if (!doc.load_string(result.second.c_str()))
+        throw std::runtime_error("Failed to parse GetStreamUri response");
+
+    string xpath = "//" + _xpath_local("GetStreamUriResponse", NS_MEDIA) + "//" + _xpath_local("Uri", NS_SCHEMA);
+    pugi::xpath_node node = doc.select_node(xpath.c_str());
+
+    if (!node)
+    {
+        // Fallback: try without namespace constraint
+        xpath = "//" + _xpath_local("GetStreamUriResponse") + "//" + _xpath_local("Uri");
+        node = doc.select_node(xpath.c_str());
+    }
+
+    if (!node)
+        throw std::runtime_error("Uri not found in GetStreamUri response");
+
+    return node.node().child_value();
 }

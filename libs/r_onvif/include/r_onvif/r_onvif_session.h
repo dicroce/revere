@@ -7,6 +7,8 @@
 #include <array>
 #include <vector>
 #include <stdbool.h>
+#include <functional>
+#include <pugixml.hpp>
 
 namespace r_onvif
 {
@@ -37,14 +39,28 @@ struct onvif_profile_info
     uint16_t height;
 };
 
+enum class soap_version
+{
+    soap_1_2,   // SOAP 1.2 (default, modern)
+    soap_1_1,   // SOAP 1.1 (legacy fallback)
+    unknown     // Not yet determined
+};
+
+enum class auth_mode
+{
+    digest,     // PasswordDigest (SHA-1, default)
+    text,       // PasswordText (plaintext, fallback for buggy cameras)
+    unknown     // Not yet determined
+};
+
 class r_onvif_cam
 {
 public:
     R_API r_onvif_cam(const std::string& host, int port, const std::string& protocol, const std::string& uri, const r_utils::r_nullable<std::string>& username, const r_utils::r_nullable<std::string>& password);
 
-    R_API time_t get_camera_system_date_and_time() const;
+    R_API time_t get_camera_system_date_and_time();
 
-    R_API onvif_capabilities get_camera_capabilities() const;
+    R_API onvif_capabilities get_camera_capabilities();
 
     R_API onvif_media_service get_media_service(const onvif_capabilities& capabilities) const;
 
@@ -53,6 +69,14 @@ public:
     R_API std::string get_stream_uri(onvif_media_service media_service, onvif_profile_token profile_token);
 
 private:
+    std::pair<int, std::string> _soap_request(
+        const std::string& host,
+        int port,
+        const std::string& uri,
+        const std::string& soap_action,
+        const std::function<void(pugi::xml_node&)>& build_body
+    );
+
     std::vector<std::string> _xaddrs_services;
     std::string _service_protocol;
     std::string _service_host;
@@ -63,6 +87,8 @@ private:
     r_utils::r_nullable<std::string> _password;
 
     int _time_offset_seconds;
+    mutable soap_version _soap_ver;
+    mutable auth_mode _auth_mode;
 };
 
 }
