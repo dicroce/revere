@@ -36,7 +36,7 @@ When a WebSocket upgrade is detected, send the 101 response:
 
 ```cpp
 void handle_websocket_upgrade(
-    r_utils::r_buffered_socket<r_utils::r_ssl_socket>& conn,
+    r_utils::r_ssl_socket& conn,
     const r_server_request& request)
 {
     // Get the WebSocket key from request

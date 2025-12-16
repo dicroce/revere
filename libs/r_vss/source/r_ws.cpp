@@ -62,7 +62,7 @@ void r_ws::stop()
 }
 
 r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_socket>&,
-                                         r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                         r_utils::r_socket&,
                                          const r_http::r_server_request& request)
 {
     try
@@ -106,7 +106,7 @@ r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_s
 }
 
 r_http::r_server_response r_ws::_get_webp(const r_http::r_web_server<r_utils::r_socket>&,
-                                          r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                          r_utils::r_socket&,
                                           const r_http::r_server_request& request)
 {
     try
@@ -150,7 +150,7 @@ r_http::r_server_response r_ws::_get_webp(const r_http::r_web_server<r_utils::r_
 }
 
 r_http::r_server_response r_ws::_get_key_frame(const r_http::r_web_server<r_utils::r_socket>&,
-                                               r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                               r_utils::r_socket&,
                                                const r_http::r_server_request& request)
 {
     try
@@ -184,7 +184,7 @@ r_http::r_server_response r_ws::_get_key_frame(const r_http::r_web_server<r_util
 }
 
 r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils::r_socket>&,
-                                            r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                            r_utils::r_socket&,
                                             const r_http::r_server_request& request)
 {
     try
@@ -233,7 +233,7 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
 }
 
 r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils::r_socket>&,
-                                           r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                           r_utils::r_socket&,
                                            const r_http::r_server_request&)
 {
     try
@@ -355,7 +355,7 @@ static void _check_timestamps(const r_blob_tree& bt)
 }
 
 r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::r_socket>&,
-                                            r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                            r_utils::r_socket&,
                                             const r_http::r_server_request& request)
 {
     try
@@ -617,7 +617,7 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
 }
 
 r_http::r_server_response r_ws::_get_motions(const r_http::r_web_server<r_utils::r_socket>&,
-                                             r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                             r_utils::r_socket&,
                                              const r_http::r_server_request& request)
 {
     try
@@ -674,7 +674,7 @@ r_http::r_server_response r_ws::_get_motions(const r_http::r_web_server<r_utils:
 }
 
 r_http::r_server_response r_ws::_get_analytics(const r_http::r_web_server<r_utils::r_socket>&,
-                                               r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                               r_utils::r_socket&,
                                                const r_http::r_server_request& request)
 {
     try
@@ -741,7 +741,7 @@ r_http::r_server_response r_ws::_get_analytics(const r_http::r_web_server<r_util
 
 
 r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_utils::r_socket>&,
-                                                   r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                                   r_utils::r_socket&,
                                                    const r_http::r_server_request& request)
 {
     try
@@ -800,7 +800,7 @@ r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_
 }
 
 r_http::r_server_response r_ws::_get_video(const r_http::r_web_server<r_utils::r_socket>&,
-                                           r_utils::r_buffered_socket<r_utils::r_socket>&,
+                                           r_utils::r_socket&,
                                            const r_http::r_server_request& request)
 {
     try

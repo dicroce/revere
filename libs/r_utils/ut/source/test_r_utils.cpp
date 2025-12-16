@@ -535,17 +535,17 @@ void test_r_utils::test_socket_wont_block()
 
 void test_r_utils::test_buffered()
 {
-    r_buffered_socket<r_socket> bufSok( 4096 );
-    bufSok.connect( "www.google.com", 80 );
+    r_socket sok;
+    sok.connect( "www.google.com", 80 );
 
     string query = "GET /\r\n\r\n";
-    r_networking::r_send(bufSok, query.c_str(), query.length());
+    r_networking::r_send(sok, query.c_str(), query.length());
 
     char buffer[1024];
     memset( buffer, 0, 1024 );
-    r_networking::r_recv(bufSok, buffer, 1023);
+    r_networking::r_recv(sok, buffer, 1023);
 
-    bufSok.close();
+    sok.close();
     string response = buffer;
     RTF_ASSERT( r_string_utils::contains(response, "google") );
 }

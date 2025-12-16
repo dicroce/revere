@@ -24,13 +24,13 @@ private:
     {
         bool done {false};
         std::chrono::steady_clock::time_point doneTP;
-        r_buffered_socket<SOK_T> connected;
+        SOK_T connected;
         std::thread th;
     };
 
 public:
-    R_API r_server_threaded( int port, std::function<void(r_buffered_socket<SOK_T>& conn)> connCB, const std::string& sockAddr = std::string() ) :
-        _bufferedServerSocket(),
+    R_API r_server_threaded( int port, std::function<void(SOK_T& conn)> connCB, const std::string& sockAddr = std::string() ) :
+        _serverSocket(),
         _port( port ),
         _connCB( connCB ),
         _sockAddr( sockAddr ),
@@ -95,29 +95,26 @@ public:
             {
                 auto cc = std::make_shared<struct conn_context>();
 
-                cc->connected = _bufferedServerSocket.accept();
+                cc->connected = _serverSocket.accept();
 
                 if( !_running )
                     continue;
 
-                if( cc->connected.buffer_recv() )
-                {
-                    _connectedContexts.remove_if( []( const std::shared_ptr<struct conn_context>& context )->bool {
-                        if( context->done && ((std::chrono::steady_clock::now() - context->doneTP) > std::chrono::seconds(30)) )
-                        {
-                            context->th.join();
-                            return true;
-                        }
-                        return false;
-                    });
-                    cc->done = false;
+                _connectedContexts.remove_if( []( const std::shared_ptr<struct conn_context>& context )->bool {
+                    if( context->done && ((std::chrono::steady_clock::now() - context->doneTP) > std::chrono::seconds(30)) )
+                    {
+                        context->th.join();
+                        return true;
+                    }
+                    return false;
+                });
+                cc->done = false;
 
-                    FULL_MEM_BARRIER();
-                    
-                    cc->th = std::thread( &r_server_threaded::_thread_start, this, cc );
+                FULL_MEM_BARRIER();
 
-                    _connectedContexts.push_back( cc );
-                }
+                cc->th = std::thread( &r_server_threaded::_thread_start, this, cc );
+
+                _connectedContexts.push_back( cc );
             }
             catch( std::exception& ex )
             {
@@ -132,16 +129,16 @@ public:
 
     R_API bool started() const { return _running; }
 
-    R_API SOK_T& get_socket() { return _bufferedServerSocket.get_socket(); }
+    R_API SOK_T& get_socket() { return _serverSocket; }
 
 private:
     void _configure_server_socket()
     {
         if( _sockAddr.empty() )
-            _bufferedServerSocket.bind( _port );
-        else _bufferedServerSocket.bind( _port, _sockAddr );
+            _serverSocket.bind( _port );
+        else _serverSocket.bind( _port, _sockAddr );
 
-        _bufferedServerSocket.listen();
+        _serverSocket.listen();
     }
 
     void _thread_start( std::shared_ptr<struct conn_context> cc )
@@ -164,9 +161,9 @@ private:
         cc->done = true;
     }
 
-    r_buffered_socket<SOK_T> _bufferedServerSocket;
+    SOK_T _serverSocket;
     int _port;
-    std::function<void(r_buffered_socket<SOK_T>& conn)> _connCB;
+    std::function<void(SOK_T& conn)> _connCB;
     std::string _sockAddr;
     std::list<std::shared_ptr<struct conn_context>> _connectedContexts;
     bool _running;

@@ -27,43 +27,43 @@ public:
 
 private:
     r_http::r_server_response _get_jpg(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                       r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                       r_utils::r_socket& conn,
                                        const r_http::r_server_request& request);
 
     r_http::r_server_response _get_webp(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                        r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                        r_utils::r_socket& conn,
                                         const r_http::r_server_request& request);
 
     r_http::r_server_response _get_key_frame(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                             r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                             r_utils::r_socket& conn,
                                              const r_http::r_server_request& request);
 
     r_http::r_server_response _get_contents(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                            r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                            r_utils::r_socket& conn,
                                             const r_http::r_server_request& request);
 
     r_http::r_server_response _get_cameras(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                           r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                           r_utils::r_socket& conn,
                                            const r_http::r_server_request& request);
 
     r_http::r_server_response _get_export(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                          r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                          r_utils::r_socket& conn,
                                           const r_http::r_server_request& request);
 
     r_http::r_server_response _get_motions(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                           r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                           r_utils::r_socket& conn,
                                            const r_http::r_server_request& request);
 
     r_http::r_server_response _get_motion_events(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                                 r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                                 r_utils::r_socket& conn,
                                                  const r_http::r_server_request& request);
 
     r_http::r_server_response _get_analytics(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                             r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                             r_utils::r_socket& conn,
                                              const r_http::r_server_request& request);
 
     r_http::r_server_response _get_video(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                         r_utils::r_buffered_socket<r_utils::r_socket>& conn,
+                                         r_utils::r_socket& conn,
                                          const r_http::r_server_request& request);
     std::string _top_dir;
     r_disco::r_devices& _devices;

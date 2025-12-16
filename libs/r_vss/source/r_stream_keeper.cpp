@@ -110,34 +110,34 @@ void r_stream_keeper::stop()
         R_THROW(("Cannot stop stream keeper if its not running!"));
 
     // Stop web server first to prevent new HTTP requests during shutdown
-    R_LOG_ERROR("Stopping web server...");
+    R_LOG_INFO("Stopping web server...");
     _ws.stop();
-    R_LOG_ERROR("Web server stopped");
+    R_LOG_INFO("Web server stopped");
 
     for(auto& s : _streams)
         s.second->stop();
 
-    R_LOG_ERROR("Stopping motion engine...");
+    R_LOG_INFO("Stopping motion engine...");
     _motionEngine.stop();
-    R_LOG_ERROR("Motion engine stopped");
+    R_LOG_INFO("Motion engine stopped");
 
     _running = false;
 
-    R_LOG_ERROR("Quitting main loop...");
+    R_LOG_INFO("Quitting main loop...");
     g_main_loop_quit(_loop);
-    R_LOG_ERROR("Main loop quit");
+    R_LOG_INFO("Main loop quit");
 
-    R_LOG_ERROR("Joining stream keeper thread...");
+    R_LOG_INFO("Joining stream keeper thread...");
     _th.join();
-    R_LOG_ERROR("Stream keeper thread joined");
+    R_LOG_INFO("Stream keeper thread joined");
 
-    R_LOG_ERROR("Joining rtsp server thread...");
+    R_LOG_INFO("Joining rtsp server thread...");
     _rtsp_server_th.join();
-    R_LOG_ERROR("Rtsp server thread joined");
+    R_LOG_INFO("Rtsp server thread joined");
 
-    R_LOG_ERROR("Stopping prune...");
+    R_LOG_INFO("Stopping prune...");
     _prune.stop();
-    R_LOG_ERROR("Prune stopped");
+    R_LOG_INFO("Prune stopped");
 }
 
 vector<r_stream_status> r_stream_keeper::fetch_stream_status()

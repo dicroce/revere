@@ -37,7 +37,7 @@ template<class SOK_T>
 class r_web_server final
 {
 public:
-    typedef std::function<r_server_response(const r_web_server<SOK_T>& ws, r_utils::r_buffered_socket<SOK_T>& conn, const r_server_request& request)> http_cb;
+    typedef std::function<r_server_response(const r_web_server<SOK_T>& ws, SOK_T& conn, const r_server_request& request)> http_cb;
 
     r_web_server(int port, const std::string& sockAddr = std::string()) :
         _cbs(),
@@ -77,7 +77,7 @@ public:
     SOK_T& get_socket() { return _server.get_socket(); }
 
 private:
-    void _server_conn_cb(r_utils::r_buffered_socket<SOK_T>& conn)
+    void _server_conn_cb(SOK_T& conn)
     {
         r_server_request request;
         request.read_request(conn);
