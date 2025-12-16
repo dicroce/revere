@@ -4,6 +4,7 @@
 #include "r_vss/r_stream_keeper.h"
 #include "r_utils/r_file.h"
 #include "r_disco/r_devices.h"
+#include "r_utils/r_time_utils.h"
 #include <memory>
 #include <vector>
 #include <algorithm>
@@ -137,6 +138,8 @@ void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
         if (msg.evt == r_vss::motion_event_start) {
             // Clear any existing detections for this camera (handle missing end events)
             _camera_detections[msg.camera_id].clear();
+            // Record motion start time
+            _camera_motion_start_time[msg.camera_id] = msg.ts;
         }
 
         if (msg.evt == r_vss::motion_event_start || msg.evt == r_vss::motion_event_update) {
@@ -154,10 +157,11 @@ void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
 
         if (msg.evt == r_vss::motion_event_end) {
             // Analyze all detections for this motion sequence and log results
-            _analyze_and_log_detections(msg.camera_id);
+            _analyze_and_log_detections(msg.camera_id, msg.ts);
 
             // Clear the detection list for this camera
             _camera_detections[msg.camera_id].clear();
+            _camera_motion_start_time.erase(msg.camera_id);
         }
 
     } catch (const std::exception& e) {
@@ -414,7 +418,7 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
     return detections;
 }
 
-void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera_id)
+void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms)
 {
     auto& devices = _host->get_devices();
 
@@ -431,7 +435,14 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
         return;
     }
 
-    // Count detections by class and track max confidence
+    // Get start time for this motion event
+    int64_t start_time_ms = end_time_ms; // fallback if not found
+    auto start_it = _camera_motion_start_time.find(camera_id);
+    if (start_it != _camera_motion_start_time.end()) {
+        start_time_ms = start_it->second;
+    }
+
+    // Count detections by class for logging
     std::map<int, int> class_counts;
     std::map<int, float> max_confidence;
 
@@ -453,32 +464,42 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
                    class_name, pair.second, confidence * 100);
     }
 
-    // Get motion event timestamp from first detection
-    int64_t motion_timestamp = it->second.front().timestamp;
+    // Convert timestamps to ISO 8601 format
+    auto start_tp = r_time_utils::epoch_millis_to_tp(start_time_ms);
+    auto end_tp = r_time_utils::epoch_millis_to_tp(end_time_ms);
+    std::string start_time_str = r_time_utils::tp_to_iso_8601(start_tp, false);
+    std::string end_time_str = r_time_utils::tp_to_iso_8601(end_tp, false);
 
-    // Construct JSON metadata object
-    std::string json_metadata = R"({"detections": [)";
+    // Construct JSON metadata object with analytics schema
+    std::string json_metadata = R"({"analytics": {"motion_start_time": ")" + start_time_str +
+                                R"(", "motion_end_time": ")" + end_time_str +
+                                R"(", "detections": [)";
 
     bool first = true;
-    for (const auto& pair : class_counts) {
-        const char* class_name = get_class_name(pair.first);
-        float confidence = max_confidence[pair.first];
-
+    for (const auto& detection : it->second) {
         if (!first) {
             json_metadata += ", ";
         }
         first = false;
 
-        json_metadata += std::string(R"({"class_name": ")") + class_name +
-                        R"(", "frame_count": )" + std::to_string(pair.second) +
-                        R"(, "max_confidence": )" + std::to_string(confidence) + "}";
+        auto det_tp = r_time_utils::epoch_millis_to_tp(detection.timestamp);
+        std::string det_time_str = r_time_utils::tp_to_iso_8601(det_tp, false);
+        const char* class_name = get_class_name(detection.class_id);
+
+        // Format confidence to 3 decimal places
+        char conf_buf[32];
+        snprintf(conf_buf, sizeof(conf_buf), "%.3f", detection.score);
+
+        json_metadata += R"({"timestamp": ")" + det_time_str +
+                        R"(", "class_name": ")" + class_name +
+                        R"(", "confidence": )" + conf_buf + "}";
     }
 
-    json_metadata += R"(], "total_detections": )" + std::to_string(it->second.size()) + "}";
+    json_metadata += R"(], "total_detections": )" + std::to_string(it->second.size()) + "}}";
 
-    // Log metadata to stream
+    // Log metadata to stream using start time as the event timestamp
     auto& stream_keeper = _host->get_stream_keeper();
-    stream_keeper.write_metadata(camera_id, "yolov8_person_plugin", json_metadata, motion_timestamp);
+    stream_keeper.write_metadata(camera_id, "yolov8_person_plugin", json_metadata, start_time_ms);
 }
 
 const char* yolov8_person_plugin::get_class_name(int class_id)

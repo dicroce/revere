@@ -8,11 +8,19 @@
 namespace vision
 {
 
+struct analytics_detection
+{
+    std::string class_name;
+    float confidence;
+    std::chrono::system_clock::time_point timestamp;
+};
+
 struct analytics_event
 {
-    std::string stream_tag;                           // e.g., "person_plugin"
-    std::chrono::system_clock::time_point timestamp;  // When the event occurred
-    std::string json_data;                            // Raw JSON data from the analytics
+    std::chrono::system_clock::time_point motion_start_time;
+    std::chrono::system_clock::time_point motion_end_time;
+    std::vector<analytics_detection> detections;
+    int total_detections;
 };
 
 }

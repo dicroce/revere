@@ -711,19 +711,15 @@ r_http::r_server_response r_ws::_get_analytics(const r_http::r_web_server<r_util
 
         for(const auto& entry : analytics_data)
         {
-            json j_entry;
-            j_entry["stream_tag"] = entry.stream_tag;
-            j_entry["timestamp"] = r_time_utils::tp_to_iso_8601(r_time_utils::epoch_millis_to_tp(entry.timestamp_ms), input_z_time);
-            
-            // Parse the JSON data to include it as an object rather than a string
+            // Parse the JSON data and extract the analytics object
             try {
-                j_entry["data"] = json::parse(entry.json_data);
+                auto parsed = json::parse(entry.json_data);
+                if(parsed.contains("analytics")) {
+                    j["analytics"].push_back(parsed["analytics"]);
+                }
             } catch(const exception&) {
-                // If JSON parsing fails, include as string
-                j_entry["data"] = entry.json_data;
+                // Skip entries that don't parse or don't contain analytics
             }
-
-            j["analytics"].push_back(j_entry);
         }
 
         r_server_response response;

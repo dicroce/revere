@@ -198,13 +198,23 @@ vector<analytics_event> vision::query_analytics(const configure_state& cs, const
 
     vector<analytics_event> result;
     result.reserve(j["analytics"].size());
-    
+
     for(auto entry : j["analytics"])
     {
         analytics_event ae;
-        ae.stream_tag = entry["stream_tag"].get<string>();
-        ae.timestamp = r_time_utils::iso_8601_to_tp(entry["timestamp"]);
-        ae.json_data = entry["data"].dump(); // Convert data object back to JSON string
+        ae.motion_start_time = r_time_utils::iso_8601_to_tp(entry["motion_start_time"]);
+        ae.motion_end_time = r_time_utils::iso_8601_to_tp(entry["motion_end_time"]);
+        ae.total_detections = entry["total_detections"].get<int>();
+
+        for(auto det : entry["detections"])
+        {
+            analytics_detection ad;
+            ad.class_name = det["class_name"].get<string>();
+            ad.confidence = det["confidence"].get<float>();
+            ad.timestamp = r_time_utils::iso_8601_to_tp(det["timestamp"]);
+            ae.detections.push_back(ad);
+        }
+
         result.push_back(ae);
     }
 

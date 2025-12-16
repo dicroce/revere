@@ -52,11 +52,12 @@ private:
     std::thread _thread;
     r_utils::r_blocking_q<MotionEventMessage> _event_queue;
     std::map<std::string, std::list<Detection>> _camera_detections;
-    
+    std::map<std::string, int64_t> _camera_motion_start_time;
+
     void _entry_point();
     void _process_motion_event(const MotionEventMessage& msg);
     std::vector<Detection> detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox);
-    void _analyze_and_log_detections(const std::string& camera_id);
+    void _analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms);
     static const char* get_class_name(int class_id);
 };
 

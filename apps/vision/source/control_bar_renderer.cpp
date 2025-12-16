@@ -298,77 +298,49 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
             for(const auto& event : cbs.analytics_events)
             {
                 // Calculate milliseconds from the start of the timerange
-                int64_t event_millis = duration_cast<milliseconds>(event.timestamp - cbs.tr.get_start()).count();
-                
+                int64_t event_millis = duration_cast<milliseconds>(event.motion_start_time - cbs.tr.get_start()).count();
+
                 // Skip events outside the visible timerange
                 if(event_millis < 0 || event_millis > bar_duration_millis)
                     continue;
-                
+
                 // Calculate pixel position
                 float position_ratio = calculate_position_ratio(event_millis, bar_duration_millis);
                 float x = calc.center_box_left + (position_ratio * calc.center_box_width);
-                
+
                 // Validate pixel coordinates
                 if (x < 0 || x > 10000)
                 {
                     R_LOG_ERROR("Invalid analytics event coordinate: x=%f", x);
                     continue;
                 }
-                
+
                 // Skip drawing if this icon would overlap with the previous one
                 const float icon_width = 48.0f;
                 if (x - last_x < icon_width)
                 {
                     continue; // Skip this icon to prevent overlap
                 }
-                
+
                 // First, always draw a colored rectangle as debug indicator
                 float center_y = (calc.contents_top + calc.contents_bottom) / 2.0f;
                 float rect_size = 12.0f;
-                
+
                 ImU32 rect_color = IM_COL32(255, 255, 255, 255); // White default
                 std::string class_name;
-                
-                // Parse JSON to determine class type
-                try
+
+                // Get class from first detection
+                if (!event.detections.empty())
                 {
-                    auto j = nlohmann::json::parse(event.json_data);
-                    
-                    // Handle new JSON format with detections array
-                    if (j.contains("detections") && j["detections"].is_array() && !j["detections"].empty())
+                    class_name = event.detections[0].class_name;
+                    if (class_name == "person")
                     {
-                        // Get the first detection (or the one with highest confidence)
-                        auto& detection = j["detections"][0];
-                        if (detection.contains("class_name"))
-                        {
-                            class_name = detection["class_name"];
-                            if (class_name == "person")
-                            {
-                                rect_color = IM_COL32(100, 200, 255, 255); // Light blue
-                            }
-                            else if (class_name == "car" || class_name == "vehicle")
-                            {
-                                rect_color = IM_COL32(255, 150, 100, 255); // Light orange
-                            }
-                        }
+                        rect_color = IM_COL32(100, 200, 255, 255); // Light blue
                     }
-                    // Fallback to old format (direct class_name field)
-                    else if (j.contains("class_name"))
+                    else if (class_name == "car" || class_name == "vehicle")
                     {
-                        class_name = j["class_name"];
-                        if (class_name == "person")
-                        {
-                            rect_color = IM_COL32(100, 200, 255, 255); // Light blue
-                        }
-                        else if (class_name == "car" || class_name == "vehicle")
-                        {
-                            rect_color = IM_COL32(255, 150, 100, 255); // Light orange
-                        }
+                        rect_color = IM_COL32(255, 150, 100, 255); // Light orange
                     }
-                }
-                catch (const std::exception& e)
-                {
-                    R_LOG_ERROR("Failed to parse analytics JSON: %s", e.what());
                 }
                 
                 // Draw colored rectangle as background/debug indicator
