@@ -316,10 +316,6 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             this->_has_audio = true;
     });
 
-    //R_LOG_INFO("recording: camera.id=%s, file=%s, rtsp_url=%s", _camera.id.c_str(), _camera.record_file_path.value().c_str(), _camera.rtsp_url.value().c_str());
-    printf("recording: camera.id=%s, file=%s, rtsp_url=%s\n", _camera.id.c_str(), _camera.record_file_path.value().c_str(), _camera.rtsp_url.value().c_str());
-    fflush(stdout);
-
     _source.play();
 }
 
@@ -348,17 +344,7 @@ bool r_recording_context::dead() const
     auto video_dead = ((now - _last_v_time) > seconds(20));
     bool is_dead = (_has_audio)?((now - _last_a_time) > seconds(20))||video_dead:video_dead;
     if(_die)
-    {
-        printf("FORCE DIE\n");
         is_dead = true;
-    }
-
-    if(is_dead)
-    {
-        R_LOG_INFO("found dead stream: camera.id=%s now=%s last_v_time=%s last_a_time=%s", _camera.id.c_str(), r_time_utils::tp_to_iso_8601(now,false).c_str(), r_time_utils::tp_to_iso_8601(_last_v_time,false).c_str(), r_time_utils::tp_to_iso_8601(_last_a_time,false).c_str());
-        printf("found dead stream: camera.id=%s now=%s last_v_time=%s last_a_time=%s\n", _camera.id.c_str(), r_time_utils::tp_to_iso_8601(now,false).c_str(), r_time_utils::tp_to_iso_8601(_last_v_time,false).c_str(), r_time_utils::tp_to_iso_8601(_last_a_time,false).c_str());
-        fflush(stdout);
-    }
 
     return is_dead;
 }
@@ -766,6 +752,7 @@ void r_recording_context::_playback_restream_media_configure(GstRTSPMediaFactory
 
     tie(prs->friendly_name, prs->start_time, prs->end_time) =
         _get_playback_url_parts();
+
     prs->query_start = prs->start_time;
     prs->query_end = prs->start_time + seconds(5);
     prs->camera_id = _camera.id;

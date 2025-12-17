@@ -516,11 +516,15 @@ void pipeline_host::_entry_point()
             {
                 bool found_dead = false;
 
-                if(curr->second->running() && curr->second->last_v_pts() == curr->second->v_pts_at_check())
-                    found_dead = true;
+                // Skip dead check for recently-started pipelines (playback needs time to start)
+                if(curr->second->ready_for_dead_check())
+                {
+                    if(curr->second->running() && curr->second->last_v_pts() == curr->second->v_pts_at_check())
+                        found_dead = true;
 
-                if(curr->second->running() && curr->second->has_audio() && curr->second->last_a_pts() == curr->second->a_pts_at_check())
-                    found_dead = true;
+                    if(curr->second->running() && curr->second->has_audio() && curr->second->last_a_pts() == curr->second->a_pts_at_check())
+                        found_dead = true;
+                }
 
                 if(found_dead)
                 {

@@ -52,39 +52,63 @@ if(NOT TARGET opencv::opencv)
         )
         
         # Set different lib directories for Debug and Release configurations
+        # Check for vc17 first, fall back to vc16
+        if(EXISTS "${OPENCV_ROOT}/x64/vc17/lib")
+            set(OPENCV_LIB_DIR "${OPENCV_ROOT}/x64/vc17/lib")
+        elseif(EXISTS "${OPENCV_ROOT}/x64/vc16/lib")
+            set(OPENCV_LIB_DIR "${OPENCV_ROOT}/x64/vc16/lib")
+        else()
+            message(FATAL_ERROR "Could not find OpenCV lib directory at ${OPENCV_ROOT}/x64/vc17/lib or ${OPENCV_ROOT}/x64/vc16/lib")
+        endif()
+        message(STATUS "OpenCV lib directory: ${OPENCV_LIB_DIR}")
+
         target_link_directories(opencv::opencv INTERFACE
-            $<$<CONFIG:Debug>:${OPENCV_ROOT}/x64/vc17/lib>
-            $<$<CONFIG:Release>:${OPENCV_ROOT}/x64/vc17/lib>
-            $<$<CONFIG:RelWithDebInfo>:${OPENCV_ROOT}/x64/vc17/lib>
-            $<$<CONFIG:MinSizeRel>:${OPENCV_ROOT}/x64/vc17/lib>
+            $<$<CONFIG:Debug>:${OPENCV_LIB_DIR}>
+            $<$<CONFIG:Release>:${OPENCV_LIB_DIR}>
+            $<$<CONFIG:RelWithDebInfo>:${OPENCV_LIB_DIR}>
+            $<$<CONFIG:MinSizeRel>:${OPENCV_LIB_DIR}>
         )
 
-        set(OPENCV_MODULES
-            opencv_bgsegm
-            opencv_calib3d
-            opencv_core
-            opencv_dnn
-            opencv_features2d
-            opencv_flann
-            opencv_imgcodecs
-            opencv_imgproc
-            opencv_optflow
-            opencv_plot
-            opencv_tracking
-            opencv_video
-            opencv_xfeatures2d
-            opencv_ximgproc
-        )
-
-        foreach(module ${OPENCV_MODULES})
+        # Check if opencv_world exists (monolithic build) or individual modules
+        if(EXISTS "${OPENCV_LIB_DIR}/opencv_world4120.lib")
+            message(STATUS "Using OpenCV world (monolithic) library")
+            # Use opencv_world monolithic library
             target_link_libraries(opencv::opencv INTERFACE
-                $<$<CONFIG:Debug>:${module}4120d.lib>
-                $<$<CONFIG:Release>:${module}4120.lib>
-                $<$<CONFIG:RelWithDebInfo>:${module}4120.lib>
-                $<$<CONFIG:MinSizeRel>:${module}4120.lib>
+                $<$<CONFIG:Debug>:opencv_world4120d.lib>
+                $<$<CONFIG:Release>:opencv_world4120.lib>
+                $<$<CONFIG:RelWithDebInfo>:opencv_world4120.lib>
+                $<$<CONFIG:MinSizeRel>:opencv_world4120.lib>
             )
-        endforeach()
-        
+        else()
+            message(STATUS "Using OpenCV individual module libraries")
+            # Use individual module libraries
+            set(OPENCV_MODULES
+                opencv_bgsegm
+                opencv_calib3d
+                opencv_core
+                opencv_dnn
+                opencv_features2d
+                opencv_flann
+                opencv_imgcodecs
+                opencv_imgproc
+                opencv_optflow
+                opencv_plot
+                opencv_tracking
+                opencv_video
+                opencv_xfeatures2d
+                opencv_ximgproc
+            )
+
+            foreach(module ${OPENCV_MODULES})
+                target_link_libraries(opencv::opencv INTERFACE
+                    $<$<CONFIG:Debug>:${module}4120d.lib>
+                    $<$<CONFIG:Release>:${module}4120.lib>
+                    $<$<CONFIG:RelWithDebInfo>:${module}4120.lib>
+                    $<$<CONFIG:MinSizeRel>:${module}4120.lib>
+                )
+            endforeach()
+        endif()
+
         # Add dependent Windows libraries often needed by OpenCV
         target_link_libraries(opencv::opencv INTERFACE
             vfw32.lib

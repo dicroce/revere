@@ -44,6 +44,14 @@ public:
     inline int64_t a_pts_at_check() const {return _a_pts_at_check;}
     inline void set_a_pts_at_check(int64_t a_pts) {_a_pts_at_check = a_pts;}
 
+    // Returns true if enough time has passed since last play to perform dead check
+    // Playback streams need more time to start than live streams
+    inline bool ready_for_dead_check() const
+    {
+        auto elapsed = std::chrono::steady_clock::now() - _last_play_time;
+        return elapsed > std::chrono::seconds(15);
+    }
+
     inline void update_range(std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
     {
         _range_start = start;
@@ -85,6 +93,7 @@ private:
     std::chrono::system_clock::time_point _last_control_bar_pos;
     std::chrono::system_clock::time_point _range_start;
     std::chrono::system_clock::time_point _range_end;
+    std::chrono::steady_clock::time_point _last_play_time;
 };
 
 }
