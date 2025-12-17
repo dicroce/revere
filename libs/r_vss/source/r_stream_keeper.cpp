@@ -566,28 +566,40 @@ void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
 
     // Now, we have the friendly name, start time, and end time. Ultimately we need to send
     // this request to the proper r_recording_context, but to do that we need to access _streams
-    // but that all happens on the thread processing our command q. So, we'll post a command to 
+    // but that all happens on the thread processing our command q. So, we'll post a command to
     // it to take it from here.
 
-    r_stream_keeper_cmd cmd;
-    cmd.cmd = R_SK_CREATE_PLAYBACK_MOUNT;
-    cmd.friendly_name = friendly_name;
-    cmd.start_ts = r_time_utils::tp_to_epoch_millis(r_time_utils::iso_8601_to_tp(start_time_s));
-    cmd.end_ts = r_time_utils::tp_to_epoch_millis(r_time_utils::iso_8601_to_tp(end_time_s));
-    cmd.url = "/" + path;
+    try
+    {
+        r_stream_keeper_cmd cmd;
+        cmd.cmd = R_SK_CREATE_PLAYBACK_MOUNT;
+        cmd.friendly_name = friendly_name;
+        cmd.start_ts = r_time_utils::tp_to_epoch_millis(r_time_utils::iso_8601_to_tp(start_time_s));
+        cmd.end_ts = r_time_utils::tp_to_epoch_millis(r_time_utils::iso_8601_to_tp(end_time_s));
+        cmd.url = "/" + path;
 
-    // Why wait here? Because we need to wait for the mount to be created before we can send the response
-    // because the client might get their DESCRIBE request in before the mount is created and then we'll
-    // get a failure. We dont wait forever here however, just in case (also note, wait_for() will return
-    // immediately when the response is ready... so in most cases this wait will be very short).
-    _cmd_q.post(cmd).wait_for(chrono::seconds(1));
+        // Why wait here? Because we need to wait for the mount to be created before we can send the response
+        // because the client might get their DESCRIBE request in before the mount is created and then we'll
+        // get a failure. We dont wait forever here however, just in case (also note, wait_for() will return
+        // immediately when the response is ready... so in most cases this wait will be very short).
+        _cmd_q.post(cmd).wait_for(chrono::seconds(1));
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+    }
 }
 
 void r_stream_keeper::_create_playback_mount(const string& friendly_name, const string& url, uint64_t start_ts, uint64_t end_ts)
 {
     for(auto s : _streams)
     {
-        if(s.second->camera().friendly_name.value() == friendly_name)
+        // Normalize the camera's friendly name the same way URLs are created (spaces -> underscores)
+        // so we can match against the friendly_name extracted from the URL
+        string normalized_name = s.second->camera().friendly_name.value();
+        replace(begin(normalized_name), end(normalized_name), ' ', '_');
+
+        if(normalized_name == friendly_name)
         {
             s.second->create_playback_mount(_server, _mounts, url, start_ts, end_ts);
             return;

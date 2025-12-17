@@ -172,6 +172,8 @@ void pipeline_state::resize(uint16_t w, uint16_t h)
 
 void pipeline_state::play_live()
 {
+    _last_play_time = steady_clock::now();
+
     vector<r_arg> arguments;
     add_argument(arguments, "url", _si.rtsp_url);
     add_argument(arguments, "protocols", string("tcp"));
@@ -190,16 +192,17 @@ void pipeline_state::play()
     // add bar duration to playhead position and convert to iso 8601 and append to url.
     // set url on source and call play()
 
-    R_LOG_ERROR("PLAY %s", _si.rtsp_url.c_str());
-
     auto playback_duration = _range_end - _last_control_bar_pos;
 
     string url = r_string_utils::format(
         "%s_%s_%s",
         _si.rtsp_url.c_str(),
         r_time_utils::tp_to_iso_8601(_last_control_bar_pos, false).c_str(),
-        r_time_utils::tp_to_iso_8601(_last_control_bar_pos + playback_duration, false).c_str()
+        r_time_utils::tp_to_iso_8601(_range_end, false).c_str()
     );
+    R_LOG_INFO("  Playback URL: %s", url.c_str());
+
+    _last_play_time = steady_clock::now();
 
     vector<r_arg> arguments;
     add_argument(arguments, "url", url);
