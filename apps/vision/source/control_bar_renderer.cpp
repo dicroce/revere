@@ -9,7 +9,7 @@
 #include "imgui/imgui_internal.h"
 #include "r_utils/r_string_utils.h"
 #include "r_ui_utils/font_catalog.h"
-#include "svg_texture_manager.h"
+#include "icon_texture_manager.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "segment.h"
 #include "motion_event.h"
@@ -350,24 +350,16 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                     rect_color
                 );
                 
-                // Now try to draw SVG icon on top
-                GLuint texture_id = 0;
-                if (class_name == "person")
-                {
-                    texture_id = get_person_texture_id();
-                }
-                else if (class_name == "car" || class_name == "vehicle")
-                {
-                    texture_id = get_car_texture_id();
-                }
-                
+                // Try to draw icon on top
+                GLuint texture_id = get_icon_texture_id(class_name);
+
                 if (texture_id != 0)
-                {   
-                    // Draw the SVG icon using the texture
+                {
+                    // Draw the icon using the texture
                     float icon_size = 48.0f; // Match the size we created the textures at
                     float icon_x = x - icon_size / 2.0f;
                     float icon_y = center_y - icon_size / 2.0f;
-                    
+
                     // Draw background rectangle matching recording segments color
                     ImU32 bg_color = IM_COL32(73, 106, 129, 255); // RGB(0.286, 0.415, 0.505) converted to 0-255
                     draw_list->AddRectFilled(
@@ -375,11 +367,11 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                         ImVec2(icon_x + icon_size, icon_y + icon_size),
                         bg_color
                     );
-                    
+
                     // Convert GLuint to ImTextureID
                     ImTextureID imgui_texture_id = reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(texture_id));
-                    
-                    // Draw the SVG icon on top of the background
+
+                    // Draw the icon on top of the background
                     draw_list->AddImage(
                         imgui_texture_id,
                         ImVec2(icon_x, icon_y),

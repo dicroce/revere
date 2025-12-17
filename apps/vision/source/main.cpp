@@ -28,18 +28,21 @@
 #include "r_ui_utils/font_catalog.h"
 #include "r_ui_utils/wizard.h"
 #include "r_ui_utils/texture_loader.h"
-#include "r_ui_utils/svg_icons.h"
 
 // Define the fonts global variable for this app
 std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 
-// Global texture IDs for analytics icons
-static GLuint g_person_texture_id = 0;
-static GLuint g_car_texture_id = 0;
+// Global map of class names to texture IDs for analytics icons
+static std::unordered_map<std::string, GLuint> g_icon_textures;
 
-// Accessor functions for analytics renderer
-GLuint get_person_texture_id() { return g_person_texture_id; }
-GLuint get_car_texture_id() { return g_car_texture_id; }
+// Get texture ID for a class name
+GLuint get_icon_texture_id(const std::string& class_name)
+{
+    auto it = g_icon_textures.find(class_name);
+    if (it != g_icon_textures.end())
+        return it->second;
+    return 0;
+}
 
 #include "configure_state.h"
 #include "gl_utils.h"
@@ -51,19 +54,92 @@ GLuint get_car_texture_id() { return g_car_texture_id; }
 #include "error_handling.h"
 
 #include "V_32x32.h"
-// V_32x32_png && V_32x32_png_len
+#include "airplane_48x48_png.h" // airplane_48x48_png airplane_48x48_png_len 4
+#include "backpack_48x48_png.h" // backpack_48x48_png backpack_48x48_png_len 24
+#include "bicycle_48x48_png.h" // bicycle_48x48_png bicycle_48x48_png_len 1
+#include "bird_48x48_png.h" // bird_48x48_png bird_48x48_png_len 14
+#include "boat_48x48_png.h" // boat_48x48_png boat_48x48_png_len 8
+#include "bus_48x48_png.h" // bus_48x48_png bus_48x48_png_len 5
+#include "car_48x48_png.h" // car_48x48_png car_48x48_png_len 2
+#include "cat_48x48_png.h" // cat_48x48_png cat_48x48_png_len 15
+#include "dog_48x48_png.h" // dog_48x48_png dog_48x48_png_len 16
+#include "handbag_48x48_png.h" // handbag_48x48_png handbag_48x48_png_len 26
+#include "motorcycle_48x48_png.h" // motorcycle_48x48_png motorcycle_48x48_png_len 3
+#include "person_48x48_png.h" // person_48x48_png person_48x48_png_len 0
+#include "suitcase_48x48_png.h" // suitcase_48x48_png suitcase_48x48_png_len 28
+#include "train_48x48_png.h" // train_48x48_png train_48x48_png_len 6
+#include "truck_48x48_png.h" // truck_48x48_png truck_48x48_png_len 7
 
 using namespace std;
 using namespace r_utils;
 using namespace vision;
 
-// Create RGBA texture directly with alpha channel support
-static void create_svg_texture_direct(const r_ui_utils::icon_bitmap& icon, GLuint& texture_id)
+// Load PNG from embedded data and create OpenGL texture
+static GLuint create_png_texture(const unsigned char* png_data, unsigned int png_len)
 {
-    if (icon.pixels.empty()) return;
-    
-    // Use RGBA data directly (keep alpha channel for transparency)
-    gl_safe::create_texture_rgba(&texture_id, icon.width, icon.height, icon.pixels.data());
+    int width, height, channels;
+    unsigned char* pixels = stbi_load_from_memory(png_data, png_len, &width, &height, &channels, 4);
+    if (!pixels)
+        return 0;
+
+    GLuint texture_id = 0;
+    gl_safe::create_texture_rgba(&texture_id, width, height, pixels);
+
+    stbi_image_free(pixels);
+    return texture_id;
+}
+
+// Initialize all icon textures from embedded PNG data
+void init_icon_textures()
+{
+    R_LOG_INFO("Creating icon textures from PNG data...");
+
+    // Map class names to their PNG data
+    // Class names match YOLOv8 detection output
+    struct icon_data {
+        const char* class_name;
+        const unsigned char* png_data;
+        unsigned int png_len;
+    };
+
+    icon_data icons[] = {
+        {"person", person_48x48_png, person_48x48_png_len},           // class 0
+        {"bicycle", bicycle_48x48_png, bicycle_48x48_png_len},        // class 1
+        {"car", car_48x48_png, car_48x48_png_len},                    // class 2
+        {"motorcycle", motorcycle_48x48_png, motorcycle_48x48_png_len}, // class 3
+        {"airplane", airplane_48x48_png, airplane_48x48_png_len},     // class 4
+        {"bus", bus_48x48_png, bus_48x48_png_len},                    // class 5
+        {"train", train_48x48_png, train_48x48_png_len},              // class 6
+        {"truck", truck_48x48_png, truck_48x48_png_len},              // class 7
+        {"boat", boat_48x48_png, boat_48x48_png_len},                 // class 8
+        {"bird", bird_48x48_png, bird_48x48_png_len},                 // class 14
+        {"cat", cat_48x48_png, cat_48x48_png_len},                    // class 15
+        {"dog", dog_48x48_png, dog_48x48_png_len},                    // class 16
+        {"backpack", backpack_48x48_png, backpack_48x48_png_len},     // class 24
+        {"handbag", handbag_48x48_png, handbag_48x48_png_len},        // class 26
+        {"suitcase", suitcase_48x48_png, suitcase_48x48_png_len},     // class 28
+    };
+
+    for (const auto& icon : icons)
+    {
+        GLuint texture_id = create_png_texture(icon.png_data, icon.png_len);
+        if (texture_id != 0)
+        {
+            g_icon_textures[icon.class_name] = texture_id;
+            R_LOG_INFO("  %s: texture_id=%u", icon.class_name, texture_id);
+        }
+        else
+        {
+            R_LOG_ERROR("  Failed to create texture for %s", icon.class_name);
+        }
+    }
+
+    // Also map "vehicle" to the car texture for compatibility
+    auto car_it = g_icon_textures.find("car");
+    if (car_it != g_icon_textures.end())
+        g_icon_textures["vehicle"] = car_it->second;
+
+    R_LOG_INFO("Icon textures created: %zu total", g_icon_textures.size());
 }
 
 struct revere_update
@@ -409,18 +485,9 @@ int main(int, char**)
 
         auto last_ui_update_ts = chrono::steady_clock::now();
 
-        // Create SVG textures directly after ImGui initialization
-        R_LOG_INFO("Creating SVG icon textures...");
-        // Use black color in RGBA format: R=0, G=0, B=0, A=255
-        // Make icons larger: 48x48 (50% bigger than 32x32)
-        auto person_bitmap = r_ui_utils::render_svg_to_bitmap(r_ui_utils::svg_icons::person, 48, 0x000000FF);
-        auto car_bitmap = r_ui_utils::render_svg_to_bitmap(r_ui_utils::svg_icons::car, 48, 0x000000FF);
-        
-        create_svg_texture_direct(person_bitmap, g_person_texture_id);
-        create_svg_texture_direct(car_bitmap, g_car_texture_id);
-        
-        R_LOG_INFO("SVG textures created: person=%u, car=%u", g_person_texture_id, g_car_texture_id);
-        
+        // Create icon textures from embedded PNG data
+        init_icon_textures();
+
         r_ui_utils::texture_loader tl;
 
         // Main loop
