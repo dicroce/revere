@@ -54,21 +54,21 @@ GLuint get_icon_texture_id(const std::string& class_name)
 #include "error_handling.h"
 
 #include "V_32x32.h"
-#include "airplane_48x48_png.h" // airplane_48x48_png airplane_48x48_png_len 4
-#include "backpack_48x48_png.h" // backpack_48x48_png backpack_48x48_png_len 24
-#include "bicycle_48x48_png.h" // bicycle_48x48_png bicycle_48x48_png_len 1
-#include "bird_48x48_png.h" // bird_48x48_png bird_48x48_png_len 14
-#include "boat_48x48_png.h" // boat_48x48_png boat_48x48_png_len 8
-#include "bus_48x48_png.h" // bus_48x48_png bus_48x48_png_len 5
-#include "car_48x48_png.h" // car_48x48_png car_48x48_png_len 2
-#include "cat_48x48_png.h" // cat_48x48_png cat_48x48_png_len 15
-#include "dog_48x48_png.h" // dog_48x48_png dog_48x48_png_len 16
-#include "handbag_48x48_png.h" // handbag_48x48_png handbag_48x48_png_len 26
-#include "motorcycle_48x48_png.h" // motorcycle_48x48_png motorcycle_48x48_png_len 3
-#include "person_48x48_png.h" // person_48x48_png person_48x48_png_len 0
-#include "suitcase_48x48_png.h" // suitcase_48x48_png suitcase_48x48_png_len 28
-#include "train_48x48_png.h" // train_48x48_png train_48x48_png_len 6
-#include "truck_48x48_png.h" // truck_48x48_png truck_48x48_png_len 7
+#include "icons/airplane_48x48_png.h" // airplane_48x48_png airplane_48x48_png_len 4
+#include "icons/backpack_48x48_png.h" // backpack_48x48_png backpack_48x48_png_len 24
+#include "icons/bicycle_48x48_png.h" // bicycle_48x48_png bicycle_48x48_png_len 1
+#include "icons/bird_48x48_png.h" // bird_48x48_png bird_48x48_png_len 14
+#include "icons/boat_48x48_png.h" // boat_48x48_png boat_48x48_png_len 8
+#include "icons/bus_48x48_png.h" // bus_48x48_png bus_48x48_png_len 5
+#include "icons/car_48x48_png.h" // car_48x48_png car_48x48_png_len 2
+#include "icons/cat_48x48_png.h" // cat_48x48_png cat_48x48_png_len 15
+#include "icons/dog_48x48_png.h" // dog_48x48_png dog_48x48_png_len 16
+#include "icons/handbag_48x48_png.h" // handbag_48x48_png handbag_48x48_png_len 26
+#include "icons/motorcycle_48x48_png.h" // motorcycle_48x48_png motorcycle_48x48_png_len 3
+#include "icons/person_48x48_png.h" // person_48x48_png person_48x48_png_len 0
+#include "icons/suitcase_48x48_png.h" // suitcase_48x48_png suitcase_48x48_png_len 28
+#include "icons/train_48x48_png.h" // train_48x48_png train_48x48_png_len 6
+#include "icons/truck_48x48_png.h" // truck_48x48_png truck_48x48_png_len 7
 
 using namespace std;
 using namespace r_utils;

@@ -245,7 +245,7 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
         
         // YOLOv8 post-processing
         // Actual output format: w=8400, h=84, c=1 where 84 = 4 (bbox) + 80 (COCO classes)
-        const float conf_threshold = 0.5f;  // Reasonable threshold for person detection
+        const float conf_threshold = 0.65f;  // Higher threshold to reduce false positives (e.g., car misclassified as train)
         const float nms_threshold = 0.45f;
 
         if (out.w == 8400 && out.c == 1) {
@@ -374,7 +374,7 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
             // Filter detections based on motion region overlap
             if (motion_bbox.has_motion) {
                 std::vector<Detection> filtered_detections;
-                const float overlap_threshold = 0.1f; // 10% overlap required
+                const float overlap_threshold = 0.75f; // 75% overlap required
                 
                 for (const auto& detection : detections) {
                     // Calculate intersection area between detection and motion region
@@ -464,11 +464,11 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
                    class_name, pair.second, confidence * 100);
     }
 
-    // Convert timestamps to ISO 8601 format
+    // Convert timestamps to ISO 8601 format (UTC)
     auto start_tp = r_time_utils::epoch_millis_to_tp(start_time_ms);
     auto end_tp = r_time_utils::epoch_millis_to_tp(end_time_ms);
-    std::string start_time_str = r_time_utils::tp_to_iso_8601(start_tp, false);
-    std::string end_time_str = r_time_utils::tp_to_iso_8601(end_tp, false);
+    std::string start_time_str = r_time_utils::tp_to_iso_8601(start_tp, true);
+    std::string end_time_str = r_time_utils::tp_to_iso_8601(end_tp, true);
 
     // Construct JSON metadata object with analytics schema
     std::string json_metadata = R"({"analytics": {"motion_start_time": ")" + start_time_str +
@@ -483,7 +483,7 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
         first = false;
 
         auto det_tp = r_time_utils::epoch_millis_to_tp(detection.timestamp);
-        std::string det_time_str = r_time_utils::tp_to_iso_8601(det_tp, false);
+        std::string det_time_str = r_time_utils::tp_to_iso_8601(det_tp, true);
         const char* class_name = get_class_name(detection.class_id);
 
         // Format confidence to 3 decimal places

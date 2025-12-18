@@ -297,8 +297,12 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
             float last_x = -1000.0f; // Initialize to a value that won't cause skipping for the first icon
             for(const auto& event : cbs.analytics_events)
             {
-                // Calculate milliseconds from the start of the timerange
-                int64_t event_millis = duration_cast<milliseconds>(event.motion_start_time - cbs.tr.get_start()).count();
+                // Skip events with no detections
+                if (event.detections.empty())
+                    continue;
+
+                // Calculate milliseconds from the start of the timerange using the first detection's timestamp
+                int64_t event_millis = duration_cast<milliseconds>(event.detections[0].timestamp - cbs.tr.get_start()).count();
 
                 // Skip events outside the visible timerange
                 if(event_millis < 0 || event_millis > bar_duration_millis)

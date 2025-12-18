@@ -690,11 +690,9 @@ r_http::r_server_response r_ws::_get_analytics(const r_http::r_web_server<r_util
         auto start_time_s = args["start_time"];
         auto start_tp = r_time_utils::iso_8601_to_tp(start_time_s);
 
-        bool input_z_time = start_time_s.find("Z") != std::string::npos;
-
         if(args.find("end_time") == args.end())
             R_THROW(("Missing end_time."));
-        
+
         auto end_time_s = args["end_time"];
         auto end_tp = r_time_utils::iso_8601_to_tp(end_time_s);
 
