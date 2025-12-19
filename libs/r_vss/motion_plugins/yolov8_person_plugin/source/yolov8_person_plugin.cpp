@@ -138,6 +138,7 @@ void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
         if (msg.evt == r_vss::motion_event_start) {
             // Clear any existing detections for this camera (handle missing end events)
             _camera_detections[msg.camera_id].clear();
+            _camera_disproven_classes[msg.camera_id].clear();
             // Record motion start time
             _camera_motion_start_time[msg.camera_id] = msg.ts;
         }
@@ -162,6 +163,7 @@ void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
             // Clear the detection list for this camera
             _camera_detections[msg.camera_id].clear();
             _camera_motion_start_time.erase(msg.camera_id);
+            _camera_disproven_classes.erase(msg.camera_id);
         }
 
     } catch (const std::exception& e) {
@@ -371,39 +373,73 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
                 }
             }
 
-            // Filter detections based on motion region overlap
+            // ===================================================================================
+            // MOTION-DETECTION CORRELATION FILTERING
+            // ===================================================================================
+            //
+            // Problem: A stationary object (e.g., a parked car) may be detected in multiple
+            // frames during a motion event caused by something else (e.g., a person walking).
+            // If we simply report all detections, the event might be incorrectly labeled as
+            // "car" when it should be "person".
+            //
+            // Solution: We track which detection classes are "disproven" as the cause of motion.
+            // A class is disproven if, at any point during the motion event, we detect that
+            // class but its bounding box does NOT overlap with the motion region.
+            //
+            // Example scenario:
+            //   - Frame 1: Person walks near parked car. Motion region covers both.
+            //              Both "person" and "car" detections overlap motion. Both are valid.
+            //   - Frame 2: Person walks away from car. Motion region follows person.
+            //              "person" still overlaps motion (valid).
+            //              "car" detected but does NOT overlap motion -> CAR IS DISPROVEN.
+            //   - Frame 3+: Person continues walking. Car may or may not be detected.
+            //
+            // At event end: We filter out all detections of disproven classes.
+            // Result: Only "person" detections are reported, correctly identifying the event.
+            //
+            // Key insight: The object causing motion will ALWAYS overlap with the motion region
+            // (since it IS the motion). Stationary objects will eventually fail this test as
+            // the motion region moves away from them.
+            // ===================================================================================
             if (motion_bbox.has_motion) {
                 std::vector<Detection> filtered_detections;
                 const float overlap_threshold = 0.75f; // 75% overlap required
-                
+
                 for (const auto& detection : detections) {
                     // Calculate intersection area between detection and motion region
                     float det_x1 = detection.x1;
                     float det_y1 = detection.y1;
                     float det_x2 = detection.x2;
                     float det_y2 = detection.y2;
-                    
+
                     float motion_x1 = static_cast<float>(motion_bbox.x);
                     float motion_y1 = static_cast<float>(motion_bbox.y);
                     float motion_x2 = static_cast<float>(motion_bbox.x + motion_bbox.width);
                     float motion_y2 = static_cast<float>(motion_bbox.y + motion_bbox.height);
-                    
+
                     // Calculate intersection
                     float inter_x1 = std::max(det_x1, motion_x1);
                     float inter_y1 = std::max(det_y1, motion_y1);
                     float inter_x2 = std::min(det_x2, motion_x2);
                     float inter_y2 = std::min(det_y2, motion_y2);
-                    
+
+                    bool overlaps_motion = false;
                     if (inter_x1 < inter_x2 && inter_y1 < inter_y2) {
                         float inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1);
                         float det_area = (det_x2 - det_x1) * (det_y2 - det_y1);
-                        
+
                         if (det_area > 0) {
                             float overlap_ratio = inter_area / det_area;
-                            if (overlap_ratio >= overlap_threshold) {
-                                filtered_detections.push_back(detection);
-                            }
+                            overlaps_motion = (overlap_ratio >= overlap_threshold);
                         }
+                    }
+
+                    if (overlaps_motion) {
+                        filtered_detections.push_back(detection);
+                    } else {
+                        // This class was detected but NOT overlapping motion
+                        // Mark it as disproven - it cannot be the cause of this motion event
+                        _camera_disproven_classes[camera_id].insert(detection.class_id);
                     }
                 }
 
@@ -442,11 +478,22 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
         start_time_ms = start_it->second;
     }
 
-    // Count detections by class for logging
+    // Get disproven classes for this camera
+    std::set<int> disproven;
+    auto disproven_it = _camera_disproven_classes.find(camera_id);
+    if (disproven_it != _camera_disproven_classes.end()) {
+        disproven = disproven_it->second;
+    }
+
+    // Count detections by class for logging (excluding disproven classes)
     std::map<int, int> class_counts;
     std::map<int, float> max_confidence;
 
     for (const auto& detection : it->second) {
+        // Skip disproven classes - they were detected but not consistently overlapping motion
+        if (disproven.find(detection.class_id) != disproven.end()) {
+            continue;
+        }
         class_counts[detection.class_id]++;
         if (max_confidence.find(detection.class_id) == max_confidence.end()) {
             max_confidence[detection.class_id] = detection.score;
@@ -464,6 +511,14 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
                    class_name, pair.second, confidence * 100);
     }
 
+    // Log disproven classes for debugging
+    for (int class_id : disproven) {
+        const char* class_name = get_class_name(class_id);
+        R_LOG_INFO("yolov8_person_plugin: camera: %s disproven class: %s (detected but not consistently in motion)",
+                   (!maybe_friendly_name.is_null())?maybe_friendly_name.value().c_str():"unknown",
+                   class_name);
+    }
+
     // Convert timestamps to ISO 8601 format (UTC)
     auto start_tp = r_time_utils::epoch_millis_to_tp(start_time_ms);
     auto end_tp = r_time_utils::epoch_millis_to_tp(end_time_ms);
@@ -476,11 +531,18 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
                                 R"(", "detections": [)";
 
     bool first = true;
+    int valid_detection_count = 0;
     for (const auto& detection : it->second) {
+        // Skip disproven classes in JSON output
+        if (disproven.find(detection.class_id) != disproven.end()) {
+            continue;
+        }
+
         if (!first) {
             json_metadata += ", ";
         }
         first = false;
+        valid_detection_count++;
 
         auto det_tp = r_time_utils::epoch_millis_to_tp(detection.timestamp);
         std::string det_time_str = r_time_utils::tp_to_iso_8601(det_tp, true);
@@ -495,11 +557,13 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
                         R"(", "confidence": )" + conf_buf + "}";
     }
 
-    json_metadata += R"(], "total_detections": )" + std::to_string(it->second.size()) + "}}";
+    json_metadata += R"(], "total_detections": )" + std::to_string(valid_detection_count) + "}}";
 
-    // Log metadata to stream using start time as the event timestamp
-    auto& stream_keeper = _host->get_stream_keeper();
-    stream_keeper.write_metadata(camera_id, "yolov8_person_plugin", json_metadata, start_time_ms);
+    // Only write metadata if we have valid detections
+    if (valid_detection_count > 0) {
+        auto& stream_keeper = _host->get_stream_keeper();
+        stream_keeper.write_metadata(camera_id, "yolov8_person_plugin", json_metadata, start_time_ms);
+    }
 }
 
 const char* yolov8_person_plugin::get_class_name(int class_id)

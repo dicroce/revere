@@ -9,6 +9,7 @@
 #include <thread>
 #include <map>
 #include <list>
+#include <set>
 
 namespace ncnn {
     class Net;
@@ -53,6 +54,7 @@ private:
     r_utils::r_blocking_q<MotionEventMessage> _event_queue;
     std::map<std::string, std::list<Detection>> _camera_detections;
     std::map<std::string, int64_t> _camera_motion_start_time;
+    std::map<std::string, std::set<int>> _camera_disproven_classes; // Classes detected but not overlapping motion
 
     void _entry_point();
     void _process_motion_event(const MotionEventMessage& msg);

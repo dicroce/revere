@@ -1,6 +1,7 @@
 
 #include "test_r_utils.h"
 #include "r_utils/r_string_utils.h"
+#include "r_utils/r_weekly_schedule.h"
 #include "r_utils/r_stack_trace.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_file.h"
@@ -1427,6 +1428,131 @@ void test_r_utils::test_lower_bound_bytes()
     RTF_ASSERT(ufind(b, e, 5, false));
     // find thing after last thing should return false
     RTF_ASSERT(!ufind(b, e, 145));
+}
+
+void test_r_utils::test_weekly_schedule_basic()
+{
+    // Monday-Friday, 9am-5pm (8 hours)
+    r_weekly_schedule schedule("09:00:00", chrono::hours(8), {1, 2, 3, 4, 5});
+
+    // Create a known time point: a Wednesday at 10am local time
+    // We'll use tm to construct a specific local time
+    tm test_tm = {};
+    test_tm.tm_year = 2025 - 1900;  // Year since 1900
+    test_tm.tm_mon = 11;             // December (0-based)
+    test_tm.tm_mday = 17;            // Wednesday Dec 17, 2025
+    test_tm.tm_hour = 10;
+    test_tm.tm_min = 0;
+    test_tm.tm_sec = 0;
+    test_tm.tm_isdst = -1;           // Let system determine DST
+
+    time_t test_time = mktime(&test_tm);
+    auto tp_in = system_clock::from_time_t(test_time);
+
+    // Should be IN during work hours on a weekday
+    RTF_ASSERT(schedule.query(tp_in) == r_schedule_state::INSIDE);
+
+    // Same day at 6pm (after work hours)
+    test_tm.tm_hour = 18;
+    test_time = mktime(&test_tm);
+    auto tp_out = system_clock::from_time_t(test_time);
+    RTF_ASSERT(schedule.query(tp_out) == r_schedule_state::OUTSIDE);
+
+    // Saturday at 10am (not a work day)
+    test_tm.tm_mday = 20;  // Saturday Dec 20, 2025
+    test_tm.tm_hour = 10;
+    test_time = mktime(&test_tm);
+    auto tp_weekend = system_clock::from_time_t(test_time);
+    RTF_ASSERT(schedule.query(tp_weekend) == r_schedule_state::OUTSIDE);
+}
+
+void test_r_utils::test_weekly_schedule_span_midnight()
+{
+    // Night shift: 10pm to 6am (8 hours), Sunday-Thursday nights
+    r_weekly_schedule schedule("22:00:00", chrono::hours(8), {7, 1, 2, 3, 4});
+
+    // Sunday night at 11pm - should be IN
+    tm test_tm = {};
+    test_tm.tm_year = 2025 - 1900;
+    test_tm.tm_mon = 11;
+    test_tm.tm_mday = 21;  // Sunday Dec 21, 2025
+    test_tm.tm_hour = 23;
+    test_tm.tm_min = 0;
+    test_tm.tm_sec = 0;
+    test_tm.tm_isdst = -1;
+
+    time_t test_time = mktime(&test_tm);
+    auto tp_sunday_night = system_clock::from_time_t(test_time);
+    RTF_ASSERT(schedule.query(tp_sunday_night) == r_schedule_state::INSIDE);
+
+    // Monday morning at 3am - should still be IN (carry over from Sunday night)
+    test_tm.tm_mday = 22;  // Monday Dec 22, 2025
+    test_tm.tm_hour = 3;
+    test_time = mktime(&test_tm);
+    auto tp_monday_morning = system_clock::from_time_t(test_time);
+    RTF_ASSERT(schedule.query(tp_monday_morning) == r_schedule_state::INSIDE);
+
+    // Monday morning at 7am - should be OUT (past 6am)
+    test_tm.tm_hour = 7;
+    test_time = mktime(&test_tm);
+    auto tp_monday_late = system_clock::from_time_t(test_time);
+    RTF_ASSERT(schedule.query(tp_monday_late) == r_schedule_state::OUTSIDE);
+
+    // Friday night at 11pm - should be OUT (Friday=5 is not in the schedule)
+    test_tm.tm_mday = 26;  // Friday Dec 26, 2025
+    test_tm.tm_hour = 23;
+    test_time = mktime(&test_tm);
+    auto tp_friday_night = system_clock::from_time_t(test_time);
+    RTF_ASSERT(schedule.query(tp_friday_night) == r_schedule_state::OUTSIDE);
+}
+
+void test_r_utils::test_weekly_schedule_json()
+{
+    // Create a schedule and serialize it
+    r_weekly_schedule schedule1("08:30:00", chrono::seconds(32400), {1, 2, 3, 4, 5});
+
+    auto json = schedule1.to_json();
+
+    // Deserialize into a new schedule
+    r_weekly_schedule schedule2(json);
+
+    // Test that they behave the same way
+    tm test_tm = {};
+    test_tm.tm_year = 2025 - 1900;
+    test_tm.tm_mon = 11;
+    test_tm.tm_mday = 17;  // Wednesday
+    test_tm.tm_hour = 10;
+    test_tm.tm_min = 0;
+    test_tm.tm_sec = 0;
+    test_tm.tm_isdst = -1;
+
+    time_t test_time = mktime(&test_tm);
+    auto tp = system_clock::from_time_t(test_time);
+
+    RTF_ASSERT(schedule1.query(tp) == schedule2.query(tp));
+    RTF_ASSERT(schedule2.query(tp) == r_schedule_state::INSIDE);
+
+    // Also test construction from JSON string
+    r_weekly_schedule schedule3;
+    schedule3.from_json(json);
+    RTF_ASSERT(schedule3.query(tp) == r_schedule_state::INSIDE);
+}
+
+void test_r_utils::test_weekly_schedule_empty()
+{
+    // Empty schedule should always return OUT
+    r_weekly_schedule empty;
+
+    auto now = system_clock::now();
+    RTF_ASSERT(empty.query(now) == r_schedule_state::OUTSIDE);
+
+    // Schedule with no days should return OUT
+    r_weekly_schedule no_days("09:00:00", chrono::hours(8), {});
+    RTF_ASSERT(no_days.query(now) == r_schedule_state::OUTSIDE);
+
+    // Schedule with zero duration should return OUT
+    r_weekly_schedule no_duration("09:00:00", chrono::seconds(0), {1, 2, 3, 4, 5});
+    RTF_ASSERT(no_duration.query(now) == r_schedule_state::OUTSIDE);
 }
 
 #ifdef WIN32

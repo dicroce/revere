@@ -54,19 +54,56 @@ system_clock::time_point r_utils::r_time_utils::iso_8601_to_tp(const string& str
     }
 
     // Format 3: No timezone (treat as local time) - e.g., "2024-01-01T12:00:00.000"
+    // Parse the time components and convert from local time to UTC
     ss.clear();
     ss.str(str);
     ss >> date::parse("%FT%T", tp);
     if (!ss.fail())
-        return tp;
+    {
+        // tp now contains the parsed time as if it were UTC, but it represents local time
+        // We need to convert from local time to UTC
+        auto tp_ms = floor<milliseconds>(tp);
+        time_t parsed_time = system_clock::to_time_t(tp_ms);
+
+        // Use mktime to interpret the parsed time as local time and get UTC equivalent
+        struct tm local_tm;
+#ifdef IS_WINDOWS
+        gmtime_s(&local_tm, &parsed_time);  // Get the tm struct in UTC (which is what we parsed as)
+#else
+        gmtime_r(&parsed_time, &local_tm);
+#endif
+        // mktime interprets tm as local time and returns UTC time_t
+        time_t utc_time = mktime(&local_tm);
+
+        // Calculate the offset between local and UTC
+        time_t offset = parsed_time - utc_time;
+
+        // Apply offset to get true UTC time
+        return tp_ms - seconds(offset);
+    }
 
     // Format 4: Malformed format without colons - e.g., "2025-11-14T160437.070"
     // This handles the macOS bug where colons are missing from the time portion
+    // Also treat as local time and convert to UTC
     ss.clear();
     ss.str(str);
     ss >> date::parse("%FT%H%M%S", tp);
     if (!ss.fail())
-        return tp;
+    {
+        auto tp_ms = floor<milliseconds>(tp);
+        time_t parsed_time = system_clock::to_time_t(tp_ms);
+
+        struct tm local_tm;
+#ifdef IS_WINDOWS
+        gmtime_s(&local_tm, &parsed_time);
+#else
+        gmtime_r(&parsed_time, &local_tm);
+#endif
+        time_t utc_time = mktime(&local_tm);
+        time_t offset = parsed_time - utc_time;
+
+        return tp_ms - seconds(offset);
+    }
 
     // If all parsing attempts failed, throw an exception
     R_THROW(("Failed to parse ISO 8601 timestamp: %s", str.c_str()));
@@ -102,9 +139,27 @@ string r_utils::r_time_utils::tp_to_iso_8601(const system_clock::time_point& tp,
         //  We use separate %H:%M:%S instead of %T to ensure milliseconds are included
         return date::format("%FT%H:%M:%SZ", floor<milliseconds>(tp));
     } else {
-        // Format as local time without timezone offset (maintaining current behavior)
-        // Note: To include timezone offset, you'd need the tz.h header and compiled timezone support
-        return date::format("%FT%H:%M:%S", floor<milliseconds>(tp));
+        // Convert UTC time_point to local time and format without timezone suffix
+        auto tp_ms = floor<milliseconds>(tp);
+        time_t utc_time = system_clock::to_time_t(tp_ms);
+        auto sub_second_ms = duration_cast<milliseconds>(tp_ms - floor<seconds>(tp_ms)).count();
+
+        struct tm local_tm;
+#ifdef IS_WINDOWS
+        localtime_s(&local_tm, &utc_time);
+#else
+        localtime_r(&utc_time, &local_tm);
+#endif
+        char buffer[32];
+        snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02d.%03lld",
+                 local_tm.tm_year + 1900,
+                 local_tm.tm_mon + 1,
+                 local_tm.tm_mday,
+                 local_tm.tm_hour,
+                 local_tm.tm_min,
+                 local_tm.tm_sec,
+                 (long long)sub_second_ms);
+        return string(buffer);
     }
 #endif
 }

@@ -54,6 +54,10 @@ public:
       TEST(test_r_utils::test_sha1_basic);
       TEST(test_r_utils::test_exp_avg);
       TEST(test_r_utils::test_lower_bound_bytes);
+      TEST(test_r_utils::test_weekly_schedule_basic);
+      TEST(test_r_utils::test_weekly_schedule_span_midnight);
+      TEST(test_r_utils::test_weekly_schedule_json);
+      TEST(test_r_utils::test_weekly_schedule_empty);
     RTF_FIXTURE_END();
 
     virtual ~test_r_utils() throw() {}
@@ -110,4 +114,8 @@ public:
     void test_sha1_basic();
     void test_exp_avg();
     void test_lower_bound_bytes();
+    void test_weekly_schedule_basic();
+    void test_weekly_schedule_span_midnight();
+    void test_weekly_schedule_json();
+    void test_weekly_schedule_empty();
 };
