@@ -28,6 +28,7 @@ target_link_libraries(
     r_motion
     r_disco
     r_storage
+    r_onvif
     r_utils
     ffmpeg::ffmpeg
     opencv::opencv

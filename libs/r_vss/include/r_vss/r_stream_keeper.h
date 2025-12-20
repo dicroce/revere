@@ -104,6 +104,10 @@ public:
 
     R_API void post_frame_to_motion_engine(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_params, const std::string& camera_id, bool is_key_frame);
 
+    // Register/unregister callback for motion data from motion engine
+    R_API void set_motion_data_cb(const std::string& camera_id, motion_data_cb cb);
+    R_API void clear_motion_data_cb(const std::string& camera_id);
+
     R_API std::vector<uint8_t> get_jpg(const std::string& camera_id, int64_t ts, uint16_t w, uint16_t h);
 
     R_API std::chrono::hours get_retention_hours(const std::string& camera_id);

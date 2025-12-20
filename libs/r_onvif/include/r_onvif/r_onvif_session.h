@@ -53,10 +53,10 @@ enum class auth_mode
     unknown     // Not yet determined
 };
 
-class r_onvif_cam
+class r_onvif_cam_caps
 {
 public:
-    R_API r_onvif_cam(const std::string& host, int port, const std::string& protocol, const std::string& uri, const r_utils::r_nullable<std::string>& username, const r_utils::r_nullable<std::string>& password);
+    R_API r_onvif_cam_caps(const std::string& host, int port, const std::string& protocol, const std::string& uri, const r_utils::r_nullable<std::string>& username, const r_utils::r_nullable<std::string>& password);
 
     R_API time_t get_camera_system_date_and_time();
 
@@ -67,6 +67,8 @@ public:
     R_API std::vector<onvif_profile_info> get_profile_tokens(onvif_media_service media_service);
 
     R_API std::string get_stream_uri(onvif_media_service media_service, onvif_profile_token profile_token);
+
+    R_API int get_time_offset_seconds() const { return _time_offset_seconds; }
 
 private:
     std::pair<int, std::string> _soap_request(

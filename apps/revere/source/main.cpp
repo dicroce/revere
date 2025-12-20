@@ -31,6 +31,7 @@
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_file.h"
 #include "r_storage/r_md_storage_file.h"
+#include "r_storage/r_ring.h"
 #include "r_pipeline/r_stream_info.h"
 #include "r_pipeline/r_gst_source.h"
 #include "r_av/r_video_decoder.h"

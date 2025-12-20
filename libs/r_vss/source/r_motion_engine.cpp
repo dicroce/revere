@@ -12,7 +12,6 @@
 
 using namespace r_vss;
 using namespace r_utils;
-using namespace r_storage;
 using namespace r_motion;
 using namespace std;
 using namespace std::chrono;
@@ -22,6 +21,8 @@ r_motion_engine::r_motion_engine(r_disco::r_devices& devices, const string& top_
     _top_dir(top_dir),
     _work(),
     _work_contexts(),
+    _motion_data_cbs(),
+    _motion_data_cbs_mutex(),
     _running(false),
     _thread(),
     _meph(meph)
@@ -69,6 +70,18 @@ void r_motion_engine::remove_work_context(const string& camera_id)
     item.id = camera_id;
     item.ts = -1; // Use -1 as a sentinel value to indicate removal request
     _work.post(item);
+}
+
+void r_motion_engine::set_motion_data_cb(const string& camera_id, motion_data_cb cb)
+{
+    lock_guard<mutex> g(_motion_data_cbs_mutex);
+    _motion_data_cbs[camera_id] = cb;
+}
+
+void r_motion_engine::clear_motion_data_cb(const string& camera_id)
+{
+    lock_guard<mutex> g(_motion_data_cbs_mutex);
+    _motion_data_cbs.erase(camera_id);
 }
 
 void r_motion_engine::_entry_point()
@@ -144,21 +157,22 @@ void r_motion_engine::_entry_point()
                         {
                             auto motion_info = maybe_motion_info.value();
 
-                            uint8_t md[RING_MOTION_EVENT_SIZE];
                             auto ts = work.ts;
-                            memcpy(md, (uint8_t*)&ts, 8);
-
                             const uint64_t max_motion = output_w * output_h;
 
-                            md[8] = (uint8_t)(((double)motion_info.motion / (double)max_motion) * 100);
-                            md[9] = (uint8_t)(((double)motion_info.avg_motion / (double)max_motion) * 100);
-                            md[10] = (uint8_t)(((double)motion_info.stddev / (double)max_motion) * 100);
-
-                            system_clock::time_point tp{milliseconds{ts}};
+                            uint8_t motion_pct = (uint8_t)(((double)motion_info.motion / (double)max_motion) * 100);
+                            uint8_t avg_motion_pct = (uint8_t)(((double)motion_info.avg_motion / (double)max_motion) * 100);
+                            uint8_t stddev_pct = (uint8_t)(((double)motion_info.stddev / (double)max_motion) * 100);
 
                             if(found_wc->second->first_ts_valid() && ((ts - found_wc->second->get_first_ts()) > 60000))
                             {
-                                found_wc->second->ring().write(tp, &md[0]);
+                                // Call the motion data callback if registered
+                                {
+                                    lock_guard<mutex> g(_motion_data_cbs_mutex);
+                                    auto cb_it = _motion_data_cbs.find(work.id);
+                                    if(cb_it != _motion_data_cbs.end() && cb_it->second)
+                                        cb_it->second(work.id, ts, motion_pct, avg_motion_pct, stddev_pct);
+                                }
 
                                 // Convert motion region from r_motion to r_vss format
                                 r_vss::motion_region motion_bbox;
@@ -233,7 +247,6 @@ map<string, shared_ptr<r_work_context>>::iterator r_motion_engine::_create_work_
     auto wc = make_shared<r_work_context>(
         r_av::encoding_to_av_codec_id(item.video_codec_name),
         camera,
-        _top_dir + PATH_SLASH + "video" + PATH_SLASH + camera.motion_detection_file_path.value(),
         r_pipeline::get_video_codec_extradata(item.video_codec_name, item.video_codec_parameters)
     );
 

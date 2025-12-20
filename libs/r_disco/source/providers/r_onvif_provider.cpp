@@ -51,7 +51,7 @@ void r_onvif_provider::interrogate_camera(
         int port = sc.port.is_null() ? 80 : sc.port.value();
         string protocol = sc.protocol.is_null() ? "http" : sc.protocol.value();
 
-        r_onvif::r_onvif_cam cam(sc.ipv4.value(), port, protocol, sc.xaddrs.value(), username, password);
+        r_onvif::r_onvif_cam_caps cam(sc.ipv4.value(), port, protocol, sc.xaddrs.value(), username, password);
 
         auto caps = cam.get_camera_capabilities();
         auto oms = cam.get_media_service(caps);
@@ -149,7 +149,7 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
         int port = config.port.is_null() ? 80 : config.port.value();
         string protocol = config.protocol.is_null() ? "http" : config.protocol.value();
 
-        r_onvif::r_onvif_cam cam(config.ipv4.value(), port, protocol, xaddrs, username, password);
+        r_onvif::r_onvif_cam_caps cam(config.ipv4.value(), port, protocol, xaddrs, username, password);
 
         auto caps = cam.get_camera_capabilities();
         auto oms = cam.get_media_service(caps);

@@ -19,6 +19,7 @@
 
 #include "r_vss/r_recording_context.h"
 #include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_motion_engine.h"
 #include "r_vss/r_ws.h"
 #include "r_vss/r_query.h"
 #include "r_pipeline/r_arg.h"
@@ -32,6 +33,7 @@
 #include "r_utils/r_logger.h"
 #include "r_utils/r_blob_tree.h"
 #include "r_utils/r_time_utils.h"
+#include "r_http/r_utils.h"
 #include <vector>
 
 using namespace r_vss;
@@ -69,7 +71,10 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     _got_first_audio_sample(false),
     _got_first_video_sample(false),
     _die(false),
-    _ws(ws)
+    _ws(ws),
+    _onvif_cam(),
+    _using_onvif_motion_events(false),
+    _motion_ring()
 {
     vector<r_arg> arguments;
     add_argument(arguments, "url", _camera.rtsp_url.value());
@@ -267,7 +272,8 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
             bool do_motion = (!this->_camera.do_motion_detection.is_null())?this->_camera.do_motion_detection.value():false;
 
-            if(do_motion)
+            // Only use software motion detection if motion is enabled AND we're not using ONVIF camera-side events
+            if(do_motion && !this->_using_onvif_motion_events)
             {
                 this->_sk->post_frame_to_motion_engine(
                     buffer,
@@ -316,11 +322,96 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             this->_has_audio = true;
     });
 
+    // Set up motion detection if enabled
+    bool do_motion = (!_camera.do_motion_detection.is_null()) ? _camera.do_motion_detection.value() : false;
+
+    if(do_motion && !_camera.motion_detection_file_path.is_null())
+    {
+        // Create the motion ring buffer for this camera
+        string motion_ring_path = _top_dir + PATH_SLASH + "video" + PATH_SLASH + _camera.motion_detection_file_path.value();
+        _motion_ring = make_unique<r_ring>(motion_ring_path, RING_MOTION_EVENT_SIZE);
+
+        // Try ONVIF camera-side motion detection first if available
+        if(!_camera.xaddrs.is_null() && !_camera.ipv4.is_null())
+        {
+            try
+            {
+                // Parse port and protocol from xaddrs URL
+                string host, protocol, uri;
+                int port;
+                r_http::parse_url_parts(_camera.xaddrs.value(), host, port, protocol, uri);
+
+                _onvif_cam = make_unique<r_onvif::r_onvif_cam>(
+                    _camera.ipv4.value(),
+                    port,
+                    protocol,
+                    _camera.xaddrs.value(),
+                    _camera.rtsp_username,
+                    _camera.rtsp_password
+                );
+
+                if(_onvif_cam->supports_motion_events())
+                {
+                    bool started = _onvif_cam->start_motion_subscription(
+                        [this](bool motion_detected, int64_t timestamp_ms) {
+                            // Write motion event to the ring
+                            // For ONVIF events: motion=100% when detected, 0% when ended
+                            uint8_t motion_pct = motion_detected ? 100 : 0;
+                            _write_motion_data(timestamp_ms, motion_pct, motion_pct, 0);
+                        }
+                    );
+
+                    if(started)
+                    {
+                        _using_onvif_motion_events = true;
+                        R_LOG_INFO("Using ONVIF camera-side motion detection for %s",
+                                   _camera.friendly_name.value().c_str());
+                    }
+                    else
+                    {
+                        R_LOG_WARNING("Failed to start ONVIF motion subscription for %s, using software motion",
+                                      _camera.friendly_name.value().c_str());
+                        _onvif_cam.reset();
+                    }
+                }
+                else
+                {
+                    R_LOG_INFO("Camera %s does not support ONVIF motion events, using software motion",
+                               _camera.friendly_name.value().c_str());
+                    _onvif_cam.reset();
+                }
+            }
+            catch(const exception& e)
+            {
+                R_LOG_WARNING("Failed to setup ONVIF motion for %s: %s, using software motion",
+                              _camera.friendly_name.value().c_str(), e.what());
+                _onvif_cam.reset();
+                _using_onvif_motion_events = false;
+            }
+        }
+
+        // If not using ONVIF events, register callback for software motion detection
+        if(!_using_onvif_motion_events)
+        {
+            _sk->set_motion_data_cb(_camera.id, [this](const string& camera_id, int64_t ts, uint8_t motion_pct, uint8_t avg_motion_pct, uint8_t stddev_pct) {
+                _write_motion_data(ts, motion_pct, avg_motion_pct, stddev_pct);
+            });
+        }
+    }
+
     _source.play();
 }
 
 r_recording_context::~r_recording_context() noexcept
 {
+    // Stop ONVIF motion subscription first
+    if(_onvif_cam)
+        _onvif_cam->stop_motion_subscription();
+
+    // Clear motion data callback if using software motion detection
+    if(!_using_onvif_motion_events && _motion_ring)
+        _sk->clear_motion_data_cb(_camera.id);
+
     _sk->remove_restream_mount(_restream_mount_path);
 
     _source.stop();
@@ -344,6 +435,10 @@ bool r_recording_context::dead() const
     auto video_dead = ((now - _last_v_time) > seconds(20));
     bool is_dead = (_has_audio)?((now - _last_a_time) > seconds(20))||video_dead:video_dead;
     if(_die)
+        is_dead = true;
+
+    // Also check ONVIF event subscription health
+    if(_onvif_cam && _onvif_cam->dead())
         is_dead = true;
 
     return is_dead;
@@ -824,4 +919,20 @@ void r_recording_context::_playback_restream_cleanup_cbs(playback_restreaming_st
     prs->playback_thread.join();
 
     rc->_playback_restreaming_states.erase(media);
+}
+
+void r_recording_context::_write_motion_data(int64_t timestamp_ms, uint8_t motion_pct, uint8_t avg_motion_pct, uint8_t stddev_pct)
+{
+    if(!_motion_ring)
+        return;
+
+    // Build the motion event data (11 bytes total)
+    uint8_t md[RING_MOTION_EVENT_SIZE];
+    memcpy(md, (uint8_t*)&timestamp_ms, 8);
+    md[8] = motion_pct;
+    md[9] = avg_motion_pct;
+    md[10] = stddev_pct;
+
+    system_clock::time_point tp{milliseconds{timestamp_ms}};
+    _motion_ring->write(tp, &md[0]);
 }

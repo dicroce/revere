@@ -258,6 +258,16 @@ void r_stream_keeper::post_frame_to_motion_engine(r_pipeline::r_gst_buffer buffe
     _motionEngine.post_frame(buffer, ts, video_codec_name, video_codec_params, camera_id, is_key_frame);
 }
 
+void r_stream_keeper::set_motion_data_cb(const string& camera_id, motion_data_cb cb)
+{
+    _motionEngine.set_motion_data_cb(camera_id, cb);
+}
+
+void r_stream_keeper::clear_motion_data_cb(const string& camera_id)
+{
+    _motionEngine.clear_motion_data_cb(camera_id);
+}
+
 vector<uint8_t> r_stream_keeper::get_jpg(const string& camera_id, int64_t ts, uint16_t w, uint16_t h)
 {
     return query_get_jpg(_top_dir, _devices, camera_id, r_time_utils::epoch_millis_to_tp(ts), w, h);

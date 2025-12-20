@@ -11,6 +11,8 @@
 #include "r_pipeline/r_stream_info.h"
 #include "r_storage/r_storage_file.h"
 #include "r_storage/r_md_storage_file.h"
+#include "r_storage/r_ring.h"
+#include "r_onvif/r_onvif_cam.h"
 #include "r_utils/r_blocking_q.h"
 #include "r_utils/r_macro.h"
 #include <mutex>
@@ -159,6 +161,16 @@ private:
     bool _got_first_video_sample;
     bool _die;
     r_ws& _ws;
+
+    // ONVIF camera-side motion detection
+    std::unique_ptr<r_onvif::r_onvif_cam> _onvif_cam;
+    bool _using_onvif_motion_events;
+
+    // Motion data ring buffer - used by both software motion detection and ONVIF events
+    std::unique_ptr<r_storage::r_ring> _motion_ring;
+
+    // Helper to write motion data to the ring
+    void _write_motion_data(int64_t timestamp_ms, uint8_t motion_pct, uint8_t avg_motion_pct, uint8_t stddev_pct);
 };
 
 }

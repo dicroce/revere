@@ -8,12 +8,13 @@
 #include "r_av/r_video_decoder.h"
 #include "r_pipeline/r_gst_buffer.h"
 #include "r_disco/r_devices.h"
-#include "r_storage/r_ring.h"
 #include "r_vss/r_motion_event_plugin_host.h"
 #include <vector>
 #include <map>
 #include <memory>
 #include <thread>
+#include <functional>
+#include <mutex>
 
 namespace r_vss
 {
@@ -22,6 +23,9 @@ enum
 {
     RING_MOTION_EVENT_SIZE = 11
 };
+
+// Callback for motion data: (camera_id, timestamp_ms, motion_percent, avg_motion_percent, stddev_percent)
+using motion_data_cb = std::function<void(const std::string&, int64_t, uint8_t, uint8_t, uint8_t)>;
 
 struct r_work_item
 {
@@ -38,12 +42,10 @@ struct r_work_context
 public:
     r_work_context(AVCodecID codec_id,
                    const r_disco::r_camera& camera,
-                   const std::string& path,
                    const std::vector<uint8_t> ed) :
         _motion_state(60),
         _video_decoder(codec_id),
         _camera(camera),
-        _ring(path, RING_MOTION_EVENT_SIZE),
         _in_event(false),
         _decode_all_frames(false),
         _first_ts(-1)
@@ -55,7 +57,6 @@ public:
     }
     r_av::r_video_decoder& decoder(){return _video_decoder;}
     r_motion::r_motion_state& motion_state(){return _motion_state;}
-    r_storage::r_ring& ring(){return _ring;}
     bool get_in_event() const { return _in_event; }
     void set_in_event(bool v) { _in_event = v; }
     std::string get_camera_id() { return _camera.id; }
@@ -68,7 +69,6 @@ private:
     r_motion::r_motion_state _motion_state;
     r_av::r_video_decoder _video_decoder;
     r_disco::r_camera _camera;
-    r_storage::r_ring _ring;
     bool _in_event;
     bool _decode_all_frames;
     int64_t _first_ts;
@@ -93,6 +93,10 @@ public:
 
     R_API void remove_work_context(const std::string& camera_id);
 
+    // Register callback for motion data - called when motion is detected
+    R_API void set_motion_data_cb(const std::string& camera_id, motion_data_cb cb);
+    R_API void clear_motion_data_cb(const std::string& camera_id);
+
 private:
     void _entry_point();
     std::map<std::string, std::shared_ptr<r_work_context>>::iterator _create_work_context(const r_work_item& item);
@@ -100,6 +104,8 @@ private:
     std::string _top_dir;
     r_utils::r_blocking_q<r_work_item> _work;
     std::map<std::string, std::shared_ptr<r_work_context>> _work_contexts;
+    std::map<std::string, motion_data_cb> _motion_data_cbs;
+    std::mutex _motion_data_cbs_mutex;
     bool _running;
     std::thread _thread;
     r_motion_event_plugin_host& _meph;

@@ -84,9 +84,17 @@ retry:
     std::unique_ptr<r_utils::r_socket_base> sock;
 
     if (port == 443)
-        sock = std::make_unique<r_utils::r_ssl_socket>();
+    {
+        auto ssl_sock = std::make_unique<r_utils::r_ssl_socket>();
+        ssl_sock->set_io_timeout(30000);  // 30 second timeout for ONVIF operations
+        sock = std::move(ssl_sock);
+    }
     else
-        sock = std::make_unique<r_utils::r_socket>();
+    {
+        auto plain_sock = std::make_unique<r_utils::r_socket>();
+        plain_sock->set_io_timeout(30000);  // 30 second timeout for ONVIF operations
+        sock = std::move(plain_sock);
+    }
 
     sock->connect(host, port);
 
@@ -204,7 +212,12 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
     r_nullable<time_t> response;
 
     pugi::xml_document doc;
-    doc.load_string(xmlResponse.c_str());
+    auto parse_result = doc.load_string(xmlResponse.c_str());
+    if (!parse_result)
+    {
+        R_LOG_WARNING("Failed to parse date/time XML: %s", parse_result.description());
+        return response;
+    }
 
     // Check for DaylightSavings using namespace-agnostic XPath
     bool daylightSavings = false;
@@ -226,6 +239,7 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
     // First try to get UTCDateTime
     struct tm timeinfo = {};
     bool useUtc = false;
+    bool foundDateTime = false;
 
     pugi::xpath_node utcNode = _select_node_local_abs(doc, "UTCDateTime", NS_SCHEMA);
     if (utcNode)
@@ -247,6 +261,7 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
                 timeinfo.tm_year = std::stoi(yearNode.node().child_value()) - 1900;
                 timeinfo.tm_mon = std::stoi(monthNode.node().child_value()) - 1;
                 timeinfo.tm_mday = std::stoi(dayNode.node().child_value());
+                foundDateTime = true;
             }
         }
 
@@ -294,6 +309,7 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
                     timeinfo.tm_year = std::stoi(yearNode.node().child_value()) - 1900;
                     timeinfo.tm_mon = std::stoi(monthNode.node().child_value()) - 1;
                     timeinfo.tm_mday = std::stoi(dayNode.node().child_value());
+                    foundDateTime = true;
                 }
             }
 
@@ -315,6 +331,19 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
                 }
             }
         }
+    }
+
+    if (!foundDateTime)
+    {
+        // Some cameras (like IPC-BO) report DateTimeType=NTP but don't include actual datetime
+        // In this case, we can't calculate a time offset, so we'll return current time
+        // (which will result in a 0 offset)
+        R_LOG_WARNING("Camera returned no UTCDateTime or LocalDateTime (NTP mode without time data). Using local time.");
+
+        // Return current UTC time so the offset will be 0
+        auto now = std::chrono::system_clock::now();
+        response = std::chrono::system_clock::to_time_t(now);
+        return response;
     }
 
     // Convert to time_t
@@ -375,8 +404,16 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
         timestamp = mktime(&timeinfo);
     }
 
+    // Sanity check: if timestamp is before year 2000, something went wrong
+    // Year 2000 in epoch seconds is approximately 946684800
+    if (timestamp < 946684800)
+    {
+        R_LOG_WARNING("Parsed ONVIF date/time resulted in timestamp before year 2000 (%lld), returning null", (long long)timestamp);
+        return r_nullable<time_t>();
+    }
+
     response = timestamp;
-    
+
     return response;
 }
 
@@ -1063,7 +1100,7 @@ std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::s
     return filtered;
 }
 
-r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::string& protocol, const std::string& uri, const r_utils::r_nullable<std::string>& username, const r_utils::r_nullable<std::string>& password)
+r_onvif::r_onvif_cam_caps::r_onvif_cam_caps(const std::string& host, int port, const std::string& protocol, const std::string& uri, const r_utils::r_nullable<std::string>& username, const r_utils::r_nullable<std::string>& password)
 {
     _service_host = host;
     _service_port = port;
@@ -1077,6 +1114,21 @@ r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::
 
     _time_offset_seconds = (int)((int64_t)camera_time - (int64_t)now);
 
+    // Log the time offset - even large offsets are valid if the camera clock is wrong
+    // We need to use the actual offset for WS-Security authentication to work
+    // 1 year = 31536000 seconds
+    if (_time_offset_seconds > 31536000 || _time_offset_seconds < -31536000)
+    {
+        R_LOG_WARNING("Camera time offset (%d seconds / %.1f days) is very large - camera clock may need syncing",
+                      _time_offset_seconds, _time_offset_seconds / 86400.0);
+    }
+    else
+    {
+        R_LOG_INFO("Camera time offset: %d seconds (camera %s local time)",
+                   _time_offset_seconds,
+                   _time_offset_seconds >= 0 ? "ahead of" : "behind");
+    }
+
     _username = username;
     _password = password;
 }
@@ -1084,16 +1136,19 @@ r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::
 // Helper to check if response indicates SOAP version mismatch
 static bool _is_soap_version_error(int status, const string& body)
 {
-    // HTTP 400 (Bad Request) or 415 (Unsupported Media Type) often indicate version mismatch
-    if (status == 400 || status == 415)
+    // HTTP 415 (Unsupported Media Type) is a clear SOAP version mismatch
+    if (status == 415)
         return true;
 
     // Check for SOAP Fault about envelope/namespace
     if (body.find("VersionMismatch") != string::npos ||
-        body.find("MustUnderstand") != string::npos ||
         body.find("InvalidEnvelopeNamespace") != string::npos ||
         (body.find("Fault") != string::npos && body.find("envelope") != string::npos))
         return true;
+
+    // HTTP 400 is only a version error if the body indicates so
+    // (e.g., mentions envelope or namespace issues)
+    // Don't treat all 400s as version errors - could be auth issues, time sync issues, etc.
 
     return false;
 }
@@ -1160,14 +1215,17 @@ static bool _is_auth_error(int status, const string& body)
         body.find("FailedAuthentication") != string::npos ||
         body.find("AuthenticationFailed") != string::npos ||
         body.find("InvalidSecurityToken") != string::npos ||
-        body.find("FailedCheck") != string::npos)
+        body.find("FailedCheck") != string::npos ||
+        body.find("MessageExpired") != string::npos ||       // WS-Security timestamp expired
+        body.find("wsse:InvalidSecurity") != string::npos || // Invalid security header
+        (status == 400 && body.find("MustUnderstand") != string::npos)) // Security header must be understood
         return true;
 
     return false;
 }
 
 // SOAP request with automatic SOAP 1.2->1.1 and Digest->Text fallback
-pair<int, string> r_onvif::r_onvif_cam::_soap_request(
+pair<int, string> r_onvif::r_onvif_cam_caps::_soap_request(
     const string& host,
     int port,
     const string& uri,
@@ -1244,7 +1302,7 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
     return result;
 }
 
-time_t r_onvif::r_onvif_cam::get_camera_system_date_and_time()
+time_t r_onvif::r_onvif_cam_caps::get_camera_system_date_and_time()
 {
     auto result = _soap_request(
         _service_host, _service_port, _service_uri,
@@ -1254,6 +1312,8 @@ time_t r_onvif::r_onvif_cam::get_camera_system_date_and_time()
         }
     );
 
+    R_LOG_DEBUG("GetSystemDateAndTime response (status=%d): %s", result.first, result.second.c_str());
+
     auto maybe_parsed_ts = _parse_onvif_date_time(result.second);
 
     if(maybe_parsed_ts.is_null())
@@ -1262,7 +1322,7 @@ time_t r_onvif::r_onvif_cam::get_camera_system_date_and_time()
     return maybe_parsed_ts.value();
 }
 
-r_onvif::onvif_capabilities r_onvif::r_onvif_cam::get_camera_capabilities()
+r_onvif::onvif_capabilities r_onvif::r_onvif_cam_caps::get_camera_capabilities()
 {
     auto result = _soap_request(
         _service_host, _service_port, _service_uri,
@@ -1280,7 +1340,7 @@ r_onvif::onvif_capabilities r_onvif::r_onvif_cam::get_camera_capabilities()
     return result.second;
 }
 
-r_onvif::onvif_media_service r_onvif::r_onvif_cam::get_media_service(const r_onvif::onvif_capabilities& capabilities) const
+r_onvif::onvif_media_service r_onvif::r_onvif_cam_caps::get_media_service(const r_onvif::onvif_capabilities& capabilities) const
 {
     pugi::xml_document doc;
     if (!doc.load_string(capabilities.c_str()))
@@ -1329,7 +1389,7 @@ r_onvif::onvif_media_service r_onvif::r_onvif_cam::get_media_service(const r_onv
     return node.node().child_value();
 }
 
-std::vector<r_onvif::onvif_profile_info> r_onvif::r_onvif_cam::get_profile_tokens(r_onvif::onvif_media_service media_service)
+std::vector<r_onvif::onvif_profile_info> r_onvif::r_onvif_cam_caps::get_profile_tokens(r_onvif::onvif_media_service media_service)
 {
     string host, protocol, uri;
     int port;
@@ -1454,7 +1514,7 @@ std::vector<r_onvif::onvif_profile_info> r_onvif::r_onvif_cam::get_profile_token
     return profiles;
 }
 
-string r_onvif::r_onvif_cam::get_stream_uri(onvif_media_service media_service, onvif_profile_token profile_token)
+string r_onvif::r_onvif_cam_caps::get_stream_uri(onvif_media_service media_service, onvif_profile_token profile_token)
 {
     string host, http_protocol, uri;
     int port;
