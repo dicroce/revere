@@ -369,6 +369,8 @@ r_md_storage_file& r_recording_context::metadata_storage()
 
 void r_recording_context::write_metadata(const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms)
 {
+    R_LOG_INFO("[RECORDING_CONTEXT] write_metadata stream_tag=%s ts=%lld json=%s",
+               stream_tag.c_str(), (long long)timestamp_ms, json_data.c_str());
     _md_storage_file.write_metadata(stream_tag, json_data, timestamp_ms);
 }
 

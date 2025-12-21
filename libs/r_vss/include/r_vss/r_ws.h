@@ -50,10 +50,6 @@ private:
                                           r_utils::r_socket& conn,
                                           const r_http::r_server_request& request);
 
-    r_http::r_server_response _get_motions(const r_http::r_web_server<r_utils::r_socket>& r_ws,
-                                           r_utils::r_socket& conn,
-                                           const r_http::r_server_request& request);
-
     r_http::r_server_response _get_motion_events(const r_http::r_web_server<r_utils::r_socket>& r_ws,
                                                  r_utils::r_socket& conn,
                                                  const r_http::r_server_request& request);

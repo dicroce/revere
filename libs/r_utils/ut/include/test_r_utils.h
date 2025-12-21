@@ -58,6 +58,11 @@ public:
       TEST(test_r_utils::test_weekly_schedule_span_midnight);
       TEST(test_r_utils::test_weekly_schedule_json);
       TEST(test_r_utils::test_weekly_schedule_empty);
+      TEST(test_r_utils::test_ring_buffer_basic);
+      TEST(test_r_utils::test_ring_buffer_overwrite);
+      TEST(test_r_utils::test_ring_buffer_iteration);
+      TEST(test_r_utils::test_ring_buffer_count_if);
+      TEST(test_r_utils::test_ring_buffer_last_n_match);
     RTF_FIXTURE_END();
 
     virtual ~test_r_utils() throw() {}
@@ -118,4 +123,9 @@ public:
     void test_weekly_schedule_span_midnight();
     void test_weekly_schedule_json();
     void test_weekly_schedule_empty();
+    void test_ring_buffer_basic();
+    void test_ring_buffer_overwrite();
+    void test_ring_buffer_iteration();
+    void test_ring_buffer_count_if();
+    void test_ring_buffer_last_n_match();
 };

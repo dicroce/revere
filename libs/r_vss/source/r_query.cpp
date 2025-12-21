@@ -1,7 +1,5 @@
 #include "r_vss/r_query.h"
-#include "r_vss/r_vss_utils.h"
 #include "r_vss/r_motion_engine.h"
-#include "r_motion/utils.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_blob_tree.h"
@@ -21,7 +19,6 @@ using namespace r_disco;
 using namespace r_storage;
 using namespace r_av;
 using namespace r_vss;
-using namespace r_motion;
 using namespace std;
 using namespace std::chrono;
 
@@ -384,7 +381,6 @@ vector<r_vss::motion_event_info> r_vss::query_get_motion_events(const std::strin
 
     try
     {
-    
         auto maybe_camera = devices.get_camera_by_id(camera_id);
 
         if(maybe_camera.is_null())
@@ -400,60 +396,56 @@ vector<r_vss::motion_event_info> r_vss::query_get_motion_events(const std::strin
         if(!r_fs::file_exists(motion_path))
             R_THROW(("Motion database file does not exist."));
 
-        r_ring r(motion_path, RING_MOTION_EVENT_SIZE);
+        r_ring r(motion_path, RING_MOTION_FLAG_SIZE);
 
         vector<uint8_t> motion_data = r.query_raw(start, end);
 
-        // OK, so we have a bunch of raw motion data... We need to make events. Here are some
+        // Each byte is a motion flag: 1 = motion, 0 = no motion
+        // Find contiguous runs of 1s and create events from those
 
-        struct motion_info
-        {
-            int64_t time;
-            uint8_t motion;
-            uint8_t avg_motion;
-            uint8_t stddev;
-        };
+        int64_t start_seconds = duration_cast<seconds>(start.time_since_epoch()).count();
 
-        // 1. Create a map<> of motion event time to motion data (motion, avg_motion and stddev).
-        map<int64_t, motion_info> motion_infos;
-        for(int i = 0; i < (int)(motion_data.size() / RING_MOTION_EVENT_SIZE); ++i)
+        bool in_event = false;
+        int64_t event_start_second = 0;
+
+        for(size_t i = 0; i < motion_data.size(); ++i)
         {
-            motion_info mi;
-            mi.time = *(int64_t*)(&motion_data[(i*RING_MOTION_EVENT_SIZE)]);
-            mi.motion = motion_data[(i*RING_MOTION_EVENT_SIZE)+8];
-            mi.avg_motion = motion_data[(i*RING_MOTION_EVENT_SIZE)+9];
-            mi.stddev = motion_data[(i*RING_MOTION_EVENT_SIZE)+10];
-            // Use statistical significance test like the motion engine does
-            if(is_motion_significant(mi.motion, mi.avg_motion, mi.stddev))    
-                motion_infos.insert(make_pair(mi.time, mi));
+            bool has_motion = (motion_data[i] != 0);
+            int64_t current_second = start_seconds + (int64_t)i;
+
+            if(has_motion && !in_event)
+            {
+                // Start of a new event
+                in_event = true;
+                event_start_second = current_second;
+            }
+            else if(!has_motion && in_event)
+            {
+                // End of current event
+                in_event = false;
+
+                motion_event_info mi;
+                mi.start = system_clock::time_point(seconds(event_start_second));
+                mi.end = system_clock::time_point(seconds(current_second));
+                mi.motion = 0;      // Dummy value for now
+                mi.avg_motion = 0;  // Dummy value for now
+                mi.stddev = 0;      // Dummy value for now
+
+                result.push_back(mi);
+            }
         }
 
-        // 2. Create a vector<> of motion times.
-        vector<int64_t> motion_times;
-        for(auto& mi : motion_infos)
-            motion_times.push_back(mi.first);
-
-        // 3. Call r_vss::find_contiguous_segments() to find events.
-        auto events = r_vss::find_contiguous_segments(motion_times);
-
-        for(auto e : events)
+        // Handle case where event extends to end of query range
+        if(in_event)
         {
-            // for each event, the motion, stddev and avg_motion will be taken from the motion data with the largest
-            // motion value. Effectively the event becomes the highwater mark of the raw motions.
-            auto first = motion_infos.find(e.first);
-            auto last = motion_infos.find(e.second);
-
-            auto max = max_element(first, last, [](const auto& a, const auto& b){ return a.second.motion < b.second.motion; });
-
             motion_event_info mi;
+            mi.start = system_clock::time_point(seconds(event_start_second));
+            mi.end = system_clock::time_point(seconds(start_seconds + (int64_t)motion_data.size()));
+            mi.motion = 0;      // Dummy value for now
+            mi.avg_motion = 0;  // Dummy value for now
+            mi.stddev = 0;      // Dummy value for now
 
-            mi.start = system_clock::time_point(milliseconds(e.first));
-            mi.end = system_clock::time_point(milliseconds(e.second));
-            mi.motion = max->second.motion;
-            mi.avg_motion = max->second.avg_motion;
-            mi.stddev = max->second.stddev;
-
-            result.push_back(mi);        
+            result.push_back(mi);
         }
     }
     catch(const std::exception& e)
@@ -508,52 +500,6 @@ void r_vss::query_remove_blocks(const std::string& top_dir, r_devices& devices, 
     auto file_name = top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value();
 
     r_storage_file::remove_blocks(file_name, r_time_utils::tp_to_epoch_millis(start), r_time_utils::tp_to_epoch_millis(end));
-}
-
-vector<r_vss::motion_data_point> r_vss::query_get_motions(const std::string& top_dir, r_devices& devices, const std::string& camera_id, uint8_t motion_threshold, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
-{
-    vector<motion_data_point> result;
-
-    auto maybe_camera = devices.get_camera_by_id(camera_id);
-
-    if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
-
-    if(maybe_camera.value().motion_detection_file_path.is_null())
-        R_THROW(("Camera has no motion recording file!"));
-
-    auto motion_file_name = maybe_camera.value().motion_detection_file_path.value();
-
-    auto motion_path = top_dir + PATH_SLASH + "video" + PATH_SLASH + motion_file_name;
-
-    if(!r_fs::file_exists(motion_path))
-        R_THROW(("Motion database file does not exist."));
-
-    r_ring r(motion_path, RING_MOTION_EVENT_SIZE);
-
-    vector<uint8_t> motion_data = r.query_raw(start, end);
-
-    for(int i = 0; i < (int)(motion_data.size() / RING_MOTION_EVENT_SIZE); ++i)
-    {
-        uint8_t motion_value = motion_data[(i*RING_MOTION_EVENT_SIZE)+8];
-        uint8_t avg_motion = motion_data[(i*RING_MOTION_EVENT_SIZE)+9];
-        uint8_t stddev = motion_data[(i*RING_MOTION_EVENT_SIZE)+10];
-
-        // Use statistical significance test like the motion engine does
-        if(is_motion_significant(motion_value, avg_motion, stddev))
-        {
-            motion_data_point mdp;
-            int64_t motion_ts_millis = *(int64_t*)(motion_data.data() + (i*RING_MOTION_EVENT_SIZE));
-            mdp.time = system_clock::time_point(milliseconds{motion_ts_millis});
-            mdp.motion = motion_value;
-            mdp.avg_motion = avg_motion;
-            mdp.stddev = stddev;
-
-            result.push_back(mdp);
-        }
-    }
-
-    return result;
 }
 
 vector<r_metadata_entry> r_vss::query_get_analytics(const string& top_dir, r_devices& devices, const string& camera_id, system_clock::time_point start, system_clock::time_point end, const r_nullable<string>& stream_tag)

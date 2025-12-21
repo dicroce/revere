@@ -143,22 +143,22 @@ void r_motion_engine::_entry_point()
                         if(!maybe_motion_info.is_null())
                         {
                             auto motion_info = maybe_motion_info.value();
-
-                            uint8_t md[RING_MOTION_EVENT_SIZE];
                             auto ts = work.ts;
-                            memcpy(md, (uint8_t*)&ts, 8);
 
-                            const uint64_t max_motion = output_w * output_h;
-
-                            md[8] = (uint8_t)(((double)motion_info.motion / (double)max_motion) * 100);
-                            md[9] = (uint8_t)(((double)motion_info.avg_motion / (double)max_motion) * 100);
-                            md[10] = (uint8_t)(((double)motion_info.stddev / (double)max_motion) * 100);
+                            bool is_significant = is_motion_significant(motion_info.motion, motion_info.avg_motion, motion_info.stddev);
 
                             system_clock::time_point tp{milliseconds{ts}};
 
                             if(found_wc->second->first_ts_valid() && ((ts - found_wc->second->get_first_ts()) > 60000))
                             {
-                                found_wc->second->ring().write(tp, &md[0]);
+                                // Write to ring buffer only on second rollover
+                                int64_t current_second = ts / 1000;
+                                if(current_second != found_wc->second->get_last_written_second())
+                                {
+                                    uint8_t motion_flag = is_significant ? 1 : 0;
+                                    found_wc->second->ring().write(tp, &motion_flag);
+                                    found_wc->second->set_last_written_second(current_second);
+                                }
 
                                 // Convert motion region from r_motion to r_vss format
                                 r_vss::motion_region motion_bbox;
@@ -167,8 +167,6 @@ void r_motion_engine::_entry_point()
                                 motion_bbox.width = motion_info.motion_bbox.width;
                                 motion_bbox.height = motion_info.motion_bbox.height;
                                 motion_bbox.has_motion = motion_info.motion_bbox.has_motion;
-
-                                bool is_significant = is_motion_significant(motion_info.motion, motion_info.avg_motion, motion_info.stddev);
 
                                 if(is_significant)
                                 {
@@ -189,7 +187,7 @@ void r_motion_engine::_entry_point()
                                         _meph.post(r_vss::motion_event_end, found_wc->second->get_camera_id(), work.ts, *decoded, output_w, output_h, motion_bbox);
                                     }
                                 }
-                                
+
                                 // Send frame to plugins if we're in a motion event (regardless of key frame status)
                                 if(found_wc->second->get_in_event())
                                 {

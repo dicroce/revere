@@ -85,9 +85,17 @@ public:
 
         auto start_idx = _idx(qs);
         auto elements_to_query = std::chrono::duration_cast<std::chrono::seconds>(qe-qs).count();
-        std::vector<uint8_t> result(elements_to_query*_element_size);
+        std::vector<uint8_t> result(elements_to_query * _element_size);
 
-        memcpy(result.data(), _ring_start() + (start_idx * _element_size), elements_to_query*_element_size);
+        auto elements_before_wrap = (std::min)((int64_t)(n_elements - start_idx), elements_to_query);
+        auto elements_after_wrap = elements_to_query - elements_before_wrap;
+
+        memcpy(result.data(), _ring_start() + (start_idx * _element_size), elements_before_wrap * _element_size);
+
+        if(elements_after_wrap > 0)
+        {
+            memcpy(result.data() + (elements_before_wrap * _element_size), _ring_start(), elements_after_wrap * _element_size);
+        }
 
         return result;
     }

@@ -42,7 +42,6 @@ r_ws::r_ws(const string& top_dir, r_devices& devices) :
     _server.add_route(METHOD_GET, "/contents", std::bind(&r_ws::_get_contents, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/cameras", std::bind(&r_ws::_get_cameras, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/export", std::bind(&r_ws::_get_export, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/motions", std::bind(&r_ws::_get_motions, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/motion_events", std::bind(&r_ws::_get_motion_events, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/key_frame", std::bind(&r_ws::_get_key_frame, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/analytics", std::bind(&r_ws::_get_analytics, this, _1, _2, _3));
@@ -614,63 +613,6 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
     }
 
     R_STHROW(r_http_500_exception, ("Failed to export."));
-}
-
-r_http::r_server_response r_ws::_get_motions(const r_http::r_web_server<r_utils::r_socket>&,
-                                             r_utils::r_socket&,
-                                             const r_http::r_server_request& request)
-{
-    try
-    {
-        auto args = request.get_uri().get_get_args();
-
-        uint8_t motion_threshold = 0;
-        if(args.count("motion_threshold") > 0)
-            motion_threshold = r_string_utils::s_to_uint8(args["motion_threshold"]);
-
-        if(args.find("start_time") == args.end())
-            R_THROW(("Missing start_time."));
-
-        auto start_time_s = args["start_time"];
-
-        auto start_tp = r_time_utils::iso_8601_to_tp(start_time_s);
-
-        bool input_z_time = start_time_s.find("Z") != std::string::npos;
-
-        if(args.find("end_time") == args.end())
-            R_THROW(("Missing end_time."));
-        
-        auto end_time_s = args["end_time"];
-
-        auto end_tp = r_time_utils::iso_8601_to_tp(end_time_s);
-
-        auto motion_data_points = query_get_motions(_top_dir, _devices, args["camera_id"], motion_threshold, start_tp, end_tp);
-
-        json j;
-        j["motions"] = json::array();
-
-        for(auto& mdp : motion_data_points)
-        {
-            json j_motion;
-            j_motion["time"] = r_time_utils::tp_to_iso_8601(mdp.time, input_z_time);
-            j_motion["motion"] = mdp.motion;
-            j_motion["avg_motion"] = mdp.avg_motion;
-            j_motion["stddev"] = mdp.stddev;
-
-            j["motions"].push_back(j_motion);
-        }
-
-        r_server_response response;
-        response.set_content_type("text/json");
-        response.set_body(j.dump());
-        return response;
-    }
-    catch(const std::exception& ex)
-    {
-        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
-    }
-
-    R_STHROW(r_http_500_exception, ("Failed to query motions."));
 }
 
 r_http::r_server_response r_ws::_get_analytics(const r_http::r_web_server<r_utils::r_socket>&,

@@ -58,16 +58,6 @@ R_API std::vector<segment> query_get_blocks(const std::string& top_dir, r_disco:
 
 R_API void query_remove_blocks(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
 
-struct motion_data_point
-{
-    std::chrono::system_clock::time_point time;
-    uint8_t motion;
-    uint8_t avg_motion;
-    uint8_t stddev;
-};
-
-R_API std::vector<motion_data_point> query_get_motions(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, uint8_t motion_threshold, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
-
 R_API std::vector<r_storage::r_metadata_entry> query_get_analytics(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end, const r_utils::r_nullable<std::string>& stream_tag = r_utils::r_nullable<std::string>());
 
 }

@@ -20,7 +20,7 @@ namespace r_vss
 
 enum
 {
-    RING_MOTION_EVENT_SIZE = 11
+    RING_MOTION_FLAG_SIZE = 1
 };
 
 struct r_work_item
@@ -43,10 +43,11 @@ public:
         _motion_state(60),
         _video_decoder(codec_id),
         _camera(camera),
-        _ring(path, RING_MOTION_EVENT_SIZE),
+        _ring(path, RING_MOTION_FLAG_SIZE),
         _in_event(false),
         _decode_all_frames(false),
-        _first_ts(-1)
+        _first_ts(-1),
+        _last_written_second(-1)
     {
         _video_decoder.set_extradata(ed);
     }
@@ -64,6 +65,8 @@ public:
     bool first_ts_valid() { return _first_ts != -1; }
     int64_t get_first_ts() const { return _first_ts; }
     void set_first_ts(int64_t ts) { _first_ts = ts; }
+    int64_t get_last_written_second() const { return _last_written_second; }
+    void set_last_written_second(int64_t s) { _last_written_second = s; }
 private:
     r_motion::r_motion_state _motion_state;
     r_av::r_video_decoder _video_decoder;
@@ -72,6 +75,7 @@ private:
     bool _in_event;
     bool _decode_all_frames;
     int64_t _first_ts;
+    int64_t _last_written_second;
 };
 
 class r_motion_engine final

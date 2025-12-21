@@ -20,6 +20,7 @@
 #include "r_utils/r_timer.h"
 #include "r_utils/r_avg.h"
 #include "r_utils/r_algorithms.h"
+#include "r_utils/r_ring_buffer.h"
 #include <chrono>
 #include <thread>
 #include <climits>
@@ -1553,6 +1554,191 @@ void test_r_utils::test_weekly_schedule_empty()
     // Schedule with zero duration should return OUT
     r_weekly_schedule no_duration("09:00:00", chrono::seconds(0), {1, 2, 3, 4, 5});
     RTF_ASSERT(no_duration.query(now) == r_schedule_state::OUTSIDE);
+}
+
+void test_r_utils::test_ring_buffer_basic()
+{
+    r_ring_buffer<int> rb(5);
+
+    RTF_ASSERT(rb.empty());
+    RTF_ASSERT(rb.size() == 0);
+    RTF_ASSERT(rb.capacity() == 5);
+    RTF_ASSERT(!rb.full());
+
+    rb.push(10);
+    RTF_ASSERT(rb.size() == 1);
+    RTF_ASSERT(!rb.empty());
+    RTF_ASSERT(!rb.full());
+    RTF_ASSERT(rb.at(0) == 10);
+    RTF_ASSERT(rb.oldest() == 10);
+    RTF_ASSERT(rb.newest() == 10);
+
+    rb.push(20);
+    rb.push(30);
+    RTF_ASSERT(rb.size() == 3);
+    RTF_ASSERT(rb.at(0) == 10);  // oldest
+    RTF_ASSERT(rb.at(1) == 20);
+    RTF_ASSERT(rb.at(2) == 30);  // newest
+    RTF_ASSERT(rb.oldest() == 10);
+    RTF_ASSERT(rb.newest() == 30);
+
+    rb.clear();
+    RTF_ASSERT(rb.empty());
+    RTF_ASSERT(rb.size() == 0);
+
+    // Test zero capacity throws
+    bool threw_on_zero = false;
+    try {
+        r_ring_buffer<int> bad(0);
+    } catch(const std::invalid_argument&) {
+        threw_on_zero = true;
+    }
+    RTF_ASSERT(threw_on_zero);
+
+    // Test out of range throws
+    rb.push(1);
+    bool threw_on_range = false;
+    try {
+        rb.at(1);
+    } catch(const std::out_of_range&) {
+        threw_on_range = true;
+    }
+    RTF_ASSERT(threw_on_range);
+}
+
+void test_r_utils::test_ring_buffer_overwrite()
+{
+    r_ring_buffer<int> rb(3);
+
+    rb.push(1);
+    rb.push(2);
+    rb.push(3);
+    RTF_ASSERT(rb.full());
+    RTF_ASSERT(rb.size() == 3);
+    RTF_ASSERT(rb.at(0) == 1);
+    RTF_ASSERT(rb.at(1) == 2);
+    RTF_ASSERT(rb.at(2) == 3);
+
+    // Push one more - should overwrite oldest (1)
+    rb.push(4);
+    RTF_ASSERT(rb.full());
+    RTF_ASSERT(rb.size() == 3);
+    RTF_ASSERT(rb.at(0) == 2);  // oldest is now 2
+    RTF_ASSERT(rb.at(1) == 3);
+    RTF_ASSERT(rb.at(2) == 4);  // newest is 4
+    RTF_ASSERT(rb.oldest() == 2);
+    RTF_ASSERT(rb.newest() == 4);
+
+    // Push more
+    rb.push(5);
+    rb.push(6);
+    RTF_ASSERT(rb.at(0) == 4);
+    RTF_ASSERT(rb.at(1) == 5);
+    RTF_ASSERT(rb.at(2) == 6);
+}
+
+void test_r_utils::test_ring_buffer_iteration()
+{
+    r_ring_buffer<int> rb(5);
+
+    rb.push(10);
+    rb.push(20);
+    rb.push(30);
+
+    vector<int> collected;
+    rb.for_each([&](const int& v) { collected.push_back(v); });
+
+    RTF_ASSERT(collected.size() == 3);
+    RTF_ASSERT(collected[0] == 10);  // oldest first
+    RTF_ASSERT(collected[1] == 20);
+    RTF_ASSERT(collected[2] == 30);  // newest last
+
+    // Test iteration after wrap-around
+    rb.push(40);
+    rb.push(50);
+    rb.push(60);  // This overwrites 10
+
+    collected.clear();
+    rb.for_each([&](const int& v) { collected.push_back(v); });
+
+    RTF_ASSERT(collected.size() == 5);
+    RTF_ASSERT(collected[0] == 20);  // oldest after wrap
+    RTF_ASSERT(collected[4] == 60);  // newest
+}
+
+void test_r_utils::test_ring_buffer_count_if()
+{
+    r_ring_buffer<int> rb(5);
+
+    rb.push(1);
+    rb.push(2);
+    rb.push(3);
+    rb.push(4);
+    rb.push(5);
+
+    // Count evens
+    auto even_count = rb.count_if([](const int& v) { return v % 2 == 0; });
+    RTF_ASSERT(even_count == 2);
+
+    // Count > 3
+    auto gt3_count = rb.count_if([](const int& v) { return v > 3; });
+    RTF_ASSERT(gt3_count == 2);
+
+    // Count all
+    auto all_count = rb.count_if([](const int&) { return true; });
+    RTF_ASSERT(all_count == 5);
+
+    // Count none
+    auto none_count = rb.count_if([](const int&) { return false; });
+    RTF_ASSERT(none_count == 0);
+}
+
+void test_r_utils::test_ring_buffer_last_n_match()
+{
+    r_ring_buffer<int> rb(5);
+
+    rb.push(1);
+    rb.push(2);
+    rb.push(3);
+    rb.push(4);
+    rb.push(5);
+
+    // Last 2 are 4,5 - both > 3
+    RTF_ASSERT(rb.last_n_match(2, [](const int& v) { return v > 3; }));
+
+    // Last 3 are 3,4,5 - not all > 3
+    RTF_ASSERT(!rb.last_n_match(3, [](const int& v) { return v > 3; }));
+
+    // Last 1 is 5 - is > 0
+    RTF_ASSERT(rb.last_n_match(1, [](const int& v) { return v > 0; }));
+
+    // n=0 should always return true
+    RTF_ASSERT(rb.last_n_match(0, [](const int&) { return false; }));
+
+    // n > size should return false
+    RTF_ASSERT(!rb.last_n_match(6, [](const int&) { return true; }));
+
+    // Test with struct (simulating motion detection use case)
+    struct motion_sample {
+        int64_t ts;
+        bool is_significant;
+    };
+
+    r_ring_buffer<motion_sample> motion_rb(5);
+    motion_rb.push({1000, false});
+    motion_rb.push({2000, false});
+    motion_rb.push({3000, true});
+    motion_rb.push({4000, true});
+    motion_rb.push({5000, true});
+
+    // Last 3 should all be significant
+    RTF_ASSERT(motion_rb.last_n_match(3, [](const motion_sample& s) { return s.is_significant; }));
+
+    // Last 4 should NOT all be significant
+    RTF_ASSERT(!motion_rb.last_n_match(4, [](const motion_sample& s) { return s.is_significant; }));
+
+    // Last 2 should NOT be non-significant
+    RTF_ASSERT(!motion_rb.last_n_match(2, [](const motion_sample& s) { return !s.is_significant; }));
 }
 
 #ifdef WIN32
