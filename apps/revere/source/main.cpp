@@ -1404,7 +1404,8 @@ int main(int argc, char** argv)
 
     streamKeeper.stop();
     agent.stop();
-    devices.stop();
+    // Note: devices.stop() is called by its destructor AFTER streamKeeper is destroyed
+    // This order is important because plugins may use devices during their shutdown
 
     r_pipeline::gstreamer_deinit();
 

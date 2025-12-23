@@ -554,12 +554,21 @@ tuple<string, system_clock::time_point, system_clock::time_point> r_recording_co
 
 void r_recording_context::_live_restream_cleanup_cbs(live_restreaming_state* lrs)
 {
-    lock_guard<mutex> g(lrs->rc->_live_restreaming_states_lok);
-
-    auto rc = lrs->rc;
-    auto media = lrs->media;
-
-    rc->_live_restreaming_states.erase(media);
+    // Note: This callback is called by GStreamer when the media object is destroyed.
+    // We cannot safely access lrs->rc here because the r_recording_context may have
+    // already been destroyed (GStreamer may destroy the media on its own thread
+    // after r_recording_context is gone). The _live_restreaming_states map cleanup
+    // happens automatically when r_recording_context is destroyed.
+    //
+    // This callback exists to satisfy GDestroyNotify but intentionally does nothing.
+    //
+    // Here is what we used to do:
+    //
+    //    lock_guard<mutex> g(lrs->rc->_live_restreaming_states_lok);
+    //    auto rc = lrs->rc;
+    //    auto media = lrs->media;
+    //
+    //    rc->_live_restreaming_states.erase(media);
 }
 
 static tuple<bool, string, string, string, string, r_encoding, r_nullable<r_encoding>>

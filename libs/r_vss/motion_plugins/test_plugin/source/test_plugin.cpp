@@ -15,6 +15,12 @@ test_plugin::~test_plugin()
     R_LOG_INFO("test_plugin: Destructor called");
 }
 
+void test_plugin::stop()
+{
+    R_LOG_INFO("test_plugin: stop() called");
+    // Nothing to do - test_plugin has no background threads
+}
+
 void test_plugin::post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox)
 {
 //    R_LOG_INFO("test_plugin: Received motion event %d for camera %s at ts %lld with frame data size %zu (resolution: %dx%d)",
@@ -46,6 +52,14 @@ R_API r_motion_plugin_handle load_plugin(r_motion_event_plugin_host_handle host)
 
     // Return as opaque handle
     return reinterpret_cast<r_motion_plugin_handle>(plugin);
+}
+
+R_API void stop_plugin(r_motion_plugin_handle plugin)
+{
+    R_LOG_INFO("test_plugin: stop_plugin() called");
+
+    test_plugin* plugin_ptr = reinterpret_cast<test_plugin*>(plugin);
+    plugin_ptr->stop();
 }
 
 R_API void destroy_plugin(r_motion_plugin_handle plugin)

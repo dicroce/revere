@@ -73,6 +73,14 @@ yolov8_person_plugin::yolov8_person_plugin(r_vss::r_motion_event_plugin_host* ho
 
 yolov8_person_plugin::~yolov8_person_plugin()
 {
+    stop();
+
+    // Clean up network
+    _net.reset();
+}
+
+void yolov8_person_plugin::stop()
+{
     // Stop processing thread
     if (_running) {
         _running = false;
@@ -85,16 +93,12 @@ yolov8_person_plugin::~yolov8_person_plugin()
             _thread.join();
         }
     }
-
-    // Clean up network
-    _net.reset();
 }
 
 void yolov8_person_plugin::post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox)
 {
-    if (!_running) {
+    if (!_running)
         return;
-    }
 
     MotionEventMessage msg;
     msg.evt = evt;
@@ -104,6 +108,43 @@ void yolov8_person_plugin::post_motion_event(r_vss::r_motion_event evt, const st
     msg.width = width;
     msg.height = height;
     msg.motion_bbox = motion_bbox;
+
+    if (evt == r_vss::motion_event_update) {
+        // UPDATE frames: buffer them, and queue periodic frames every 5 seconds for long events
+        const int64_t LONG_EVENT_INTERVAL_MS = 5000;
+        bool should_queue_periodic = false;
+
+        {
+            std::lock_guard<std::mutex> lock(_buffer_mutex);
+            _camera_buffered_update[camera_id] = msg; // Buffer the latest
+
+            // Check if we should queue a periodic frame
+            auto last_periodic_it = _camera_last_periodic_ts.find(camera_id);
+            int64_t last_ts = (last_periodic_it != _camera_last_periodic_ts.end()) ? last_periodic_it->second : 0;
+
+            if (last_ts > 0 && (ts - last_ts) >= LONG_EVENT_INTERVAL_MS) {
+                should_queue_periodic = true;
+                _camera_last_periodic_ts[camera_id] = ts;
+            }
+        }
+
+        if (should_queue_periodic) {
+            // Queue this frame as a periodic update
+            const size_t MAX_QUEUE_DEPTH = 30;
+            if (_event_queue.size() < MAX_QUEUE_DEPTH) {
+                _event_queue.post(msg);
+            }
+        }
+        return;
+    }
+
+    // START and END events go to the queue
+    // Drop if queue is too deep (system performance limit)
+    const size_t MAX_QUEUE_DEPTH = 30;
+    if (_event_queue.size() >= MAX_QUEUE_DEPTH) {
+        R_LOG_WARNING("yolov8_person_plugin: System performance limit exceeded - dropping frame (queue depth: %zu)", _event_queue.size());
+        return;
+    }
 
     _event_queue.post(msg);
 }
@@ -139,24 +180,78 @@ void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
             // Clear any existing detections for this camera (handle missing end events)
             _camera_detections[msg.camera_id].clear();
             _camera_disproven_classes[msg.camera_id].clear();
+            {
+                std::lock_guard<std::mutex> lock(_buffer_mutex);
+                _camera_buffered_update.erase(msg.camera_id);
+                _camera_last_periodic_ts[msg.camera_id] = msg.ts; // Initialize for periodic frame tracking
+            }
             // Record motion start time
             _camera_motion_start_time[msg.camera_id] = msg.ts;
+
+            // Process START frame immediately
+            size_t expected_size = msg.width * msg.height * 3;
+            if (msg.frame_data.size() == expected_size) {
+                auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox);
+                R_LOG_INFO("YOLOV8_DIAG: START frame - detect_persons returned %zu detections", detections.size());
+                _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
+                _camera_last_processed_ts[msg.camera_id] = msg.ts;
+            }
         }
 
-        if (msg.evt == r_vss::motion_event_start || msg.evt == r_vss::motion_event_update) {
-            // Process frame for start and update events
+        // Periodic UPDATE events come through the queue for long events
+        if (msg.evt == r_vss::motion_event_update) {
             size_t expected_size = msg.width * msg.height * 3;
-
             if (msg.frame_data.size() == expected_size) {
-                // Run object detection and append to camera's detection list
                 auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox);
-
-                // Append all detections to the camera's list
+                R_LOG_INFO("YOLOV8_DIAG: PERIODIC frame - detect_persons returned %zu detections", detections.size());
                 _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
+                _camera_last_processed_ts[msg.camera_id] = msg.ts;
             }
         }
 
         if (msg.evt == r_vss::motion_event_end) {
+            // Grab the buffered UPDATE frame (if any) under lock, and clear periodic tracking
+            MotionEventMessage buffered;
+            bool have_buffered = false;
+            {
+                std::lock_guard<std::mutex> lock(_buffer_mutex);
+                auto buffered_it = _camera_buffered_update.find(msg.camera_id);
+                if (buffered_it != _camera_buffered_update.end()) {
+                    buffered = std::move(buffered_it->second);
+                    have_buffered = true;
+                    _camera_buffered_update.erase(buffered_it);
+                }
+                _camera_last_periodic_ts.erase(msg.camera_id);
+            }
+
+            // Process buffered UPDATE frame if we have one (middle frame)
+            // Skip if it's older than the last processed frame (we already sent a PERIODIC frame after it)
+            if (have_buffered) {
+                auto last_ts_it = _camera_last_processed_ts.find(msg.camera_id);
+                bool should_process = (last_ts_it == _camera_last_processed_ts.end()) ||
+                                      (buffered.ts > last_ts_it->second);
+
+                if (should_process) {
+                    size_t expected_size = buffered.width * buffered.height * 3;
+                    if (buffered.frame_data.size() == expected_size) {
+                        auto detections = detect_persons(buffered.frame_data.data(), buffered.width, buffered.height, buffered.camera_id, buffered.ts, buffered.motion_bbox);
+                        R_LOG_INFO("YOLOV8_DIAG: MIDDLE frame - detect_persons returned %zu detections", detections.size());
+                        _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
+                    }
+                }
+            }
+
+            // Process END frame
+            size_t expected_size = msg.width * msg.height * 3;
+            if (msg.frame_data.size() == expected_size) {
+                auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox);
+                R_LOG_INFO("YOLOV8_DIAG: END frame - detect_persons returned %zu detections", detections.size());
+                _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
+            }
+
+            R_LOG_INFO("YOLOV8_DIAG: EVENT_END - total detections accumulated: %zu",
+                       _camera_detections[msg.camera_id].size());
+
             // Analyze all detections for this motion sequence and log results
             _analyze_and_log_detections(msg.camera_id, msg.ts);
 
@@ -164,6 +259,7 @@ void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
             _camera_detections[msg.camera_id].clear();
             _camera_motion_start_time.erase(msg.camera_id);
             _camera_disproven_classes.erase(msg.camera_id);
+            _camera_last_processed_ts.erase(msg.camera_id);
         }
 
     } catch (const std::exception& e) {
@@ -372,79 +468,6 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
                     }
                 }
             }
-
-            // ===================================================================================
-            // MOTION-DETECTION CORRELATION FILTERING
-            // ===================================================================================
-            //
-            // Problem: A stationary object (e.g., a parked car) may be detected in multiple
-            // frames during a motion event caused by something else (e.g., a person walking).
-            // If we simply report all detections, the event might be incorrectly labeled as
-            // "car" when it should be "person".
-            //
-            // Solution: We track which detection classes are "disproven" as the cause of motion.
-            // A class is disproven if, at any point during the motion event, we detect that
-            // class but its bounding box does NOT overlap with the motion region.
-            //
-            // Example scenario:
-            //   - Frame 1: Person walks near parked car. Motion region covers both.
-            //              Both "person" and "car" detections overlap motion. Both are valid.
-            //   - Frame 2: Person walks away from car. Motion region follows person.
-            //              "person" still overlaps motion (valid).
-            //              "car" detected but does NOT overlap motion -> CAR IS DISPROVEN.
-            //   - Frame 3+: Person continues walking. Car may or may not be detected.
-            //
-            // At event end: We filter out all detections of disproven classes.
-            // Result: Only "person" detections are reported, correctly identifying the event.
-            //
-            // Key insight: The object causing motion will ALWAYS overlap with the motion region
-            // (since it IS the motion). Stationary objects will eventually fail this test as
-            // the motion region moves away from them.
-            // ===================================================================================
-            if (motion_bbox.has_motion) {
-                std::vector<Detection> filtered_detections;
-                const float overlap_threshold = 0.75f; // 75% overlap required
-
-                for (const auto& detection : detections) {
-                    // Calculate intersection area between detection and motion region
-                    float det_x1 = detection.x1;
-                    float det_y1 = detection.y1;
-                    float det_x2 = detection.x2;
-                    float det_y2 = detection.y2;
-
-                    float motion_x1 = static_cast<float>(motion_bbox.x);
-                    float motion_y1 = static_cast<float>(motion_bbox.y);
-                    float motion_x2 = static_cast<float>(motion_bbox.x + motion_bbox.width);
-                    float motion_y2 = static_cast<float>(motion_bbox.y + motion_bbox.height);
-
-                    // Calculate intersection
-                    float inter_x1 = std::max(det_x1, motion_x1);
-                    float inter_y1 = std::max(det_y1, motion_y1);
-                    float inter_x2 = std::min(det_x2, motion_x2);
-                    float inter_y2 = std::min(det_y2, motion_y2);
-
-                    bool overlaps_motion = false;
-                    if (inter_x1 < inter_x2 && inter_y1 < inter_y2) {
-                        float inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1);
-                        float det_area = (det_x2 - det_x1) * (det_y2 - det_y1);
-
-                        if (det_area > 0) {
-                            float overlap_ratio = inter_area / det_area;
-                            overlaps_motion = (overlap_ratio >= overlap_threshold);
-                        }
-                    }
-
-                    if (overlaps_motion) {
-                        filtered_detections.push_back(detection);
-                    } else {
-                        // This class was detected but NOT overlapping motion
-                        // Mark it as disproven - it cannot be the cause of this motion event
-                        _camera_disproven_classes[camera_id].insert(detection.class_id);
-                    }
-                }
-
-                detections = filtered_detections;
-            }
         }
         
     } catch (const std::exception& e) {
@@ -603,6 +626,13 @@ R_API r_motion_plugin_handle load_plugin(r_motion_event_plugin_host_handle host)
 
     // Return as opaque handle
     return reinterpret_cast<r_motion_plugin_handle>(plugin);
+}
+
+R_API void stop_plugin(r_motion_plugin_handle plugin)
+{
+    // Cast opaque handle back to actual type and stop
+    yolov8_person_plugin* plugin_ptr = reinterpret_cast<yolov8_person_plugin*>(plugin);
+    plugin_ptr->stop();
 }
 
 R_API void destroy_plugin(r_motion_plugin_handle plugin)

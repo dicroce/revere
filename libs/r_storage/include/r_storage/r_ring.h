@@ -29,6 +29,11 @@ public:
 
     R_API void write(const std::chrono::system_clock::time_point& tp, const uint8_t* p);
 
+    // Write the same value to all seconds in the range [start, end] inclusive
+    R_API void write_range(const std::chrono::system_clock::time_point& start,
+                           const std::chrono::system_clock::time_point& end,
+                           const uint8_t* p);
+
     template<typename CB>
     void query(const std::chrono::system_clock::time_point& qs, const std::chrono::system_clock::time_point& qe, CB cb)
     {

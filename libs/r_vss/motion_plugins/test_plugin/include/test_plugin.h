@@ -14,6 +14,8 @@ public:
     R_API test_plugin(r_vss::r_motion_event_plugin_host* host);
     R_API virtual ~test_plugin();
 
+    R_API void stop();
+
     R_API virtual void post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox) override;
 
 private:

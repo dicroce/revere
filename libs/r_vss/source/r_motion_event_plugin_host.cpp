@@ -12,6 +12,7 @@ namespace fs = std::filesystem;
 
 // C API function pointer types
 typedef r_motion_plugin_handle (*load_plugin_func)(r_motion_event_plugin_host_handle);
+typedef void (*stop_plugin_func)(r_motion_plugin_handle);
 typedef void (*destroy_plugin_func)(r_motion_plugin_handle);
 typedef void (*post_motion_event_func)(r_motion_plugin_handle, int, const char*, int64_t, const uint8_t*, size_t, uint16_t, uint16_t, int, int, int, int, bool);
 
@@ -59,6 +60,7 @@ r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devic
 
                         // Look for the required C API symbols
                         void* load_symbol = lib->resolve_symbol("load_plugin");
+                        void* stop_symbol = lib->resolve_symbol("stop_plugin");
                         void* destroy_symbol = lib->resolve_symbol("destroy_plugin");
                         void* post_symbol = lib->resolve_symbol("post_motion_event");
 
@@ -66,6 +68,7 @@ r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devic
                         {
                             // Cast to function pointers
                             load_plugin_func load_func = reinterpret_cast<load_plugin_func>(load_symbol);
+                            stop_plugin_func stop_func = stop_symbol ? reinterpret_cast<stop_plugin_func>(stop_symbol) : nullptr;
                             destroy_plugin_func destroy_func = reinterpret_cast<destroy_plugin_func>(destroy_symbol);
                             post_motion_event_func post_func = reinterpret_cast<post_motion_event_func>(post_symbol);
 
@@ -74,7 +77,7 @@ r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devic
 
                             if (plugin_handle)
                             {
-                                _plugins.push_back({std::move(lib), plugin_handle, destroy_func, post_func});
+                                _plugins.push_back({std::move(lib), plugin_handle, stop_func, destroy_func, post_func});
                                 R_LOG_INFO("Loaded motion plugin: %s", filename.c_str());
                             }
                             else
@@ -121,6 +124,31 @@ r_motion_event_plugin_host::~r_motion_event_plugin_host()
         }
     }
     _plugins.clear();
+}
+
+void r_motion_event_plugin_host::stop()
+{
+    R_LOG_INFO("Stopping all motion plugins...");
+
+    // Stop all plugins using their stop_plugin function
+    for(auto& p : _plugins)
+    {
+        if (p.plugin_handle && p.stop_func)
+        {
+            try
+            {
+                R_LOG_INFO("Stopping motion plugin...");
+                p.stop_func(p.plugin_handle);
+                R_LOG_INFO("Motion plugin stopped.");
+            }
+            catch (const std::exception& e)
+            {
+                R_LOG_ERROR("Error stopping plugin: %s", e.what());
+            }
+        }
+    }
+
+    R_LOG_INFO("All motion plugins stopped.");
 }
 
 void r_motion_event_plugin_host::post(r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const motion_region& motion_bbox)

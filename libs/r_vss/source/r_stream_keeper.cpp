@@ -121,6 +121,12 @@ void r_stream_keeper::stop()
     _motionEngine.stop();
     R_LOG_INFO("Motion engine stopped");
 
+    // Stop motion event plugins AFTER motion engine (no more events will be posted)
+    // but BEFORE we quit the main loop (plugins may need GStreamer resources)
+    R_LOG_INFO("Stopping motion event plugins...");
+    _meph.stop();
+    R_LOG_INFO("Motion event plugins stopped");
+
     _running = false;
 
     R_LOG_INFO("Quitting main loop...");

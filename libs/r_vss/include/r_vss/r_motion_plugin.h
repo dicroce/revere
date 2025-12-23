@@ -39,6 +39,10 @@ typedef void* r_motion_event_plugin_host_handle;
 // load_plugin: Creates and returns a new plugin instance
 R_API r_motion_plugin_handle load_plugin(r_motion_event_plugin_host_handle host);
 
+// stop_plugin: Signals the plugin to stop processing and wait for threads to finish
+// Called before destroy_plugin to ensure clean shutdown
+R_API void stop_plugin(r_motion_plugin_handle plugin);
+
 // destroy_plugin: Destroys a plugin instance created by load_plugin
 R_API void destroy_plugin(r_motion_plugin_handle plugin);
 

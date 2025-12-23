@@ -59,6 +59,12 @@ public:
         return _accumulator;
     }
 
+    // Get current EMA value without updating
+    R_API T value() const
+    {
+        return _accumulator;
+    }
+
     // Exponential moving variance = E[x^2] - (E[x])^2
     R_API T variance() const
     {

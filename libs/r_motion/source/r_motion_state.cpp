@@ -22,7 +22,7 @@ r_motion_state::r_motion_state(size_t memory,
 
 r_motion_state::~r_motion_state() noexcept = default;
 
-r_nullable<r_motion_info> r_motion_state::process(const r_image& input)
+r_nullable<r_motion_info> r_motion_state::process(const r_image& input, bool skip_stats_update)
 {
     r_nullable<r_motion_info> result;
 
@@ -30,7 +30,7 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& input)
         return result;                       // empty frame guard
 
     cv::Mat src;
-    
+
     // Handle different input formats
     if(input.type == R_MOTION_IMAGE_TYPE_ARGB)
     {
@@ -39,7 +39,7 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& input)
                       input.width,
                       CV_8UC4,
                       const_cast<unsigned char*>(input.data.data()));
-        
+
         // --- GRAYSCALE + BLUR -----------------------------------------------------------
         cv::cvtColor(src, _currGray, cv::COLOR_BGRA2GRAY);
     }
@@ -50,7 +50,7 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& input)
                       input.width,
                       CV_8UC3,
                       const_cast<unsigned char*>(input.data.data()));
-        
+
         // --- GRAYSCALE + BLUR -----------------------------------------------------------
         cv::cvtColor(src, _currGray, cv::COLOR_BGR2GRAY);
     }
@@ -61,7 +61,7 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& input)
                       input.width,
                       CV_8UC3,
                       const_cast<unsigned char*>(input.data.data()));
-        
+
         // --- GRAYSCALE + BLUR -----------------------------------------------------------
         cv::cvtColor(src, _currGray, cv::COLOR_RGB2GRAY);
     }
@@ -74,7 +74,19 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& input)
     // --- MOG2 BACKGROUND SUBTRACTION -----------------------------------------------
     // apply() automatically updates the background model
     // learningRate of -1 means "auto" (usually 1/history)
+    // Always let MOG2 update so it tracks the visual scene properly
     _mog2->apply(_blurred, _fgMask, -1);
+
+    // --- WARMUP PERIOD -------------------------------------------------------------
+    // Skip the first few frames while MOG2 builds its background model.
+    // Without a background, MOG2 reports everything as "motion" on the first frame,
+    // which would pollute our stddev and make real motion detection impossible.
+    _warmupFrames++;
+    if(_warmupFrames <= _warmupThreshold)
+    {
+        R_LOG_INFO("MOTION: Warmup frame %zu/%zu - skipping stats", _warmupFrames, _warmupThreshold);
+        return result;  // return empty until background model is stable
+    }
 
     // --- SHADOW REMOVAL -----------------------------------------------------------
     // MOG2 marks shadows as 127 (gray). We only want actual motion (255).
@@ -87,6 +99,7 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& input)
     const double changeRatio = cv::countNonZero(_fgMask) / static_cast<double>(_fgMask.total());
     if(changeRatio > _illumChangeThresh)
     {
+        R_LOG_INFO("MOTION: Illumination veto triggered - changeRatio=%.3f threshold=%.3f", changeRatio, _illumChangeThresh);
         return result;  // nothing emitted
     }
 
@@ -95,24 +108,30 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& input)
     cv::erode (_fgMask, _fgMask, _morphKernel, cv::Point(-1,-1), 1);
 
     // --- MOTION FREQUENCY MAP UPDATE -----------------------------------------------
-    _frameCount++;
-    
+    // Only update frame count and frequency map if not in skip_stats_update mode
+    if(!skip_stats_update)
+        _frameCount++;
+
     // Track motion before masking for statistics
     uint64_t motion_before_mask = cv::countNonZero(_fgMask);
-    
-    // Update motion frequency map using exponential moving average to keep values in range (0-1)
-    cv::Mat motionNormalized;
-    _fgMask.convertTo(motionNormalized, CV_32F, 1.0/255.0);
-    
-    // Initialize frequency map if needed
+
+    // Initialize frequency map if needed (always do this even in skip_update mode)
     if(_motionFreqMap.empty() || _motionFreqMap.size() != _fgMask.size())
     {
         _motionFreqMap = cv::Mat::zeros(_fgMask.size(), CV_32F);
         _staticMask = cv::Mat::ones(_fgMask.size(), CV_8U);
     }
 
-    // Exponential moving average: freq = freq * decay + motion * (1 - decay)
-    _motionFreqMap = _motionFreqMap * _freqDecayRate + motionNormalized * (1.0 - _freqDecayRate);
+    // Update motion frequency map using exponential moving average to keep values in range (0-1)
+    // Only update if not in skip_stats_update mode
+    if(!skip_stats_update)
+    {
+        cv::Mat motionNormalized;
+        _fgMask.convertTo(motionNormalized, CV_32F, 1.0/255.0);
+
+        // Exponential moving average: freq = freq * decay + motion * (1 - decay)
+        _motionFreqMap = _motionFreqMap * _freqDecayRate + motionNormalized * (1.0 - _freqDecayRate);
+    }
     
     // Generate static mask if we have enough observations and masking is enabled
     bool masking_active = (_enableMasking && _frameCount >= _minObservationFrames);
@@ -153,8 +172,40 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& input)
     // --- METRICS OUTPUT -------------------------------------------------------------
     r_motion_info mi;
     mi.motion               = motion_pixels;
-    mi.avg_motion           = _avg_motion.update(mi.motion);
+
+    // Get current baseline values first (before any potential update)
+    mi.avg_motion           = _avg_motion.value();
     mi.stddev               = _avg_motion.standard_deviation();
+
+    // Baseline learning: During the first N frames after warmup, we need to establish
+    // a baseline. Without this, avg=0 and stddev=0, so ANY motion > 0 is considered
+    // significant, and the baseline never gets updated (chicken-and-egg problem).
+    // During learning, we use a simple threshold to decide if motion is "low enough"
+    // to be considered baseline noise. We only learn from low-motion frames to avoid
+    // polluting the baseline if someone walks in front during startup.
+    bool in_learning_phase = (_frameCount < _baselineLearningFrames);
+
+    // Only update the moving average if:
+    // 1. Not in skip_stats_update mode (catchup processing)
+    // 2. Either (in learning phase AND motion is low) OR motion is NOT significant
+    // This prevents motion events from inflating the stddev and making subsequent
+    // frames of the same event not register as significant (after learning).
+    if(!skip_stats_update)
+    {
+        bool is_significant = is_motion_significant(mi.motion, mi.avg_motion, mi.stddev);
+
+        // During learning, use a fixed threshold to filter out high-motion frames
+        // 1000 pixels is a reasonable threshold for "baseline noise" vs "real motion"
+        bool is_low_motion_for_learning = (mi.motion < 1000);
+
+        if((in_learning_phase && is_low_motion_for_learning) || !is_significant)
+        {
+            _avg_motion.update(mi.motion);
+            // Update returned values to reflect the new baseline
+            mi.avg_motion   = _avg_motion.value();
+            mi.stddev       = _avg_motion.standard_deviation();
+        }
+    }
     mi.motion_before_mask   = motion_before_mask;
     mi.masked_pixels        = masked_pixels;
     mi.masking_active       = masking_active;

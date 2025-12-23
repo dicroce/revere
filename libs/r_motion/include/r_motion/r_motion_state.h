@@ -49,8 +49,14 @@ public:
     /**
      * Feed a BGRA or BGR image and receive motion metrics for that frame.
      * Returns empty nullable on the very first call (no background yet).
+     *
+     * @param input The input image to process
+     * @param skip_stats_update If true, don't update the moving average or motion frequency map.
+     *                          MOG2 background model still updates so it tracks the visual scene.
+     *                          Useful for catchup/in-event processing where we want motion detection
+     *                          results but don't want to adapt the baseline statistics.
      */
-    R_API r_utils::r_nullable<r_motion_info> process(const r_image& input);
+    R_API r_utils::r_nullable<r_motion_info> process(const r_image& input, bool skip_stats_update = false);
 
 private:
     // statistics
@@ -62,6 +68,13 @@ private:
     // tuning parameters
     const double _illumChangeThresh = 0.25;   // % of pixels changed ⇒ treat as illumination event
     const double _minAreaFraction   = 0.003;   // 1% of frame (adjustable)
+
+    // warmup tracking - skip first few frames while MOG2 builds background model
+    const size_t _warmupThreshold {5};        // number of frames to skip at startup
+    size_t _warmupFrames {0};                 // frames processed during warmup
+
+    // baseline learning - always update baseline during first N frames to establish it
+    const size_t _baselineLearningFrames {30}; // frames to learn baseline (unconditionally update stats)
     
     // motion frequency masking parameters
     const double _motionFreqThresh;           // threshold for marking pixels as continuously moving

@@ -91,6 +91,26 @@ void r_ring::write(const system_clock::time_point& tp, const uint8_t* p)
     memcpy(_ring_start() + ((unwrapped_idx % n_elements) * _element_size), p, _element_size);
 }
 
+void r_ring::write_range(const system_clock::time_point& start,
+                         const system_clock::time_point& end,
+                         const uint8_t* p)
+{
+    r_file_lock_guard g(_lock);
+
+    auto n_elements = _n_elements();
+
+    auto start_idx = _unwrapped_idx(start);
+    auto end_idx = _unwrapped_idx(end);
+
+    // Write the value to all seconds in the range [start, end]
+    for(auto idx = start_idx; idx <= end_idx; ++idx)
+    {
+        memcpy(_ring_start() + ((idx % n_elements) * _element_size), p, _element_size);
+    }
+
+    _last_write_idx = end_idx;
+}
+
 uint8_t* r_ring::_ring_start() const
 {
     return (uint8_t*)_map.map() + R_RING_HEADER_SIZE;
