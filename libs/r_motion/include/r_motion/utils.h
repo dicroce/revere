@@ -32,7 +32,7 @@ struct r_image
  * @param multiplier Standard deviation multiplier (default 2.5)
  * @return True if motion is significant (motion > avg + stddev * multiplier)
  */
-R_API bool is_motion_significant(uint64_t motion, uint64_t avg_motion, uint64_t stddev, double multiplier = 2.5);
+R_API bool is_motion_significant(uint64_t motion, uint64_t avg_motion, uint64_t stddev, double multiplier = 2.0);
 
 }
 

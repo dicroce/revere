@@ -52,6 +52,8 @@ typedef _GstRTSPMedia GstRTSPMedia;
 namespace r_vss
 {
 
+struct live_restreaming_state;
+
 struct r_stream_status
 {
     r_disco::r_camera camera;
@@ -118,6 +120,11 @@ public:
 
     R_API std::vector<std::string> get_loaded_system_plugins() const;
 
+    // Live restreaming state management (owned by r_stream_keeper for safe cleanup)
+    R_API void add_live_restreaming_state(GstRTSPMedia* media, std::shared_ptr<live_restreaming_state> lrs);
+    R_API void remove_live_restreaming_state(GstRTSPMedia* media);
+    R_API void iterate_live_restreaming_states(const std::string& camera_id, std::function<void(live_restreaming_state&)> fn);
+
 private:
     void _entry_point();
     void _rtsp_server_entry_point();
@@ -160,6 +167,11 @@ private:
     r_system_plugin_host _system_plugin_host;
     r_ws _ws;
     r_prune _prune;
+
+    // Live restreaming states - owned here so cleanup callback can safely access them
+    // even after r_recording_context is destroyed
+    mutable std::mutex _live_restreaming_states_lok;
+    std::map<GstRTSPMedia*, std::shared_ptr<live_restreaming_state>> _live_restreaming_states;
 };
 
 }

@@ -612,3 +612,25 @@ void r_stream_keeper::_create_playback_mount(const string& friendly_name, const 
         }
     }
 }
+
+void r_stream_keeper::add_live_restreaming_state(GstRTSPMedia* media, std::shared_ptr<live_restreaming_state> lrs)
+{
+    lock_guard<mutex> g(_live_restreaming_states_lok);
+    _live_restreaming_states[media] = lrs;
+}
+
+void r_stream_keeper::remove_live_restreaming_state(GstRTSPMedia* media)
+{
+    lock_guard<mutex> g(_live_restreaming_states_lok);
+    _live_restreaming_states.erase(media);
+}
+
+void r_stream_keeper::iterate_live_restreaming_states(const std::string& camera_id, std::function<void(live_restreaming_state&)> fn)
+{
+    lock_guard<mutex> g(_live_restreaming_states_lok);
+    for(auto& lrs : _live_restreaming_states)
+    {
+        if(lrs.second->camera_id == camera_id)
+            fn(*lrs.second);
+    }
+}

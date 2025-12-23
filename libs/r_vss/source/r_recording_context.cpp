@@ -48,7 +48,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     _top_dir(top_dir),
     _source(camera.friendly_name + "_"),
     _storage_file(top_dir + PATH_SLASH + "video" + PATH_SLASH + camera.record_file_path.value()),
-    _md_storage_file(top_dir + PATH_SLASH + "video" + PATH_SLASH + camera.record_file_path.value()),
+    _md_storage_file(),
     _maybe_video_storage_write_context(),
     _maybe_audio_storage_write_context(),
     _last_v_time(system_clock::now()),
@@ -62,8 +62,6 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     _video_caps(),
     _audio_caps(),
     _restream_mount_path(),
-    _live_restreaming_states_lok(),
-    _live_restreaming_states(),
     _playback_restreaming_states_lok(),
     _playback_restreaming_states(),
     _got_first_audio_sample(false),
@@ -71,6 +69,14 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     _die(false),
     _ws(ws)
 {
+    // Only create metadata storage if motion detection is enabled
+    if(!_camera.do_motion_detection.is_null() && _camera.do_motion_detection.value())
+    {
+        _md_storage_file = make_unique<r_md_storage_file>(
+            top_dir + PATH_SLASH + "video" + PATH_SLASH + camera.record_file_path.value()
+        );
+    }
+
     vector<r_arg> arguments;
     add_argument(arguments, "url", _camera.rtsp_url.value());
 
@@ -141,28 +147,25 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 pts
             );
 
-            lock_guard<mutex> g(this->_live_restreaming_states_lok);
-
-            for(auto& lrs : this->_live_restreaming_states)
-            {
-                if(lrs.second->live_restream_key_sent)
+            this->_sk->iterate_live_restreaming_states(this->_camera.id, [&](live_restreaming_state& lrs) {
+                if(lrs.live_restream_key_sent)
                 {
-                    if(!lrs.second->first_restream_a_times_set)
+                    if(!lrs.first_restream_a_times_set)
                     {
-                        lrs.second->first_restream_a_times_set = true;
-                        lrs.second->first_restream_a_pts = pts * 1000000;
-                        lrs.second->first_restream_a_dts = pts * 1000000;
+                        lrs.first_restream_a_times_set = true;
+                        lrs.first_restream_a_pts = pts * 1000000;
+                        lrs.first_restream_a_dts = pts * 1000000;
                     }
 
                     _frame_context fc;
-                    fc.gst_pts = (pts * 1000000) - lrs.second->first_restream_a_pts;
-                    fc.gst_dts = (pts * 1000000) - lrs.second->first_restream_a_dts;
+                    fc.gst_pts = (pts * 1000000) - lrs.first_restream_a_pts;
+                    fc.gst_dts = (pts * 1000000) - lrs.first_restream_a_dts;
 
                     fc.key = key;
                     fc.buffer = buffer;
-                    lrs.second->audio_samples.post(fc);
+                    lrs.audio_samples.post(fc);
                 }
-            }
+            });
         }
         catch(exception& e)
         {
@@ -279,29 +282,26 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 );
             }
 
-            lock_guard<mutex> g(this->_live_restreaming_states_lok);
-
-            for(auto& lrs : this->_live_restreaming_states)
-            {
-                if(lrs.second->live_restream_key_sent || key)
+            this->_sk->iterate_live_restreaming_states(this->_camera.id, [&](live_restreaming_state& lrs) {
+                if(lrs.live_restream_key_sent || key)
                 {
-                    lrs.second->live_restream_key_sent = true;
+                    lrs.live_restream_key_sent = true;
 
-                    if(!lrs.second->first_restream_v_times_set)
+                    if(!lrs.first_restream_v_times_set)
                     {
-                        lrs.second->first_restream_v_times_set = true;
-                        lrs.second->first_restream_v_pts = pts * 1000000;
-                        lrs.second->first_restream_v_dts = pts * 1000000;
+                        lrs.first_restream_v_times_set = true;
+                        lrs.first_restream_v_pts = pts * 1000000;
+                        lrs.first_restream_v_dts = pts * 1000000;
                     }
 
                     _frame_context fc;
-                    fc.gst_pts = (pts*1000000) - lrs.second->first_restream_v_pts;
-                    fc.gst_dts = (pts*1000000) - lrs.second->first_restream_v_dts;
+                    fc.gst_pts = (pts*1000000) - lrs.first_restream_v_pts;
+                    fc.gst_dts = (pts*1000000) - lrs.first_restream_v_dts;
                     fc.key = key;
                     fc.buffer = buffer;
-                    lrs.second->video_samples.post(fc);
+                    lrs.video_samples.post(fc);
                 }
-            }
+            });
         }
         catch(exception& e)
         {
@@ -364,14 +364,19 @@ int32_t r_recording_context::bytes_per_second() const
 
 r_md_storage_file& r_recording_context::metadata_storage()
 {
-    return _md_storage_file;
+    if(!_md_storage_file)
+        R_THROW(("Metadata storage not available - motion detection is disabled"));
+    return *_md_storage_file;
 }
 
 void r_recording_context::write_metadata(const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms)
 {
+    if(!_md_storage_file)
+        return;  // No metadata storage when motion detection disabled
+
     R_LOG_INFO("[RECORDING_CONTEXT] write_metadata stream_tag=%s ts=%lld json=%s",
                stream_tag.c_str(), (long long)timestamp_ms, json_data.c_str());
-    _md_storage_file.write_metadata(stream_tag, json_data, timestamp_ms);
+    _md_storage_file->write_metadata(stream_tag, json_data, timestamp_ms);
 }
 
 static void _need_live_data_cbs(GstElement* appsrc, guint, live_restreaming_state* lrs)
@@ -408,7 +413,9 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
 {
     auto lrs = make_shared<live_restreaming_state>();
     lrs->rc = this;
+    lrs->sk = _sk;  // Store stream_keeper pointer for safe cleanup
     lrs->media = media;
+    lrs->camera_id = _camera.id;
 
     auto element = gst_rtsp_media_get_element(media);
     if(!element)
@@ -417,7 +424,7 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
     // pay0 is the video payloader
     // pay1 is the audio payloader which might now actually be present
 
-    // attach media cleanup callback to unset _live_restreaming flag
+    // attach media cleanup callback - now safe because r_stream_keeper outlives r_recording_context
     g_object_set_data_full(G_OBJECT(media), "rtsp-extra-data", lrs.get(), (GDestroyNotify)_live_restream_cleanup_cbs);
 
     lrs->v_appsrc = gst_bin_get_by_name_recurse_up(GST_BIN(element), "videosrc");
@@ -441,7 +448,8 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
         g_signal_connect(lrs->a_appsrc, "need-data", (GCallback)_need_live_data_cbs, lrs.get());
     }
 
-    _live_restreaming_states[media] = lrs;
+    // Store in r_stream_keeper's map (not r_recording_context's)
+    _sk->add_live_restreaming_state(media, lrs);
 }
 
 void r_recording_context::stop()
@@ -554,21 +562,11 @@ tuple<string, system_clock::time_point, system_clock::time_point> r_recording_co
 
 void r_recording_context::_live_restream_cleanup_cbs(live_restreaming_state* lrs)
 {
-    // Note: This callback is called by GStreamer when the media object is destroyed.
-    // We cannot safely access lrs->rc here because the r_recording_context may have
-    // already been destroyed (GStreamer may destroy the media on its own thread
-    // after r_recording_context is gone). The _live_restreaming_states map cleanup
-    // happens automatically when r_recording_context is destroyed.
-    //
-    // This callback exists to satisfy GDestroyNotify but intentionally does nothing.
-    //
-    // Here is what we used to do:
-    //
-    //    lock_guard<mutex> g(lrs->rc->_live_restreaming_states_lok);
-    //    auto rc = lrs->rc;
-    //    auto media = lrs->media;
-    //
-    //    rc->_live_restreaming_states.erase(media);
+    // This callback is called by GStreamer when the media object is destroyed.
+    // It's now safe to access lrs->sk because r_stream_keeper outlives all
+    // r_recording_context instances and the GStreamer main loop.
+    // The shared_ptr in the map keeps the lrs alive until we erase it.
+    lrs->sk->remove_live_restreaming_state(lrs->media);
 }
 
 static tuple<bool, string, string, string, string, r_encoding, r_nullable<r_encoding>>

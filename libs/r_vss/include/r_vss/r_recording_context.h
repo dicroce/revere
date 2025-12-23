@@ -44,7 +44,9 @@ struct _frame_context
 struct live_restreaming_state
 {
     r_recording_context* rc {nullptr};
+    r_stream_keeper* sk {nullptr};  // For cleanup callback to safely access the map
     GstRTSPMedia* media {nullptr};
+    std::string camera_id;  // To identify which camera this state belongs to
 
     GstElement* v_appsrc {nullptr};
     GstElement* a_appsrc {nullptr};
@@ -137,7 +139,7 @@ private:
     std::string _top_dir;
     r_pipeline::r_gst_source _source;
     r_storage::r_storage_file _storage_file;
-    r_storage::r_md_storage_file _md_storage_file;
+    std::unique_ptr<r_storage::r_md_storage_file> _md_storage_file;
     r_utils::r_nullable<r_storage::r_storage_write_context> _maybe_video_storage_write_context;
     r_utils::r_nullable<r_storage::r_storage_write_context> _maybe_audio_storage_write_context;
     std::chrono::system_clock::time_point _last_v_time;
@@ -151,8 +153,6 @@ private:
     r_utils::r_nullable<r_pipeline::r_gst_caps> _video_caps;
     r_utils::r_nullable<r_pipeline::r_gst_caps> _audio_caps;
     std::string _restream_mount_path;
-    std::mutex _live_restreaming_states_lok;
-    std::map<GstRTSPMedia*, std::shared_ptr<live_restreaming_state>> _live_restreaming_states;
     std::mutex _playback_restreaming_states_lok;
     std::map<GstRTSPMedia*, std::shared_ptr<playback_restreaming_state>> _playback_restreaming_states;
     bool _got_first_audio_sample;
