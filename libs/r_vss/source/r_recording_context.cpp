@@ -150,16 +150,22 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             this->_sk->iterate_live_restreaming_states(this->_camera.id, [&](live_restreaming_state& lrs) {
                 if(lrs.live_restream_key_sent)
                 {
+                    // Clamp pts to safe range to prevent overflow when multiplying by 1000000
+                    // Max safe value: INT64_MAX / 1000000 = 9223372036854 (~292 years in seconds)
+                    constexpr int64_t MAX_SAFE_PTS = INT64_MAX / 1000000;
+                    constexpr int64_t MIN_SAFE_PTS = INT64_MIN / 1000000;
+                    int64_t safe_pts = (pts > MAX_SAFE_PTS) ? MAX_SAFE_PTS : ((pts < MIN_SAFE_PTS) ? MIN_SAFE_PTS : pts);
+
                     if(!lrs.first_restream_a_times_set)
                     {
                         lrs.first_restream_a_times_set = true;
-                        lrs.first_restream_a_pts = pts * 1000000;
-                        lrs.first_restream_a_dts = pts * 1000000;
+                        lrs.first_restream_a_pts = static_cast<uint64_t>(safe_pts * 1000000);
+                        lrs.first_restream_a_dts = static_cast<uint64_t>(safe_pts * 1000000);
                     }
 
                     _frame_context fc;
-                    fc.gst_pts = (pts * 1000000) - lrs.first_restream_a_pts;
-                    fc.gst_dts = (pts * 1000000) - lrs.first_restream_a_dts;
+                    fc.gst_pts = static_cast<uint64_t>(safe_pts * 1000000) - lrs.first_restream_a_pts;
+                    fc.gst_dts = static_cast<uint64_t>(safe_pts * 1000000) - lrs.first_restream_a_dts;
 
                     fc.key = key;
                     fc.buffer = buffer;
@@ -287,16 +293,22 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 {
                     lrs.live_restream_key_sent = true;
 
+                    // Clamp pts to safe range to prevent overflow when multiplying by 1000000
+                    // Max safe value: INT64_MAX / 1000000 = 9223372036854 (~292 years in seconds)
+                    constexpr int64_t MAX_SAFE_PTS = INT64_MAX / 1000000;
+                    constexpr int64_t MIN_SAFE_PTS = INT64_MIN / 1000000;
+                    int64_t safe_pts = (pts > MAX_SAFE_PTS) ? MAX_SAFE_PTS : ((pts < MIN_SAFE_PTS) ? MIN_SAFE_PTS : pts);
+
                     if(!lrs.first_restream_v_times_set)
                     {
                         lrs.first_restream_v_times_set = true;
-                        lrs.first_restream_v_pts = pts * 1000000;
-                        lrs.first_restream_v_dts = pts * 1000000;
+                        lrs.first_restream_v_pts = static_cast<uint64_t>(safe_pts * 1000000);
+                        lrs.first_restream_v_dts = static_cast<uint64_t>(safe_pts * 1000000);
                     }
 
                     _frame_context fc;
-                    fc.gst_pts = (pts*1000000) - lrs.first_restream_v_pts;
-                    fc.gst_dts = (pts*1000000) - lrs.first_restream_v_dts;
+                    fc.gst_pts = static_cast<uint64_t>(safe_pts * 1000000) - lrs.first_restream_v_pts;
+                    fc.gst_dts = static_cast<uint64_t>(safe_pts * 1000000) - lrs.first_restream_v_dts;
                     fc.key = key;
                     fc.buffer = buffer;
                     lrs.video_samples.post(fc);
@@ -731,10 +743,15 @@ static void _playback_entry_point(shared_ptr<playback_restreaming_state> prs)
 
                         r_gst_buffer buffer(frame.data(), frame.size());
 
+                        // Clamp timestamp delta to safe range to prevent overflow when multiplying by 1000000
+                        constexpr int64_t MAX_SAFE_DELTA = INT64_MAX / 1000000;
+                        int64_t ts_delta = ts - prs->first_ts.value();
+                        int64_t safe_delta = (ts_delta > MAX_SAFE_DELTA) ? MAX_SAFE_DELTA : ((ts_delta < -MAX_SAFE_DELTA) ? -MAX_SAFE_DELTA : ts_delta);
+
                         _frame_context fc;
-                        fc.gst_pts = (ts - prs->first_ts.value()) * 1000000;
-                        fc.gst_dts = (ts - prs->first_ts.value()) * 1000000;
-                        fc.key = key;                
+                        fc.gst_pts = static_cast<uint64_t>(safe_delta * 1000000);
+                        fc.gst_dts = static_cast<uint64_t>(safe_delta * 1000000);
+                        fc.key = key;
                         fc.buffer = buffer;
 
                         if(sid == R_STORAGE_MEDIA_TYPE_VIDEO)

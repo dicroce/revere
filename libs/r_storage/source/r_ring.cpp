@@ -1,6 +1,7 @@
 
 #include "r_storage/r_ring.h"
 #include "r_utils/r_exception.h"
+#include <algorithm>
 
 using namespace std;
 using namespace std::chrono;
@@ -74,13 +75,18 @@ void r_ring::write(const system_clock::time_point& tp, const uint8_t* p)
 
     if(_last_write_idx != -1)
     {
-        auto delta = abs((int)(unwrapped_idx - _last_write_idx));
+        // Use int64_t for safe arithmetic with potentially large size_t values
+        int64_t delta = static_cast<int64_t>(unwrapped_idx) - static_cast<int64_t>(_last_write_idx);
+        if(delta < 0)
+            delta = -delta;
 
-        if(delta > 1)
+        // Cap the fill loop to avoid excessive iterations (max 1 hour of gap filling)
+        constexpr int64_t MAX_GAP_FILL = 3600;
+        if(delta > 1 && delta <= MAX_GAP_FILL)
         {
-            for(int i = 0; i < delta-1; i++)
+            for(int64_t i = 0; i < delta-1; i++)
             {
-                auto ofs = ((_last_write_idx + 1 + i) % n_elements) * _element_size;
+                auto ofs = ((static_cast<size_t>(_last_write_idx) + 1 + static_cast<size_t>(i)) % n_elements) * _element_size;
                 memset(_ring_start() + ofs, 0, _element_size);
             }
         }
@@ -101,6 +107,20 @@ void r_ring::write_range(const system_clock::time_point& start,
 
     auto start_idx = _unwrapped_idx(start);
     auto end_idx = _unwrapped_idx(end);
+
+    // Sanity check: if end is before start, swap them
+    if(end_idx < start_idx)
+        std::swap(start_idx, end_idx);
+
+    // Cap the range to avoid excessive iterations (max 24 hours of range writing)
+    // This prevents runaway loops if timestamps are corrupted
+    constexpr size_t MAX_RANGE_SECONDS = 86400;
+    size_t range_size = end_idx - start_idx;
+    if(range_size > MAX_RANGE_SECONDS)
+    {
+        // Limit to last MAX_RANGE_SECONDS of the range
+        start_idx = end_idx - MAX_RANGE_SECONDS;
+    }
 
     // Write the value to all seconds in the range [start, end]
     for(auto idx = start_idx; idx <= end_idx; ++idx)
