@@ -424,41 +424,42 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
             for (int i = 0; i < proposals.size(); i++) {
                 indices.push_back(i);
             }
-            
+
             // Sort by confidence (descending)
             std::sort(indices.begin(), indices.end(), [&](int a, int b) {
                 return proposals[a].score > proposals[b].score;
             });
-            
+
             std::vector<bool> suppressed(proposals.size(), false);
-            
+            std::vector<Detection> nms_detections;
+
             for (int i = 0; i < indices.size(); i++) {
                 if (suppressed[indices[i]]) continue;
-                
-                detections.push_back(proposals[indices[i]]);
-                
+
+                nms_detections.push_back(proposals[indices[i]]);
+
                 // Suppress overlapping detections of the same class
                 for (int j = i + 1; j < indices.size(); j++) {
                     if (suppressed[indices[j]]) continue;
-                    
+
                     const auto& det1 = proposals[indices[i]];
                     const auto& det2 = proposals[indices[j]];
-                    
+
                     // Only suppress if same class
                     if (det1.class_id != det2.class_id) continue;
-                    
+
                     // Calculate IoU
                     float inter_x1 = std::max(det1.x1, det2.x1);
                     float inter_y1 = std::max(det1.y1, det2.y1);
                     float inter_x2 = std::min(det1.x2, det2.x2);
                     float inter_y2 = std::min(det1.y2, det2.y2);
-                    
+
                     if (inter_x1 < inter_x2 && inter_y1 < inter_y2) {
                         float inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1);
                         float area1 = (det1.x2 - det1.x1) * (det1.y2 - det1.y1);
                         float area2 = (det2.x2 - det2.x1) * (det2.y2 - det2.y1);
                         float union_area = area1 + area2 - inter_area;
-                        
+
                         if (union_area > 0) {
                             float iou = inter_area / union_area;
                             if (iou > nms_threshold) {
@@ -467,6 +468,46 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
                         }
                     }
                 }
+            }
+
+            // Filter detections that don't overlap sufficiently with the motion region
+            // Require at least 25% of the detection bbox to overlap with the motion bbox
+            const float min_overlap_ratio = 0.25f;
+
+            if (motion_bbox.has_motion && motion_bbox.width > 0 && motion_bbox.height > 0) {
+                // Motion bbox coordinates (in original image space at detection resolution)
+                float motion_x1 = (float)motion_bbox.x;
+                float motion_y1 = (float)motion_bbox.y;
+                float motion_x2 = (float)(motion_bbox.x + motion_bbox.width);
+                float motion_y2 = (float)(motion_bbox.y + motion_bbox.height);
+
+                for (const auto& det : nms_detections) {
+                    // Calculate intersection with motion region
+                    float inter_x1 = std::max(det.x1, motion_x1);
+                    float inter_y1 = std::max(det.y1, motion_y1);
+                    float inter_x2 = std::min(det.x2, motion_x2);
+                    float inter_y2 = std::min(det.y2, motion_y2);
+
+                    float det_area = (det.x2 - det.x1) * (det.y2 - det.y1);
+
+                    if (inter_x1 < inter_x2 && inter_y1 < inter_y2 && det_area > 0) {
+                        float inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1);
+                        float overlap_ratio = inter_area / det_area;
+
+                        if (overlap_ratio >= min_overlap_ratio) {
+                            detections.push_back(det);
+                        } else {
+                            R_LOG_INFO("yolov8_person_plugin: Filtered detection (class %d, conf %.2f) - only %.1f%% overlap with motion region",
+                                       det.class_id, det.score, overlap_ratio * 100.0f);
+                        }
+                    } else {
+                        R_LOG_INFO("yolov8_person_plugin: Filtered detection (class %d, conf %.2f) - no overlap with motion region",
+                                   det.class_id, det.score);
+                    }
+                }
+            } else {
+                // No valid motion region, keep all detections
+                detections = std::move(nms_detections);
             }
         }
         
