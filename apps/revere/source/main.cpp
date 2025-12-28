@@ -1298,7 +1298,23 @@ int main(int argc, char** argv)
         );
 
         r_utils::r_nullable<std::string> main_status;
-        main_status.set_value(string("Revere Running"));
+
+        // Check for queue overflow warnings and display in status bar
+        auto overflow_flags = streamKeeper.get_current_overflow_flags();
+        if(overflow_flags != r_vss::r_overflow_type::none)
+        {
+            std::string warning_msg = "WARNING: System under heavy load - ";
+            if(r_vss::has_overflow(overflow_flags, r_vss::r_overflow_type::motion_detection))
+                warning_msg += "Motion detection ";
+            if(r_vss::has_overflow(overflow_flags, r_vss::r_overflow_type::live_restream))
+                warning_msg += "Live restreaming ";
+            warning_msg += "dropping frames (" + std::to_string(streamKeeper.get_total_dropped_frames()) + " total)";
+            main_status.set_value(warning_msg);
+        }
+        else
+        {
+            main_status.set_value(string("Revere Running"));
+        }
 
         main_layout(
             client_top,
