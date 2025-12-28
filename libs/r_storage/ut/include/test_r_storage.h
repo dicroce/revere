@@ -5,6 +5,10 @@ class test_r_storage : public test_fixture
 {
 public:
     RTF_FIXTURE(test_r_storage);
+      // Tests for r_ring overflow fixes
+      TEST(test_r_storage::test_r_ring_write_safe_delta_calculation);
+      TEST(test_r_storage::test_r_ring_write_range_large_range_capped);
+      TEST(test_r_storage::test_r_ring_write_range_inverted_range);
 #if 0
       TEST(test_r_storage::test_r_dumbdex_writing);
       TEST(test_r_storage::test_r_dumbdex_consistency);
@@ -37,6 +41,11 @@ public:
 
     virtual void setup();
     virtual void teardown();
+
+    // Tests for r_ring overflow fixes
+    void test_r_ring_write_safe_delta_calculation();
+    void test_r_ring_write_range_large_range_capped();
+    void test_r_ring_write_range_inverted_range();
 
 #if 0
     void test_r_dumbdex_writing();
