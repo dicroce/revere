@@ -36,6 +36,9 @@ void r_devices::start()
 {
     _running = true;
     _th = thread(&r_devices::_entry_point, this);
+
+    // Pre-populate the cache so UI has data immediately
+    refresh_camera_cache();
 }
 
 void r_devices::stop()
@@ -119,8 +122,45 @@ vector<r_camera> r_devices::get_assigned_cameras()
     {
         R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
-    
+
     return cameras;
+}
+
+vector<r_camera> r_devices::get_all_cameras_cached()
+{
+    lock_guard<mutex> g(_cache_lock);
+    return _cached_all_cameras;
+}
+
+vector<r_camera> r_devices::get_assigned_cameras_cached()
+{
+    lock_guard<mutex> g(_cache_lock);
+    return _cached_assigned_cameras;
+}
+
+void r_devices::refresh_camera_cache()
+{
+    // Avoid piling up refresh requests if one is already pending
+    bool expected = false;
+    if(!_cache_refresh_pending.compare_exchange_strong(expected, true))
+        return;
+
+    try
+    {
+        // Fire-and-forget: post commands without waiting for result
+        // The worker thread will update the cache when it processes these
+        r_devices_cmd cmd;
+        cmd.type = GET_ALL_CAMERAS;
+        _db_work_q.post(cmd);
+
+        cmd.type = GET_ASSIGNED_CAMERAS;
+        _db_work_q.post(cmd);
+    }
+    catch(const std::exception& e)
+    {
+        _cache_refresh_pending = false;
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+    }
 }
 
 void r_devices::save_camera(const r_camera& camera)
@@ -265,12 +305,29 @@ void r_devices::_entry_point()
                 else if(cmd.first.type == GET_ALL_CAMERAS)
                 {
                     auto conn = _open_db(_top_dir);
-                    cmd.second.set_value(_get_all_cameras(conn));
+                    auto result = _get_all_cameras(conn);
+
+                    // Update cache
+                    {
+                        lock_guard<mutex> g(_cache_lock);
+                        _cached_all_cameras = result.cameras;
+                    }
+
+                    cmd.second.set_value(result);
                 }
                 else if(cmd.first.type == GET_ASSIGNED_CAMERAS)
                 {
                     auto conn = _open_db(_top_dir);
-                    cmd.second.set_value(_get_assigned_cameras(conn));
+                    auto result = _get_assigned_cameras(conn);
+
+                    // Update cache and clear refresh pending flag
+                    {
+                        lock_guard<mutex> g(_cache_lock);
+                        _cached_assigned_cameras = result.cameras;
+                    }
+                    _cache_refresh_pending = false;
+
+                    cmd.second.set_value(result);
                 }
                 else if(cmd.first.type == SAVE_CAMERA)
                 {
@@ -278,6 +335,10 @@ void r_devices::_entry_point()
                     if(cmd.first.cameras.empty())
                         R_THROW(("No cameras passed to SAVE_CAMERA."));
                     cmd.second.set_value(_save_camera(conn, cmd.first.cameras.front()));
+
+                    // Invalidate cache since camera list changed
+                    _cache_refresh_pending = false;
+                    refresh_camera_cache();
                 }
                 else if(cmd.first.type == REMOVE_CAMERA)
                 {
@@ -285,6 +346,10 @@ void r_devices::_entry_point()
                     if(cmd.first.cameras.empty())
                         R_THROW(("No cameras passed to REMOVE_CAMERA."));
                     cmd.second.set_value(_remove_camera(conn, cmd.first.cameras.front()));
+
+                    // Invalidate cache since camera list changed
+                    _cache_refresh_pending = false;
+                    refresh_camera_cache();
                 }
                 else if(cmd.first.type == GET_MODIFIED_CAMERAS)
                 {

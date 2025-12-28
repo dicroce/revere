@@ -145,7 +145,11 @@ static string _make_file_name(string name)
 
 void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_vss::r_stream_keeper& streamKeeper)
 {
-    auto assigned_cameras = devices.get_assigned_cameras();
+    // Use cached camera data to avoid blocking the UI thread
+    auto assigned_cameras = devices.get_assigned_cameras_cached();
+
+    // Trigger a background refresh for next time
+    devices.refresh_camera_cache();
 
     map<string, r_disco::r_camera> assigned;
     for(auto& c: assigned_cameras)
@@ -182,7 +186,8 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
         ui_state.recording_items.push_back(item);
     }
 
-    auto all_cameras = devices.get_all_cameras();
+    // Use cached camera data to avoid blocking the UI thread
+    auto all_cameras = devices.get_all_cameras_cached();
 
     ui_state.discovered_items.clear();
     for(int i = 0; i < (int)all_cameras.size(); ++i)

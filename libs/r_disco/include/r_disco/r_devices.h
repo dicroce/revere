@@ -11,6 +11,7 @@
 #include <thread>
 #include <string>
 #include <map>
+#include <atomic>
 
 namespace r_disco
 {
@@ -56,6 +57,13 @@ public:
     R_API r_utils::r_nullable<r_camera> get_camera_by_id(const std::string& id);
     R_API std::vector<r_camera> get_all_cameras();
     R_API std::vector<r_camera> get_assigned_cameras();
+
+    // Non-blocking cached accessors for UI thread - never block, return last known data
+    R_API std::vector<r_camera> get_all_cameras_cached();
+    R_API std::vector<r_camera> get_assigned_cameras_cached();
+
+    // Request cache refresh (non-blocking, fires and forgets)
+    R_API void refresh_camera_cache();
     R_API void save_camera(const r_camera& camera);
     R_API void remove_camera(const r_camera& camera);
     R_API void assign_camera(r_camera& camera);
@@ -104,6 +112,12 @@ private:
     // Cached master key for encryption/decryption
     mutable std::vector<uint8_t> _master_key;
     mutable bool _master_key_loaded;
+
+    // Camera cache for non-blocking UI access
+    mutable std::mutex _cache_lock;
+    std::vector<r_camera> _cached_all_cameras;
+    std::vector<r_camera> _cached_assigned_cameras;
+    std::atomic<bool> _cache_refresh_pending{false};
 };
 
 }
