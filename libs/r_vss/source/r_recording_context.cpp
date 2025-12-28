@@ -42,12 +42,22 @@ using namespace r_utils;
 using namespace std;
 using namespace std::chrono;
 
+// Helper to get storage file path - handles both legacy (filename only) and new (full path) formats
+static string _get_storage_path(const string& record_file_path, const string& top_dir)
+{
+    // Check if it's already a full path (contains path separators)
+    if(record_file_path.find('/') != string::npos || record_file_path.find('\\') != string::npos)
+        return record_file_path;
+    // Legacy format: just filename, prepend default video directory
+    return top_dir + PATH_SLASH + "video" + PATH_SLASH + record_file_path;
+}
+
 r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& camera, const string& top_dir, r_ws& ws) :
     _sk(sk),
     _camera(camera),
     _top_dir(top_dir),
     _source(camera.friendly_name + "_"),
-    _storage_file(top_dir + PATH_SLASH + "video" + PATH_SLASH + camera.record_file_path.value()),
+    _storage_file(_get_storage_path(camera.record_file_path.value(), top_dir)),
     _md_storage_file(),
     _maybe_video_storage_write_context(),
     _maybe_audio_storage_write_context(),
@@ -73,7 +83,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     if(!_camera.do_motion_detection.is_null() && _camera.do_motion_detection.value())
     {
         _md_storage_file = make_unique<r_md_storage_file>(
-            top_dir + PATH_SLASH + "video" + PATH_SLASH + camera.record_file_path.value()
+            _get_storage_path(camera.record_file_path.value(), top_dir)
         );
     }
 

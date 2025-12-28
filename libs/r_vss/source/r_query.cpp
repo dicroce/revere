@@ -22,6 +22,16 @@ using namespace r_vss;
 using namespace std;
 using namespace std::chrono;
 
+// Helper to get storage file path - handles both legacy (filename only) and new (full path) formats
+static string _get_storage_path(const string& record_file_path, const string& top_dir)
+{
+    // Check if it's already a full path (contains path separators)
+    if(record_file_path.find('/') != string::npos || record_file_path.find('\\') != string::npos)
+        return record_file_path;
+    // Legacy format: just filename, prepend default video directory
+    return top_dir + PATH_SLASH + "video" + PATH_SLASH + record_file_path;
+}
+
 // Helper: check if frame data has inline SPS (H.264 NAL type 7)
 static bool _has_inline_sps(const vector<uint8_t>& frame)
 {
@@ -90,7 +100,7 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
     auto epoch_millis = r_time_utils::tp_to_epoch_millis(ts);
 
@@ -140,7 +150,7 @@ vector<uint8_t> r_vss::query_get_webp(const string& top_dir, r_devices& devices,
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
     auto epoch_millis = r_time_utils::tp_to_epoch_millis(ts);
 
@@ -193,7 +203,7 @@ chrono::hours r_vss::query_get_retention_hours(const std::string& top_dir, r_dev
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
     auto maybe_first_ts = sf.first_ts();
 
@@ -213,7 +223,7 @@ vector<uint8_t> r_vss::query_get_key_frame(const std::string& top_dir, r_devices
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
     return sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, r_time_utils::tp_to_epoch_millis(ts));
 }
@@ -228,7 +238,7 @@ vector<uint8_t> r_vss::query_get_bgr24_frame(const std::string& top_dir, r_devic
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
     auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, r_time_utils::tp_to_epoch_millis(ts));
 
@@ -268,7 +278,7 @@ vector<uint8_t> r_vss::query_get_rgb24_frame(const std::string& top_dir, r_devic
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
     auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, r_time_utils::tp_to_epoch_millis(ts));
 
@@ -308,7 +318,7 @@ vector<uint8_t> r_vss::query_get_video(const std::string& top_dir, r_devices& de
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
     return sf.query(
         R_STORAGE_MEDIA_TYPE_ALL,
@@ -326,7 +336,7 @@ contents r_vss::query_get_contents(const string& top_dir, r_devices& devices, co
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
     auto segments = sf.query_segments(
         r_time_utils::tp_to_epoch_millis(start),
@@ -359,7 +369,7 @@ r_nullable<system_clock::time_point> r_vss::query_get_first_ts(const std::string
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sfr(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+    r_storage_file_reader sfr(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
     r_nullable<system_clock::time_point> result;
 
@@ -391,7 +401,8 @@ vector<r_vss::motion_event_info> r_vss::query_get_motion_events(const std::strin
 
         auto motion_file_name = maybe_camera.value().motion_detection_file_path.value();
 
-        auto motion_path = top_dir + PATH_SLASH + "video" + PATH_SLASH + motion_file_name;
+        // Handle both full path and legacy filename format for motion files
+        auto motion_path = _get_storage_path(motion_file_name, top_dir);
 
         if(!r_fs::file_exists(motion_path))
             R_THROW(("Motion database file does not exist."));
@@ -465,7 +476,7 @@ vector<r_vss::segment> r_vss::query_get_blocks(const string& top_dir, r_devices&
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value());
+    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
     vector<pair<int64_t, int64_t>> blocks;
 
@@ -497,7 +508,7 @@ void r_vss::query_remove_blocks(const std::string& top_dir, r_devices& devices, 
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
     
-    auto file_name = top_dir + PATH_SLASH + "video" + PATH_SLASH + maybe_camera.value().record_file_path.value();
+    auto file_name = _get_storage_path(maybe_camera.value().record_file_path.value(), top_dir);
 
     r_storage_file::remove_blocks(file_name, r_time_utils::tp_to_epoch_millis(start), r_time_utils::tp_to_epoch_millis(end));
 }
@@ -516,15 +527,16 @@ vector<r_metadata_entry> r_vss::query_get_analytics(const string& top_dir, r_dev
     // Construct metadata file path (same as recording file but with .mdnts extension)
     auto record_file_path = maybe_camera.value().record_file_path.value();
     
-    // Remove .nts extension if present
-    std::string base_path = record_file_path;
-    if(base_path.size() > 4 && base_path.substr(base_path.size() - 4) == ".nts")
-    {
-        base_path = base_path.substr(0, base_path.size() - 4);
-    }
+    // Get the full storage path (handles both legacy and new formats)
+    auto storage_path = _get_storage_path(record_file_path, top_dir);
     
-    auto mdnts_file_path = base_path + ".mdnts";
-    auto full_path = top_dir + PATH_SLASH + "video" + PATH_SLASH + mdnts_file_path;
+    // Remove .nts extension if present and add .mdnts
+    std::string full_path = storage_path;
+    if(full_path.size() > 4 && full_path.substr(full_path.size() - 4) == ".nts")
+    {
+        full_path = full_path.substr(0, full_path.size() - 4);
+    }
+    full_path += ".mdnts";
 
     // Check if metadata file exists
     if(!r_fs::file_exists(full_path))

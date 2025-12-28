@@ -27,6 +27,7 @@ struct assignment_state
     int motion_retention_days {10};
     int motion_percentage_estimate {5};
     std::string file_name;
+    std::string storage_dir;  // Directory where recording files will be stored
     r_utils::r_nullable<int64_t> num_storage_file_blocks {0};
     r_utils::r_nullable<int64_t> storage_file_block_size {0};
     r_utils::r_nullable<r_disco::r_camera> camera;
