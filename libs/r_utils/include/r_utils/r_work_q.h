@@ -59,6 +59,21 @@ public:
         return result;
     }
 
+    R_API r_utils::r_nullable<std::pair<CMD,std::promise<RESULT>>> try_poll()
+    {
+        std::unique_lock<std::mutex> g(_lock);
+
+        r_utils::r_nullable<std::pair<CMD,std::promise<RESULT>>> result;
+
+        if(!_queue.empty())
+        {
+            result.assign(std::move(_queue.back()));
+            _queue.pop_back();
+        }
+
+        return result;
+    }
+
     R_API void wake()
     {
         std::unique_lock<std::mutex> g(_lock);

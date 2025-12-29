@@ -187,7 +187,9 @@ void r_utils::r_logger::write(LOG_LEVEL level,
             fprintf(_state->log_file, "%s\n", l.c_str());
 #endif
         }
-        fflush(_state->log_file);
+        // Only flush on errors and above to avoid blocking on slow disks
+        if(level <= LOG_LEVEL_ERROR)
+            fflush(_state->log_file);
     }
 
 #ifdef IS_LINUX

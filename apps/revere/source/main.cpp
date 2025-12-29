@@ -1156,7 +1156,29 @@ int main(int argc, char** argv)
 
     // Main loop
     while(!close_requested)
-    {        
+    {
+        glfwPollEvents();
+        tray.pump();
+
+        if(maybe_start_minimized)
+        {
+            maybe_start_minimized = false;
+            glfwHideWindow(window);
+        }
+
+        if(glfwWindowShouldClose(window) != GL_FALSE)
+        {
+            glfwSetWindowShouldClose(window, GL_FALSE);
+            camera_setup_wizard.next("minimize_to_tray");
+        }
+
+        // Skip heavy processing when window is hidden
+        if(!glfwGetWindowAttrib(window, GLFW_VISIBLE))
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+
         auto now = chrono::steady_clock::now();
 
         if(((now - last_ui_update_ts) > chrono::seconds(5)) || force_ui_update)
@@ -1172,7 +1194,7 @@ int main(int argc, char** argv)
             {
                 auto stream_status = streamKeeper.fetch_stream_status();
 
-                for(auto status : stream_status)
+                for(const auto& status : stream_status)
                 {
                     if(status.camera.id == maybe_camera_id.value())
                     {
@@ -1185,22 +1207,6 @@ int main(int argc, char** argv)
                     }
                 }
             }
-        }
-
-        glfwPollEvents();
-
-        tray.pump();
-
-        if(maybe_start_minimized)
-        {
-            maybe_start_minimized = false;
-            glfwHideWindow(window);
-        }
-
-        if(glfwWindowShouldClose(window) != GL_FALSE)
-        {
-            glfwSetWindowShouldClose(window, GL_FALSE);
-            camera_setup_wizard.next("minimize_to_tray");
         }
 
         // Start the Dear ImGui frame
@@ -1231,8 +1237,7 @@ int main(int argc, char** argv)
             }
         );
 
-        r_utils::r_nullable<std::string> main_status;
-        main_status.set_value(string("Revere Running"));
+        static const r_utils::r_nullable<std::string> main_status(std::string("Revere Running"));
 
         main_layout(
             client_top,
@@ -1382,21 +1387,16 @@ int main(int argc, char** argv)
             glfwHideWindow(window);
         }
 
-        // Always call Render to complete the frame (required by ImGui)
         ImGui::Render();
 
-        // Only render to screen if window is visible
-        if(glfwGetWindowAttrib(window, GLFW_VISIBLE))
-        {
-            int display_w, display_h;
-            glfwGetFramebufferSize(window, &display_w, &display_h);
-            glViewport(0, 0, display_w, display_h);
-            glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
-            glClear(GL_COLOR_BUFFER_BIT);
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        int display_w, display_h;
+        glfwGetFramebufferSize(window, &display_w, &display_h);
+        glViewport(0, 0, display_w, display_h);
+        glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-            glfwSwapBuffers(window);
-        }
+        glfwSwapBuffers(window);
     }
 
     // Cleanup

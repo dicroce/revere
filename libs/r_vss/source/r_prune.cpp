@@ -93,6 +93,15 @@ void r_prune::_entry_point()
                     auto block_start = current_ps.blocks[current_ps.bi].start;
                     auto block_end = current_ps.blocks[current_ps.bi].end;
 
+                    // Skip blocks that are too recent - the +30 second overlap on the motion
+                    // query would exceed what the ring buffer has recorded
+                    if(block_end + chrono::seconds(30) > now)
+                    {
+                        _rotate_cameras();
+                        _ps.clear();
+                        continue;
+                    }
+
                     auto motion_events = query_get_motion_events(
                         _top_dir,
                         _devices,
@@ -104,7 +113,7 @@ void r_prune::_entry_point()
 
                     if(motion_events.empty())
                     {
-#if 0
+#if 1
                         R_LOG_INFO(
                             "Pruning %s FROM %s -> %s\n", 
                             current_ps.camera.friendly_name.value().c_str(),

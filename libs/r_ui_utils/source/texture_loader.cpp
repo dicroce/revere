@@ -79,7 +79,7 @@ void texture_loader::work()
 
     while(!done)
     {
-        auto w = _load_q.poll(std::chrono::milliseconds(1));
+        auto w = _load_q.try_poll();
 
         if(w.is_null())
         {
