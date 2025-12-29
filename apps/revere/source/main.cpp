@@ -28,6 +28,7 @@
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
 #include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_disk_benchmark.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_file.h"
 #include "r_storage/r_md_storage_file.h"
@@ -1125,6 +1126,10 @@ int main(int argc, char** argv)
     R_LOG_INFO("Revere Video Surveillance System");
     R_LOG_INFO("Starting up...");
     R_LOG_INFO("========================================");
+
+    // Benchmark disk write speed before starting recording services
+    auto video_path = revere::sub_dir("video");
+    uint64_t disk_bytes_per_second = r_vss::benchmark_disk_write_speed(video_path);
 
     // Start background services
     streamKeeper.start();
