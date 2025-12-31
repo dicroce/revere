@@ -58,6 +58,21 @@ public:
      */
     R_API r_utils::r_nullable<r_motion_info> process(const r_image& input, bool skip_stats_update = false);
 
+    /**
+     * Feed a cv::Mat image directly and receive motion metrics for that frame.
+     * This overload accepts ROI Mats (zero-copy subregions of larger images).
+     * Returns empty nullable on the very first call (no background yet).
+     *
+     * @param input The input image (BGR, RGB, or grayscale). Can be an ROI of a larger image.
+     * @param roi_offset_x Offset to add to motion bbox x coordinates (for letterbox correction)
+     * @param roi_offset_y Offset to add to motion bbox y coordinates (for letterbox correction)
+     * @param skip_stats_update If true, don't update the moving average or motion frequency map.
+     */
+    R_API r_utils::r_nullable<r_motion_info> process(const cv::Mat& input,
+                                                      int roi_offset_x = 0,
+                                                      int roi_offset_y = 0,
+                                                      bool skip_stats_update = false);
+
 private:
     // statistics
     r_utils::r_exp_avg<uint64_t> _avg_motion;

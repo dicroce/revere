@@ -9,7 +9,9 @@
 #include "r_pipeline/r_gst_buffer.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
+#include <opencv2/opencv.hpp>
 #include <chrono>
+#include <algorithm>
 
 using namespace r_vss;
 using namespace r_utils;
@@ -17,6 +19,46 @@ using namespace r_storage;
 using namespace r_motion;
 using namespace std;
 using namespace std::chrono;
+
+namespace {
+    // Letterbox parameters for 640x640 target
+    struct letterbox_params {
+        int scaled_w;
+        int scaled_h;
+        int pad_x;
+        int pad_y;
+        float scale;
+    };
+
+    letterbox_params calc_letterbox(int input_w, int input_h, int target_size = 640) {
+        letterbox_params p;
+        p.scale = std::min((float)target_size / input_w, (float)target_size / input_h);
+        p.scaled_w = (int)(input_w * p.scale);
+        p.scaled_h = (int)(input_h * p.scale);
+        p.pad_x = (target_size - p.scaled_w) / 2;
+        p.pad_y = (target_size - p.scaled_h) / 2;
+        return p;
+    }
+
+    // Create letterboxed 640x640 image and return ROI mat for motion detection
+    // letterbox_out: receives the full 640x640 letterboxed image
+    // Returns: ROI mat pointing to content region (zero-copy)
+    cv::Mat create_letterbox(const std::vector<uint8_t>& decoded_data, int scaled_w, int scaled_h,
+                             const letterbox_params& lp, cv::Mat& letterbox_out) {
+        // Wrap decoded data as cv::Mat (no copy)
+        cv::Mat content(scaled_h, scaled_w, CV_8UC3, const_cast<uint8_t*>(decoded_data.data()));
+
+        // Create 640x640 black image
+        letterbox_out = cv::Mat::zeros(640, 640, CV_8UC3);
+
+        // Copy content to center region
+        cv::Rect roi(lp.pad_x, lp.pad_y, lp.scaled_w, lp.scaled_h);
+        content.copyTo(letterbox_out(roi));
+
+        // Return ROI mat (zero-copy reference to content region in letterbox)
+        return letterbox_out(roi);
+    }
+}
 
 r_motion_engine::r_motion_engine(r_disco::r_devices& devices, const string& top_dir, r_motion_event_plugin_host& meph) :
     _devices(devices),
@@ -135,18 +177,19 @@ void r_motion_engine::_entry_point()
                         {
                             uint16_t input_w = wc->decoder().input_width();
                             uint16_t input_h = wc->decoder().input_height();
-                            uint16_t output_w = 640;
-                            uint16_t output_h = (uint16_t)((640.0 * input_h) / input_w);
 
-                            auto decoded = wc->decoder().get(AV_PIX_FMT_RGB24, output_w, output_h, 1);
+                            // Calculate letterbox parameters for 640x640 target
+                            auto lp = calc_letterbox(input_w, input_h);
 
-                            r_motion::r_image img;
-                            img.type = r_motion::R_MOTION_IMAGE_TYPE_RGB;
-                            img.width = output_w;
-                            img.height = output_h;
-                            img.data = *decoded;
+                            // Decode to scaled size (maintains aspect ratio)
+                            auto decoded = wc->decoder().get(AV_PIX_FMT_RGB24, (uint16_t)lp.scaled_w, (uint16_t)lp.scaled_h, 1);
 
-                            auto maybe_motion_info = wc->motion_state().process(img);
+                            // Create 640x640 letterboxed image and get ROI for motion detection
+                            cv::Mat letterbox_img;
+                            cv::Mat roi_mat = create_letterbox(*decoded, lp.scaled_w, lp.scaled_h, lp, letterbox_img);
+
+                            // Process motion on ROI only (efficient), with offset correction
+                            auto maybe_motion_info = wc->motion_state().process(roi_mat, lp.pad_x, lp.pad_y, false);
 
                             if(!maybe_motion_info.is_null())
                             {
@@ -154,6 +197,7 @@ void r_motion_engine::_entry_point()
                                 bool is_significant = is_motion_significant(motion_info.motion, motion_info.avg_motion, motion_info.stddev);
 
                                 // Convert motion region from r_motion to r_vss format
+                                // Coordinates are already in 640x640 letterbox space (corrected by motion_state)
                                 r_vss::motion_region motion_bbox;
                                 motion_bbox.x = motion_info.motion_bbox.x;
                                 motion_bbox.y = motion_info.motion_bbox.y;
@@ -161,13 +205,18 @@ void r_motion_engine::_entry_point()
                                 motion_bbox.height = motion_info.motion_bbox.height;
                                 motion_bbox.has_motion = motion_info.motion_bbox.has_motion;
 
+                                // Copy letterboxed image to vector for storage
+                                std::vector<uint8_t> letterbox_data(letterbox_img.data,
+                                    letterbox_img.data + letterbox_img.total() * letterbox_img.elemSize());
+
                                 // Push to keyframe motion buffer (ring buffer 1)
+                                // Now stores 640x640 letterboxed image
                                 r_keyframe_motion_entry kf_entry;
                                 kf_entry.ts = work.ts;
                                 kf_entry.has_motion = is_significant;
-                                kf_entry.decoded_image = *decoded;
-                                kf_entry.width = output_w;
-                                kf_entry.height = output_h;
+                                kf_entry.decoded_image = std::move(letterbox_data);
+                                kf_entry.width = 640;
+                                kf_entry.height = 640;
                                 kf_entry.bbox = motion_bbox;
                                 wc->keyframe_motion_buffer().push(kf_entry);
 
@@ -316,30 +365,35 @@ void r_motion_engine::_decode_and_process_frame(shared_ptr<r_work_context>& wc, 
         {
             uint16_t input_w = wc->decoder().input_width();
             uint16_t input_h = wc->decoder().input_height();
-            uint16_t output_w = 640;
-            uint16_t output_h = (uint16_t)((640.0 * input_h) / input_w);
 
-            auto decoded = wc->decoder().get(AV_PIX_FMT_RGB24, output_w, output_h, 1);
+            // Calculate letterbox parameters for 640x640 target
+            auto lp = calc_letterbox(input_w, input_h);
 
-            r_motion::r_image img;
-            img.type = r_motion::R_MOTION_IMAGE_TYPE_RGB;
-            img.width = output_w;
-            img.height = output_h;
-            img.data = *decoded;
+            // Decode to scaled size (maintains aspect ratio)
+            auto decoded = wc->decoder().get(AV_PIX_FMT_RGB24, (uint16_t)lp.scaled_w, (uint16_t)lp.scaled_h, 1);
+
+            // Create 640x640 letterboxed image and get ROI for motion detection
+            cv::Mat letterbox_img;
+            cv::Mat roi_mat = create_letterbox(*decoded, lp.scaled_w, lp.scaled_h, lp, letterbox_img);
 
             // During catchup processing, pass skip_update=true to prevent the motion detector
             // from adapting its baseline to the motion being detected. This keeps the baseline
             // stable so that subsequent live frames are evaluated correctly.
-            auto maybe_motion_info = wc->motion_state().process(img, is_catchup);
+            auto maybe_motion_info = wc->motion_state().process(roi_mat, lp.pad_x, lp.pad_y, is_catchup);
 
             r_vss::motion_region motion_bbox = {0, 0, 0, 0, false};
             bool is_significant = false;
+
+            // Copy letterboxed image to vector for passing to plugins
+            std::vector<uint8_t> letterbox_data(letterbox_img.data,
+                letterbox_img.data + letterbox_img.total() * letterbox_img.elemSize());
 
             if(!maybe_motion_info.is_null())
             {
                 auto motion_info = maybe_motion_info.value();
                 is_significant = is_motion_significant(motion_info.motion, motion_info.avg_motion, motion_info.stddev);
 
+                // Coordinates are already in 640x640 letterbox space (corrected by motion_state)
                 motion_bbox.x = motion_info.motion_bbox.x;
                 motion_bbox.y = motion_info.motion_bbox.y;
                 motion_bbox.width = motion_info.motion_bbox.width;
@@ -349,12 +403,13 @@ void r_motion_engine::_decode_and_process_frame(shared_ptr<r_work_context>& wc, 
                 // For key frames during live processing (not catchup), update the keyframe motion buffer
                 if(entry.is_key_frame && !is_catchup)
                 {
+                    // Now stores 640x640 letterboxed image
                     r_keyframe_motion_entry kf_entry;
                     kf_entry.ts = entry.ts;
                     kf_entry.has_motion = is_significant;
-                    kf_entry.decoded_image = *decoded;
-                    kf_entry.width = output_w;
-                    kf_entry.height = output_h;
+                    kf_entry.decoded_image = letterbox_data;
+                    kf_entry.width = 640;
+                    kf_entry.height = 640;
                     kf_entry.bbox = motion_bbox;
                     wc->keyframe_motion_buffer().push(kf_entry);
 
@@ -395,7 +450,7 @@ void r_motion_engine::_decode_and_process_frame(shared_ptr<r_work_context>& wc, 
 
                         wc->set_in_event(false);
                         wc->set_event_start_ts(-1);
-                        _meph.post(r_vss::motion_event_end, wc->get_camera_id(), entry.ts, *decoded, output_w, output_h, motion_bbox);
+                        _meph.post(r_vss::motion_event_end, wc->get_camera_id(), entry.ts, letterbox_data, 640, 640, motion_bbox);
 
                         if(ds == r_av::R_CODEC_STATE_HAS_OUTPUT)
                             decode_again = false;
@@ -407,7 +462,7 @@ void r_motion_engine::_decode_and_process_frame(shared_ptr<r_work_context>& wc, 
             // Send update event for frames during motion event
             if(wc->get_in_event())
             {
-                _meph.post(r_vss::motion_event_update, wc->get_camera_id(), entry.ts, *decoded, output_w, output_h, motion_bbox);
+                _meph.post(r_vss::motion_event_update, wc->get_camera_id(), entry.ts, letterbox_data, 640, 640, motion_bbox);
             }
 
             if(ds == r_av::R_CODEC_STATE_HAS_OUTPUT)

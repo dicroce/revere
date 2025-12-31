@@ -24,46 +24,57 @@ r_motion_state::~r_motion_state() noexcept = default;
 
 r_nullable<r_motion_info> r_motion_state::process(const r_image& input, bool skip_stats_update)
 {
-    r_nullable<r_motion_info> result;
-
     if(input.width == 0 || input.height == 0)
-        return result;                       // empty frame guard
+        return r_nullable<r_motion_info>();  // empty frame guard
 
     cv::Mat src;
 
-    // Handle different input formats
+    // Handle different input formats - wrap incoming buffer (no copy)
     if(input.type == R_MOTION_IMAGE_TYPE_ARGB)
     {
-        // Wrap incoming BGRA buffer (no copy)
-        src = cv::Mat(input.height,
-                      input.width,
-                      CV_8UC4,
+        src = cv::Mat(input.height, input.width, CV_8UC4,
                       const_cast<unsigned char*>(input.data.data()));
-
-        // --- GRAYSCALE + BLUR -----------------------------------------------------------
-        cv::cvtColor(src, _currGray, cv::COLOR_BGRA2GRAY);
     }
     else if(input.type == R_MOTION_IMAGE_TYPE_BGR)
     {
-        // Wrap incoming BGR buffer (no copy)
-        src = cv::Mat(input.height,
-                      input.width,
-                      CV_8UC3,
+        src = cv::Mat(input.height, input.width, CV_8UC3,
                       const_cast<unsigned char*>(input.data.data()));
-
-        // --- GRAYSCALE + BLUR -----------------------------------------------------------
-        cv::cvtColor(src, _currGray, cv::COLOR_BGR2GRAY);
     }
     else if(input.type == R_MOTION_IMAGE_TYPE_RGB)
     {
-        // Wrap incoming RGB buffer (no copy)
-        src = cv::Mat(input.height,
-                      input.width,
-                      CV_8UC3,
+        src = cv::Mat(input.height, input.width, CV_8UC3,
                       const_cast<unsigned char*>(input.data.data()));
+    }
+    else
+    {
+        return r_nullable<r_motion_info>(); // Unsupported format
+    }
 
-        // --- GRAYSCALE + BLUR -----------------------------------------------------------
-        cv::cvtColor(src, _currGray, cv::COLOR_RGB2GRAY);
+    // Delegate to cv::Mat overload with no offset
+    return process(src, 0, 0, skip_stats_update);
+}
+
+r_nullable<r_motion_info> r_motion_state::process(const cv::Mat& input, int roi_offset_x, int roi_offset_y, bool skip_stats_update)
+{
+    r_nullable<r_motion_info> result;
+
+    if(input.empty())
+        return result;
+
+    // --- GRAYSCALE + BLUR -----------------------------------------------------------
+    // Detect input format and convert to grayscale
+    if(input.channels() == 4)
+    {
+        cv::cvtColor(input, _currGray, cv::COLOR_BGRA2GRAY);
+    }
+    else if(input.channels() == 3)
+    {
+        // Assume RGB (caller from motion engine sends RGB)
+        cv::cvtColor(input, _currGray, cv::COLOR_RGB2GRAY);
+    }
+    else if(input.channels() == 1)
+    {
+        _currGray = input; // Already grayscale (may be ROI, no copy)
     }
     else
     {
@@ -216,8 +227,9 @@ r_nullable<r_motion_info> r_motion_state::process(const r_image& input, bool ski
         for (size_t i = 1; i < motion_rects.size(); i++) {
             combined_bbox |= motion_rects[i];  // Union of rectangles
         }
-        mi.motion_bbox.x = combined_bbox.x;
-        mi.motion_bbox.y = combined_bbox.y;
+        // Apply ROI offset to transform from ROI-local coords to full image coords
+        mi.motion_bbox.x = combined_bbox.x + roi_offset_x;
+        mi.motion_bbox.y = combined_bbox.y + roi_offset_y;
         mi.motion_bbox.width = combined_bbox.width;
         mi.motion_bbox.height = combined_bbox.height;
         mi.motion_bbox.has_motion = true;

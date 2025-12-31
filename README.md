@@ -92,24 +92,31 @@ If you have a camera that doesn't work with Revere, the project maintainer is wi
 ## Technology Stack & Acknowledgements
 
 **Core Media Processing:**
-- **OpenCV** (4.x) - Computer vision, motion detection, and background subtraction
-- **GStreamer** (1.0) - Media pipeline framework for RTSP streaming and video processing
-- **FFmpeg** (4.x/5.x/6.x) - Video decoding, encoding, and format handling
+- [OpenCV](https://opencv.org/) (4.x) - Computer vision, motion detection, and background subtraction
+- [GStreamer](https://gstreamer.freedesktop.org/) (1.0) - Media pipeline framework for RTSP streaming and video processing
+- [FFmpeg](https://ffmpeg.org/) - Video decoding, encoding, and format handling
 
 **AI/ML (Optional):**
-- **NCNN** - Neural network inference for AI-based motion detection plugins (YOLOv8)
+- [NCNN](https://github.com/Tencent/ncnn) - High-performance neural network inference (YOLOv8 object detection)
 
 **User Interface:**
-- **ImGui** - Immediate-mode GUI framework
-- **GLFW** - Window and input management
-- **OpenGL** - Graphics rendering
+- [Dear ImGui](https://github.com/ocornut/imgui) (v1.88) - Immediate-mode GUI framework
+- [ImGuiFileDialog](https://github.com/aiekick/ImGuiFileDialog) - File dialog extension for ImGui
+- [GLFW](https://www.glfw.org/) (3.4) - Cross-platform window and input management
+- OpenGL - Graphics rendering
 
-**Networking & Data:**
-- **ONVIF** - IP camera discovery and control
-- **SQLite** - Metadata and configuration storage
-- **nanots** - Time-series database for recording
-- **mbedTLS** - TLS/SSL and cryptography
-- **pugixml** - XML parsing for ONVIF communication
+**Storage & Data:**
+- [nanots](https://github.com/dicroce/nanots) - Time-series storage for video recording
+- [SQLite](https://sqlite.org/) - Metadata and configuration storage (bundled with nanots)
+- [nlohmann/json](https://github.com/nlohmann/json) - JSON parsing
+
+**Networking & Security:**
+- [pugixml](https://pugixml.org/) - XML parsing for ONVIF communication
+- [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (3.6.3) - TLS/SSL and cryptography
+
+**Utilities:**
+- [date](https://github.com/HowardHinnant/date) - Howard Hinnant's date/time library
+- [stb libraries](https://github.com/nothings/stb) - Single-file image processing utilities
 
 ## License
 

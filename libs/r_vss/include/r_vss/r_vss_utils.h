@@ -10,7 +10,6 @@ namespace r_vss
 
 R_API std::vector<std::pair<int64_t, int64_t>> find_contiguous_segments(const std::vector<int64_t>& times);
 
-
 }
 
 #endif

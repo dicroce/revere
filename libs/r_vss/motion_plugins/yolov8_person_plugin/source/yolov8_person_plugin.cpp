@@ -274,55 +274,28 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
     if (!_initialized || !_net) {
         return detections;
     }
-    
+
     try {
-        // YOLOv8 preprocessing: letterbox to 640x640 to maintain aspect ratio
-        const int model_width = 640;
-        const int model_height = 640;
-        
-        // Calculate scale factor to fit the image into model size while maintaining aspect ratio
-        float scale = std::min((float)model_width / width, (float)model_height / height);
-        int scaled_width = (int)(width * scale);
-        int scaled_height = (int)(height * scale);
-        
-        // Calculate padding to center the image
-        int pad_x = (model_width - scaled_width) / 2;
-        int pad_y = (model_height - scaled_height) / 2;
-        
-        // Create letterboxed image with padding (input is now RGB)
-        cv::Mat original_img(height, width, CV_8UC3, (void*)rgb_data);
-        if (original_img.empty()) {
+        // Input is already 640x640 letterboxed RGB from motion engine
+        // No resize needed - use directly
+        cv::Mat input_img(height, width, CV_8UC3, (void*)rgb_data);
+        if (input_img.empty()) {
             return detections;
         }
 
-        cv::Mat resized_img;
-        cv::resize(original_img, resized_img, cv::Size(scaled_width, scaled_height));
-        if (resized_img.empty()) {
-            return detections;
-        }
-
-        // Create padded image (letterbox)
-        cv::Mat letterbox_img = cv::Mat::zeros(model_height, model_width, CV_8UC3);
-        cv::Rect roi(pad_x, pad_y, scaled_width, scaled_height);
-        resized_img.copyTo(letterbox_img(roi));
-
-        if (letterbox_img.empty()) {
-            return detections;
-        }
-
-        // Convert to NCNN mat
-        ncnn::Mat in = ncnn::Mat::from_pixels(letterbox_img.data, ncnn::Mat::PIXEL_BGR, model_width, model_height);
+        // Convert to NCNN mat (RGB input, NCNN expects RGB for PIXEL_RGB)
+        ncnn::Mat in = ncnn::Mat::from_pixels(input_img.data, ncnn::Mat::PIXEL_RGB, width, height);
         if (in.empty()) {
             return detections;
         }
-        
+
         // YOLOv8 normalization: divide by 255.0
         const float norm_vals[3] = {1.0f/255.0f, 1.0f/255.0f, 1.0f/255.0f};
         in.substract_mean_normalize(0, norm_vals);
-        
+
         // Create extractor and run inference
         ncnn::Extractor ex = _net->create_extractor();
-        
+
         // YOLOv8 input layer name
         int ret = ex.input("in0", in);
         if (ret != 0) {
@@ -335,12 +308,12 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
         if (ret != 0) {
             return detections;
         }
-        
+
         // Check if output is empty
         if (out.empty()) {
             return detections;  // Empty detections is valid - nothing found
         }
-        
+
         // YOLOv8 post-processing
         // Actual output format: w=8400, h=84, c=1 where 84 = 4 (bbox) + 80 (COCO classes)
         const float conf_threshold = 0.65f;  // Higher threshold to reduce false positives (e.g., car misclassified as train)
@@ -360,8 +333,8 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
                 const float* data = (const float*)out.data;
                 float cx = data[0 * 8400 + i];  // Channel 0, proposal i
                 float cy = data[1 * 8400 + i];  // Channel 1, proposal i
-                float w = data[2 * 8400 + i];   // Channel 2, proposal i
-                float h = data[3 * 8400 + i];   // Channel 3, proposal i
+                float bw = data[2 * 8400 + i];  // Channel 2, proposal i
+                float bh = data[3 * 8400 + i];  // Channel 3, proposal i
 
                 // Find the class with maximum confidence (channels 4 to num_channels-1)
                 float max_class_score = 0.0f;
@@ -377,44 +350,30 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
                 if (max_class_score < conf_threshold) {
                     continue;
                 }
-                
+
                 // Convert center format to corner format
-                float x1 = cx - w * 0.5f;
-                float y1 = cy - h * 0.5f;
-                float x2 = cx + w * 0.5f;
-                float y2 = cy + h * 0.5f;
-                
-                // Convert from letterbox space to original image space
-                float orig_x1 = (x1 - pad_x) / scale;
-                float orig_y1 = (y1 - pad_y) / scale;
-                float orig_x2 = (x2 - pad_x) / scale;
-                float orig_y2 = (y2 - pad_y) / scale;
-                
+                // Coordinates are already in 640x640 letterbox space - no transformation needed
+                float x1 = cx - bw * 0.5f;
+                float y1 = cy - bh * 0.5f;
+                float x2 = cx + bw * 0.5f;
+                float y2 = cy + bh * 0.5f;
+
                 Detection detection;
-                detection.x1 = orig_x1;
-                detection.y1 = orig_y1;
-                detection.x2 = orig_x2;
-                detection.y2 = orig_y2;
+                detection.x1 = x1;
+                detection.y1 = y1;
+                detection.x2 = x2;
+                detection.y2 = y2;
                 detection.score = max_class_score;
                 detection.class_id = max_class_id;
                 detection.camera_id = camera_id;
                 detection.timestamp = timestamp;
-                
-                
-                // Clamp to image bounds
-                detection.x1 = std::max(0.0f, std::min((float)(width-1), detection.x1));
-                detection.y1 = std::max(0.0f, std::min((float)(height-1), detection.y1));
-                detection.x2 = std::max(0.0f, std::min((float)(width-1), detection.x2));
-                detection.y2 = std::max(0.0f, std::min((float)(height-1), detection.y2));
-                
-                // Basic size validation - reject tiny or huge detections (temporarily disabled)
-                // float bbox_width = detection.x2 - detection.x1;
-                // float bbox_height = detection.y2 - detection.y1;
-                // if (bbox_width < 10.0f || bbox_height < 10.0f || 
-                //     bbox_width > width * 0.8f || bbox_height > height * 0.8f) {
-                //     continue;
-                // }
-                
+
+                // Clamp to image bounds (640x640)
+                detection.x1 = std::max(0.0f, std::min(639.0f, detection.x1));
+                detection.y1 = std::max(0.0f, std::min(639.0f, detection.y1));
+                detection.x2 = std::max(0.0f, std::min(639.0f, detection.x2));
+                detection.y2 = std::max(0.0f, std::min(639.0f, detection.y2));
+
                 // Since user only needs detection events (not bbox coordinates), add all detections above threshold
                 proposals.push_back(detection);
             }
@@ -472,10 +431,11 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
 
             // Filter detections that don't overlap sufficiently with the motion region
             // Require at least 25% of the detection bbox to overlap with the motion bbox
+            // Both detection and motion_bbox coordinates are in 640x640 letterbox space
             const float min_overlap_ratio = 0.25f;
 
             if (motion_bbox.has_motion && motion_bbox.width > 0 && motion_bbox.height > 0) {
-                // Motion bbox coordinates (in original image space at detection resolution)
+                // Motion bbox coordinates (in 640x640 letterbox space, same as detections)
                 float motion_x1 = (float)motion_bbox.x;
                 float motion_y1 = (float)motion_bbox.y;
                 float motion_x2 = (float)(motion_bbox.x + motion_bbox.width);
