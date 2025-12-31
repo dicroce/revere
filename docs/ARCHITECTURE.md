@@ -20,7 +20,9 @@ This document describes the architecture and design of the Revere video surveill
 Revere is 2 applications: revere and vision. revere takes care of camera discovery, recording, exports, thumbnails, analytics, etc. vision is a viewing app that uses revere as its backend api.
 
 The revere applications are built from 13 libraries that provide most of the functionality. These libraries range in functionality from video, networking, storage and analytics.
-  
+
+In addition the Revere system has a flexible plugin architecture that supports two kinds of plugins: plugins that are sent motion events and
+plugins that are more general. Our cloud plugin is an example of the more general type.
 
 ### Key Architectural Principles
 
@@ -31,7 +33,7 @@ I shoot for building lego blocks that are generally useful from which many appli
 [ASCII diagram or reference to image showing major components and their relationships]
 
 ```
-[Camera] --RTSP--> [r_pipeline] --> [r_vss] --> [r_storage] --> [Disk]
+[Camera] --RTSP--> [r_pipeline] --> [r_vss] --> [r_storage] --> [nanots] --> [Disk]
                                        |
                                        v
                                    [r_motion]      [r_http]
@@ -46,7 +48,7 @@ I shoot for building lego blocks that are generally useful from which many appli
 ### Applications
 
 #### revere
-The main surveillance application that handles camera management, recording, and streaming.
+The main surveillance application that handles camera management, recording, and streaming. Also implements a full featured HTTP api.
 
 **Purpose:** Central hub for video surveillance operations
 

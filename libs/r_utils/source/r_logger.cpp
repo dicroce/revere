@@ -177,20 +177,24 @@ void r_utils::r_logger::write(LOG_LEVEL level,
         }
     }
 
+#ifdef IS_WINDOWS
     if(_state->log_file)
     {
         for(auto l : lines)
         {
-#ifdef IS_WINDOWS
             fprintf(_state->log_file, "%s %s\n", timestamp.c_str(), l.c_str());
-#else
-            fprintf(_state->log_file, "%s\n", l.c_str());
-#endif
         }
-        // Only flush on errors and above to avoid blocking on slow disks
-        if(level <= LOG_LEVEL_ERROR)
+        // Flush on errors and above, or if 10 seconds have passed since last flush
+        bool should_flush = (level <= LOG_LEVEL_ERROR);
+        if(!should_flush && (now - _state->last_flush_time) > std::chrono::seconds(10))
+            should_flush = true;
+        if(should_flush)
+        {
             fflush(_state->log_file);
+            _state->last_flush_time = now;
+        }
     }
+#endif
 
 #ifdef IS_LINUX
     int priority = LOG_USER;
