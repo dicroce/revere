@@ -22,10 +22,7 @@ namespace r_vss
 enum
 {
     RING_MOTION_FLAG_SIZE = 1,
-    DEFAULT_MOTION_CONFIRM_FRAMES = 3,
-    DEFAULT_MOTION_END_FRAMES = 3,      // Require N frames to END event
-    DEFAULT_GOP_SIZE = 30,
-    DEFAULT_BUFFER_GOPS = 4
+    DEFAULT_MOTION_CONFIRM_FRAMES = 3
 };
 
 // Entry for ring buffer 1: key frame motion detection results
@@ -37,14 +34,6 @@ struct r_keyframe_motion_entry
     uint16_t width;
     uint16_t height;
     motion_region bbox;
-};
-
-// Entry for ring buffer 2: encoded frames (I and P)
-struct r_encoded_frame_entry
-{
-    r_pipeline::r_gst_buffer frame;
-    int64_t ts;
-    bool is_key_frame;
 };
 
 struct r_work_item
@@ -64,10 +53,7 @@ public:
                    const r_disco::r_camera& camera,
                    const std::string& path,
                    const std::vector<uint8_t> ed,
-                   size_t motion_confirm_frames = DEFAULT_MOTION_CONFIRM_FRAMES,
-                   size_t motion_end_frames = DEFAULT_MOTION_END_FRAMES,
-                   size_t gop_size = DEFAULT_GOP_SIZE,
-                   size_t buffer_gops = DEFAULT_BUFFER_GOPS) :
+                   size_t motion_confirm_frames = DEFAULT_MOTION_CONFIRM_FRAMES) :
         _motion_state(60),
         _video_decoder(codec_id),
         _camera(camera),
@@ -76,10 +62,7 @@ public:
         _first_ts(-1),
         _last_written_second(-1),
         _motion_confirm_frames(motion_confirm_frames),
-        _motion_end_frames(motion_end_frames),
-        _keyframe_motion_buffer(std::max(motion_confirm_frames, motion_end_frames)),
-        _encoded_frame_buffer(gop_size * buffer_gops),
-        _processing_catchup(false)
+        _keyframe_motion_buffer(motion_confirm_frames)
     {
         _video_decoder.set_extradata(ed);
     }
@@ -100,15 +83,13 @@ public:
     int64_t get_last_written_second() const { return _last_written_second; }
     void set_last_written_second(int64_t s) { _last_written_second = s; }
 
-    // Ring buffer accessors
+    // Ring buffer accessor
     r_utils::r_ring_buffer<r_keyframe_motion_entry>& keyframe_motion_buffer() { return _keyframe_motion_buffer; }
-    r_utils::r_ring_buffer<r_encoded_frame_entry>& encoded_frame_buffer() { return _encoded_frame_buffer; }
     size_t get_motion_confirm_frames() const { return _motion_confirm_frames; }
-    size_t get_motion_end_frames() const { return _motion_end_frames; }
 
-    // Catchup processing state
-    bool is_processing_catchup() const { return _processing_catchup; }
-    void set_processing_catchup(bool v) { _processing_catchup = v; }
+    // No-motion counter for event end hysteresis
+    size_t get_no_motion_count() const { return _no_motion_count; }
+    void set_no_motion_count(size_t v) { _no_motion_count = v; }
 
 private:
     r_motion::r_motion_state _motion_state;
@@ -120,18 +101,14 @@ private:
     int64_t _first_ts;
     int64_t _last_written_second;
 
-    // Motion confirmation settings
+    // Motion confirmation setting
     size_t _motion_confirm_frames;
-    size_t _motion_end_frames;
 
-    // Ring buffer 1: decoded key frames with motion detection results
+    // Ring buffer: decoded key frames with motion detection results
     r_utils::r_ring_buffer<r_keyframe_motion_entry> _keyframe_motion_buffer;
 
-    // Ring buffer 2: all encoded frames (I and P) for catchup processing
-    r_utils::r_ring_buffer<r_encoded_frame_entry> _encoded_frame_buffer;
-
-    // True while processing buffered frames after motion detection
-    bool _processing_catchup;
+    // Counter for consecutive keyframes without motion (for event end hysteresis)
+    size_t _no_motion_count {0};
 };
 
 class r_motion_engine final
@@ -156,8 +133,6 @@ public:
 private:
     void _entry_point();
     std::map<std::string, std::shared_ptr<r_work_context>>::iterator _create_work_context(const r_work_item& item);
-    void _process_catchup_frames(std::shared_ptr<r_work_context>& wc, int64_t start_ts);
-    void _decode_and_process_frame(std::shared_ptr<r_work_context>& wc, const r_encoded_frame_entry& entry, bool is_catchup);
     r_disco::r_devices& _devices;
     std::string _top_dir;
     r_utils::r_blocking_q<r_work_item> _work;

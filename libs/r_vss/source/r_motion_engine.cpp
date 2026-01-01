@@ -145,20 +145,7 @@ void r_motion_engine::_entry_point()
 
                 auto& wc = found_wc->second;
 
-                // Always push encoded frames to ring buffer 2 (all frames buffer)
-                r_encoded_frame_entry encoded_entry;
-                encoded_entry.frame = work.frame;
-                encoded_entry.ts = work.ts;
-                encoded_entry.is_key_frame = work.is_key_frame;
-                wc->encoded_frame_buffer().push(encoded_entry);
-
-                // If we're in a motion event, decode and process every frame
-                if(wc->get_in_event())
-                {
-                    _decode_and_process_frame(wc, encoded_entry, false);
-                }
-                // If not in motion event, only decode key frames for motion detection
-                else if(work.is_key_frame)
+                if(work.is_key_frame)
                 {
                     auto mi = work.frame.map(r_pipeline::r_gst_buffer::MT_READ);
                     int max_decode_attempts = 10;
@@ -205,68 +192,102 @@ void r_motion_engine::_entry_point()
                                 motion_bbox.height = motion_info.motion_bbox.height;
                                 motion_bbox.has_motion = motion_info.motion_bbox.has_motion;
 
-                                // Copy letterboxed image to vector for storage
+                                // Copy letterboxed image to vector
                                 std::vector<uint8_t> letterbox_data(letterbox_img.data,
                                     letterbox_img.data + letterbox_img.total() * letterbox_img.elemSize());
 
-                                // Push to keyframe motion buffer (ring buffer 1)
-                                // Now stores 640x640 letterboxed image
+                                // Push to keyframe motion buffer for event start detection
                                 r_keyframe_motion_entry kf_entry;
                                 kf_entry.ts = work.ts;
                                 kf_entry.has_motion = is_significant;
-                                kf_entry.decoded_image = std::move(letterbox_data);
+                                kf_entry.decoded_image = letterbox_data;
                                 kf_entry.width = 640;
                                 kf_entry.height = 640;
                                 kf_entry.bbox = motion_bbox;
                                 wc->keyframe_motion_buffer().push(kf_entry);
 
-                                // Check if we should transition to IN_MOTION state
-                                // Require N consecutive key frames with motion
-                                size_t n = wc->get_motion_confirm_frames();
-                                bool should_start_motion = wc->keyframe_motion_buffer().last_n_match(
-                                    n, [](const r_keyframe_motion_entry& e) { return e.has_motion; }
-                                );
-
-                                if(should_start_motion && !wc->get_in_event())
+                                // Event state machine (keyframe-only mode)
+                                if(!wc->get_in_event())
                                 {
-                                    // Find the timestamp of the first frame that triggered motion
-                                    // This is the (n-1)th from newest in the buffer
-                                    size_t first_motion_idx = wc->keyframe_motion_buffer().size() - n;
-                                    int64_t trigger_ts = wc->keyframe_motion_buffer().at(first_motion_idx).ts;
-                                    const auto& trigger_entry = wc->keyframe_motion_buffer().at(first_motion_idx);
+                                    // Check if we should start an event (N consecutive keyframes with motion)
+                                    size_t n = wc->get_motion_confirm_frames();
+                                    bool should_start = wc->keyframe_motion_buffer().last_n_match(
+                                        n, [](const r_keyframe_motion_entry& e) { return e.has_motion; }
+                                    );
 
-                                    R_LOG_INFO("MOTION: STARTING EVENT - %zu consecutive frames with motion, trigger_ts=%lld",
-                                               n, (long long)trigger_ts);
-
-                                    // Transition to IN_MOTION and record event start time
-                                    wc->set_in_event(true);
-                                    wc->set_event_start_ts(trigger_ts);
-
-                                    // Note: We don't write to ring buffer here - we'll use write_range
-                                    // when the event ends to fill the entire event duration with 1s
-
-                                    // Post motion_event_start with the triggering frame
-                                    _meph.post(r_vss::motion_event_start, wc->get_camera_id(), trigger_ts,
-                                               trigger_entry.decoded_image, trigger_entry.width, trigger_entry.height, trigger_entry.bbox);
-
-                                    // Process catchup frames from the encoded buffer
-                                    _process_catchup_frames(wc, trigger_ts);
-                                }
-                                // Only write to storage ring if NOT in event (during event, it's handled in _decode_and_process_frame)
-                                else if(!wc->get_in_event())
-                                {
-                                    // Don't write unconfirmed motion to storage ring
-                                    // Only write confirmed no-motion (when not in event and no pending motion)
-                                    if(!is_significant && wc->first_ts_valid() && ((work.ts - wc->get_first_ts()) > 60000))
+                                    if(should_start)
                                     {
-                                        system_clock::time_point tp{milliseconds{work.ts}};
-                                        int64_t current_second = work.ts / 1000;
-                                        if(current_second != wc->get_last_written_second())
+                                        // Find the first triggering frame
+                                        size_t first_motion_idx = wc->keyframe_motion_buffer().size() - n;
+                                        const auto& trigger_entry = wc->keyframe_motion_buffer().at(first_motion_idx);
+
+                                        // Start new event
+                                        wc->set_in_event(true);
+                                        wc->set_event_start_ts(trigger_entry.ts);
+                                        wc->set_no_motion_count(0);
+
+                                        // Post event start with the first triggering frame
+                                        _meph.post(r_vss::motion_event_start, wc->get_camera_id(), trigger_entry.ts,
+                                                   trigger_entry.decoded_image, trigger_entry.width, trigger_entry.height, trigger_entry.bbox);
+
+                                        // Post updates for subsequent frames (including current)
+                                        for(size_t i = first_motion_idx + 1; i < wc->keyframe_motion_buffer().size(); ++i)
                                         {
-                                            uint8_t motion_flag = 0;
-                                            wc->ring().write(tp, &motion_flag);
-                                            wc->set_last_written_second(current_second);
+                                            const auto& entry = wc->keyframe_motion_buffer().at(i);
+                                            _meph.post(r_vss::motion_event_update, wc->get_camera_id(), entry.ts,
+                                                       entry.decoded_image, entry.width, entry.height, entry.bbox);
                                         }
+                                    }
+                                }
+                                else
+                                {
+                                    // Already in event
+                                    if(is_significant)
+                                    {
+                                        // Reset no-motion counter and send update
+                                        wc->set_no_motion_count(0);
+                                        _meph.post(r_vss::motion_event_update, wc->get_camera_id(), work.ts,
+                                                   letterbox_data, 640, 640, motion_bbox);
+                                    }
+                                    else
+                                    {
+                                        // No motion - count consecutive no-motion frames
+                                        wc->set_no_motion_count(wc->get_no_motion_count() + 1);
+
+                                        // Require 2 consecutive keyframes without motion to end event
+                                        if(wc->get_no_motion_count() >= 2)
+                                        {
+                                            // End event
+                                            wc->set_in_event(false);
+                                            wc->set_no_motion_count(0);
+
+                                            // Backfill event duration with motion=1
+                                            if(wc->first_ts_valid() && wc->get_event_start_ts() > 0)
+                                            {
+                                                system_clock::time_point start_tp{milliseconds{wc->get_event_start_ts()}};
+                                                system_clock::time_point end_tp{milliseconds{work.ts}};
+                                                uint8_t motion_flag = 1;
+                                                wc->ring().write_range(start_tp, end_tp, &motion_flag);
+                                                wc->set_last_written_second(work.ts / 1000);
+                                            }
+
+                                            wc->set_event_start_ts(-1);
+                                            _meph.post(r_vss::motion_event_end, wc->get_camera_id(), work.ts,
+                                                       letterbox_data, 640, 640, motion_bbox);
+                                        }
+                                    }
+                                }
+
+                                // Write motion flag to storage ring (only when not in event)
+                                if(!wc->get_in_event() && wc->first_ts_valid() && ((work.ts - wc->get_first_ts()) > 60000))
+                                {
+                                    system_clock::time_point tp{milliseconds{work.ts}};
+                                    int64_t current_second = work.ts / 1000;
+                                    if(current_second != wc->get_last_written_second())
+                                    {
+                                        uint8_t motion_flag = 0;
+                                        wc->ring().write(tp, &motion_flag);
+                                        wc->set_last_written_second(current_second);
                                     }
                                 }
 
@@ -286,187 +307,6 @@ void r_motion_engine::_entry_point()
                 fflush(stdout);
                 _work_contexts.erase(work.id);
             }
-        }
-    }
-}
-
-void r_motion_engine::_process_catchup_frames(shared_ptr<r_work_context>& wc, int64_t start_ts)
-{
-    wc->set_processing_catchup(true);
-
-    auto& buffer = wc->encoded_frame_buffer();
-
-    // Find the starting index in the encoded buffer
-    // We need to find the key frame with this timestamp
-    size_t start_idx = 0;
-    bool found_start = false;
-
-    for(size_t i = 0; i < buffer.size(); ++i)
-    {
-        const auto& entry = buffer.at(i);
-        if(entry.ts == start_ts && entry.is_key_frame)
-        {
-            start_idx = i;
-            found_start = true;
-            break;
-        }
-    }
-
-    if(!found_start)
-    {
-        // If we can't find the exact frame, start from the first key frame after start_ts
-        for(size_t i = 0; i < buffer.size(); ++i)
-        {
-            const auto& entry = buffer.at(i);
-            if(entry.is_key_frame && entry.ts >= start_ts)
-            {
-                start_idx = i;
-                found_start = true;
-                break;
-            }
-        }
-    }
-
-    if(!found_start)
-    {
-        wc->set_processing_catchup(false);
-        return;
-    }
-
-    // Skip the first frame (already sent as motion_event_start)
-    // Process remaining frames from start_idx+1 to end
-    size_t catchup_count = buffer.size() - start_idx - 1;
-    R_LOG_INFO("MOTION: Processing %zu catchup frames from idx %zu to %zu", catchup_count, start_idx + 1, buffer.size() - 1);
-
-    for(size_t i = start_idx + 1; i < buffer.size(); ++i)
-    {
-        _decode_and_process_frame(wc, buffer.at(i), true);
-    }
-
-    R_LOG_INFO("MOTION: Catchup complete");
-    wc->set_processing_catchup(false);
-}
-
-void r_motion_engine::_decode_and_process_frame(shared_ptr<r_work_context>& wc, const r_encoded_frame_entry& entry, bool is_catchup)
-{
-    auto mi = entry.frame.map(r_pipeline::r_gst_buffer::MT_READ);
-    int max_decode_attempts = 10;
-    wc->decoder().attach_buffer(mi.data(), mi.size());
-
-    bool decode_again = true;
-    while(decode_again)
-    {
-        if(max_decode_attempts <= 0)
-            R_THROW(("Unable to decode!"));
-        --max_decode_attempts;
-
-        auto ds = wc->decoder().decode();
-        if(ds == r_av::R_CODEC_STATE_HAS_OUTPUT || ds == r_av::R_CODEC_STATE_AGAIN_HAS_OUTPUT)
-        {
-            uint16_t input_w = wc->decoder().input_width();
-            uint16_t input_h = wc->decoder().input_height();
-
-            // Calculate letterbox parameters for 640x640 target
-            auto lp = calc_letterbox(input_w, input_h);
-
-            // Decode to scaled size (maintains aspect ratio)
-            auto decoded = wc->decoder().get(AV_PIX_FMT_RGB24, (uint16_t)lp.scaled_w, (uint16_t)lp.scaled_h, 1);
-
-            // Create 640x640 letterboxed image and get ROI for motion detection
-            cv::Mat letterbox_img;
-            cv::Mat roi_mat = create_letterbox(*decoded, lp.scaled_w, lp.scaled_h, lp, letterbox_img);
-
-            // During catchup processing, pass skip_update=true to prevent the motion detector
-            // from adapting its baseline to the motion being detected. This keeps the baseline
-            // stable so that subsequent live frames are evaluated correctly.
-            auto maybe_motion_info = wc->motion_state().process(roi_mat, lp.pad_x, lp.pad_y, is_catchup);
-
-            r_vss::motion_region motion_bbox = {0, 0, 0, 0, false};
-            bool is_significant = false;
-
-            // Copy letterboxed image to vector for passing to plugins
-            std::vector<uint8_t> letterbox_data(letterbox_img.data,
-                letterbox_img.data + letterbox_img.total() * letterbox_img.elemSize());
-
-            if(!maybe_motion_info.is_null())
-            {
-                auto motion_info = maybe_motion_info.value();
-                is_significant = is_motion_significant(motion_info.motion, motion_info.avg_motion, motion_info.stddev);
-
-                // Coordinates are already in 640x640 letterbox space (corrected by motion_state)
-                motion_bbox.x = motion_info.motion_bbox.x;
-                motion_bbox.y = motion_info.motion_bbox.y;
-                motion_bbox.width = motion_info.motion_bbox.width;
-                motion_bbox.height = motion_info.motion_bbox.height;
-                motion_bbox.has_motion = motion_info.motion_bbox.has_motion;
-
-                // For key frames during live processing (not catchup), update the keyframe motion buffer
-                if(entry.is_key_frame && !is_catchup)
-                {
-                    // Now stores 640x640 letterboxed image
-                    r_keyframe_motion_entry kf_entry;
-                    kf_entry.ts = entry.ts;
-                    kf_entry.has_motion = is_significant;
-                    kf_entry.decoded_image = letterbox_data;
-                    kf_entry.width = 640;
-                    kf_entry.height = 640;
-                    kf_entry.bbox = motion_bbox;
-                    wc->keyframe_motion_buffer().push(kf_entry);
-
-                    // Write motion flag to storage ring buffer
-                    // Only write when NOT in an event - events are backfilled with write_range on end
-                    if(!wc->get_in_event() && wc->first_ts_valid() && ((entry.ts - wc->get_first_ts()) > 60000))
-                    {
-                        system_clock::time_point tp{milliseconds{entry.ts}};
-                        int64_t current_second = entry.ts / 1000;
-                        if(current_second != wc->get_last_written_second())
-                        {
-                            uint8_t motion_flag = is_significant ? 1 : 0;
-                            wc->ring().write(tp, &motion_flag);
-                            wc->set_last_written_second(current_second);
-                        }
-                    }
-
-                    // Check if we should transition to NO_MOTION state
-                    // Require N consecutive key frames without motion (more than start threshold)
-                    size_t end_n = wc->get_motion_end_frames();
-                    bool should_stop_motion = wc->keyframe_motion_buffer().last_n_match(
-                        end_n, [](const r_keyframe_motion_entry& e) { return !e.has_motion; }
-                    );
-
-                    if(should_stop_motion && wc->get_in_event())
-                    {
-                        R_LOG_INFO("MOTION: ENDING EVENT - %zu consecutive frames without motion", end_n);
-
-                        // Backfill the entire event duration with motion=1 using write_range
-                        if(wc->first_ts_valid() && wc->get_event_start_ts() > 0)
-                        {
-                            system_clock::time_point start_tp{milliseconds{wc->get_event_start_ts()}};
-                            system_clock::time_point end_tp{milliseconds{entry.ts}};
-                            uint8_t motion_flag = 1;
-                            wc->ring().write_range(start_tp, end_tp, &motion_flag);
-                            wc->set_last_written_second(entry.ts / 1000);
-                        }
-
-                        wc->set_in_event(false);
-                        wc->set_event_start_ts(-1);
-                        _meph.post(r_vss::motion_event_end, wc->get_camera_id(), entry.ts, letterbox_data, 640, 640, motion_bbox);
-
-                        if(ds == r_av::R_CODEC_STATE_HAS_OUTPUT)
-                            decode_again = false;
-                        return;
-                    }
-                }
-            }
-
-            // Send update event for frames during motion event
-            if(wc->get_in_event())
-            {
-                _meph.post(r_vss::motion_event_update, wc->get_camera_id(), entry.ts, letterbox_data, 640, 640, motion_bbox);
-            }
-
-            if(ds == r_av::R_CODEC_STATE_HAS_OUTPUT)
-                decode_again = false;
         }
     }
 }
