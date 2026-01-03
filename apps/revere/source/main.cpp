@@ -83,6 +83,9 @@ struct revere_ui_state
     // Cached values for performance optimization
     float recording_largest_label {-1.0f};  // -1 means needs recalculation
     float discovered_largest_label {-1.0f}; // -1 means needs recalculation
+
+    // Cached system plugins list (updated periodically, not per-frame)
+    vector<string> loaded_system_plugins;
     void reset_selection()
     {
         recording_selected_item = -1;
@@ -146,13 +149,14 @@ static string _make_file_name(string name)
 
 void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_vss::r_stream_keeper& streamKeeper)
 {
-    auto assigned_cameras = devices.get_assigned_cameras();
+    // Use cached versions to avoid blocking the UI thread
+    auto assigned_cameras = devices.get_assigned_cameras_cached();
 
     map<string, r_disco::r_camera> assigned;
     for(auto& c: assigned_cameras)
         assigned[c.id] = c;
 
-    // Get stream status for all cameras to populate kbps and retention
+    // Get stream status for all cameras to populate kbps and retention (already cached/non-blocking)
     auto stream_status = streamKeeper.fetch_stream_status();
     map<string, decltype(stream_status)::value_type> status_by_id;
     for(auto& status : stream_status)
@@ -183,7 +187,8 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
         ui_state.recording_items.push_back(item);
     }
 
-    auto all_cameras = devices.get_all_cameras();
+    // Use cached version to avoid blocking the UI thread
+    auto all_cameras = devices.get_all_cameras_cached();
 
     ui_state.discovered_items.clear();
     for(int i = 0; i < (int)all_cameras.size(); ++i)
@@ -1144,6 +1149,9 @@ int main(int argc, char** argv)
 
     _update_list_ui(ui_state, devices, streamKeeper);
 
+    // Initialize cached system plugins list
+    ui_state.loaded_system_plugins = streamKeeper.get_loaded_system_plugins();
+
     // Auto-select first camera in Recording list if any exist
     if(ui_state.recording_items.size() > 0)
     {
@@ -1187,6 +1195,9 @@ int main(int argc, char** argv)
             force_ui_update = false;
 
             _update_list_ui(ui_state, devices, streamKeeper);
+
+            // Update cached system plugins list (only every 5 seconds, not every frame)
+            ui_state.loaded_system_plugins = streamKeeper.get_loaded_system_plugins();
 
             // Also update stream status for selected camera (only every 5 seconds, not every frame)
             auto maybe_camera_id = ui_state.selected_camera_id();
@@ -1350,9 +1361,8 @@ int main(int argc, char** argv)
                     [&](uint16_t){
                         ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_18].roboto_regular);
 
-                        auto loaded_plugins = streamKeeper.get_loaded_system_plugins();
-
-                        if (loaded_plugins.empty())
+                        // Use cached plugins list instead of calling get_loaded_system_plugins() every frame
+                        if (ui_state.loaded_system_plugins.empty())
                         {
                             ImGui::Text("No system plugins loaded");
                         }
@@ -1360,7 +1370,7 @@ int main(int argc, char** argv)
                         {
                             ImGui::Text("Loaded plugins:");
                             ImGui::Spacing();
-                            for (const auto& plugin_name : loaded_plugins)
+                            for (const auto& plugin_name : ui_state.loaded_system_plugins)
                             {
                                 ImGui::BulletText("%s", plugin_name.c_str());
                             }

@@ -119,8 +119,20 @@ vector<r_camera> r_devices::get_assigned_cameras()
     {
         R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
-    
+
     return cameras;
+}
+
+vector<r_camera> r_devices::get_all_cameras_cached() const
+{
+    lock_guard<mutex> g(_cache_mutex);
+    return _all_cameras_cache;
+}
+
+vector<r_camera> r_devices::get_assigned_cameras_cached() const
+{
+    lock_guard<mutex> g(_cache_mutex);
+    return _assigned_cameras_cache;
 }
 
 void r_devices::save_camera(const r_camera& camera)
@@ -237,13 +249,30 @@ vector<r_camera> r_devices::get_assigned_cameras_removed(const vector<r_camera>&
     return removed_cameras;
 }
 
+void r_devices::_update_caches()
+{
+    auto conn = _open_db(_top_dir, false);
+
+    auto all_result = _get_all_cameras(conn);
+    auto assigned_result = _get_assigned_cameras(conn);
+
+    {
+        lock_guard<mutex> g(_cache_mutex);
+        _all_cameras_cache = std::move(all_result.cameras);
+        _assigned_cameras_cache = std::move(assigned_result.cameras);
+    }
+}
+
 void r_devices::_entry_point()
 {
     _create_db(_top_dir);
 
+    // Initialize caches immediately on startup
+    _update_caches();
+
     while(_running)
     {
-        auto maybe_cmd = _db_work_q.poll();
+        auto maybe_cmd = _db_work_q.poll(chrono::seconds(2));
         if(!maybe_cmd.is_null())
         {
             auto cmd = maybe_cmd.take();
@@ -322,6 +351,9 @@ void r_devices::_entry_point()
                 }
             }
         }
+
+        // Update caches periodically (every 2 seconds when poll times out, or after processing commands)
+        _update_caches();
     }
 }
 

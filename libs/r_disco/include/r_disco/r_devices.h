@@ -56,6 +56,10 @@ public:
     R_API r_utils::r_nullable<r_camera> get_camera_by_id(const std::string& id);
     R_API std::vector<r_camera> get_all_cameras();
     R_API std::vector<r_camera> get_assigned_cameras();
+
+    // Non-blocking cached versions for UI thread (updated asynchronously)
+    R_API std::vector<r_camera> get_all_cameras_cached() const;
+    R_API std::vector<r_camera> get_assigned_cameras_cached() const;
     R_API void save_camera(const r_camera& camera);
     R_API void remove_camera(const r_camera& camera);
     R_API void assign_camera(r_camera& camera);
@@ -104,6 +108,12 @@ private:
     // Cached master key for encryption/decryption
     mutable std::vector<uint8_t> _master_key;
     mutable bool _master_key_loaded;
+
+    // Cached camera lists for non-blocking UI reads
+    mutable std::mutex _cache_mutex;
+    std::vector<r_camera> _all_cameras_cache;
+    std::vector<r_camera> _assigned_cameras_cache;
+    void _update_caches();
 };
 
 }
