@@ -62,7 +62,10 @@ r_stream_keeper::~r_stream_keeper() noexcept
 
     // Clear the streams map BEFORE destroying server objects
     // This ensures recording contexts are destroyed while server is still valid
-    _streams.clear();
+    {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        _streams.clear();
+    }
 
     for(auto f : _factories)
         g_object_unref(f);
@@ -114,8 +117,11 @@ void r_stream_keeper::stop()
     _ws.stop();
     R_LOG_INFO("Web server stopped");
 
-    for(auto& s : _streams)
-        s.second->stop();
+    {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        for(auto& s : _streams)
+            s.second->stop();
+    }
 
     R_LOG_INFO("Stopping motion engine...");
     _motionEngine.stop();
@@ -154,7 +160,11 @@ vector<r_stream_status> r_stream_keeper::fetch_stream_status()
 
 void r_stream_keeper::_update_status_cache()
 {
-    auto status = _fetch_stream_status();
+    std::vector<r_stream_status> status;
+    {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        status = _fetch_stream_status();
+    }
     std::lock_guard<std::mutex> lock(_status_cache_mutex);
     _status_cache = std::move(status);
 }
@@ -290,18 +300,28 @@ void r_stream_keeper::_update_retention_cache()
     _last_retention_update = now;
 
     // Build new cache from all current streams
+    // First, get a snapshot of camera IDs under the lock
+    std::vector<std::string> camera_ids;
+    {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        camera_ids.reserve(_streams.size());
+        for(const auto& stream : _streams)
+            camera_ids.push_back(stream.first);
+    }
+
+    // Now query retention without holding the lock (queries can be slow)
     std::map<std::string, std::chrono::hours> new_cache;
-    for(const auto& stream : _streams)
+    for(const auto& camera_id : camera_ids)
     {
         try
         {
-            auto retention = query_get_retention_hours(_top_dir, _devices, stream.first);
-            new_cache[stream.first] = retention;
+            auto retention = query_get_retention_hours(_top_dir, _devices, camera_id);
+            new_cache[camera_id] = retention;
         }
         catch(const std::exception& e)
         {
-            R_LOG_WARNING("Failed to get retention for camera %s: %s", stream.first.c_str(), e.what());
-            new_cache[stream.first] = std::chrono::hours(0);
+            R_LOG_WARNING("Failed to get retention for camera %s: %s", camera_id.c_str(), e.what());
+            new_cache[camera_id] = std::chrono::hours(0);
         }
     }
 
@@ -319,10 +339,17 @@ r_devices& r_stream_keeper::get_devices()
 
 void r_stream_keeper::write_metadata(const string& camera_id, const string& stream_tag, const string& json_data, int64_t timestamp_ms)
 {
-    auto it = _streams.find(camera_id);
-    if(it != _streams.end())
+    std::shared_ptr<r_recording_context> rc;
     {
-        it->second->write_metadata(stream_tag, json_data, timestamp_ms);
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        auto it = _streams.find(camera_id);
+        if(it != _streams.end())
+            rc = it->second;
+    }
+
+    if(rc)
+    {
+        rc->write_metadata(stream_tag, json_data, timestamp_ms);
     }
     else
     {
@@ -380,21 +407,26 @@ void r_stream_keeper::_entry_point()
     {
         try
         {
-            // IMPORTANT: Remove dead recording contexts FIRST, before any add/remove logic
-            // This ensures that when a stream dies and needs to be recreated, the old
-            // r_recording_context (and its nanots_writer) is fully destroyed before
-            // we attempt to create a new one with the same file path and stream tags.
-            r_funky::erase_if(_streams, [](const auto& c){return c.second->dead();});
-
-            if(_streams.empty())
-                _add_recording_contexts(_devices.get_assigned_cameras());
-            else
+            // All _streams map modifications are protected by _streams_mutex
             {
-                auto cameras = _get_current_cameras();
+                std::lock_guard<std::mutex> lock(_streams_mutex);
 
-                _remove_recording_contexts(_devices.get_modified_cameras(cameras));
-                _remove_recording_contexts(_devices.get_assigned_cameras_removed(cameras));
-                _add_recording_contexts(_devices.get_assigned_cameras_added(_get_current_cameras()));
+                // IMPORTANT: Remove dead recording contexts FIRST, before any add/remove logic
+                // This ensures that when a stream dies and needs to be recreated, the old
+                // r_recording_context (and its nanots_writer) is fully destroyed before
+                // we attempt to create a new one with the same file path and stream tags.
+                r_funky::erase_if(_streams, [](const auto& c){return c.second->dead();});
+
+                if(_streams.empty())
+                    _add_recording_contexts(_devices.get_assigned_cameras());
+                else
+                {
+                    auto cameras = _get_current_cameras();
+
+                    _remove_recording_contexts(_devices.get_modified_cameras(cameras));
+                    _remove_recording_contexts(_devices.get_assigned_cameras_removed(cameras));
+                    _add_recording_contexts(_devices.get_assigned_cameras_added(_get_current_cameras()));
+                }
             }
 
             auto c = _cmd_q.poll(std::chrono::seconds(2));
@@ -406,19 +438,28 @@ void r_stream_keeper::_entry_point()
                 if(cmd.first.cmd == R_SK_IS_RECORDING)
                 {
                     r_stream_keeper_result result;
-                    result.is_recording = _streams.find(cmd.first.id) != _streams.end();
+                    {
+                        std::lock_guard<std::mutex> lock(_streams_mutex);
+                        result.is_recording = _streams.find(cmd.first.id) != _streams.end();
+                    }
                     cmd.second.set_value(result);
                 }
                 else if(cmd.first.cmd == R_SK_STOP)
                 {
                     r_stream_keeper_result result;
-                    _stop(cmd.first.id);
+                    {
+                        std::lock_guard<std::mutex> lock(_streams_mutex);
+                        _stop(cmd.first.id);
+                    }
                     cmd.second.set_value(result);
                 }
                 else if(cmd.first.cmd == R_SK_CREATE_PLAYBACK_MOUNT)
                 {
                     r_stream_keeper_result result;
-                    _create_playback_mount(cmd.first.friendly_name, cmd.first.url, cmd.first.start_ts, cmd.first.end_ts);
+                    {
+                        std::lock_guard<std::mutex> lock(_streams_mutex);
+                        _create_playback_mount(cmd.first.friendly_name, cmd.first.url, cmd.first.start_ts, cmd.first.end_ts);
+                    }
                     cmd.second.set_value(result);
                 }
                 else R_THROW(("Unknown command sent to stream keeper!"));

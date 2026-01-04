@@ -13,6 +13,12 @@ namespace r_utils
 
 const int DEFAULT_UDP_RECV_BUF_SIZE = 0;
 
+/// r_udp_receiver provides a thread-safe UDP socket receiver.
+///
+/// THREAD SAFETY:
+/// The _associatedReceivers list is protected by a mutex to prevent
+/// iterator invalidation when associate() or clear_associations() are
+/// called concurrently with receive operations.
 class r_udp_receiver final
 {
 public:
@@ -60,6 +66,7 @@ private:
 
     SOK _sok;
     r_socket_address _addr;
+    mutable std::mutex _associatedReceiversLock;
     std::list<std::shared_ptr<r_udp_receiver> > _associatedReceivers;
 };
 

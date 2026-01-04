@@ -170,6 +170,8 @@ r_ssl_socket::~r_ssl_socket()
 
 void r_ssl_socket::connect(const std::string& host, int port)
 {
+    std::lock_guard<std::recursive_mutex> lock(_sslLock);
+
     _host = host;
 
     // Create socket with correct address family (IPv4 or IPv6)
@@ -210,6 +212,7 @@ void r_ssl_socket::connect(const std::string& host, int port)
 
 void r_ssl_socket::close() const
 {
+    std::lock_guard<std::recursive_mutex> lock(_sslLock);
     if (_valid) {
         mbedtls_ssl_close_notify(&_ssl);
         _sok.close();
@@ -219,11 +222,17 @@ void r_ssl_socket::close() const
 
 bool r_ssl_socket::valid() const
 {
+    std::lock_guard<std::recursive_mutex> lock(_sslLock);
     return _valid && _sok.valid();
 }
 
 int r_ssl_socket::send(const void* buf, size_t len)
 {
+    std::lock_guard<std::recursive_mutex> lock(_sslLock);
+
+    if (!_valid)
+        return MBEDTLS_ERR_SSL_CONN_EOF;
+
     // Retry loop for WANT_READ/WANT_WRITE with a short timeout per attempt
     // This handles the case where SSL needs multiple network writes to encrypt and send data
     uint64_t timeout_ms = 100;  // Short timeout per write attempt
@@ -250,6 +259,11 @@ int r_ssl_socket::send(const void* buf, size_t len)
 
 int r_ssl_socket::recv(void* buf, size_t len)
 {
+    std::lock_guard<std::recursive_mutex> lock(_sslLock);
+
+    if (!_valid)
+        return MBEDTLS_ERR_SSL_CONN_EOF;
+
     // Retry loop for WANT_READ/WANT_WRITE with a short timeout per attempt
     // This handles the case where SSL needs multiple network reads to decrypt a record
     uint64_t timeout_ms = 100;  // Short timeout per read attempt
@@ -276,6 +290,11 @@ int r_ssl_socket::recv(void* buf, size_t len)
 
 bool r_ssl_socket::wait_till_recv_wont_block(uint64_t& millis) const
 {
+    std::lock_guard<std::recursive_mutex> lock(_sslLock);
+
+    if (!_valid)
+        return false;
+
     // Check if mbedtls has already buffered decrypted data
     if (mbedtls_ssl_get_bytes_avail(&_ssl) > 0)
         return true;
@@ -286,5 +305,10 @@ bool r_ssl_socket::wait_till_recv_wont_block(uint64_t& millis) const
 
 bool r_ssl_socket::wait_till_send_wont_block(uint64_t& millis) const
 {
+    std::lock_guard<std::recursive_mutex> lock(_sslLock);
+
+    if (!_valid)
+        return false;
+
     return _sok.wait_till_send_wont_block(millis);
 }
