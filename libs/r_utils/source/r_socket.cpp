@@ -64,7 +64,7 @@ r_raw_socket::r_raw_socket() :
 r_raw_socket::r_raw_socket( r_raw_socket&& obj ) noexcept :
     _sok( -1 ),
     _instanceLock(),
-    _addr(),
+    _addr( 0 ),  // Initialize with dummy port, will be overwritten by move
     _host()
 {
     // Lock the source object to ensure thread-safe move
