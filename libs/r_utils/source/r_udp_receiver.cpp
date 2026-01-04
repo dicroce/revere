@@ -160,6 +160,16 @@ bool r_udp_receiver::_receive( int& port, vector<uint8_t>& buffer, bool block, i
 
     auto beforeSelect = std::chrono::steady_clock::now();
 
+    // Take a snapshot of associated receivers to prevent iterator invalidation
+    // if another thread calls associate() or clear_associations() during receive
+    std::vector<shared_ptr<r_udp_receiver>> receiversSnapshot;
+    {
+        std::lock_guard<std::mutex> lock(_associatedReceiversLock);
+        receiversSnapshot.reserve(_associatedReceivers.size());
+        for(const auto& r : _associatedReceivers)
+            receiversSnapshot.push_back(r);
+    }
+
     while( (_sok > 0) && (selectRet == 0) )
     {
         struct timeval tv = { 0, block ? 250000 : 0 };
@@ -168,17 +178,20 @@ bool r_udp_receiver::_receive( int& port, vector<uint8_t>& buffer, bool block, i
 
         SOK currentLargestSOK = _sok;
 
-        // First, add ourseleves...
+        // First, add ourselves...
         FD_SET( _sok, &readFileDescriptors );
 
-        // Next, loop over all the associated sockets and add them to the set.
-        std::list<shared_ptr<r_udp_receiver> >::iterator i;
-        for( i = _associatedReceivers.begin(); i != _associatedReceivers.end(); i++ )
+        // Next, loop over the snapshot of associated sockets
+        for(const auto& receiver : receiversSnapshot)
         {
-            FD_SET( (*i)->_sok, &readFileDescriptors );
+            SOK receiverSok = receiver->_sok;
+            if(receiverSok > 0)
+            {
+                FD_SET( receiverSok, &readFileDescriptors );
 
-            if( (*i)->_sok > currentLargestSOK )
-                currentLargestSOK = (*i)->_sok;
+                if( receiverSok > currentLargestSOK )
+                    currentLargestSOK = receiverSok;
+            }
         }
 
         selectRet = select( (int)currentLargestSOK + 1,
@@ -227,11 +240,10 @@ bool r_udp_receiver::_receive( int& port, vector<uint8_t>& buffer, bool block, i
         }
         else
         {
-            for( auto i = _associatedReceivers.begin(); i != _associatedReceivers.end(); i++)
+            // Check the snapshot for which receiver has data
+            for(const auto& receiver : receiversSnapshot)
             {
-                shared_ptr<r_udp_receiver> receiver = *i;
-
-                if(FD_ISSET(receiver->_sok, &readFileDescriptors))
+                if(receiver->_sok > 0 && FD_ISSET(receiver->_sok, &readFileDescriptors))
                     return receiver->receive(port, buffer);
             }
         }
@@ -294,11 +306,13 @@ void r_udp_receiver::close()
 
 void r_udp_receiver::associate( shared_ptr<r_udp_receiver> receiver )
 {
+    std::lock_guard<std::mutex> lock(_associatedReceiversLock);
     _associatedReceivers.push_back( receiver );
 }
 
 void r_udp_receiver::clear_associations()
 {
+    std::lock_guard<std::mutex> lock(_associatedReceiversLock);
     _associatedReceivers.clear();
 }
 

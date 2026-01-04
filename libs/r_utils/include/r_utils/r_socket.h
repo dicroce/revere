@@ -56,6 +56,17 @@ class test_r_utils;
 namespace r_utils
 {
 
+/// r_raw_socket provides a thread-safe wrapper around BSD sockets.
+///
+/// THREAD SAFETY:
+/// All socket operations are protected by an instance-level mutex (_instanceLock).
+/// This ensures that concurrent calls to close(), get_sok_id(), send(), recv(),
+/// and wait functions from multiple threads will not cause race conditions or
+/// use-after-free issues.
+///
+/// The socket ID returned by get_sok_id() is safe to use for the duration of
+/// operations on this object, but callers should not cache the ID across
+/// potential close() calls from other threads.
 class r_raw_socket : public r_socket_base
 {
     friend class ::test_r_utils;
@@ -84,12 +95,13 @@ public:
     R_API void bind( int port, const std::string& ip = "" );
     R_API r_raw_socket accept();
 
-    R_API inline SOK get_sok_id() const { return _sok; }
+    /// Returns the underlying socket ID.
+    /// Thread-safe: protected by instance mutex.
+    R_API SOK get_sok_id() const;
 
-    R_API virtual bool valid() const
-	{
-		return (_sok > 0) ? true : false;
-	}
+    /// Returns true if the socket is valid (connected/bound).
+    /// Thread-safe: protected by instance mutex.
+    R_API virtual bool valid() const;
 
     R_API virtual int send(const void* buf, size_t len);
     R_API virtual int recv(void* buf, size_t len);
@@ -104,11 +116,12 @@ public:
 
 protected:
     mutable SOK _sok;
+    mutable std::recursive_mutex _instanceLock;  // Per-instance lock for thread safety
     r_socket_address _addr;
     std::string _host;
 
     static bool _sokSysStarted;
-    static std::recursive_mutex _sokLock;
+    static std::recursive_mutex _sokLock;  // Global lock for socket system startup/cleanup
 };
 
 class r_socket : public r_socket_base

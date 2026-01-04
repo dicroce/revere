@@ -145,6 +145,7 @@ private:
     std::string _top_dir;
     std::thread _th;
     bool _running;
+    mutable std::mutex _streams_mutex;  // Protects _streams from concurrent access
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
     r_utils::r_work_q<r_stream_keeper_cmd, r_stream_keeper_result> _cmd_q;
 

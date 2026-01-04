@@ -62,10 +62,16 @@ r_raw_socket::r_raw_socket() :
 }
 
 r_raw_socket::r_raw_socket( r_raw_socket&& obj ) noexcept :
-    _sok( std::move( obj._sok ) ),
-    _addr( std::move( obj._addr ) ),
-    _host( std::move( obj._host ) )
+    _sok( -1 ),
+    _instanceLock(),
+    _addr(),
+    _host()
 {
+    // Lock the source object to ensure thread-safe move
+    std::lock_guard<std::recursive_mutex> lock(obj._instanceLock);
+    _sok = obj._sok;
+    _addr = std::move( obj._addr );
+    _host = std::move( obj._host );
     obj._sok = -1;
     obj._host = string();
 }
@@ -78,12 +84,35 @@ r_raw_socket::~r_raw_socket() noexcept
 
 r_raw_socket& r_raw_socket::operator = ( r_raw_socket&& obj ) noexcept
 {
-    if(valid())
-        close();
+    if(this == &obj)
+        return *this;
 
-    _sok = std::move( obj._sok );
-	obj._sok = -1;
-	_addr = std::move(obj._addr);
+    // Lock both objects - always lock in consistent order to prevent deadlock
+    // Use pointer comparison to determine lock order
+    std::recursive_mutex* first = &_instanceLock;
+    std::recursive_mutex* second = &obj._instanceLock;
+    if(first > second)
+        std::swap(first, second);
+
+    std::lock_guard<std::recursive_mutex> lock1(*first);
+    std::lock_guard<std::recursive_mutex> lock2(*second);
+
+    if(_sok > 0)
+    {
+        // Close the current socket without recursively locking
+        SOK sokTemp = _sok;
+        _sok = -1;
+        FULL_MEM_BARRIER();
+#ifdef IS_WINDOWS
+        ::closesocket(sokTemp);
+#else
+        ::close(sokTemp);
+#endif
+    }
+
+    _sok = obj._sok;
+    obj._sok = -1;
+    _addr = std::move(obj._addr);
     _host = std::move( obj._host );
     obj._host = string();
     return *this;
@@ -176,6 +205,8 @@ int r_raw_socket::recv( void* buf, size_t len )
 
 void r_raw_socket::close() const
 {
+    std::lock_guard<std::recursive_mutex> lock(_instanceLock);
+
     if( _sok < 0 )
         return;
 
@@ -195,24 +226,49 @@ void r_raw_socket::close() const
         R_LOG_WARNING( "Failed to close socket." );
 }
 
+SOK r_raw_socket::get_sok_id() const
+{
+    std::lock_guard<std::recursive_mutex> lock(_instanceLock);
+    return _sok;
+}
+
+bool r_raw_socket::valid() const
+{
+    std::lock_guard<std::recursive_mutex> lock(_instanceLock);
+    return (_sok > 0) ? true : false;
+}
+
 bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
 {
+    // Get socket ID under lock, then release before blocking on select()
+    SOK sok;
+    {
+        std::lock_guard<std::recursive_mutex> lock(_instanceLock);
+        sok = _sok;
+        if(sok < 0)
+            return false;
+    }
+
     struct timeval recv_timeout;
     recv_timeout.tv_sec = (uint32_t)(millis / 1000);
     recv_timeout.tv_usec = (uint32_t)((millis % 1000) * 1000);
 
     fd_set recv_fds;
     FD_ZERO(&recv_fds);
-    FD_SET((int)_sok, &recv_fds);
+    FD_SET((int)sok, &recv_fds);
 
     auto before = std::chrono::steady_clock::now();
 
-    auto fds_with_data = select((int)(_sok + 1), &recv_fds, NULL, NULL, &recv_timeout);
+    auto fds_with_data = select((int)(sok + 1), &recv_fds, NULL, NULL, &recv_timeout);
 
     auto after = std::chrono::steady_clock::now();
 
-    if(_sok < 0)
-        return false;
+    // Check if socket was closed while we were waiting
+    {
+        std::lock_guard<std::recursive_mutex> lock(_instanceLock);
+        if(_sok < 0)
+            return false;
+    }
 
     uint64_t elapsed_millis = std::chrono::duration_cast<std::chrono::milliseconds>(after - before).count();
 
@@ -223,22 +279,35 @@ bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
 
 bool r_raw_socket::wait_till_send_wont_block( uint64_t& millis ) const
 {
+    // Get socket ID under lock, then release before blocking on select()
+    SOK sok;
+    {
+        std::lock_guard<std::recursive_mutex> lock(_instanceLock);
+        sok = _sok;
+        if(sok < 0)
+            return false;
+    }
+
     struct timeval send_timeout;
     send_timeout.tv_sec = (uint32_t)(millis / 1000);
     send_timeout.tv_usec = (uint32_t)((millis % 1000) * 1000);
 
     fd_set send_fds;
     FD_ZERO(&send_fds);
-    FD_SET((int)_sok, &send_fds);
+    FD_SET((int)sok, &send_fds);
 
     auto before = std::chrono::steady_clock::now();
 
-    auto fds_with_data = select((int)(_sok + 1), NULL, &send_fds, NULL, &send_timeout);
+    auto fds_with_data = select((int)(sok + 1), NULL, &send_fds, NULL, &send_timeout);
 
     auto after = std::chrono::steady_clock::now();
 
-    if(_sok < 0)
-        return false;
+    // Check if socket was closed while we were waiting
+    {
+        std::lock_guard<std::recursive_mutex> lock(_instanceLock);
+        if(_sok < 0)
+            return false;
+    }
 
     uint64_t elapsed_millis = std::chrono::duration_cast<std::chrono::milliseconds>(after - before).count();
 

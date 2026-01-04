@@ -819,7 +819,11 @@ void r_recording_context::_playback_restream_media_configure(GstRTSPMediaFactory
         prs
     );
 
-    _playback_restreaming_states[media] = prs;
+    // Lock must be held when inserting to prevent race with cleanup callback erase
+    {
+        std::lock_guard<std::mutex> lock(_playback_restreaming_states_lok);
+        _playback_restreaming_states[media] = prs;
+    }
 }
 
 void r_recording_context::_playback_restream_cleanup_cbs(playback_restreaming_state* prs)
