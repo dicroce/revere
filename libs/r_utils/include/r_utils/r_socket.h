@@ -12,7 +12,8 @@
     #include <ws2tcpip.h>
     #include <Iphlpapi.h>
 
-    typedef int SOK;
+    using sock_t = SOCKET;
+    static constexpr sock_t kInvalidSock = INVALID_SOCKET;
 
     #define SOCKET_SHUT_FLAGS SD_BOTH
     #define SOCKET_SHUT_SEND_FLAGS SD_SEND
@@ -35,7 +36,8 @@
     #include <unistd.h>
     #include <arpa/inet.h>
 
-    typedef int SOK;
+    using sock_t = int;
+    static constexpr sock_t kInvalidSock = -1;
 
     #define SOCKET_SHUT_FLAGS SHUT_RDWR
     #define SOCKET_SHUT_SEND_FLAGS SHUT_WR
@@ -48,6 +50,7 @@
 #include <mutex>
 #include <vector>
 #include <algorithm>
+#include <atomic>
 #include <string.h>
 #include <sys/types.h>
 
@@ -56,14 +59,6 @@ class test_r_utils;
 namespace r_utils
 {
 
-/// r_raw_socket provides a thread-safe wrapper around BSD sockets.
-///
-/// THREAD SAFETY:
-/// All socket operations are protected by an instance-level mutex (_instanceLock).
-/// This ensures that concurrent calls to close(), get_sok_id(), send(), recv(),
-/// and wait functions from multiple threads will not cause race conditions or
-/// use-after-free issues.
-///
 /// The socket ID returned by get_sok_id() is safe to use for the duration of
 /// operations on this object, but callers should not cache the ID across
 /// potential close() calls from other threads.
@@ -97,7 +92,7 @@ public:
 
     /// Returns the underlying socket ID.
     /// Thread-safe: protected by instance mutex.
-    R_API SOK get_sok_id() const;
+    R_API sock_t get_sok_id() const;
 
     /// Returns true if the socket is valid (connected/bound).
     /// Thread-safe: protected by instance mutex.
@@ -106,7 +101,7 @@ public:
     R_API virtual int send(const void* buf, size_t len);
     R_API virtual int recv(void* buf, size_t len);
 
-    R_API virtual void close() const;
+    R_API virtual void close();
 
     R_API virtual bool wait_till_recv_wont_block( uint64_t& millis ) const;
     R_API virtual bool wait_till_send_wont_block( uint64_t& millis ) const;
@@ -115,8 +110,7 @@ public:
     R_API std::string get_local_ip() const;
 
 protected:
-    mutable SOK _sok;
-    mutable std::recursive_mutex _instanceLock;  // Per-instance lock for thread safety
+    std::atomic<sock_t> _sok;
     r_socket_address _addr;
     std::string _host;
 
@@ -167,7 +161,7 @@ public:
     }
     R_API inline r_socket accept() { auto r = _sok.accept(); r_socket s; s._sok = std::move(r); return s; }
 
-    R_API inline SOK get_sok_id() const { return _sok.get_sok_id(); }
+    R_API inline sock_t get_sok_id() const { return _sok.get_sok_id(); }
 
     R_API inline virtual bool valid() const { return _sok.valid(); }
 
@@ -175,7 +169,7 @@ public:
 
     R_API virtual int recv( void* buf, size_t len );
 
-    R_API inline void close() const { _sok.close(); }
+    R_API inline void close() { _sok.close(); }
 
     R_API inline virtual bool wait_till_recv_wont_block( uint64_t& millis ) const { return _sok.wait_till_recv_wont_block(millis); }
     R_API inline virtual bool wait_till_send_wont_block( uint64_t& millis ) const { return _sok.wait_till_send_wont_block(millis); }
@@ -184,7 +178,7 @@ public:
     R_API inline std::string get_local_ip() const { return _sok.get_local_ip(); }
 
 private:
-    mutable r_raw_socket _sok;
+    r_raw_socket _sok;
     uint64_t _ioTimeOut;
 };
 

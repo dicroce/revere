@@ -15,7 +15,7 @@ class r_socket_base
 public:
     R_API virtual ~r_socket_base() noexcept {}
     R_API virtual void connect(const std::string& host, int port) = 0;
-    R_API virtual void close() const = 0;
+    R_API virtual void close() = 0;
     R_API virtual bool valid() const = 0;
     R_API virtual int send(const void* buf, size_t len) = 0;
     R_API virtual int recv(void* buf, size_t len) = 0;

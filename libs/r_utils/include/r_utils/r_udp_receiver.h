@@ -58,13 +58,13 @@ public:
 
     R_API virtual void set_recv_buffer_size( size_t size );
 
-    R_API SOK get_socket_fd() { return _sok; }
+    R_API sock_t get_socket_fd() { return _sok; }
 
 private:
 
     bool _receive( int& port, std::vector<uint8_t>& buffer, bool block, int waitMillis );
 
-    SOK _sok;
+    sock_t _sok;
     r_socket_address _addr;
     mutable std::mutex _associatedReceiversLock;
     std::list<std::shared_ptr<r_udp_receiver> > _associatedReceivers;

@@ -55,7 +55,7 @@ void r_udp_sender::_configure()
     _close();
 
     // First, create our datagram socket...
-    _sok = (SOK)socket( _addr.address_family(), SOCK_DGRAM, IPPROTO_UDP );
+    _sok = (sock_t)socket( _addr.address_family(), SOCK_DGRAM, IPPROTO_UDP );
     if( _sok < 0 )
         R_STHROW(r_internal_exception, ( "r_udp_sender: Unable to create a datagram socket." ));
 

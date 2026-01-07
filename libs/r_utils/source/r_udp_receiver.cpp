@@ -24,13 +24,13 @@ r_udp_receiver::r_udp_receiver( int destinationPort,
         _addr.set_address( _addr.is_ipv4() ? ip4_addr_any : ip6_addr_any );
 
     // First, create our datagram socket...
-    _sok = (SOK)socket( _addr.address_family(), SOCK_DGRAM, IPPROTO_UDP );
+    _sok = (sock_t)socket( _addr.address_family(), SOCK_DGRAM, IPPROTO_UDP );
     if( _sok <= 0 )
         R_STHROW(r_internal_exception, ( "r_udp_receiver: Unable to create a datagram socket." ));
 
     int on = 1;
 
-    int err = (int)::setsockopt( (SOK)_sok, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(int) );
+    int err = (int)::setsockopt( (sock_t)_sok, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(int) );
 
     if( err < 0 )
         R_STHROW(r_internal_exception, ( "r_udp_receiver: Unable to configure socket." ));
@@ -176,7 +176,7 @@ bool r_udp_receiver::_receive( int& port, vector<uint8_t>& buffer, bool block, i
 
         FD_ZERO( &readFileDescriptors );
 
-        SOK currentLargestSOK = _sok;
+        sock_t currentLargestSOK = _sok;
 
         // First, add ourselves...
         FD_SET( _sok, &readFileDescriptors );
@@ -184,7 +184,7 @@ bool r_udp_receiver::_receive( int& port, vector<uint8_t>& buffer, bool block, i
         // Next, loop over the snapshot of associated sockets
         for(const auto& receiver : receiversSnapshot)
         {
-            SOK receiverSok = receiver->_sok;
+            sock_t receiverSok = receiver->_sok;
             if(receiverSok > 0)
             {
                 FD_SET( receiverSok, &readFileDescriptors );
@@ -288,7 +288,7 @@ void r_udp_receiver::close()
     // the trick. on linux!
     shutdown();
 
-    SOK tmpSok = _sok;
+    sock_t tmpSok = _sok;
 
     _sok = 0;
 

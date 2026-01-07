@@ -22,11 +22,11 @@ public:
     R_API int sendto(const uint8_t* buffer, size_t size, r_socket_address& address);
     R_API int recvfrom(uint8_t* buffer, size_t size, r_socket_address& address);
 
-    R_API int fd() const {return _sok;}
+    R_API sock_t fd() const {return _sok;}
 
 private:
     void _clear() noexcept;
-    SOK _sok;
+    sock_t _sok;
 };
 
 }

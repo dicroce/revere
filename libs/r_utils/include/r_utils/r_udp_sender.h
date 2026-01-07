@@ -36,13 +36,13 @@ public:
 
     R_API virtual void set_send_buffer_size(size_t size);
 
-    R_API SOK get_socket_fd() { return _sok; }
+    R_API sock_t get_socket_fd() { return _sok; }
 
 private:
     void _configure();
     void _close() throw();
 
-    SOK _sok;
+    sock_t _sok;
     r_socket_address _addr;
     std::string _localInterfaceIP;
     int _localPort;

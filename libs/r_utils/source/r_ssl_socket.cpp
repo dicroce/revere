@@ -170,8 +170,6 @@ r_ssl_socket::~r_ssl_socket()
 
 void r_ssl_socket::connect(const std::string& host, int port)
 {
-    std::lock_guard<std::recursive_mutex> lock(_sslLock);
-
     _host = host;
 
     // Create socket with correct address family (IPv4 or IPv6)
@@ -182,10 +180,10 @@ void r_ssl_socket::connect(const std::string& host, int port)
     connect_timeout.tv_sec = (long)(_ioTimeOut / 1000);
     connect_timeout.tv_usec = (long)((_ioTimeOut % 1000) * 1000);
 
-    if( ::setsockopt( (SOK)_sok.get_sok_id(), SOL_SOCKET, SO_RCVTIMEO, (const char*)&connect_timeout, sizeof(connect_timeout) ) < 0 )
+    if( ::setsockopt( (sock_t)_sok.get_sok_id(), SOL_SOCKET, SO_RCVTIMEO, (const char*)&connect_timeout, sizeof(connect_timeout) ) < 0 )
         R_THROW(("Unable to configure socket receive timeout."));
 
-    if( ::setsockopt( (SOK)_sok.get_sok_id(), SOL_SOCKET, SO_SNDTIMEO, (const char*)&connect_timeout, sizeof(connect_timeout) ) < 0 )
+    if( ::setsockopt( (sock_t)_sok.get_sok_id(), SOL_SOCKET, SO_SNDTIMEO, (const char*)&connect_timeout, sizeof(connect_timeout) ) < 0 )
         R_THROW(("Unable to configure socket send timeout."));
 
     _sok.connect(host, port);
@@ -210,9 +208,8 @@ void r_ssl_socket::connect(const std::string& host, int port)
     _valid = true;
 }
 
-void r_ssl_socket::close() const
+void r_ssl_socket::close()
 {
-    std::lock_guard<std::recursive_mutex> lock(_sslLock);
     if (_valid) {
         mbedtls_ssl_close_notify(&_ssl);
         _sok.close();
@@ -222,14 +219,11 @@ void r_ssl_socket::close() const
 
 bool r_ssl_socket::valid() const
 {
-    std::lock_guard<std::recursive_mutex> lock(_sslLock);
     return _valid && _sok.valid();
 }
 
 int r_ssl_socket::send(const void* buf, size_t len)
 {
-    std::lock_guard<std::recursive_mutex> lock(_sslLock);
-
     if (!_valid)
         return MBEDTLS_ERR_SSL_CONN_EOF;
 
@@ -259,8 +253,6 @@ int r_ssl_socket::send(const void* buf, size_t len)
 
 int r_ssl_socket::recv(void* buf, size_t len)
 {
-    std::lock_guard<std::recursive_mutex> lock(_sslLock);
-
     if (!_valid)
         return MBEDTLS_ERR_SSL_CONN_EOF;
 
@@ -290,8 +282,6 @@ int r_ssl_socket::recv(void* buf, size_t len)
 
 bool r_ssl_socket::wait_till_recv_wont_block(uint64_t& millis) const
 {
-    std::lock_guard<std::recursive_mutex> lock(_sslLock);
-
     if (!_valid)
         return false;
 
@@ -303,10 +293,8 @@ bool r_ssl_socket::wait_till_recv_wont_block(uint64_t& millis) const
     return _sok.wait_till_recv_wont_block(millis);
 }
 
-bool r_ssl_socket::wait_till_send_wont_block(uint64_t& millis) const
+bool r_ssl_socket::wait_till_send_wont_block(uint64_t& millis) const 
 {
-    std::lock_guard<std::recursive_mutex> lock(_sslLock);
-
     if (!_valid)
         return false;
 

@@ -55,25 +55,26 @@ void r_raw_socket::socket_cleanup()
 }
 
 r_raw_socket::r_raw_socket() :
-    _sok( -1 ),
+    _sok( kInvalidSock ),
     _addr( 0 ),
     _host()
 {
 }
 
-r_raw_socket::r_raw_socket( r_raw_socket&& obj ) noexcept :
-    _sok( -1 ),
-    _instanceLock(),
-    _addr( 0 ),  // Initialize with dummy port, will be overwritten by move
-    _host()
+r_raw_socket::r_raw_socket(r_raw_socket&& obj) noexcept
+    : _sok(kInvalidSock),
+      _addr(0),     // dummy init; will be overwritten
+      _host()
 {
-    // Lock the source object to ensure thread-safe move
-    std::lock_guard<std::recursive_mutex> lock(obj._instanceLock);
-    _sok = obj._sok;
-    _addr = std::move( obj._addr );
-    _host = std::move( obj._host );
-    obj._sok = -1;
-    obj._host = string();
+    // Atomically steal the socket from obj
+    const sock_t stolen = obj._sok.exchange(kInvalidSock, std::memory_order_acq_rel);
+    _sok.store(stolen, std::memory_order_release);
+
+    _addr = std::move(obj._addr);
+    _host = std::move(obj._host);
+
+    // Optional: leave moved-from object in a tidy state
+    obj._host = std::string();
 }
 
 r_raw_socket::~r_raw_socket() noexcept
@@ -82,51 +83,33 @@ r_raw_socket::~r_raw_socket() noexcept
         close();
 }
 
-r_raw_socket& r_raw_socket::operator = ( r_raw_socket&& obj ) noexcept
+r_raw_socket& r_raw_socket::operator=(r_raw_socket&& obj) noexcept
 {
-    if(this == &obj)
+    if (this == &obj)
         return *this;
 
-    // Lock both objects - always lock in consistent order to prevent deadlock
-    // Use pointer comparison to determine lock order
-    std::recursive_mutex* first = &_instanceLock;
-    std::recursive_mutex* second = &obj._instanceLock;
-    if(first > second)
-        std::swap(first, second);
+    if (valid())
+        close();
 
-    std::lock_guard<std::recursive_mutex> lock1(*first);
-    std::lock_guard<std::recursive_mutex> lock2(*second);
+    // Atomically steal the socket from obj
+    const sock_t stolen = obj._sok.exchange(kInvalidSock, std::memory_order_acq_rel);
+    _sok.store(stolen, std::memory_order_release);
 
-    if(_sok > 0)
-    {
-        // Close the current socket without recursively locking
-        SOK sokTemp = _sok;
-        _sok = -1;
-        FULL_MEM_BARRIER();
-#ifdef IS_WINDOWS
-        ::closesocket(sokTemp);
-#else
-        ::close(sokTemp);
-#endif
-    }
-
-    _sok = obj._sok;
-    obj._sok = -1;
     _addr = std::move(obj._addr);
-    _host = std::move( obj._host );
-    obj._host = string();
+    _host = std::move(obj._host);
+    obj._host = std::string();
     return *this;
 }
 
 void r_raw_socket::create( int af )
 {
-    _sok = (SOK) ::socket( af, SOCK_STREAM, 0 );
+    _sok = (sock_t) ::socket( af, SOCK_STREAM, 0 );
 
     if( _sok <= 0 )
         R_STHROW( r_socket_exception, ("Unable to create socket.") );
 
     int on = 1;
-    if( ::setsockopt( (SOK)_sok, SOL_SOCKET, SO_REUSEADDR, (const char*)&on, sizeof(int) ) < 0 )
+    if( ::setsockopt( (sock_t)_sok, SOL_SOCKET, SO_REUSEADDR, (const char*)&on, sizeof(int) ) < 0 )
         R_STHROW( r_socket_exception, ("Unable to configure socket.") );
 }
 
@@ -172,10 +155,10 @@ r_raw_socket r_raw_socket::accept()
 
     r_raw_socket clientSocket;
 
-    SOK clientSok = 0;
+    sock_t clientSok = kInvalidSock;
     socklen_t addrLength = _addr.sock_addr_size();
 
-    clientSok = (SOK)::accept(_sok,
+    clientSok = (sock_t)::accept(_sok,
                               _addr.get_sock_addr(),
                               &addrLength );
 
@@ -203,51 +186,47 @@ int r_raw_socket::recv( void* buf, size_t len )
     return (int)::recv(_sok, (char*)buf, (int)len, 0);
 }
 
-void r_raw_socket::close() const
+void r_raw_socket::close()
 {
-    std::lock_guard<std::recursive_mutex> lock(_instanceLock);
+    // Atomically grab the socket and invalidate it
+    sock_t s = _sok.exchange(kInvalidSock, std::memory_order_acq_rel);
 
-    if( _sok < 0 )
+    // If someone already closed it, nothing to do
+    if (s == kInvalidSock)
         return;
 
-    SOK sokTemp = _sok;
-    int err;
-
-    _sok = -1;
-
-    FULL_MEM_BARRIER();
-
+    // shutdown() will Wake anyone blocked in select()/send()/recv()
 #ifdef IS_WINDOWS
-    err = ::closesocket(sokTemp);
+    ::shutdown(s, SD_BOTH);
+    int rc = ::closesocket(s);
+    if (rc == SOCKET_ERROR) {
+        int wsa = ::WSAGetLastError();
+        R_LOG_WARNING("closesocket failed, WSA=%d", wsa);
+    }
 #else
-    err = ::close(sokTemp);
+    ::shutdown(s, SHUT_RDWR);
+    if (::close(s) < 0) {
+        R_LOG_WARNING("close failed, errno=%d", errno);
+    }
 #endif
-    if( err < 0 )
-        R_LOG_WARNING( "Failed to close socket." );
 }
 
-SOK r_raw_socket::get_sok_id() const
+sock_t r_raw_socket::get_sok_id() const
 {
-    std::lock_guard<std::recursive_mutex> lock(_instanceLock);
     return _sok;
 }
 
 bool r_raw_socket::valid() const
 {
-    std::lock_guard<std::recursive_mutex> lock(_instanceLock);
     return (_sok > 0) ? true : false;
 }
 
 bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
 {
     // Get socket ID under lock, then release before blocking on select()
-    SOK sok;
-    {
-        std::lock_guard<std::recursive_mutex> lock(_instanceLock);
-        sok = _sok;
-        if(sok < 0)
-            return false;
-    }
+    sock_t sok = _sok;
+    if(sok < 0)
+        return false;
 
     struct timeval recv_timeout;
     recv_timeout.tv_sec = (uint32_t)(millis / 1000);
@@ -264,11 +243,8 @@ bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
     auto after = std::chrono::steady_clock::now();
 
     // Check if socket was closed while we were waiting
-    {
-        std::lock_guard<std::recursive_mutex> lock(_instanceLock);
-        if(_sok < 0)
-            return false;
-    }
+    if(_sok < 0)
+        return false;
 
     uint64_t elapsed_millis = std::chrono::duration_cast<std::chrono::milliseconds>(after - before).count();
 
@@ -280,13 +256,9 @@ bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
 bool r_raw_socket::wait_till_send_wont_block( uint64_t& millis ) const
 {
     // Get socket ID under lock, then release before blocking on select()
-    SOK sok;
-    {
-        std::lock_guard<std::recursive_mutex> lock(_instanceLock);
-        sok = _sok;
-        if(sok < 0)
-            return false;
-    }
+    sock_t sok = _sok;
+    if(sok < 0)
+        return false;
 
     struct timeval send_timeout;
     send_timeout.tv_sec = (uint32_t)(millis / 1000);
@@ -303,11 +275,8 @@ bool r_raw_socket::wait_till_send_wont_block( uint64_t& millis ) const
     auto after = std::chrono::steady_clock::now();
 
     // Check if socket was closed while we were waiting
-    {
-        std::lock_guard<std::recursive_mutex> lock(_instanceLock);
-        if(_sok < 0)
-            return false;
-    }
+    if(_sok < 0)
+        return false;
 
     uint64_t elapsed_millis = std::chrono::duration_cast<std::chrono::milliseconds>(after - before).count();
 
@@ -353,10 +322,10 @@ void r_socket::connect( const string& host, int port )
     connect_timeout.tv_sec = (long)(_ioTimeOut / 1000);
     connect_timeout.tv_usec = (long)((_ioTimeOut % 1000) * 1000);
 
-    if( ::setsockopt( (SOK)_sok.get_sok_id(), SOL_SOCKET, SO_RCVTIMEO, (const char*)&connect_timeout, sizeof(connect_timeout) ) < 0 )
+    if( ::setsockopt( (sock_t)_sok.get_sok_id(), SOL_SOCKET, SO_RCVTIMEO, (const char*)&connect_timeout, sizeof(connect_timeout) ) < 0 )
         R_STHROW( r_socket_exception, ("Unable to configure socket.") );
 
-    if( ::setsockopt( (SOK)_sok.get_sok_id(), SOL_SOCKET, SO_SNDTIMEO, (const char*)&connect_timeout, sizeof(connect_timeout) ) < 0 )
+    if( ::setsockopt( (sock_t)_sok.get_sok_id(), SOL_SOCKET, SO_SNDTIMEO, (const char*)&connect_timeout, sizeof(connect_timeout) ) < 0 )
         R_STHROW( r_socket_exception, ("Unable to configure socket.") );
 
     _sok.connect(host, port);
@@ -484,14 +453,15 @@ vector<uint8_t> r_utils::r_networking::r_get_hardware_address(
     ULONG bufferSize = 15000;  // Recommended initial size
     vector<uint8_t> adapterInfoBuffer(bufferSize);
 
-    PIP_ADAPTER_INFO pAdapterInfo = reinterpret_cast<PIP_ADAPTER_INFO>(&adapterInfoBuffer[0]);
+    PIP_ADAPTER_INFO pAdapterInfo =
+        reinterpret_cast<PIP_ADAPTER_INFO>(adapterInfoBuffer.data());
     DWORD result = GetAdaptersInfo(pAdapterInfo, &bufferSize);
 
     if (result == ERROR_BUFFER_OVERFLOW)
     {
-        // Need larger buffer
         adapterInfoBuffer.resize(bufferSize);
-        pAdapterInfo = reinterpret_cast<PIP_ADAPTER_INFO>(&adapterInfoBuffer[0]);
+        pAdapterInfo =
+            reinterpret_cast<PIP_ADAPTER_INFO>(adapterInfoBuffer.data());
         result = GetAdaptersInfo(pAdapterInfo, &bufferSize);
     }
 
@@ -499,11 +469,13 @@ vector<uint8_t> r_utils::r_networking::r_get_hardware_address(
         R_THROW(("Unable to query network adapters."));
 
     // Find the first active adapter with a non-zero MAC
-    PIP_ADAPTER_INFO pAdapter = pAdapterInfo;
-    while (pAdapter)
+    for (PIP_ADAPTER_INFO pAdapter = pAdapterInfo;
+         pAdapter;
+         pAdapter = pAdapter->Next)
     {
         // Skip loopback and inactive adapters
-        if (pAdapter->Type != MIB_IF_TYPE_LOOPBACK && pAdapter->AddressLength == 6)
+        if (pAdapter->Type != MIB_IF_TYPE_LOOPBACK &&
+            pAdapter->AddressLength == 6)
         {
             bool isZero = true;
             for (UINT i = 0; i < 6; i++)
@@ -517,53 +489,62 @@ vector<uint8_t> r_utils::r_networking::r_get_hardware_address(
 
             if (!isZero)
             {
-                memcpy(&buffer[0], pAdapter->Address, 6);
+                memcpy(buffer.data(), pAdapter->Address, 6);
                 return buffer;
             }
         }
-        pAdapter = pAdapter->Next;
     }
 
-    // If no valid adapter found, return zeros
+    // No valid adapter found -> fall through and throw below
 #endif
+
 #ifdef IS_LINUX
     int fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
-    if(fd < 0)
+    if (fd < 0)
         R_THROW(("Unable to create datagram socket."));
 
-    struct ifreq s;
-    strcpy(s.ifr_name, ifname.c_str());
+    struct ifreq s{};
+    std::snprintf(s.ifr_name, IFNAMSIZ, "%s", ifname.c_str());
 
-    if(ioctl(fd, SIOCGIFHWADDR, &s) < 0)
+    if (ioctl(fd, SIOCGIFHWADDR, &s) < 0)
     {
         close(fd);
-
         R_THROW(("Unable to query MAC address."));
     }
 
     close(fd);
 
-    memcpy(&buffer[0], &s.ifr_addr.sa_data[0], 6);
+    memcpy(buffer.data(), &s.ifr_addr.sa_data[0], 6);
+    return buffer;
 #endif
+
 #ifdef IS_MACOS
     // macOS uses getifaddrs to get MAC address
-    struct ifaddrs* iflist;
-    if (getifaddrs(&iflist) == 0)
+    struct ifaddrs* iflist = nullptr;
+    if (getifaddrs(&iflist) == 0 && iflist)
     {
         for (struct ifaddrs* cur = iflist; cur; cur = cur->ifa_next)
         {
-            if (cur->ifa_addr && cur->ifa_addr->sa_family == AF_LINK)
+            if (cur->ifa_addr &&
+                cur->ifa_addr->sa_family == AF_LINK)
             {
-                // If ifname is empty, find first active non-loopback interface with non-zero MAC
+                // If ifname is empty, find first active non-loopback interface
                 // Otherwise, match the specific interface name
-                if (ifname.empty() || strcmp(cur->ifa_name, ifname.c_str()) == 0)
+                if (ifname.empty() ||
+                    strcmp(cur->ifa_name, ifname.c_str()) == 0)
                 {
                     // Skip loopback interface
                     if (cur->ifa_flags & IFF_LOOPBACK)
                         continue;
 
-                    struct sockaddr_dl* sdl = (struct sockaddr_dl*)cur->ifa_addr;
-                    unsigned char* mac = (unsigned char*)LLADDR(sdl);
+                    auto* sdl =
+                        reinterpret_cast<struct sockaddr_dl*>(cur->ifa_addr);
+
+                    if (sdl->sdl_alen < 6)
+                        continue;
+
+                    unsigned char* mac =
+                        reinterpret_cast<unsigned char*>(LLADDR(sdl));
 
                     // Check if MAC is non-zero
                     bool isZero = true;
@@ -578,7 +559,7 @@ vector<uint8_t> r_utils::r_networking::r_get_hardware_address(
 
                     if (!isZero)
                     {
-                        memcpy(&buffer[0], mac, 6);
+                        memcpy(buffer.data(), mac, 6);
                         freeifaddrs(iflist);
                         return buffer;
                     }
@@ -587,8 +568,9 @@ vector<uint8_t> r_utils::r_networking::r_get_hardware_address(
         }
         freeifaddrs(iflist);
     }
-    R_THROW(("Unable to query MAC address."));
 #endif
+
+    R_THROW(("Unable to query MAC address."));
 }
 
 string r_utils::r_networking::r_get_device_uuid(const std::string& ifname)
