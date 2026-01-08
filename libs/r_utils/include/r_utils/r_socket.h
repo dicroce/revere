@@ -113,9 +113,6 @@ protected:
     std::atomic<sock_t> _sok;
     r_socket_address _addr;
     std::string _host;
-
-    static bool _sokSysStarted;
-    static std::recursive_mutex _sokLock;  // Global lock for socket system startup/cleanup
 };
 
 class r_socket : public r_socket_base

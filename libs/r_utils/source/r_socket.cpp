@@ -23,9 +23,6 @@ using namespace std;
 
 static const int POLL_NFDS = 1;
 
-bool r_raw_socket::_sokSysStarted = false;
-recursive_mutex r_raw_socket::_sokLock;
-
 void r_raw_socket::socket_startup()
 {
 #ifdef IS_WINDOWS
@@ -105,7 +102,7 @@ void r_raw_socket::create( int af )
 {
     _sok = (sock_t) ::socket( af, SOCK_STREAM, 0 );
 
-    if( _sok <= 0 )
+    if( _sok == kInvalidSock )
         R_STHROW( r_socket_exception, ("Unable to create socket.") );
 
     int on = 1;
@@ -150,7 +147,7 @@ void r_raw_socket::bind( int port, const string& ip )
 
 r_raw_socket r_raw_socket::accept()
 {
-    if( _sok <= 0 )
+    if( _sok == kInvalidSock )
         R_STHROW( r_socket_exception, ( "Unable to accept() on uninitialized socket." ));
 
     r_raw_socket clientSocket;
@@ -164,7 +161,7 @@ r_raw_socket r_raw_socket::accept()
 
     // Since the socket can be closed by another thread while we were waiting in accept(),
     // we only throw here if _sok is still a valid fd.
-    if( valid() && clientSok <= 0 )
+    if( valid() && clientSok == kInvalidSock )
         R_STHROW( r_socket_exception, ( "Unable to accept inbound connection."));
 
     clientSocket._sok = clientSok;
@@ -218,14 +215,14 @@ sock_t r_raw_socket::get_sok_id() const
 
 bool r_raw_socket::valid() const
 {
-    return (_sok > 0) ? true : false;
+    return (_sok != kInvalidSock) ? true : false;
 }
 
 bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
 {
     // Get socket ID under lock, then release before blocking on select()
     sock_t sok = _sok;
-    if(sok < 0)
+    if(sok == kInvalidSock)
         return false;
 
     struct timeval recv_timeout;
@@ -243,7 +240,7 @@ bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
     auto after = std::chrono::steady_clock::now();
 
     // Check if socket was closed while we were waiting
-    if(_sok < 0)
+    if(_sok == kInvalidSock)
         return false;
 
     uint64_t elapsed_millis = std::chrono::duration_cast<std::chrono::milliseconds>(after - before).count();
@@ -257,7 +254,7 @@ bool r_raw_socket::wait_till_send_wont_block( uint64_t& millis ) const
 {
     // Get socket ID under lock, then release before blocking on select()
     sock_t sok = _sok;
-    if(sok < 0)
+    if(sok == kInvalidSock)
         return false;
 
     struct timeval send_timeout;
@@ -275,7 +272,7 @@ bool r_raw_socket::wait_till_send_wont_block( uint64_t& millis ) const
     auto after = std::chrono::steady_clock::now();
 
     // Check if socket was closed while we were waiting
-    if(_sok < 0)
+    if(_sok == kInvalidSock)
         return false;
 
     uint64_t elapsed_millis = std::chrono::duration_cast<std::chrono::milliseconds>(after - before).count();
