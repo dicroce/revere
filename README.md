@@ -12,7 +12,7 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 - Motion detection with AI plugin support
 - Continuous recording with non motion pruning.
 - RTSP streaming
-- Cross-platform (Linux/Windows)
+- Cross-platform (Linux/Windows/Mac)
 - Full featured API
 - YOLOv8 object detection of people and cars.
 
