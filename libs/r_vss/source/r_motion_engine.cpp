@@ -12,6 +12,7 @@
 #include <opencv2/opencv.hpp>
 #include <chrono>
 #include <algorithm>
+#include <utility>
 
 using namespace r_vss;
 using namespace r_utils;
@@ -209,10 +210,20 @@ void r_motion_engine::_entry_point()
                                 // Event state machine (keyframe-only mode)
                                 if(!wc->get_in_event())
                                 {
-                                    // Check if we should start an event (N consecutive keyframes with motion)
+                                    // Check if we should start an event (N consecutive keyframes with motion AND sufficient displacement)
                                     size_t n = wc->get_motion_confirm_frames();
-                                    bool should_start = wc->keyframe_motion_buffer().last_n_match(
-                                        n, [](const r_keyframe_motion_entry& e) { return e.has_motion; }
+                                    double min_disp = wc->get_min_motion_displacement();
+
+                                    // Lambda to extract bbox center from keyframe entry
+                                    auto get_bbox_center = [](const r_keyframe_motion_entry& e) -> std::pair<int, int> {
+                                        return {e.bbox.x + e.bbox.width / 2, e.bbox.y + e.bbox.height / 2};
+                                    };
+
+                                    bool should_start = wc->keyframe_motion_buffer().last_n_match_with_displacement(
+                                        n,
+                                        min_disp,
+                                        [](const r_keyframe_motion_entry& e) { return e.has_motion; },
+                                        get_bbox_center
                                     );
 
                                     if(should_start)

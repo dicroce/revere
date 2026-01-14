@@ -5,6 +5,7 @@
 #include <vector>
 #include <stdexcept>
 #include <cstddef>
+#include <cmath>
 
 namespace r_utils {
 
@@ -124,6 +125,44 @@ public:
                 return false;
         }
         return true;
+    }
+
+    // Check if last N items all match predicate AND have sufficient displacement
+    // displacement_func: extracts (x, y) center point from an item
+    // Returns false if size < n or displacement < min_displacement
+    template<typename P, typename D>
+    bool last_n_match_with_displacement(size_t n, double min_displacement, P&& predicate, D&& displacement_func) const
+    {
+        if(n == 0)
+            return true;
+
+        if(_size < n)
+            return false;
+
+        // First check all items match predicate
+        size_t first_idx = _size - n;  // oldest of the last N
+        size_t last_idx = _size - 1;   // newest
+
+        for(size_t i = 0; i < n; ++i)
+        {
+            size_t age_from_oldest = first_idx + i;
+            size_t actual_idx = (_tail + age_from_oldest) % _capacity;
+            if(!predicate(_buffer[actual_idx]))
+                return false;
+        }
+
+        // Now check displacement between first and last of the N items
+        size_t first_actual_idx = (_tail + first_idx) % _capacity;
+        size_t last_actual_idx = (_tail + last_idx) % _capacity;
+
+        auto [x1, y1] = displacement_func(_buffer[first_actual_idx]);
+        auto [x2, y2] = displacement_func(_buffer[last_actual_idx]);
+
+        double dx = static_cast<double>(x2 - x1);
+        double dy = static_cast<double>(y2 - y1);
+        double distance = std::sqrt(dx * dx + dy * dy);
+
+        return distance >= min_displacement;
     }
 
     void clear()

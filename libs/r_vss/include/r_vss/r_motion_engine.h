@@ -22,7 +22,8 @@ namespace r_vss
 enum
 {
     RING_MOTION_FLAG_SIZE = 1,
-    DEFAULT_MOTION_CONFIRM_FRAMES = 3
+    DEFAULT_MOTION_CONFIRM_FRAMES = 3,
+    DEFAULT_MIN_MOTION_DISPLACEMENT = 15  // pixels
 };
 
 // Entry for ring buffer 1: key frame motion detection results
@@ -53,7 +54,8 @@ public:
                    const r_disco::r_camera& camera,
                    const std::string& path,
                    const std::vector<uint8_t> ed,
-                   size_t motion_confirm_frames = DEFAULT_MOTION_CONFIRM_FRAMES) :
+                   size_t motion_confirm_frames = DEFAULT_MOTION_CONFIRM_FRAMES,
+                   double min_motion_displacement = DEFAULT_MIN_MOTION_DISPLACEMENT) :
         _motion_state(60),
         _video_decoder(codec_id),
         _camera(camera),
@@ -62,6 +64,7 @@ public:
         _first_ts(-1),
         _last_written_second(-1),
         _motion_confirm_frames(motion_confirm_frames),
+        _min_motion_displacement(min_motion_displacement),
         _keyframe_motion_buffer(motion_confirm_frames)
     {
         _video_decoder.set_extradata(ed);
@@ -86,6 +89,7 @@ public:
     // Ring buffer accessor
     r_utils::r_ring_buffer<r_keyframe_motion_entry>& keyframe_motion_buffer() { return _keyframe_motion_buffer; }
     size_t get_motion_confirm_frames() const { return _motion_confirm_frames; }
+    double get_min_motion_displacement() const { return _min_motion_displacement; }
 
     // No-motion counter for event end hysteresis
     size_t get_no_motion_count() const { return _no_motion_count; }
@@ -101,8 +105,9 @@ private:
     int64_t _first_ts;
     int64_t _last_written_second;
 
-    // Motion confirmation setting
+    // Motion confirmation settings
     size_t _motion_confirm_frames;
+    double _min_motion_displacement;
 
     // Ring buffer: decoded key frames with motion detection results
     r_utils::r_ring_buffer<r_keyframe_motion_entry> _keyframe_motion_buffer;
