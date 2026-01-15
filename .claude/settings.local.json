@@ -15,7 +15,9 @@
       "Bash(do timeout 120:*)",
       "Bash(timeout 120 ./r_http_ut.exe:*)",
       "Bash(timeout 60 ./r_http_ut.exe:*)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(ls:*)",
+      "Bash(Get-EventLog -LogName Application -Source \"*revere*\" -Newest 10 -ErrorAction SilentlyContinue)"
     ]
   }
 }

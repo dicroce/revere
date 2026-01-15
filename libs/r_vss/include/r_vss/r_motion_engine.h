@@ -29,7 +29,7 @@ enum
     // Maximum frames to queue for motion detection before dropping
     // This prevents memory exhaustion if motion processing can't keep up
     // At 30fps * 10 cameras = 300 frames/sec, 1000 frames = ~3 seconds buffer
-    MOTION_ENGINE_MAX_QUEUE_SIZE = 1000
+    MOTION_ENGINE_MAX_QUEUE_SIZE = 1000,
     DEFAULT_MIN_MOTION_DISPLACEMENT = 15  // pixels
 };
 

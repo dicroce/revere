@@ -838,13 +838,20 @@ void r_recording_context::_playback_restream_media_configure(GstRTSPMediaFactory
 
 void r_recording_context::_playback_restream_cleanup_cbs(playback_restreaming_state* prs)
 {
-    lock_guard<mutex> g(prs->rc->_playback_restreaming_states_lok);
-
     auto rc = prs->rc;
     auto media = prs->media;
 
+    // Signal thread to stop WITHOUT holding the lock
+    // This is safe because prs->running is atomic and the thread owns the prs object
     prs->running = false;
+
+    // Join thread without holding any locks to prevent deadlock
+    // The playback thread may need to acquire locks during its shutdown
     prs->playback_thread.join();
 
-    rc->_playback_restreaming_states.erase(media);
+    // Now safely remove from map with lock held
+    {
+        lock_guard<mutex> g(rc->_playback_restreaming_states_lok);
+        rc->_playback_restreaming_states.erase(media);
+    }
 }

@@ -518,10 +518,29 @@ void r_stream_keeper::_entry_point()
                 else if(cmd.first.cmd == R_SK_STOP)
                 {
                     r_stream_keeper_result result;
+
+                    // Get the recording context reference while holding the lock
+                    std::shared_ptr<r_recording_context> rc;
                     {
                         std::lock_guard<std::mutex> lock(_streams_mutex);
-                        _stop(cmd.first.id);
+                        auto it = _streams.find(cmd.first.id);
+                        if(it != _streams.end())
+                            rc = it->second;
                     }
+
+                    // Stop the recording context WITHOUT holding _streams_mutex
+                    // This prevents deadlock if stop() triggers callbacks that need the lock
+                    if(rc)
+                    {
+                        rc->stop();
+                        // Clean up motion engine work context for this camera
+                        _motionEngine.remove_work_context(cmd.first.id);
+                    }
+                    else
+                    {
+                        R_LOG_ERROR("Attempt to stop recording for camera %s that is not being recorded!", cmd.first.id.c_str());
+                    }
+
                     cmd.second.set_value(result);
                 }
                 else if(cmd.first.cmd == R_SK_CREATE_PLAYBACK_MOUNT)
@@ -739,12 +758,21 @@ void r_stream_keeper::remove_live_restreaming_state(GstRTSPMedia* media)
 
 void r_stream_keeper::iterate_live_restreaming_states(const std::string& camera_id, std::function<void(live_restreaming_state&)> fn)
 {
-    lock_guard<mutex> g(_live_restreaming_states_lok);
-    for(auto& lrs : _live_restreaming_states)
+    // Create a snapshot of matching states to avoid holding lock during callback
+    // This prevents deadlock if fn() needs to acquire locks or perform blocking operations
+    std::vector<std::shared_ptr<live_restreaming_state>> snapshot;
     {
-        if(lrs.second->camera_id == camera_id)
-            fn(*lrs.second);
+        lock_guard<mutex> g(_live_restreaming_states_lok);
+        for(auto& lrs : _live_restreaming_states)
+        {
+            if(lrs.second->camera_id == camera_id)
+                snapshot.push_back(lrs.second);
+        }
     }
+
+    // Call fn() without holding any locks
+    for(auto& lrs : snapshot)
+        fn(*lrs);
 }
 
 size_t r_stream_keeper::get_motion_engine_dropped_count()
