@@ -2356,8 +2356,11 @@ namespace IGFD
 			puInputPathActivated = !puInputPathActivated;
 			if (puInputPathActivated)
 			{
-				auto endIt = prCurrentPathDecomposition.end();
-				prCurrentPath = ComposeNewPath(--endIt);
+				if (!prCurrentPathDecomposition.empty())
+				{
+					auto endIt = prCurrentPathDecomposition.end();
+					prCurrentPath = ComposeNewPath(--endIt);
+				}
 				IGFD::Utils::SetBuffer(puInputPathBuffer, MAX_PATH_BUFFER_SIZE, prCurrentPath);
 			}
 		}
@@ -4277,7 +4280,15 @@ namespace IGFD
 
 		bool res = ImGui::Selectable(fdi.puVariadicBuffer, vSelected, selectableFlags, ImVec2(-1.0f, h));
 #endif // USE_EXPLORATION_BY_KEYS
-		if (res)
+		// Check for double-click separately - works even when Selectable consumes first click
+		bool isDoubleClick = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0);
+
+		// Handle directory double-click to navigate into it (works in both file and directory mode)
+		if (isDoubleClick && vInfos->fileType == 'd')
+		{
+			fdi.puPathClicked = fdi.SelectDirectory(vInfos);
+		}
+		else if (res)
 		{
 			if (vInfos->fileType == 'd')
 			{
@@ -4293,23 +4304,16 @@ namespace IGFD
 						fdi.puPathClicked = fdi.SelectDirectory(vInfos);
 					}
 				}
-				else // no nav system => classic behavior
+				else if (fdi.puDLGDirectoryMode) // directory chooser - single click selects
 				{
-					if (ImGui::IsMouseDoubleClicked(0)) // 0 -> left mouse button double click
-					{
-						fdi.puPathClicked = fdi.SelectDirectory(vInfos);
-					}
-					else if (fdi.puDLGDirectoryMode) // directory chooser
-					{
-						fdi.SelectFileName(prFileDialogInternal, vInfos);
-					}
+					fdi.SelectFileName(prFileDialogInternal, vInfos);
 				}
 			}
 			else
 			{
 				fdi.SelectFileName(prFileDialogInternal, vInfos);
 
-				if (ImGui::IsMouseDoubleClicked(0))
+				if (isDoubleClick)
 				{
 					prFileDialogInternal.puIsOk = true;
 				}

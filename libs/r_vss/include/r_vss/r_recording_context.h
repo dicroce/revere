@@ -31,6 +31,13 @@ typedef _GstRTSPMedia GstRTSPMedia;
 namespace r_vss
 {
 
+// Maximum frames to buffer for live restreaming before dropping old frames
+// At 30fps, 300 frames = 10 seconds of buffer
+constexpr size_t LIVE_RESTREAM_MAX_QUEUE_SIZE = 300;
+
+// Maximum frames to buffer for playback restreaming
+constexpr size_t PLAYBACK_RESTREAM_MAX_QUEUE_SIZE = 120;
+
 class r_recording_context;
 
 struct _frame_context
@@ -57,13 +64,19 @@ struct live_restreaming_state
     bool first_restream_a_times_set {false};
     uint64_t first_restream_a_pts {0};
     uint64_t first_restream_a_dts {0};
-    r_utils::r_blocking_q<struct _frame_context> video_samples;
-    r_utils::r_blocking_q<struct _frame_context> audio_samples;
+    // Bounded queues - drop oldest frames when full to prevent memory exhaustion
+    r_utils::r_blocking_q<struct _frame_context> video_samples{LIVE_RESTREAM_MAX_QUEUE_SIZE};
+    r_utils::r_blocking_q<struct _frame_context> audio_samples{LIVE_RESTREAM_MAX_QUEUE_SIZE};
 };
 
 struct playback_restreaming_state
 {
-    playback_restreaming_state(const std::string& top_dir, r_disco::r_devices& devices) : top_dir(top_dir), devices(devices) {}
+    playback_restreaming_state(const std::string& top_dir, r_disco::r_devices& devices)
+        : top_dir(top_dir)
+        , devices(devices)
+        , video_samples(PLAYBACK_RESTREAM_MAX_QUEUE_SIZE)
+        , audio_samples(PLAYBACK_RESTREAM_MAX_QUEUE_SIZE)
+    {}
 
     r_recording_context* rc {nullptr};
     GstRTSPMedia* media {nullptr};
@@ -88,6 +101,7 @@ struct playback_restreaming_state
     std::string audio_codec_parameters;
     r_pipeline::r_encoding video_encoding;
     r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding;
+    // Bounded queues - drop oldest frames when full to prevent memory exhaustion
     r_utils::r_blocking_q<struct _frame_context> video_samples;
     r_utils::r_blocking_q<struct _frame_context> audio_samples;
     std::thread playback_thread;

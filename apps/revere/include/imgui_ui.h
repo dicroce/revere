@@ -314,14 +314,14 @@ void sidebar_list(
         if(show_forget_button)
         {
             ImGui::SameLine();
-            if(ImGui::Button("Forget"))
+            if(ImGui::Button("Forget", ImVec2(button_width, button_height)))
                 forget_button_click_cb(i);
         }
 
         if(show_properties_button)
         {
             ImGui::SameLine();
-            if(ImGui::Button("Properties"))
+            if(ImGui::Button("Properties", ImVec2(button_width, button_height)))
                 properties_click_cb(i);
         }
 
@@ -551,6 +551,51 @@ void new_or_existing_modal(
     }
 }
 
+template<typename DEFAULT_CB, typename CUSTOM_CB, typename CANCEL_CB>
+void storage_location_modal(
+    ImGuiContext*,
+    const std::string& name,
+    const std::string& default_path,
+    DEFAULT_CB default_cb,
+    CUSTOM_CB custom_cb,
+    CANCEL_CB cancel_cb
+)
+{
+    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("Where should recordings be stored?");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Default: %s", default_path.c_str());
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if(ImGui::Button("Cancel"))
+        {
+            ImGui::CloseCurrentPopup();
+            cancel_cb();
+        }
+
+        ImGui::SameLine();
+
+        if(ImGui::Button("Use Default"))
+        {
+            ImGui::CloseCurrentPopup();
+            default_cb();
+        }
+
+        ImGui::SameLine();
+
+        if(ImGui::Button("Choose Location..."))
+        {
+            ImGui::CloseCurrentPopup();
+            custom_cb();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
 template<typename OK_CB, typename CANCEL_CB>
 void new_file_name_modal(
     ImGuiContext*,
@@ -774,12 +819,24 @@ void camera_properties_modal(
     bool& do_motion_detection,
     bool& do_motion_pruning,
     std::string& min_continuous_retention_hours,
+    const std::string& record_file_path,
     OK_CB ok_cb,
     CANCEL_CB cancel_cb
 )
 {
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
+        // Display recording file location (read-only)
+        if(!record_file_path.empty())
+        {
+            ImGui::Text("Recording Location:");
+            ImGui::SameLine();
+            ImGui::TextWrapped("%s", record_file_path.c_str());
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+        }
+
         ImGui::Checkbox("Motion Detection", &do_motion_detection);
 
         ImGui::Checkbox("Prune Still Video", &do_motion_pruning);
@@ -788,6 +845,8 @@ void camera_properties_modal(
         r_ui_utils::copy_s(retention_hours, 64, min_continuous_retention_hours);
         if(ImGui::InputText("Minimum continuous retention hours", retention_hours, 64))
             min_continuous_retention_hours = std::string(retention_hours);
+
+        ImGui::Spacing();
 
         if(ImGui::Button("Cancel"))
         {

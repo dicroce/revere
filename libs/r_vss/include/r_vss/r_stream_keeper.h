@@ -54,10 +54,36 @@ namespace r_vss
 
 struct live_restreaming_state;
 
+// Types of queue overflow that can occur
+enum class r_overflow_type
+{
+    none = 0,
+    live_restream = 1,      // Live RTSP restreaming queue overflow
+    playback_restream = 2,  // Playback restreaming queue overflow
+    motion_detection = 4    // Motion detection queue overflow
+};
+
+// Bitwise operators for r_overflow_type
+inline r_overflow_type operator|(r_overflow_type a, r_overflow_type b) {
+    return static_cast<r_overflow_type>(static_cast<int>(a) | static_cast<int>(b));
+}
+inline r_overflow_type operator&(r_overflow_type a, r_overflow_type b) {
+    return static_cast<r_overflow_type>(static_cast<int>(a) & static_cast<int>(b));
+}
+inline r_overflow_type& operator|=(r_overflow_type& a, r_overflow_type b) {
+    a = a | b;
+    return a;
+}
+inline bool has_overflow(r_overflow_type flags, r_overflow_type check) {
+    return static_cast<int>(flags & check) != 0;
+}
+
 struct r_stream_status
 {
     r_disco::r_camera camera;
     uint32_t bytes_per_second;
+    r_overflow_type overflow_flags {r_overflow_type::none};
+    size_t dropped_frames {0};  // Total frames dropped since last check
 };
 
 enum r_stream_keeper_commands
@@ -125,6 +151,12 @@ public:
     R_API void remove_live_restreaming_state(GstRTSPMedia* media);
     R_API void iterate_live_restreaming_states(const std::string& camera_id, std::function<void(live_restreaming_state&)> fn);
 
+    // Queue overflow monitoring
+    R_API size_t get_motion_engine_dropped_count();
+    R_API size_t get_motion_engine_queue_size() const;
+    R_API r_overflow_type get_current_overflow_flags() const;
+    R_API size_t get_total_dropped_frames() const;
+
 private:
     void _entry_point();
     void _rtsp_server_entry_point();
@@ -173,6 +205,13 @@ private:
     // even after r_recording_context is destroyed
     mutable std::mutex _live_restreaming_states_lok;
     std::map<GstRTSPMedia*, std::shared_ptr<live_restreaming_state>> _live_restreaming_states;
+
+    // Overflow tracking
+    std::chrono::steady_clock::time_point _last_overflow_log_time;
+    std::chrono::steady_clock::time_point _last_overflow_time;
+    size_t _total_motion_dropped {0};
+    size_t _total_restream_dropped {0};
+    r_overflow_type _current_overflow_flags {r_overflow_type::none};
 };
 
 }

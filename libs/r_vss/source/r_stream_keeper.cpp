@@ -160,11 +160,82 @@ vector<r_stream_status> r_stream_keeper::fetch_stream_status()
 
 void r_stream_keeper::_update_status_cache()
 {
+    // Fetch stream status with proper locking (thread safety fix)
     std::vector<r_stream_status> status;
     {
         std::lock_guard<std::mutex> lock(_streams_mutex);
         status = _fetch_stream_status();
     }
+
+    // Check for motion engine overflow
+    size_t motion_dropped = _motionEngine.get_and_reset_dropped_count();
+    if(motion_dropped > 0)
+    {
+        _total_motion_dropped += motion_dropped;
+        _current_overflow_flags |= r_overflow_type::motion_detection;
+    }
+
+    // Check for live restreaming overflow
+    size_t restream_dropped = 0;
+    {
+        lock_guard<mutex> g(_live_restreaming_states_lok);
+        for(auto& lrs_pair : _live_restreaming_states)
+        {
+            auto& lrs = lrs_pair.second;
+            restream_dropped += lrs->video_samples.dropped_count();
+            restream_dropped += lrs->audio_samples.dropped_count();
+            lrs->video_samples.reset_dropped_count();
+            lrs->audio_samples.reset_dropped_count();
+        }
+    }
+    if(restream_dropped > 0)
+    {
+        _total_restream_dropped += restream_dropped;
+        _current_overflow_flags |= r_overflow_type::live_restream;
+    }
+
+    auto now = chrono::steady_clock::now();
+
+    // Track when overflow last occurred
+    if(motion_dropped > 0 || restream_dropped > 0)
+    {
+        _last_overflow_time = now;
+    }
+
+    // Clear overflow flags after 60 seconds of no overflow
+    if(_current_overflow_flags != r_overflow_type::none &&
+       chrono::duration_cast<chrono::seconds>(now - _last_overflow_time).count() >= 60)
+    {
+        _current_overflow_flags = r_overflow_type::none;
+        _total_motion_dropped = 0;
+        _total_restream_dropped = 0;
+    }
+
+    // Log overflow warnings periodically (max once per 30 seconds)
+    if(_current_overflow_flags != r_overflow_type::none &&
+       chrono::duration_cast<chrono::seconds>(now - _last_overflow_log_time).count() >= 30)
+    {
+        _last_overflow_log_time = now;
+
+        if(has_overflow(_current_overflow_flags, r_overflow_type::motion_detection))
+        {
+            R_LOG_WARNING("Motion detection queue overflow: %zu frames dropped (queue size: %zu/%d). System may be under heavy load.",
+                         _total_motion_dropped, _motionEngine.get_queue_size(), MOTION_ENGINE_MAX_QUEUE_SIZE);
+        }
+        if(has_overflow(_current_overflow_flags, r_overflow_type::live_restream))
+        {
+            R_LOG_WARNING("Live restreaming queue overflow: %zu frames dropped. RTSP clients may not be consuming data fast enough.",
+                         _total_restream_dropped);
+        }
+    }
+
+    // Add overflow info to the status
+    for(auto& s : status)
+    {
+        s.overflow_flags = _current_overflow_flags;
+        s.dropped_frames = _total_motion_dropped + _total_restream_dropped;
+    }
+
     std::lock_guard<std::mutex> lock(_status_cache_mutex);
     _status_cache = std::move(status);
 }
@@ -674,4 +745,24 @@ void r_stream_keeper::iterate_live_restreaming_states(const std::string& camera_
         if(lrs.second->camera_id == camera_id)
             fn(*lrs.second);
     }
+}
+
+size_t r_stream_keeper::get_motion_engine_dropped_count()
+{
+    return _motionEngine.get_and_reset_dropped_count();
+}
+
+size_t r_stream_keeper::get_motion_engine_queue_size() const
+{
+    return _motionEngine.get_queue_size();
+}
+
+r_overflow_type r_stream_keeper::get_current_overflow_flags() const
+{
+    return _current_overflow_flags;
+}
+
+size_t r_stream_keeper::get_total_dropped_frames() const
+{
+    return _total_motion_dropped + _total_restream_dropped;
 }

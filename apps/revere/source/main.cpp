@@ -222,14 +222,22 @@ void _create_motion_files(const string& motion_path)
     r_storage::r_md_storage_file::allocate(motion_path, 524288, 30);
 }
 
+// Helper to get storage file path - handles both legacy (filename only) and new (full path) formats
+static std::string _get_storage_path(const std::string& record_file_path)
+{
+    // Check if it's already a full path (contains path separators)
+    if(record_file_path.find('/') != std::string::npos || record_file_path.find('\\') != std::string::npos)
+        return record_file_path;
+    // Legacy format: just filename, prepend default video directory
+    return revere::join_path(revere::sub_dir("video"), record_file_path);
+}
+
 void _delete_camera_files(const r_disco::r_camera& camera)
 {
-    auto video_path = revere::sub_dir("video");
-
     // Delete the main storage file (.nts)
     if(!camera.record_file_path.is_null())
     {
-        auto storage_path = revere::join_path(video_path, camera.record_file_path.value());
+        auto storage_path = _get_storage_path(camera.record_file_path.value());
         if(r_fs::file_exists(storage_path))
         {
             try
@@ -247,7 +255,7 @@ void _delete_camera_files(const r_disco::r_camera& camera)
     // Delete motion detection files (.mdb and .mdnts)
     if(!camera.motion_detection_file_path.is_null())
     {
-        auto motion_base_path = revere::join_path(video_path, camera.motion_detection_file_path.value());
+        auto motion_base_path = _get_storage_path(camera.motion_detection_file_path.value());
 
         // Delete .mdb file (ring buffer)
         if(r_fs::file_exists(motion_base_path))
@@ -320,7 +328,8 @@ void _delete_camera_files(const r_disco::r_camera& camera)
 
 void _on_new_file(revere::assignment_state& as, r_ui_utils::wizard& camera_setup_wizard, r_disco::r_devices& devices, revere_ui_state& ui_state, r_vss::r_stream_keeper& streamKeeper)
 {
-    auto video_path = revere::sub_dir("video");
+    // Use selected storage directory (defaults to standard video path)
+    auto video_path = as.storage_dir.empty() ? revere::sub_dir("video") : as.storage_dir;
 
     auto c = as.camera.value();
 
@@ -353,12 +362,16 @@ void _on_new_file(revere::assignment_state& as, r_ui_utils::wizard& camera_setup
 
         _create_motion_files(motion_path);
 
-        as.motion_detection_file_path = motion_file_name;
+        // Store motion file as full path
+        as.motion_detection_file_path = motion_path;
     }
     
     camera_setup_wizard.cancel();
 
     r_storage::r_storage_file::allocate(storage_path, as.storage_file_block_size.value(), as.num_storage_file_blocks.value());
+
+    // Store full path in file_name so it gets saved to database
+    as.file_name = storage_path;
 
     _assign_camera(as, devices);
 
@@ -630,32 +643,79 @@ void configure_camera_setup_wizard(
             revere::new_or_existing_modal(
                 GImGui,
                 "New or Existing storage file?",
-                [&](){camera_setup_wizard.next("retention");},
+                [&](){camera_setup_wizard.next("choose_storage_location");},
                 [&](){camera_setup_wizard.next("choose_file");},
                 [&](){camera_setup_wizard.cancel();}
             );
         }
     );
     camera_setup_wizard.add_step(
-        "choose_file",
-        [&as, &camera_setup_wizard, &devices, &ui_state, &stream_keeper](){
-            ImGuiFileDialog::Instance()->OpenDialog("ChooseFileDlgKey", "Choose File", ".nts", revere::sub_dir("video"));
-            if(ImGuiFileDialog::Instance()->Display("ChooseFileDlgKey", ImGuiWindowFlags_None, ImVec2(800, 600))) 
+        "choose_storage_location",
+        [&as, &camera_setup_wizard](){
+            auto default_path = revere::sub_dir("video");
+            ImGui::OpenPopup("Storage Location");
+            revere::storage_location_modal(
+                GImGui,
+                "Storage Location",
+                default_path,
+                [&, default_path](){
+                    // Use default location
+                    as.storage_dir = default_path;
+                    camera_setup_wizard.next("retention");
+                },
+                [&](){
+                    // Choose custom location
+                    camera_setup_wizard.next("choose_storage_dir");
+                },
+                [&](){camera_setup_wizard.cancel();}
+            );
+        }
+    );
+    camera_setup_wizard.add_step(
+        "choose_storage_dir",
+        [&as, &camera_setup_wizard](){
+            // Default to standard video directory for the picker starting point
+            if(as.storage_dir.empty())
+                as.storage_dir = revere::sub_dir("video");
+
+            // Only open if not already open to avoid resetting state while user edits path
+            if(!ImGuiFileDialog::Instance()->IsOpened("ChooseDirDlgKey"))
+                ImGuiFileDialog::Instance()->OpenDialog("ChooseDirDlgKey", "Choose Storage Location", nullptr, as.storage_dir, "", 1, nullptr, 0);
+            if(ImGuiFileDialog::Instance()->Display("ChooseDirDlgKey", ImGuiWindowFlags_None, ImVec2(800, 500)))
             {
                 if(ImGuiFileDialog::Instance()->IsOk())
                 {
-                    auto currentPath = ImGuiFileDialog::Instance()->GetCurrentPath();
+                    as.storage_dir = ImGuiFileDialog::Instance()->GetCurrentPath();
+                    camera_setup_wizard.next("retention");
+                }
+                else
+                {
+                    camera_setup_wizard.cancel();
+                }
+                ImGuiFileDialog::Instance()->Close();
+            }
+        }
+    );
+    camera_setup_wizard.add_step(
+        "choose_file",
+        [&as, &camera_setup_wizard, &devices, &ui_state, &stream_keeper](){
+            // Only open if not already open to avoid resetting state while user edits path
+            if(!ImGuiFileDialog::Instance()->IsOpened("ChooseFileDlgKey"))
+                ImGuiFileDialog::Instance()->OpenDialog("ChooseFileDlgKey", "Choose File", ".nts", revere::sub_dir("video"));
+            if(ImGuiFileDialog::Instance()->Display("ChooseFileDlgKey", ImGuiWindowFlags_None, ImVec2(800, 600)))
+            {
+                if(ImGuiFileDialog::Instance()->IsOk())
+                {
+                    // Store full path instead of just filename
                     std::string filePathName = ImGuiFileDialog::Instance()->GetFilePathName();
-                    auto fileName = filePathName.substr(currentPath.size() + 1);
-                    as.file_name = fileName;
+                    as.file_name = filePathName;
 
-                    auto dotPos = fileName.find_last_of('.');
-                    auto mdbFileName = fileName.substr(0, dotPos) + ".mdb";
-                    auto mdbPathName = revere::join_path(ImGuiFileDialog::Instance()->GetCurrentPath(), mdbFileName);
+                    auto dotPos = filePathName.find_last_of('.');
+                    auto mdbPathName = (dotPos == std::string::npos) ? filePathName + ".mdb" : filePathName.substr(0, dotPos) + ".mdb";
                     if(r_fs::file_exists(mdbPathName))
                     {
                         as.do_motion_detection = true;
-                        as.motion_detection_file_path = mdbFileName;
+                        as.motion_detection_file_path = mdbPathName;  // Store full path
                     }
 
                     _assign_camera(as, devices);
@@ -667,7 +727,7 @@ void configure_camera_setup_wizard(
                     camera_setup_wizard.cancel();
                 }
                 else camera_setup_wizard.cancel();
-                
+
                 ImGuiFileDialog::Instance()->Close();
             }
         }
@@ -745,6 +805,16 @@ void configure_camera_setup_wizard(
         "camera_properties_modal",
         [&ui_state, &camera_setup_wizard, &rscc, &devices, &stream_keeper, &as](){
 
+            // Get camera info to display record file path
+            auto camera_id = ui_state.selected_camera_id();
+            string record_path;
+            if(!camera_id.is_null())
+            {
+                auto camera_opt = devices.get_camera_by_id(camera_id.value());
+                if(!camera_opt.is_null() && !camera_opt.value().record_file_path.is_null())
+                    record_path = _get_storage_path(camera_opt.value().record_file_path.value());
+            }
+
             ImGui::OpenPopup("Camera Properties");
             revere::camera_properties_modal(
                 GImGui,
@@ -752,6 +822,7 @@ void configure_camera_setup_wizard(
                 ui_state.do_motion_detection,
                 ui_state.do_motion_pruning,
                 ui_state.min_continuous_recording_hours,
+                record_path,
                 [&](){
                     // OK button
                     auto camera_id = ui_state.selected_camera_id();
@@ -1248,7 +1319,24 @@ int main(int argc, char** argv)
             }
         );
 
-        static const r_utils::r_nullable<std::string> main_status(std::string("Revere Running"));
+        r_utils::r_nullable<std::string> main_status;
+
+        // Check for queue overflow warnings and display in status bar
+        auto overflow_flags = streamKeeper.get_current_overflow_flags();
+        if(overflow_flags != r_vss::r_overflow_type::none)
+        {
+            std::string warning_msg = "WARNING: System under heavy load - ";
+            if(r_vss::has_overflow(overflow_flags, r_vss::r_overflow_type::motion_detection))
+                warning_msg += "Motion detection ";
+            if(r_vss::has_overflow(overflow_flags, r_vss::r_overflow_type::live_restream))
+                warning_msg += "Live restreaming ";
+            warning_msg += "dropping frames (" + std::to_string(streamKeeper.get_total_dropped_frames()) + " total)";
+            main_status.set_value(warning_msg);
+        }
+        else
+        {
+            main_status.set_value(string("Revere Running"));
+        }
 
         main_layout(
             client_top,

@@ -119,7 +119,14 @@ r_nullable<vector<uint8_t>> r_pipeline::get_h264_sps(const string& video_codec_p
 
             auto parts = r_string_utils::split(value, ",");
 
+            // Bounds check: ensure parts[0] exists
+            if(parts.size() < 1)
+                continue;
+
             auto sps = r_string_utils::from_base64(parts[0]);
+            if(sps.empty())
+                continue;
+
             buffer.resize(4 + sps.size());
             memcpy(&buffer[0], &start_code[0], 4);
             memcpy(&buffer[4], &sps[0], sps.size());
@@ -150,7 +157,14 @@ r_nullable<vector<uint8_t>> r_pipeline::get_h264_pps(const string& video_codec_p
 
             auto parts = r_string_utils::split(value, ",");
 
+            // Bounds check: ensure parts[1] exists (need at least 2 parts for PPS)
+            if(parts.size() < 2)
+                continue;
+
             auto pps = r_string_utils::from_base64(parts[1]);
+            if(pps.empty())
+                continue;
+
             buffer.resize(4 + pps.size());
             memcpy(&buffer[0], &start_code[0], 4);
             memcpy(&buffer[4], &pps[0], pps.size());
@@ -174,9 +188,16 @@ r_nullable<vector<uint8_t>> r_pipeline::get_h265_vps(const string& video_codec_p
     {
         auto nv_parts = r_string_utils::split(nvp, "=");
 
+        // Bounds check: ensure we have key=value pair
+        if(nv_parts.size() < 2)
+            continue;
+
         if(buffer.empty() && nv_parts[0] == "sprop-vps")
         {
             auto ps = r_string_utils::from_base64(nv_parts[1]);
+            if(ps.empty())
+                continue;
+
             buffer.resize(4 + ps.size());
             memcpy(&buffer[0], &start_code[0], 4);
             memcpy(&buffer[4], &ps[0], ps.size());
@@ -200,9 +221,16 @@ r_nullable<vector<uint8_t>> r_pipeline::get_h265_sps(const string& video_codec_p
     {
         auto nv_parts = r_string_utils::split(nvp, "=");
 
+        // Bounds check: ensure we have key=value pair
+        if(nv_parts.size() < 2)
+            continue;
+
         if(buffer.empty() && nv_parts[0] == "sprop-sps")
         {
             auto ps = r_string_utils::from_base64(nv_parts[1]);
+            if(ps.empty())
+                continue;
+
             buffer.resize(4 + ps.size());
             memcpy(&buffer[0], &start_code[0], 4);
             memcpy(&buffer[4], &ps[0], ps.size());
@@ -217,7 +245,7 @@ r_nullable<vector<uint8_t>> r_pipeline::get_h265_sps(const string& video_codec_p
 }
 
 r_nullable<vector<uint8_t>> r_pipeline::get_h265_pps(const string& video_codec_parameters)
-{    
+{
     auto params_parts = r_string_utils::split(video_codec_parameters, ", ");
     vector<uint8_t> start_code = {0, 0, 0, 1};
 
@@ -226,9 +254,16 @@ r_nullable<vector<uint8_t>> r_pipeline::get_h265_pps(const string& video_codec_p
     {
         auto nv_parts = r_string_utils::split(nvp, "=");
 
+        // Bounds check: ensure we have key=value pair
+        if(nv_parts.size() < 2)
+            continue;
+
         if(buffer.empty() && nv_parts[0] == "sprop-pps")
         {
             auto ps = r_string_utils::from_base64(nv_parts[1]);
+            if(ps.empty())
+                continue;
+
             buffer.resize(4 + ps.size());
             memcpy(&buffer[0], &start_code[0], 4);
             memcpy(&buffer[4], &ps[0], ps.size());
@@ -264,7 +299,7 @@ vector<uint8_t> r_pipeline::make_h264_extradata(
     {
         memcpy(writer, &start_code[0], start_code.size());
         writer += start_code.size();
-        memcpy(&output[sps_b.size()], &pps_b[0], pps_b.size());
+        memcpy(writer, &pps_b[0], pps_b.size());
     }
     return output;
 }

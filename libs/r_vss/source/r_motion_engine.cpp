@@ -115,6 +115,18 @@ void r_motion_engine::remove_work_context(const string& camera_id)
     _work.post(item);
 }
 
+size_t r_motion_engine::get_and_reset_dropped_count()
+{
+    size_t count = _work.dropped_count();
+    _work.reset_dropped_count();
+    return count;
+}
+
+size_t r_motion_engine::get_queue_size() const
+{
+    return _work.size();
+}
+
 void r_motion_engine::_entry_point()
 {
     _running = true;

@@ -23,6 +23,13 @@ enum
 {
     RING_MOTION_FLAG_SIZE = 1,
     DEFAULT_MOTION_CONFIRM_FRAMES = 3,
+    DEFAULT_MOTION_END_FRAMES = 3,      // Require N frames to END event
+    DEFAULT_GOP_SIZE = 30,
+    DEFAULT_BUFFER_GOPS = 4,
+    // Maximum frames to queue for motion detection before dropping
+    // This prevents memory exhaustion if motion processing can't keep up
+    // At 30fps * 10 cameras = 300 frames/sec, 1000 frames = ~3 seconds buffer
+    MOTION_ENGINE_MAX_QUEUE_SIZE = 1000
     DEFAULT_MIN_MOTION_DISPLACEMENT = 15  // pixels
 };
 
@@ -135,12 +142,19 @@ public:
 
     R_API void remove_work_context(const std::string& camera_id);
 
+    // Returns number of frames dropped since last call (resets counter)
+    R_API size_t get_and_reset_dropped_count();
+
+    // Returns current queue size
+    R_API size_t get_queue_size() const;
+
 private:
     void _entry_point();
     std::map<std::string, std::shared_ptr<r_work_context>>::iterator _create_work_context(const r_work_item& item);
     r_disco::r_devices& _devices;
     std::string _top_dir;
-    r_utils::r_blocking_q<r_work_item> _work;
+    // Bounded queue to prevent memory exhaustion if motion processing can't keep up
+    r_utils::r_blocking_q<r_work_item> _work{MOTION_ENGINE_MAX_QUEUE_SIZE};
     std::map<std::string, std::shared_ptr<r_work_context>> _work_contexts;
     bool _running;
     std::thread _thread;
