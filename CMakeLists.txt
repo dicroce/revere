@@ -99,3 +99,15 @@ if(EXTERNAL_PLUGIN_REPOS)
 else()
     message(STATUS "No external plugins configured (use -DEXTERNAL_PLUGIN_REPOS to add them)")
 endif()
+
+# ---- CPack Configuration for macOS DMG ----
+if(APPLE)
+    set(CPACK_GENERATOR "DragNDrop")
+    set(CPACK_DMG_VOLUME_NAME "Revere")
+    set(CPACK_DMG_FORMAT "UDBZ")  # Compressed, read-only
+    set(CPACK_PACKAGE_FILE_NAME "Revere-${REVERE_VERSION_STRING}-macOS")
+    set(CPACK_PACKAGE_VENDOR "Revere")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Revere Video Surveillance System")
+
+    include(CPack)
+endif()
