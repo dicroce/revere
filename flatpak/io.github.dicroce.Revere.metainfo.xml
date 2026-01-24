@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.dicroce.Revere</id>
+
+  <name>Revere</name>
+  <summary>Open source video surveillance system</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>BSD-3-Clause</project_license>
+
+  <developer id="com.github.dicroce">
+    <name>Tony Di Croce</name>
+  </developer>
+
+  <description>
+    <p>
+      Revere is a free, open source video surveillance system designed to run
+      unobtrusively on standard desktop computers. It supports ONVIF-compliant
+      IP cameras and provides continuous recording with intelligent storage management.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>ONVIF camera discovery and management</li>
+      <li>Motion detection with configurable sensitivity</li>
+      <li>Continuous recording with automatic storage pruning</li>
+      <li>YOLOv8 AI-powered object detection for people and vehicles</li>
+      <li>RTSP streaming support</li>
+      <li>System tray operation for unobtrusive monitoring</li>
+      <li>REST API for integration and remote control</li>
+    </ul>
+    <p>
+      This package includes two applications: Revere (the main surveillance and
+      recording service) and Vision (the playback and multi-camera viewing application
+      with 2x2, 4x4, and single-view layouts).
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.dicroce.Revere.desktop</launchable>
+
+  <url type="homepage">https://github.com/dicroce/revere</url>
+  <url type="bugtracker">https://github.com/dicroce/revere/issues</url>
+  <url type="vcs-browser">https://github.com/dicroce/revere</url>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#4a90d9</color>
+    <color type="primary" scheme_preference="dark">#1c5a9e</color>
+  </branding>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.0.1" date="2025-01-21">
+      <description>
+        <p>Initial release featuring:</p>
+        <ul>
+          <li>ONVIF camera discovery and RTSP streaming</li>
+          <li>Motion detection with background subtraction</li>
+          <li>Continuous recording with storage management</li>
+          <li>YOLOv8 AI object detection for people and cars</li>
+          <li>Vision playback application with grid layouts</li>
+          <li>System tray integration</li>
+          <li>REST API</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+
+  <provides>
+    <binary>revere</binary>
+    <binary>vision</binary>
+  </provides>
+
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+
+  <categories>
+    <category>Utility</category>
+    <category>Video</category>
+  </categories>
+
+  <keywords>
+    <keyword>surveillance</keyword>
+    <keyword>video</keyword>
+    <keyword>camera</keyword>
+    <keyword>ONVIF</keyword>
+    <keyword>security</keyword>
+    <keyword>NVR</keyword>
+    <keyword>recording</keyword>
+    <keyword>motion detection</keyword>
+    <keyword>RTSP</keyword>
+  </keywords>
+</component>

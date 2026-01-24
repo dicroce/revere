@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Vision
+GenericName=Video Playback
+Comment=Video viewer and playback for Revere surveillance system
+Exec=vision
+Icon=io.github.dicroce.Vision
+Terminal=false
+Categories=Utility;Video;AudioVideo;Player;
+Keywords=video;playback;viewer;surveillance;
+StartupNotify=true
+StartupWMClass=vision

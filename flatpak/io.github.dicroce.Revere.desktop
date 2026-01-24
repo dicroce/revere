@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Revere
+GenericName=Video Surveillance
+Comment=Open source video surveillance system with ONVIF support
+Exec=revere
+Icon=io.github.dicroce.Revere
+Terminal=false
+Categories=Utility;Video;
+Keywords=surveillance;camera;video;security;ONVIF;NVR;recording;
+StartupNotify=true
+StartupWMClass=revere

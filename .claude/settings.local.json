@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(for i in 1 2 3 4 5)",
+      "Bash(do echo \"=== Streaming Run $i ===\")",
+      "Bash(./r_http_ut.exe:*)",
+      "Bash(done)",
+      "Bash(do echo \"=== Run $i ===\")",
+      "Bash(do echo \"=== Full Run $i ===\")",
+      "Bash(timeout 60 ./r_http_ut.exe test_r_http:*)",
+      "Bash(for i in 1 2 3 4 5 6 7 8 9 10)",
+      "Bash(cmake --build:*)",
+      "Bash(for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15)",
+      "Bash(do timeout 60 ./r_http_ut.exe:*)",
+      "Bash(do timeout 120:*)",
+      "Bash(timeout 120 ./r_http_ut.exe:*)",
+      "Bash(timeout 60 ./r_http_ut.exe:*)",
+      "Bash(powershell:*)",
+      "Bash(ls:*)",
+      "Bash(Get-EventLog -LogName Application -Source \"*revere*\" -Newest 10 -ErrorAction SilentlyContinue)"
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+build/
+.claude/
+.vscode/
+
+# Flatpak build artifacts
+flatpak/build-dir/
+flatpak/.flatpak-builder/
+flatpak/build.log
+flatpak/repo/
+*.flatpak

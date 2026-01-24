@@ -1,0 +1,47 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "(Windows) Attach Revere",
+            "type": "cppvsdbg",
+            "request": "attach",
+            "processId": "${command:pickProcess}"
+        },
+        {
+            "name": "(Windows) Launch Revere",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "C:\\Program Files (x86)\\revere\\revere\\revere.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "C:\\Program Files (x86)\\revere\\revere",
+            "environment": [],
+            "console": "externalTerminal"
+        },
+        {
+            "name": "(Windows) r_http_ut",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}\\build\\bin\\Debug\\r_http_ut.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}\\build",
+            "environment": [],
+            "console": "externalTerminal"
+        },
+        {
+            "name": "(Windows) r_av_ut",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}\\build\\bin\\Debug\\r_av_ut.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}\\build",
+            "environment": [],
+            "console": "externalTerminal"
+        },
+    ]
+}
