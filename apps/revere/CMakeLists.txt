@@ -121,6 +121,24 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     endif()
 endif()
 
+# Linux XDG install (desktop file, icon, metainfo)
+if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
+    include(GNUInstallDirs)
+
+    # Desktop file
+    install(FILES ${CMAKE_SOURCE_DIR}/flatpak/io.github.dicroce.Revere.desktop
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
+
+    # Icon
+    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/R.png
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/256x256/apps
+        RENAME io.github.dicroce.Revere.png)
+
+    # AppStream metainfo
+    install(FILES ${CMAKE_SOURCE_DIR}/flatpak/io.github.dicroce.Revere.metainfo.xml
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/metainfo)
+endif()
+
 # macOS app bundle configuration
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set_target_properties(revere PROPERTIES
