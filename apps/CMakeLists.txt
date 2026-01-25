@@ -141,12 +141,12 @@ else()
     # Regular install for Windows and Linux
     install(
         TARGETS revere
-        RUNTIME DESTINATION revere
+        RUNTIME DESTINATION ${REVERE_INSTALL_BINDIR}
     )
 
     install(
         TARGETS vision
-        RUNTIME DESTINATION revere
+        RUNTIME DESTINATION ${REVERE_INSTALL_BINDIR}
     )
 endif()
 

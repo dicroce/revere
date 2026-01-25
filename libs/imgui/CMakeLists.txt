@@ -53,6 +53,6 @@ target_link_libraries(
 # Install the static library (skip on macOS - bundled into .app)
 if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     install(TARGETS imgui
-        ARCHIVE DESTINATION revere
+        ARCHIVE DESTINATION ${REVERE_INSTALL_LIBDIR}
     )
 endif()

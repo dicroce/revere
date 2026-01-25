@@ -9,6 +9,15 @@ else()
     set(FLATPAK_BUILD FALSE)
 endif()
 
+# Install destinations - flatpak uses standard FHS paths, portable uses single directory
+if(FLATPAK_BUILD)
+    set(REVERE_INSTALL_BINDIR bin)
+    set(REVERE_INSTALL_LIBDIR lib)
+else()
+    set(REVERE_INSTALL_BINDIR revere)
+    set(REVERE_INSTALL_LIBDIR revere)
+endif()
+
 if(IS_BIG_ENDIAN)
     add_compile_definitions(IS_BIG_ENDIAN)
 else()

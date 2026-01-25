@@ -50,9 +50,9 @@ endif()
 # Install the shared library (skip on macOS - bundled into .app)
 if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     install(TARGETS r_utils
-        RUNTIME DESTINATION revere
-        LIBRARY DESTINATION revere
-        ARCHIVE DESTINATION revere
+        RUNTIME DESTINATION ${REVERE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${REVERE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${REVERE_INSTALL_LIBDIR}
     )
 endif()
 
