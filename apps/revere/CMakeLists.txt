@@ -15,11 +15,14 @@ configure_file(
 
 include(FetchContent)
 
-if(APPLE)
-    set(CMAKE_INSTALL_RPATH "@executable_path/../lib;@executable_path")
-    set(CMAKE_BUILD_RPATH "@executable_path/../lib;@executable_path/../../libs/r_utils;@executable_path/../../libs/r_ui_utils;@executable_path/../../libs/r_av;@executable_path/../../libs/r_pipeline;@executable_path/../../libs/r_storage;@executable_path/../../libs/r_motion;@executable_path/../../libs/r_onvif;@executable_path/../../libs/r_http;@executable_path/../../libs/r_db;@executable_path/../../libs/r_fakey")
-else()
-    set(CMAKE_INSTALL_RPATH $ORIGIN)
+# Set RPATH - skip for Flatpak builds (they use standard library paths)
+if(NOT FLATPAK_BUILD)
+    if(APPLE)
+        set(CMAKE_INSTALL_RPATH "@executable_path/../lib;@executable_path")
+        set(CMAKE_BUILD_RPATH "@executable_path/../lib;@executable_path/../../libs/r_utils;@executable_path/../../libs/r_ui_utils;@executable_path/../../libs/r_av;@executable_path/../../libs/r_pipeline;@executable_path/../../libs/r_storage;@executable_path/../../libs/r_motion;@executable_path/../../libs/r_onvif;@executable_path/../../libs/r_http;@executable_path/../../libs/r_db;@executable_path/../../libs/r_fakey")
+    else()
+        set(CMAKE_INSTALL_RPATH $ORIGIN)
+    endif()
 endif()
 
 FetchContent_Declare(

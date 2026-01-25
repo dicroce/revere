@@ -318,25 +318,28 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     endif()
 
     # Patch RUNPATH on third-party libraries so they can find sibling libs
-    install(CODE "
-        find_program(PATCHELF patchelf)
-        if(PATCHELF)
-            file(GLOB INSTALLED_LIBS \"\${CMAKE_INSTALL_PREFIX}/revere/lib*.so.*\")
-            foreach(LIB \${INSTALLED_LIBS})
-                # Skip symlinks, only patch actual files
-                if(NOT IS_SYMLINK \${LIB})
-                    execute_process(
-                        COMMAND \${PATCHELF} --set-rpath \"\\\$ORIGIN\" \${LIB}
-                        RESULT_VARIABLE PATCH_RESULT
-                        ERROR_QUIET
-                    )
-                endif()
-            endforeach()
-            message(STATUS \"Patched RUNPATH on installed libraries\")
-        else()
-            message(WARNING \"patchelf not found - third-party libraries may not find dependencies at runtime. Install with: sudo apt install patchelf\")
-        endif()
-    ")
+    # Skip for Flatpak builds - they use standard library paths
+    if(NOT FLATPAK_BUILD)
+        install(CODE "
+            find_program(PATCHELF patchelf)
+            if(PATCHELF)
+                file(GLOB INSTALLED_LIBS \"\${CMAKE_INSTALL_PREFIX}/revere/lib*.so.*\")
+                foreach(LIB \${INSTALLED_LIBS})
+                    # Skip symlinks, only patch actual files
+                    if(NOT IS_SYMLINK \${LIB})
+                        execute_process(
+                            COMMAND \${PATCHELF} --set-rpath \"\\\$ORIGIN\" \${LIB}
+                            RESULT_VARIABLE PATCH_RESULT
+                            ERROR_QUIET
+                        )
+                    endif()
+                endforeach()
+                message(STATUS \"Patched RUNPATH on installed libraries\")
+            else()
+                message(WARNING \"patchelf not found - third-party libraries may not find dependencies at runtime. Install with: sudo apt install patchelf\")
+            endif()
+        ")
+    endif()
 
     # Use GST_TOP_DIR if defined, otherwise fall back to system path
     if(DEFINED ENV{GST_TOP_DIR})
@@ -369,20 +372,23 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     )
 
     # Patch RUNPATH on GStreamer plugins so they find libs in parent directory
-    install(CODE "
-        find_program(PATCHELF patchelf)
-        if(PATCHELF)
-            file(GLOB GST_PLUGINS \"\${CMAKE_INSTALL_PREFIX}/revere/gstreamer_plugins/*.so\")
-            foreach(PLUGIN \${GST_PLUGINS})
-                execute_process(
-                    COMMAND \${PATCHELF} --set-rpath \"\\\$ORIGIN/..\" \${PLUGIN}
-                    RESULT_VARIABLE PATCH_RESULT
-                    ERROR_QUIET
-                )
-            endforeach()
-            message(STATUS \"Patched RUNPATH on GStreamer plugins\")
-        endif()
-    ")
+    # Skip for Flatpak builds - they use standard library paths
+    if(NOT FLATPAK_BUILD)
+        install(CODE "
+            find_program(PATCHELF patchelf)
+            if(PATCHELF)
+                file(GLOB GST_PLUGINS \"\${CMAKE_INSTALL_PREFIX}/revere/gstreamer_plugins/*.so\")
+                foreach(PLUGIN \${GST_PLUGINS})
+                    execute_process(
+                        COMMAND \${PATCHELF} --set-rpath \"\\\$ORIGIN/..\" \${PLUGIN}
+                        RESULT_VARIABLE PATCH_RESULT
+                        ERROR_QUIET
+                    )
+                endforeach()
+                message(STATUS \"Patched RUNPATH on GStreamer plugins\")
+            endif()
+        ")
+    endif()
 
     # Install system plugins if they were built
     install(CODE "

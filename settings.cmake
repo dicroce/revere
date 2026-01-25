@@ -20,8 +20,11 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set RPATH for all targets to find libraries in the same directory
-set(CMAKE_INSTALL_RPATH "$ORIGIN")
-set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+# Skip for Flatpak builds - they use standard library paths
+if(NOT FLATPAK_BUILD)
+    set(CMAKE_INSTALL_RPATH "$ORIGIN")
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+endif()
 
 # Put all runtime outputs (DLLs and executables) in a common bin directory during build
 # This ensures executables can find their DLL dependencies without manual copying
