@@ -37,6 +37,17 @@
 
   <launchable type="desktop-id">io.github.dicroce.Revere.desktop</launchable>
 
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/dicroce/revere/refs/heads/main/assets/screenshots/revere.jpg</image>
+      <caption>Revere main interface with camera configuration</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/dicroce/revere/refs/heads/main/assets/screenshots/vision.jpg</image>
+      <caption>Vision playback application with multi-camera grid view</caption>
+    </screenshot>
+  </screenshots>
+
   <url type="homepage">https://github.com/dicroce/revere</url>
   <url type="bugtracker">https://github.com/dicroce/revere/issues</url>
   <url type="vcs-browser">https://github.com/dicroce/revere</url>
