@@ -1000,7 +1000,12 @@ string _get_icon_path()
 #endif
 
 #if defined(IS_LINUX) || defined(IS_MACOS)
-    // Try AppImage-style icon path first
+    // Try Flatpak icon path first
+    std::string flatpak_icon = "/app/share/icons/hicolor/256x256/apps/io.github.dicroce.Revere.png";
+    if (r_fs::file_exists(flatpak_icon))
+        return flatpak_icon;
+
+    // Try AppImage-style icon path
     std::string rel_icon_path = "/../share/icons/hicolor/128x128/apps/revere.png";
     std::string full_icon_path = r_fs::path_join(r_fs::working_directory(), rel_icon_path);
 
