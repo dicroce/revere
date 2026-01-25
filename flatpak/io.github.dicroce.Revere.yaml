@@ -69,7 +69,6 @@ modules:
     builddir: true
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
-      - -DCMAKE_INSTALL_LIBDIR=lib
       - -DOPENCV_EXTRA_MODULES_PATH=/run/build/opencv/contrib/modules
       - -DBUILD_LIST=core,imgproc,imgcodecs,video,videoio,calib3d,features2d,flann,dnn,bgsegm,tracking,optflow,ximgproc,xfeatures2d,plot
       - -DBUILD_SHARED_LIBS=ON
