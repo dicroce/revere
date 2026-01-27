@@ -1,6 +1,17 @@
 # Flatpak Build Guide
 
-## Running on a Clean Ubuntu 24.04
+## Installing from Flathub
+
+Once published on Flathub, install directly:
+
+```bash
+flatpak install flathub io.github.dicroce.Revere
+flatpak run io.github.dicroce.Revere
+```
+
+---
+
+## Running on a Clean Ubuntu
 
 Install flatpak:
 
@@ -17,10 +28,10 @@ flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flat
 Install the freedesktop runtime:
 
 ```bash
-flatpak install flathub org.freedesktop.Platform//24.08
+flatpak install flathub org.freedesktop.Platform//25.08
 ```
 
-Install and run Revere:
+Install and run Revere from a bundle:
 
 ```bash
 flatpak install --user revere.flatpak
@@ -33,49 +44,46 @@ flatpak run io.github.dicroce.Revere
 
 ### Prerequisites
 
-Install flatpak-builder and the freedesktop SDK:
+Install flatpak and the flatpak-builder from Flathub:
 
 ```bash
-sudo apt install flatpak-builder
-flatpak install flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+sudo apt install flatpak
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install flathub org.flatpak.Builder
+flatpak install flathub org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08
 ```
 
-## Clean Rebuild
-
-```bash
-cd flatpak
-flatpak-builder --force-clean --repo=repo build-dir io.github.dicroce.Revere.yaml
-```
-
-## Generate Bundle
-
-```bash
-flatpak build-bundle repo revere.flatpak io.github.dicroce.Revere
-```
-
-## Install and Run
-
-Install the bundle:
-
-```bash
-flatpak install --user revere.flatpak
-```
-
-Run:
-
-```bash
-flatpak run io.github.dicroce.Revere
-```
-
-## Quick Build and Install (Development)
+### Quick Build and Install (Development)
 
 For faster iteration during development, build and install directly:
 
 ```bash
 cd flatpak
-flatpak-builder --force-clean --user --install build-dir io.github.dicroce.Revere.yaml
+flatpak run org.flatpak.Builder --force-clean --user --install build io.github.dicroce.Revere.yaml
 flatpak run io.github.dicroce.Revere
 ```
+
+### Clean Rebuild
+
+```bash
+cd flatpak
+flatpak run org.flatpak.Builder --force-clean --repo=repo build io.github.dicroce.Revere.yaml
+```
+
+### Generate Bundle
+
+```bash
+flatpak build-bundle repo revere.flatpak io.github.dicroce.Revere
+```
+
+### Install Bundle
+
+```bash
+flatpak install --user revere.flatpak
+flatpak run io.github.dicroce.Revere
+```
+
+---
 
 ## System Plugins
 
