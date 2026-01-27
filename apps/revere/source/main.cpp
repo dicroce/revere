@@ -66,7 +66,7 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 //                                                            revere-v0.0.1-x86_64-macos.dmg
 //                                                            revere_cloud-v0.0.1-x86_64-windows-setup.exe
 //                                                            revere_cloud-v0.0.1-x86_64-linux.run
-//                                                            revere_cloud-v0.0.1-x86_64-macos.pkg
+//                                                            revere_cloud-v0.0.1-x86_64-macos.command
 
 using namespace std;
 using namespace r_utils;
@@ -1403,7 +1403,7 @@ int main(int argc, char** argv)
 #elif defined(IS_LINUX)
                 filename = "revere_cloud-v" + version + "-x86_64-linux.run";
 #elif defined(IS_MACOS)
-                filename = "revere_cloud-v" + version + "-x86_64-macos.pkg";
+                filename = "revere_cloud-v" + version + "-x86_64-macos.command";
 #else
                 #error "Unsupported platform"
 #endif
