@@ -1,14 +1,27 @@
 cmake_minimum_required(VERSION 3.14)
 project(r_utils)
 
-file(GLOB MBEDTLS_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/source/mbedtls/*.c
+include(FetchContent)
+
+# Fetch mbedtls 3.6.3 from official repository
+FetchContent_Declare(
+    mbedtls
+    GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls.git
+    GIT_TAG v3.6.3
 )
 
-file(GLOB MBEDTLS_HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls/*.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/psa/*.h
-)
+# Configure mbedtls to build static libraries only
+set(ENABLE_PROGRAMS OFF CACHE BOOL "Disable mbedtls programs")
+set(ENABLE_TESTING OFF CACHE BOOL "Disable mbedtls tests")
+set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "Disable fatal warnings")
+set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "Build static mbedtls libraries")
+set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "Disable shared mbedtls libraries")
+
+# Point mbedtls to our custom configuration files
+set(MBEDTLS_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls/mbedtls_config.h" CACHE STRING "Custom mbedtls config")
+set(MBEDTLS_USER_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls/user_config.h" CACHE STRING "Custom user config")
+
+FetchContent_MakeAvailable(mbedtls)
 
 file(GLOB R_UTILS_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/r_utils/*.h
@@ -20,8 +33,6 @@ file(GLOB R_UTILS_SOURCES
 
 add_library(
     r_utils SHARED
-    ${MBEDTLS_HEADERS}
-    ${MBEDTLS_SOURCES}
     ${R_UTILS_HEADERS}
     ${R_UTILS_SOURCES}
 )
@@ -29,7 +40,7 @@ add_library(
 target_include_directories(
     r_utils PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/source/mbedtls>
+    $<BUILD_INTERFACE:${mbedtls_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
@@ -37,6 +48,9 @@ target_link_libraries(
     r_utils PUBLIC
     uuid::uuid
     platform::platform
+    mbedcrypto
+    mbedx509
+    mbedtls
 )
 
 if(WIN32)
