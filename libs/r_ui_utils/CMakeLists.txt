@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.14)
 project(r_ui_utils)
 
-find_package(OpenGL REQUIRED)
+# SDL2 dependency (already found by imgui, but ensure it's available)
+include(FindPkgConfig)
+pkg_search_module(SDL2 REQUIRED sdl2)
 
 file(GLOB R_UI_UTILS_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/r_ui_utils/*.h
@@ -21,6 +23,7 @@ target_include_directories(
     r_ui_utils PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
+    ${SDL2_INCLUDE_DIRS}
 )
 
 target_compile_definitions(
@@ -32,8 +35,12 @@ target_link_libraries(
     r_ui_utils PUBLIC
     imgui
     r_utils
-    glfw
-    ${OPENGL_LIBRARIES}
+    ${SDL2_LIBRARIES}
+)
+
+target_link_directories(
+    r_ui_utils PUBLIC
+    ${SDL2_LIBRARY_DIRS}
 )
 
 # Install the shared library (skip on macOS - bundled into .app)

@@ -91,7 +91,7 @@ namespace timeline_constants
     // Window and UI
     constexpr int DEFAULT_WINDOW_WIDTH = 1280;
     constexpr int DEFAULT_WINDOW_HEIGHT = 720;
-    constexpr float GLFW_EVENT_TIMEOUT = 0.1f;
+    constexpr float SDL_EVENT_TIMEOUT_SEC = 0.1f;
     
     // Video positioning (from our earlier fix)
     constexpr float VIDEO_ASPECT_RATIO_TOLERANCE = 0.01f;

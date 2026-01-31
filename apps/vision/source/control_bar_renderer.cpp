@@ -355,9 +355,9 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                 );
                 
                 // Try to draw icon on top
-                GLuint texture_id = get_icon_texture_id(class_name);
+                void* texture_id = get_icon_texture_id(class_name);
 
-                if (texture_id != 0)
+                if (texture_id != nullptr)
                 {
                     // Draw the icon using the texture
                     float icon_size = 48.0f; // Match the size we created the textures at
@@ -372,12 +372,9 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                         bg_color
                     );
 
-                    // Convert GLuint to ImTextureID
-                    ImTextureID imgui_texture_id = reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(texture_id));
-
                     // Draw the icon on top of the background
                     draw_list->AddImage(
-                        imgui_texture_id,
+                        (ImTextureID)texture_id,
                         ImVec2(icon_x, icon_y),
                         ImVec2(icon_x + icon_size, icon_y + icon_size),
                         ImVec2(0, 0),

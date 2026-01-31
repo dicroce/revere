@@ -2,8 +2,10 @@
 #ifndef __vision_render_context_h
 #define __vision_render_context_h
 
-#include <GLFW/glfw3.h> // Will drag system OpenGL headers
+#include <SDL.h>
 #include <cstdint>
+#include <memory>
+#include "r_ui_utils/texture.h"
 
 namespace vision
 {
@@ -11,17 +13,16 @@ namespace vision
 struct render_context final
 {
     render_context() :
-        texture_id(0),
+        tex(nullptr),
         w(0),
         h(0),
         done(false),
         pts(0)
     {
     }
-    ~render_context()
-    {
-    }
-    GLuint texture_id;
+    ~render_context() = default;
+
+    std::shared_ptr<r_ui_utils::texture> tex;
     uint16_t w;
     uint16_t h;
     bool done;

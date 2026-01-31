@@ -5,13 +5,14 @@
 #ifdef IS_WINDOWS
 #include <windows.h>
 #endif
-#include <GLFW/glfw3.h> // Will drag system OpenGL headers
+#include <SDL.h>
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
-#include "imgui/imgui_impl_glfw.h"
-#include "imgui/imgui_impl_opengl3.h"
+#include "imgui/imgui_impl_sdl2.h"
+#include "imgui/imgui_impl_sdlrenderer.h"
 #include "stb_image.h"
+#include "r_ui_utils/texture.h"
 
 #include <string>
 #include <thread>
@@ -32,16 +33,17 @@
 // Define the fonts global variable for this app
 std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 
-// Global map of class names to texture IDs for analytics icons
-static std::unordered_map<std::string, GLuint> g_icon_textures;
+// Global map of class names to textures for analytics icons
+static std::unordered_map<std::string, std::shared_ptr<r_ui_utils::texture>> g_icon_textures;
+static SDL_Renderer* g_renderer = nullptr;
 
-// Get texture ID for a class name
-GLuint get_icon_texture_id(const std::string& class_name)
+// Get texture for a class name
+void* get_icon_texture_id(const std::string& class_name)
 {
     auto it = g_icon_textures.find(class_name);
-    if (it != g_icon_textures.end())
-        return it->second;
-    return 0;
+    if (it != g_icon_textures.end() && it->second)
+        return it->second->imgui_id();
+    return nullptr;
 }
 
 #include "configure_state.h"
@@ -74,19 +76,18 @@ using namespace std;
 using namespace r_utils;
 using namespace vision;
 
-// Load PNG from embedded data and create OpenGL texture
-static GLuint create_png_texture(const unsigned char* png_data, unsigned int png_len)
+// Load PNG from embedded data and create SDL texture
+static std::shared_ptr<r_ui_utils::texture> create_png_texture(const unsigned char* png_data, unsigned int png_len)
 {
     int width, height, channels;
     unsigned char* pixels = stbi_load_from_memory(png_data, png_len, &width, &height, &channels, 4);
     if (!pixels)
-        return 0;
+        return nullptr;
 
-    GLuint texture_id = 0;
-    gl_safe::create_texture_rgba(&texture_id, width, height, pixels);
+    auto tex = r_ui_utils::texture::create_from_rgba(g_renderer, pixels, (uint16_t)width, (uint16_t)height);
 
     stbi_image_free(pixels);
-    return texture_id;
+    return tex;
 }
 
 // Initialize all icon textures from embedded PNG data
@@ -122,11 +123,11 @@ void init_icon_textures()
 
     for (const auto& icon : icons)
     {
-        GLuint texture_id = create_png_texture(icon.png_data, icon.png_len);
-        if (texture_id != 0)
+        auto tex = create_png_texture(icon.png_data, icon.png_len);
+        if (tex)
         {
-            g_icon_textures[icon.class_name] = texture_id;
-            R_LOG_INFO("  %s: texture_id=%u", icon.class_name, texture_id);
+            g_icon_textures[icon.class_name] = tex;
+            R_LOG_INFO("  %s: texture created", icon.class_name);
         }
         else
         {
@@ -136,7 +137,7 @@ void init_icon_textures()
 
     // Also map "vehicle" to the car texture for compatibility
     auto car_it = g_icon_textures.find("car");
-    if (car_it != g_icon_textures.end())
+    if (car_it != g_icon_textures.end() && car_it->second)
         g_icon_textures["vehicle"] = car_it->second;
 
     R_LOG_INFO("Icon textures created: %zu total", g_icon_textures.size());
@@ -155,17 +156,13 @@ struct vision_ui_state
     main_client_state mcs;
 };
 
-static void glfw_error_callback(int error, const char* description)
-{
-    fprintf(stderr, "Glfw Error %d: %s\n", error, description);
-}
 
 extern ImGuiContext *GImGui;
 
 void configure_configure_wizard(
     r_ui_utils::wizard& configure_wizard,
     vision::configure_state& cfg_state,
-    GLFWwindow* window,
+    SDL_Window* window,
     vision_ui_state& ui_state
 )
 {
@@ -376,40 +373,57 @@ int main(int, char**)
 
     auto top_dir = vision::top_dir();
 
-    // Setup window
-    glfwSetErrorCallback(glfw_error_callback);
-    if (!glfwInit())
+    // Setup SDL
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
+    {
+        R_LOG_ERROR("SDL_Init error: %s", SDL_GetError());
         return 1;
+    }
 
-    // GL 3.0 + GLSL 130
-    const char* glsl_version = "#version 130";
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-#ifdef IS_MACOS
-    // macOS requires at least OpenGL 3.2 with Core Profile
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-    glsl_version = "#version 150";
-#endif
-
-    // Create window with graphics context
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "Vision", NULL, NULL);
-    if (window == NULL)
+    // Create window
+    SDL_Window* window = SDL_CreateWindow(
+        "Vision",
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED,
+        1280, 720,
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI
+    );
+    if (window == nullptr)
+    {
+        R_LOG_ERROR("SDL_CreateWindow error: %s", SDL_GetError());
+        SDL_Quit();
         return 1;
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(1); // Enable vsync
+    }
 
-    GLFWimage images[1];
+    // Create software renderer
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+    if (renderer == nullptr)
+    {
+        R_LOG_ERROR("SDL_CreateRenderer error: %s", SDL_GetError());
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    // Store global renderer for icon texture creation
+    g_renderer = renderer;
+
+    // Set window icon
     int x, y, channels;
-    // V_32x32_png && V_32x32_png_len
-    images[0].pixels = stbi_load_from_memory(V_32x32_png, V_32x32_png_len, &x, &y, &channels, 4);
-    images[0].width = x;
-    images[0].height = y;
-
-    glfwSetWindowIcon(window, 1, images);
-    stbi_image_free(images[0].pixels);
+    unsigned char* icon_pixels = stbi_load_from_memory(V_32x32_png, V_32x32_png_len, &x, &y, &channels, 4);
+    if (icon_pixels)
+    {
+        SDL_Surface* icon_surface = SDL_CreateRGBSurfaceFrom(
+            icon_pixels, x, y, 32, x * 4,
+            0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000
+        );
+        if (icon_surface)
+        {
+            SDL_SetWindowIcon(window, icon_surface);
+            SDL_FreeSurface(icon_surface);
+        }
+        stbi_image_free(icon_pixels);
+    }
 
     bool close_requested = false;
 
@@ -424,8 +438,8 @@ int main(int, char**)
     ImGui::StyleColorsDark();
 
     // Setup Platform/Renderer backends
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL3_Init(glsl_version);
+    ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
+    ImGui_ImplSDLRenderer_Init(renderer);
 
     // Platform-specific font sizes (macOS renders fonts larger, so we use smaller sizes)
 #ifdef IS_MACOS
@@ -467,7 +481,7 @@ int main(int, char**)
         r_ui_utils::wizard configure_wizard;
         configure_configure_wizard(configure_wizard, cfg_state, window, ui_state);
 
-        pipeline_host ph(cfg_state);
+        pipeline_host ph(cfg_state, renderer);
         ph.start();
 
         change_layout(cfg_state, ph, ui_state, cfg_state.get_current_layout());
@@ -484,30 +498,39 @@ int main(int, char**)
         );
 
         auto last_ui_update_ts = chrono::steady_clock::now();
+        const auto frame_duration = chrono::microseconds(16667);  // ~60fps
 
         // Create icon textures from embedded PNG data
         init_icon_textures();
 
         r_ui_utils::texture_loader tl;
+        tl.set_renderer(renderer);
 
         // Main loop
         while(!close_requested)
         {
-            auto now = chrono::steady_clock::now();
+            auto frame_start = chrono::steady_clock::now();
 
-            if(now - last_ui_update_ts > chrono::seconds(5))
+            if(frame_start - last_ui_update_ts > chrono::seconds(5))
             {
                 update_ui = true;
-                last_ui_update_ts = now;
+                last_ui_update_ts = frame_start;
             }
 
-            glfwWaitEventsTimeout(0.1);
-
-            if(glfwWindowShouldClose(window) != GL_FALSE)
+            // Process all pending SDL events
+            SDL_Event event;
+            while (SDL_PollEvent(&event))
             {
-                close_requested = true;
-                continue;
+                ImGui_ImplSDL2_ProcessEvent(&event);
+                if (event.type == SDL_QUIT)
+                    close_requested = true;
+                if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE &&
+                    event.window.windowID == SDL_GetWindowID(window))
+                    close_requested = true;
             }
+
+            if (close_requested)
+                continue;
 
             auto update = update_q.poll(chrono::milliseconds(1));
 
@@ -515,8 +538,8 @@ int main(int, char**)
                 ui_state.current_revere_update = update.value();
 
             // Start the Dear ImGui frame
-            ImGui_ImplOpenGL3_NewFrame();
-            ImGui_ImplGlfw_NewFrame();
+            ImGui_ImplSDLRenderer_NewFrame();
+            ImGui_ImplSDL2_NewFrame();
             ImGui::NewFrame();
 
             ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_24].roboto_regular);
@@ -586,7 +609,7 @@ int main(int, char**)
                             {
                                 R_LOG_ERROR("Invalid container dimensions for stream %s: %dx%d", name.c_str(), w, h);
                                 // Render placeholder image
-                                ImGui::Image((void*)(intptr_t)0, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+                                ImGui::Image(nullptr, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
                                 return;
                             }
                             
@@ -600,15 +623,15 @@ int main(int, char**)
                                 if (!state_validate::is_valid_frame_dimensions(rc->w, rc->h))
                                 {
                                     R_LOG_ERROR("Invalid render context dimensions for stream %s: %dx%d", name.c_str(), rc->w, rc->h);
-                                    ImGui::Image((void*)(intptr_t)0, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+                                    ImGui::Image(nullptr, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
                                     return;
                                 }
                                 
-                                // Validate texture ID
-                                if (!state_validate::is_valid_texture_id(rc->texture_id))
+                                // Validate texture
+                                if (!state_validate::is_valid_texture(rc->tex))
                                 {
-                                    R_LOG_ERROR("Invalid texture ID for stream %s: %u", name.c_str(), rc->texture_id);
-                                    ImGui::Image((void*)(intptr_t)0, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+                                    R_LOG_ERROR("Invalid texture for stream %s", name.c_str());
+                                    ImGui::Image(nullptr, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
                                     return;
                                 }
                                 
@@ -653,7 +676,7 @@ int main(int, char**)
                                 if (!scale_x_maybe.has_value() || !scale_y_maybe.has_value())
                                 {
                                     R_LOG_ERROR("Invalid scaling calculation for stream %s", name.c_str());
-                                    ImGui::Image((void*)(intptr_t)0, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+                                    ImGui::Image(nullptr, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
                                     return;
                                 }
                                 
@@ -664,7 +687,7 @@ int main(int, char**)
                                     !state_validate::is_safe_multiplication((int64_t)rc->h, (int64_t)(scale * 1000)))
                                 {
                                     R_LOG_ERROR("Scaling calculation overflow for stream %s", name.c_str());
-                                    ImGui::Image((void*)(intptr_t)0, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+                                    ImGui::Image(nullptr, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
                                     return;
                                 }
                                 
@@ -675,7 +698,7 @@ int main(int, char**)
                                 if (!state_validate::is_valid_frame_dimensions(scaled_w, scaled_h))
                                 {
                                     R_LOG_ERROR("Invalid scaled dimensions for stream %s: %dx%d", name.c_str(), scaled_w, scaled_h);
-                                    ImGui::Image((void*)(intptr_t)0, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+                                    ImGui::Image(nullptr, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
                                     return;
                                 }
                                 
@@ -692,20 +715,21 @@ int main(int, char**)
                                 
                                 // SetCursorPos uses window-relative coordinates, not absolute coordinates
                                 ImGui::SetCursorPos(ImVec2((float)lx, (float)ly));
-                                ImGui::Image((void*)(intptr_t)rc->texture_id, ImVec2((float)scaled_w, (float)scaled_h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+                                ImGui::Image(rc->tex->imgui_id(), ImVec2((float)scaled_w, (float)scaled_h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
                             }
                             else
                             {
-                                // Render placeholder with validated dimensions
+                                // Render placeholder with InvisibleButton so drag-drop target works
+                                // (ImGui::Image with nullptr doesn't create a proper widget for drag-drop in SDL renderer)
                                 if (state_validate::is_valid_frame_dimensions(w, h))
                                 {
-                                    ImGui::Image((void*)(intptr_t)0, ImVec2(w, h), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+                                    ImGui::InvisibleButton("##drop_target", ImVec2(w, h));
                                 }
                                 else
                                 {
                                     R_LOG_ERROR("Invalid placeholder dimensions: %dx%d", w, h);
                                     // Use minimum valid dimensions for placeholder
-                                    ImGui::Image((void*)(intptr_t)0, ImVec2(100, 100), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+                                    ImGui::InvisibleButton("##drop_target", ImVec2(100, 100));
                                 }
                             }
 
@@ -804,15 +828,21 @@ int main(int, char**)
 
             // Rendering
             ImGui::Render();
-            int display_w, display_h;
-            glfwGetFramebufferSize(window, &display_w, &display_h);
-            glViewport(0, 0, display_w, display_h);
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-            glfwSwapBuffers(window);
+            SDL_SetRenderDrawColor(renderer, 45, 45, 45, 255);
+            SDL_RenderClear(renderer);
+            ImGui_ImplSDLRenderer_RenderDrawData(ImGui::GetDrawData());
+            SDL_RenderPresent(renderer);
 
             if(cfg_state.need_save())
                 cfg_state.save();
+
+            // Frame rate limiter - cap at ~60fps to reduce CPU usage
+            auto frame_end = chrono::steady_clock::now();
+            auto frame_time = frame_end - frame_start;
+            if (frame_time < frame_duration)
+            {
+                std::this_thread::sleep_for(frame_duration - frame_time);
+            }
         }
 
         ph.stop();
@@ -821,12 +851,13 @@ int main(int, char**)
     }
 
     // Cleanup
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    ImGui_ImplSDLRenderer_Shutdown();
+    ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
 
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
 
     r_pipeline::gstreamer_deinit();
 

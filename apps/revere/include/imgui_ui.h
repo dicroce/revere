@@ -436,7 +436,7 @@ void friendly_name_modal(
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
         ImGui::SetCursorPos(ImVec2(350 - (320/2), 40));
-        ImGui::Image((void*)(intptr_t)as.key_frame_texture, ImVec2(320, 240));
+        ImGui::Image(as.key_frame_texture ? as.key_frame_texture->imgui_id() : nullptr, ImVec2(320, 240));
 
         static char friendly_name[64] = {0};
         r_ui_utils::copy_s(friendly_name, 64, fn);

@@ -11,7 +11,9 @@ if(NOT FLATPAK_BUILD)
     endif()
 endif()
 
-find_package(OpenGL)
+# SDL2 dependency
+include(FindPkgConfig)
+pkg_search_module(SDL2 REQUIRED sdl2)
 
 file(GLOB VISION_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/*.h
@@ -51,6 +53,7 @@ target_include_directories(
     vision PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
+    ${SDL2_INCLUDE_DIRS}
 )
  
 target_link_libraries(
@@ -63,10 +66,14 @@ target_link_libraries(
     r_utils
     r_vss
     imgui
-    glfw
     gstreamer::gstreamer
     ffmpeg::ffmpeg
-    ${OPENGL_LIBRARIES}
+    ${SDL2_LIBRARIES}
+)
+
+target_link_directories(
+    vision PUBLIC
+    ${SDL2_LIBRARY_DIRS}
 )
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")

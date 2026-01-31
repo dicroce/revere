@@ -4,6 +4,7 @@
 #include "r_utils/r_socket.h"
 #include "r_http/r_client_request.h"
 #include "r_http/r_client_response.h"
+#include <SDL.h>
 #include "pipeline_host.h"
 #include "pipeline_state.h"
 #include "utils.h"
@@ -16,9 +17,10 @@ using namespace r_utils;
 using namespace std;
 using namespace std::chrono;
 
-pipeline_host::pipeline_host(configure_state& cfg) :
+pipeline_host::pipeline_host(configure_state& cfg, SDL_Renderer* renderer) :
     _internals_lok(),
     _cfg(cfg),
+    _renderer(renderer),
     _stream_infos(),
     _pipes(),
     _render_contexts(),
@@ -218,10 +220,17 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
     f.original_h = original_h;
     f.pts = display_pts;
 
+    // Signal that new frames are available
+    _has_new_frames.store(true);
+
     // If something goes into our frame buffer, then wakeup the main loop... but since
     // this queue is drained each time through the loop we only need to do it once...
     if(_video_frames.empty())
-        glfwPostEmptyEvent();
+    {
+        SDL_Event event;
+        event.type = SDL_USEREVENT;
+        SDL_PushEvent(&event);
+    }
 
     _video_frames.insert(make_pair(name, f));
 
