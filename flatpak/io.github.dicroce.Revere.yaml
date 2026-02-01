@@ -5,9 +5,10 @@ sdk: org.freedesktop.Sdk
 command: revere
 
 finish-args:
-  # Display access for GUI (X11 only - Wayland conflicts with GLFW)
+  # Display access for GUI (SDL2 supports both X11 and Wayland)
   - --share=ipc
   - --socket=x11
+  - --socket=wayland
   - --device=dri
 
   # Network access for RTSP cameras and ONVIF discovery
@@ -134,7 +135,8 @@ modules:
       - -DFETCHCONTENT_SOURCE_DIR_NANOTS=/run/build/revere/deps/nanots
       - -DFETCHCONTENT_SOURCE_DIR_PUGIXML=/run/build/revere/deps/pugixml
       - -DFETCHCONTENT_SOURCE_DIR_TRAYPP=/run/build/revere/deps/traypp
-      - -DFETCHCONTENT_SOURCE_DIR_GLFW3=/run/build/revere/deps/glfw
+      - -DFETCHCONTENT_SOURCE_DIR_SDL2=/run/build/revere/deps/sdl2
+      - -DFETCHCONTENT_SOURCE_DIR_MBEDTLS=/run/build/revere/deps/mbedtls
     build-options:
       env:
         NCNN_TOP_DIR: /app
@@ -161,6 +163,10 @@ modules:
           - -d
           - deps/traypp
       - type: git
-        url: https://github.com/glfw/glfw.git
-        commit: a74efa0d5628b74adc0426af4c5710e287fa7c2c
-        dest: deps/glfw
+        url: https://github.com/libsdl-org/SDL.git
+        tag: release-2.32.2
+        dest: deps/sdl2
+      - type: git
+        url: https://github.com/Mbed-TLS/mbedtls.git
+        tag: v3.6.3
+        dest: deps/mbedtls

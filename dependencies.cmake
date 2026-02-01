@@ -385,7 +385,7 @@ if(NOT TARGET SDL2::SDL2)
     FetchContent_Declare(
         SDL2
         GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-        GIT_TAG        release-2.30.10
+        GIT_TAG        release-2.32.2
         GIT_SHALLOW    TRUE
     )
 
