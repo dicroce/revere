@@ -1168,8 +1168,28 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Create software renderer
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
+    // Platform-specific renderer selection:
+    // - Windows: Use hardware-accelerated (Direct3D) - no packaging concerns
+    // - Linux: Use software renderer - for AppImage/Snap compatibility (avoids OpenGL)
+    SDL_Renderer* renderer = nullptr;
+#ifdef IS_WINDOWS
+    // Windows: Use hardware acceleration (Direct3D, not OpenGL)
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (renderer == nullptr)
+    {
+        R_LOG_ERROR("Hardware renderer failed: %s, falling back to software", SDL_GetError());
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
+    }
+#else
+    // Linux/macOS: Use software renderer to avoid OpenGL packaging issues
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
+    if (renderer == nullptr)
+    {
+        R_LOG_ERROR("Software renderer failed: %s, trying hardware", SDL_GetError());
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    }
+#endif
+
     if (renderer == nullptr)
     {
         R_LOG_ERROR("Unable to create SDL renderer: %s", SDL_GetError());

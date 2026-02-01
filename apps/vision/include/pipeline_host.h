@@ -67,11 +67,24 @@ public:
     {
         std::lock_guard<std::mutex> pipes_lock(_internals_lok);
 
+        static int load_log_count = 0;
+        if (!_video_frames.empty() && load_log_count++ < 5)
+        {
+            R_LOG_INFO("load_video_textures: processing %zu video frames", _video_frames.size());
+        }
+
         for(auto& frame_p : _video_frames)
         {
             auto found_rc = _render_contexts.find(frame_p.first);
             if(found_rc == end(_render_contexts))
             {
+                static int create_log_count = 0;
+                if (create_log_count++ < 5)
+                {
+                    R_LOG_INFO("Creating new render context for stream: %s (%dx%d)",
+                        frame_p.first.c_str(), frame_p.second.w, frame_p.second.h);
+                }
+
                 // Create streaming texture for video (optimized for frequent updates)
                 auto rc = std::make_shared<render_context>();
                 rc->tex = r_ui_utils::texture::create_streaming(
@@ -87,6 +100,10 @@ public:
                         frame_p.second.w,
                         frame_p.second.h
                     );
+                }
+                else
+                {
+                    R_LOG_ERROR("Failed to create streaming texture for stream: %s", frame_p.first.c_str());
                 }
                 rc->w = frame_p.second.w;
                 rc->h = frame_p.second.h;

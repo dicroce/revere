@@ -116,7 +116,6 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
     add_compile_options(
         $<$<CONFIG:Debug>:/Od>                # disable optimizations
         $<$<CONFIG:Debug>:/Zi>                # debug info (PDB)
-        $<$<CONFIG:Debug>:/RTC1>              # runtime checks (stack, uninit, etc.)
         $<$<CONFIG:Debug>:/Gy>                # function-level linking
         $<$<CONFIG:Debug>:/Zf>                # force inline debug info
     )

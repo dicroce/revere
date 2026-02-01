@@ -84,6 +84,16 @@ static std::shared_ptr<r_ui_utils::texture> create_png_texture(const unsigned ch
     if (!pixels)
         return nullptr;
 
+    // stb_image returns RGBA, but SDL ARGB8888 on little-endian expects BGRA
+    // Swap R and B channels in-place
+    for (int i = 0; i < width * height * 4; i += 4)
+    {
+        unsigned char temp = pixels[i];     // Save R
+        pixels[i] = pixels[i + 2];          // B -> R position
+        pixels[i + 2] = temp;               // R -> B position
+        // G and A stay in place
+    }
+
     auto tex = r_ui_utils::texture::create_from_rgba(g_renderer, pixels, (uint16_t)width, (uint16_t)height);
 
     stbi_image_free(pixels);
@@ -380,13 +390,13 @@ int main(int, char**)
         return 1;
     }
 
-    // Create window
+    // Create window with specific flags for software rendering
     SDL_Window* window = SDL_CreateWindow(
         "Vision",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         1280, 720,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_SHOWN
     );
     if (window == nullptr)
     {
@@ -395,14 +405,47 @@ int main(int, char**)
         return 1;
     }
 
-    // Create software renderer
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+    // Platform-specific renderer selection:
+    // - Windows: Use hardware-accelerated (Direct3D) - no packaging concerns
+    // - Linux: Use software renderer - for AppImage/Snap compatibility (avoids OpenGL)
+    SDL_Renderer* renderer = nullptr;
+#ifdef IS_WINDOWS
+    // Windows: Use hardware acceleration (Direct3D, not OpenGL)
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
+    if (renderer == nullptr)
+    {
+        R_LOG_ERROR("Hardware renderer failed: %s, falling back to software", SDL_GetError());
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE);
+    }
+#else
+    // Linux/macOS: Use software renderer to avoid OpenGL packaging issues
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE);
+    if (renderer == nullptr)
+    {
+        R_LOG_ERROR("Software renderer failed: %s, trying hardware", SDL_GetError());
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
+    }
+#endif
+
     if (renderer == nullptr)
     {
         R_LOG_ERROR("SDL_CreateRenderer error: %s", SDL_GetError());
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
+    }
+
+    // Log renderer info for debugging
+    SDL_RendererInfo renderer_info;
+    if (SDL_GetRendererInfo(renderer, &renderer_info) == 0)
+    {
+        R_LOG_INFO("Using SDL renderer: %s", renderer_info.name);
+        R_LOG_INFO("Max texture size: %dx%d", renderer_info.max_texture_width, renderer_info.max_texture_height);
+        R_LOG_INFO("Supported texture formats: %d", renderer_info.num_texture_formats);
+        for (Uint32 i = 0; i < renderer_info.num_texture_formats && i < 16; i++)
+        {
+            R_LOG_INFO("  Format %d: %s", i, SDL_GetPixelFormatName(renderer_info.texture_formats[i]));
+        }
     }
 
     // Store global renderer for icon texture creation
@@ -440,6 +483,9 @@ int main(int, char**)
     // Setup Platform/Renderer backends
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer_Init(renderer);
+
+    // Initialize icon textures
+    init_icon_textures();
 
     // Platform-specific font sizes (macOS renders fonts larger, so we use smaller sizes)
 #ifdef IS_MACOS
@@ -499,9 +545,6 @@ int main(int, char**)
 
         auto last_ui_update_ts = chrono::steady_clock::now();
         const auto frame_duration = chrono::microseconds(16667);  // ~60fps
-
-        // Create icon textures from embedded PNG data
-        init_icon_textures();
 
         r_ui_utils::texture_loader tl;
         tl.set_renderer(renderer);

@@ -74,10 +74,11 @@ std::shared_ptr<texture> texture::create_from_rgba(
     tex->_height = h;
     tex->_is_rgba = true;
 
-    // Create SDL texture with RGBA format
+    // Create SDL texture with ARGB8888 format (supported by Direct3D on Windows)
+    // On little-endian x86, ARGB8888 = BGRA in memory, which matches our input data
     tex->_sdl_texture = SDL_CreateTexture(
         renderer,
-        SDL_PIXELFORMAT_ABGR8888,  // RGBA format (ImGui expects this order)
+        SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_STATIC,
         w,
         h
@@ -122,10 +123,11 @@ std::shared_ptr<texture> texture::create_from_rgb(
     tex->_height = h;
     tex->_is_rgba = false;
 
-    // Create SDL texture with RGB format
+    // Create SDL texture with ARGB8888 format (supported by Direct3D on Windows)
+    // On little-endian x86, ARGB8888 = BGRA in memory, matches our RGB24 converted to BGRA
     tex->_sdl_texture = SDL_CreateTexture(
         renderer,
-        SDL_PIXELFORMAT_RGB24,
+        SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_STATIC,
         w,
         h
@@ -137,8 +139,8 @@ std::shared_ptr<texture> texture::create_from_rgb(
         return nullptr;
     }
 
-    // Upload pixel data
-    if (SDL_UpdateTexture(tex->_sdl_texture, nullptr, pixels, w * 3) != 0)
+    // Upload pixel data (4 bytes per pixel for BGRX)
+    if (SDL_UpdateTexture(tex->_sdl_texture, nullptr, pixels, w * 4) != 0)
     {
         R_LOG_ERROR("Failed to update RGB texture: %s", SDL_GetError());
         SDL_DestroyTexture(tex->_sdl_texture);
@@ -167,7 +169,9 @@ std::shared_ptr<texture> texture::create_streaming(
     tex->_height = h;
     tex->_is_rgba = rgba;
 
-    Uint32 format = rgba ? SDL_PIXELFORMAT_ABGR8888 : SDL_PIXELFORMAT_RGB24;
+    // Use ARGB8888 format (supported by Direct3D on Windows)
+    // On little-endian x86, ARGB8888 = BGRA in memory
+    Uint32 format = SDL_PIXELFORMAT_ARGB8888;
 
     // Create SDL texture with streaming access for frequent updates
     tex->_sdl_texture = SDL_CreateTexture(
@@ -183,6 +187,8 @@ std::shared_ptr<texture> texture::create_streaming(
         R_LOG_ERROR("Failed to create streaming texture: %s", SDL_GetError());
         return nullptr;
     }
+
+    R_LOG_INFO("Streaming texture created successfully");
 
     if (rgba)
     {
@@ -207,7 +213,7 @@ bool texture::update_rgba(const uint8_t* pixels, uint16_t w, uint16_t h)
 
         _sdl_texture = SDL_CreateTexture(
             _renderer,
-            SDL_PIXELFORMAT_ABGR8888,
+            SDL_PIXELFORMAT_ARGB8888,
             SDL_TEXTUREACCESS_STREAMING,
             w,
             h
@@ -246,11 +252,12 @@ bool texture::update_rgb(const uint8_t* pixels, uint16_t w, uint16_t h)
     // If dimensions changed, recreate the texture
     if (w != _width || h != _height)
     {
+        R_LOG_INFO("Texture dimensions changed from %dx%d to %dx%d, recreating", _width, _height, w, h);
         SDL_DestroyTexture(_sdl_texture);
 
         _sdl_texture = SDL_CreateTexture(
             _renderer,
-            SDL_PIXELFORMAT_RGB24,
+            SDL_PIXELFORMAT_ARGB8888,
             SDL_TEXTUREACCESS_STREAMING,
             w,
             h
@@ -268,7 +275,7 @@ bool texture::update_rgb(const uint8_t* pixels, uint16_t w, uint16_t h)
         _height = h;
     }
 
-    if (SDL_UpdateTexture(_sdl_texture, nullptr, pixels, w * 3) != 0)
+    if (SDL_UpdateTexture(_sdl_texture, nullptr, pixels, w * 4) != 0)
     {
         R_LOG_ERROR("Failed to update RGB texture: %s", SDL_GetError());
         return false;

@@ -35,6 +35,15 @@ std::shared_ptr<r_ui_utils::texture> vision::load_texture_from_file(SDL_Renderer
         return nullptr;
     }
 
+    // stb_image returns RGBA, but SDL ARGB8888 on little-endian expects BGRA
+    // Swap R and B channels in-place
+    for (int i = 0; i < image_width * image_height * 4; i += 4)
+    {
+        unsigned char temp = image_data[i];     // Save R
+        image_data[i] = image_data[i + 2];      // B -> R position
+        image_data[i + 2] = temp;               // R -> B position
+    }
+
     auto tex = r_ui_utils::texture::create_from_rgba(
         renderer,
         image_data,

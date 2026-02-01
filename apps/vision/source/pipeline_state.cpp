@@ -316,9 +316,28 @@ void pipeline_state::_entry_point()
 
                             // Use PTS directly - it should already be absolute from the sample callback
 
+                            static int decode_log_count = 0;
+                            if (decode_log_count++ < 5)
+                            {
+                                R_LOG_INFO("Decoding video frame: stream=%s, input=%dx%d, dest=%dx%d, pts=%lld",
+                                    _si.name.c_str(), input_width, input_height, dest_width, dest_height, _last_v_pts);
+                            }
+
+                            // Use BGRA format which matches SDL_PIXELFORMAT_ARGB8888 on little-endian (x86)
+                            // BGRA in memory = B G R A bytes = ARGB8888 pixel format
+                            auto decoded_frame = _video_decoder.raw().get(AV_PIX_FMT_BGRA, dest_width, dest_height, 1);
+
+                            static int pixel_log_count = 0;
+                            if (decoded_frame && pixel_log_count++ < 5)
+                            {
+                                const uint8_t* data = decoded_frame->data();
+                                R_LOG_INFO("Decoded frame data: size=%zu, first_pixels: B=%d G=%d R=%d A=%d",
+                                    decoded_frame->size(), data[0], data[1], data[2], data[3]);
+                            }
+
                             _ph->post_video_frame(
                                 _si.name,
-                                _video_decoder.raw().get(AV_PIX_FMT_RGB24, dest_width, dest_height, 1),
+                                decoded_frame,
                                 dest_width,
                                 dest_height,
                                 input_width,

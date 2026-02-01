@@ -1,10 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 project(imgui)
 
-# SDL2 dependency - find system SDL2 via pkg-config or CMake find_package
-include(FindPkgConfig)
-pkg_search_module(SDL2 REQUIRED sdl2)
-
 file(GLOB R_IMGUI_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/r_imgui/*.h
 )
@@ -32,17 +28,11 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/imgui>
     $<INSTALL_INTERFACE:include>
     $<INSTALL_INTERFACE:include/imgui>
-    ${SDL2_INCLUDE_DIRS}
 )
 
 target_link_libraries(
     imgui
-    ${SDL2_LIBRARIES}
-)
-
-target_link_directories(
-    imgui PUBLIC
-    ${SDL2_LIBRARY_DIRS}
+    SDL2::SDL2
 )
 
 # Install the static library (skip on macOS - bundled into .app)

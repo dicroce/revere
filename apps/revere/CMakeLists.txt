@@ -44,10 +44,6 @@ set(PUGIXML_INSTALL OFF CACHE BOOL "Disable pugixml install target")
 
 FetchContent_MakeAvailable(pugixml)
 
-# SDL2 dependency
-include(FindPkgConfig)
-pkg_search_module(SDL2 REQUIRED sdl2)
-
 file(GLOB REVERE_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/*.h
 )
@@ -87,9 +83,8 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/generated>
     $<INSTALL_INTERFACE:include>
-    ${SDL2_INCLUDE_DIRS}
 )
- 
+
 target_link_libraries(
     revere
     r_ui_utils
@@ -109,14 +104,9 @@ target_link_libraries(
     opencv::opencv
     gstreamer::gstreamer
     ffmpeg::ffmpeg
-    ${SDL2_LIBRARIES}
+    SDL2::SDL2
     uuid::uuid
     platform::platform
-)
-
-target_link_directories(
-    revere PUBLIC
-    ${SDL2_LIBRARY_DIRS}
 )
 
 # Link tray library on all platforms

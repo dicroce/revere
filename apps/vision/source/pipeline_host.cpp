@@ -178,11 +178,20 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
         return;
     }
     
-    // Validate buffer size (assuming RGB format = 3 channels)
-    if (!state_validate::is_valid_buffer_size(buffer->size(), w, h, 3))
+    // Validate buffer size (assuming BGRA format = 4 bytes per pixel)
+    if (!state_validate::is_valid_buffer_size(buffer->size(), w, h, 4))
     {
         R_LOG_ERROR("Invalid buffer size in post_video_frame for stream %s: %zu bytes for %dx%d", name.c_str(), buffer->size(), w, h);
         return;
+    }
+
+    // Debug: Log frame reception with pixel sample
+    static int frame_log_count = 0;
+    if (frame_log_count++ < 5)
+    {
+        const uint8_t* data = buffer->data();
+        R_LOG_INFO("post_video_frame: stream=%s, size=%dx%d, buffer_size=%zu, first_pixels: B=%d G=%d R=%d A=%d",
+            name.c_str(), w, h, buffer->size(), data[0], data[1], data[2], data[3]);
     }
 
     // Calculate playback-relative timestamp if we're in playback mode
