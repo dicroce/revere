@@ -1,8 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 project(r_ui_utils)
 
-find_package(OpenGL REQUIRED)
-
 file(GLOB R_UI_UTILS_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/r_ui_utils/*.h
 )
@@ -32,8 +30,7 @@ target_link_libraries(
     r_ui_utils PUBLIC
     imgui
     r_utils
-    glfw
-    ${OPENGL_LIBRARIES}
+    SDL2::SDL2
 )
 
 # Install the shared library (skip on macOS - bundled into .app)

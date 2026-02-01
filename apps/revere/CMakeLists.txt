@@ -44,8 +44,6 @@ set(PUGIXML_INSTALL OFF CACHE BOOL "Disable pugixml install target")
 
 FetchContent_MakeAvailable(pugixml)
 
-find_package(OpenGL)
-
 file(GLOB REVERE_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/*.h
 )
@@ -86,7 +84,7 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/generated>
     $<INSTALL_INTERFACE:include>
 )
- 
+
 target_link_libraries(
     revere
     r_ui_utils
@@ -103,11 +101,10 @@ target_link_libraries(
     r_utils
     imgui
     pugixml
-    glfw
     opencv::opencv
     gstreamer::gstreamer
     ffmpeg::ffmpeg
-    ${OPENGL_LIBRARIES}
+    SDL2::SDL2
     uuid::uuid
     platform::platform
 )

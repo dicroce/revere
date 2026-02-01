@@ -4,18 +4,19 @@
 #ifdef IS_WINDOWS
 #include <windows.h>
 #endif
-#include <GLFW/glfw3.h> // Will drag system OpenGL headers
+#include <SDL.h>
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
-#include "imgui/imgui_impl_glfw.h"
-#include "imgui/imgui_impl_opengl3.h"
+#include "imgui/imgui_impl_sdl2.h"
+#include "imgui/imgui_impl_sdlrenderer.h"
 
 #include <tray.hpp>
 
 #include <string>
 #include <thread>
 #include <chrono>
+#include <fstream>
 
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_logger.h"
@@ -130,11 +131,8 @@ struct revere_ui_state
     }
 };
 
-static void glfw_error_callback(int error, const char* description)
-{
-    R_LOG_ERROR("GLFW Error %d: %s", error, description);
-    printf("GLFW Error %d: %s\n", error, description);
-}
+// Global SDL renderer pointer for texture operations
+static SDL_Renderer* g_renderer = nullptr;
 
 extern ImGuiContext *GImGui;
 
@@ -531,8 +529,7 @@ void configure_camera_setup_wizard(
     r_disco::r_agent& agent,
     r_disco::r_devices& devices,
     r_vss::r_stream_keeper& stream_keeper,
-    revere_ui_state& ui_state,
-    GLFWwindow*
+    revere_ui_state& ui_state
 )
 {
     camera_setup_wizard.add_step(
@@ -589,19 +586,15 @@ void configure_camera_setup_wizard(
                                 as.sdp_medias = cp.sdp_medias;    
                                 as.maybe_key_frame = _decode_frame(cp.sample_ctx, cp.video_key_frame, 320, 240, AV_PIX_FMT_RGB24);
 
-                                if(as.key_frame_texture != 0)
-                                {
-                                    tl.destroy_texture(as.key_frame_texture);
-                                    as.key_frame_texture = 0;
-                                }
+                                // Reset existing texture
+                                as.key_frame_texture.reset();
 
-                                as.key_frame_texture = tl.create_texture();
+                                // Create new texture from decoded frame
                                 if(!as.maybe_key_frame.is_null())
                                 {
-                                    tl.load_texture_from_rgb_memory(
-                                        as.key_frame_texture,
+                                    as.key_frame_texture = r_ui_utils::texture::create_from_rgb(
+                                        g_renderer,
                                         as.maybe_key_frame.raw()->data(),
-                                        as.maybe_key_frame.raw()->size(),
                                         320,
                                         240
                                     );
@@ -999,7 +992,14 @@ string _get_icon_path()
     );
 #endif
 
-#if defined(IS_LINUX) || defined(IS_MACOS)
+#ifdef IS_MACOS
+    // On macOS, system tray icons are treated as templates by default (monochrome)
+    // For now, just use the R.png from the working directory
+    // TODO: Create a proper monochrome template icon for better macOS integration
+    return r_fs::path_join(r_fs::working_directory(), "R.png");
+#endif
+
+#ifdef IS_LINUX
     // In Flatpak, use icon name (not path) for libappindicator compatibility
     const char* flatpak_id = getenv("FLATPAK_ID");
     if (flatpak_id != nullptr)
@@ -1029,18 +1029,20 @@ void _set_working_dir()
     r_fs::change_working_directory(wd);
 }
 
-void _set_adaptive_window_size(GLFWwindow* window)
+void _set_adaptive_window_size(SDL_Window* window)
 {
-    // Get primary monitor and its workarea (which excludes taskbars/menubars)
-    GLFWmonitor* primary_monitor = glfwGetPrimaryMonitor();
-    if (primary_monitor == NULL)
+    // Get display bounds (which excludes taskbars/menubars on some platforms)
+    SDL_Rect display_bounds;
+    if (SDL_GetDisplayUsableBounds(0, &display_bounds) != 0)
     {
-        R_LOG_WARNING("Unable to detect primary monitor, using default window size");
+        R_LOG_WARNING("Unable to detect display bounds, using default window size");
         return;
     }
 
-    int monitor_x, monitor_y, monitor_width, monitor_height;
-    glfwGetMonitorWorkarea(primary_monitor, &monitor_x, &monitor_y, &monitor_width, &monitor_height);
+    int monitor_x = display_bounds.x;
+    int monitor_y = display_bounds.y;
+    int monitor_width = display_bounds.w;
+    int monitor_height = display_bounds.h;
 
     R_LOG_INFO("Monitor workarea: %dx%d at (%d, %d)", monitor_width, monitor_height, monitor_x, monitor_y);
 
@@ -1071,26 +1073,32 @@ void _set_adaptive_window_size(GLFWwindow* window)
         target_height = monitor_height;
 
     R_LOG_INFO("Setting adaptive window size: %dx%d", target_width, target_height);
-    glfwSetWindowSize(window, target_width, target_height);
+    SDL_SetWindowSize(window, target_width, target_height);
 
     // Center window on monitor
     int window_x = monitor_x + (monitor_width - target_width) / 2;
     int window_y = monitor_y + (monitor_height - target_height) / 2;
-    glfwSetWindowPos(window, window_x, window_y);
+    SDL_SetWindowPosition(window, window_x, window_y);
 }
 
-void _set_window_icon(GLFWwindow* window)
+void _set_window_icon(SDL_Window* window)
 {
-    GLFWimage images[1];
     int x, y, channels;
-    images[0].pixels = stbi_load_from_memory(R_32x32_png, R_32x32_png_len, &x, &y, &channels, 4);
-    //auto icon_file = r_file::open("R.png", "r");
-    //images[0].pixels = stbi_load_from_file(icon_file, &x, &y, &channels, 4);
-    images[0].width = x;
-    images[0].height = y;
-
-    glfwSetWindowIcon(window, 1, images);
-    stbi_image_free(images[0].pixels);
+    unsigned char* pixels = stbi_load_from_memory(R_32x32_png, R_32x32_png_len, &x, &y, &channels, 4);
+    if (pixels)
+    {
+        // Create SDL surface from pixel data
+        SDL_Surface* icon = SDL_CreateRGBSurfaceFrom(
+            pixels, x, y, 32, x * 4,
+            0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000
+        );
+        if (icon)
+        {
+            SDL_SetWindowIcon(window, icon);
+            SDL_FreeSurface(icon);
+        }
+        stbi_image_free(pixels);
+    }
 }
 
 #ifdef IS_WINDOWS
@@ -1145,51 +1153,70 @@ int main(int argc, char** argv)
 
     // Note: streamKeeper, devices, and agent will be started after log callback is registered
 
-    // Setup window
-    glfwSetErrorCallback(glfw_error_callback);
-    if (!glfwInit())
+    // Setup SDL2
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
     {
-        R_LOG_ERROR("Unable to initialize GLFW");
+        R_LOG_ERROR("Unable to initialize SDL: %s", SDL_GetError());
         return 1;
     }
 
-    // GL 3.0 + GLSL 130
-    const char* glsl_version = "#version 130";
-#ifdef IS_MACOS
-    // macOS requires at least OpenGL 3.2 with Core Profile
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-    glsl_version = "#version 150";
+    // Create window with SDL2
+    SDL_Window* window = SDL_CreateWindow(
+        "Revere",
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED,
+        960, 540,
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI
+    );
+
+    if (window == nullptr)
+    {
+        R_LOG_ERROR("Unable to create SDL window: %s", SDL_GetError());
+        SDL_Quit();
+        return 1;
+    }
+
+    // Platform-specific renderer selection:
+    // - Windows: Use hardware-accelerated (Direct3D) - no packaging concerns
+    // - Linux: Use software renderer - for AppImage/Snap compatibility (avoids OpenGL)
+    SDL_Renderer* renderer = nullptr;
+#ifdef IS_WINDOWS
+    // Windows: Use hardware acceleration (Direct3D, not OpenGL)
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (renderer == nullptr)
+    {
+        R_LOG_ERROR("Hardware renderer failed: %s, falling back to software", SDL_GetError());
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
+    }
 #else
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-#endif
-
-    // Create window with graphics context
-    GLFWwindow* window = glfwCreateWindow(960, 540, "Revere", NULL, NULL);
-
-#ifndef IS_MACOS
-    // Fallback: if GLX fails, try EGL (better compatibility with software renderers)
-    if (window == NULL)
+    // Linux/macOS: Use software renderer to avoid OpenGL packaging issues
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
+    if (renderer == nullptr)
     {
-        R_LOG_WARNING("GLX context creation failed, trying EGL");
-        glfwDefaultWindowHints();
-        glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_EGL_CONTEXT_API);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-        window = glfwCreateWindow(960, 540, "Revere", NULL, NULL);
+        R_LOG_ERROR("Software renderer failed: %s, trying hardware", SDL_GetError());
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     }
 #endif
 
-    if (window == NULL)
+    if (renderer == nullptr)
     {
-        R_LOG_ERROR("Unable to glfwCreateWindow");
+        R_LOG_ERROR("Unable to create SDL renderer: %s", SDL_GetError());
+        SDL_DestroyWindow(window);
+        SDL_Quit();
         return 1;
     }
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(1); // Enable vsync
+
+    // Store global renderer pointer for texture operations
+    g_renderer = renderer;
+
+#ifdef IS_MACOS
+    // On macOS with high DPI displays, set logical size to match window size
+    // This ensures SDL handles the 2x scaling properly for Retina displays
+    int window_w, window_h;
+    SDL_GetWindowSize(window, &window_w, &window_h);
+    SDL_RenderSetLogicalSize(renderer, window_w, window_h);
+    R_LOG_INFO("Set SDL logical size to %dx%d for Retina display support", window_w, window_h);
+#endif
 
     // Set adaptive window size based on monitor resolution
     _set_adaptive_window_size(window);
@@ -1222,10 +1249,11 @@ int main(int argc, char** argv)
         tray.exit();
     }));
     tray.addEntry(Tray::Button("Show", [&]{
-        glfwShowWindow(window);
+        SDL_ShowWindow(window);
+        SDL_RaiseWindow(window);
     }));
     tray.addEntry(Tray::Button("Hide", [&]{
-        glfwHideWindow(window);
+        SDL_HideWindow(window);
     }));
     tray.addEntry(Tray::Button("Launch Vision", [&]{
         if(!vision_process.running())
@@ -1240,9 +1268,9 @@ int main(int argc, char** argv)
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
 
-    // Setup Platform/Renderer backends
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL3_Init(glsl_version);
+    // Setup Platform/Renderer backends for SDL2
+    ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
+    ImGui_ImplSDLRenderer_Init(renderer);
 
     // Platform-specific font sizes (macOS renders fonts larger, so we use smaller sizes)
 #ifdef IS_MACOS
@@ -1292,10 +1320,11 @@ int main(int argc, char** argv)
     agent.start();
 
     r_ui_utils::texture_loader tl;
+    tl.set_renderer(renderer);  // Set the SDL renderer for texture operations
     revere::assignment_state as;
     revere::rtsp_source_camera_config rscc;
     r_ui_utils::wizard camera_setup_wizard;
-    configure_camera_setup_wizard(as, rscc, camera_setup_wizard, tl, agent, devices, streamKeeper, ui_state, window);
+    configure_camera_setup_wizard(as, rscc, camera_setup_wizard, tl, agent, devices, streamKeeper, ui_state);
 
     _update_list_ui(ui_state, devices, streamKeeper);
 
@@ -1312,37 +1341,81 @@ int main(int argc, char** argv)
     bool force_ui_update = false;
 
 
+    bool window_visible = true;
+    bool need_render = true;  // Render at least once on startup
+
     // Main loop
     while(!close_requested)
     {
-        glfwPollEvents();
+        // Wait for events with timeout (event-driven rendering for low CPU usage)
+        // Timeout allows periodic updates and tray pumping even when idle
+        SDL_Event event;
+        bool had_event = SDL_WaitEventTimeout(&event, 100);  // 100ms timeout
+
+        // Always render on timeout to allow UI updates (tooltips, animations, etc.)
+        if (!had_event)
+            need_render = true;
+
+        if (had_event)
+        {
+            need_render = true;
+            do {
+                ImGui_ImplSDL2_ProcessEvent(&event);
+                if (event.type == SDL_QUIT)
+                {
+                    camera_setup_wizard.next("minimize_to_tray");
+                }
+                if (event.type == SDL_WINDOWEVENT)
+                {
+                    if (event.window.event == SDL_WINDOWEVENT_CLOSE &&
+                        event.window.windowID == SDL_GetWindowID(window))
+                    {
+                        camera_setup_wizard.next("minimize_to_tray");
+                    }
+                    if (event.window.event == SDL_WINDOWEVENT_SHOWN)
+                        window_visible = true;
+                    if (event.window.event == SDL_WINDOWEVENT_HIDDEN)
+                        window_visible = false;
+                    if (event.window.event == SDL_WINDOWEVENT_EXPOSED)
+                        need_render = true;
+#ifdef IS_MACOS
+                    // On macOS, update logical size when window is resized for proper Retina scaling
+                    if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
+                    {
+                        int new_w, new_h;
+                        SDL_GetWindowSize(window, &new_w, &new_h);
+                        SDL_RenderSetLogicalSize(renderer, new_w, new_h);
+                    }
+#endif
+                }
+            } while (SDL_PollEvent(&event));
+        }
+
         tray.pump();
 
         if(maybe_start_minimized)
         {
             maybe_start_minimized = false;
-            glfwHideWindow(window);
+            SDL_HideWindow(window);
+            window_visible = false;
         }
 
-        if(glfwWindowShouldClose(window) != GL_FALSE)
+        // Skip rendering when window is hidden
+        if(!window_visible)
         {
-            glfwSetWindowShouldClose(window, GL_FALSE);
-            camera_setup_wizard.next("minimize_to_tray");
-        }
-
-        // Skip heavy processing when window is hidden
-        if(!glfwGetWindowAttrib(window, GLFW_VISIBLE))
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
 
         auto now = chrono::steady_clock::now();
 
-        if(((now - last_ui_update_ts) > chrono::seconds(5)) || force_ui_update)
+        // Check if periodic data update is needed
+        bool need_data_update = ((now - last_ui_update_ts) > chrono::seconds(5)) || force_ui_update;
+
+        if(need_data_update)
         {
             last_ui_update_ts = now;
             force_ui_update = false;
+            need_render = true;  // Data changed, need to render
 
             _update_list_ui(ui_state, devices, streamKeeper);
 
@@ -1370,9 +1443,15 @@ int main(int argc, char** argv)
             }
         }
 
+        // Skip rendering if nothing changed
+        if (!need_render)
+            continue;
+
+        need_render = false;  // Reset for next iteration
+
         // Start the Dear ImGui frame
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
+        ImGui_ImplSDLRenderer_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
         auto window_size = ImGui::GetIO().DisplaySize;
@@ -1578,28 +1657,34 @@ int main(int argc, char** argv)
         if(ui_state.minimize_requested)
         {
             ui_state.minimize_requested = false;
-            glfwHideWindow(window);
+            SDL_HideWindow(window);
+            window_visible = false;
         }
 
         ImGui::Render();
 
-        int display_w, display_h;
-        glfwGetFramebufferSize(window, &display_w, &display_h);
-        glViewport(0, 0, display_w, display_h);
-        glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
-        glClear(GL_COLOR_BUFFER_BIT);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        // Clear with background color
+        SDL_SetRenderDrawColor(renderer,
+            (Uint8)(clear_color.x * 255),
+            (Uint8)(clear_color.y * 255),
+            (Uint8)(clear_color.z * 255),
+            (Uint8)(clear_color.w * 255));
+        SDL_RenderClear(renderer);
 
-        glfwSwapBuffers(window);
+        // Render ImGui
+        ImGui_ImplSDLRenderer_RenderDrawData(ImGui::GetDrawData());
+
+        SDL_RenderPresent(renderer);
     }
 
     // Cleanup
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    ImGui_ImplSDLRenderer_Shutdown();
+    ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
 
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
 
     streamKeeper.stop();
     agent.stop();

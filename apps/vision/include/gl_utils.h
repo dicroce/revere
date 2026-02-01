@@ -2,19 +2,17 @@
 #ifndef __vision_gl_utils_h
 #define __vision_gl_utils_h
 
-#ifdef IS_WINDOWS
-#include <windows.h>
-#endif
-
-#include <GLFW/glfw3.h> // Will drag system OpenGL headers
+#include <SDL.h>
 #include <string>
+#include <memory>
+#include "r_ui_utils/texture.h"
 
 namespace vision
 {
 
-void load_texture_from_file(const std::string& filename, GLuint* out_texture, int* out_width, int* out_height);
+std::shared_ptr<r_ui_utils::texture> load_texture_from_file(SDL_Renderer* renderer, const std::string& filename);
 
-GLuint load_texture_from_rgba(const uint8_t* pixels, size_t size, uint16_t w, uint16_t h);
+std::shared_ptr<r_ui_utils::texture> load_texture_from_rgba(SDL_Renderer* renderer, const uint8_t* pixels, uint16_t w, uint16_t h);
 
 }
 

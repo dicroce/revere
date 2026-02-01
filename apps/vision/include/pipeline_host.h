@@ -9,10 +9,8 @@
 #include <mutex>
 #include <thread>
 #include <chrono>
-#ifdef IS_WINDOWS
-#include <windows.h>
-#endif
-#include <GLFW/glfw3.h> // Will drag system OpenGL headers
+#include <atomic>
+#include <SDL.h>
 #include "layouts.h"
 #include "configure_state.h"
 #include "stream_info.h"
@@ -30,7 +28,7 @@ class pipeline_state;
 class pipeline_host final
 {
 public:
-    pipeline_host(configure_state& cfg);
+    pipeline_host(configure_state& cfg, SDL_Renderer* renderer);
     pipeline_host(const pipeline_host&) = delete;
     pipeline_host(pipeline_host&&) = delete;
     pipeline_host& operator=(const pipeline_host&) = delete;
@@ -49,7 +47,7 @@ public:
     void post_video_frame(const std::string& name, std::shared_ptr<std::vector<uint8_t>> buffer, uint16_t w, uint16_t h, uint16_t original_w, uint16_t original_h, int64_t pts);
 
     r_utils::r_nullable<std::shared_ptr<render_context>> lookup_render_context(const std::string& name, uint16_t w, uint16_t h);
-    
+
     void update_render_context_timestamp(const std::string& name, int64_t pts);
 
     void control_bar_cb(const std::string& name, const std::chrono::system_clock::time_point& pos);
@@ -61,8 +59,7 @@ public:
     {
         for(auto& rc : _render_contexts)
         {
-            glDeleteTextures(1, &rc.second->texture_id);
-            rc.second->texture_id = 0;
+            rc.second->tex.reset();
         }
     }
 
@@ -70,13 +67,44 @@ public:
     {
         std::lock_guard<std::mutex> pipes_lock(_internals_lok);
 
+        static int load_log_count = 0;
+        if (!_video_frames.empty() && load_log_count++ < 5)
+        {
+            R_LOG_INFO("load_video_textures: processing %zu video frames", _video_frames.size());
+        }
+
         for(auto& frame_p : _video_frames)
         {
             auto found_rc = _render_contexts.find(frame_p.first);
             if(found_rc == end(_render_contexts))
             {
+                static int create_log_count = 0;
+                if (create_log_count++ < 5)
+                {
+                    R_LOG_INFO("Creating new render context for stream: %s (%dx%d)",
+                        frame_p.first.c_str(), frame_p.second.w, frame_p.second.h);
+                }
+
+                // Create streaming texture for video (optimized for frequent updates)
                 auto rc = std::make_shared<render_context>();
-                glGenTextures(1, &rc->texture_id);
+                rc->tex = r_ui_utils::texture::create_streaming(
+                    _renderer,
+                    frame_p.second.w,
+                    frame_p.second.h,
+                    false  // RGB, not RGBA
+                );
+                if (rc->tex)
+                {
+                    rc->tex->update_rgb(
+                        frame_p.second.buffer->data(),
+                        frame_p.second.w,
+                        frame_p.second.h
+                    );
+                }
+                else
+                {
+                    R_LOG_ERROR("Failed to create streaming texture for stream: %s", frame_p.first.c_str());
+                }
                 rc->w = frame_p.second.w;
                 rc->h = frame_p.second.h;
                 _render_contexts.insert(make_pair(frame_p.first, rc));
@@ -85,29 +113,39 @@ public:
             {
                 if(found_rc->second->w != frame_p.second.w || found_rc->second->h != frame_p.second.h)
                 {
-                    glDeleteTextures(1, &found_rc->second->texture_id);
-                    found_rc->second->texture_id = 0;
+                    // Recreate streaming texture with new dimensions
                     auto rc = std::make_shared<render_context>();
-                    glGenTextures(1, &rc->texture_id);
+                    rc->tex = r_ui_utils::texture::create_streaming(
+                        _renderer,
+                        frame_p.second.w,
+                        frame_p.second.h,
+                        false  // RGB, not RGBA
+                    );
+                    if (rc->tex)
+                    {
+                        rc->tex->update_rgb(
+                            frame_p.second.buffer->data(),
+                            frame_p.second.w,
+                            frame_p.second.h
+                        );
+                    }
                     rc->w = frame_p.second.w;
                     rc->h = frame_p.second.h;
                     _render_contexts[found_rc->first] = rc;
                 }
+                else
+                {
+                    // Update existing streaming texture
+                    if (found_rc->second->tex)
+                    {
+                        found_rc->second->tex->update_rgb(
+                            frame_p.second.buffer->data(),
+                            frame_p.second.w,
+                            frame_p.second.h
+                        );
+                    }
+                }
             }
-
-            auto rc = _render_contexts[frame_p.first];
-
-            glBindTexture(GL_TEXTURE_2D, rc->texture_id);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-#if defined(IS_LINUX) || defined(IS_MACOS)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-#endif
-#if defined(GL_UNPACK_ROW_LENGTH) && !defined(__EMSCRIPTEN__)
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-#endif
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frame_p.second.w, frame_p.second.h, 0, GL_RGB, GL_UNSIGNED_BYTE, frame_p.second.buffer->data());
         }
 
         _video_frames.clear();
@@ -122,18 +160,25 @@ public:
 
     bool playing(const std::string& stream_name) const;
 
+    // Returns true if new frames have arrived since last call (and clears the flag)
+    bool consume_new_frames_flag()
+    {
+        return _has_new_frames.exchange(false);
+    }
+
 private:
     void _entry_point();
 
     mutable std::mutex _internals_lok;
 
     configure_state& _cfg;
+    SDL_Renderer* _renderer;
     std::map<std::string, stream_info> _stream_infos;
     std::map<std::string, std::shared_ptr<pipeline_state>> _pipes;
 
     std::map<std::string, std::shared_ptr<render_context>> _render_contexts;
     std::map<std::string, frame> _video_frames;
-    
+
     // Playback tracking for relative timestamp calculation
     std::map<std::string, std::chrono::system_clock::time_point> _playback_start_positions;
     std::map<std::string, int64_t> _playback_start_pts;
@@ -142,6 +187,9 @@ private:
     bool _running;
     std::chrono::steady_clock::time_point _last_dead_check;
     std::chrono::steady_clock::time_point _last_stream_start;
+
+    // Flag to signal main loop that new frames are available
+    std::atomic<bool> _has_new_frames{false};
 };
 
 }

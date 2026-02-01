@@ -6,7 +6,7 @@
 #include "r_utils/r_nullable.h"
 #include "r_disco/r_camera.h"
 #include "r_pipeline/r_stream_info.h"
-#include "gl_utils.h"
+#include "r_ui_utils/texture.h"
 #include <vector>
 #include <memory>
 #include <cstdint>
@@ -33,7 +33,7 @@ struct assignment_state
     r_utils::r_nullable<r_disco::r_camera> camera;
     std::map<std::string, r_pipeline::r_sdp_media> sdp_medias;
     r_utils::r_nullable<std::shared_ptr<std::vector<uint8_t>>> maybe_key_frame;
-    GLuint key_frame_texture {0};
+    std::shared_ptr<r_ui_utils::texture> key_frame_texture;
     bool do_motion_detection {false};
     std::string motion_detection_file_path;
     r_utils::r_nullable<std::string> error_message;

@@ -367,3 +367,41 @@ if(NOT TARGET ncnn::ncnn)
         message(STATUS "NCNN_TOP_DIR not set - NCNN plugins will not be built")
     endif()
 endif()
+
+# ---- SDL2 ----
+if(NOT TARGET SDL2::SDL2)
+    # Use FetchContent to build SDL2 as shared library
+    # This ensures a single SDL2 instance is shared between exe and DLLs
+    include(FetchContent)
+
+    message(STATUS "Using SDL2 via FetchContent (shared library)")
+
+    # Configure SDL2 build options - build as SHARED to avoid duplicate instances
+    set(SDL_SHARED ON CACHE BOOL "Build SDL2 as a shared library" FORCE)
+    set(SDL_STATIC OFF CACHE BOOL "Build SDL2 as a static library" FORCE)
+    set(SDL_TEST_LIBRARY OFF CACHE BOOL "Build SDL2 test library" FORCE)
+    set(SDL_TESTS OFF CACHE BOOL "Build SDL2 tests" FORCE)
+
+    FetchContent_Declare(
+        SDL2
+        GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+        GIT_TAG        release-2.30.10
+        GIT_SHALLOW    TRUE
+    )
+
+    FetchContent_MakeAvailable(SDL2)
+
+    # SDL2 creates SDL2::SDL2 target when built as shared
+    if(TARGET SDL2 AND NOT TARGET SDL2::SDL2)
+        add_library(SDL2::SDL2 ALIAS SDL2)
+    endif()
+
+    # Install SDL2 shared library (skip on macOS - bundled into .app)
+    if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+        install(TARGETS SDL2
+            RUNTIME DESTINATION ${REVERE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${REVERE_INSTALL_LIBDIR}
+            ARCHIVE DESTINATION ${REVERE_INSTALL_LIBDIR}
+        )
+    endif()
+endif()
