@@ -16,6 +16,7 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <fstream>
 
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_logger.h"
@@ -991,7 +992,14 @@ string _get_icon_path()
     );
 #endif
 
-#if defined(IS_LINUX) || defined(IS_MACOS)
+#ifdef IS_MACOS
+    // On macOS, system tray icons are treated as templates by default (monochrome)
+    // For now, just use the R.png from the working directory
+    // TODO: Create a proper monochrome template icon for better macOS integration
+    return r_fs::path_join(r_fs::working_directory(), "R.png");
+#endif
+
+#ifdef IS_LINUX
     // In Flatpak, use icon name (not path) for libappindicator compatibility
     const char* flatpak_id = getenv("FLATPAK_ID");
     if (flatpak_id != nullptr)
@@ -1201,6 +1209,15 @@ int main(int argc, char** argv)
     // Store global renderer pointer for texture operations
     g_renderer = renderer;
 
+#ifdef IS_MACOS
+    // On macOS with high DPI displays, set logical size to match window size
+    // This ensures SDL handles the 2x scaling properly for Retina displays
+    int window_w, window_h;
+    SDL_GetWindowSize(window, &window_w, &window_h);
+    SDL_RenderSetLogicalSize(renderer, window_w, window_h);
+    R_LOG_INFO("Set SDL logical size to %dx%d for Retina display support", window_w, window_h);
+#endif
+
     // Set adaptive window size based on monitor resolution
     _set_adaptive_window_size(window);
 
@@ -1335,6 +1352,10 @@ int main(int argc, char** argv)
         SDL_Event event;
         bool had_event = SDL_WaitEventTimeout(&event, 100);  // 100ms timeout
 
+        // Always render on timeout to allow UI updates (tooltips, animations, etc.)
+        if (!had_event)
+            need_render = true;
+
         if (had_event)
         {
             need_render = true;
@@ -1357,6 +1378,15 @@ int main(int argc, char** argv)
                         window_visible = false;
                     if (event.window.event == SDL_WINDOWEVENT_EXPOSED)
                         need_render = true;
+#ifdef IS_MACOS
+                    // On macOS, update logical size when window is resized for proper Retina scaling
+                    if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
+                    {
+                        int new_w, new_h;
+                        SDL_GetWindowSize(window, &new_w, &new_h);
+                        SDL_RenderSetLogicalSize(renderer, new_w, new_h);
+                    }
+#endif
                 }
             } while (SDL_PollEvent(&event));
         }

@@ -342,12 +342,23 @@ void sidebar_list(
         }
 
         // Show tooltip with kbps and retention info when hovering (with delay and stationary mouse)
+        static int last_hovered_item = -1;
+        static float hover_start_time = 0.0f;
+        static ImVec2 last_mouse_pos = ImVec2(0, 0);
+
         if (ImGui::IsItemHovered() && !labels[i].kbps.empty() && labels[i].kbps != "N/A")
         {
-            static int last_hovered_item = -1;
-            static float hover_start_time = 0.0f;
-            static ImVec2 last_mouse_pos = ImVec2(0, 0);
             const float tooltip_delay = 0.5f; // 0.5 seconds delay
+
+#ifdef IS_MACOS
+            // On macOS, only check if we switched to a different item (ignore mouse movement)
+            // Mouse sensitivity and Retina scaling make movement detection unreliable
+            if (last_hovered_item != i)
+            {
+                last_hovered_item = i;
+                hover_start_time = (float)ImGui::GetTime();
+            }
+#else
             const float mouse_move_threshold = 2.0f; // pixels - small threshold to ignore tiny movements
 
             ImVec2 current_mouse_pos = ImGui::GetMousePos();
@@ -362,6 +373,7 @@ void sidebar_list(
                 last_mouse_pos = current_mouse_pos;
                 hover_start_time = (float)ImGui::GetTime();
             }
+#endif
 
             float hover_duration = (float)ImGui::GetTime() - hover_start_time;
             if (hover_duration >= tooltip_delay)
@@ -374,7 +386,6 @@ void sidebar_list(
         }
         else
         {
-            static int last_hovered_item = -1;
             last_hovered_item = -1; // Reset when not hovering
         }
 

@@ -451,6 +451,15 @@ int main(int, char**)
     // Store global renderer for icon texture creation
     g_renderer = renderer;
 
+#ifdef IS_MACOS
+    // On macOS with high DPI displays, set logical size to match window size
+    // This ensures SDL handles the 2x scaling properly for Retina displays
+    int window_w, window_h;
+    SDL_GetWindowSize(window, &window_w, &window_h);
+    SDL_RenderSetLogicalSize(renderer, window_w, window_h);
+    R_LOG_INFO("Set SDL logical size to %dx%d for Retina display support", window_w, window_h);
+#endif
+
     // Set window icon
     int x, y, channels;
     unsigned char* icon_pixels = stbi_load_from_memory(V_32x32_png, V_32x32_png_len, &x, &y, &channels, 4);
@@ -567,9 +576,21 @@ int main(int, char**)
                 ImGui_ImplSDL2_ProcessEvent(&event);
                 if (event.type == SDL_QUIT)
                     close_requested = true;
-                if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE &&
-                    event.window.windowID == SDL_GetWindowID(window))
-                    close_requested = true;
+                if (event.type == SDL_WINDOWEVENT)
+                {
+                    if (event.window.event == SDL_WINDOWEVENT_CLOSE &&
+                        event.window.windowID == SDL_GetWindowID(window))
+                        close_requested = true;
+#ifdef IS_MACOS
+                    // On macOS, update logical size when window is resized for proper Retina scaling
+                    if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
+                    {
+                        int new_w, new_h;
+                        SDL_GetWindowSize(window, &new_w, &new_h);
+                        SDL_RenderSetLogicalSize(renderer, new_w, new_h);
+                    }
+#endif
+                }
             }
 
             if (close_requested)
