@@ -584,7 +584,7 @@ void configure_camera_setup_wizard(
 
                                 as.byte_rate = cp.bytes_per_second;
                                 as.sdp_medias = cp.sdp_medias;    
-                                as.maybe_key_frame = _decode_frame(cp.sample_ctx, cp.video_key_frame, 320, 240, AV_PIX_FMT_RGB24);
+                                as.maybe_key_frame = _decode_frame(cp.sample_ctx, cp.video_key_frame, 320, 240, AV_PIX_FMT_BGRA);
 
                                 // Reset existing texture
                                 as.key_frame_texture.reset();
