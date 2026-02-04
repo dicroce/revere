@@ -19,7 +19,7 @@ description: |
   NOTE: This is beta software. Please report issues at:
   https://github.com/dicroce/revere/issues
 
-grade: devel
+grade: stable
 confinement: strict
 license: BSD-3-Clause
 

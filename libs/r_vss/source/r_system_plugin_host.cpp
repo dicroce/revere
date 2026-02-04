@@ -37,13 +37,9 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
         // Primary location: alongside the executable
         plugin_dirs.push_back(r_fs::working_directory() + PATH_SLASH + "system_plugins");
 
-        // In Flatpak, also check user-writable location for downloaded plugins
-        const char* flatpak_id = getenv("FLATPAK_ID");
-        if (flatpak_id != nullptr)
-        {
-            // ~/Documents/revere/revere/system_plugins
-            plugin_dirs.push_back(_top_dir + PATH_SLASH + "system_plugins");
-        }
+        // Also check user data directory for downloaded plugins
+        // (Documents/revere/revere on Linux/macOS, LocalAppData/Revere on Windows)
+        plugin_dirs.push_back(_top_dir + PATH_SLASH + "system_plugins");
 
         for (const auto& plugin_dir : plugin_dirs)
         {
