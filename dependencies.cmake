@@ -193,7 +193,7 @@ if(NOT TARGET gstreamer::gstreamer)
         pkg_search_module(GST_RTSP    REQUIRED gstreamer-rtsp-1.0)
         pkg_search_module(GST_CODECPARSERS REQUIRED gstreamer-codecparsers-1.0)
 
-        # gst-rtsp-server might be in /app for Flatpak builds
+        # gst-rtsp-server might be in /app for Flatpak builds or CRAFT_STAGE for Snap builds
         pkg_search_module(GST_RTSP_SERVER gstreamer-rtsp-server-1.0)
         if(NOT GST_RTSP_SERVER_FOUND AND DEFINED ENV{FLATPAK_ID})
             # Flatpak: manually configure gst-rtsp-server from /app
@@ -212,6 +212,24 @@ if(NOT TARGET gstreamer::gstreamer)
                 message(STATUS "Found gst-rtsp-server in Flatpak /app/lib prefix")
             else()
                 message(FATAL_ERROR "gstreamer-rtsp-server-1.0 not found in Flatpak /app")
+            endif()
+        elseif(NOT GST_RTSP_SERVER_FOUND AND DEFINED ENV{CRAFT_STAGE})
+            # Snap: manually configure gst-rtsp-server from CRAFT_STAGE
+            set(SNAP_STAGE "$ENV{CRAFT_STAGE}")
+            if(EXISTS "${SNAP_STAGE}/usr/lib/x86_64-linux-gnu/libgstrtspserver-1.0.so")
+                set(GST_RTSP_SERVER_FOUND TRUE)
+                set(GST_RTSP_SERVER_INCLUDE_DIRS "${SNAP_STAGE}/usr/include/gstreamer-1.0")
+                set(GST_RTSP_SERVER_LIBRARY_DIRS "${SNAP_STAGE}/usr/lib/x86_64-linux-gnu")
+                set(GST_RTSP_SERVER_LIBRARIES "gstrtspserver-1.0")
+                message(STATUS "Found gst-rtsp-server in Snap stage prefix")
+            elseif(EXISTS "${SNAP_STAGE}/usr/lib/libgstrtspserver-1.0.so")
+                set(GST_RTSP_SERVER_FOUND TRUE)
+                set(GST_RTSP_SERVER_INCLUDE_DIRS "${SNAP_STAGE}/usr/include/gstreamer-1.0")
+                set(GST_RTSP_SERVER_LIBRARY_DIRS "${SNAP_STAGE}/usr/lib")
+                set(GST_RTSP_SERVER_LIBRARIES "gstrtspserver-1.0")
+                message(STATUS "Found gst-rtsp-server in Snap stage prefix")
+            else()
+                message(FATAL_ERROR "gstreamer-rtsp-server-1.0 not found in Snap stage")
             endif()
         elseif(NOT GST_RTSP_SERVER_FOUND)
             message(FATAL_ERROR "gstreamer-rtsp-server-1.0 not found")
@@ -362,6 +380,18 @@ if(NOT TARGET ncnn::ncnn)
         target_link_libraries(ncnn::ncnn INTERFACE ncnn pthread gomp)
 
         message(STATUS "NCNN found in Flatpak prefix: ${NCNN_ROOT}")
+
+    # Snap build: check for NCNN at CRAFT_STAGE prefix
+    elseif(DEFINED ENV{CRAFT_STAGE} AND EXISTS "$ENV{CRAFT_STAGE}/usr/include/ncnn/net.h")
+        set(NCNN_ROOT "$ENV{CRAFT_STAGE}/usr")
+        set(NCNN_AVAILABLE TRUE)
+
+        add_library(ncnn::ncnn INTERFACE IMPORTED GLOBAL)
+        target_include_directories(ncnn::ncnn INTERFACE "${NCNN_ROOT}/include/ncnn")
+        target_link_directories(ncnn::ncnn INTERFACE "${NCNN_ROOT}/lib")
+        target_link_libraries(ncnn::ncnn INTERFACE ncnn pthread gomp)
+
+        message(STATUS "NCNN found in Snap stage prefix: ${NCNN_ROOT}")
 
     else()
         message(STATUS "NCNN_TOP_DIR not set - NCNN plugins will not be built")

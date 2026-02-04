@@ -10,6 +10,7 @@
 #include <memory>
 #include <chrono>
 #include <thread>
+#include <cstdlib>
 
 using namespace r_pipeline;
 using namespace r_utils;
@@ -25,12 +26,31 @@ void r_pipeline::gstreamer_init()
 
     GstRegistry *registry = gst_registry_get();
     auto wd_plugins = r_fs::path_join(r_fs::working_directory(), "gstreamer_plugins");
-    if(r_fs::file_exists(wd_plugins))
+    if(r_fs::is_dir(wd_plugins))
     {
         R_LOG_INFO("Loading plugins from: %s", wd_plugins.c_str());
         gst_registry_scan_path(registry, wd_plugins.c_str());
     }
-    else R_LOG_INFO("No plugins found in: %s", wd_plugins.c_str());
+    else
+    {
+        // Fallback to GST_PLUGIN_PATH for sandboxed environments (Flatpak/Snap)
+        const char* gst_plugin_path = getenv("GST_PLUGIN_PATH");
+        if(gst_plugin_path)
+        {
+            R_LOG_INFO("Loading plugins from GST_PLUGIN_PATH: %s", gst_plugin_path);
+            // GST_PLUGIN_PATH can contain multiple paths separated by ':'
+            auto paths = r_string_utils::split(gst_plugin_path, ":");
+            for(const auto& path : paths)
+            {
+                if(!path.empty() && r_fs::is_dir(path))
+                    gst_registry_scan_path(registry, path.c_str());
+            }
+        }
+        else
+        {
+            R_LOG_INFO("No plugins found in: %s (and GST_PLUGIN_PATH not set)", wd_plugins.c_str());
+        }
+    }
 }
 
 void r_pipeline::gstreamer_deinit()

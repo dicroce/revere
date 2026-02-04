@@ -115,9 +115,10 @@ std::string r_secure_store::_get_key_path() const
             }
         }
 
-        // Check if running in Flatpak - use Documents directory which is accessible
+        // Check if running in Flatpak or Snap - use Documents directory which is accessible
         const char* flatpak_id = getenv("FLATPAK_ID");
-        if (flatpak_id != nullptr) {
+        const char* snap = getenv("SNAP");
+        if (flatpak_id != nullptr || snap != nullptr) {
             return std::string(home) + "/Documents/revere/revere/config/encryption.key";
         }
 
@@ -170,18 +171,12 @@ std::vector<uint8_t> r_secure_store::_load_key_from_file(const std::string& path
 
 void r_secure_store::_save_key_to_file(const std::string& path, const std::vector<uint8_t>& data) const
 {
-    // Ensure parent directory exists
+    // Ensure parent directory exists (recursively create if needed)
     std::string dir, filename;
     r_fs::break_path(path, dir, filename);
 
     if (!dir.empty() && !r_fs::is_dir(dir)) {
-        // Create directory (we'll need to handle this recursively if needed)
-        try {
-            r_fs::mkdir(dir);
-        } catch (const r_exception&) {
-            // Directory might already exist or parent doesn't exist
-            // For now, we'll try to write anyway and let it fail if needed
-        }
+        r_fs::mkdir_p(dir);
     }
 
     // Write the file

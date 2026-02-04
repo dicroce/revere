@@ -282,9 +282,9 @@ string r_utils::r_stack_trace::get_stack(char sep)
 
         std::string location = "?? ??:0";
 
-        // Skip addr2line/atos in flatpak since binutils isn't available
-        static bool is_flatpak = (getenv("FLATPAK_ID") != nullptr);
-        if (!is_flatpak)
+        // Skip addr2line/atos in sandboxed environments (Flatpak/Snap) since binutils isn't available
+        static bool is_sandboxed = (getenv("FLATPAK_ID") != nullptr || getenv("SNAP") != nullptr);
+        if (!is_sandboxed)
         {
             char cmd[512];
 #ifdef IS_MACOS

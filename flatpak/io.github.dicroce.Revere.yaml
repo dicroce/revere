@@ -137,6 +137,8 @@ modules:
       - -DFETCHCONTENT_SOURCE_DIR_TRAYPP=/run/build/revere/deps/traypp
       - -DFETCHCONTENT_SOURCE_DIR_SDL2=/run/build/revere/deps/sdl2
       - -DFETCHCONTENT_SOURCE_DIR_MBEDTLS=/run/build/revere/deps/mbedtls
+      # Disable PipeWire in SDL2 (SDK 25.08 has incompatible version)
+      - -DSDL_PIPEWIRE=OFF
     build-options:
       env:
         NCNN_TOP_DIR: /app

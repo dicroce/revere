@@ -150,8 +150,8 @@ else()
     )
 endif()
 
-# Install desktop files for system installs (not Flatpak - handled by manifest)
-if(${CMAKE_SYSTEM_NAME} MATCHES "Linux" AND NOT DEFINED ENV{FLATPAK_ID})
+# Install desktop files for system installs (not Flatpak/Snap - handled by their manifests)
+if(${CMAKE_SYSTEM_NAME} MATCHES "Linux" AND NOT PACKAGED_BUILD)
     install(
         FILES vision/vision.desktop revere/revere.desktop
         DESTINATION /usr/share/applications
@@ -318,8 +318,8 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     endif()
 
     # Patch RUNPATH on third-party libraries so they can find sibling libs
-    # Skip for Flatpak builds - they use standard library paths
-    if(NOT FLATPAK_BUILD)
+    # Skip for packaged builds (Flatpak/Snap) - they use standard library paths
+    if(NOT PACKAGED_BUILD)
         install(CODE "
             find_program(PATCHELF patchelf)
             if(PATCHELF)
@@ -372,8 +372,8 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     )
 
     # Patch RUNPATH on GStreamer plugins so they find libs in parent directory
-    # Skip for Flatpak builds - they use standard library paths
-    if(NOT FLATPAK_BUILD)
+    # Skip for packaged builds (Flatpak/Snap) - they use standard library paths
+    if(NOT PACKAGED_BUILD)
         install(CODE "
             find_program(PATCHELF patchelf)
             if(PATCHELF)

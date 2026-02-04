@@ -105,6 +105,7 @@ R_API void break_path(const std::string& path, std::string& dir, std::string& fi
 R_API std::string temp_file_name(const std::string& dir, const std::string& baseName = std::string());
 R_API void get_fs_usage(const std::string& path, uint64_t& size, uint64_t& free);
 R_API void mkdir(const std::string& path);
+R_API void mkdir_p(const std::string& path);  // Create directory and all parent directories
 R_API void rmdir(const std::string& path);
 R_API void remove_file(const std::string& path);
 

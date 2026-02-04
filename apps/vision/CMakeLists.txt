@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.14)
 project(vision)
 
-# Set RPATH - skip for Flatpak builds (they use standard library paths)
-if(NOT FLATPAK_BUILD)
+# Set RPATH - skip for packaged builds (Flatpak/Snap use standard library paths)
+if(NOT PACKAGED_BUILD)
     if(APPLE)
         set(CMAKE_INSTALL_RPATH "@executable_path/../lib;@executable_path")
         set(CMAKE_BUILD_RPATH "@executable_path/../lib;@executable_path/../../libs/r_utils;@executable_path/../../libs/r_ui_utils;@executable_path/../../libs/r_av;@executable_path/../../libs/r_pipeline;@executable_path/../../libs/r_storage;@executable_path/../../libs/r_motion;@executable_path/../../libs/r_onvif;@executable_path/../../libs/r_http;@executable_path/../../libs/r_db")

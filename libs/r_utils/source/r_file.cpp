@@ -367,6 +367,33 @@ void r_utils::r_fs::mkdir(const std::string& path)
 #endif
 }
 
+void r_utils::r_fs::mkdir_p(const std::string& path)
+{
+    if(path.empty())
+        return;
+
+    // If it already exists, we're done
+    if(is_dir(path))
+        return;
+
+    // Find the parent directory
+    std::string dir, filename;
+    break_path(path, dir, filename);
+
+    // Recursively create parent if needed
+    if(!dir.empty() && !is_dir(dir))
+        mkdir_p(dir);
+
+    // Now create this directory
+#ifdef IS_WINDOWS
+    if(_mkdir(path.c_str()) < 0 && errno != EEXIST)
+        R_STHROW(r_internal_exception, ("Unable to make directory: %s",path.c_str()));
+#else
+    if(::mkdir(path.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0 && errno != EEXIST)
+        R_STHROW(r_internal_exception, ("Unable to make directory: %s",path.c_str()));
+#endif
+}
+
 void r_utils::r_fs::rmdir(const std::string& path)
 {
 #ifdef IS_WINDOWS

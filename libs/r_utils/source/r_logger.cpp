@@ -173,7 +173,7 @@ void r_utils::r_logger::write(LOG_LEVEL level,
             auto timestamped_msg = timestamp + " " + l;
             _state->log_callback(level, timestamped_msg);
 #elif defined(IS_LINUX)
-            if(_state->is_flatpak)
+            if(_state->is_sandboxed)
             {
                 auto timestamped_msg = timestamp + " " + l;
                 _state->log_callback(level, timestamped_msg);
@@ -195,7 +195,7 @@ void r_utils::r_logger::write(LOG_LEVEL level,
     use_file_logging = true;
 #endif
 #ifdef IS_LINUX
-    use_file_logging = _state->is_flatpak;
+    use_file_logging = _state->is_sandboxed;
 #endif
     if(use_file_logging && _state->log_file)
     {
@@ -217,7 +217,7 @@ void r_utils::r_logger::write(LOG_LEVEL level,
 
 #ifdef IS_LINUX
     // Syslog for Linux when not in Flatpak
-    if(!_state->is_flatpak)
+    if(!_state->is_sandboxed)
     {
         int priority = LOG_USER;
 
@@ -274,9 +274,10 @@ void r_utils::r_logger::install_logger(const std::string& log_dir, const std::st
     _state->log_dir = log_dir;
     _state->log_prefix = log_prefix;
 
-    // Auto-detect Flatpak environment
+    // Auto-detect Flatpak or Snap environment (both need file logging)
     const char* flatpak_id = getenv("FLATPAK_ID");
-    _state->is_flatpak = (flatpak_id != nullptr);
+    const char* snap = getenv("SNAP");
+    _state->is_sandboxed = (flatpak_id != nullptr || snap != nullptr);
 
     auto v = _next_log_name(_state->log_dir, _state->log_prefix, true);
     auto log_path = r_string_utils::format("%s%s%s", _state->log_dir.c_str(), PATH_SLASH.c_str(), v.c_str());
@@ -288,7 +289,7 @@ void r_utils::r_logger::install_logger(const std::string& log_dir, const std::st
     open_log_file(log_path);
 #endif
 #ifdef IS_LINUX
-    if(_state->is_flatpak)
+    if(_state->is_sandboxed)
     {
         open_log_file(log_path);
     }

@@ -1008,6 +1008,14 @@ string _get_icon_path()
         return "io.github.dicroce.Revere";
     }
 
+    // In Snap, use icon name (not path) for libappindicator compatibility
+    const char* snap = getenv("SNAP");
+    if (snap != nullptr)
+    {
+        // Return just the icon name - libappindicator will find it in the icon theme
+        return "revere";
+    }
+
     // Try AppImage-style icon path
     std::string rel_icon_path = "/../share/icons/hicolor/128x128/apps/revere.png";
     std::string full_icon_path = r_fs::path_join(r_fs::working_directory(), rel_icon_path);

@@ -9,8 +9,22 @@ else()
     set(FLATPAK_BUILD FALSE)
 endif()
 
-# Install destinations - flatpak uses standard FHS paths, portable uses single directory
-if(FLATPAK_BUILD)
+# Detect Snap build environment (CRAFT_PART_BUILD is set during snapcraft builds)
+if(DEFINED ENV{CRAFT_PART_BUILD} OR SNAP_BUILD)
+    message(STATUS "Building for Snap")
+    set(SNAP_BUILD TRUE)
+else()
+    set(SNAP_BUILD FALSE)
+endif()
+
+# Generic flag for any sandboxed/packaged build that uses FHS paths
+set(PACKAGED_BUILD FALSE)
+if(FLATPAK_BUILD OR SNAP_BUILD)
+    set(PACKAGED_BUILD TRUE)
+endif()
+
+# Install destinations - packaged builds (Flatpak/Snap) use standard FHS paths, portable uses single directory
+if(PACKAGED_BUILD)
     set(REVERE_INSTALL_BINDIR bin)
     set(REVERE_INSTALL_LIBDIR lib)
 else()
@@ -29,8 +43,8 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set RPATH for all targets to find libraries in the same directory
-# Skip for Flatpak builds - they use standard library paths
-if(NOT FLATPAK_BUILD)
+# Skip for packaged builds (Flatpak/Snap) - they use standard library paths
+if(NOT PACKAGED_BUILD)
     set(CMAKE_INSTALL_RPATH "$ORIGIN")
     set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 endif()
@@ -76,8 +90,8 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_link_options(
         $<$<CONFIG:Release>:-O3>
     )
-    # -march=native breaks Flatpak portability (different CPUs)
-    if(NOT FLATPAK_BUILD)
+    # -march=native breaks Flatpak/Snap portability (different CPUs)
+    if(NOT PACKAGED_BUILD)
         add_compile_options($<$<CONFIG:Release>:-march=native>)
         add_link_options($<$<CONFIG:Release>:-march=native>)
     endif()

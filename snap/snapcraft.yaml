@@ -1,0 +1,230 @@
+name: revere
+base: core24
+adopt-info: revere
+summary: Open source video surveillance system with ONVIF support
+description: |
+  Revere is an open source video surveillance system that runs on standard
+  desktop computers. It supports ONVIF-compliant IP cameras with features
+  including:
+
+  - ONVIF camera discovery and management
+  - RTSP video streaming (H.264/H.265)
+  - Continuous recording with automatic storage pruning
+  - Motion detection using background subtraction
+  - YOLOv8 AI object detection (people and vehicles)
+  - REST API for integration
+  - System tray operation
+  - Multi-camera viewing (Vision app)
+
+  NOTE: This is beta software. Please report issues at:
+  https://github.com/dicroce/revere/issues
+
+grade: devel
+confinement: strict
+license: BSD-3-Clause
+
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+
+apps:
+  revere:
+    command: bin/revere
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      - network-bind
+      - opengl
+      - audio-playback
+      - camera
+    desktop: usr/share/applications/revere.desktop
+    environment:
+      GST_PLUGIN_PATH: $SNAP/usr/lib/x86_64-linux-gnu/gstreamer-1.0:$SNAP/lib/gstreamer-1.0
+      LD_LIBRARY_PATH: $SNAP/usr/lib/x86_64-linux-gnu/blas:$SNAP/usr/lib/x86_64-linux-gnu/lapack:$LD_LIBRARY_PATH
+      GIO_USE_PROXY_RESOLVER: dummy
+
+  vision:
+    command: bin/vision
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      - opengl
+      - audio-playback
+    desktop: usr/share/applications/vision.desktop
+    environment:
+      GST_PLUGIN_PATH: $SNAP/usr/lib/x86_64-linux-gnu/gstreamer-1.0:$SNAP/lib/gstreamer-1.0
+      LD_LIBRARY_PATH: $SNAP/usr/lib/x86_64-linux-gnu/blas:$SNAP/usr/lib/x86_64-linux-gnu/lapack:$LD_LIBRARY_PATH
+      GIO_USE_PROXY_RESOLVER: dummy
+
+layout:
+  /usr/lib/x86_64-linux-gnu/gstreamer-1.0:
+    symlink: $SNAP/usr/lib/x86_64-linux-gnu/gstreamer-1.0
+
+parts:
+  ncnn:
+    plugin: cmake
+    source: https://github.com/Tencent/ncnn.git
+    source-commit: 1e88fb8d5b03fedc813dd54bff34d42f65650281
+    cmake-parameters:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_PREFIX=/usr
+      - -DNCNN_VULKAN=OFF
+      - -DNCNN_BUILD_TOOLS=OFF
+      - -DNCNN_BUILD_EXAMPLES=OFF
+      - -DNCNN_BUILD_BENCHMARK=OFF
+      - -DNCNN_OPENMP=ON
+      - -DNCNN_SHARED_LIB=ON
+    build-packages:
+      - g++
+      - libgomp1
+
+  opencv:
+    plugin: cmake
+    source: https://github.com/opencv/opencv/archive/refs/tags/4.10.0.tar.gz
+    source-type: tar
+    cmake-parameters:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_PREFIX=/usr
+      - -DBUILD_LIST=core,imgproc,imgcodecs,video,videoio,calib3d,features2d,flann,dnn,bgsegm,tracking,optflow,ximgproc,xfeatures2d,plot
+      - -DOPENCV_EXTRA_MODULES_PATH=$CRAFT_PART_SRC/../opencv-contrib/modules
+      - -DBUILD_opencv_python2=OFF
+      - -DBUILD_opencv_python3=OFF
+      - -DBUILD_TESTS=OFF
+      - -DBUILD_PERF_TESTS=OFF
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_DOCS=OFF
+      - -DWITH_FFMPEG=ON
+      - -DWITH_GSTREAMER=ON
+      - -DWITH_GTK=OFF
+      - -DWITH_QT=OFF
+      - -DWITH_VA=OFF
+      - -DWITH_VA_INTEL=OFF
+      - -DBUILD_SHARED_LIBS=ON
+    override-pull: |
+      craftctl default
+      # Download opencv_contrib for extra modules
+      mkdir -p $CRAFT_PART_SRC/../opencv-contrib
+      curl -L https://github.com/opencv/opencv_contrib/archive/refs/tags/4.10.0.tar.gz | \
+        tar xz --strip-components=1 -C $CRAFT_PART_SRC/../opencv-contrib
+    build-packages:
+      - g++
+      - curl
+      - libavcodec-dev
+      - libavformat-dev
+      - libavutil-dev
+      - libswscale-dev
+      - libgstreamer1.0-dev
+      - libgstreamer-plugins-base1.0-dev
+      - libjpeg-dev
+      - libpng-dev
+      - libtiff-dev
+      - libwebp-dev
+      - libopenjp2-7-dev
+    stage-packages:
+      - libavcodec60
+      - libavformat60
+      - libavutil58
+      - libswscale7
+      - libgstreamer1.0-0
+      - libgstreamer-plugins-base1.0-0
+      - libjpeg8
+      - libpng16-16
+      - libtiff6
+      - libwebp7
+
+  gstreamer:
+    plugin: nil
+    stage-packages:
+      - libgstrtspserver-1.0-0
+      - gstreamer1.0-plugins-base
+      - gstreamer1.0-plugins-good
+      - gstreamer1.0-plugins-bad
+      - gstreamer1.0-plugins-ugly
+      - gstreamer1.0-libav
+      - gstreamer1.0-tools
+      - libblas3
+      - liblapack3
+
+  libappindicator:
+    plugin: nil
+    stage-packages:
+      - libappindicator3-1
+      - libdbusmenu-gtk3-4
+      - libindicator3-7
+      - libdbus-glib-1-2
+
+  revere:
+    plugin: cmake
+    source: .
+    source-type: local
+    after:
+      - ncnn
+      - opencv
+      - gstreamer
+      - libappindicator
+    override-pull: |
+      craftctl default
+      # Try exact tag first, fall back to describe, then commit hash
+      if version=$(git describe --tags --exact-match 2>/dev/null); then
+        # Remove 'v' prefix if present (v0.0.8 -> 0.0.8)
+        version="${version#v}"
+      elif version=$(git describe --tags 2>/dev/null); then
+        version="${version#v}"
+      else
+        version="0+git.$(git rev-parse --short HEAD)"
+      fi
+      craftctl set version="$version"
+    cmake-parameters:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_PREFIX=/
+      - -DSNAP_BUILD=TRUE
+      - -DFETCHCONTENT_QUIET=OFF
+    build-environment:
+      - PKG_CONFIG_PATH: $CRAFT_STAGE/usr/lib/pkgconfig:$CRAFT_STAGE/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}
+      - CMAKE_PREFIX_PATH: $CRAFT_STAGE/usr
+      - NCNN_TOP_DIR: $CRAFT_STAGE/usr
+      - OPENCV_TOP_DIR: $CRAFT_STAGE/usr
+      - LIBRARY_PATH: $CRAFT_STAGE/usr/lib/x86_64-linux-gnu:$CRAFT_STAGE/usr/lib:${LIBRARY_PATH:-}
+      - LD_LIBRARY_PATH: $CRAFT_STAGE/usr/lib/x86_64-linux-gnu:$CRAFT_STAGE/usr/lib:${LD_LIBRARY_PATH:-}
+    build-packages:
+      - g++
+      - git
+      - pkg-config
+      - libglfw3-dev
+      - libgl1-mesa-dev
+      - libglu1-mesa-dev
+      - libx11-dev
+      - libxrandr-dev
+      - libxinerama-dev
+      - libxcursor-dev
+      - libxi-dev
+      - libssl-dev
+      - libsqlite3-dev
+      - libgstreamer1.0-dev
+      - libgstreamer-plugins-base1.0-dev
+      - libgstreamer-plugins-bad1.0-dev
+      - libgstrtspserver-1.0-dev
+      - libappindicator3-dev
+    stage-packages:
+      - libglfw3
+      - libgl1
+      - libglu1-mesa
+      - libx11-6
+      - libxrandr2
+      - libxinerama1
+      - libxcursor1
+      - libxi6
+      - libssl3
+      - libsqlite3-0
+
+  desktop-integration:
+    plugin: dump
+    source: snap/gui
+    organize:
+      revere.desktop: usr/share/applications/revere.desktop
+      vision.desktop: usr/share/applications/vision.desktop
+      revere.png: usr/share/icons/hicolor/256x256/apps/revere.png
+      vision.png: usr/share/icons/hicolor/256x256/apps/vision.png

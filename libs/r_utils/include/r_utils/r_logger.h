@@ -40,7 +40,7 @@ struct logger_state
     std::string log_prefix = "log_";
     log_callback_t log_callback = nullptr;
     std::chrono::system_clock::time_point last_flush_time{};
-    bool is_flatpak = false;
+    bool is_sandboxed = false;
 };
 
 #define R_LOG_CRITICAL(format, ...) r_utils::r_logger::write(r_utils::r_logger::LOG_LEVEL_CRITICAL, __LINE__, __FILE__, format,  ##__VA_ARGS__)
