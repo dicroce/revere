@@ -496,17 +496,28 @@ vector<uint8_t> r_utils::r_networking::r_get_hardware_address(
 #endif
 
 #ifdef IS_LINUX
+    string interface_name = ifname;
+
+    // If no interface specified, find the first active non-loopback interface
+    if (interface_name.empty())
+    {
+        auto adapters = r_get_adapters();
+        if (adapters.empty())
+            R_THROW(("No active network interfaces found."));
+        interface_name = adapters[0].name;
+    }
+
     int fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (fd < 0)
         R_THROW(("Unable to create datagram socket."));
 
     struct ifreq s{};
-    std::snprintf(s.ifr_name, IFNAMSIZ, "%s", ifname.c_str());
+    std::snprintf(s.ifr_name, IFNAMSIZ, "%s", interface_name.c_str());
 
     if (ioctl(fd, SIOCGIFHWADDR, &s) < 0)
     {
         close(fd);
-        R_THROW(("Unable to query MAC address."));
+        R_THROW(("Unable to query MAC address for interface: %s", interface_name.c_str()));
     }
 
     close(fd);

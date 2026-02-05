@@ -100,18 +100,18 @@ void pipeline_host::update_stream(int window, stream_info si)
     shared_ptr<pipeline_state> old_pipeline;
     {
         lock_guard<mutex> g(_internals_lok);
-        
+
         // Extract the existing pipeline (if any) before erasing from map
         auto pipe_it = _pipes.find(si.name);
         if (pipe_it != _pipes.end()) {
             old_pipeline = pipe_it->second;  // Keep reference to prevent immediate destruction
             _pipes.erase(pipe_it);           // Remove from map but don't destroy yet
         }
-        
+
         _render_contexts.erase(si.name);
         _stream_infos[si.name] = si;
     }  // Lock is released here
-    
+
     // Destroy the old pipeline outside the critical section
     // Now the pipeline thread can complete post_video_frame() calls and exit cleanly
     // before thread.join() is called in the pipeline_state destructor
@@ -132,17 +132,17 @@ void pipeline_host::disconnect_stream(int window, const string& name)
             old_pipeline = pipe_it->second;  // Keep reference to prevent immediate destruction
             _pipes.erase(pipe_it);           // Remove from map but don't destroy yet
         }
-        
+
         // Signal render context to stop and clean up
         auto rc_it = _render_contexts.find(name);
         if (rc_it != _render_contexts.end()) {
             rc_it->second->done = true;      // Signal rendering to stop
             _render_contexts.erase(rc_it);
         }
-        
+
         _stream_infos.erase(name);
     }  // Lock is released here
-    
+
     // Destroy the old pipeline outside the critical section
     // Prevents deadlock between main thread and pipeline worker thread
     old_pipeline.reset();
@@ -261,11 +261,17 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
         R_LOG_ERROR("Empty stream name in lookup_render_context");
         return r_nullable<shared_ptr<render_context>>();
     }
-    
+
     // Validate frame dimensions
     if (!state_validate::is_valid_frame_dimensions(w, h))
     {
         R_LOG_ERROR("Invalid frame dimensions in lookup_render_context for stream %s: %dx%d", name.c_str(), w, h);
+        return r_nullable<shared_ptr<render_context>>();
+    }
+
+    // Don't try to connect until cameras have been validated against revere's camera list
+    if (!_cameras_validated)
+    {
         return r_nullable<shared_ptr<render_context>>();
     }
 
@@ -305,7 +311,7 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
                     R_LOG_ERROR("Invalid resize dimensions for stream %s: %dx%d", name.c_str(), w, h);
                     return r_nullable<shared_ptr<render_context>>();
                 }
-                
+
                 try
                 {
                     resized = true;
@@ -319,7 +325,7 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
             }
         }
     }
- 
+
     // Finally, once a buffer makes it to the end of the a pipeline we will create a render_context for it
     // If we have then get the texture id and return it.
     auto found_rc = _render_contexts.find(name);

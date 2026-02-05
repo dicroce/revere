@@ -330,13 +330,25 @@ void _pop_export_folder()
     auto export_dir = sub_dir("exports");
 
 #ifdef IS_WINDOWS
-    ShellExecuteA(NULL, "open", export_dir.c_str(), NULL, NULL, SW_SHOWDEFAULT);
+    HINSTANCE result = ShellExecuteA(NULL, "open", export_dir.c_str(), NULL, NULL, SW_SHOWDEFAULT);
+    if ((INT_PTR)result <= 32)
+        R_LOG_ERROR("ShellExecuteA failed to open exports folder: %s (error code: %lld)", export_dir.c_str(), (long long)(INT_PTR)result);
 #endif
 #ifdef IS_LINUX
-    system(r_string_utils::format("xdg-open %s", export_dir.c_str()).c_str());
+    auto command = r_string_utils::format("xdg-open \"%s\"", export_dir.c_str());
+    R_LOG_INFO("Opening exports folder with command: %s", command.c_str());
+    int result = system(command.c_str());
+    if (result != 0)
+        R_LOG_ERROR("xdg-open failed for exports folder: %s (exit code: %d)", export_dir.c_str(), result);
+    else
+        R_LOG_INFO("xdg-open succeeded for exports folder");
 #endif
 #ifdef IS_MACOS
-    system(r_string_utils::format("open %s", export_dir.c_str()).c_str());
+    auto command = r_string_utils::format("open \"%s\"", export_dir.c_str());
+    R_LOG_INFO("Opening exports folder with command: %s", command.c_str());
+    int result = system(command.c_str());
+    if (result != 0)
+        R_LOG_ERROR("open failed for exports folder: %s (exit code: %d)", export_dir.c_str(), result);
 #endif
 }
 
@@ -599,7 +611,46 @@ int main(int, char**)
             auto update = update_q.poll(chrono::milliseconds(1));
 
             if(!update.is_null())
+            {
                 ui_state.current_revere_update = update.value();
+
+                // Validate configured streams against the camera list from revere.
+                // Remove any streams whose camera_id no longer exists.
+                auto configured_streams = cfg_state.collect_stream_info(0, cfg_state.get_current_layout());
+                bool config_changed = false;
+                for (const auto& si : configured_streams)
+                {
+                    bool camera_exists = false;
+                    for (const auto& cam : ui_state.current_revere_update.cameras)
+                    {
+                        if (cam.camera_id == si.camera_id)
+                        {
+                            camera_exists = true;
+                            break;
+                        }
+                    }
+                    if (!camera_exists)
+                    {
+                        R_LOG_WARNING("Camera %s no longer exists, removing stream %s from config",
+                            si.camera_id.c_str(), si.name.c_str());
+                        cfg_state.unset_stream_info(si.name);
+                        ph.disconnect_stream(0, si.name);
+                        ui_state.current_revere_update.status_text.set_value(
+                            "Camera removed: " + si.camera_id + " (no longer exists)");
+                        config_changed = true;
+                    }
+                }
+                if (config_changed)
+                {
+                    cfg_state.save();
+                }
+
+                // Mark cameras as validated - now safe to connect
+                if (!ph.cameras_validated())
+                {
+                    ph.set_cameras_validated();
+                }
+            }
 
             // Start the Dear ImGui frame
             ImGui_ImplSDLRenderer_NewFrame();

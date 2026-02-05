@@ -95,7 +95,9 @@ void main_layout(
 
     bool open = true;
     uint16_t line_height = (uint16_t)ImGui::GetTextLineHeightWithSpacing();
+    ImVec4 status_bar_bg = ImVec4(0.08f, 0.08f, 0.10f, 1.0f);  // Darkest for status bar
     ImGui::PushFont(r_ui_utils::fonts[font_key_18].roboto_regular);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, status_bar_bg);
     ImGui::SetNextWindowPos(ImVec2(0, (float)(window_height - line_height)));
     ImGui::SetNextWindowSize(ImVec2(window_width, line_height));
     ImGui::Begin("##status", &open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
@@ -105,6 +107,7 @@ void main_layout(
         ImGui::Text("%s",status_text.value().c_str());
     }
     ImGui::End();
+    ImGui::PopStyleColor();
     ImGui::PopFont();
 }
 
@@ -122,24 +125,34 @@ void thirds(
     THIRD_CB third_cb
 )
 {
+    // Side panels: dark gray, Middle panel: slightly lighter/different shade
+    ImVec4 side_panel_bg = ImVec4(0.12f, 0.12f, 0.14f, 1.0f);    // Dark gray with slight blue tint
+    ImVec4 middle_panel_bg = ImVec4(0.15f, 0.16f, 0.18f, 1.0f);  // Slightly lighter, more visible
+
     uint16_t panel_width = window_width / 3;
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, side_panel_bg);
     ImGui::SetNextWindowPos(ImVec2(x, y));
     ImGui::SetNextWindowSize(ImVec2(panel_width, window_height));
     ImGui::Begin(first_label.c_str());
     first_cb(panel_width);
     ImGui::End();
+    ImGui::PopStyleColor();
 
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, middle_panel_bg);
     ImGui::SetNextWindowPos(ImVec2((float)(x + panel_width), (float)y));
     ImGui::SetNextWindowSize(ImVec2(panel_width, window_height));
     ImGui::Begin(second_label.c_str());
     second_cb(panel_width);
     ImGui::End();
+    ImGui::PopStyleColor();
 
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, side_panel_bg);
     ImGui::SetNextWindowPos(ImVec2(x + ((float)panel_width*2), y));
     ImGui::SetNextWindowSize(ImVec2(panel_width, window_height));
     ImGui::Begin(third_label.c_str());
     third_cb(panel_width);
     ImGui::End();
+    ImGui::PopStyleColor();
 }
 
 template<typename FIRST_CB, typename SECOND_CB, typename THIRD_CB, typename LOG_CB>
@@ -169,26 +182,38 @@ void thirds_with_log(
     float top_height = window_height - log_height;
 
     // Top section: three columns
+    // Side panels: dark gray, Middle panel: slightly lighter/different shade
+    ImVec4 side_panel_bg = ImVec4(0.12f, 0.12f, 0.14f, 1.0f);    // Dark gray with slight blue tint
+    ImVec4 middle_panel_bg = ImVec4(0.15f, 0.16f, 0.18f, 1.0f);  // Slightly lighter, more visible
+
     uint16_t panel_width = window_width / 3;
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, side_panel_bg);
     ImGui::SetNextWindowPos(ImVec2(x, y));
     ImGui::SetNextWindowSize(ImVec2(panel_width, top_height));
     ImGui::Begin(first_label.c_str());
     first_cb(panel_width);
     ImGui::End();
+    ImGui::PopStyleColor();
 
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, middle_panel_bg);
     ImGui::SetNextWindowPos(ImVec2((float)(x + panel_width), (float)y));
     ImGui::SetNextWindowSize(ImVec2(panel_width, top_height));
     ImGui::Begin(second_label.c_str());
     second_cb(panel_width);
     ImGui::End();
+    ImGui::PopStyleColor();
 
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, side_panel_bg);
     ImGui::SetNextWindowPos(ImVec2(x + ((float)panel_width*2), y));
     ImGui::SetNextWindowSize(ImVec2(panel_width, top_height));
     ImGui::Begin(third_label.c_str());
     third_cb(panel_width);
     ImGui::End();
+    ImGui::PopStyleColor();
 
     // Bottom section: full width log (resizable from top)
+    ImVec4 log_panel_bg = ImVec4(0.10f, 0.10f, 0.12f, 1.0f);  // Slightly darker for log
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, log_panel_bg);
     ImGui::SetNextWindowPos(ImVec2(x, y + top_height));
     ImGui::SetNextWindowSize(ImVec2(window_width, log_height));
     ImGui::Begin(log_label.c_str(), nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
@@ -198,6 +223,7 @@ void thirds_with_log(
 
     log_cb(window_width, (uint16_t)log_height);
     ImGui::End();
+    ImGui::PopStyleColor();
 }
 
 template<typename OK_CB, typename CANCEL_CB>

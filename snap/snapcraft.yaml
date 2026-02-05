@@ -36,6 +36,7 @@ apps:
       - home
       - network
       - network-bind
+      - network-observe
       - opengl
       - audio-playback
       - camera

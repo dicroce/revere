@@ -1120,6 +1120,7 @@ int main(int argc, char** argv)
 
     auto top_dir = revere::top_dir();
     auto log_path = revere::sub_dir("logs");
+    revere::sub_dir("config");  // Ensure config dir exists for plugins
 
     r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
 

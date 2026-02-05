@@ -190,6 +190,24 @@ private:
 
     // Flag to signal main loop that new frames are available
     std::atomic<bool> _has_new_frames{false};
+
+    // Flag to indicate camera list has been validated - don't connect until this is true
+    bool _cameras_validated{false};
+
+public:
+    // Call after camera list validation to enable connections
+    void set_cameras_validated()
+    {
+        std::lock_guard<std::mutex> g(_internals_lok);
+        _cameras_validated = true;
+    }
+
+    // Check if cameras have been validated
+    bool cameras_validated() const
+    {
+        std::lock_guard<std::mutex> g(_internals_lok);
+        return _cameras_validated;
+    }
 };
 
 }

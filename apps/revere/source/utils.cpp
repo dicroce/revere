@@ -3,6 +3,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_file.h"
+#include "r_utils/r_logger.h"
 
 #ifdef IS_WINDOWS
 #include <shlobj_core.h>
@@ -107,26 +108,37 @@ bool revere::open_url_in_browser(const std::string& url)
 {
 #ifdef IS_WINDOWS
     // Windows: Use ShellExecute
+    R_LOG_INFO("Opening URL in browser: %s", url.c_str());
     HINSTANCE result = ShellExecuteA(NULL, "open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
     if(result <= (HINSTANCE)32)
+    {
+        R_LOG_ERROR("ShellExecuteA failed to open URL: %s (error code: %lld)", url.c_str(), (long long)(INT_PTR)result);
         R_THROW(("Failed to open URL in browser. Error code: %d (%s)", (INT_PTR)result, r_utils::last_error_to_string().c_str()));
+    }
     return true;
 #elif defined(IS_MACOS)
     // macOS: Use open command
     std::string command = "open \"" + url + "\"";
+    R_LOG_INFO("Opening URL with command: %s", command.c_str());
     int result = system(command.c_str());
     if(result != 0)
+    {
+        R_LOG_ERROR("open command failed for URL: %s (exit code: %d)", url.c_str(), result);
         R_THROW(("Failed to open URL in browser. Error code: %d", result));
+    }
 #elif defined(IS_LINUX)
-    // Linux: Try xdg-open first, then fallback to other common browsers
-    std::string command = "xdg-open \"" + url + "\" 2>/dev/null || "
-                         "gnome-open \"" + url + "\" 2>/dev/null || "
-                         "kde-open \"" + url + "\" 2>/dev/null || "
-                         "firefox \"" + url + "\" 2>/dev/null &";
+    // Linux: Use xdg-open which works with XDG Desktop Portal in snaps
+    std::string command = "xdg-open \"" + url + "\"";
+    R_LOG_INFO("Opening URL with command: %s", command.c_str());
     int result = system(command.c_str());
     if(result != 0)
+    {
+        R_LOG_ERROR("xdg-open failed for URL: %s (exit code: %d)", url.c_str(), result);
         R_THROW(("Failed to open URL in browser. Error code: %d", result));
+    }
+    R_LOG_INFO("xdg-open succeeded for URL: %s", url.c_str());
 #else
+    R_LOG_ERROR("open_url_in_browser: unsupported platform");
     return false;  // Unsupported platform
 #endif
     return true;
