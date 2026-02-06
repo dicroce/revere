@@ -46,8 +46,6 @@ Source: "C:\Program Files (x86)\revere\revere\models"; DestDir: "{app}"; Flags: 
 Source: "C:\Program Files (x86)\revere\revere\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "C:\Program Files (x86)\revere\revere\motion_plugins"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "C:\Program Files (x86)\revere\revere\motion_plugins\*"; DestDir: "{app}\motion_plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "C:\Program Files (x86)\revere\revere\system_plugins"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "C:\Program Files (x86)\revere\revere\system_plugins\*"; DestDir: "{app}\system_plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 Source: "C:\dev\VC_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
@@ -65,7 +63,6 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 Type: filesandordirs; Name: "{app}\gstreamer_plugins"
 Type: filesandordirs; Name: "{app}\models"
 Type: filesandordirs; Name: "{app}\motion_plugins"
-Type: filesandordirs; Name: "{app}\system_plugins"
 Type: files; Name: "{app}\*.dll"
 Type: files; Name: "{app}\*.exe"
 Type: files; Name: "{app}\*.lib"
