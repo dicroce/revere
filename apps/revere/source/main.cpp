@@ -1644,7 +1644,11 @@ int main(int argc, char** argv)
                             ImGui::Spacing();
                             for (const auto& plugin_name : ui_state.loaded_system_plugins)
                             {
-                                ImGui::BulletText("%s", plugin_name.c_str());
+                                bool is_enabled = streamKeeper.is_system_plugin_enabled(plugin_name);
+                                if (ImGui::Checkbox(plugin_name.c_str(), &is_enabled))
+                                {
+                                    streamKeeper.set_system_plugin_enabled(plugin_name, is_enabled);
+                                }
                             }
                         }
 

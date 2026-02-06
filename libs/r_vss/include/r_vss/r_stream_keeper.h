@@ -145,6 +145,8 @@ public:
     R_API void write_metadata(const std::string& camera_id, const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);
 
     R_API std::vector<std::string> get_loaded_system_plugins() const;
+    R_API bool is_system_plugin_enabled(const std::string& plugin_name) const;
+    R_API void set_system_plugin_enabled(const std::string& plugin_name, bool enabled);
 
     // Live restreaming state management (owned by r_stream_keeper for safe cleanup)
     R_API void add_live_restreaming_state(GstRTSPMedia* media, std::shared_ptr<live_restreaming_state> lrs);

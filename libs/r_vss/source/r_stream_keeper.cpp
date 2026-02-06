@@ -433,6 +433,16 @@ std::vector<std::string> r_stream_keeper::get_loaded_system_plugins() const
     return _system_plugin_host.get_loaded_plugins();
 }
 
+bool r_stream_keeper::is_system_plugin_enabled(const std::string& plugin_name) const
+{
+    return _system_plugin_host.is_plugin_enabled(plugin_name);
+}
+
+void r_stream_keeper::set_system_plugin_enabled(const std::string& plugin_name, bool enabled)
+{
+    _system_plugin_host.set_plugin_enabled(plugin_name, enabled);
+}
+
 void r_stream_keeper::bounce(const std::string& camera_id)
 {
     r_stream_keeper_cmd cmd;

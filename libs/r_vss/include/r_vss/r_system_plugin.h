@@ -13,6 +13,12 @@ typedef void* r_system_plugin_handle;
 
 // Required exports from each plugin shared library
 
+// Get the plugin's unique identifier (GUID)
+// This is called BEFORE load_system_plugin to check for duplicates
+// Returns: A unique string identifier for this plugin (e.g., "com.example.myplugin")
+// The returned string must remain valid for the lifetime of the loaded library
+R_API const char* get_system_plugin_guid();
+
 // Load and initialize the plugin
 // Called once at Revere startup
 // top_dir: Revere's top-level data directory
@@ -31,6 +37,14 @@ R_API void stop_system_plugin(r_system_plugin_handle plugin);
 // Destroy and cleanup the plugin
 // Called after stop, final cleanup before unloading
 R_API void destroy_system_plugin(r_system_plugin_handle plugin);
+
+// Check if the plugin is enabled
+// Returns: true if enabled, false otherwise
+R_API bool system_plugin_enabled(r_system_plugin_handle plugin);
+
+// Enable or disable the plugin
+// enabled: true to enable, false to disable
+R_API void system_plugin_set_enabled(r_system_plugin_handle plugin, bool enabled);
 
 #ifdef __cplusplus
 }

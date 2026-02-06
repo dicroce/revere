@@ -10,10 +10,13 @@ using namespace r_utils;
 namespace fs = std::filesystem;
 
 // C API function pointer types
+typedef const char* (*get_system_plugin_guid_func)();
 typedef r_system_plugin_handle (*load_system_plugin_func)(const char*, void*);
 typedef void (*start_system_plugin_func)(r_system_plugin_handle);
 typedef void (*stop_system_plugin_func)(r_system_plugin_handle);
 typedef void (*destroy_system_plugin_func)(r_system_plugin_handle);
+typedef bool (*system_plugin_enabled_func)(r_system_plugin_handle);
+typedef void (*system_plugin_set_enabled_func)(r_system_plugin_handle, bool);
 
 r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
     : _top_dir(top_dir)
@@ -66,33 +69,61 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                             auto lib = std::make_unique<r_dynamic_library>(entry.path().string());
 
                             // Look for the required C API symbols
+                            void* guid_symbol = lib->resolve_symbol("get_system_plugin_guid");
                             void* load_symbol = lib->resolve_symbol("load_system_plugin");
                             void* start_symbol = lib->resolve_symbol("start_system_plugin");
                             void* stop_symbol = lib->resolve_symbol("stop_system_plugin");
                             void* destroy_symbol = lib->resolve_symbol("destroy_system_plugin");
+                            void* enabled_symbol = lib->resolve_symbol("system_plugin_enabled");
+                            void* set_enabled_symbol = lib->resolve_symbol("system_plugin_set_enabled");
 
-                            if (load_symbol && start_symbol && stop_symbol && destroy_symbol)
+                            if (guid_symbol && load_symbol && start_symbol && stop_symbol && destroy_symbol &&
+                                enabled_symbol && set_enabled_symbol)
                             {
                                 // Cast to function pointers
+                                get_system_plugin_guid_func guid_func = reinterpret_cast<get_system_plugin_guid_func>(guid_symbol);
                                 load_system_plugin_func load_func = reinterpret_cast<load_system_plugin_func>(load_symbol);
                                 start_system_plugin_func start_func = reinterpret_cast<start_system_plugin_func>(start_symbol);
                                 stop_system_plugin_func stop_func = reinterpret_cast<stop_system_plugin_func>(stop_symbol);
                                 destroy_system_plugin_func destroy_func = reinterpret_cast<destroy_system_plugin_func>(destroy_symbol);
+                                system_plugin_enabled_func enabled_func = reinterpret_cast<system_plugin_enabled_func>(enabled_symbol);
+                                system_plugin_set_enabled_func set_enabled_func = reinterpret_cast<system_plugin_set_enabled_func>(set_enabled_symbol);
+
+                                // Get the plugin GUID and check for duplicates
+                                const char* guid_cstr = guid_func();
+                                std::string plugin_guid = guid_cstr ? guid_cstr : "";
+
+                                if (plugin_guid.empty())
+                                {
+                                    R_LOG_WARNING("System plugin %s returned empty GUID, skipping", filename.c_str());
+                                    continue;
+                                }
+
+                                if (_loaded_guids.count(plugin_guid) > 0)
+                                {
+                                    R_LOG_INFO("System plugin %s (GUID: %s) already loaded, skipping duplicate",
+                                        filename.c_str(), plugin_guid.c_str());
+                                    continue;
+                                }
 
                                 // Call load_system_plugin with top_dir and logger state
                                 r_system_plugin_handle plugin_handle = load_func(_top_dir.c_str(), r_logger::get_logger_state());
 
                                 if (plugin_handle)
                                 {
+                                    _loaded_guids.insert(plugin_guid);
                                     _plugins.push_back({
                                         std::move(lib),
                                         plugin_handle,
                                         start_func,
                                         stop_func,
                                         destroy_func,
-                                        plugin_name
+                                        enabled_func,
+                                        set_enabled_func,
+                                        plugin_name,
+                                        plugin_guid
                                     });
-                                    R_LOG_INFO("Loaded system plugin: %s", filename.c_str());
+                                    R_LOG_INFO("Loaded system plugin: %s (GUID: %s)", filename.c_str(), plugin_guid.c_str());
                                 }
                                 else
                                 {
@@ -101,7 +132,7 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                             }
                             else
                             {
-                                R_LOG_WARNING("System plugin %s does not export required symbols (load_system_plugin, start_system_plugin, stop_system_plugin, destroy_system_plugin)", filename.c_str());
+                                R_LOG_WARNING("System plugin %s does not export required symbols", filename.c_str());
                             }
                         }
                         catch (const std::exception& e)
@@ -190,4 +221,43 @@ std::vector<std::string> r_system_plugin_host::get_loaded_plugins() const
         plugin_names.push_back(p.name);
     }
     return plugin_names;
+}
+
+bool r_system_plugin_host::is_plugin_enabled(const std::string& plugin_name) const
+{
+    for(const auto& p : _plugins)
+    {
+        if (p.name == plugin_name && p.plugin_handle && p.enabled_func)
+        {
+            try
+            {
+                return p.enabled_func(p.plugin_handle);
+            }
+            catch (const std::exception& e)
+            {
+                R_LOG_ERROR("Error checking enabled state for plugin %s: %s", plugin_name.c_str(), e.what());
+            }
+        }
+    }
+    return false;
+}
+
+void r_system_plugin_host::set_plugin_enabled(const std::string& plugin_name, bool enabled)
+{
+    for(auto& p : _plugins)
+    {
+        if (p.name == plugin_name && p.plugin_handle && p.set_enabled_func)
+        {
+            try
+            {
+                p.set_enabled_func(p.plugin_handle, enabled);
+                R_LOG_INFO("Set plugin %s enabled=%s", plugin_name.c_str(), enabled ? "true" : "false");
+            }
+            catch (const std::exception& e)
+            {
+                R_LOG_ERROR("Error setting enabled state for plugin %s: %s", plugin_name.c_str(), e.what());
+            }
+            return;
+        }
+    }
 }

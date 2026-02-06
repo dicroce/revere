@@ -8,6 +8,7 @@
 
 #include <list>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,12 @@ public:
     // Get list of loaded plugin names
     R_API std::vector<std::string> get_loaded_plugins() const;
 
+    // Check if a plugin is enabled by name
+    R_API bool is_plugin_enabled(const std::string& plugin_name) const;
+
+    // Enable or disable a plugin by name
+    R_API void set_plugin_enabled(const std::string& plugin_name, bool enabled);
+
 private:
     struct plugin_info
     {
@@ -37,11 +44,15 @@ private:
         void (*start_func)(r_system_plugin_handle);
         void (*stop_func)(r_system_plugin_handle);
         void (*destroy_func)(r_system_plugin_handle);
+        bool (*enabled_func)(r_system_plugin_handle);
+        void (*set_enabled_func)(r_system_plugin_handle, bool);
         std::string name;
+        std::string guid;
     };
 
     std::string _top_dir;
     std::list<plugin_info> _plugins;
+    std::set<std::string> _loaded_guids;  // Track loaded plugin GUIDs to prevent duplicates
 };
 
 }
