@@ -84,7 +84,7 @@ if(EXTERNAL_PLUGIN_REPOS)
             # Handles both https://github.com/user/repo.git and git@github.com:user/repo.git
             string(REGEX REPLACE ".*[/:](.+)\\.git$" "\\1" PLUGIN_NAME "${PLUGIN_URL}")
             string(REGEX REPLACE ".*[/:](.+)$" "\\1" PLUGIN_NAME "${PLUGIN_NAME}")
-
+ 
             message(STATUS "Fetching external plugin: ${PLUGIN_NAME} from ${PLUGIN_URL}")
 
             FetchContent_Declare(
