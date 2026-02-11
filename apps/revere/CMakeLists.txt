@@ -33,6 +33,13 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(traypp)
 
+# On macOS, patch traypp to not use template mode so the color icon is preserved
+if(APPLE)
+    file(READ ${traypp_SOURCE_DIR}/tray/src/core/macos/tray.mm TRAY_MM_CONTENT)
+    string(REPLACE "[nsIcon setTemplate:YES]" "[nsIcon setTemplate:NO]" TRAY_MM_CONTENT "${TRAY_MM_CONTENT}")
+    file(WRITE ${traypp_SOURCE_DIR}/tray/src/core/macos/tray.mm "${TRAY_MM_CONTENT}")
+endif()
+
 FetchContent_Declare(
     pugixml
     GIT_REPOSITORY https://github.com/zeux/pugixml.git
@@ -154,5 +161,25 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     # set_source_files_properties(${APP_ICON} PROPERTIES
     #     MACOSX_PACKAGE_LOCATION "Resources")
     # target_sources(revere PRIVATE ${APP_ICON})
+
+    # Copy shared libraries into the app bundle so it can find them at runtime
+    set(REVERE_LIBS r_utils r_ui_utils r_av r_pipeline r_storage r_motion r_onvif r_http r_db r_fakey r_disco r_vss)
+    foreach(LIB ${REVERE_LIBS})
+        add_custom_command(TARGET revere POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/lib
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${LIB}> $<TARGET_BUNDLE_DIR:revere>/Contents/lib/
+        )
+    endforeach()
+
+    # Also copy SDL2 and nanots
+    add_custom_command(TARGET revere POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2> $<TARGET_BUNDLE_DIR:revere>/Contents/lib/
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:nanots> $<TARGET_BUNDLE_DIR:revere>/Contents/lib/
+    )
+
+    # Copy tray icon into the app bundle
+    add_custom_command(TARGET revere POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/R.png $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/R.png
+    )
 endif()
 
