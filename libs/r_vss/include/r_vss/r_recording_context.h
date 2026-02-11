@@ -36,7 +36,11 @@ namespace r_vss
 constexpr size_t LIVE_RESTREAM_MAX_QUEUE_SIZE = 300;
 
 // Maximum frames to buffer for playback restreaming
-constexpr size_t PLAYBACK_RESTREAM_MAX_QUEUE_SIZE = 120;
+// Increased from 120 to 300 to accommodate 5-second fetches without dropping frames
+// Video at 30fps: ~150 frames per 5 seconds
+// Audio at 50fps: ~250 frames per 5 seconds
+// 300 frame buffer ensures no drops for both streams
+constexpr size_t PLAYBACK_RESTREAM_MAX_QUEUE_SIZE = 300;
 
 class r_recording_context;
 

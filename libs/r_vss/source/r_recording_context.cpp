@@ -698,7 +698,18 @@ static void _need_playback_data_cbs(GstElement* appsrc, guint, playback_restream
 
 static bool _time_to_get_more_data(shared_ptr<playback_restreaming_state> prs)
 {
-    return prs->running && (prs->video_samples.size() < 40 || (prs->has_audio && prs->audio_samples.size() < 40));
+    if(!prs->running) return false;
+
+    // Prioritize video queue - fetch more aggressively to prevent visible stuttering
+    // Increased threshold from 40 to 60 to fetch sooner and maintain larger buffer
+    if(prs->video_samples.size() < 60) return true;
+
+    // For audio, only fetch if video buffer is also getting low
+    // This prevents too-frequent fetches triggered by audio-only consumption
+    if(prs->has_audio && prs->audio_samples.size() < 60 && prs->video_samples.size() < 80)
+        return true;
+
+    return false;
 }
 
 static void _playback_entry_point(shared_ptr<playback_restreaming_state> prs)
