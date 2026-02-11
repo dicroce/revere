@@ -104,5 +104,20 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     # set_source_files_properties(${APP_ICON} PROPERTIES
     #     MACOSX_PACKAGE_LOCATION "Resources")
     # target_sources(vision PRIVATE ${APP_ICON})
+
+    # Copy shared libraries into the app bundle so it can find them at runtime
+    set(VISION_LIBS r_utils r_ui_utils r_av r_pipeline r_storage r_motion r_onvif r_http r_db r_vss)
+    foreach(LIB ${VISION_LIBS})
+        add_custom_command(TARGET vision POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:vision>/Contents/lib
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${LIB}> $<TARGET_BUNDLE_DIR:vision>/Contents/lib/
+        )
+    endforeach()
+
+    # Also copy SDL2 and nanots
+    add_custom_command(TARGET vision POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2> $<TARGET_BUNDLE_DIR:vision>/Contents/lib/
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:nanots> $<TARGET_BUNDLE_DIR:vision>/Contents/lib/
+    )
 endif()
 
