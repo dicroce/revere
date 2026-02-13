@@ -1235,7 +1235,15 @@ int main(int argc, char** argv)
     vision_cmd = "vision.exe";
 #elif defined(IS_MACOS)
     // On macOS, use 'open' command to launch the app bundle
-    vision_cmd = "open -n /Applications/Vision.app";
+    // Look for vision.app next to revere.app first, then fall back to /Applications
+    {
+        auto exe_dir = r_fs::working_directory();
+        auto local_vision = exe_dir + "/../../../vision.app";
+        if(r_fs::is_dir(local_vision))
+            vision_cmd = "open -n " + local_vision;
+        else
+            vision_cmd = "open -n /Applications/Vision.app";
+    }
 #endif
 
     r_process vision_process(vision_cmd, true); // Use detached process

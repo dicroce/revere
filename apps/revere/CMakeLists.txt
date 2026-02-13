@@ -33,10 +33,11 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(traypp)
 
-# On macOS, patch traypp to not use template mode so the color icon is preserved
+# On macOS, patch traypp: use color icon and show app in Cmd-Tab / Dock
 if(APPLE)
     file(READ ${traypp_SOURCE_DIR}/tray/src/core/macos/tray.mm TRAY_MM_CONTENT)
     string(REPLACE "[nsIcon setTemplate:YES]" "[nsIcon setTemplate:NO]" TRAY_MM_CONTENT "${TRAY_MM_CONTENT}")
+    string(REPLACE "NSApplicationActivationPolicyAccessory" "NSApplicationActivationPolicyRegular" TRAY_MM_CONTENT "${TRAY_MM_CONTENT}")
     file(WRITE ${traypp_SOURCE_DIR}/tray/src/core/macos/tray.mm "${TRAY_MM_CONTENT}")
 endif()
 
@@ -181,5 +182,24 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     add_custom_command(TARGET revere POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/R.png $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/R.png
     )
+
+    # Copy system plugins into the app bundle
+    add_custom_command(TARGET revere POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/system_plugins
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_BINARY_DIR}/system_plugins $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/system_plugins
+    )
+
+    # Copy motion plugins and model files into the app bundle
+    add_custom_command(TARGET revere POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/motion_plugins
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_BINARY_DIR}/motion_plugins $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/motion_plugins
+    )
+    if(NCNN_AVAILABLE)
+        add_custom_command(TARGET revere POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/libs/r_vss/motion_plugins/yolov8_person_plugin/model/yolov8n.param $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person/
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/libs/r_vss/motion_plugins/yolov8_person_plugin/model/yolov8n.bin $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person/
+        )
+    endif()
 endif()
 
