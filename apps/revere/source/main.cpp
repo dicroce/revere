@@ -4,6 +4,10 @@
 #ifdef IS_WINDOWS
 #include <windows.h>
 #endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 #include <SDL.h>
 
 #include "imgui/imgui.h"
@@ -1116,6 +1120,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 int main(int argc, char** argv)
 #endif
 {
+    // Single instance check: prevent multiple revere processes from running
+#ifdef IS_WINDOWS
+    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\RevereAppMutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        MessageBoxW(NULL, L"Revere is already running.", L"Revere", MB_OK | MB_ICONINFORMATION);
+        if (hMutex) CloseHandle(hMutex);
+        return 1;
+    }
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+    auto lock_file_path = std::string(getenv("HOME")) + "/.revere.lock";
+    int lock_fd = open(lock_file_path.c_str(), O_CREAT | O_RDWR, 0600);
+    if (lock_fd >= 0 && flock(lock_fd, LOCK_EX | LOCK_NB) != 0)
+    {
+        fprintf(stderr, "Revere is already running.\n");
+        close(lock_fd);
+        return 1;
+    }
+#endif
+
     r_logger::install_terminate();
 
     auto top_dir = revere::top_dir();
