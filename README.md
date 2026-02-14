@@ -32,7 +32,11 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 
 ## Quick Start
 
-The quickest way to try it is the .AppImage version on linux or the portable windows binary version.
+On Windows the quickest way to try Revere is to download a release and run the installer (and optionally the revere_cloud installer if you want cloud access).
+
+On Linux the simplest way is to install the revere snap:
+
+[![Get it from the Snap Store](https://snapcraft.io/en/dark/install.svg)](https://snapcraft.io/revere)
 
 ### Prerequisites
 
