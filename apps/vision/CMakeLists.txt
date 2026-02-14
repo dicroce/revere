@@ -106,7 +106,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     # target_sources(vision PRIVATE ${APP_ICON})
 
     # Copy shared libraries into the app bundle so it can find them at runtime
-    set(VISION_LIBS r_utils r_ui_utils r_av r_pipeline r_storage r_motion r_onvif r_http r_db r_vss)
+    set(VISION_LIBS r_utils r_ui_utils r_av r_pipeline r_storage r_motion r_onvif r_http r_db r_vss r_disco r_fakey)
     foreach(LIB ${VISION_LIBS})
         add_custom_command(TARGET vision POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:vision>/Contents/lib

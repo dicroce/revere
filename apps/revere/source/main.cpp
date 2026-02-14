@@ -4,6 +4,10 @@
 #ifdef IS_WINDOWS
 #include <windows.h>
 #endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 #include <SDL.h>
 
 #include "imgui/imgui.h"
@@ -1129,6 +1133,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 int main(int argc, char** argv)
 #endif
 {
+    // Single instance check: prevent multiple revere processes from running
+#ifdef IS_WINDOWS
+    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\RevereAppMutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        MessageBoxW(NULL, L"Revere is already running.", L"Revere", MB_OK | MB_ICONINFORMATION);
+        if (hMutex) CloseHandle(hMutex);
+        return 1;
+    }
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+    auto lock_file_path = std::string(getenv("HOME")) + "/.revere.lock";
+    int lock_fd = open(lock_file_path.c_str(), O_CREAT | O_RDWR, 0600);
+    if (lock_fd >= 0 && flock(lock_fd, LOCK_EX | LOCK_NB) != 0)
+    {
+        fprintf(stderr, "Revere is already running.\n");
+        close(lock_fd);
+        return 1;
+    }
+#endif
+
     r_logger::install_terminate();
 
     auto top_dir = revere::top_dir();
@@ -1268,7 +1293,15 @@ int main(int argc, char** argv)
     vision_cmd = "vision.exe";
 #elif defined(IS_MACOS)
     // On macOS, use 'open' command to launch the app bundle
-    vision_cmd = "open -n /Applications/Vision.app";
+    // Look for vision.app next to revere.app first, then fall back to /Applications
+    {
+        auto exe_dir = r_fs::working_directory();
+        auto local_vision = exe_dir + "/../../../vision.app";
+        if(r_fs::is_dir(local_vision))
+            vision_cmd = "open -n " + local_vision;
+        else
+            vision_cmd = "open -n /Applications/Vision.app";
+    }
 #endif
 
     r_process vision_process(vision_cmd, true); // Use detached process
@@ -1688,8 +1721,6 @@ int main(int argc, char** argv)
                         }
                         else
                         {
-                            ImGui::Text("Loaded plugins:");
-                            ImGui::Spacing();
                             for (const auto& plugin_name : ui_state.loaded_system_plugins)
                             {
                                 bool is_enabled = streamKeeper.is_system_plugin_enabled(plugin_name);
@@ -1697,6 +1728,97 @@ int main(int argc, char** argv)
                                 {
                                     streamKeeper.set_system_plugin_enabled(plugin_name, is_enabled);
                                 }
+
+                                // Show status indicator if plugin supports it
+                                auto status = streamKeeper.get_system_plugin_status(plugin_name);
+                                if (!status.empty())
+                                {
+                                    ImU32 dot_color;
+                                    const char* status_label;
+
+                                    if (status == "connected")
+                                    {
+                                        dot_color = IM_COL32(50, 200, 50, 255);
+                                        status_label = "Connected";
+                                    }
+                                    else if (status == "authenticating")
+                                    {
+                                        dot_color = IM_COL32(220, 180, 50, 255);
+                                        status_label = "Authenticating...";
+                                    }
+                                    else if (status == "not_connected")
+                                    {
+                                        dot_color = IM_COL32(200, 50, 50, 255);
+                                        status_label = "Not Connected";
+                                    }
+                                    else
+                                    {
+                                        dot_color = IM_COL32(100, 100, 100, 255);
+                                        status_label = "Disabled";
+                                    }
+
+                                    ImGui::Indent(28.0f);
+                                    auto cursor = ImGui::GetCursorScreenPos();
+                                    float dot_radius = 5.0f;
+                                    ImVec2 dot_center(cursor.x + dot_radius, cursor.y + ImGui::GetTextLineHeight() * 0.5f);
+                                    ImGui::GetWindowDrawList()->AddCircleFilled(dot_center, dot_radius, dot_color);
+                                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dot_radius * 2.0f + 6.0f);
+                                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", status_label);
+
+                                    // Show status message details (e.g., user code + URL during auth)
+                                    auto status_message = streamKeeper.get_system_plugin_status_message(plugin_name);
+                                    if (!status_message.empty())
+                                    {
+                                        // Parse "Code: XXXX-XXXX\nhttps://..." into separate lines
+                                        auto newline_pos = status_message.find('\n');
+                                        if (newline_pos != std::string::npos)
+                                        {
+                                            auto code_line = status_message.substr(0, newline_pos);
+                                            auto url_line = status_message.substr(newline_pos + 1);
+
+                                            // Show user code prominently
+                                            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.6f, 1.0f), "%s", code_line.c_str());
+
+                                            // Copy code button
+                                            ImGui::SameLine();
+                                            // Extract just the code value after "Code: "
+                                            auto code_value = code_line.substr(code_line.find(": ") != std::string::npos ? code_line.find(": ") + 2 : 0);
+                                            if (ImGui::SmallButton("Copy Code"))
+                                                ImGui::SetClipboardText(code_value.c_str());
+
+                                            // Show URL with wrapping
+                                            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+                                            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", url_line.c_str());
+                                            ImGui::PopTextWrapPos();
+
+                                            // Open in browser button
+                                            if (ImGui::SmallButton("Open in Browser"))
+                                            {
+                                                std::string open_cmd;
+#if defined(IS_MACOS) || defined(__APPLE__)
+                                                open_cmd = "open \"" + url_line + "\"";
+#elif defined(IS_LINUX)
+                                                open_cmd = "xdg-open \"" + url_line + "\"";
+#elif defined(IS_WINDOWS)
+                                                open_cmd = "start \"\" \"" + url_line + "\"";
+#endif
+                                                if (!open_cmd.empty())
+                                                    system(open_cmd.c_str());
+                                            }
+                                            ImGui::SameLine();
+                                            if (ImGui::SmallButton("Copy URL"))
+                                                ImGui::SetClipboardText(url_line.c_str());
+                                        }
+                                        else
+                                        {
+                                            ImGui::TextWrapped("%s", status_message.c_str());
+                                        }
+                                    }
+
+                                    ImGui::Unindent(28.0f);
+                                }
+
+                                ImGui::Spacing();
                             }
                         }
 

@@ -17,6 +17,8 @@ typedef void (*stop_system_plugin_func)(r_system_plugin_handle);
 typedef void (*destroy_system_plugin_func)(r_system_plugin_handle);
 typedef bool (*system_plugin_enabled_func)(r_system_plugin_handle);
 typedef void (*system_plugin_set_enabled_func)(r_system_plugin_handle, bool);
+typedef const char* (*system_plugin_get_status_func)(r_system_plugin_handle);
+typedef const char* (*system_plugin_get_status_message_func)(r_system_plugin_handle);
 
 r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
     : _top_dir(top_dir)
@@ -89,6 +91,24 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                 system_plugin_enabled_func enabled_func = reinterpret_cast<system_plugin_enabled_func>(enabled_symbol);
                                 system_plugin_set_enabled_func set_enabled_func = reinterpret_cast<system_plugin_set_enabled_func>(set_enabled_symbol);
 
+                                // Optional: resolve status functions (nullptr if not supported)
+                                system_plugin_get_status_func status_func = nullptr;
+                                system_plugin_get_status_message_func status_message_func = nullptr;
+                                try
+                                {
+                                    void* status_symbol = lib->resolve_symbol("system_plugin_get_status");
+                                    if (status_symbol)
+                                        status_func = reinterpret_cast<system_plugin_get_status_func>(status_symbol);
+                                }
+                                catch (...) {}
+                                try
+                                {
+                                    void* msg_symbol = lib->resolve_symbol("system_plugin_get_status_message");
+                                    if (msg_symbol)
+                                        status_message_func = reinterpret_cast<system_plugin_get_status_message_func>(msg_symbol);
+                                }
+                                catch (...) {}
+
                                 // Get the plugin GUID and check for duplicates
                                 const char* guid_cstr = guid_func();
                                 std::string plugin_guid = guid_cstr ? guid_cstr : "";
@@ -120,6 +140,8 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         destroy_func,
                                         enabled_func,
                                         set_enabled_func,
+                                        status_func,
+                                        status_message_func,
                                         plugin_name,
                                         plugin_guid
                                     });
@@ -260,4 +282,44 @@ void r_system_plugin_host::set_plugin_enabled(const std::string& plugin_name, bo
             return;
         }
     }
+}
+
+std::string r_system_plugin_host::get_plugin_status(const std::string& plugin_name) const
+{
+    for(const auto& p : _plugins)
+    {
+        if (p.name == plugin_name && p.plugin_handle && p.status_func)
+        {
+            try
+            {
+                const char* status = p.status_func(p.plugin_handle);
+                return status ? std::string(status) : std::string();
+            }
+            catch (const std::exception& e)
+            {
+                R_LOG_ERROR("Error getting status for plugin %s: %s", plugin_name.c_str(), e.what());
+            }
+        }
+    }
+    return std::string();
+}
+
+std::string r_system_plugin_host::get_plugin_status_message(const std::string& plugin_name) const
+{
+    for(const auto& p : _plugins)
+    {
+        if (p.name == plugin_name && p.plugin_handle && p.status_message_func)
+        {
+            try
+            {
+                const char* msg = p.status_message_func(p.plugin_handle);
+                return msg ? std::string(msg) : std::string();
+            }
+            catch (const std::exception& e)
+            {
+                R_LOG_ERROR("Error getting status message for plugin %s: %s", plugin_name.c_str(), e.what());
+            }
+        }
+    }
+    return std::string();
 }
