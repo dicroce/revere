@@ -43,6 +43,7 @@
 #include "r_av/r_video_decoder.h"
 #include "r_ui_utils/stb_image.h"
 #include "r_ui_utils/font_catalog.h"
+#include "r_utils/3rdparty/json/json.h"
 #include "r_ui_utils/texture_loader.h"
 #include "r_ui_utils/wizard.h"
 
@@ -1730,32 +1731,18 @@ int main(int argc, char** argv)
                                 }
 
                                 // Show status indicator if plugin supports it
-                                auto status = streamKeeper.get_system_plugin_status(plugin_name);
-                                if (!status.empty())
+                                auto status_json = streamKeeper.get_system_plugin_status(plugin_name);
+                                if (!status_json.empty())
                                 {
-                                    ImU32 dot_color;
-                                    const char* status_label;
-
-                                    if (status == "connected")
+                                    try
                                     {
-                                        dot_color = IM_COL32(50, 200, 50, 255);
-                                        status_label = "Connected";
-                                    }
-                                    else if (status == "authenticating")
-                                    {
-                                        dot_color = IM_COL32(220, 180, 50, 255);
-                                        status_label = "Authenticating...";
-                                    }
-                                    else if (status == "not_connected")
-                                    {
-                                        dot_color = IM_COL32(200, 50, 50, 255);
-                                        status_label = "Not Connected";
-                                    }
-                                    else
-                                    {
-                                        dot_color = IM_COL32(100, 100, 100, 255);
-                                        status_label = "Disabled";
-                                    }
+                                    auto sj = nlohmann::json::parse(status_json);
+                                    auto label = sj.value("label", std::string("Unknown"));
+                                    auto color_arr = sj.value("color", std::vector<int>{100, 100, 100});
+                                    int r = color_arr.size() > 0 ? color_arr[0] : 100;
+                                    int g = color_arr.size() > 1 ? color_arr[1] : 100;
+                                    int b = color_arr.size() > 2 ? color_arr[2] : 100;
+                                    ImU32 dot_color = IM_COL32(r, g, b, 255);
 
                                     ImGui::Indent(28.0f);
                                     auto cursor = ImGui::GetCursorScreenPos();
@@ -1763,62 +1750,71 @@ int main(int argc, char** argv)
                                     ImVec2 dot_center(cursor.x + dot_radius, cursor.y + ImGui::GetTextLineHeight() * 0.5f);
                                     ImGui::GetWindowDrawList()->AddCircleFilled(dot_center, dot_radius, dot_color);
                                     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dot_radius * 2.0f + 6.0f);
-                                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", status_label);
+                                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", label.c_str());
 
-                                    // Show status message details (e.g., user code + URL during auth)
+                                    // Show status message details (parsed from JSON)
                                     auto status_message = streamKeeper.get_system_plugin_status_message(plugin_name);
                                     if (!status_message.empty())
                                     {
-                                        // Parse "Code: XXXX-XXXX\nhttps://..." into separate lines
-                                        auto newline_pos = status_message.find('\n');
-                                        if (newline_pos != std::string::npos)
+                                        try
                                         {
-                                            auto code_line = status_message.substr(0, newline_pos);
-                                            auto url_line = status_message.substr(newline_pos + 1);
-
-                                            // Show user code prominently
-                                            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.6f, 1.0f), "%s", code_line.c_str());
-
-                                            // Copy code button
-                                            ImGui::SameLine();
-                                            // Extract just the code value after "Code: "
-                                            auto code_value = code_line.substr(code_line.find(": ") != std::string::npos ? code_line.find(": ") + 2 : 0);
-                                            if (ImGui::SmallButton("Copy Code"))
-                                                ImGui::SetClipboardText(code_value.c_str());
-
-                                            // Show URL with wrapping
-                                            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
-                                            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", url_line.c_str());
-                                            ImGui::PopTextWrapPos();
-
-                                            // Open in browser button
-                                            if (ImGui::SmallButton("Open in Browser"))
+                                            auto j = nlohmann::json::parse(status_message);
+                                            if (j.contains("lines") && j["lines"].is_array())
                                             {
-                                                std::string open_cmd;
+                                                for (const auto& line : j["lines"])
+                                                {
+                                                    auto text = line.value("text", std::string());
+                                                    if (text.empty())
+                                                        continue;
+
+                                                    bool has_copy = line.contains("copy");
+                                                    bool has_url = line.contains("url");
+
+                                                    if (has_url)
+                                                    {
+                                                        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+                                                        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", text.c_str());
+                                                        ImGui::PopTextWrapPos();
+
+                                                        auto url_val = line["url"].get<std::string>();
+                                                        ImGui::SameLine();
+                                                        if (ImGui::SmallButton(("Open##" + text).c_str()))
+                                                        {
 #if defined(IS_MACOS) || defined(__APPLE__)
-                                                open_cmd = "open \"" + url_line + "\"";
+                                                            std::string open_cmd = "open \"" + url_val + "\"";
 #elif defined(IS_LINUX)
-                                                open_cmd = "xdg-open \"" + url_line + "\"";
+                                                            std::string open_cmd = "xdg-open \"" + url_val + "\"";
 #elif defined(IS_WINDOWS)
-                                                open_cmd = "start \"\" \"" + url_line + "\"";
+                                                            std::string open_cmd = "start \"\" \"" + url_val + "\"";
 #endif
-                                                if (!open_cmd.empty())
-                                                    system(open_cmd.c_str());
+                                                            system(open_cmd.c_str());
+                                                        }
+                                                        ImGui::SameLine();
+                                                        if (ImGui::SmallButton(("Copy URL##" + text).c_str()))
+                                                            ImGui::SetClipboardText(url_val.c_str());
+                                                    }
+                                                    else
+                                                    {
+                                                        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.6f, 1.0f), "%s", text.c_str());
+
+                                                        if (has_copy)
+                                                        {
+                                                            auto copy_val = line["copy"].get<std::string>();
+                                                            ImGui::SameLine();
+                                                            if (ImGui::SmallButton(("Copy##" + text).c_str()))
+                                                                ImGui::SetClipboardText(copy_val.c_str());
+                                                        }
+                                                    }
+                                                }
                                             }
-                                            ImGui::SameLine();
-                                            if (ImGui::SmallButton("Copy URL"))
-                                                ImGui::SetClipboardText(url_line.c_str());
                                         }
-                                        else
-                                        {
-                                            ImGui::TextWrapped("%s", status_message.c_str());
-                                        }
+                                        catch (...) {}
                                     }
 
                                     ImGui::Unindent(28.0f);
+                                    }
+                                    catch (...) {}
                                 }
-
-                                ImGui::Spacing();
                             }
                         }
 
