@@ -443,6 +443,16 @@ void r_stream_keeper::set_system_plugin_enabled(const std::string& plugin_name, 
     _system_plugin_host.set_plugin_enabled(plugin_name, enabled);
 }
 
+std::string r_stream_keeper::get_system_plugin_status(const std::string& plugin_name) const
+{
+    return _system_plugin_host.get_plugin_status(plugin_name);
+}
+
+std::string r_stream_keeper::get_system_plugin_status_message(const std::string& plugin_name) const
+{
+    return _system_plugin_host.get_plugin_status_message(plugin_name);
+}
+
 void r_stream_keeper::bounce(const std::string& camera_id)
 {
     r_stream_keeper_cmd cmd;
