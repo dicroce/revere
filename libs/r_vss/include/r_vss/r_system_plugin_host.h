@@ -36,10 +36,17 @@ public:
     // Enable or disable a plugin by name
     R_API void set_plugin_enabled(const std::string& plugin_name, bool enabled);
 
+<<<<<<< Updated upstream
     // Get plugin status string (returns empty string if plugin doesn't support status)
     R_API std::string get_plugin_status(const std::string& plugin_name) const;
 
     // Get plugin status message (returns empty string if plugin doesn't support it)
+=======
+    // Get a plugin's current status string (empty if plugin doesn't support status reporting)
+    R_API std::string get_plugin_status(const std::string& plugin_name) const;
+
+    // Get a plugin's current status message JSON (empty if no message)
+>>>>>>> Stashed changes
     R_API std::string get_plugin_status_message(const std::string& plugin_name) const;
 
 private:
@@ -52,8 +59,13 @@ private:
         void (*destroy_func)(r_system_plugin_handle);
         bool (*enabled_func)(r_system_plugin_handle);
         void (*set_enabled_func)(r_system_plugin_handle, bool);
+<<<<<<< Updated upstream
         const char* (*status_func)(r_system_plugin_handle); // Optional - nullptr if not supported
         const char* (*status_message_func)(r_system_plugin_handle); // Optional - nullptr if not supported
+=======
+        const char* (*status_func)(r_system_plugin_handle);          // Optional - nullptr if not supported
+        const char* (*status_message_func)(r_system_plugin_handle);  // Optional - nullptr if not supported
+>>>>>>> Stashed changes
         std::string name;
         std::string guid;
     };

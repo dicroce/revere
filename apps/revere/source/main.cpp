@@ -43,6 +43,7 @@
 #include "r_av/r_video_decoder.h"
 #include "r_ui_utils/stb_image.h"
 #include "r_ui_utils/font_catalog.h"
+#include "r_utils/3rdparty/json/json.h"
 #include "r_ui_utils/texture_loader.h"
 #include "r_ui_utils/wizard.h"
 
@@ -1730,6 +1731,7 @@ int main(int argc, char** argv)
                                 }
 
                                 // Show status indicator if plugin supports it
+<<<<<<< Updated upstream
                                 auto status = streamKeeper.get_system_plugin_status(plugin_name);
                                 if (!status.empty())
                                 {
@@ -1756,6 +1758,20 @@ int main(int argc, char** argv)
                                         dot_color = IM_COL32(100, 100, 100, 255);
                                         status_label = "Disabled";
                                     }
+=======
+                                auto status_json = streamKeeper.get_system_plugin_status(plugin_name);
+                                if (!status_json.empty())
+                                {
+                                    try
+                                    {
+                                    auto sj = nlohmann::json::parse(status_json);
+                                    auto label = sj.value("label", std::string("Unknown"));
+                                    auto color_arr = sj.value("color", std::vector<int>{100, 100, 100});
+                                    int r = color_arr.size() > 0 ? color_arr[0] : 100;
+                                    int g = color_arr.size() > 1 ? color_arr[1] : 100;
+                                    int b = color_arr.size() > 2 ? color_arr[2] : 100;
+                                    ImU32 dot_color = IM_COL32(r, g, b, 255);
+>>>>>>> Stashed changes
 
                                     ImGui::Indent(28.0f);
                                     auto cursor = ImGui::GetCursorScreenPos();
@@ -1763,6 +1779,7 @@ int main(int argc, char** argv)
                                     ImVec2 dot_center(cursor.x + dot_radius, cursor.y + ImGui::GetTextLineHeight() * 0.5f);
                                     ImGui::GetWindowDrawList()->AddCircleFilled(dot_center, dot_radius, dot_color);
                                     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dot_radius * 2.0f + 6.0f);
+<<<<<<< Updated upstream
                                     ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", status_label);
 
                                     // Show status message details (e.g., user code + URL during auth)
@@ -1819,6 +1836,73 @@ int main(int argc, char** argv)
                                 }
 
                                 ImGui::Spacing();
+=======
+                                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", label.c_str());
+
+                                    // Show status message details (parsed from JSON)
+                                    auto status_message = streamKeeper.get_system_plugin_status_message(plugin_name);
+                                    if (!status_message.empty())
+                                    {
+                                        try
+                                        {
+                                            auto j = nlohmann::json::parse(status_message);
+                                            if (j.contains("lines") && j["lines"].is_array())
+                                            {
+                                                for (const auto& line : j["lines"])
+                                                {
+                                                    auto text = line.value("text", std::string());
+                                                    if (text.empty())
+                                                        continue;
+
+                                                    bool has_copy = line.contains("copy");
+                                                    bool has_url = line.contains("url");
+
+                                                    if (has_url)
+                                                    {
+                                                        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+                                                        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", text.c_str());
+                                                        ImGui::PopTextWrapPos();
+
+                                                        auto url_val = line["url"].get<std::string>();
+                                                        ImGui::SameLine();
+                                                        if (ImGui::SmallButton(("Open##" + text).c_str()))
+                                                        {
+#if defined(IS_MACOS) || defined(__APPLE__)
+                                                            std::string open_cmd = "open \"" + url_val + "\"";
+#elif defined(IS_LINUX)
+                                                            std::string open_cmd = "xdg-open \"" + url_val + "\"";
+#elif defined(IS_WINDOWS)
+                                                            std::string open_cmd = "start \"\" \"" + url_val + "\"";
+#endif
+                                                            system(open_cmd.c_str());
+                                                        }
+                                                        ImGui::SameLine();
+                                                        if (ImGui::SmallButton(("Copy URL##" + text).c_str()))
+                                                            ImGui::SetClipboardText(url_val.c_str());
+                                                    }
+                                                    else
+                                                    {
+                                                        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.6f, 1.0f), "%s", text.c_str());
+
+                                                        if (has_copy)
+                                                        {
+                                                            auto copy_val = line["copy"].get<std::string>();
+                                                            ImGui::SameLine();
+                                                            if (ImGui::SmallButton(("Copy##" + text).c_str()))
+                                                                ImGui::SetClipboardText(copy_val.c_str());
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        catch (...) {}
+                                    }
+
+                                    ImGui::Unindent(28.0f);
+                                    }
+                                    catch (...) {}
+                                }
+>>>>>>> Stashed changes
                             }
                         }
 
