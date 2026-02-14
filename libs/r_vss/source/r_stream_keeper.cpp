@@ -150,6 +150,10 @@ void r_stream_keeper::stop()
     R_LOG_INFO("Stopping prune...");
     _prune.stop();
     R_LOG_INFO("Prune stopped");
+
+    R_LOG_INFO("Stopping system plugins...");
+    _system_plugin_host.stop_all();
+    R_LOG_INFO("System plugins stopped");
 }
 
 vector<r_stream_status> r_stream_keeper::fetch_stream_status()
