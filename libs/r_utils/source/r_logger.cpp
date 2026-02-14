@@ -239,6 +239,19 @@ void r_utils::r_logger::write(LOG_LEVEL level,
         }
     }
 #endif
+
+#ifdef IS_MACOS
+    {
+        auto now = std::chrono::system_clock::now();
+        auto timestamp = r_time_utils::tp_to_iso_8601(now, false);
+        for(auto l : lines)
+        {
+            fprintf(stdout, "%s %s\n", timestamp.c_str(), l.c_str());
+        }
+        if(level <= LOG_LEVEL_ERROR)
+            fflush(stdout);
+    }
+#endif
 }
 
 void r_utils_terminate()
