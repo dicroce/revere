@@ -46,6 +46,16 @@ R_API bool system_plugin_enabled(r_system_plugin_handle plugin);
 // enabled: true to enable, false to disable
 R_API void system_plugin_set_enabled(r_system_plugin_handle plugin, bool enabled);
 
+// Optional: Get the plugin's current status string
+// Returns: A status string (e.g., "disabled", "authenticating", "connected", "not_connected")
+// The returned string must remain valid until the next call to this function
+// Plugins that don't implement this export will have no status displayed
+R_API const char* system_plugin_get_status(r_system_plugin_handle plugin);
+
+// Optional: Get additional status detail (e.g., user code, URL during auth)
+// Returns: A detail string, empty if no details available
+R_API const char* system_plugin_get_status_message(r_system_plugin_handle plugin);
+
 #ifdef __cplusplus
 }
 #endif
