@@ -34,7 +34,7 @@ struct assignment_state
     std::map<std::string, r_pipeline::r_sdp_media> sdp_medias;
     r_utils::r_nullable<std::shared_ptr<std::vector<uint8_t>>> maybe_key_frame;
     std::shared_ptr<r_ui_utils::texture> key_frame_texture;
-    bool do_motion_detection {false};
+    bool do_motion_detection {true};
     std::string motion_detection_file_path;
     r_utils::r_nullable<std::string> error_message;
 };

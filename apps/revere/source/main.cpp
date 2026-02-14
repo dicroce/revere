@@ -24,6 +24,7 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/r_process.h"
 #include "r_utils/r_args.h"
+#include "r_utils/r_startup.h"
 #include "r_utils/r_time_utils.h"
 #include "r_disco/r_agent.h"
 #include "r_disco/r_devices.h"
@@ -730,7 +731,7 @@ void configure_camera_setup_wizard(
             // Only open if not already open to avoid resetting state while user edits path
             if(!ImGuiFileDialog::Instance()->IsOpened("ChooseDirDlgKey"))
                 ImGuiFileDialog::Instance()->OpenDialog("ChooseDirDlgKey", "Choose Storage Location", nullptr, as.storage_dir, "", 1, nullptr, 0);
-            if(ImGuiFileDialog::Instance()->Display("ChooseDirDlgKey", ImGuiWindowFlags_None, ImVec2(800, 500)))
+            if(ImGuiFileDialog::Instance()->Display("ChooseDirDlgKey", ImGuiWindowFlags_None, ImVec2(800, 350)))
             {
                 if(ImGuiFileDialog::Instance()->IsOk())
                 {
@@ -751,7 +752,7 @@ void configure_camera_setup_wizard(
             // Only open if not already open to avoid resetting state while user edits path
             if(!ImGuiFileDialog::Instance()->IsOpened("ChooseFileDlgKey"))
                 ImGuiFileDialog::Instance()->OpenDialog("ChooseFileDlgKey", "Choose File", ".nts", revere::sub_dir("video"));
-            if(ImGuiFileDialog::Instance()->Display("ChooseFileDlgKey", ImGuiWindowFlags_None, ImVec2(800, 600)))
+            if(ImGuiFileDialog::Instance()->Display("ChooseFileDlgKey", ImGuiWindowFlags_None, ImVec2(800, 350)))
             {
                 if(ImGuiFileDialog::Instance()->IsOk())
                 {
@@ -816,6 +817,18 @@ void configure_camera_setup_wizard(
                 GImGui,
                 "Minimize to Tray",
                 [&](){camera_setup_wizard.cancel(); ui_state.minimize_requested = true;},
+                [&](){camera_setup_wizard.cancel();}
+            );
+        }
+    );
+
+    camera_setup_wizard.add_step(
+        "startup_enabled_notification",
+        [&camera_setup_wizard](){
+            ImGui::OpenPopup("Startup Enabled");
+            revere::startup_enabled_modal(
+                GImGui,
+                "Startup Enabled",
                 [&](){camera_setup_wizard.cancel();}
             );
         }
@@ -1129,7 +1142,9 @@ int main(int argc, char** argv)
 
 #ifdef IS_WINDOWS
     int argc;
-    LPWSTR* argv_p = CommandLineToArgvW(pCmdLine, &argc);
+    // Use GetCommandLineW() to get the FULL command line including exe path
+    // pCmdLine only contains arguments without the exe name
+    LPWSTR* argv_p = CommandLineToArgvW(GetCommandLineW(), &argc);
     vector<string> arg_storage;
     for(int i = 0; i < argc; i++)
         arg_storage.push_back(r_string_utils::convert_wide_string_to_multi_byte_string(argv_p[i]));
@@ -1140,7 +1155,17 @@ int main(int argc, char** argv)
 #endif
     auto args = r_args::parse_arguments(argc, &argv[0]);
 
-    auto maybe_start_minimized = (r_args::get_optional_argument(args, "--start_minimized", "false").value() == "false")? false : true;
+    // Debug: Log all parsed arguments
+    R_LOG_INFO("argc = %d", argc);
+    for(int i = 0; i < argc; ++i)
+        R_LOG_INFO("argv[%d] = '%s'", i, argv[i]);
+    R_LOG_INFO("Parsed %zu arguments:", args.size());
+    for(size_t i = 0; i < args.size(); ++i)
+        R_LOG_INFO("  args[%zu]: name='%s', value='%s'", i, args[i].name.c_str(), args[i].value.c_str());
+
+    auto maybe_start_minimized = r_args::check_argument(args, "--start_minimized");
+
+    R_LOG_INFO("Starting Revere: start_minimized = %s", maybe_start_minimized ? "true" : "false");
 
     r_raw_socket::socket_startup();
 
@@ -1170,12 +1195,20 @@ int main(int argc, char** argv)
     }
 
     // Create window with SDL2
+    // If starting minimized, create window hidden to avoid showing it briefly
+    Uint32 window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+    if (maybe_start_minimized)
+    {
+        window_flags |= SDL_WINDOW_HIDDEN;
+        R_LOG_INFO("Creating window with SDL_WINDOW_HIDDEN flag");
+    }
+
     SDL_Window* window = SDL_CreateWindow(
         "Revere",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         960, 540,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI
+        window_flags
     );
 
     if (window == nullptr)
@@ -1350,7 +1383,7 @@ int main(int argc, char** argv)
     bool force_ui_update = false;
 
 
-    bool window_visible = true;
+    bool window_visible = !maybe_start_minimized;  // Start hidden if minimized flag is set
     bool need_render = true;  // Render at least once on startup
 
     // Main loop
@@ -1500,6 +1533,21 @@ int main(int argc, char** argv)
 #endif
                 std::string download_url = base_url + filename;
                 revere::open_url_in_browser(download_url);
+            },
+            [&]() -> bool {
+                // Get current startup state
+                return r_startup::is_autostart_enabled("Revere");
+            },
+            [&](bool enabled){
+                // Set startup state
+                auto exe_path = r_fs::current_exe_path();
+                bool success = r_startup::set_autostart(enabled, "Revere", exe_path, "--start_minimized");
+
+                // Show confirmation dialog only when enabling and operation succeeded
+                if (enabled && success)
+                {
+                    camera_setup_wizard.next("startup_enabled_notification");
+                }
             }
         );
 

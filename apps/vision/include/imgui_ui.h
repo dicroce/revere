@@ -88,18 +88,21 @@ void configure_modal(
         //ImGuiWindow* window = g.CurrentWindow;
         //ImVec2 pos_before = window->DC.CursorPos;
 
-        ImGui::SetCursorPos(ImVec2(250 - (430/2), 40));
+        ImGui::SetCursorPos(ImVec2(250 - (430/2), 30));
+        ImGui::Text("Revere IPV4 Address");
+
+        ImGui::SetCursorPos(ImVec2(250 - (430/2), 55));
 
         char revere_ipv4[64] = {0};
         if(!cs.revere_ipv4.is_null())
             r_ui_utils::copy_s(revere_ipv4, 64, ip_storage);
-        
-        if(ImGui::InputText("Revere IPV4 Address", revere_ipv4, 64))
+
+        if(ImGui::InputText("##revere_ipv4", revere_ipv4, 64))
             ip_storage = std::string(revere_ipv4);
 
-        ImGui::SetCursorPos(ImVec2(340, 90));
+        ImGui::SetCursorPos(ImVec2(330, 90));
 
-        if(ImGui::Button("Cancel", ImVec2(60, 30)))
+        if(ImGui::Button("Cancel", ImVec2(70, 30)))
         {
             ImGui::CloseCurrentPopup();
             cancel_cb();

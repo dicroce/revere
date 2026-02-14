@@ -46,8 +46,8 @@ void error_modal(
     }
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb)
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb)
 {
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("File"))
@@ -58,6 +58,11 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
             minimize_cb();
         if (ImGui::MenuItem("Launch Vision"))
             launch_vision_cb();
+        ImGui::Separator();
+        bool startup_enabled = get_startup_state_cb();
+        if (ImGui::MenuItem("Start Revere with system", nullptr, &startup_enabled))
+            set_startup_state_cb(startup_enabled);
+        ImGui::Separator();
         if (ImGui::MenuItem("Exit"))
             exit_cb();
 
@@ -241,12 +246,23 @@ void rtsp_credentials_modal(
         ImGui::Text("Please provide the credentials for the Onvif user you wish\nto connect to this camera as:");
 
         static char username[64] = {0};
+        static char password[64] = {0};
+
+        // Clear static variables when dialog first opens
+        if(ImGui::IsWindowAppearing())
+        {
+            username[0] = '\0';
+            password[0] = '\0';
+            // Also clear the stored nullable values
+            u = r_utils::r_nullable<std::string>();
+            p = r_utils::r_nullable<std::string>();
+        }
+
         if(!u.is_null())
             r_ui_utils::copy_s(username, 64, u.value());
         if(ImGui::InputText("Username", username, 64))
             u.set_value(std::string(username));
 
-        static char password[64] = {0};
         if(!p.is_null())
             r_ui_utils::copy_s(password, 64, p.value());
         if(ImGui::InputText("Password", password, 64, ImGuiInputTextFlags_Password))
@@ -476,7 +492,11 @@ void friendly_name_modal(
         ImGui::Image(as.key_frame_texture ? as.key_frame_texture->imgui_id() : nullptr, ImVec2(320, 240));
 
         static char friendly_name[64] = {0};
-        r_ui_utils::copy_s(friendly_name, 64, fn);
+        // Clear static variable if starting with empty string (new camera)
+        if(fn.empty())
+            friendly_name[0] = '\0';
+        else
+            r_ui_utils::copy_s(friendly_name, 64, fn);
         if(ImGui::InputText("Camera Friendly Name", friendly_name, 64))
             fn = std::string(friendly_name);
 
@@ -786,6 +806,27 @@ void minimize_to_tray_modal(
         }
 
         ImGui::SameLine();
+
+        if(ImGui::Button("Ok"))
+        {
+            ok_cb();
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+template<typename OK_CB>
+void startup_enabled_modal(
+    ImGuiContext*,
+    const std::string& name,
+    OK_CB ok_cb
+)
+{
+    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("Revere will now start minimized to the system tray when the system starts.");
 
         if(ImGui::Button("Ok"))
         {

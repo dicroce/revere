@@ -104,21 +104,28 @@ template<typename EXPORT_CB>
 void control_bar_renderer::render_export_controls(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, const std::string& stream_name, EXPORT_CB export_cb)
 {
     auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-    auto export_button_x = (calc.center_box_left + calc.center_box_width) - 300;
+    auto right_edge = calc.center_box_left + calc.center_box_width;
 
-    ImGui::SetCursorScreenPos(ImVec2((float)export_button_x, (float)top_line_top));
     bool export_clicked = false;
     bool finish_export_clicked = false;
 
     if(cbs.exp_state == EXPORT_STATE_CONFIGURING)
     {
+        // When configuring export: Finish Export | Cancel | Play | Go Live
+        // From right with 10px spacing: Go Live(80) @ -90, Play(80) @ -180, Cancel(90) @ -280, Finish Export(120) @ -410
+        auto finish_export_x = right_edge - 410;
+        ImGui::SetCursorScreenPos(ImVec2((float)finish_export_x, (float)top_line_top));
         ImGui::PushStyleColor(ImGuiCol_Button, timeline_constants::colors::EXPORT_BUTTON_ACTIVE);
-        finish_export_clicked = ImGui::Button("Finish Export");
+        finish_export_clicked = ImGui::Button("Finish Export", ImVec2(120, 0));
         ImGui::PopStyleColor();
     }
     else
     {
-        export_clicked = ImGui::Button("Export ");
+        // Normal export button: Export | Play | Go Live
+        // From right with 10px spacing: Go Live(80) @ -90, Play(80) @ -180, Export(80) @ -270
+        auto export_button_x = right_edge - 270;
+        ImGui::SetCursorScreenPos(ImVec2((float)export_button_x, (float)top_line_top));
+        export_clicked = ImGui::Button("Export", ImVec2(80, 0));
     }
 
     if(export_clicked)
@@ -139,10 +146,10 @@ void control_bar_renderer::render_export_controls(const control_bar_layout& layo
     // Cancel button (shown during export configuration)
     if(cbs.exp_state == EXPORT_STATE_CONFIGURING)
     {
-        auto export_cancel_button_x = (calc.center_box_left + calc.center_box_width) - 200;
+        auto export_cancel_button_x = right_edge - 280;
         ImGui::SetCursorScreenPos(ImVec2((float)export_cancel_button_x, (float)top_line_top));
         ImGui::PushStyleColor(ImGuiCol_Button, timeline_constants::colors::CANCEL_BUTTON);
-        if(ImGui::Button("Cancel"))
+        if(ImGui::Button("Cancel", ImVec2(90, 0)))
         {
             cbs.exp_state = EXPORT_STATE_NONE;
         }
@@ -161,20 +168,33 @@ void control_bar_renderer::render_play_live_button(const control_bar_layout& lay
     auto right_edge = calc.center_box_left + calc.center_box_width;
     float play_button_x, live_button_x;
 
+    // Adjust positions if export is configuring (need room for Finish Export and Cancel buttons)
+    bool export_active = (cbs.exp_state == EXPORT_STATE_CONFIGURING);
+
     if (!is_at_live && !playing)
     {
         // Show both buttons: Play and Go Live
-        play_button_x = right_edge - 120; // Make room for both buttons
-        live_button_x = right_edge - 60;
+        if (export_active)
+        {
+            // Export configuring mode: positions match export button layout
+            play_button_x = right_edge - 180;
+            live_button_x = right_edge - 90;
+        }
+        else
+        {
+            // Normal mode: positions match export button layout
+            play_button_x = right_edge - 180;
+            live_button_x = right_edge - 90;
+        }
 
         ImGui::SetCursorScreenPos(ImVec2(play_button_x, (float)top_line_top));
-        if(ImGui::Button("Play"))
+        if(ImGui::Button("Play", ImVec2(80, 0)))
         {
             control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_PLAY);
         }
 
         ImGui::SetCursorScreenPos(ImVec2(live_button_x, (float)top_line_top));
-        if(ImGui::Button("Go Live"))
+        if(ImGui::Button("Go Live", ImVec2(80, 0)))
         {
             cbs.live();
             control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_LIVE);
@@ -183,10 +203,11 @@ void control_bar_renderer::render_play_live_button(const control_bar_layout& lay
     }
     else if (!is_at_live && playing)
     {
-        // Show only Go Live button when playing in the past
-        live_button_x = right_edge - 60;
+        // Show only Go Live button when playing in the past (same position in both modes)
+        live_button_x = right_edge - 90;
+
         ImGui::SetCursorScreenPos(ImVec2(live_button_x, (float)top_line_top));
-        if(ImGui::Button("Go Live"))
+        if(ImGui::Button("Go Live", ImVec2(80, 0)))
         {
             cbs.live();
             control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_LIVE);
