@@ -253,7 +253,11 @@ bool r_utils::r_startup::set_autostart(bool enable, const string& app_name, cons
         // Create autostart directory if it doesn't exist
         if (!r_fs::file_exists(autostart_dir))
         {
-            if (!r_fs::create_directory(autostart_dir))
+            try
+            {
+                r_fs::mkdir_p(autostart_dir);
+            }
+            catch (const exception& e)
             {
                 R_LOG_ERROR("Failed to create autostart directory: %s", autostart_dir.c_str());
                 return false;
@@ -340,12 +344,13 @@ bool r_utils::r_startup::set_autostart(bool enable, const string& app_name, cons
         // Remove desktop file - same for all packaging formats
         if (r_fs::file_exists(desktop_file))
         {
-            if (r_fs::remove_file(desktop_file))
+            try
             {
+                r_fs::remove_file(desktop_file);
                 R_LOG_INFO("Removed %s from Linux autostart", app_name.c_str());
                 return true;
             }
-            else
+            catch (const exception& e)
             {
                 R_LOG_ERROR("Failed to remove desktop file: %s", desktop_file.c_str());
                 return false;
