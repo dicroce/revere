@@ -32,6 +32,7 @@ apps:
   revere:
     command: bin/revere
     extensions: [gnome]
+    autostart: revere-autostart.desktop
     plugs:
       - home
       - network

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Revere
+Exec=revere --start_minimized
+Icon=snap.revere.revere
+Comment=Revere Video Surveillance System
+X-GNOME-Autostart-enabled=true
+StartupNotify=false
+Terminal=false

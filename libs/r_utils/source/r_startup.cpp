@@ -234,19 +234,36 @@ bool r_utils::r_startup::is_autostart_enabled(const string& app_name)
 
 bool r_utils::r_startup::set_autostart(bool enable, const string& app_name, const string& exe_path, const string& args)
 {
-    const char* home = getenv("HOME");
-    if (!home)
-    {
-        R_LOG_ERROR("Failed to get HOME directory for autostart");
-        return false;
-    }
-
-    string autostart_dir = string(home) + "/.config/autostart";
-    string desktop_file = autostart_dir + "/" + app_name + ".desktop";
-
-    // Check if running in snap or flatpak
     const char* snap = getenv("SNAP");
     const char* flatpak_id = getenv("FLATPAK_ID");
+
+    string autostart_dir;
+    string desktop_file;
+
+    if (snap != nullptr)
+    {
+        // Snap: write to $SNAP_USER_DATA/.config/autostart/ so snap-userd-autostart
+        // can find it. The filename must match the autostart: declaration in snapcraft.yaml.
+        const char* snap_user_data = getenv("SNAP_USER_DATA");
+        if (!snap_user_data)
+        {
+            R_LOG_ERROR("SNAP_USER_DATA not set");
+            return false;
+        }
+        autostart_dir = string(snap_user_data) + "/.config/autostart";
+        desktop_file = autostart_dir + "/revere-autostart.desktop";
+    }
+    else
+    {
+        const char* home = getenv("HOME");
+        if (!home)
+        {
+            R_LOG_ERROR("Failed to get HOME directory for autostart");
+            return false;
+        }
+        autostart_dir = string(home) + "/.config/autostart";
+        desktop_file = autostart_dir + "/" + app_name + ".desktop";
+    }
 
     if (enable)
     {
@@ -269,18 +286,13 @@ bool r_utils::r_startup::set_autostart(bool enable, const string& app_name, cons
 
         if (snap != nullptr)
         {
-            // In snap, use the snap command name, not the full path
-            // Snap command format: <snap-name>
-            // The snap name is typically lowercase, so "revere" not "Revere"
-            string snap_name = app_name;
-            std::transform(snap_name.begin(), snap_name.end(), snap_name.begin(), ::tolower);
-
-            exec_line = snap_name;
+            // Snap: use /snap/bin/<snapname> as the stable command path
+            const char* snap_name = getenv("SNAP_NAME");
+            exec_line = string("/snap/bin/") + (snap_name ? snap_name : "revere");
             if (!args.empty())
                 exec_line += " " + args;
 
-            // Snap desktop files use qualified icon names
-            icon_name = snap_name + "_" + snap_name;
+            icon_name = "snap.revere.revere";
 
             R_LOG_INFO("Configuring autostart for snap installation");
         }
@@ -332,16 +344,15 @@ bool r_utils::r_startup::set_autostart(bool enable, const string& app_name, cons
         // Make executable
         chmod(desktop_file.c_str(), 0755);
 
-        R_LOG_INFO("Added %s to Linux autostart (snap: %s, flatpak: %s, native: %s)",
+        R_LOG_INFO("Added %s to Linux autostart (flatpak: %s, native: %s)",
                    app_name.c_str(),
-                   snap ? "yes" : "no",
                    flatpak_id ? "yes" : "no",
-                   (!snap && !flatpak_id) ? "yes" : "no");
+                   !flatpak_id ? "yes" : "no");
         return true;
     }
     else
     {
-        // Remove desktop file - same for all packaging formats
+        // Remove desktop file - same for flatpak and native
         if (r_fs::file_exists(desktop_file))
         {
             try
@@ -362,6 +373,16 @@ bool r_utils::r_startup::set_autostart(bool enable, const string& app_name, cons
 
 bool r_utils::r_startup::is_autostart_enabled(const string& app_name)
 {
+    const char* snap = getenv("SNAP");
+    if (snap != nullptr)
+    {
+        const char* snap_user_data = getenv("SNAP_USER_DATA");
+        if (!snap_user_data)
+            return false;
+        string desktop_file = string(snap_user_data) + "/.config/autostart/revere-autostart.desktop";
+        return r_fs::file_exists(desktop_file);
+    }
+
     const char* home = getenv("HOME");
     if (!home)
         return false;
