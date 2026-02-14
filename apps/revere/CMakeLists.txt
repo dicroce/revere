@@ -183,11 +183,13 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/R.png $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/R.png
     )
 
-    # Copy system plugins into the app bundle
-    add_custom_command(TARGET revere POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/system_plugins
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_BINARY_DIR}/system_plugins $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/system_plugins
-    )
+    # Copy system plugins into the app bundle (if they were built)
+    if(EXISTS "${CMAKE_BINARY_DIR}/system_plugins")
+        add_custom_command(TARGET revere POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/system_plugins
+            COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_BINARY_DIR}/system_plugins $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/system_plugins
+        )
+    endif()
 
     # Copy motion plugins and model files into the app bundle
     add_custom_command(TARGET revere POST_BUILD
