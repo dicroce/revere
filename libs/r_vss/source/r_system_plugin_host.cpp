@@ -94,20 +94,16 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                 // Optional: resolve status functions (nullptr if not supported)
                                 system_plugin_get_status_func status_func = nullptr;
                                 system_plugin_get_status_message_func status_message_func = nullptr;
-                                try
-                                {
+                                try {
                                     void* status_symbol = lib->resolve_symbol("system_plugin_get_status");
                                     if (status_symbol)
                                         status_func = reinterpret_cast<system_plugin_get_status_func>(status_symbol);
-                                }
-                                catch (...) {}
-                                try
-                                {
+                                } catch (...) {}
+                                try {
                                     void* msg_symbol = lib->resolve_symbol("system_plugin_get_status_message");
                                     if (msg_symbol)
                                         status_message_func = reinterpret_cast<system_plugin_get_status_message_func>(msg_symbol);
-                                }
-                                catch (...) {}
+                                } catch (...) {}
 
                                 // Get the plugin GUID and check for duplicates
                                 const char* guid_cstr = guid_func();
