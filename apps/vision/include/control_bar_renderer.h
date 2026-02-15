@@ -232,9 +232,26 @@ void control_bar_renderer::handle_playhead_interaction(const control_bar_layout&
         uint16_t phx = (uint16_t)(std::min)((std::max)(ImGui::GetMousePos().x, calc.center_box_left),
                                            (calc.center_box_left + calc.center_box_width)) - (cbs.playhead_width/2);
         cbs.playhead_pos = (uint16_t)(std::max)((std::min)((int)(((double)(phx - calc.center_box_left) / (double)(calc.center_box_width)) * 1000.0), 1000), 0);
-        control_bar_slider_cb(stream_name, cbs.tr.time_in_range(0, 1000, cbs.playhead_pos));
+
+        // Throttle the slider callback to prevent overwhelming the system with HTTP requests
+        // Only call the callback every 100ms while dragging
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - cbs.last_slider_callback_time).count();
+
+        bool should_call_callback = (elapsed >= 100);
+
+        // Always call callback when drag ends to ensure final position is set
         if(!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        {
+            should_call_callback = true;
             cbs.dragging = false;
+        }
+
+        if(should_call_callback)
+        {
+            control_bar_slider_cb(stream_name, cbs.tr.time_in_range(0, 1000, cbs.playhead_pos));
+            cbs.last_slider_callback_time = now;
+        }
     }
 }
 

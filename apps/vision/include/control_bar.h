@@ -39,6 +39,7 @@ struct control_bar_state
     uint16_t playhead_x {4};
     uint16_t playhead_width {3};
     bool dragging {false};
+    std::chrono::steady_clock::time_point last_slider_callback_time {};
     uint16_t timerange_minutes {20};
     timerange tr;
     std::vector<segment> segments;
