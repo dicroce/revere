@@ -177,8 +177,8 @@ vector<uint8_t> r_vss::query_get_webp(const string& top_dir, r_devices& devices,
         r_video_encoder encoder(AV_CODEC_ID_WEBP, 100000, w, h, {1,1}, AV_PIX_FMT_YUV420P, 0, 1, 0, 0);
         encoder.attach_buffer(decoded->data(), decoded->size(), 0);
         auto es = encoder.encode();
-
-        es = encoder.flush();
+        if(es != R_CODEC_STATE_HAS_OUTPUT)
+            es = encoder.flush();
 
         if(es == R_CODEC_STATE_HAS_OUTPUT)
         {
