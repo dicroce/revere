@@ -164,13 +164,35 @@ vector<uint8_t> r_storage_file_reader::query_key(r_storage_media_type media_type
         string stream_tag = (media_type == R_STORAGE_MEDIA_TYPE_VIDEO) ? "video" : "audio";
         nanots_iterator iterator(nanots_file_name, stream_tag);
         iterator.find(ts);
-        
+
+        // If find() failed (e.g. ts is slightly beyond the latest stored data),
+        // fall back to searching within a 5-minute window before ts.
+        if (!iterator.valid()) {
+            static const int64_t five_minutes_ms = 5LL * 60 * 1000;
+            int64_t fallback_ts = ts - five_minutes_ms;
+            iterator.find(fallback_ts);
+
+            if (iterator.valid()) {
+                // Walk forward to find the last key frame at or before ts
+                int64_t best_key_ts = -1;
+                while (iterator.valid() && iterator->timestamp <= ts) {
+                    if (iterator->flags > 0)
+                        best_key_ts = iterator->timestamp;
+                    ++iterator;
+                }
+
+                // Reposition at the best key frame found
+                if (best_key_ts >= 0)
+                    iterator.find(best_key_ts);
+            }
+        }
+
         // Back up to find the closest previous key frame
         while (iterator.valid() && iterator->flags == 0) {
             --iterator;
             if (!iterator.valid()) break;
         }
-        
+
         if (iterator.valid() && iterator->flags > 0) {
             // Get frame data
             frame_data.resize(iterator->size);
@@ -178,7 +200,7 @@ vector<uint8_t> r_storage_file_reader::query_key(r_storage_media_type media_type
 
             bt["frames"][0]["ts"] = r_string_utils::int64_to_s(iterator->timestamp);
             bt["frames"][0]["data"] = frame_data;
-            
+
             // Extract codec info from metadata
             auto metadata = iterator.current_metadata();
             if (!metadata.empty()) {
