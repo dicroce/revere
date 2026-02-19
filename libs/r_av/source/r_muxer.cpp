@@ -21,6 +21,10 @@ AVCodecID r_av::encoding_to_av_codec_id(const string& codec_name)
         return AV_CODEC_ID_AAC;
     else if(lower_codec_name == "pcmu")
         return AV_CODEC_ID_PCM_MULAW;
+    else if(lower_codec_name == "pcma")
+        return AV_CODEC_ID_PCM_ALAW;
+    else if(lower_codec_name == "aac")
+        return AV_CODEC_ID_AAC;
 
     R_THROW(("Unknown codec name."));
 }
@@ -28,6 +32,7 @@ AVCodecID r_av::encoding_to_av_codec_id(const string& codec_name)
 r_muxer::r_muxer(const std::string& path, bool output_to_buffer, const std::string& format_name) :
     _path(path),
     _output_to_buffer(output_to_buffer),
+    _faststart(false),
     _format_name(format_name),
     _output_options(),
     _buffer(),
@@ -178,6 +183,13 @@ void r_muxer::set_output_option(const std::string& key, const std::string& value
     _output_options[key] = value;
 }
 
+void r_muxer::enable_faststart()
+{
+    if(_output_to_buffer)
+        R_THROW(("enable_faststart() requires file output, not buffer output."));
+    _faststart = true;
+}
+
 void r_muxer::open()
 {
     if(_fc.get()->nb_streams < 1)
@@ -203,7 +215,12 @@ void r_muxer::open()
             R_THROW(("Unable to open output io context: %s", ff_rc_to_msg(res).c_str()));
     }
 
-    int res = avformat_write_header(_fc.get(), NULL);
+    AVDictionary* fmt_opts = nullptr;
+    if(_faststart)
+        av_dict_set(&fmt_opts, "movflags", "+faststart", 0);
+
+    int res = avformat_write_header(_fc.get(), fmt_opts ? &fmt_opts : nullptr);
+    av_dict_free(&fmt_opts);
     if(res < 0)
         R_THROW(("Unable to write header to output file: %s", ff_rc_to_msg(res).c_str()));
 

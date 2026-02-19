@@ -109,6 +109,14 @@ R_API r_utils::r_nullable<std::vector<uint8_t>> get_h265_pps(const std::string& 
 R_API std::vector<uint8_t> make_h264_extradata(const r_utils::r_nullable<std::vector<uint8_t>>& sps, const r_utils::r_nullable<std::vector<uint8_t>>& pps);
 R_API std::vector<uint8_t> make_h265_extradata(const r_utils::r_nullable<std::vector<uint8_t>>& vps, const r_utils::r_nullable<std::vector<uint8_t>>& sps, const r_utils::r_nullable<std::vector<uint8_t>>& pps);
 
+// Build a proper AVCDecoderConfigurationRecord (AVCC format) for use as MP4 muxer extradata.
+// sps and pps are expected in the format returned by get_h264_sps/get_h264_pps:
+// [00 00 00 01][NALU bytes]. The start-code prefix is stripped internally.
+// Unlike make_h264_extradata (which produces Annex-B), this produces AVCC so that
+// FFmpeg's MP4 muxer correctly converts incoming Annex-B frame data to length-prefixed
+// AVCC inside the container.
+R_API std::vector<uint8_t> make_h264_avcc_extradata(const r_utils::r_nullable<std::vector<uint8_t>>& sps, const r_utils::r_nullable<std::vector<uint8_t>>& pps);
+
 struct r_h264_sps
 {
     uint8_t profile_idc;
@@ -129,6 +137,21 @@ R_API struct r_h264_sps parse_h264_sps(const std::vector<uint8_t>& sps);
 R_API struct r_h265_sps parse_h265_sps(const std::vector<uint8_t>& sps);
 
 R_API std::vector<uint8_t> get_video_codec_extradata(const std::string& video_codec_name, const std::string& video_codec_parameters);
+
+// Inverse of get_video_codec_extradata: parse AVCC (H264) or HVCC (H265) binary extradata
+// and produce the codec_parameters string used elsewhere in the system, e.g.:
+//   H264: "sprop-parameter-sets=<sps_b64>,<pps_b64>,sc_framerate=<fr>"
+//   H265: "sprop-vps=<b64>,sprop-sps=<b64>,sprop-pps=<b64>,sc_framerate=<fr>"
+R_API std::string build_video_codec_params(const std::string& codec_name, const std::vector<uint8_t>& extradata, float framerate);
+
+// Build an audio_codec_parameters string encoding rate, channels, and (optionally)
+// the AudioSpecificConfig (ASC) as sc_asc=<base64>, e.g.:
+//   "sc_audio_rate=48000, sc_audio_channels=2, sc_asc=<b64>"
+R_API std::string build_audio_codec_params(const std::vector<uint8_t>& asc, int sample_rate, int channels);
+
+// Extract the AudioSpecificConfig (ASC) from an audio_codec_parameters string.
+// Returns an empty vector if sc_asc is absent.
+R_API std::vector<uint8_t> get_audio_codec_extradata(const std::string& audio_codec_parameters);
 
 }
 

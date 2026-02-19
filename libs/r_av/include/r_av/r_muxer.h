@@ -55,6 +55,11 @@ public:
 
     R_API void set_output_option(const std::string& key, const std::string& value);
 
+    // Move the moov atom to the front of the file after writing so the MP4 can
+    // be played before it is fully downloaded. Only valid for file output (not
+    // output_to_buffer). Call before open().
+    R_API void enable_faststart();
+
     R_API void open();
 
     R_API void write_video_frame(uint8_t* p, size_t size, int64_t input_pts, int64_t input_dts, AVRational input_time_base, bool key);
@@ -68,6 +73,7 @@ public:
 private:
     std::string _path;
     bool _output_to_buffer;
+    bool _faststart;
     std::string _format_name;
     std::map<std::string, std::string> _output_options;
     std::vector<uint8_t> _buffer;

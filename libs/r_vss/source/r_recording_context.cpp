@@ -123,6 +123,26 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                     auto encoded_acaps_s = r_string_utils::to_base64(acaps_s.data(), acaps_s.size());
 
                     audio_codec_parameters += ", encoded_audio_sample_caps=" + encoded_acaps_s;
+
+                    // Extract AAC AudioSpecificConfig (ASC) from the caps codec_data buffer.
+                    // This is present for AAC streams and is needed by the transcoder decoder.
+                    // Storing it as sc_asc= avoids relying solely on the SDP config= fallback.
+                    if(audio_codec_parameters.find("sc_asc") == string::npos)
+                    {
+                        auto* s = gst_caps_get_structure(acaps.value(), 0);
+                        const GValue* cd = s ? gst_structure_get_value(s, "codec_data") : nullptr;
+                        if(cd && GST_VALUE_HOLDS_BUFFER(cd))
+                        {
+                            GstBuffer* buf = gst_value_get_buffer(cd);
+                            GstMapInfo map;
+                            if(gst_buffer_map(buf, &map, GST_MAP_READ))
+                            {
+                                vector<uint8_t> asc(map.data, map.data + map.size);
+                                gst_buffer_unmap(buf, &map);
+                                audio_codec_parameters += ", sc_asc=" + r_string_utils::to_base64(asc.data(), asc.size());
+                            }
+                        }
+                    }
                 }
 
                 audio_codec_parameters += ", sc_audio_rate=" + r_string_utils::uint32_to_s(sc.audio_sample_rate().value());

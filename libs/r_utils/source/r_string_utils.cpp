@@ -277,6 +277,9 @@ static const char base64_encoding_table[64] =
 
 string r_utils::r_string_utils::to_base64( const void* source, size_t length )
 {
+    if(source == nullptr || length == 0)
+        return string();
+
     size_t srcLen = length;
     const size_t bufferSize = (4 * ((srcLen + 2 - ((srcLen + 2) % 3)) / 3));
 

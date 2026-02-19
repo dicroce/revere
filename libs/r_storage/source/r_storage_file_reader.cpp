@@ -41,31 +41,37 @@ vector<uint8_t> r_storage_file_reader::query(r_storage_media_type media_type, in
     auto base_name = _file_name.substr(0, (_file_name.find_last_of('.')));
     auto nanots_file_name = base_name + ".nts";
     
+    // Track where the video keyframe backup landed so audio can be aligned to it.
+    int64_t video_actual_start_ts = start_ts;
+
     try {
         // Query video frames if needed
         if (media_type == R_STORAGE_MEDIA_TYPE_VIDEO || media_type == R_STORAGE_MEDIA_TYPE_ALL) {
             nanots_iterator video_iterator(nanots_file_name, "video");
             video_iterator.find(start_ts);
-            
+
             // Back up to find previous key frame
             while (video_iterator.valid() && video_iterator->flags == 0) {
                 --video_iterator;
                 if (!video_iterator.valid()) break;
             }
-            
+
+            if (video_iterator.valid())
+                video_actual_start_ts = video_iterator->timestamp;
+
             while (video_iterator.valid() && video_iterator->timestamp < end_ts) {
                 frame_data frame;
                 frame.ts = video_iterator->timestamp;
                 frame.stream_id = R_STORAGE_MEDIA_TYPE_VIDEO;
                 frame.flags = video_iterator->flags;
-                
+
                 // Get frame data
                 auto data_size = video_iterator->size;
                 frame.data.resize(data_size);
                 memcpy(frame.data.data(), video_iterator->data, data_size);
-                
+
                 video_frames.push_back(frame);
-                
+
                 // Extract codec info from metadata on first frame
                 if (!has_video_metadata) {
                     auto metadata = video_iterator.current_metadata();
@@ -75,21 +81,18 @@ vector<uint8_t> r_storage_file_reader::query(r_storage_media_type media_type, in
                         has_video_metadata = true;
                     }
                 }
-                
+
                 ++video_iterator;
             }
         }
-        
-        // Query audio frames if needed
+
+        // Query audio frames if needed.
+        // Start audio at the same timestamp as the video keyframe so both streams
+        // are aligned — without this, audio starts at start_ts while video starts
+        // potentially seconds earlier, producing a black-video / audio-only gap.
         if (media_type == R_STORAGE_MEDIA_TYPE_AUDIO || media_type == R_STORAGE_MEDIA_TYPE_ALL) {
             nanots_iterator audio_iterator(nanots_file_name, "audio");
-            audio_iterator.find(start_ts);
-            
-            // Back up to find previous key frame
-            while (audio_iterator.valid() && audio_iterator->flags == 0) {
-                --audio_iterator;
-                if (!audio_iterator.valid()) break;
-            }
+            audio_iterator.find(video_actual_start_ts);
             
             while (audio_iterator.valid() && audio_iterator->timestamp < end_ts) {
                 frame_data frame;
