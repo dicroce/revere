@@ -50,25 +50,34 @@ template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA
 uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb)
 {
     ImGui::BeginMainMenuBar();
-    if (ImGui::BeginMenu("File"))
+    if (ImGui::BeginMenu("Cameras"))
     {
         if (ImGui::MenuItem("Add RTSP Source Camera"))
             add_rtsp_source_camera_cb();
-        if (ImGui::MenuItem("Minimize to system tray"))
-            minimize_cb();
-        if (ImGui::MenuItem("Launch Vision"))
-            launch_vision_cb();
-        ImGui::Separator();
-        bool startup_enabled = get_startup_state_cb();
-        if (ImGui::MenuItem("Start Revere with system", nullptr, &startup_enabled))
-            set_startup_state_cb(startup_enabled);
         ImGui::Separator();
         if (ImGui::MenuItem("Exit"))
             exit_cb();
 
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Tools"))
+    if (ImGui::BeginMenu("View"))
+    {
+        if (ImGui::MenuItem("Launch Vision"))
+            launch_vision_cb();
+        if (ImGui::MenuItem("Minimize to system tray"))
+            minimize_cb();
+
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Settings"))
+    {
+        bool startup_enabled = get_startup_state_cb();
+        if (ImGui::MenuItem("Start Revere with system", nullptr, &startup_enabled))
+            set_startup_state_cb(startup_enabled);
+
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Help"))
     {
         if (ImGui::MenuItem("Download Revere Cloud"))
             download_revere_cloud_cb();
@@ -1003,6 +1012,30 @@ void remove_camera_modal(
                 ImGui::CloseCurrentPopup();
                 keep_files_cb();
             }
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+template<typename OK_CB>
+void download_revere_cloud_modal(
+    ImGuiContext*,
+    const std::string& name,
+    OK_CB ok_cb
+)
+{
+    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("We opened a browser with the download links for the Revere Cloud version you need.");
+        ImGui::Text("Restart Revere after you install Revere Cloud.");
+
+        ImGui::Spacing();
+
+        if(ImGui::Button("Ok"))
+        {
+            ok_cb();
+            ImGui::CloseCurrentPopup();
         }
 
         ImGui::EndPopup();

@@ -840,6 +840,18 @@ void configure_camera_setup_wizard(
     );
 
     camera_setup_wizard.add_step(
+        "download_revere_cloud_notification",
+        [&camera_setup_wizard](){
+            ImGui::OpenPopup("Download Revere Cloud");
+            revere::download_revere_cloud_modal(
+                GImGui,
+                "Download Revere Cloud",
+                [&](){camera_setup_wizard.cancel();}
+            );
+        }
+    );
+
+    camera_setup_wizard.add_step(
         "configure_rtsp_source_camera",
         [&ui_state, &camera_setup_wizard, &rscc, &devices](){
             ImGui::OpenPopup("Configure RTSP Source Camera");
@@ -1452,6 +1464,13 @@ int main(int argc, char** argv)
                         window_visible = true;
                     if (event.window.event == SDL_WINDOWEVENT_HIDDEN)
                         window_visible = false;
+                    if (event.window.event == SDL_WINDOWEVENT_MINIMIZED)
+                        window_visible = false;
+                    if (event.window.event == SDL_WINDOWEVENT_RESTORED)
+                    {
+                        window_visible = true;
+                        need_render = true;
+                    }
                     if (event.window.event == SDL_WINDOWEVENT_EXPOSED)
                         need_render = true;
 #ifdef IS_MACOS
@@ -1567,6 +1586,7 @@ int main(int argc, char** argv)
 #endif
                 std::string download_url = base_url + filename;
                 revere::open_url_in_browser(download_url);
+                camera_setup_wizard.next("download_revere_cloud_notification");
             },
             [&]() -> bool {
                 // Get current startup state
