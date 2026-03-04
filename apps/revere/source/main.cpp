@@ -1361,6 +1361,7 @@ int main(int argc, char** argv)
 #endif
 
     bool close_requested = false;
+    bool user_close_handled = false;
 
     R_LOG_INFO("wd=%s\n",r_fs::working_directory().c_str());
 
@@ -1488,13 +1489,24 @@ int main(int argc, char** argv)
                 ImGui_ImplSDL2_ProcessEvent(&event);
                 if (event.type == SDL_QUIT)
                 {
-                    camera_setup_wizard.next("minimize_to_tray");
+                    if (user_close_handled)
+                    {
+                        // User clicked X, the window close handler already showed the dialog.
+                        user_close_handled = false;
+                    }
+                    else
+                    {
+                        // OS-initiated quit (system shutdown/restart). Actually quit.
+                        close_requested = true;
+                        tray.exit();
+                    }
                 }
                 if (event.type == SDL_WINDOWEVENT)
                 {
                     if (event.window.event == SDL_WINDOWEVENT_CLOSE &&
                         event.window.windowID == SDL_GetWindowID(window))
                     {
+                        user_close_handled = true;
                         camera_setup_wizard.next("minimize_to_tray");
                     }
                     if (event.window.event == SDL_WINDOWEVENT_SHOWN)
