@@ -77,9 +77,9 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
 
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Help"))
+    if (ImGui::BeginMenu("Revere Cloud"))
     {
-        if (ImGui::MenuItem("Download Revere Cloud"))
+        if (ImGui::MenuItem("About Revere Cloud"))
             download_revere_cloud_cb();
 
         ImGui::EndMenu();
@@ -722,61 +722,46 @@ void retention_modal(
 {
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        ImGui::Text("%s",(as.camera_friendly_name + " at " + std::to_string((as.byte_rate * 8) / 1024) + " kbps").c_str());
+        const float WRAP_WIDTH = 420.0f;
+
+        ImGui::PushTextWrapPos(WRAP_WIDTH);
+        ImGui::TextWrapped("Your recording file size will determine your video retention period.");
+        ImGui::PopTextWrapPos();
+
+        ImGui::Spacing();
+        ImGui::Text("%s", (as.camera_friendly_name + "  |  " + std::to_string((as.byte_rate * 8) / 1024) + " kbps").c_str());
+        ImGui::Separator();
+        ImGui::Spacing();
 
         static char continuous_retention_days_buffer[64] = {0};
-        static char days_motion_retention_buffer[64] = {0};
-        static char motion_percentage_estimate_buffer[64] = {0};
         static int last_continuous_retention_days = -1;
-        static int last_motion_retention_days = -1;
-        static int last_motion_percentage_estimate = -1;
 
-        // Always copy values when modal appears or when they change
-        if (ImGui::IsWindowAppearing() ||
-            last_continuous_retention_days != as.continuous_retention_days ||
-            last_motion_retention_days != as.motion_retention_days ||
-            last_motion_percentage_estimate != as.motion_percentage_estimate)
+        if (ImGui::IsWindowAppearing() || last_continuous_retention_days != as.continuous_retention_days)
         {
             r_ui_utils::copy_s(continuous_retention_days_buffer, 64, std::to_string(as.continuous_retention_days));
-            r_ui_utils::copy_s(days_motion_retention_buffer, 64, std::to_string(as.motion_retention_days));
-            r_ui_utils::copy_s(motion_percentage_estimate_buffer, 64, std::to_string(as.motion_percentage_estimate));
             last_continuous_retention_days = as.continuous_retention_days;
-            last_motion_retention_days = as.motion_retention_days;
-            last_motion_percentage_estimate = as.motion_percentage_estimate;
         }
 
-        if(ImGui::InputText("Continous Retention Days", continuous_retention_days_buffer, 64))
+        if(ImGui::InputText("Retention Days", continuous_retention_days_buffer, 64))
         {
-            auto s_continuous_retention_days = std::string(continuous_retention_days_buffer);
-            as.continuous_retention_days = std::stoi((!s_continuous_retention_days.empty())?s_continuous_retention_days:"0");
+            auto s = std::string(continuous_retention_days_buffer);
+            as.continuous_retention_days = std::stoi((!s.empty()) ? s : "0");
         }
 
-        if(ImGui::InputText("Motion Retention Days", days_motion_retention_buffer, 64))
-        {
-            auto s_motion_retention_days = std::string(days_motion_retention_buffer);
-            as.motion_retention_days = std::stoi((!s_motion_retention_days.empty())?s_motion_retention_days:"0");
-        }
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
 
-        if(ImGui::InputText("Motion Percentage Estimate", motion_percentage_estimate_buffer, 64))
-        {
-            auto s_motion_percentage_estimate = std::string(motion_percentage_estimate_buffer);
-            as.motion_percentage_estimate = std::stoi((!s_motion_percentage_estimate.empty())?s_motion_percentage_estimate:"0");
-        }
+        auto sz_info = r_storage::required_file_size_for_retention_hours((as.continuous_retention_days*24), as.byte_rate);
 
-        auto continuous_sz_info = r_storage::required_file_size_for_retention_hours((as.continuous_retention_days*24), as.byte_rate);
-
-        auto motion_sz_info = r_storage::required_file_size_for_retention_hours((as.motion_retention_days*24), as.byte_rate);
-
-        double motionPercentage = ((double)as.motion_percentage_estimate) / 100.0;
-
-        int64_t n_blocks = (int64_t)(continuous_sz_info.first + (motionPercentage*(double)motion_sz_info.first));
-
-        as.num_storage_file_blocks.set_value(n_blocks);
-        as.storage_file_block_size.set_value(continuous_sz_info.second);
+        as.num_storage_file_blocks.set_value(sz_info.first);
+        as.storage_file_block_size.set_value(sz_info.second);
 
         auto human_readable_size = r_storage::human_readable_file_size((double)(as.num_storage_file_blocks.value() * as.storage_file_block_size.value()));
 
-        ImGui::Text("Days Retention: %s", human_readable_size.c_str());
+        ImGui::Text("Storage needed: %s", human_readable_size.c_str());
+
+        ImGui::Spacing();
 
         if(ImGui::Button("Cancel"))
         {
@@ -1037,6 +1022,55 @@ void download_revere_cloud_modal(
             ok_cb();
             ImGui::CloseCurrentPopup();
         }
+
+        ImGui::EndPopup();
+    }
+}
+
+template<typename DOWNLOAD_CB, typename CLOSE_CB>
+void about_revere_cloud_modal(
+    ImGuiContext*,
+    const std::string& name,
+    DOWNLOAD_CB download_cb,
+    CLOSE_CB close_cb
+)
+{
+    ImGui::SetNextWindowSize(ImVec2(640, 0));
+    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        ImGui::SetCursorPosX(16.0f);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 608.0f);
+        ImGui::TextWrapped("Revere Cloud is an optional plugin for Revere that connects your system to the Revere Cloud infrastructure and enables the Lantern mobile app to access your cameras remotely. Some Revere Cloud features require paying for service (and some do not).");
+        ImGui::PopTextWrapPos();
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        float button_width = 260.0f;
+        float total_buttons = button_width * 2 + ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SetCursorPosX((640.0f - total_buttons) * 0.5f);
+
+        if(ImGui::Button("Download Revere Cloud", ImVec2(button_width, 0)))
+        {
+            download_cb();
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::SameLine();
+
+        if(ImGui::Button("Close", ImVec2(button_width, 0)))
+        {
+            close_cb();
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::Spacing();
 
         ImGui::EndPopup();
     }

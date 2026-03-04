@@ -17,6 +17,12 @@ namespace revere
 
 struct assignment_state
 {
+    int wizard_step {1};
+    int wizard_total_steps {8};
+    std::string step_title(const std::string& base) const
+    {
+        return "Step " + std::to_string(wizard_step) + "/" + std::to_string(wizard_total_steps) + " - " + base;
+    }
     std::string camera_id;
     std::string ipv4;
     r_utils::r_nullable<std::string> rtsp_username;

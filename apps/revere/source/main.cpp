@@ -553,10 +553,12 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "camera_credentials",
         [&](){
-            ImGui::OpenPopup("Camera Credentials");
+            as.wizard_step = 1;
+            auto title = as.step_title("Camera Credentials");
+            ImGui::OpenPopup(title.c_str());
             revere::rtsp_credentials_modal(
                 GImGui,
-                "Camera Credentials",
+                title,
                 as.rtsp_username,
                 as.rtsp_password,
                 [&]() {
@@ -642,10 +644,12 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "friendly_name",
         [&as, &camera_setup_wizard](){
-            ImGui::OpenPopup("Camera Friendly Name");
+            as.wizard_step = 3;
+            auto title = as.step_title("Camera Friendly Name");
+            ImGui::OpenPopup(title.c_str());
             revere::friendly_name_modal(
                 GImGui,
-                "Camera Friendly Name",
+                title,
                 as,
                 as.camera_friendly_name,
                 [&]() {
@@ -658,10 +662,12 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "please_wait",
         [&as, &camera_setup_wizard](){
-            ImGui::OpenPopup("Please Wait");
+            as.wizard_step = 2;
+            auto title = as.step_title("Please Wait");
+            ImGui::OpenPopup(title.c_str());
             revere::please_wait_modal(
                 GImGui,
-                "Please Wait",
+                title,
                 [&](){camera_setup_wizard.cancel();}
             );
         }
@@ -669,10 +675,12 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "motion_detection",
         [&as, &camera_setup_wizard](){
-            ImGui::OpenPopup("Motion Detection");
+            as.wizard_step = 4;
+            auto title = as.step_title("Motion Detection");
+            ImGui::OpenPopup(title.c_str());
             revere::motion_detection_modal(
                 GImGui,
-                "Motion Detection",
+                title,
                 as.do_motion_detection,
                 [&](){camera_setup_wizard.next("new_or_existing");},
                 [&](){camera_setup_wizard.cancel();}
@@ -682,16 +690,20 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "new_or_existing",
         [&as, &camera_setup_wizard, &devices, &ui_state](){
-            ImGui::OpenPopup("New or Existing storage file?");
+            as.wizard_step = 5;
+            auto title = as.step_title("Storage");
+            ImGui::OpenPopup(title.c_str());
             revere::new_or_existing_modal(
                 GImGui,
-                "New or Existing storage file?",
+                title,
                 [&](){
-                    // In flatpak, skip storage location dialog - we can only write to the default location
+                    // In flatpak/snap, skip storage location dialog - we can only write to the default location
                     const char* flatpak_id = getenv("FLATPAK_ID");
-                    if(flatpak_id != nullptr)
+                    const char* snap_id = getenv("SNAP");
+                    if(flatpak_id != nullptr || snap_id != nullptr)
                     {
                         as.storage_dir = revere::sub_dir("video");
+                        as.wizard_total_steps = 7;
                         camera_setup_wizard.next("retention");
                     }
                     else
@@ -699,7 +711,10 @@ void configure_camera_setup_wizard(
                         camera_setup_wizard.next("choose_storage_location");
                     }
                 },
-                [&](){camera_setup_wizard.next("choose_file");},
+                [&](){
+                    as.wizard_total_steps = 5;
+                    camera_setup_wizard.next("choose_file");
+                },
                 [&](){camera_setup_wizard.cancel();}
             );
         }
@@ -707,11 +722,13 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "choose_storage_location",
         [&as, &camera_setup_wizard](){
+            as.wizard_step = 6;
             auto default_path = revere::sub_dir("video");
-            ImGui::OpenPopup("Storage Location");
+            auto title = as.step_title("Storage Location");
+            ImGui::OpenPopup(title.c_str());
             revere::storage_location_modal(
                 GImGui,
-                "Storage Location",
+                title,
                 default_path,
                 [&, default_path](){
                     // Use default location
@@ -790,10 +807,12 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "retention",
         [&as, &camera_setup_wizard](){
-            ImGui::OpenPopup("Configure Retention");
+            as.wizard_step = as.wizard_total_steps - 1;
+            auto title = as.step_title("Configure Retention");
+            ImGui::OpenPopup(title.c_str());
             revere::retention_modal(
                 GImGui,
-                "Configure Retention",
+                title,
                 as,
                 [&](){camera_setup_wizard.next("new_file_name");},
                 [&](){camera_setup_wizard.cancel();}
@@ -803,11 +822,13 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "new_file_name",
         [&as, &camera_setup_wizard, &devices, &ui_state, &stream_keeper](){
+            as.wizard_step = as.wizard_total_steps;
             as.file_name = _make_file_name(as.camera_friendly_name);
-            ImGui::OpenPopup("New File Name");
+            auto title = as.step_title("New File Name");
+            ImGui::OpenPopup(title.c_str());
             revere::new_file_name_modal(
                 GImGui,
-                "New File Name",
+                title,
                 as.file_name,
                 [&](){_on_new_file(as, camera_setup_wizard, devices, ui_state, stream_keeper);},
                 [&](){camera_setup_wizard.cancel();}
@@ -840,12 +861,28 @@ void configure_camera_setup_wizard(
     );
 
     camera_setup_wizard.add_step(
-        "download_revere_cloud_notification",
+        "about_revere_cloud",
         [&camera_setup_wizard](){
-            ImGui::OpenPopup("Download Revere Cloud");
-            revere::download_revere_cloud_modal(
+            ImGui::OpenPopup("About Revere Cloud");
+            revere::about_revere_cloud_modal(
                 GImGui,
-                "Download Revere Cloud",
+                "About Revere Cloud",
+                [&](){
+                    std::string version = REVERE_VERSION;
+                    std::string base_url = "https://github.com/dicroce/revere/releases/download/v" + version + "/";
+                    std::string filename;
+#if defined(IS_WINDOWS)
+                    filename = "revere_cloud-v" + version + "-x86_64-windows-setup.exe";
+#elif defined(IS_LINUX)
+                    filename = "revere_cloud-v" + version + "-x86_64-linux.run";
+#elif defined(IS_MACOS)
+                    filename = "revere_cloud-v" + version + "-x86_64-macos.command";
+#else
+                    #error "Unsupported platform"
+#endif
+                    revere::open_url_in_browser(base_url + filename);
+                    camera_setup_wizard.cancel();
+                },
                 [&](){camera_setup_wizard.cancel();}
             );
         }
@@ -1571,22 +1608,7 @@ int main(int argc, char** argv)
                     vision_process.start();
             },
             [&](){
-                // Download Revere Cloud - construct URL based on platform and version
-                std::string version = REVERE_VERSION;
-                std::string base_url = "https://github.com/dicroce/revere/releases/download/v" + version + "/";
-                std::string filename;
-#if defined(IS_WINDOWS)
-                filename = "revere_cloud-v" + version + "-x86_64-windows-setup.exe";
-#elif defined(IS_LINUX)
-                filename = "revere_cloud-v" + version + "-x86_64-linux.run";
-#elif defined(IS_MACOS)
-                filename = "revere_cloud-v" + version + "-x86_64-macos.command";
-#else
-                #error "Unsupported platform"
-#endif
-                std::string download_url = base_url + filename;
-                revere::open_url_in_browser(download_url);
-                camera_setup_wizard.next("download_revere_cloud_notification");
+                camera_setup_wizard.next("about_revere_cloud");
             },
             [&]() -> bool {
                 // Get current startup state
@@ -1647,6 +1669,8 @@ int main(int argc, char** argv)
                                 as.camera_id = ui_state.discovered_items[i].camera_id;
                                 as.camera = devices.get_camera_by_id(as.camera_id);
                                 as.ipv4 = as.camera.value().ipv4.value();
+                                as.wizard_step = 1;
+                                as.wizard_total_steps = 8;
 
                                 camera_setup_wizard.next("camera_credentials");
                             },
