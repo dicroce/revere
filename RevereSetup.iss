@@ -34,8 +34,23 @@ WizardStyle=modern
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
-[Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+[Code]
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = wpSelectTasks) or (PageID = wpReady);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  // Stop any running Revere instance before replacing binaries.
+  // --quit signals graceful shutdown and waits up to 15s, escalating to
+  // force-terminate if needed. Safe to call when Revere is not running.
+  Exec(ExpandConstant('{app}\revere.exe'), '--quit', '', SW_HIDE,
+       ewWaitUntilTerminated, ResultCode);
+  Result := '';
+end;
 
 [Files]
 Source: "C:\Program Files (x86)\revere\revere\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -52,7 +67,6 @@ Source: "C:\dev\VC_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
 ; Install Visual C++ 2022 Redistributable (required for application to run)

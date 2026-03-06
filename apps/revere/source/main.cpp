@@ -1,12 +1,18 @@
 
 #include "r_utils/r_file.h"
+#include "r_utils/r_file_lock.h"
+#include <atomic>
 
 #ifdef IS_WINDOWS
 #include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
 #endif
 #if defined(IS_LINUX) || defined(IS_MACOS)
 #include <sys/file.h>
 #include <unistd.h>
+#include <signal.h>
 #endif
 #include <SDL.h>
 
@@ -1176,6 +1182,11 @@ void _set_window_icon(SDL_Window* window)
     }
 }
 
+#if defined(IS_LINUX) || defined(IS_MACOS)
+static std::atomic<bool> g_sigterm_received{false};
+static void _sigterm_handler(int) { g_sigterm_received = true; }
+#endif
+
 #ifdef IS_WINDOWS
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 #endif
@@ -1183,38 +1194,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 int main(int argc, char** argv)
 #endif
 {
-    // Single instance check: prevent multiple revere processes from running
-#ifdef IS_WINDOWS
-    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\RevereAppMutex");
-    if (GetLastError() == ERROR_ALREADY_EXISTS)
-    {
-        MessageBoxW(NULL, L"Revere is already running.", L"Revere", MB_OK | MB_ICONINFORMATION);
-        if (hMutex) CloseHandle(hMutex);
-        return 1;
-    }
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    auto lock_file_path = std::string(getenv("HOME")) + "/.revere.lock";
-    int lock_fd = open(lock_file_path.c_str(), O_CREAT | O_RDWR, 0600);
-    if (lock_fd >= 0 && flock(lock_fd, LOCK_EX | LOCK_NB) != 0)
-    {
-        fprintf(stderr, "Revere is already running.\n");
-        close(lock_fd);
-        return 1;
-    }
-#endif
-
-    r_logger::install_terminate();
-
-    auto top_dir = revere::top_dir();
-    auto log_path = revere::sub_dir("logs");
-    revere::sub_dir("config");  // Ensure config dir exists for plugins
-
-    r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
-
-    // UI state needs to be created before we can register the log callback
-    // We'll register it after creating ui_state
-
+    // Parse arguments early — needed for --quit before single-instance check
 #ifdef IS_WINDOWS
     int argc;
     // Use GetCommandLineW() to get the FULL command line including exe path
@@ -1229,6 +1209,172 @@ int main(int argc, char** argv)
         argv[i] = const_cast<char*>(arg_storage[i].c_str());
 #endif
     auto args = r_args::parse_arguments(argc, &argv[0]);
+
+    auto maybe_quit = r_args::check_argument(args, "--quit");
+
+    // Compute top_dir early for lock file path
+    auto top_dir = revere::top_dir();
+    auto lock_file_path = r_fs::platform_path(top_dir + "/revere.lock");
+
+    if(maybe_quit)
+    {
+        // --quit mode: signal the running instance to exit and wait for it.
+        // Used by the installer before replacing binaries.
+#ifdef IS_WINDOWS
+        // Check if an instance is running via the named mutex
+        HANDLE hCheckMutex = OpenMutexW(SYNCHRONIZE, FALSE, L"Global\\RevereAppMutex");
+        if(!hCheckMutex)
+            return 0; // Not running
+
+        // Signal the running instance via the named quit event
+        HANDLE hQuitEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Global\\RevereQuitEvent");
+        if(hQuitEvent)
+        {
+            SetEvent(hQuitEvent);
+            CloseHandle(hQuitEvent);
+        }
+
+        // Wait up to 10s for the instance to exit (mutex is released on exit)
+        DWORD wait_result = WaitForSingleObject(hCheckMutex, 10000);
+        CloseHandle(hCheckMutex);
+
+        if(wait_result == WAIT_TIMEOUT)
+        {
+            // Escalate: read PID from lock file and force-terminate
+            int pid_fd = _open(lock_file_path.c_str(), _O_RDONLY);
+            if(pid_fd >= 0)
+            {
+                char pid_buf[32] = {};
+                _read(pid_fd, pid_buf, sizeof(pid_buf) - 1);
+                _close(pid_fd);
+                DWORD target_pid = (DWORD)atoi(pid_buf);
+                if(target_pid > 0)
+                {
+                    HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, target_pid);
+                    if(hProc)
+                    {
+                        TerminateProcess(hProc, 1);
+                        CloseHandle(hProc);
+                    }
+                }
+            }
+            // Wait another 5s after force-terminate
+            HANDLE hFinalMutex = OpenMutexW(SYNCHRONIZE, FALSE, L"Global\\RevereAppMutex");
+            if(hFinalMutex)
+            {
+                WaitForSingleObject(hFinalMutex, 5000);
+                CloseHandle(hFinalMutex);
+            }
+            return 1;
+        }
+        return 0;
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+        // Check if running via non-blocking flock
+        int wait_fd = open(lock_file_path.c_str(), O_RDWR, 0600);
+        if(wait_fd < 0)
+            return 0; // No lock file — not running
+
+        if(flock(wait_fd, LOCK_EX | LOCK_NB) == 0)
+        {
+            // Acquired immediately — not running
+            flock(wait_fd, LOCK_UN);
+            close(wait_fd);
+            return 0;
+        }
+
+        // Read PID from lock file and send SIGTERM
+        char pid_buf[32] = {};
+        pread(wait_fd, pid_buf, sizeof(pid_buf) - 1, 0);
+        pid_t target_pid = (pid_t)atoi(pid_buf);
+        if(target_pid > 0)
+            kill(target_pid, SIGTERM);
+
+        // Wait up to 10s for exit using r_file_lock (blocking exclusive lock)
+        bool exited = false;
+        auto wait_thread = std::thread([&](){
+            r_utils::r_file_lock wait_lock(wait_fd);
+            wait_lock.lock();
+            exited = true;
+        });
+
+        auto deadline = chrono::steady_clock::now() + chrono::seconds(10);
+        while(!exited && chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(chrono::milliseconds(100));
+
+        if(!exited)
+        {
+            // Escalate to SIGKILL
+            if(target_pid > 0)
+                kill(target_pid, SIGKILL);
+
+            deadline = chrono::steady_clock::now() + chrono::seconds(5);
+            while(!exited && chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(chrono::milliseconds(100));
+
+            if(!exited)
+            {
+                wait_thread.detach();
+                close(wait_fd);
+                return 1;
+            }
+        }
+
+        wait_thread.join();
+        close(wait_fd);
+        return 0;
+#endif
+    }
+
+    // Single instance check: prevent multiple revere processes from running
+#ifdef IS_WINDOWS
+    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\RevereAppMutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        MessageBoxW(NULL, L"Revere is already running.", L"Revere", MB_OK | MB_ICONINFORMATION);
+        if (hMutex) CloseHandle(hMutex);
+        return 1;
+    }
+    // Create the quit event so --quit can signal us
+    HANDLE hQuitEvent = CreateEventW(NULL, FALSE, FALSE, L"Global\\RevereQuitEvent");
+    // Write PID to lock file so --quit can force-terminate if needed
+    int lock_fd = _open(lock_file_path.c_str(), _O_CREAT | _O_RDWR | _O_TRUNC, _S_IREAD | _S_IWRITE);
+    if(lock_fd >= 0)
+    {
+        auto pid_str = std::to_string(GetCurrentProcessId());
+        _write(lock_fd, pid_str.c_str(), (unsigned int)pid_str.size());
+    }
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+    int lock_fd = open(lock_file_path.c_str(), O_CREAT | O_RDWR, 0600);
+    if (lock_fd >= 0 && flock(lock_fd, LOCK_EX | LOCK_NB) != 0)
+    {
+        fprintf(stderr, "Revere is already running.\n");
+        close(lock_fd);
+        return 1;
+    }
+    // Write our PID so --quit can send us SIGTERM
+    if(lock_fd >= 0)
+    {
+        auto pid_str = std::to_string(getpid());
+        ftruncate(lock_fd, 0);
+        write(lock_fd, pid_str.c_str(), pid_str.size());
+    }
+    // Hold the lock via r_file_lock for the process lifetime
+    r_utils::r_file_lock process_lock(lock_fd);
+    // Install SIGTERM handler for graceful shutdown triggered by --quit
+    signal(SIGTERM, _sigterm_handler);
+#endif
+
+    r_logger::install_terminate();
+
+    auto log_path = revere::sub_dir("logs");
+    revere::sub_dir("config");  // Ensure config dir exists for plugins
+
+    r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
+
+    // UI state needs to be created before we can register the log callback
+    // We'll register it after creating ui_state
 
     // Debug: Log all parsed arguments
     R_LOG_INFO("argc = %d", argc);
@@ -1536,6 +1682,22 @@ int main(int argc, char** argv)
         }
 
         tray.pump();
+
+        // Check for external shutdown signals (from --quit / installer)
+#ifdef IS_WINDOWS
+        if(hQuitEvent && WaitForSingleObject(hQuitEvent, 0) == WAIT_OBJECT_0)
+        {
+            close_requested = true;
+            tray.exit();
+        }
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+        if(g_sigterm_received)
+        {
+            close_requested = true;
+            tray.exit();
+        }
+#endif
 
         if(maybe_start_minimized)
         {
@@ -1931,6 +2093,21 @@ int main(int argc, char** argv)
     r_raw_socket::socket_cleanup();
 
     r_logger::uninstall_logger();
+
+    // Release the process lock last — this unblocks any waiting --quit process,
+    // signalling that we have fully shut down.
+#ifdef IS_WINDOWS
+    if(lock_fd >= 0) _close(lock_fd);
+    if(hQuitEvent) CloseHandle(hQuitEvent);
+    if(hMutex) CloseHandle(hMutex);
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+    if(lock_fd >= 0)
+    {
+        process_lock.unlock();
+        close(lock_fd);
+    }
+#endif
 
     return 0;
 }
