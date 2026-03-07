@@ -1416,6 +1416,9 @@ int main(int argc, char** argv)
     }
     SDL_EnableScreenSaver();
 
+    // Allow display sleep - SDL2 prevents it by default
+    SDL_EnableScreenSaver();
+
     // Create window with SDL2
     // If starting minimized, create window hidden to avoid showing it briefly
     Uint32 window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
