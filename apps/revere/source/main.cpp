@@ -1414,6 +1414,7 @@ int main(int argc, char** argv)
         R_LOG_ERROR("Unable to initialize SDL: %s", SDL_GetError());
         return 1;
     }
+    SDL_EnableScreenSaver();
 
     // Create window with SDL2
     // If starting minimized, create window hidden to avoid showing it briefly

@@ -401,6 +401,7 @@ int main(int, char**)
         R_LOG_ERROR("SDL_Init error: %s", SDL_GetError());
         return 1;
     }
+    SDL_EnableScreenSaver();
 
     // Create window with specific flags for software rendering
     SDL_Window* window = SDL_CreateWindow(
