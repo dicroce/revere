@@ -1414,7 +1414,6 @@ int main(int argc, char** argv)
         R_LOG_ERROR("Unable to initialize SDL: %s", SDL_GetError());
         return 1;
     }
-    SDL_EnableScreenSaver();
 
     // Allow display sleep - SDL2 prevents it by default
     SDL_EnableScreenSaver();
