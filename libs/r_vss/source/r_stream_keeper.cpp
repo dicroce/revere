@@ -303,10 +303,13 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
 
 void r_stream_keeper::remove_restream_mount(const string& mount_path)
 {
+    if(mount_path.empty() || mount_path[0] != '/')
+        return;
+
     // Safety check: return early if objects are null or invalid
     if(!_mounts || !GST_IS_RTSP_MOUNT_POINTS(_mounts))
         return;
-    
+
     if(!_server || !GST_IS_RTSP_SERVER(_server))
         return;
 
@@ -661,6 +664,7 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             r_stream_status s;
             s.camera = c.second->camera();
             s.bytes_per_second = c.second->bytes_per_second();
+            s.receiving_video = c.second->receiving_video();
             return s;
         }
     );

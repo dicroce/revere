@@ -295,6 +295,13 @@ void rtsp_credentials_modal(
     }
 }
 
+enum class stream_health
+{
+    unknown,    // no status data available
+    healthy,    // receiving video frames
+    error       // not receiving video frames
+};
+
 struct sidebar_list_ui_item
 {
     std::string label;
@@ -302,6 +309,7 @@ struct sidebar_list_ui_item
     std::string camera_id;
     std::string kbps;
     std::string retention;
+    stream_health health {stream_health::unknown};
 };
 
 template<typename BUTTON_CLICK_CB, typename ITEM_CLICK_CB, typename FORGET_BUTTON_CLICK_CB, typename PROPERTIES_CLICK_CB>
@@ -350,6 +358,14 @@ void sidebar_list(
     };
     std::vector<TextRenderInfo> text_to_render;
     text_to_render.reserve(labels.size() * 2);
+
+    // Store health indicator positions for drawing after text
+    struct HealthDotInfo {
+        ImVec2 position;
+        stream_health health;
+    };
+    std::vector<HealthDotInfo> health_dots;
+    health_dots.reserve(labels.size());
 
     // selectable list - first pass: interactive elements
     for(int i = 0; i < (int)labels.size(); ++i)
@@ -455,6 +471,10 @@ void sidebar_list(
         text_to_render.push_back({ImVec2(pos.x+10, pos.y+5), labels[i].label, true});
         text_to_render.push_back({ImVec2(pos.x+10, pos.y+28), labels[i].sub_label, false});
 
+        // Store health indicator position (right-aligned in the selectable area)
+        if(labels[i].health != stream_health::unknown)
+            health_dots.push_back({ImVec2(pos.x + width - 30, pos.y + 12), labels[i].health});
+
         pos.y += 110;
 
         ImGui::PopID();
@@ -482,6 +502,19 @@ void sidebar_list(
         }
     }
     ImGui::PopFont();
+
+    // Third pass: draw health indicator dots
+    ImDrawList* health_draw_list = ImGui::GetWindowDrawList();
+    for(const auto& dot : health_dots)
+    {
+        auto screen_pos = ImGui::GetWindowPos();
+        ImVec2 center(screen_pos.x + dot.position.x, screen_pos.y + dot.position.y);
+        float radius = 5.0f;
+        ImU32 color = (dot.health == stream_health::healthy) ?
+            IM_COL32(0, 200, 0, 255) :   // green
+            IM_COL32(200, 0, 0, 255);     // red
+        health_draw_list->AddCircleFilled(center, radius, color);
+    }
 }
 
 template<typename OK_CB, typename CANCEL_CB>

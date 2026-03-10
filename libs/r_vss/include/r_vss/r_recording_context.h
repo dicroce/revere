@@ -132,6 +132,8 @@ public:
 
     R_API int32_t bytes_per_second() const;
 
+    R_API bool receiving_video() const;
+
     R_API r_storage::r_md_storage_file& metadata_storage();
 
     R_API void write_metadata(const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);

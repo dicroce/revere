@@ -368,6 +368,11 @@ r_recording_context::~r_recording_context() noexcept
         _maybe_audio_storage_write_context.clear();
 }
 
+bool r_recording_context::receiving_video() const
+{
+    return _got_first_video_sample;
+}
+
 bool r_recording_context::dead() const
 {
     auto now = system_clock::now();

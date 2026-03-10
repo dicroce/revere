@@ -82,6 +82,7 @@ struct r_stream_status
 {
     r_disco::r_camera camera;
     uint32_t bytes_per_second;
+    bool receiving_video {false};
     r_overflow_type overflow_flags {r_overflow_type::none};
     size_t dropped_frames {0};  // Total frames dropped since last check
 };
