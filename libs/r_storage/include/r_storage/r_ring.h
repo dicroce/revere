@@ -56,11 +56,15 @@ public:
             R_THROW(("query start time is too old"));
         }
 
-        if(qe > now)
-            R_THROW(("query end time is too new"));
+        // Clamp end time to now instead of throwing — callers may not know
+        // the exact safe boundary and partial results are better than errors.
+        auto effective_qe = (qe > now) ? now : qe;
+
+        if(effective_qe <= qs)
+            return; // Nothing to query after clamping
 
         auto start_idx = _idx(qs);
-        auto elements_to_query = std::chrono::duration_cast<std::chrono::seconds>(qe-qs).count();
+        auto elements_to_query = std::chrono::duration_cast<std::chrono::seconds>(effective_qe-qs).count();
         for(auto i = 0; i < elements_to_query; i++)
         {
             uint8_t* element = _ring_start() + (((start_idx + i) % n_elements) * _element_size);
@@ -85,11 +89,14 @@ public:
         if(qs_et < oldest_et)
             R_THROW(("query start time is too old"));
 
-        if(qe > now)
-            R_THROW(("query end time is too new"));
+        // Clamp end time to now instead of throwing
+        auto effective_qe = (qe > now) ? now : qe;
+
+        if(effective_qe <= qs)
+            return {}; // Nothing to query after clamping
 
         auto start_idx = _idx(qs);
-        auto elements_to_query = std::chrono::duration_cast<std::chrono::seconds>(qe-qs).count();
+        auto elements_to_query = std::chrono::duration_cast<std::chrono::seconds>(effective_qe-qs).count();
         std::vector<uint8_t> result(elements_to_query * _element_size);
 
         auto elements_before_wrap = (std::min)((int64_t)(n_elements - start_idx), elements_to_query);
