@@ -195,18 +195,20 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
         item.sub_label = c.second.ipv4.value();
         item.camera_id = c.first;
 
-        // Populate kbps and retention if stream status is available
+        // Populate kbps, retention, and health if stream status is available
         if(status_by_id.find(c.first) != status_by_id.end())
         {
             auto& status = status_by_id[c.first];
             item.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
             auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
             item.retention = r_string_utils::format("%.2f days", retention_days);
+            item.health = status.receiving_video ? revere::stream_health::healthy : revere::stream_health::error;
         }
         else
         {
             item.kbps = "N/A";
             item.retention = "N/A";
+            item.health = revere::stream_health::unknown;
         }
 
         ui_state.recording_items.push_back(item);
