@@ -2,6 +2,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_blob_tree.h"
+#include "r_utils/r_logger.h"
 #include "r_utils/3rdparty/json/json.h"
 #include <algorithm>
 #include <memory>
@@ -211,8 +212,10 @@ vector<uint8_t> r_storage_file_reader::query_key(r_storage_media_type media_type
                                   audio_codec_name, audio_codec_parameters);
             }
         }
-    } catch (const nanots_exception&) {
-        // Handle case where stream doesn't exist or no key frame found
+    } catch (const nanots_exception& e) {
+        R_LOG_ERROR("query_key: nanots error: %s", e.what());
+    } catch (const std::exception& e) {
+        R_LOG_ERROR("query_key: error: %s", e.what());
     }
 
     if(!video_codec_name.empty())

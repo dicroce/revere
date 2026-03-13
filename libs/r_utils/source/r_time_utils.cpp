@@ -72,6 +72,10 @@ system_clock::time_point r_utils::r_time_utils::iso_8601_to_tp(const string& str
 #else
         gmtime_r(&parsed_time, &local_tm);
 #endif
+        // Let mktime auto-determine DST (-1) so it uses the correct offset for the date/timezone.
+        // Without this, gmtime sets tm_isdst=0 (UTC has no DST), causing mktime to use the
+        // standard (non-DST) UTC offset, which is wrong when DST is actually in effect.
+        local_tm.tm_isdst = -1;
         // mktime interprets tm as local time and returns UTC time_t
         time_t utc_time = mktime(&local_tm);
 
@@ -99,6 +103,7 @@ system_clock::time_point r_utils::r_time_utils::iso_8601_to_tp(const string& str
 #else
         gmtime_r(&parsed_time, &local_tm);
 #endif
+        local_tm.tm_isdst = -1;  // Let mktime auto-determine DST for correct offset
         time_t utc_time = mktime(&local_tm);
         time_t offset = parsed_time - utc_time;
 
