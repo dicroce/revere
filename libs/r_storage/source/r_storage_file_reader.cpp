@@ -348,60 +348,25 @@ vector<int64_t> r_storage_file_reader::key_frame_start_times(r_storage_media_typ
 r_nullable<int64_t> r_storage_file_reader::last_ts()
 {
     r_nullable<int64_t> result;
-    
+
     auto base_name = _file_name.substr(0, (_file_name.find_last_of('.')));
     auto nanots_file_name = base_name + ".nts";
-    
-    try {
-        // Try video stream first
-        nanots_iterator video_iterator(nanots_file_name, "video");
-        
-        // Iterate to find the last frame
-        int64_t last_video_ts = -1;
-        while (video_iterator.valid()) {
-            last_video_ts = video_iterator->timestamp;
-            ++video_iterator;
-        }
-        
-        if (last_video_ts != -1) {
-            result.set_value(last_video_ts);
-        }
-        
-        // Check if audio has a later timestamp
+
+    auto check_stream = [&](const std::string& stream_tag) {
         try {
-            nanots_iterator audio_iterator(nanots_file_name, "audio");
-            int64_t last_audio_ts = -1;
-            while (audio_iterator.valid()) {
-                last_audio_ts = audio_iterator->timestamp;
-                ++audio_iterator;
+            nanots_iterator it(nanots_file_name, stream_tag);
+            it.seek_end();
+            if (it.valid()) {
+                auto ts = it->timestamp;
+                if (result.is_null() || ts > result.value())
+                    result.set_value(ts);
             }
-            
-            if (last_audio_ts != -1) {
-                if (result.is_null() || last_audio_ts > result.value()) {
-                    result.set_value(last_audio_ts);
-                }
-            }
-        } catch (const nanots_exception&) {
-            // Audio stream doesn't exist, use video result
-        }
-    } catch (const nanots_exception&) {
-        try {
-            // Video stream doesn't exist, try audio only
-            nanots_iterator audio_iterator(nanots_file_name, "audio");
-            int64_t last_audio_ts = -1;
-            while (audio_iterator.valid()) {
-                last_audio_ts = audio_iterator->timestamp;
-                ++audio_iterator;
-            }
-            
-            if (last_audio_ts != -1) {
-                result.set_value(last_audio_ts);
-            }
-        } catch (const nanots_exception&) {
-            // No streams exist
-        }
-    }
-    
+        } catch (const nanots_exception&) {}
+    };
+
+    check_stream("video");
+    check_stream("audio");
+
     return result;
 }
 

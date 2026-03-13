@@ -20,7 +20,10 @@
       "Bash(Get-EventLog -LogName Application -Source \"*revere*\" -Newest 10 -ErrorAction SilentlyContinue)",
       "Bash(dir \"C:\\\\Program Files\\\\Revere Surveillance\" /b)",
       "Bash(dir \"C:\\\\Program Files \\(x86\\)\\\\revere\\\\revere\" /b)",
-      "Bash(xargs rm:*)"
+      "Bash(xargs rm:*)",
+      "Bash(sqlite3 \"C:/Users/dicro/AppData/Local/revere/revere/video/backyard.db\" \".schema\")",
+      "Bash(sqlite3 \"C:/Users/dicro/AppData/Local/revere/revere/video/backyard.db\" \"SELECT id, stream_tag FROM segments ORDER BY id;\")",
+      "Bash(sqlite3 \"C:/Users/dicro/AppData/Local/revere/revere/video/backyard.db\" \"SELECT sb.id, sb.segment_id, sb.start_timestamp, sb.end_timestamp FROM segment_blocks sb JOIN segments s ON s.id = sb.segment_id WHERE s.stream_tag = ''video'' ORDER BY sb.start_timestamp DESC LIMIT 5;\")"
     ]
   }
 }
