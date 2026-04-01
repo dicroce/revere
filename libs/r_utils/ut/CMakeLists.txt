@@ -3,20 +3,19 @@ project(r_utils_ut)
 
 add_executable(
     ut
-    include/framework.h
-    source/framework.cpp
     include/test_r_utils.h
     source/test_r_utils.cpp
 )
 
 target_include_directories(
-    ut PUBLIC 
+    ut PUBLIC
     include
     ../r_utils/include
 )
 
 target_link_libraries(
     ut LINK_PUBLIC
+    experimentum
     r_utils
     uuid::uuid
 )

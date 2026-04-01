@@ -173,15 +173,15 @@ class test_fixture {
   std::string _fixture_name;
 };
 
-extern std::vector<std::shared_ptr<test_fixture>> _test_fixtures;
+std::vector<std::shared_ptr<test_fixture>>& rtf_get_fixtures();
 
-#define REGISTER_TEST_FIXTURE(a)                       \
-  class a##_static_init {                              \
-   public:                                             \
-    a##_static_init() {                                \
-      _test_fixtures.push_back(std::make_shared<a>()); \
-    }                                                  \
-  };                                                   \
+#define REGISTER_TEST_FIXTURE(a)                             \
+  class a##_static_init {                                    \
+   public:                                                   \
+    a##_static_init() {                                      \
+      rtf_get_fixtures().push_back(std::make_shared<a>());   \
+    }                                                        \
+  };                                                         \
   a##_static_init a##_static_init_instance;
 
 // This is a globally (across test) incrementing counter so that tests can avoid

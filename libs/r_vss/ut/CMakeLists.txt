@@ -3,8 +3,6 @@ project(r_vss_ut)
 
 add_executable(
     r_vss_ut
-    include/framework.h
-    source/framework.cpp
     include/test_r_motion_engine.h
     source/test_r_motion_engine.cpp
 )
@@ -18,6 +16,7 @@ target_include_directories(
 
 target_link_libraries(
     r_vss_ut LINK_PUBLIC
+    experimentum
     r_vss
     r_pipeline
     r_av

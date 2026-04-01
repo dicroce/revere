@@ -19,7 +19,10 @@
 
 using namespace std;
 
-vector<shared_ptr<test_fixture>> _test_fixtures;
+vector<shared_ptr<test_fixture>>& rtf_get_fixtures() {
+  static vector<shared_ptr<test_fixture>> fixtures;
+  return fixtures;
+}
 
 #ifdef _WIN32
 int64_t GetSystemTimeAsUnixTime() {
@@ -232,7 +235,7 @@ int main(int argc, char* argv[]) {
   bool something_failed = false;
   int total_tests_run = 0;
 
-  for (auto& tf : _test_fixtures) {
+  for (auto& tf : rtf_get_fixtures()) {
     if (!fixture_name.empty())
       if (tf->get_name() != fixture_name)
         continue;

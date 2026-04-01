@@ -1,8 +1,6 @@
 
 add_executable(
     r_disco_ut
-    include/framework.h
-    source/framework.cpp
     include/test_r_disco.h
     source/test_r_disco.cpp
 )
@@ -15,6 +13,7 @@ target_include_directories(
 
 target_link_libraries(
     r_disco_ut LINK_PUBLIC
+    experimentum
     r_disco
     r_pipeline
     r_db

@@ -1,4 +1,5 @@
 
+add_subdirectory(experimentum)
 add_subdirectory(r_utils)
 add_subdirectory(r_db)
 add_subdirectory(r_http)

@@ -1,8 +1,6 @@
 
 add_executable(
     r_http_ut
-    include/framework.h
-    source/framework.cpp
     include/test_r_http.h
     source/test_r_http.cpp
     include/test_r_websocket.h
@@ -10,12 +8,13 @@ add_executable(
 )
 
 target_include_directories(
-    r_http_ut PUBLIC 
+    r_http_ut PUBLIC
     include
 )
 
 target_link_libraries(
     r_http_ut LINK_PUBLIC
+    experimentum
     r_http
     r_utils
     platform::platform

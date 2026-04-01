@@ -1,8 +1,6 @@
 
 add_executable(
     r_av_ut
-    include/framework.h
-    source/framework.cpp
     include/test_r_mux.h
     source/test_r_mux.cpp
     include/test_r_codec.h
@@ -19,7 +17,8 @@ target_include_directories(
 )
 
 target_link_libraries(
-    r_av_ut LINK_PUBLIC 
+    r_av_ut LINK_PUBLIC
+    experimentum
     r_utils
     r_av
     ffmpeg::ffmpeg

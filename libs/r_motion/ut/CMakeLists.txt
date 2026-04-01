@@ -3,8 +3,6 @@ project(r_motion_ut)
 
 add_executable(
     r_motion_ut
-    include/framework.h
-    source/framework.cpp
     include/test_r_motion.h
     source/test_r_motion.cpp
 )
@@ -18,6 +16,7 @@ target_include_directories(
 
 target_link_libraries(
     r_motion_ut LINK_PUBLIC
+    experimentum
     r_motion
     r_av
     r_utils

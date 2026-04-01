@@ -1,8 +1,6 @@
 
 add_executable(
     r_pipeline_ut
-    include/framework.h
-    source/framework.cpp
     include/utils.h
     source/utils.cpp
     include/test_r_pipeline.h
@@ -17,7 +15,8 @@ target_include_directories(
 )
 
 target_link_libraries(
-    r_pipeline_ut LINK_PUBLIC 
+    r_pipeline_ut LINK_PUBLIC
+    experimentum
     r_fakey
     r_pipeline
     r_av
