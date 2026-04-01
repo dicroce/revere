@@ -12,9 +12,10 @@ add_executable(
 )
 
 target_include_directories(
-    r_av_ut PUBLIC 
+    r_av_ut PUBLIC
     include
     ../include
+    ../../ut_data
 )
 
 target_link_libraries(

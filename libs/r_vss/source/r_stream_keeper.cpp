@@ -1,5 +1,7 @@
 
 #include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_motion_storage_sink.h"
+#include "r_av/r_muxer.h"
 #include "r_vss/r_recording_context.h"
 #include "r_vss/r_query.h"
 #include "r_utils/r_exception.h"
@@ -32,7 +34,24 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
     _mounts(nullptr),
     _factories(),
     _meph(_devices, _top_dir, *this),
-    _motionEngine(_devices, top_dir, _meph),
+    _motionEngine(
+        [this](const r_motion_work_item& item) -> std::shared_ptr<r_motion_work_context> {
+            auto maybe_camera = _devices.get_camera_by_id(item.id);
+            if(maybe_camera.is_null())
+                R_THROW(("Motion engine unable to find camera with id: %s", item.id.c_str()));
+            auto camera = maybe_camera.value();
+            string path = camera.motion_detection_file_path.value();
+            if(path.find('/') == string::npos && path.find('\\') == string::npos)
+                path = _top_dir + PATH_SLASH + "video" + PATH_SLASH + path;
+            return make_shared<r_motion_work_context>(
+                r_av::encoding_to_av_codec_id(item.video_codec_name),
+                camera.id,
+                r_pipeline::get_video_codec_extradata(item.video_codec_name, item.video_codec_parameters),
+                make_unique<r_ring_storage_sink>(path, RING_MOTION_FLAG_SIZE)
+            );
+        },
+        _meph
+    ),
     _system_plugin_host(top_dir),
     _ws(top_dir, _devices),
     _prune(_top_dir, _devices)

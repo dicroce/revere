@@ -2,7 +2,7 @@
 #ifndef __r_motion_event_plugin_host_h
 #define __r_motion_event_plugin_host_h
 
-#include "r_vss/r_motion_event.h"
+#include "r_vss/r_motion_event_sink.h"
 #include "r_vss/r_motion_plugin.h"
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_macro.h"
@@ -19,7 +19,7 @@ namespace r_vss
 
 class r_stream_keeper;
 
-class r_motion_event_plugin_host
+class r_motion_event_plugin_host : public r_motion_event_sink
 {
 public:
     R_API r_motion_event_plugin_host(r_disco::r_devices& devices, const std::string& top_dir, r_stream_keeper& stream_keeper);
@@ -29,7 +29,7 @@ public:
     // Must be called before gst_deinit() to ensure clean shutdown
     R_API void stop();
 
-    R_API void post(r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const motion_region& motion_bbox);
+    R_API void post(r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const motion_region& motion_bbox) override;
     
     r_disco::r_devices& get_devices() { return _devices; }
     const std::string& get_top_dir() const { return _top_dir; }

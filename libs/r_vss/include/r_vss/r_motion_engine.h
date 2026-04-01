@@ -8,9 +8,9 @@
 #include "r_utils/r_ring_buffer.h"
 #include "r_av/r_video_decoder.h"
 #include "r_pipeline/r_gst_buffer.h"
-#include "r_disco/r_devices.h"
-#include "r_storage/r_ring.h"
-#include "r_vss/r_motion_event_plugin_host.h"
+#include "r_vss/r_motion_event_sink.h"
+#include "r_vss/r_motion_storage_sink.h"
+#include <functional>
 #include <vector>
 #include <map>
 #include <memory>
@@ -44,7 +44,7 @@ struct r_keyframe_motion_entry
     motion_region bbox;
 };
 
-struct r_work_item
+struct r_motion_work_item
 {
     r_pipeline::r_gst_buffer frame;
     std::string video_codec_name;
@@ -54,19 +54,19 @@ struct r_work_item
     bool is_key_frame;
 };
 
-struct r_work_context
+struct r_motion_work_context
 {
 public:
-    r_work_context(AVCodecID codec_id,
-                   const r_disco::r_camera& camera,
-                   const std::string& path,
+    r_motion_work_context(AVCodecID codec_id,
+                   const std::string& camera_id,
                    const std::vector<uint8_t> ed,
+                   std::unique_ptr<r_motion_storage_sink> storage_sink,
                    size_t motion_confirm_frames = DEFAULT_MOTION_CONFIRM_FRAMES,
                    double min_motion_displacement = DEFAULT_MIN_MOTION_DISPLACEMENT) :
         _motion_state(60),
         _video_decoder(codec_id),
-        _camera(camera),
-        _ring(path, RING_MOTION_FLAG_SIZE),
+        _camera_id(camera_id),
+        _storage_sink(std::move(storage_sink)),
         _in_event(false),
         _first_ts(-1),
         _last_written_second(-1),
@@ -76,17 +76,17 @@ public:
     {
         _video_decoder.set_extradata(ed);
     }
-    ~r_work_context() noexcept
+    ~r_motion_work_context() noexcept
     {
     }
     r_av::r_video_decoder& decoder(){return _video_decoder;}
     r_motion::r_motion_state& motion_state(){return _motion_state;}
-    r_storage::r_ring& ring(){return _ring;}
+    r_motion_storage_sink& storage_sink(){return *_storage_sink;}
     bool get_in_event() const { return _in_event; }
     void set_in_event(bool v) { _in_event = v; }
     int64_t get_event_start_ts() const { return _event_start_ts; }
     void set_event_start_ts(int64_t ts) { _event_start_ts = ts; }
-    std::string get_camera_id() { return _camera.id; }
+    std::string get_camera_id() { return _camera_id; }
     bool first_ts_valid() { return _first_ts != -1; }
     int64_t get_first_ts() const { return _first_ts; }
     void set_first_ts(int64_t ts) { _first_ts = ts; }
@@ -105,8 +105,8 @@ public:
 private:
     r_motion::r_motion_state _motion_state;
     r_av::r_video_decoder _video_decoder;
-    r_disco::r_camera _camera;
-    r_storage::r_ring _ring;
+    std::string _camera_id;
+    std::unique_ptr<r_motion_storage_sink> _storage_sink;
     bool _in_event;
     int64_t _event_start_ts {-1};  // Timestamp when current event started
     int64_t _first_ts;
@@ -123,11 +123,13 @@ private:
     size_t _no_motion_count {0};
 };
 
+using r_motion_work_context_factory = std::function<std::shared_ptr<r_motion_work_context>(const r_motion_work_item&)>;
+
 class r_motion_engine final
 {
 public:
     r_motion_engine() = delete;
-    R_API r_motion_engine(r_disco::r_devices& devices, const std::string& top_dir, r_motion_event_plugin_host& meph);
+    R_API r_motion_engine(r_motion_work_context_factory factory, r_motion_event_sink& meph);
     r_motion_engine(const r_motion_engine&) = delete;
     r_motion_engine(r_motion_engine&&) = delete;
     R_API ~r_motion_engine() noexcept;
@@ -150,15 +152,14 @@ public:
 
 private:
     void _entry_point();
-    std::map<std::string, std::shared_ptr<r_work_context>>::iterator _create_work_context(const r_work_item& item);
-    r_disco::r_devices& _devices;
-    std::string _top_dir;
+    std::map<std::string, std::shared_ptr<r_motion_work_context>>::iterator _create_work_context(const r_motion_work_item& item);
+    r_motion_work_context_factory _factory;
     // Bounded queue to prevent memory exhaustion if motion processing can't keep up
-    r_utils::r_blocking_q<r_work_item> _work{MOTION_ENGINE_MAX_QUEUE_SIZE};
-    std::map<std::string, std::shared_ptr<r_work_context>> _work_contexts;
+    r_utils::r_blocking_q<r_motion_work_item> _work{MOTION_ENGINE_MAX_QUEUE_SIZE};
+    std::map<std::string, std::shared_ptr<r_motion_work_context>> _work_contexts;
     bool _running;
     std::thread _thread;
-    r_motion_event_plugin_host& _meph;
+    r_motion_event_sink& _meph;
 };
 
 }

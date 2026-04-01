@@ -13,6 +13,7 @@ target_include_directories(
     r_pipeline_ut PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ut_data
 )
 
 target_link_libraries(

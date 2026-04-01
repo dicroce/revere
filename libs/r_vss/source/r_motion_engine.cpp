@@ -1,13 +1,10 @@
 
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_motion_event.h"
-#include "r_vss/r_vss_utils.h"
 #include "r_motion/utils.h"
-#include "r_av/r_muxer.h"
 #include "r_av/r_codec_state.h"
 #include "r_pipeline/r_stream_info.h"
 #include "r_pipeline/r_gst_buffer.h"
-#include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
 #include <opencv2/opencv.hpp>
 #include <chrono>
@@ -16,22 +13,11 @@
 
 using namespace r_vss;
 using namespace r_utils;
-using namespace r_storage;
 using namespace r_motion;
 using namespace std;
 using namespace std::chrono;
 
 namespace {
-    // Helper to get storage file path - handles both legacy (filename only) and new (full path) formats
-    string _get_storage_path(const string& file_path, const string& top_dir)
-    {
-        // Check if it's already a full path (contains path separators)
-        if(file_path.find('/') != string::npos || file_path.find('\\') != string::npos)
-            return file_path;
-        // Legacy format: just filename, prepend default video directory
-        return top_dir + PATH_SLASH + "video" + PATH_SLASH + file_path;
-    }
-
     // Letterbox parameters for 640x640 target
     struct letterbox_params {
         int scaled_w;
@@ -71,9 +57,8 @@ namespace {
     }
 }
 
-r_motion_engine::r_motion_engine(r_disco::r_devices& devices, const string& top_dir, r_motion_event_plugin_host& meph) :
-    _devices(devices),
-    _top_dir(top_dir),
+r_motion_engine::r_motion_engine(r_motion_work_context_factory factory, r_motion_event_sink& meph) :
+    _factory(std::move(factory)),
     _work(),
     _work_contexts(),
     _running(false),
@@ -89,12 +74,13 @@ r_motion_engine::~r_motion_engine() noexcept
 
 void r_motion_engine::start()
 {
+    _running = true;
     _thread = thread(&r_motion_engine::_entry_point, this);
 }
 
 void r_motion_engine::stop() noexcept
 {
-    if(_running)
+    if(_thread.joinable())
     {
         _running = false;
         _work.wake();
@@ -104,7 +90,7 @@ void r_motion_engine::stop() noexcept
 
 void r_motion_engine::post_frame(r_pipeline::r_gst_buffer buffer, int64_t ts, const string& video_codec_name, const string& video_codec_parameters, const string& id, bool is_key_frame)
 {
-    r_work_item item;
+    r_motion_work_item item;
     item.frame = buffer;
     item.video_codec_name = video_codec_name;
     item.video_codec_parameters = video_codec_parameters;
@@ -119,7 +105,7 @@ void r_motion_engine::remove_work_context(const string& camera_id)
 {
     // Post a special work item to trigger removal in the worker thread
     // This ensures the work context is removed from the same thread that accesses it
-    r_work_item item;
+    r_motion_work_item item;
     item.id = camera_id;
     item.ts = -1; // Use -1 as a sentinel value to indicate removal request
     _work.post(item);
@@ -139,8 +125,6 @@ size_t r_motion_engine::get_queue_size() const
 
 void r_motion_engine::_entry_point()
 {
-    _running = true;
-
     while(_running)
     {
         auto maybe_work = _work.poll(chrono::milliseconds(1000));
@@ -171,16 +155,11 @@ void r_motion_engine::_entry_point()
                 if(work.is_key_frame)
                 {
                     auto mi = work.frame.map(r_pipeline::r_gst_buffer::MT_READ);
-                    int max_decode_attempts = 10;
                     wc->decoder().attach_buffer(mi.data(), mi.size());
 
                     bool decode_again = true;
                     while(decode_again)
                     {
-                        if(max_decode_attempts <= 0)
-                            R_THROW(("Unable to decode!"));
-                        --max_decode_attempts;
-
                         auto ds = wc->decoder().decode();
 
                         if(ds == r_av::R_CODEC_STATE_HAS_OUTPUT || ds == r_av::R_CODEC_STATE_AGAIN_HAS_OUTPUT)
@@ -300,7 +279,7 @@ void r_motion_engine::_entry_point()
                                                 system_clock::time_point start_tp{milliseconds{wc->get_event_start_ts()}};
                                                 system_clock::time_point end_tp{milliseconds{work.ts}};
                                                 uint8_t motion_flag = 1;
-                                                wc->ring().write_range(start_tp, end_tp, &motion_flag);
+                                                wc->storage_sink().write_range(start_tp, end_tp, &motion_flag);
                                                 wc->set_last_written_second(work.ts / 1000);
                                             }
 
@@ -319,7 +298,7 @@ void r_motion_engine::_entry_point()
                                     if(current_second != wc->get_last_written_second())
                                     {
                                         uint8_t motion_flag = 0;
-                                        wc->ring().write(tp, &motion_flag);
+                                        wc->storage_sink().write(tp, &motion_flag);
                                         wc->set_last_written_second(current_second);
                                     }
                                 }
@@ -330,6 +309,13 @@ void r_motion_engine::_entry_point()
 
                             if(ds == r_av::R_CODEC_STATE_HAS_OUTPUT)
                                 decode_again = false;
+                        }
+                        else
+                        {
+                            // HUNGRY or error — decoder needs more data or had a problem.
+                            // Don't throw; leave the work context intact so the decoder
+                            // can be primed by subsequent key frames.
+                            decode_again = false;
                         }
                     }
                 }
@@ -345,21 +331,8 @@ void r_motion_engine::_entry_point()
     }
 }
 
-map<string, shared_ptr<r_work_context>>::iterator r_motion_engine::_create_work_context(const r_work_item& item)
+map<string, shared_ptr<r_motion_work_context>>::iterator r_motion_engine::_create_work_context(const r_motion_work_item& item)
 {
-    auto maybe_camera = _devices.get_camera_by_id(item.id);
-
-    if(maybe_camera.is_null())
-        R_THROW(("Motion engine unable to find camera with id: %s", item.id.c_str()));
-
-    auto camera = maybe_camera.value();
-
-    auto wc = make_shared<r_work_context>(
-        r_av::encoding_to_av_codec_id(item.video_codec_name),
-        camera,
-        _get_storage_path(camera.motion_detection_file_path.value(), _top_dir),
-        r_pipeline::get_video_codec_extradata(item.video_codec_name, item.video_codec_parameters)
-    );
-
+    auto wc = _factory(item);
     return _work_contexts.insert(make_pair(item.id, wc)).first;
 }
