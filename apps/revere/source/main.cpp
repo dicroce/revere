@@ -1683,6 +1683,13 @@ int main(int argc, char** argv)
                     }
 #endif
                 }
+                if (event.type == SDL_RENDER_TARGETS_RESET || event.type == SDL_RENDER_DEVICE_RESET)
+                {
+                    R_LOG_WARNING("Render device reset - recreating GPU resources");
+                    ImGui_ImplSDLRenderer_DestroyDeviceObjects();
+                    ImGui_ImplSDLRenderer_CreateDeviceObjects();
+                    force_ui_update = true;
+                }
             } while (SDL_PollEvent(&event));
         }
 
