@@ -1450,19 +1450,21 @@ int main(int argc, char** argv)
     SDL_Renderer* renderer = nullptr;
 #ifdef IS_WINDOWS
     // Windows: Use hardware acceleration (Direct3D, not OpenGL)
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    // No PRESENTVSYNC: SDL_RenderPresent() with vsync can block indefinitely on old/buggy GPU drivers,
+    // freezing the entire UI. Frame rate is naturally limited by SDL_WaitEventTimeout(100) in the loop.
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (renderer == nullptr)
     {
         R_LOG_ERROR("Hardware renderer failed: %s, falling back to software", SDL_GetError());
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
     }
 #else
     // Linux/macOS: Use software renderer to avoid OpenGL packaging issues
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
     if (renderer == nullptr)
     {
         R_LOG_ERROR("Software renderer failed: %s, trying hardware", SDL_GetError());
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     }
 #endif
 
@@ -2086,7 +2088,14 @@ int main(int argc, char** argv)
         SDL_RenderPresent(renderer);
     }
 
-    // Cleanup
+    // Cleanup — order matters:
+    // 1. Stop background workers first so they stop touching SDL textures
+    streamKeeper.stop();
+    agent.stop();
+    // Note: devices.stop() is called by its destructor AFTER streamKeeper is destroyed
+    // This order is important because plugins may use devices during their shutdown
+
+    // 2. Tear down ImGui and SDL after all workers are stopped
     ImGui_ImplSDLRenderer_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
@@ -2094,11 +2103,6 @@ int main(int argc, char** argv)
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
-
-    streamKeeper.stop();
-    agent.stop();
-    // Note: devices.stop() is called by its destructor AFTER streamKeeper is destroyed
-    // This order is important because plugins may use devices during their shutdown
 
     r_pipeline::gstreamer_deinit();
 
