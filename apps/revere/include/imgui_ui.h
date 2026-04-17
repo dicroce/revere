@@ -332,6 +332,8 @@ void sidebar_list(
 )
 {
     auto pos = ImGui::GetCursorPos();
+    const float start_x = pos.x;
+    const float start_y = pos.y;
 
     // Only calculate text sizes if cache is invalid (< 0) or list changed
     if(cached_largest_label < 0.0f)
@@ -358,14 +360,6 @@ void sidebar_list(
     };
     std::vector<TextRenderInfo> text_to_render;
     text_to_render.reserve(labels.size() * 2);
-
-    // Store health indicator positions for drawing after text
-    struct HealthDotInfo {
-        ImVec2 position;
-        stream_health health;
-    };
-    std::vector<HealthDotInfo> health_dots;
-    health_dots.reserve(labels.size());
 
     // selectable list - first pass: interactive elements
     for(int i = 0; i < (int)labels.size(); ++i)
@@ -408,54 +402,6 @@ void sidebar_list(
             item_click_cb(i);
         }
 
-        // Show tooltip with kbps and retention info when hovering (with delay and stationary mouse)
-        static int last_hovered_item = -1;
-        static float hover_start_time = 0.0f;
-        static ImVec2 last_mouse_pos = ImVec2(0, 0);
-
-        if (ImGui::IsItemHovered() && !labels[i].kbps.empty() && labels[i].kbps != "N/A")
-        {
-            const float tooltip_delay = 0.5f; // 0.5 seconds delay
-
-#ifdef IS_MACOS
-            // On macOS, only check if we switched to a different item (ignore mouse movement)
-            // Mouse sensitivity and Retina scaling make movement detection unreliable
-            if (last_hovered_item != i)
-            {
-                last_hovered_item = i;
-                hover_start_time = (float)ImGui::GetTime();
-            }
-#else
-            const float mouse_move_threshold = 2.0f; // pixels - small threshold to ignore tiny movements
-
-            ImVec2 current_mouse_pos = ImGui::GetMousePos();
-            float mouse_delta_x = current_mouse_pos.x - last_mouse_pos.x;
-            float mouse_delta_y = current_mouse_pos.y - last_mouse_pos.y;
-            float mouse_distance = sqrtf(mouse_delta_x * mouse_delta_x + mouse_delta_y * mouse_delta_y);
-
-            if (last_hovered_item != i || mouse_distance > mouse_move_threshold)
-            {
-                // Started hovering a new item or mouse moved
-                last_hovered_item = i;
-                last_mouse_pos = current_mouse_pos;
-                hover_start_time = (float)ImGui::GetTime();
-            }
-#endif
-
-            float hover_duration = (float)ImGui::GetTime() - hover_start_time;
-            if (hover_duration >= tooltip_delay)
-            {
-                ImGui::BeginTooltip();
-                ImGui::Text("kbps: %s", labels[i].kbps.c_str());
-                ImGui::Text("retention: %s", labels[i].retention.c_str());
-                ImGui::EndTooltip();
-            }
-        }
-        else
-        {
-            last_hovered_item = -1; // Reset when not hovering
-        }
-
         ImGui::PopStyleColor();
         ImGui::PopStyleColor();
         ImGui::PopStyleColor();
@@ -470,10 +416,6 @@ void sidebar_list(
         // Store text for batched rendering
         text_to_render.push_back({ImVec2(pos.x+10, pos.y+5), labels[i].label, true});
         text_to_render.push_back({ImVec2(pos.x+10, pos.y+28), labels[i].sub_label, false});
-
-        // Store health indicator position (right-aligned in the selectable area)
-        if(labels[i].health != stream_health::unknown)
-            health_dots.push_back({ImVec2(pos.x + width - 30, pos.y + 12), labels[i].health});
 
         pos.y += 110;
 
@@ -503,18 +445,37 @@ void sidebar_list(
     }
     ImGui::PopFont();
 
-    // Third pass: draw health indicator dots
-    ImDrawList* health_draw_list = ImGui::GetWindowDrawList();
-    for(const auto& dot : health_dots)
+    // Third pass: render kbps and retention in the top-right corner of each item.
+    // These replace the old green/red health-dot indicator. If stream_health is
+    // error, the text is rendered in red to preserve the "something is wrong" signal.
+    ImGui::PushFont(r_ui_utils::fonts["18.00"].roboto_regular);
+    const float stats_right_pad = 10.0f;
+    for(size_t i = 0; i < labels.size(); ++i)
     {
-        auto screen_pos = ImGui::GetWindowPos();
-        ImVec2 center(screen_pos.x + dot.position.x, screen_pos.y + dot.position.y);
-        float radius = 5.0f;
-        ImU32 color = (dot.health == stream_health::healthy) ?
-            IM_COL32(0, 200, 0, 255) :   // green
-            IM_COL32(200, 0, 0, 255);     // red
-        health_draw_list->AddCircleFilled(center, radius, color);
+        const auto& lbl = labels[i];
+        if(lbl.kbps.empty() && lbl.retention.empty())
+            continue;
+
+        float item_y = start_y + (float)i * 110.0f;
+        bool is_error = (lbl.health == stream_health::error);
+        ImVec4 color = is_error
+            ? ImVec4(0.86f, 0.31f, 0.31f, 1.0f)   // red (matches previous dot)
+            : ImVec4(0.70f, 0.70f, 0.70f, 1.0f);  // muted gray
+
+        if(!lbl.kbps.empty())
+        {
+            auto sz = ImGui::CalcTextSize(lbl.kbps.c_str());
+            ImGui::SetCursorPos(ImVec2(start_x + (float)width - sz.x - stats_right_pad, item_y + 6.0f));
+            ImGui::TextColored(color, "%s", lbl.kbps.c_str());
+        }
+        if(!lbl.retention.empty())
+        {
+            auto sz = ImGui::CalcTextSize(lbl.retention.c_str());
+            ImGui::SetCursorPos(ImVec2(start_x + (float)width - sz.x - stats_right_pad, item_y + 28.0f));
+            ImGui::TextColored(color, "%s", lbl.retention.c_str());
+        }
     }
+    ImGui::PopFont();
 }
 
 template<typename OK_CB, typename CANCEL_CB>
