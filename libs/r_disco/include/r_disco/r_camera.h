@@ -25,6 +25,7 @@ struct r_camera
     r_utils::r_nullable<int> audio_timebase;
 
     // r_camera specific fields
+    r_utils::r_nullable<std::string> onvif_profile_token;
     r_utils::r_nullable<std::string> rtsp_username;
     r_utils::r_nullable<std::string> rtsp_password;
     std::string state;

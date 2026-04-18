@@ -6,6 +6,7 @@
 #include "r_utils/r_nullable.h"
 #include "r_disco/r_camera.h"
 #include "r_pipeline/r_stream_info.h"
+#include "r_onvif/r_onvif_session.h"
 #include "r_ui_utils/texture.h"
 #include <vector>
 #include <memory>
@@ -18,13 +19,17 @@ namespace revere
 struct assignment_state
 {
     int wizard_step {1};
-    int wizard_total_steps {8};
+    int wizard_total_steps {9};
     std::string step_title(const std::string& base) const
     {
         return "Step " + std::to_string(wizard_step) + "/" + std::to_string(wizard_total_steps) + " - " + base;
     }
     std::string camera_id;
     std::string ipv4;
+    std::vector<r_onvif::onvif_profile_info> available_profiles;
+    std::string selected_profile_token;
+    int selected_profile_idx {0};
+    bool profiles_were_filtered {false};
     r_utils::r_nullable<std::string> rtsp_username;
     r_utils::r_nullable<std::string> rtsp_password;
     std::string camera_friendly_name;

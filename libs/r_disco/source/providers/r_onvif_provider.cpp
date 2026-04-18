@@ -32,10 +32,24 @@ vector<r_stream_config> r_onvif_provider::poll()
     return _fetch_configs(_top_dir);
 }
 
+vector<r_onvif::onvif_profile_info> r_onvif_provider::get_camera_profiles(
+    const string& ipv4,
+    const string& xaddrs,
+    r_nullable<string> username,
+    r_nullable<string> password
+)
+{
+    r_onvif::r_onvif_cam cam(ipv4, 80, "http", xaddrs, username, password);
+    auto caps = cam.get_camera_capabilities();
+    auto oms = cam.get_media_service(caps);
+    return cam.get_profile_tokens(oms);
+}
+
 void r_onvif_provider::interrogate_camera(
     r_stream_config& sc,
     r_utils::r_nullable<std::string> username,
-    r_utils::r_nullable<std::string> password
+    r_utils::r_nullable<std::string> password,
+    const std::string& preferred_profile_token
 )
 {
     _cache_check_expiration(sc.id);
@@ -57,30 +71,42 @@ void r_onvif_provider::interrogate_camera(
         auto oms = cam.get_media_service(caps);
         auto profile_tokens = cam.get_profile_tokens(oms);
 
-        // Select the profile with the highest resolution (main stream, not sub-stream)
         if(profile_tokens.empty())
             R_THROW(("No ONVIF profiles available for camera."));
 
-        size_t best_profile_idx = 0;
-        uint32_t best_resolution = 0;
-
-        for(size_t i = 0; i < profile_tokens.size(); ++i)
+        size_t selected_idx = 0;
+        if(!preferred_profile_token.empty())
         {
-            uint32_t resolution = (uint32_t)profile_tokens[i].width * (uint32_t)profile_tokens[i].height;
-            if(resolution > best_resolution)
+            for(size_t i = 0; i < profile_tokens.size(); ++i)
             {
-                best_resolution = resolution;
-                best_profile_idx = i;
+                if(profile_tokens[i].token == preferred_profile_token)
+                {
+                    selected_idx = i;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            uint32_t best_resolution = 0;
+            for(size_t i = 0; i < profile_tokens.size(); ++i)
+            {
+                uint32_t resolution = (uint32_t)profile_tokens[i].width * (uint32_t)profile_tokens[i].height;
+                if(resolution > best_resolution)
+                {
+                    best_resolution = resolution;
+                    selected_idx = i;
+                }
             }
         }
 
         R_LOG_INFO("Selected ONVIF profile %zu/%zu: %s (%dx%d)",
-                   best_profile_idx + 1, profile_tokens.size(),
-                   profile_tokens[best_profile_idx].encoding.c_str(),
-                   profile_tokens[best_profile_idx].width,
-                   profile_tokens[best_profile_idx].height);
+                   selected_idx + 1, profile_tokens.size(),
+                   profile_tokens[selected_idx].encoding.c_str(),
+                   profile_tokens[selected_idx].width,
+                   profile_tokens[selected_idx].height);
 
-        auto stream_uri = cam.get_stream_uri(oms, profile_tokens[best_profile_idx].token);
+        auto stream_uri = cam.get_stream_uri(oms, profile_tokens[selected_idx].token);
 
         sc.rtsp_url = stream_uri;
 
@@ -124,7 +150,8 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
     const std::string& xaddrs,
     const std::string& address,
     r_utils::r_nullable<std::string> username,
-    r_utils::r_nullable<std::string> password
+    r_utils::r_nullable<std::string> password,
+    const std::string& preferred_profile_token
 )
 {
     r_nullable<r_stream_config> config_nullable;
@@ -155,30 +182,42 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
         auto oms = cam.get_media_service(caps);
         auto profile_tokens = cam.get_profile_tokens(oms);
 
-        // Select the profile with the highest resolution (main stream, not sub-stream)
         if(profile_tokens.empty())
             R_THROW(("No ONVIF profiles available for camera."));
 
-        size_t best_profile_idx = 0;
-        uint32_t best_resolution = 0;
-
-        for(size_t i = 0; i < profile_tokens.size(); ++i)
+        size_t selected_idx = 0;
+        if(!preferred_profile_token.empty())
         {
-            uint32_t resolution = (uint32_t)profile_tokens[i].width * (uint32_t)profile_tokens[i].height;
-            if(resolution > best_resolution)
+            for(size_t i = 0; i < profile_tokens.size(); ++i)
             {
-                best_resolution = resolution;
-                best_profile_idx = i;
+                if(profile_tokens[i].token == preferred_profile_token)
+                {
+                    selected_idx = i;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            uint32_t best_resolution = 0;
+            for(size_t i = 0; i < profile_tokens.size(); ++i)
+            {
+                uint32_t resolution = (uint32_t)profile_tokens[i].width * (uint32_t)profile_tokens[i].height;
+                if(resolution > best_resolution)
+                {
+                    best_resolution = resolution;
+                    selected_idx = i;
+                }
             }
         }
 
         R_LOG_INFO("Selected ONVIF profile %zu/%zu: %s (%dx%d)",
-                   best_profile_idx + 1, profile_tokens.size(),
-                   profile_tokens[best_profile_idx].encoding.c_str(),
-                   profile_tokens[best_profile_idx].width,
-                   profile_tokens[best_profile_idx].height);
+                   selected_idx + 1, profile_tokens.size(),
+                   profile_tokens[selected_idx].encoding.c_str(),
+                   profile_tokens[selected_idx].width,
+                   profile_tokens[selected_idx].height);
 
-        auto stream_uri = cam.get_stream_uri(oms, profile_tokens[best_profile_idx].token);
+        auto stream_uri = cam.get_stream_uri(oms, profile_tokens[selected_idx].token);
 
         config.rtsp_url = stream_uri;
 

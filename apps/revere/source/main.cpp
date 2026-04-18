@@ -154,6 +154,8 @@ void _assign_camera(revere::assignment_state& as, r_disco::r_devices& devices)
 
     c.rtsp_username = as.rtsp_username;
     c.rtsp_password = as.rtsp_password;
+    if(!as.selected_profile_token.empty())
+        c.onvif_profile_token = as.selected_profile_token;
     c.friendly_name = as.camera_friendly_name;
     c.record_file_path = as.file_name;
     if(!as.num_storage_file_blocks.is_null())
@@ -574,85 +576,171 @@ void configure_camera_setup_wizard(
                     // we're not left with an index pointing at a UI list element that no longer exists.
                     ui_state.discovered_selected_item = -1;
 
-                    try
-                    {
-                        auto camera = as.camera.value();
-                        if(camera.rtsp_url.is_null())
+                    auto camera = as.camera.value();
+                    as.selected_profile_token = "";
+                    as.selected_profile_idx = 0;
+                    as.profiles_were_filtered = false;
+
+                    std::thread th([&, camera](){
+                        try
                         {
-                            agent.interrogate_camera(
-                                camera.camera_name.value(),
+                            auto all_profiles = agent.get_camera_profiles(
                                 camera.ipv4.value(),
                                 camera.xaddrs.value(),
-                                camera.address.value(),
                                 as.rtsp_username,
                                 as.rtsp_password
                             );
-                        }
-                        as.camera = devices.get_camera_by_id(as.camera_id);
 
-                        std::thread th([&](){
-                            try
+                            as.available_profiles.clear();
+                            for(auto& p : all_profiles)
                             {
-                                auto cp = r_pipeline::fetch_camera_params(as.camera.value().rtsp_url.value(), as.rtsp_username, as.rtsp_password);
+                                if(p.encoding == "H264" || p.encoding == "H265")
+                                    as.available_profiles.push_back(p);
+                            }
+                            as.profiles_were_filtered = as.available_profiles.size() < all_profiles.size();
 
-                                if(cp.sdp_medias.empty() || cp.bytes_per_second == 0)
-                                    R_THROW(("Unable to communicate with camera."));
+                            if(as.available_profiles.empty())
+                            {
+                                std::string found;
+                                for(auto& p : all_profiles)
+                                    found += (found.empty() ? "" : ", ") + p.encoding;
+                                R_THROW(("Camera has no supported stream profiles (found: " + found + ")."));
+                            }
 
-                                as.byte_rate = cp.bytes_per_second;
-                                as.sdp_medias = cp.sdp_medias;    
-                                as.maybe_key_frame = _decode_frame(cp.sample_ctx, cp.video_key_frame, 320, 240, AV_PIX_FMT_BGRA);
-
-                                // Reset existing texture
-                                as.key_frame_texture.reset();
-
-                                // Create new texture from decoded frame
-                                if(!as.maybe_key_frame.is_null())
-                                {
-                                    as.key_frame_texture = r_ui_utils::texture::create_from_rgb(
-                                        g_renderer,
-                                        as.maybe_key_frame.raw()->data(),
-                                        320,
-                                        240
-                                    );
-                                }
-
+                            if(as.available_profiles.size() == 1)
+                            {
+                                as.selected_profile_token = as.available_profiles[0].token;
+                                camera_setup_wizard.next("complete_interrogation");
+                            }
+                            else
+                            {
                                 if(camera_setup_wizard.active())
-                                    camera_setup_wizard.next("friendly_name");
+                                    camera_setup_wizard.next("profile_selection");
                             }
-                            catch(const r_utils::r_unauthorized_exception&)
-                            {
-                                as.error_message = "Invalid Credentials";
-                                camera_setup_wizard.next("error_modal");
-                            }
-                            catch(const std::exception& e)
-                            {
-                                as.error_message = e.what();
-                                camera_setup_wizard.next("error_modal");
-                            }
-                        });
-                        th.detach();
+                        }
+                        catch(const r_utils::r_unauthorized_exception&)
+                        {
+                            as.error_message = "Invalid Credentials";
+                            camera_setup_wizard.next("error_modal");
+                        }
+                        catch(const std::exception& e)
+                        {
+                            as.error_message = e.what();
+                            camera_setup_wizard.next("error_modal");
+                        }
+                    });
+                    th.detach();
 
-                        camera_setup_wizard.next("please_wait");
-                    }
-                    catch(const r_utils::r_unauthorized_exception&)
-                    {
-                        as.error_message = "Invalid Credentials";
-                        camera_setup_wizard.next("error_modal");
-                    }
-                    catch(const std::exception& e)
-                    {
-                        as.error_message = e.what();
-                        camera_setup_wizard.next("error_modal");
-                    }
+                    camera_setup_wizard.next("please_wait");
                 },
                 [&](){camera_setup_wizard.cancel();}
             );
         }
     );
     camera_setup_wizard.add_step(
+        "profile_selection",
+        [&as, &camera_setup_wizard, &agent, &devices](){
+            as.wizard_step = 3;
+            auto title = as.step_title("Select Stream Profile");
+            ImGui::OpenPopup(title.c_str());
+            ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Always);
+            if(ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+            {
+                ImGui::TextUnformatted("Choose the stream profile to record:");
+                if(as.profiles_were_filtered)
+                {
+                    ImGui::Spacing();
+                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.0f, 1.0f), "Some profiles were removed because their codecs are not supported.");
+                }
+                ImGui::Spacing();
+
+                for(int i = 0; i < (int)as.available_profiles.size(); ++i)
+                {
+                    auto& p = as.available_profiles[i];
+                    auto label = p.encoding + "  " + std::to_string(p.width) + "x" + std::to_string(p.height);
+                    ImGui::RadioButton(label.c_str(), &as.selected_profile_idx, i);
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                if(ImGui::Button("Next", ImVec2(120, 0)))
+                {
+                    as.selected_profile_token = as.available_profiles[as.selected_profile_idx].token;
+                    ImGui::CloseCurrentPopup();
+                    camera_setup_wizard.next("complete_interrogation");
+                }
+                ImGui::SameLine();
+                if(ImGui::Button("Cancel", ImVec2(120, 0)))
+                {
+                    ImGui::CloseCurrentPopup();
+                    camera_setup_wizard.cancel();
+                }
+                ImGui::EndPopup();
+            }
+        }
+    );
+    camera_setup_wizard.add_step(
+        "complete_interrogation",
+        [&as, &camera_setup_wizard, &agent, &devices](){
+            auto camera = as.camera.value();
+            std::thread th([&, camera](){
+                try
+                {
+                    agent.interrogate_camera(
+                        camera.camera_name.value(),
+                        camera.ipv4.value(),
+                        camera.xaddrs.value(),
+                        camera.address.value(),
+                        as.rtsp_username,
+                        as.rtsp_password,
+                        as.selected_profile_token
+                    );
+                    as.camera = devices.get_camera_by_id(as.camera_id);
+
+                    auto cp = r_pipeline::fetch_camera_params(as.camera.value().rtsp_url.value(), as.rtsp_username, as.rtsp_password);
+
+                    if(cp.sdp_medias.empty() || cp.bytes_per_second == 0)
+                        R_THROW(("Unable to communicate with camera."));
+
+                    as.byte_rate = cp.bytes_per_second;
+                    as.sdp_medias = cp.sdp_medias;
+                    as.maybe_key_frame = _decode_frame(cp.sample_ctx, cp.video_key_frame, 320, 240, AV_PIX_FMT_BGRA);
+
+                    as.key_frame_texture.reset();
+                    if(!as.maybe_key_frame.is_null())
+                    {
+                        as.key_frame_texture = r_ui_utils::texture::create_from_rgb(
+                            g_renderer,
+                            as.maybe_key_frame.raw()->data(),
+                            320,
+                            240
+                        );
+                    }
+
+                    if(camera_setup_wizard.active())
+                        camera_setup_wizard.next("friendly_name");
+                }
+                catch(const r_utils::r_unauthorized_exception&)
+                {
+                    as.error_message = "Invalid Credentials";
+                    camera_setup_wizard.next("error_modal");
+                }
+                catch(const std::exception& e)
+                {
+                    as.error_message = e.what();
+                    camera_setup_wizard.next("error_modal");
+                }
+            });
+            th.detach();
+            camera_setup_wizard.next("please_wait");
+        }
+    );
+    camera_setup_wizard.add_step(
         "friendly_name",
         [&as, &camera_setup_wizard](){
-            as.wizard_step = 3;
+            as.wizard_step = 4;
             auto title = as.step_title("Camera Friendly Name");
             ImGui::OpenPopup(title.c_str());
             revere::friendly_name_modal(
@@ -683,7 +771,7 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "motion_detection",
         [&as, &camera_setup_wizard](){
-            as.wizard_step = 4;
+            as.wizard_step = 5;
             auto title = as.step_title("Motion Detection");
             ImGui::OpenPopup(title.c_str());
             revere::motion_detection_modal(
@@ -698,7 +786,7 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "new_or_existing",
         [&as, &camera_setup_wizard, &devices, &ui_state](){
-            as.wizard_step = 5;
+            as.wizard_step = 6;
             auto title = as.step_title("Storage");
             ImGui::OpenPopup(title.c_str());
             revere::new_or_existing_modal(
@@ -711,7 +799,7 @@ void configure_camera_setup_wizard(
                     if(flatpak_id != nullptr || snap_id != nullptr)
                     {
                         as.storage_dir = revere::sub_dir("video");
-                        as.wizard_total_steps = 7;
+                        as.wizard_total_steps = 8;
                         camera_setup_wizard.next("retention");
                     }
                     else
@@ -730,7 +818,7 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "choose_storage_location",
         [&as, &camera_setup_wizard](){
-            as.wizard_step = 6;
+            as.wizard_step = 7;
             auto default_path = revere::sub_dir("video");
             auto title = as.step_title("Storage Location");
             ImGui::OpenPopup(title.c_str());
@@ -1868,7 +1956,7 @@ int main(int argc, char** argv)
                                 as.camera = devices.get_camera_by_id(as.camera_id);
                                 as.ipv4 = as.camera.value().ipv4.value();
                                 as.wizard_step = 1;
-                                as.wizard_total_steps = 8;
+                                as.wizard_total_steps = 9;
 
                                 camera_setup_wizard.next("camera_credentials");
                             },

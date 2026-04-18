@@ -432,6 +432,16 @@ void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
             });
         }
         [[fallthrough]];
+        case 2:
+        {
+            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
+                conn.exec(
+                    "ALTER TABLE cameras ADD COLUMN onvif_profile_token TEXT;"
+                );
+                _set_db_version(conn, 3);
+            });
+        }
+        [[fallthrough]];
         default:
             break;
     };
@@ -551,6 +561,8 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
         camera.address = row.at("address").value();
     if(!row.at("rtsp_url").is_null())
         camera.rtsp_url = row.at("rtsp_url").value();
+    if(!row.at("onvif_profile_token").is_null())
+        camera.onvif_profile_token = row.at("onvif_profile_token").value();
     if(!row.at("rtsp_username").is_null())
     {
         // Decrypt username
@@ -697,8 +709,9 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
 
     auto query = r_string_utils::format(
             "REPLACE INTO cameras("
-                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%slast_update_time, stream_config_hash) "
+                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%slast_update_time, stream_config_hash) "
             "VALUES("
+                "%s"
                 "%s"
                 "%s"
                 "%s"
@@ -731,6 +744,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.xaddrs.is_null())?"xaddrs, ":"",
             (!camera.address.is_null())?"address, ":"",
             (!camera.rtsp_url.is_null())?"rtsp_url, ":"",
+            (!camera.onvif_profile_token.is_null())?"onvif_profile_token, ":"",
             (!camera.rtsp_username.is_null())?"rtsp_username, ":"",
             (!camera.rtsp_password.is_null())?"rtsp_password, ":"",
             (!camera.video_codec.is_null())?"video_codec, ":"",
@@ -754,6 +768,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.xaddrs.is_null())?r_string_utils::format("'%s', ", camera.xaddrs.value().c_str()).c_str():"",
             (!camera.address.is_null())?r_string_utils::format("'%s', ", camera.address.value().c_str()).c_str():"",
             (!camera.rtsp_url.is_null())?r_string_utils::format("'%s', ", camera.rtsp_url.value().c_str()).c_str():"",
+            (!camera.onvif_profile_token.is_null())?r_string_utils::format("'%s', ", camera.onvif_profile_token.value().c_str()).c_str():"",
             (!encrypted_camera.rtsp_username.is_null())?r_string_utils::format("'%s', ", encrypted_camera.rtsp_username.value().c_str()).c_str():"",
             (!encrypted_camera.rtsp_password.is_null())?r_string_utils::format("'%s', ", encrypted_camera.rtsp_password.value().c_str()).c_str():"",
             (!camera.video_codec.is_null())?r_string_utils::format("'%s', ", camera.video_codec.value().c_str()).c_str():"",
