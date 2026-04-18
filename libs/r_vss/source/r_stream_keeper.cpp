@@ -389,9 +389,12 @@ void r_stream_keeper::_update_retention_cache()
 {
     auto now = std::chrono::steady_clock::now();
 
-    // Update hourly, or immediately on first run (when _last_retention_update is epoch)
+    // Update every 5 minutes, or immediately on first run (when _last_retention_update is epoch).
+    // Retention is measured in days for a ring-buffer recording, so it doesn't change much
+    // minute-to-minute, but 5 minutes keeps the UI responsive after a camera is added or
+    // removed without spamming storage file reads on the hot path.
     if(_last_retention_update.time_since_epoch().count() != 0 &&
-       (now - _last_retention_update) < std::chrono::hours(1))
+       (now - _last_retention_update) < std::chrono::minutes(5))
         return;
 
     _last_retention_update = now;

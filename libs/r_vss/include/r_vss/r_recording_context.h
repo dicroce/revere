@@ -15,12 +15,14 @@
 #include "r_utils/r_macro.h"
 #include <mutex>
 #include <chrono>
+#include <deque>
 #include <map>
 #include <string>
 #include <vector>
 #include <map>
 #include <tuple>
 #include <thread>
+#include <utility>
 
 struct _GstRTSPMediaFactory;
 typedef _GstRTSPMediaFactory GstRTSPMediaFactory;
@@ -177,6 +179,14 @@ private:
     std::map<GstRTSPMedia*, std::shared_ptr<playback_restreaming_state>> _playback_restreaming_states;
     bool _got_first_audio_sample;
     bool _got_first_video_sample;
+
+    // Sliding-window bitrate tracking. Samples are (timestamp, cumulative bytes).
+    // Appended at most once every 500ms from the packet receive paths; trimmed to
+    // a 30s retention so bytes_per_second() can compute rate over the last ~10s.
+    mutable std::mutex _byte_rate_mutex;
+    mutable std::deque<std::pair<std::chrono::system_clock::time_point, uint64_t>> _byte_rate_samples;
+
+    void _record_byte_sample();
     bool _die;
     r_ws& _ws;
 };

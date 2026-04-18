@@ -159,6 +159,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             _last_a_time = system_clock::now();
             auto mi = buffer.map(r_gst_buffer::MT_READ);
             _a_bytes_received += mi.size();
+            _record_byte_sample();
 
             if(this->_audio_caps.is_null())
                 this->_audio_caps = _source.get_audio_caps();
@@ -280,6 +281,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             _last_v_time = system_clock::now();
             auto mi = buffer.map(r_gst_buffer::MT_READ);
             _v_bytes_received += mi.size();
+            _record_byte_sample();
             if(this->_video_caps.is_null())
             {
                 this->_video_caps = _source.get_video_caps();
@@ -389,12 +391,55 @@ r_camera r_recording_context::camera() const
     return _camera;
 }
 
+void r_recording_context::_record_byte_sample()
+{
+    // Rate-limit sample insertion to avoid deque churn under high packet rates.
+    // Appending every ~500ms gives us ~20 samples over the 10s window, which is
+    // plenty of resolution for a rate display.
+    auto now = system_clock::now();
+    std::lock_guard<std::mutex> g(_byte_rate_mutex);
+
+    if(!_byte_rate_samples.empty() &&
+       (now - _byte_rate_samples.back().first) < std::chrono::milliseconds(500))
+        return;
+
+    _byte_rate_samples.emplace_back(now, _v_bytes_received + _a_bytes_received);
+
+    // Keep ~30s of history so the 10s window always has headroom even if the
+    // UI polls slightly late.
+    while(!_byte_rate_samples.empty() &&
+          (now - _byte_rate_samples.front().first) > std::chrono::seconds(30))
+        _byte_rate_samples.pop_front();
+}
+
 int32_t r_recording_context::bytes_per_second() const
 {
-    uint64_t div = duration_cast<seconds>(system_clock::now() - _stream_start_ts).count();
-    if(div == 0)
-        div = 1;
-    return (int32_t)((_v_bytes_received + _a_bytes_received) / div);
+    auto now = system_clock::now();
+    std::lock_guard<std::mutex> g(_byte_rate_mutex);
+
+    // Trim samples older than the reporting window (10s).
+    constexpr auto window = std::chrono::seconds(10);
+    while(!_byte_rate_samples.empty() &&
+          (now - _byte_rate_samples.front().first) > window)
+        _byte_rate_samples.pop_front();
+
+    // Need two samples for a meaningful delta; during the first few seconds of
+    // a stream we fall back to the lifetime average so the UI isn't blank.
+    if(_byte_rate_samples.size() < 2)
+    {
+        uint64_t div = duration_cast<seconds>(now - _stream_start_ts).count();
+        if(div == 0)
+            div = 1;
+        return (int32_t)((_v_bytes_received + _a_bytes_received) / div);
+    }
+
+    const auto& first = _byte_rate_samples.front();
+    const auto& last = _byte_rate_samples.back();
+    uint64_t byte_delta = last.second - first.second;
+    uint64_t sec_delta = (uint64_t)duration_cast<seconds>(last.first - first.first).count();
+    if(sec_delta == 0)
+        sec_delta = 1;
+    return (int32_t)(byte_delta / sec_delta);
 }
 
 r_md_storage_file& r_recording_context::metadata_storage()

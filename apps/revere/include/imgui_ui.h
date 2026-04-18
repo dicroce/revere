@@ -361,6 +361,17 @@ void sidebar_list(
     std::vector<TextRenderInfo> text_to_render;
     text_to_render.reserve(labels.size() * 2);
 
+    // Card layout constants. The card grew taller (vs. the original 100px selectable)
+    // to give the per-camera stats (bitrate / retention) their own rows beneath the
+    // IP address so they don't crowd the name on narrow windows.
+    constexpr int card_height = 130;   // selectable height
+    constexpr int card_pitch  = 140;   // vertical stride between cards (10px gap)
+    constexpr int label_y     = 5;
+    constexpr int sub_label_y = 30;
+    constexpr int bitrate_y   = 54;
+    constexpr int retention_y = 74;
+    constexpr int buttons_y   = 92;
+
     // selectable list - first pass: interactive elements
     for(int i = 0; i < (int)labels.size(); ++i)
     {
@@ -372,7 +383,7 @@ void sidebar_list(
         // the Selectable will steal the click event.
         const int button_width = 100;
         const int button_height = 35;
-        ImGui::SetCursorPos(ImVec2(pos.x+10, pos.y + 55));
+        ImGui::SetCursorPos(ImVec2(pos.x+10, pos.y + buttons_y));
         if(ImGui::Button(button_label.c_str(), ImVec2(button_width, button_height)))
         {
             item_click_cb(i);
@@ -398,7 +409,7 @@ void sidebar_list(
         ImGui::PushStyleColor(ImGuiCol_NavHighlight, IM_COL32(255, 0, 0, 200));
         ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(25, 47, 63, 200));
         ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(49, 55, 62, 200));
-        if (ImGui::Selectable(name.c_str(), i == selected, 0, ImVec2((float)width, 100))) {
+        if (ImGui::Selectable(name.c_str(), i == selected, 0, ImVec2((float)width, (float)card_height))) {
             item_click_cb(i);
         }
 
@@ -414,10 +425,10 @@ void sidebar_list(
         draw_list->AddLine(ImVec2(cursor_pos.x, cursor_pos.y), ImVec2(cursor_pos.x + width, cursor_pos.y), IM_COL32(40, 40, 40, 200));
 
         // Store text for batched rendering
-        text_to_render.push_back({ImVec2(pos.x+10, pos.y+5), labels[i].label, true});
-        text_to_render.push_back({ImVec2(pos.x+10, pos.y+28), labels[i].sub_label, false});
+        text_to_render.push_back({ImVec2(pos.x+10, pos.y + label_y), labels[i].label, true});
+        text_to_render.push_back({ImVec2(pos.x+10, pos.y + sub_label_y), labels[i].sub_label, false});
 
-        pos.y += 110;
+        pos.y += card_pitch;
 
         ImGui::PopID();
     }
@@ -445,18 +456,20 @@ void sidebar_list(
     }
     ImGui::PopFont();
 
-    // Third pass: render kbps and retention in the top-right corner of each item.
-    // These replace the old green/red health-dot indicator. If stream_health is
-    // error, the text is rendered in red to preserve the "something is wrong" signal.
+    // Third pass: render labeled bitrate / retention rows. These replace the old
+    // green/red health-dot indicator. If stream_health is error, the text is
+    // rendered in red so the "something is wrong" signal is preserved.
+    //
+    // The rows are left-aligned below the IP address so they don't collide with
+    // the camera name when the sidebar is narrow.
     ImGui::PushFont(r_ui_utils::fonts["18.00"].roboto_regular);
-    const float stats_right_pad = 10.0f;
     for(size_t i = 0; i < labels.size(); ++i)
     {
         const auto& lbl = labels[i];
         if(lbl.kbps.empty() && lbl.retention.empty())
             continue;
 
-        float item_y = start_y + (float)i * 110.0f;
+        float item_y = start_y + (float)i * (float)card_pitch;
         bool is_error = (lbl.health == stream_health::error);
         ImVec4 color = is_error
             ? ImVec4(0.86f, 0.31f, 0.31f, 1.0f)   // red (matches previous dot)
@@ -464,15 +477,13 @@ void sidebar_list(
 
         if(!lbl.kbps.empty())
         {
-            auto sz = ImGui::CalcTextSize(lbl.kbps.c_str());
-            ImGui::SetCursorPos(ImVec2(start_x + (float)width - sz.x - stats_right_pad, item_y + 6.0f));
-            ImGui::TextColored(color, "%s", lbl.kbps.c_str());
+            ImGui::SetCursorPos(ImVec2(start_x + 10.0f, item_y + (float)bitrate_y));
+            ImGui::TextColored(color, "bitrate: %s", lbl.kbps.c_str());
         }
         if(!lbl.retention.empty())
         {
-            auto sz = ImGui::CalcTextSize(lbl.retention.c_str());
-            ImGui::SetCursorPos(ImVec2(start_x + (float)width - sz.x - stats_right_pad, item_y + 28.0f));
-            ImGui::TextColored(color, "%s", lbl.retention.c_str());
+            ImGui::SetCursorPos(ImVec2(start_x + 10.0f, item_y + (float)retention_y));
+            ImGui::TextColored(color, "retention: %s", lbl.retention.c_str());
         }
     }
     ImGui::PopFont();
