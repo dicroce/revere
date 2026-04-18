@@ -1388,6 +1388,11 @@ int main(int argc, char** argv)
 
     auto maybe_start_minimized = r_args::check_argument(args, "--start_minimized");
 
+    std::string sim_mttf_str;
+    uint32_t sim_mttf_seconds = 0;
+    if(r_args::check_argument(args, "--sim_mttf_seconds", sim_mttf_str))
+        sim_mttf_seconds = (uint32_t)std::stoul(sim_mttf_str);
+
     R_LOG_INFO("Starting Revere: start_minimized = %s", maybe_start_minimized ? "true" : "false");
 
     r_raw_socket::socket_startup();
@@ -1403,6 +1408,11 @@ int main(int argc, char** argv)
     r_disco::r_agent agent(r_fs::platform_path(top_dir));
     r_disco::r_devices devices(r_fs::platform_path(top_dir));
     r_vss::r_stream_keeper streamKeeper(devices, r_fs::platform_path(top_dir));
+    if(sim_mttf_seconds > 0)
+    {
+        R_LOG_WARNING("*** SIMULATED FAILURE MODE: streams will die randomly near every %u seconds ***", sim_mttf_seconds);
+        streamKeeper.set_sim_mttf_seconds(sim_mttf_seconds);
+    }
 
     agent.set_stream_change_cb(bind(&r_disco::r_devices::insert_or_update_devices, &devices, placeholders::_1));
     agent.set_credential_cb(bind(&r_disco::r_devices::get_credentials, &devices, placeholders::_1));

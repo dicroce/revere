@@ -52,7 +52,7 @@ static string _get_storage_path(const string& record_file_path, const string& to
     return top_dir + PATH_SLASH + "video" + PATH_SLASH + record_file_path;
 }
 
-r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& camera, const string& top_dir, r_ws& ws) :
+r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& camera, const string& top_dir, r_ws& ws, uint32_t sim_mttf_seconds) :
     _sk(sk),
     _camera(camera),
     _top_dir(top_dir),
@@ -345,6 +345,9 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
         if(this->_sdp_medias.find("audio") != this->_sdp_medias.end())
             this->_has_audio = true;
     });
+
+    if(sim_mttf_seconds > 0)
+        _source.set_sim_mttf_seconds(sim_mttf_seconds);
 
     _source.play();
 }

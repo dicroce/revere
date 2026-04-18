@@ -532,7 +532,14 @@ void r_stream_keeper::_entry_point()
                 // This ensures that when a stream dies and needs to be recreated, the old
                 // r_recording_context (and its nanots_writer) is fully destroyed before
                 // we attempt to create a new one with the same file path and stream tags.
-                r_funky::erase_if(_streams, [](const auto& c){return c.second->dead();});
+                r_funky::erase_if(_streams, [](const auto& c){
+                    if(c.second->dead())
+                    {
+                        R_LOG_WARNING("Dead stream detected, removing: %s", c.first.c_str());
+                        return true;
+                    }
+                    return false;
+                });
 
                 if(_streams.empty())
                     _add_recording_contexts(_devices.get_assigned_cameras());
@@ -647,7 +654,7 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
                 (camera.camera_name.is_null() ? camera.id : camera.camera_name.value()) :
                 camera.friendly_name.value();
             R_LOG_INFO("Starting camera stream: %s (%s)", name.c_str(), camera.id.c_str());
-            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws);
+            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds);
         }
     }
 }

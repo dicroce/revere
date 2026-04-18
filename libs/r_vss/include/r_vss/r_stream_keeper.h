@@ -162,6 +162,9 @@ public:
     R_API r_overflow_type get_current_overflow_flags() const;
     R_API size_t get_total_dropped_frames() const;
 
+    // Simulated failure for leak testing. 0 = disabled. Must be set before streams start.
+    R_API void set_sim_mttf_seconds(uint32_t mttf) { _sim_mttf_seconds = mttf; }
+
 private:
     void _entry_point();
     void _rtsp_server_entry_point();
@@ -181,6 +184,7 @@ private:
     r_disco::r_devices& _devices;
     std::string _top_dir;
     std::thread _th;
+    uint32_t _sim_mttf_seconds {0};
     bool _running;
     mutable std::mutex _streams_mutex;  // Protects _streams from concurrent access
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
