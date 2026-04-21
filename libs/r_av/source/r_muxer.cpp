@@ -79,8 +79,8 @@ void r_muxer::add_video_stream(AVRational frame_rate, AVCodecID codec_id, uint16
     _video_stream->codecpar->profile = profile;
     _video_stream->codecpar->level = level;
     
-    _video_stream->time_base.num = frame_rate.den;
-    _video_stream->time_base.den = frame_rate.num;
+    _video_stream->time_base = {1, 90000};
+    _video_stream->avg_frame_rate = frame_rate;
 }
 
 void r_muxer::add_audio_stream(AVCodecID codec_id, uint8_t channels, uint32_t sample_rate)

@@ -60,7 +60,14 @@ private:
         r_stream_config config;
     };
 
+    struct _r_onvif_cam_hints
+    {
+        r_onvif::soap_version soap_ver;
+        r_onvif::auth_mode auth_mode;
+    };
+
     std::map<std::string, _r_onvif_provider_cache_entry> _cache;
+    std::map<std::string, _r_onvif_cam_hints> _negotiated_params;
 };
 
 }
