@@ -556,6 +556,7 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
 
     bool first = true;
     int valid_detection_count = 0;
+    int64_t first_detection_ts = start_time_ms;
     for (const auto& detection : it->second) {
         // Skip disproven classes in JSON output
         if (disproven.find(detection.class_id) != disproven.end()) {
@@ -565,6 +566,7 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
         if (!first) {
             json_metadata += ", ";
         }
+        if (first) first_detection_ts = detection.timestamp;
         first = false;
         valid_detection_count++;
 
@@ -586,7 +588,7 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
     // Only write metadata if we have valid detections
     if (valid_detection_count > 0) {
         auto& stream_keeper = _host->get_stream_keeper();
-        stream_keeper.write_metadata(camera_id, "yolov8_person_plugin", json_metadata, start_time_ms);
+        stream_keeper.write_metadata(camera_id, "yolov8_person_plugin", json_metadata, first_detection_ts);
     }
 }
 

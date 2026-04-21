@@ -1,6 +1,7 @@
 
 add_subdirectory(revere)
 add_subdirectory(vision)
+add_subdirectory(revere_mcp)
 
 set(CPACK_PACKAGE_VENDOR "Tony Di Croce")
 set(CPACK_PACKAGE_VERSION_MAJOR 0)
