@@ -62,6 +62,8 @@ private:
     std::map<std::string, MotionEventMessage> _camera_buffered_update; // Most recent UPDATE frame per camera
     std::map<std::string, int64_t> _camera_last_periodic_ts; // Timestamp of last queued periodic frame per camera
     std::map<std::string, int64_t> _camera_last_processed_ts; // Timestamp of last processed frame per camera (worker thread only)
+    std::map<std::string, std::vector<Detection>> _camera_start_frame_detections;
+    std::map<std::string, std::vector<Detection>> _camera_end_frame_detections;
 
     void _entry_point();
     void _process_motion_event(const MotionEventMessage& msg);

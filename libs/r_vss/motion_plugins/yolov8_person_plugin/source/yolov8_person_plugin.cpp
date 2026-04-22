@@ -180,6 +180,8 @@ void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
             // Clear any existing detections for this camera (handle missing end events)
             _camera_detections[msg.camera_id].clear();
             _camera_disproven_classes[msg.camera_id].clear();
+            _camera_start_frame_detections.erase(msg.camera_id);
+            _camera_end_frame_detections.erase(msg.camera_id);
             {
                 std::lock_guard<std::mutex> lock(_buffer_mutex);
                 _camera_buffered_update.erase(msg.camera_id);
@@ -193,6 +195,7 @@ void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
             if (msg.frame_data.size() == expected_size) {
                 auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox);
                 R_LOG_INFO("YOLOV8_DIAG: START frame - detect_persons returned %zu detections", detections.size());
+                _camera_start_frame_detections[msg.camera_id] = detections;
                 _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
                 _camera_last_processed_ts[msg.camera_id] = msg.ts;
             }
@@ -246,6 +249,7 @@ void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
             if (msg.frame_data.size() == expected_size) {
                 auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox);
                 R_LOG_INFO("YOLOV8_DIAG: END frame - detect_persons returned %zu detections", detections.size());
+                _camera_end_frame_detections[msg.camera_id] = detections;
                 _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
             }
 
@@ -260,6 +264,8 @@ void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
             _camera_motion_start_time.erase(msg.camera_id);
             _camera_disproven_classes.erase(msg.camera_id);
             _camera_last_processed_ts.erase(msg.camera_id);
+            _camera_start_frame_detections.erase(msg.camera_id);
+            _camera_end_frame_detections.erase(msg.camera_id);
         }
 
     } catch (const std::exception& e) {
@@ -429,40 +435,27 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
                 }
             }
 
-            // Filter detections that don't overlap sufficiently with the motion region
-            // Require at least 25% of the detection bbox to overlap with the motion bbox
-            // Both detection and motion_bbox coordinates are in 640x640 letterbox space
-            const float min_overlap_ratio = 0.25f;
+            // Filter: detection center must fall within motion bbox (with margin).
+            // Tighter than area-overlap: a large static object (e.g. parked car) whose
+            // bbox merely clips the motion region is rejected; only objects centered near
+            // the actual motion pass through.
+            const float center_margin = 32.0f; // pixels in 640x640 space (~5% of frame)
 
             if (motion_bbox.has_motion && motion_bbox.width > 0 && motion_bbox.height > 0) {
-                // Motion bbox coordinates (in 640x640 letterbox space, same as detections)
-                float motion_x1 = (float)motion_bbox.x;
-                float motion_y1 = (float)motion_bbox.y;
-                float motion_x2 = (float)(motion_bbox.x + motion_bbox.width);
-                float motion_y2 = (float)(motion_bbox.y + motion_bbox.height);
+                float motion_x1 = (float)motion_bbox.x - center_margin;
+                float motion_y1 = (float)motion_bbox.y - center_margin;
+                float motion_x2 = (float)(motion_bbox.x + motion_bbox.width)  + center_margin;
+                float motion_y2 = (float)(motion_bbox.y + motion_bbox.height) + center_margin;
 
                 for (const auto& det : nms_detections) {
-                    // Calculate intersection with motion region
-                    float inter_x1 = std::max(det.x1, motion_x1);
-                    float inter_y1 = std::max(det.y1, motion_y1);
-                    float inter_x2 = std::min(det.x2, motion_x2);
-                    float inter_y2 = std::min(det.y2, motion_y2);
+                    float cx = (det.x1 + det.x2) * 0.5f;
+                    float cy = (det.y1 + det.y2) * 0.5f;
 
-                    float det_area = (det.x2 - det.x1) * (det.y2 - det.y1);
-
-                    if (inter_x1 < inter_x2 && inter_y1 < inter_y2 && det_area > 0) {
-                        float inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1);
-                        float overlap_ratio = inter_area / det_area;
-
-                        if (overlap_ratio >= min_overlap_ratio) {
-                            detections.push_back(det);
-                        } else {
-                            R_LOG_INFO("yolov8_person_plugin: Filtered detection (class %d, conf %.2f) - only %.1f%% overlap with motion region",
-                                       det.class_id, det.score, overlap_ratio * 100.0f);
-                        }
+                    if (cx >= motion_x1 && cx <= motion_x2 && cy >= motion_y1 && cy <= motion_y2) {
+                        detections.push_back(det);
                     } else {
-                        R_LOG_INFO("yolov8_person_plugin: Filtered detection (class %d, conf %.2f) - no overlap with motion region",
-                                   det.class_id, det.score);
+                        R_LOG_INFO("yolov8_person_plugin: Filtered detection (class %d, conf %.2f) - center (%.0f,%.0f) outside motion region",
+                                   det.class_id, det.score, cx, cy);
                     }
                 }
             } else {
@@ -509,15 +502,43 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
         disproven = disproven_it->second;
     }
 
-    // Count detections by class for logging (excluding disproven classes)
+    // Suppress static objects: if the same class appears in the same position in both the
+    // start and end frames (IoU >= 0.85), the object didn't move — it wasn't what caused
+    // the motion (e.g. parked car detected during a lighting-change event).
+    std::set<int> static_classes;
+    {
+        const float static_iou_threshold = 0.85f;
+        auto sf_it = _camera_start_frame_detections.find(camera_id);
+        auto ef_it = _camera_end_frame_detections.find(camera_id);
+        if (sf_it != _camera_start_frame_detections.end() && ef_it != _camera_end_frame_detections.end()) {
+            for (const auto& sd : sf_it->second) {
+                for (const auto& ed : ef_it->second) {
+                    if (sd.class_id != ed.class_id) continue;
+                    float ix1 = std::max(sd.x1, ed.x1), iy1 = std::max(sd.y1, ed.y1);
+                    float ix2 = std::min(sd.x2, ed.x2), iy2 = std::min(sd.y2, ed.y2);
+                    if (ix1 < ix2 && iy1 < iy2) {
+                        float inter = (ix2 - ix1) * (iy2 - iy1);
+                        float a1 = (sd.x2 - sd.x1) * (sd.y2 - sd.y1);
+                        float a2 = (ed.x2 - ed.x1) * (ed.y2 - ed.y1);
+                        float uni = a1 + a2 - inter;
+                        if (uni > 0 && (inter / uni) >= static_iou_threshold) {
+                            static_classes.insert(sd.class_id);
+                            R_LOG_INFO("yolov8_person_plugin: Suppressing static %s (IoU=%.2f between start/end frames)",
+                                       get_class_name(sd.class_id), inter / uni);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Count detections by class for logging (excluding disproven and static classes)
     std::map<int, int> class_counts;
     std::map<int, float> max_confidence;
 
     for (const auto& detection : it->second) {
-        // Skip disproven classes - they were detected but not consistently overlapping motion
-        if (disproven.find(detection.class_id) != disproven.end()) {
-            continue;
-        }
+        if (disproven.find(detection.class_id) != disproven.end()) continue;
+        if (static_classes.find(detection.class_id) != static_classes.end()) continue;
         class_counts[detection.class_id]++;
         if (max_confidence.find(detection.class_id) == max_confidence.end()) {
             max_confidence[detection.class_id] = detection.score;
@@ -558,10 +579,8 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
     int valid_detection_count = 0;
     int64_t first_detection_ts = start_time_ms;
     for (const auto& detection : it->second) {
-        // Skip disproven classes in JSON output
-        if (disproven.find(detection.class_id) != disproven.end()) {
-            continue;
-        }
+        if (disproven.find(detection.class_id) != disproven.end()) continue;
+        if (static_classes.find(detection.class_id) != static_classes.end()) continue;
 
         if (!first) {
             json_metadata += ", ";
