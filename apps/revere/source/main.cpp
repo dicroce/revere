@@ -1550,11 +1550,11 @@ int main(int argc, char** argv)
     // Windows: Use hardware acceleration (Direct3D, not OpenGL)
     // No PRESENTVSYNC: SDL_RenderPresent() with vsync can block indefinitely on old/buggy GPU drivers,
     // freezing the entire UI. Frame rate is naturally limited by SDL_WaitEventTimeout(100) in the loop.
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
     if (renderer == nullptr)
     {
         R_LOG_ERROR("Hardware renderer failed: %s, falling back to software", SDL_GetError());
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     }
 #else
     // Linux/macOS: Use software renderer to avoid OpenGL packaging issues
