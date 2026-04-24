@@ -1,5 +1,5 @@
-#ifndef __yolov8_person_plugin_h
-#define __yolov8_person_plugin_h
+#ifndef __yolov8_motion_plugin_h
+#define __yolov8_motion_plugin_h
 
 #include "r_vss/r_motion_plugin.h"
 #include "r_utils/r_macro.h"
@@ -20,7 +20,7 @@ namespace r_vss {
     class r_motion_event_plugin_host;
 }
 
-class yolov8_person_plugin : public r_vss::r_motion_plugin
+class yolov8_motion_plugin : public r_vss::r_motion_plugin
 {
 public:
     struct Detection {
@@ -41,8 +41,8 @@ public:
         r_vss::motion_region motion_bbox;
     };
 
-    R_API yolov8_person_plugin(r_vss::r_motion_event_plugin_host* host);
-    R_API virtual ~yolov8_person_plugin();
+    R_API yolov8_motion_plugin(r_vss::r_motion_event_plugin_host* host);
+    R_API virtual ~yolov8_motion_plugin();
 
     R_API void stop();
 

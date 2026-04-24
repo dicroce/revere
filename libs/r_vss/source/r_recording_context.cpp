@@ -308,7 +308,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                     this->_maybe_video_storage_write_context.value().codec_name,
                     this->_maybe_video_storage_write_context.value().codec_parameters,
                     this->_camera.id,
-                    key || GST_BUFFER_FLAG_IS_SET(buffer.get(), GST_BUFFER_FLAG_NON_DROPPABLE)
+                    key
                 );
             }
 

@@ -1,28 +1,28 @@
 cmake_minimum_required(VERSION 3.14)
-project(picodet_person_plugin)
+project(yolov8_motion_plugin)
 
-file(GLOB PICODET_PERSON_PLUGIN_HEADERS
+file(GLOB YOLOV8_MOTION_PLUGIN_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/*.h
 )
 
-file(GLOB PICODET_PERSON_PLUGIN_SOURCES
+file(GLOB YOLOV8_MOTION_PLUGIN_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp
 )
 
 add_library(
-    picodet_person_plugin SHARED
-    ${PICODET_PERSON_PLUGIN_HEADERS}
-    ${PICODET_PERSON_PLUGIN_SOURCES}
+    yolov8_motion_plugin SHARED
+    ${YOLOV8_MOTION_PLUGIN_HEADERS}
+    ${YOLOV8_MOTION_PLUGIN_SOURCES}
 )
 
 target_include_directories(
-    picodet_person_plugin PUBLIC
+    yolov8_motion_plugin PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
 target_link_libraries(
-    picodet_person_plugin PRIVATE
+    yolov8_motion_plugin PRIVATE
     r_utils
     r_disco
     r_vss
@@ -32,31 +32,33 @@ target_link_libraries(
 
 # Add compile-time dependencies for headers only
 target_include_directories(
-    picodet_person_plugin PRIVATE
+    yolov8_motion_plugin PRIVATE
     $<TARGET_PROPERTY:r_vss,INTERFACE_INCLUDE_DIRECTORIES>
     $<TARGET_PROPERTY:r_utils,INTERFACE_INCLUDE_DIRECTORIES>
 )
 
 # Set the output name to avoid lib prefix on all platforms
-set_target_properties(picodet_person_plugin PROPERTIES PREFIX "")
+set_target_properties(yolov8_motion_plugin PROPERTIES PREFIX "")
 
 # Copy the plugin to the motion_plugins directory after build
-add_custom_command(TARGET picodet_person_plugin POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:picodet_person_plugin> ${CMAKE_BINARY_DIR}/motion_plugins/
+add_custom_command(TARGET yolov8_motion_plugin POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:yolov8_motion_plugin> ${CMAKE_BINARY_DIR}/motion_plugins/
 )
 
 # Install the plugin to motion_plugins subdirectory relative to the executable (skip on macOS - bundled into .app)
 if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-install(TARGETS picodet_person_plugin
+install(TARGETS yolov8_motion_plugin
     LIBRARY DESTINATION revere/motion_plugins
     RUNTIME DESTINATION revere/motion_plugins
 )
 endif()
 
-# Install model files
+# Install model files (skip on macOS - bundled into .app)
+if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/model/
-    DESTINATION revere/models/picodet_person
+    DESTINATION revere/models/yolov8_person
     FILES_MATCHING
     PATTERN "*.bin"
     PATTERN "*.param"
 )
+endif()

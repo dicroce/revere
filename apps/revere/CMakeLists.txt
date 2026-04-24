@@ -199,8 +199,8 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     if(NCNN_AVAILABLE)
         add_custom_command(TARGET revere POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/libs/r_vss/motion_plugins/yolov8_person_plugin/model/yolov8n.param $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person/
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/libs/r_vss/motion_plugins/yolov8_person_plugin/model/yolov8n.bin $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person/
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/libs/r_vss/motion_plugins/yolov8_motion_plugin/model/yolov8n.param $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person/
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/libs/r_vss/motion_plugins/yolov8_motion_plugin/model/yolov8n.bin $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person/
         )
     endif()
 endif()

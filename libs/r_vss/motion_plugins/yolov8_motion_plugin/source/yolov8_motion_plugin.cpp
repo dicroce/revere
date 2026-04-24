@@ -1,4 +1,4 @@
-#include "yolov8_person_plugin.h"
+#include "yolov8_motion_plugin.h"
 #include "r_utils/r_logger.h"
 #include "r_vss/r_motion_event_plugin_host.h"
 #include "r_vss/r_stream_keeper.h"
@@ -26,7 +26,7 @@
 
 using namespace r_utils;
 
-yolov8_person_plugin::yolov8_person_plugin(r_vss::r_motion_event_plugin_host* host)
+yolov8_motion_plugin::yolov8_motion_plugin(r_vss::r_motion_event_plugin_host* host)
     : _host(host),
       _initialized(false),
       _running(false)
@@ -47,14 +47,14 @@ yolov8_person_plugin::yolov8_person_plugin(r_vss::r_motion_event_plugin_host* ho
         // Load model
         int ret_param = _net->load_param(params_path.c_str());
         if (ret_param != 0) {
-            R_LOG_ERROR("yolov8_person_plugin: Failed to load model param file: %s (ret=%d)", params_path.c_str(), ret_param);
+            R_LOG_ERROR("yolov8_motion_plugin: Failed to load model param file: %s (ret=%d)", params_path.c_str(), ret_param);
             _net.reset();
             return;
         }
 
         int ret_bin = _net->load_model(bin_path.c_str());
         if (ret_bin != 0) {
-            R_LOG_ERROR("yolov8_person_plugin: Failed to load model bin file: %s (ret=%d)", bin_path.c_str(), ret_bin);
+            R_LOG_ERROR("yolov8_motion_plugin: Failed to load model bin file: %s (ret=%d)", bin_path.c_str(), ret_bin);
             _net.reset();
             return;
         }
@@ -63,15 +63,15 @@ yolov8_person_plugin::yolov8_person_plugin(r_vss::r_motion_event_plugin_host* ho
 
         // Start processing thread
         _running = true;
-        _thread = std::thread(&yolov8_person_plugin::_entry_point, this);
+        _thread = std::thread(&yolov8_motion_plugin::_entry_point, this);
 
     } catch (const std::exception& e) {
-        R_LOG_ERROR("yolov8_person_plugin: Failed to initialize: %s", e.what());
+        R_LOG_ERROR("yolov8_motion_plugin: Failed to initialize: %s", e.what());
         _initialized = false;
     }
 }
 
-yolov8_person_plugin::~yolov8_person_plugin()
+yolov8_motion_plugin::~yolov8_motion_plugin()
 {
     stop();
 
@@ -79,7 +79,7 @@ yolov8_person_plugin::~yolov8_person_plugin()
     _net.reset();
 }
 
-void yolov8_person_plugin::stop()
+void yolov8_motion_plugin::stop()
 {
     // Stop processing thread
     if (_running) {
@@ -95,7 +95,7 @@ void yolov8_person_plugin::stop()
     }
 }
 
-void yolov8_person_plugin::post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox)
+void yolov8_motion_plugin::post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox)
 {
     if (!_running)
         return;
@@ -142,14 +142,14 @@ void yolov8_person_plugin::post_motion_event(r_vss::r_motion_event evt, const st
     // Drop if queue is too deep (system performance limit)
     const size_t MAX_QUEUE_DEPTH = 30;
     if (_event_queue.size() >= MAX_QUEUE_DEPTH) {
-        R_LOG_WARNING("yolov8_person_plugin: System performance limit exceeded - dropping frame (queue depth: %zu)", _event_queue.size());
+        R_LOG_WARNING("yolov8_motion_plugin: System performance limit exceeded - dropping frame (queue depth: %zu)", _event_queue.size());
         return;
     }
 
     _event_queue.post(msg);
 }
 
-void yolov8_person_plugin::_entry_point()
+void yolov8_motion_plugin::_entry_point()
 {
     while (_running) {
         try {
@@ -164,12 +164,12 @@ void yolov8_person_plugin::_entry_point()
             }
 
         } catch (const std::exception& e) {
-            R_LOG_ERROR("yolov8_person_plugin: Error in worker thread: %s", e.what());
+            R_LOG_ERROR("yolov8_motion_plugin: Error in worker thread: %s", e.what());
         }
     }
 }
 
-void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
+void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
 {
     if (!_initialized || !_host) {
         return;
@@ -269,11 +269,11 @@ void yolov8_person_plugin::_process_motion_event(const MotionEventMessage& msg)
         }
 
     } catch (const std::exception& e) {
-        R_LOG_ERROR("yolov8_person_plugin: Failed to process motion event: %s", e.what());
+        R_LOG_ERROR("yolov8_motion_plugin: Failed to process motion event: %s", e.what());
     }
 }
 
-std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox)
+std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox)
 {
     std::vector<Detection> detections;
 
@@ -454,7 +454,7 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
                     if (cx >= motion_x1 && cx <= motion_x2 && cy >= motion_y1 && cy <= motion_y2) {
                         detections.push_back(det);
                     } else {
-                        R_LOG_INFO("yolov8_person_plugin: Filtered detection (class %d, conf %.2f) - center (%.0f,%.0f) outside motion region",
+                        R_LOG_INFO("yolov8_motion_plugin: Filtered detection (class %d, conf %.2f) - center (%.0f,%.0f) outside motion region",
                                    det.class_id, det.score, cx, cy);
                     }
                 }
@@ -465,13 +465,13 @@ std::vector<yolov8_person_plugin::Detection> yolov8_person_plugin::detect_person
         }
         
     } catch (const std::exception& e) {
-        R_LOG_ERROR("yolov8_person_plugin: YOLOv8 detection failed: %s", e.what());
+        R_LOG_ERROR("yolov8_motion_plugin: YOLOv8 detection failed: %s", e.what());
     }
     
     return detections;
 }
 
-void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms)
+void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms)
 {
     auto& devices = _host->get_devices();
 
@@ -523,7 +523,7 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
                         float uni = a1 + a2 - inter;
                         if (uni > 0 && (inter / uni) >= static_iou_threshold) {
                             static_classes.insert(sd.class_id);
-                            R_LOG_INFO("yolov8_person_plugin: Suppressing static %s (IoU=%.2f between start/end frames)",
+                            R_LOG_INFO("yolov8_motion_plugin: Suppressing static %s (IoU=%.2f between start/end frames)",
                                        get_class_name(sd.class_id), inter / uni);
                         }
                     }
@@ -551,7 +551,7 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
     for (const auto& pair : class_counts) {
         const char* class_name = get_class_name(pair.first);
         float confidence = max_confidence[pair.first];
-        R_LOG_INFO("yolov8_person_plugin: camera: %s detected: %s (%d frames, max confidence: %.1f%%)",
+        R_LOG_INFO("yolov8_motion_plugin: camera: %s detected: %s (%d frames, max confidence: %.1f%%)",
                    (!maybe_friendly_name.is_null())?maybe_friendly_name.value().c_str():"unknown",
                    class_name, pair.second, confidence * 100);
     }
@@ -559,7 +559,7 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
     // Log disproven classes for debugging
     for (int class_id : disproven) {
         const char* class_name = get_class_name(class_id);
-        R_LOG_INFO("yolov8_person_plugin: camera: %s disproven class: %s (detected but not consistently in motion)",
+        R_LOG_INFO("yolov8_motion_plugin: camera: %s disproven class: %s (detected but not consistently in motion)",
                    (!maybe_friendly_name.is_null())?maybe_friendly_name.value().c_str():"unknown",
                    class_name);
     }
@@ -607,11 +607,11 @@ void yolov8_person_plugin::_analyze_and_log_detections(const std::string& camera
     // Only write metadata if we have valid detections
     if (valid_detection_count > 0) {
         auto& stream_keeper = _host->get_stream_keeper();
-        stream_keeper.write_metadata(camera_id, "yolov8_person_plugin", json_metadata, first_detection_ts);
+        stream_keeper.write_metadata(camera_id, "yolov8_motion_plugin", json_metadata, first_detection_ts);
     }
 }
 
-const char* yolov8_person_plugin::get_class_name(int class_id)
+const char* yolov8_motion_plugin::get_class_name(int class_id)
 {
     // COCO dataset class names (80 classes)
     static const char* class_names[] = {
@@ -644,7 +644,7 @@ R_API r_motion_plugin_handle load_plugin(r_motion_event_plugin_host_handle host)
     r_vss::r_motion_event_plugin_host* host_ptr = reinterpret_cast<r_vss::r_motion_event_plugin_host*>(host);
 
     // Create plugin instance
-    yolov8_person_plugin* plugin = new yolov8_person_plugin(host_ptr);
+    yolov8_motion_plugin* plugin = new yolov8_motion_plugin(host_ptr);
 
     // Return as opaque handle
     return reinterpret_cast<r_motion_plugin_handle>(plugin);
@@ -653,14 +653,14 @@ R_API r_motion_plugin_handle load_plugin(r_motion_event_plugin_host_handle host)
 R_API void stop_plugin(r_motion_plugin_handle plugin)
 {
     // Cast opaque handle back to actual type and stop
-    yolov8_person_plugin* plugin_ptr = reinterpret_cast<yolov8_person_plugin*>(plugin);
+    yolov8_motion_plugin* plugin_ptr = reinterpret_cast<yolov8_motion_plugin*>(plugin);
     plugin_ptr->stop();
 }
 
 R_API void destroy_plugin(r_motion_plugin_handle plugin)
 {
     // Cast opaque handle back to actual type and delete
-    yolov8_person_plugin* plugin_ptr = reinterpret_cast<yolov8_person_plugin*>(plugin);
+    yolov8_motion_plugin* plugin_ptr = reinterpret_cast<yolov8_motion_plugin*>(plugin);
     delete plugin_ptr;
 }
 
@@ -680,7 +680,7 @@ R_API void post_motion_event(
     bool has_motion)
 {
     // Cast opaque handle back to actual type
-    yolov8_person_plugin* plugin_ptr = reinterpret_cast<yolov8_person_plugin*>(plugin);
+    yolov8_motion_plugin* plugin_ptr = reinterpret_cast<yolov8_motion_plugin*>(plugin);
 
     // Convert C types back to C++ types
     std::string camera_id_str(camera_id);

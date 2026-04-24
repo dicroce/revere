@@ -412,12 +412,12 @@ nanots is highly optimized for multiple readers + writers. See the nanots repo f
 
 **Available Plugins:**
 
-#### yolov8_person_plugin
+#### yolov8_motion_plugin
 **Status:** Active (enabled by default when NCNN is available)
 **Purpose:** Person detection using YOLOv8 neural network
 **Performance:** Medium speed, high accuracy
 **Use case:** Reliable person detection with good balance of speed and accuracy
-**Requirements:** NCNN, model files in `models/yolov8_person_plugin/`
+**Requirements:** NCNN, model files in `models/yolov8_motion_plugin/`
 
 #### test_plugin
 **Status:** Always built (no NCNN required)
