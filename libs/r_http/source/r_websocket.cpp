@@ -176,9 +176,17 @@ void r_websocket::read_exact(r_utils::r_socket_base& sock, uint8_t* buffer, size
 {
     size_t total_read = 0;
     while (total_read < length) {
-        // Use r_networking::r_recv() which properly handles SSL WANT_READ/WANT_WRITE states
-        uint64_t timeout_ms = 30000;  // 30 second timeout for WebSocket reads
-        int bytes_read = r_networking::r_recv(sock, buffer + total_read, length - total_read, timeout_ms);
+        int bytes_read = 0;
+        try {
+            bytes_read = r_networking::r_recv(sock, buffer + total_read, length - total_read, 1000);
+        }
+        catch (const r_socket_exception&) {
+            // recv timed out — retry as long as the socket is still open so we
+            // don't race the 30-second keepalive ping interval
+            if (sock.valid())
+                continue;
+            R_THROW(("Socket closed while reading WebSocket frame"));
+        }
 
         if (bytes_read <= 0)
             R_THROW(("Socket closed or error while reading WebSocket frame"));
