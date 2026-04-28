@@ -713,10 +713,6 @@ r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_
     {
         auto args = request.get_uri().get_get_args();
 
-        uint8_t motion_threshold = 1;
-        if(args.count("motion_threshold") > 0)
-            motion_threshold = r_string_utils::s_to_uint8(args["motion_threshold"]);
-
         if(args.find("start_time") == args.end())
             R_THROW(("Missing start_time."));
 
@@ -733,7 +729,7 @@ r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_
 
         auto end_tp = r_time_utils::iso_8601_to_tp(end_time_s);
 
-        auto motion_events = query_get_motion_events(_top_dir, _devices, args["camera_id"], motion_threshold, start_tp, end_tp);
+        auto motion_events = query_get_motion_events(_top_dir, _devices, args["camera_id"], start_tp, end_tp);
 
         json j;
         j["motion_events"] = json::array();
@@ -1610,7 +1606,6 @@ r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
                         {"camera_id",        {{"type","string"},  {"description","Camera ID from list_cameras"}}},
                         {"start_time",       {{"type","string"},  {"description","ISO-8601 start timestamp"}}},
                         {"end_time",         {{"type","string"},  {"description","ISO-8601 end timestamp"}}},
-                        {"motion_threshold", {{"type","integer"}, {"description","Minimum motion level to include 1-255 (default 1)"}}}
                     }},
                     {"required", json::array({"camera_id","start_time","end_time"})}
                 }}
@@ -1703,10 +1698,9 @@ r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
 
             if(name == "get_motion_events")
             {
-                uint8_t threshold = (uint8_t)args.value("motion_threshold", 1);
                 auto start_tp = r_time_utils::iso_8601_to_tp(args["start_time"].get<string>());
                 auto end_tp   = r_time_utils::iso_8601_to_tp(args["end_time"].get<string>());
-                auto events   = query_get_motion_events(_top_dir, _devices, args["camera_id"].get<string>(), threshold, start_tp, end_tp);
+                auto events   = query_get_motion_events(_top_dir, _devices, args["camera_id"].get<string>(), start_tp, end_tp);
                 json j;
                 j["motion_events"] = json::array();
                 for(auto& e : events)

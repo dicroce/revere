@@ -1,5 +1,6 @@
 
 #include "r_vss/r_system_plugin_host.h"
+#include "r_vss/r_motion_event_plugin_host.h"
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
@@ -19,6 +20,7 @@ typedef bool (*system_plugin_enabled_func)(r_system_plugin_handle);
 typedef void (*system_plugin_set_enabled_func)(r_system_plugin_handle, bool);
 typedef const char* (*system_plugin_get_status_func)(r_system_plugin_handle);
 typedef const char* (*system_plugin_get_status_message_func)(r_system_plugin_handle);
+typedef void (*system_plugin_post_detection_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float);
 
 r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
     : _top_dir(top_dir)
@@ -105,6 +107,13 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         status_message_func = reinterpret_cast<system_plugin_get_status_message_func>(msg_symbol);
                                 } catch (...) {}
 
+                                system_plugin_post_detection_func post_detection_func = nullptr;
+                                try {
+                                    void* pd_symbol = lib->resolve_symbol("system_plugin_post_detection");
+                                    if (pd_symbol)
+                                        post_detection_func = reinterpret_cast<system_plugin_post_detection_func>(pd_symbol);
+                                } catch (...) {}
+
                                 // Get the plugin GUID and check for duplicates
                                 const char* guid_cstr = guid_func();
                                 std::string plugin_guid = guid_cstr ? guid_cstr : "";
@@ -138,6 +147,7 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         set_enabled_func,
                                         status_func,
                                         status_message_func,
+                                        post_detection_func,
                                         plugin_name,
                                         plugin_guid
                                     });
@@ -318,4 +328,39 @@ std::string r_system_plugin_host::get_plugin_status_message(const std::string& p
         }
     }
     return std::string();
+}
+
+void r_system_plugin_host::connect_detection_bus(r_motion_event_plugin_host& meph)
+{
+    meph.register_detection_consumer(
+        [](void* userdata, const r_detection& det) {
+            reinterpret_cast<r_system_plugin_host*>(userdata)->_dispatch_detection(det);
+        },
+        this
+    );
+}
+
+void r_system_plugin_host::_dispatch_detection(const r_detection& det)
+{
+    for (auto& p : _plugins)
+    {
+        if (p.plugin_handle && p.post_detection_func)
+        {
+            try
+            {
+                p.post_detection_func(
+                    p.plugin_handle,
+                    det.camera_id.c_str(),
+                    det.ts,
+                    det.class_name.c_str(),
+                    det.confidence,
+                    det.x1, det.y1, det.x2, det.y2
+                );
+            }
+            catch (const std::exception& e)
+            {
+                R_LOG_ERROR("Error dispatching detection to system plugin %s: %s", p.name.c_str(), e.what());
+            }
+        }
+    }
 }

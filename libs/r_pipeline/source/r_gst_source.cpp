@@ -920,7 +920,6 @@ void r_gst_source::_attach_mulaw_audio_pipeline(GstPad* new_pad)
 
 void r_gst_source::_attach_alaw_audio_pipeline(GstPad* new_pad)
 {
-    R_LOG_INFO("_attach_alaw_audio_pipeline called");
     GstElement* a_depay = gst_element_factory_make("rtppcmadepay", (_name_prefix + "rtppcmadepay").c_str());
 
     // Check if element creation succeeded

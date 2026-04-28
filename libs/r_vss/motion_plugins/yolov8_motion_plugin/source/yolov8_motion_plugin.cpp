@@ -194,7 +194,6 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             size_t expected_size = msg.width * msg.height * 3;
             if (msg.frame_data.size() == expected_size) {
                 auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox);
-                R_LOG_INFO("YOLOV8_DIAG: START frame - detect_persons returned %zu detections", detections.size());
                 _camera_start_frame_detections[msg.camera_id] = detections;
                 _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
                 _camera_last_processed_ts[msg.camera_id] = msg.ts;
@@ -206,7 +205,6 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             size_t expected_size = msg.width * msg.height * 3;
             if (msg.frame_data.size() == expected_size) {
                 auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox);
-                R_LOG_INFO("YOLOV8_DIAG: PERIODIC frame - detect_persons returned %zu detections", detections.size());
                 _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
                 _camera_last_processed_ts[msg.camera_id] = msg.ts;
             }
@@ -238,7 +236,6 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
                     size_t expected_size = buffered.width * buffered.height * 3;
                     if (buffered.frame_data.size() == expected_size) {
                         auto detections = detect_persons(buffered.frame_data.data(), buffered.width, buffered.height, buffered.camera_id, buffered.ts, buffered.motion_bbox);
-                        R_LOG_INFO("YOLOV8_DIAG: MIDDLE frame - detect_persons returned %zu detections", detections.size());
                         _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
                     }
                 }
@@ -248,13 +245,9 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             size_t expected_size = msg.width * msg.height * 3;
             if (msg.frame_data.size() == expected_size) {
                 auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox);
-                R_LOG_INFO("YOLOV8_DIAG: END frame - detect_persons returned %zu detections", detections.size());
                 _camera_end_frame_detections[msg.camera_id] = detections;
                 _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
             }
-
-            R_LOG_INFO("YOLOV8_DIAG: EVENT_END - total detections accumulated: %zu",
-                       _camera_detections[msg.camera_id].size());
 
             // Analyze all detections for this motion sequence and log results
             _analyze_and_log_detections(msg.camera_id, msg.ts);
@@ -453,9 +446,6 @@ std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_person
 
                     if (cx >= motion_x1 && cx <= motion_x2 && cy >= motion_y1 && cy <= motion_y2) {
                         detections.push_back(det);
-                    } else {
-                        R_LOG_INFO("yolov8_motion_plugin: Filtered detection (class %d, conf %.2f) - center (%.0f,%.0f) outside motion region",
-                                   det.class_id, det.score, cx, cy);
                     }
                 }
             } else {
@@ -523,8 +513,6 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
                         float uni = a1 + a2 - inter;
                         if (uni > 0 && (inter / uni) >= static_iou_threshold) {
                             static_classes.insert(sd.class_id);
-                            R_LOG_INFO("yolov8_motion_plugin: Suppressing static %s (IoU=%.2f between start/end frames)",
-                                       get_class_name(sd.class_id), inter / uni);
                         }
                     }
                 }
@@ -554,14 +542,6 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
         R_LOG_INFO("yolov8_motion_plugin: camera: %s detected: %s (%d frames, max confidence: %.1f%%)",
                    (!maybe_friendly_name.is_null())?maybe_friendly_name.value().c_str():"unknown",
                    class_name, pair.second, confidence * 100);
-    }
-
-    // Log disproven classes for debugging
-    for (int class_id : disproven) {
-        const char* class_name = get_class_name(class_id);
-        R_LOG_INFO("yolov8_motion_plugin: camera: %s disproven class: %s (detected but not consistently in motion)",
-                   (!maybe_friendly_name.is_null())?maybe_friendly_name.value().c_str():"unknown",
-                   class_name);
     }
 
     // Convert timestamps to ISO 8601 format (UTC)
@@ -604,10 +584,26 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
 
     json_metadata += R"(], "total_detections": )" + std::to_string(valid_detection_count) + "}}";
 
-    // Only write metadata if we have valid detections
+    // Only write metadata and emit detections if we have valid detections
     if (valid_detection_count > 0) {
         auto& stream_keeper = _host->get_stream_keeper();
         stream_keeper.write_metadata(camera_id, "yolov8_motion_plugin", json_metadata, first_detection_ts);
+
+        for (const auto& detection : it->second) {
+            if (disproven.find(detection.class_id) != disproven.end()) continue;
+            if (static_classes.find(detection.class_id) != static_classes.end()) continue;
+
+            r_vss::r_detection det;
+            det.camera_id  = camera_id;
+            det.ts         = detection.timestamp;
+            det.class_name = get_class_name(detection.class_id);
+            det.confidence = detection.score;
+            det.x1         = detection.x1;
+            det.y1         = detection.y1;
+            det.x2         = detection.x2;
+            det.y2         = detection.y2;
+            _host->emit_detection(det);
+        }
     }
 }
 

@@ -385,7 +385,7 @@ vector<r_camera> r_vss::query_get_cameras(r_devices& devices)
     return devices.get_all_cameras();
 }
 
-vector<r_vss::motion_event_info> r_vss::query_get_motion_events(const std::string& top_dir, r_devices& devices, const std::string& camera_id, uint8_t motion_threshold, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
+vector<r_vss::motion_event_info> r_vss::query_get_motion_events(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
 {
     vector<motion_event_info> result;
 

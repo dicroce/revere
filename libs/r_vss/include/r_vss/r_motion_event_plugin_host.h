@@ -9,6 +9,8 @@
 #include "r_disco/r_devices.h"
 
 #include <list>
+#include <map>
+#include <mutex>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -18,6 +20,17 @@ namespace r_vss
 {
 
 class r_stream_keeper;
+
+struct r_detection
+{
+    std::string camera_id;
+    int64_t     ts;
+    std::string class_name;
+    float       confidence;
+    float       x1, y1, x2, y2;  // 640x640 letterbox space
+};
+
+typedef void (*r_detection_callback)(void* userdata, const r_detection& det);
 
 class r_motion_event_plugin_host : public r_motion_event_sink
 {
@@ -30,11 +43,14 @@ public:
     R_API void stop();
 
     R_API void post(r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const motion_region& motion_bbox) override;
-    
+
+    R_API void emit_detection(const r_detection& det);
+    R_API void register_detection_consumer(r_detection_callback callback, void* userdata);
+
     r_disco::r_devices& get_devices() { return _devices; }
     const std::string& get_top_dir() const { return _top_dir; }
     r_stream_keeper& get_stream_keeper() { return _stream_keeper; }
-    
+
 private:
     struct plugin_info
     {
@@ -49,6 +65,8 @@ private:
     std::string _top_dir;
     r_stream_keeper& _stream_keeper;
     std::list<plugin_info> _plugins;
+    std::vector<std::pair<r_detection_callback, void*>> _detection_consumers;
+    std::mutex _detection_consumers_mutex;
 };
 
 }

@@ -412,8 +412,6 @@ void r_recording_context::write_metadata(const std::string& stream_tag, const st
     if(!_md_storage_file)
         return;  // No metadata storage when motion detection disabled
 
-    R_LOG_INFO("[RECORDING_CONTEXT] write_metadata stream_tag=%s ts=%lld json=%s",
-               stream_tag.c_str(), (long long)timestamp_ms, json_data.c_str());
     _md_storage_file->write_metadata(stream_tag, json_data, timestamp_ms);
 }
 
