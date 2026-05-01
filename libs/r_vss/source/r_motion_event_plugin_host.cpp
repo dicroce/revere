@@ -151,6 +151,19 @@ void r_motion_event_plugin_host::stop()
     R_LOG_INFO("All motion plugins stopped.");
 }
 
+void r_motion_event_plugin_host::emit_detection(const r_detection& det)
+{
+    std::lock_guard<std::mutex> lock(_detection_consumers_mutex);
+    for(auto& [cb, ud] : _detection_consumers)
+        cb(ud, det);
+}
+
+void r_motion_event_plugin_host::register_detection_consumer(r_detection_callback callback, void* userdata)
+{
+    std::lock_guard<std::mutex> lock(_detection_consumers_mutex);
+    _detection_consumers.emplace_back(callback, userdata);
+}
+
 void r_motion_event_plugin_host::post(r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const motion_region& motion_bbox)
 {
     for(auto& p : _plugins)

@@ -95,7 +95,6 @@ r_nullable<r_motion_info> r_motion_state::process(const cv::Mat& input, int roi_
     _warmupFrames++;
     if(_warmupFrames <= _warmupThreshold)
     {
-        R_LOG_INFO("MOTION: Warmup frame %zu/%zu - skipping stats", _warmupFrames, _warmupThreshold);
         return result;  // return empty until background model is stable
     }
 
@@ -110,7 +109,6 @@ r_nullable<r_motion_info> r_motion_state::process(const cv::Mat& input, int roi_
     const double changeRatio = cv::countNonZero(_fgMask) / static_cast<double>(_fgMask.total());
     if(changeRatio > _illumChangeThresh)
     {
-        R_LOG_INFO("MOTION: Illumination veto triggered - changeRatio=%.3f threshold=%.3f", changeRatio, _illumChangeThresh);
         return result;  // nothing emitted
     }
 

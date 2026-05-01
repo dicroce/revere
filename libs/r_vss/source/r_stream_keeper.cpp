@@ -68,6 +68,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
     _mounts = gst_rtsp_server_get_mount_points(_server);
 
     _motionEngine.start();
+    _system_plugin_host.connect_detection_bus(_meph);
     _system_plugin_host.start_all();
 }
 
@@ -737,8 +738,6 @@ void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
     GstRTSPClientClass* klass = GST_RTSP_CLIENT_GET_CLASS(client);
     shared_ptr<gchar> raw_path(klass->make_path_from_uri(client, ctx->uri), [](gchar* p){if(p) g_free(p);});
     auto path = string(raw_path.get());
-
-    R_LOG_ERROR("OPTIONS REQUEST PATH: %s", path.c_str());
 
     if(r_string_utils::starts_with(path, "/"))
         path = path.substr(1);

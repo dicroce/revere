@@ -3,6 +3,7 @@
 #define _r_system_plugin_h
 
 #include "r_utils/r_macro.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,6 +56,12 @@ R_API const char* system_plugin_get_status(r_system_plugin_handle plugin);
 // Optional: Get additional status detail (e.g., user code, URL during auth)
 // Returns: A detail string, empty if no details available
 R_API const char* system_plugin_get_status_message(r_system_plugin_handle plugin);
+
+// Optional: Receive a detection event emitted by a motion plugin
+// Implement this if your system plugin wants to consume detection events
+R_API void system_plugin_post_detection(r_system_plugin_handle plugin,
+    const char* camera_id, int64_t ts, const char* class_name,
+    float confidence, float x1, float y1, float x2, float y2);
 
 #ifdef __cplusplus
 }

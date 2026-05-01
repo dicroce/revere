@@ -251,15 +251,22 @@ vector<r_camera> r_devices::get_assigned_cameras_removed(const vector<r_camera>&
 
 void r_devices::_update_caches()
 {
-    auto conn = _open_db(_top_dir, false);
-
-    auto all_result = _get_all_cameras(conn);
-    auto assigned_result = _get_assigned_cameras(conn);
-
+    try
     {
-        lock_guard<mutex> g(_cache_mutex);
-        _all_cameras_cache = std::move(all_result.cameras);
-        _assigned_cameras_cache = std::move(assigned_result.cameras);
+        auto conn = _open_db(_top_dir, false);
+
+        auto all_result = _get_all_cameras(conn);
+        auto assigned_result = _get_assigned_cameras(conn);
+
+        {
+            lock_guard<mutex> g(_cache_mutex);
+            _all_cameras_cache = std::move(all_result.cameras);
+            _assigned_cameras_cache = std::move(assigned_result.cameras);
+        }
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
 }
 

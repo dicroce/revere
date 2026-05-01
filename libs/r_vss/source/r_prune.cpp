@@ -106,7 +106,6 @@ void r_prune::_entry_point()
                         _top_dir,
                         _devices,
                         current_ps.camera.id,
-                        1,
                         block_start - chrono::seconds(30),
                         block_end + chrono::seconds(30)
                     );
