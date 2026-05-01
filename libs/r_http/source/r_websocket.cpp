@@ -176,17 +176,25 @@ void r_websocket::read_exact(r_utils::r_socket_base& sock, uint8_t* buffer, size
 {
     size_t total_read = 0;
     while (total_read < length) {
-        int bytes_read = 0;
-        try {
-            bytes_read = r_networking::r_recv(sock, buffer + total_read, length - total_read, 1000);
-        }
-        catch (const r_socket_exception&) {
-            // recv timed out — retry as long as the socket is still open so we
-            // don't race the 30-second keepalive ping interval
-            if (sock.valid())
-                continue;
-            R_THROW(("Socket closed while reading WebSocket frame"));
-        }
+        // Use r_networking::r_recv() which properly handles SSL WANT_READ/WANT_WRITE states.
+        //
+        // Timeout sized for idle WebSocket connections: the keepalive thread
+        // sends an RFC 6455 ping every 30s, the server pongs back, so we
+        // expect inbound traffic at least every 30s on a healthy connection.
+        // 120s gives 4x cushion — enough to absorb sleep/wake transitions
+        // and a couple of dropped pongs without falsely declaring the
+        // socket dead and forcing a reconnect.
+        //
+        // True deadness is still detected promptly via:
+        //   * recv returning 0 (TCP FIN / clean close) → throw below
+        //   * keepalive_loop's send_ping failing → r_websocket_client
+        //     flips _connected = false
+        //
+        // The 30s value previously here meant a single quiet idle period
+        // (e.g., laptop sleep, brief NAT hiccup) was enough to force a
+        // full reconnect cycle.
+        uint64_t timeout_ms = 120000;
+        int bytes_read = r_networking::r_recv(sock, buffer + total_read, length - total_read, timeout_ms);
 
         if (bytes_read <= 0)
             R_THROW(("Socket closed or error while reading WebSocket frame"));
