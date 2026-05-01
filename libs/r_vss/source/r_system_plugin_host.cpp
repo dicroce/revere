@@ -21,6 +21,12 @@ typedef void (*system_plugin_set_enabled_func)(r_system_plugin_handle, bool);
 typedef const char* (*system_plugin_get_status_func)(r_system_plugin_handle);
 typedef const char* (*system_plugin_get_status_message_func)(r_system_plugin_handle);
 typedef void (*system_plugin_post_detection_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float);
+typedef void (*system_plugin_set_api_result_cb_func)(r_system_plugin_handle, system_plugin_api_result_cb, void*);
+
+void r_system_plugin_host::_api_result_bridge(const char* name, const char* json, void* user_data)
+{
+    reinterpret_cast<r_system_plugin_host*>(user_data)->_on_api_result(name, json);
+}
 
 r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
     : _top_dir(top_dir)
@@ -114,6 +120,13 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         post_detection_func = reinterpret_cast<system_plugin_post_detection_func>(pd_symbol);
                                 } catch (...) {}
 
+                                system_plugin_set_api_result_cb_func set_api_result_cb_func = nullptr;
+                                try {
+                                    void* sym = lib->resolve_symbol("system_plugin_set_api_result_cb");
+                                    if (sym)
+                                        set_api_result_cb_func = reinterpret_cast<system_plugin_set_api_result_cb_func>(sym);
+                                } catch (...) {}
+
                                 // Get the plugin GUID and check for duplicates
                                 const char* guid_cstr = guid_func();
                                 std::string plugin_guid = guid_cstr ? guid_cstr : "";
@@ -148,9 +161,13 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         status_func,
                                         status_message_func,
                                         post_detection_func,
+                                        set_api_result_cb_func,
                                         plugin_name,
                                         plugin_guid
                                     });
+
+                                    if(set_api_result_cb_func && _api_result_fn)
+                                        set_api_result_cb_func(plugin_handle, _api_result_bridge, this);
                                     R_LOG_INFO("Loaded system plugin: %s (GUID: %s)", filename.c_str(), plugin_guid.c_str());
                                 }
                                 else
@@ -338,6 +355,22 @@ void r_system_plugin_host::connect_detection_bus(r_motion_event_plugin_host& mep
         },
         this
     );
+}
+
+void r_system_plugin_host::set_api_result_fn(std::function<void(const std::string&, const std::string&)> fn)
+{
+    _api_result_fn = std::move(fn);
+    for(auto& p : _plugins)
+    {
+        if(p.set_api_result_cb_func && p.plugin_handle)
+            p.set_api_result_cb_func(p.plugin_handle, _api_result_bridge, this);
+    }
+}
+
+void r_system_plugin_host::_on_api_result(const char* name, const char* json)
+{
+    if(_api_result_fn)
+        _api_result_fn(name ? name : "", json ? json : "");
 }
 
 void r_system_plugin_host::_dispatch_detection(const r_detection& det)

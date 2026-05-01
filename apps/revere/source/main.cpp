@@ -61,6 +61,7 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 
 #include "imgui_ui.h"
 #include "assignment_state.h"
+#include "configure_state.h"
 #include "rtsp_source_camera_config.h"
 
 #include "R_32x32.h"
@@ -1461,6 +1462,9 @@ int main(int argc, char** argv)
     auto log_path = revere::sub_dir("logs");
     revere::sub_dir("config");  // Ensure config dir exists for plugins
 
+    revere::configure_state cfg_state(r_fs::platform_path(top_dir));
+    cfg_state.load();
+
     r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
 
     // UI state needs to be created before we can register the log callback
@@ -1496,6 +1500,38 @@ int main(int argc, char** argv)
     r_disco::r_agent agent(r_fs::platform_path(top_dir));
     r_disco::r_devices devices(r_fs::platform_path(top_dir));
     r_vss::r_stream_keeper streamKeeper(devices, r_fs::platform_path(top_dir));
+    streamKeeper.set_system_plugin_api_result_cb([&cfg_state](const std::string& name, const std::string& json) {
+        if(name == "camera_answers")
+        {
+            try
+            {
+                auto j = nlohmann::json::parse(json);
+                for(auto& [camera_id, answers_j] : j.items())
+                {
+                    std::map<int, std::string> answers;
+                    for(auto& [num_str, answer] : answers_j.items())
+                        answers[std::stoi(num_str)] = answer.get<std::string>();
+                    cfg_state.set_camera_answers(camera_id, answers);
+                }
+            }
+            catch(const std::exception& e)
+            {
+                R_LOG_ERROR("api_result \"camera_answers\" parse error: %s", e.what());
+            }
+        }
+    });
+
+    streamKeeper.set_motion_tuning_fn([&cfg_state](const std::string& camera_id) -> r_vss::r_motion_tuning {
+        auto size = cfg_state.get_camera_answer(camera_id, 34);
+        if(!size.has_value())
+            return {};
+        if(*size == "close")
+            return {0.010, 25.0};
+        if(*size == "distant" || *size == "mixed")
+            return {0.001, 6.0};
+        return {};  // "Medium" or unrecognized → defaults
+    });
+
     if(sim_mttf_seconds > 0)
     {
         R_LOG_WARNING("*** SIMULATED FAILURE MODE: streams will die randomly near every %u seconds ***", sim_mttf_seconds);
@@ -1817,6 +1853,9 @@ int main(int argc, char** argv)
             SDL_HideWindow(window);
             window_visible = false;
         }
+
+        if(cfg_state.need_save())
+            cfg_state.save();
 
         // Skip rendering when window is hidden
         if(!window_visible)

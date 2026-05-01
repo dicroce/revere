@@ -5,13 +5,15 @@ using namespace r_motion;
 using namespace r_utils;
 using cv::Size;
 
-r_motion_state::r_motion_state(size_t memory, 
+r_motion_state::r_motion_state(size_t memory,
                                double motionFreqThresh,
                                double freqDecayRate,
                                size_t minObservationFrames,
-                               bool enableMasking)
+                               bool enableMasking,
+                               double minAreaFraction)
 : _avg_motion(0, memory)
 , _mog2(cv::createBackgroundSubtractorMOG2(500, 16, true))
+, _minAreaFraction(minAreaFraction)
 , _motionFreqThresh(motionFreqThresh)
 , _freqDecayRate(freqDecayRate)
 , _minObservationFrames(minObservationFrames)

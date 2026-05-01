@@ -43,11 +43,17 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
             string path = camera.motion_detection_file_path.value();
             if(path.find('/') == string::npos && path.find('\\') == string::npos)
                 path = _top_dir + PATH_SLASH + "video" + PATH_SLASH + path;
+            r_motion_tuning tuning;
+            if(_motion_tuning_fn)
+                tuning = _motion_tuning_fn(camera.id);
             return make_shared<r_motion_work_context>(
                 r_av::encoding_to_av_codec_id(item.video_codec_name),
                 camera.id,
                 r_pipeline::get_video_codec_extradata(item.video_codec_name, item.video_codec_parameters),
-                make_unique<r_ring_storage_sink>(path, RING_MOTION_FLAG_SIZE)
+                make_unique<r_ring_storage_sink>(path, RING_MOTION_FLAG_SIZE),
+                DEFAULT_MOTION_CONFIRM_FRAMES,
+                tuning.min_motion_displacement,
+                tuning.min_area_fraction
             );
         },
         _meph
@@ -104,6 +110,16 @@ r_stream_keeper::~r_stream_keeper() noexcept
 
     if(_loop)
         g_main_loop_unref(_loop);
+}
+
+void r_stream_keeper::set_motion_tuning_fn(r_motion_tuning_fn fn)
+{
+    _motion_tuning_fn = std::move(fn);
+}
+
+void r_stream_keeper::set_system_plugin_api_result_cb(std::function<void(const std::string&, const std::string&)> fn)
+{
+    _system_plugin_host.set_api_result_fn(std::move(fn));
 }
 
 void r_stream_keeper::start()

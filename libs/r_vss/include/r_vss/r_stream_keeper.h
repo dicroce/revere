@@ -165,6 +165,9 @@ public:
     // Simulated failure for leak testing. 0 = disabled. Must be set before streams start.
     R_API void set_sim_mttf_seconds(uint32_t mttf) { _sim_mttf_seconds = mttf; }
 
+    R_API void set_motion_tuning_fn(r_motion_tuning_fn fn);
+    R_API void set_system_plugin_api_result_cb(std::function<void(const std::string&, const std::string&)> fn);
+
 private:
     void _entry_point();
     void _rtsp_server_entry_point();
@@ -204,6 +207,7 @@ private:
     GstRTSPServer* _server;
     GstRTSPMountPoints* _mounts;
     std::vector<GstRTSPMediaFactory*> _factories;
+    r_motion_tuning_fn _motion_tuning_fn;
     r_motion_event_plugin_host _meph;
     r_motion_engine _motionEngine;
     r_system_plugin_host _system_plugin_host;
