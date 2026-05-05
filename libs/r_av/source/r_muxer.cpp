@@ -1,6 +1,7 @@
 
 #include "r_av/r_muxer.h"
 #include "r_utils/r_exception.h"
+#include "r_utils/r_logger.h"
 #include "r_utils/r_string_utils.h"
 
 using namespace std;
@@ -58,7 +59,11 @@ r_muxer::r_muxer(const std::string& path, bool output_to_buffer, const std::stri
 r_muxer::~r_muxer()
 {
     if(_needs_finalize)
-        finalize();
+    {
+        try { finalize(); }
+        catch(std::exception& ex) { R_LOG_ERROR("r_muxer finalize failed in destructor: %s", ex.what()); }
+        catch(...) { R_LOG_ERROR("r_muxer finalize failed in destructor: unknown exception"); }
+    }
 }
 
 void r_muxer::add_video_stream(AVRational frame_rate, AVCodecID codec_id, uint16_t w, uint16_t h, int profile, int level)
@@ -79,8 +84,8 @@ void r_muxer::add_video_stream(AVRational frame_rate, AVCodecID codec_id, uint16
     _video_stream->codecpar->profile = profile;
     _video_stream->codecpar->level = level;
     
-    _video_stream->time_base.num = frame_rate.den;
-    _video_stream->time_base.den = frame_rate.num;
+    _video_stream->time_base = {1, 90000};
+    _video_stream->avg_frame_rate = frame_rate;
 }
 
 void r_muxer::add_audio_stream(AVCodecID codec_id, uint8_t channels, uint32_t sample_rate)

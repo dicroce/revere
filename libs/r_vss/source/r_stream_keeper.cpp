@@ -43,11 +43,17 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
             string path = camera.motion_detection_file_path.value();
             if(path.find('/') == string::npos && path.find('\\') == string::npos)
                 path = _top_dir + PATH_SLASH + "video" + PATH_SLASH + path;
+            r_motion_tuning tuning;
+            if(_motion_tuning_fn)
+                tuning = _motion_tuning_fn(camera.id);
             return make_shared<r_motion_work_context>(
                 r_av::encoding_to_av_codec_id(item.video_codec_name),
                 camera.id,
                 r_pipeline::get_video_codec_extradata(item.video_codec_name, item.video_codec_parameters),
-                make_unique<r_ring_storage_sink>(path, RING_MOTION_FLAG_SIZE)
+                make_unique<r_ring_storage_sink>(path, RING_MOTION_FLAG_SIZE),
+                DEFAULT_MOTION_CONFIRM_FRAMES,
+                tuning.min_motion_displacement,
+                tuning.min_area_fraction
             );
         },
         _meph
@@ -68,6 +74,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
     _mounts = gst_rtsp_server_get_mount_points(_server);
 
     _motionEngine.start();
+    _system_plugin_host.connect_detection_bus(_meph);
     _system_plugin_host.start_all();
 }
 
@@ -103,6 +110,16 @@ r_stream_keeper::~r_stream_keeper() noexcept
 
     if(_loop)
         g_main_loop_unref(_loop);
+}
+
+void r_stream_keeper::set_motion_tuning_fn(r_motion_tuning_fn fn)
+{
+    _motion_tuning_fn = std::move(fn);
+}
+
+void r_stream_keeper::set_system_plugin_api_result_cb(std::function<void(const std::string&, const std::string&)> fn)
+{
+    _system_plugin_host.set_api_result_fn(std::move(fn));
 }
 
 void r_stream_keeper::start()
@@ -535,7 +552,14 @@ void r_stream_keeper::_entry_point()
                 // This ensures that when a stream dies and needs to be recreated, the old
                 // r_recording_context (and its nanots_writer) is fully destroyed before
                 // we attempt to create a new one with the same file path and stream tags.
-                r_funky::erase_if(_streams, [](const auto& c){return c.second->dead();});
+                r_funky::erase_if(_streams, [](const auto& c){
+                    if(c.second->dead())
+                    {
+                        R_LOG_WARNING("Dead stream detected, removing: %s", c.first.c_str());
+                        return true;
+                    }
+                    return false;
+                });
 
                 if(_streams.empty())
                     _add_recording_contexts(_devices.get_assigned_cameras());
@@ -650,7 +674,7 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
                 (camera.camera_name.is_null() ? camera.id : camera.camera_name.value()) :
                 camera.friendly_name.value();
             R_LOG_INFO("Starting camera stream: %s (%s)", name.c_str(), camera.id.c_str());
-            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws);
+            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds);
         }
     }
 }
@@ -733,8 +757,6 @@ void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
     GstRTSPClientClass* klass = GST_RTSP_CLIENT_GET_CLASS(client);
     shared_ptr<gchar> raw_path(klass->make_path_from_uri(client, ctx->uri), [](gchar* p){if(p) g_free(p);});
     auto path = string(raw_path.get());
-
-    R_LOG_ERROR("OPTIONS REQUEST PATH: %s", path.c_str());
 
     if(r_string_utils::starts_with(path, "/"))
         path = path.substr(1);

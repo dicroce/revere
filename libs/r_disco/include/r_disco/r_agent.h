@@ -46,13 +46,22 @@ public:
 
     R_API void start();
     R_API void stop();
+
+    R_API std::vector<r_onvif::onvif_profile_info> get_camera_profiles(
+        const std::string& ipv4,
+        const std::string& xaddrs,
+        r_utils::r_nullable<std::string> username,
+        r_utils::r_nullable<std::string> password
+    );
+
     R_API void interrogate_camera(
         const std::string& camera_name,
         const std::string& ipv4,
         const std::string& xaddrs,
         const std::string& address,
         r_utils::r_nullable<std::string> username,
-        r_utils::r_nullable<std::string> password
+        r_utils::r_nullable<std::string> password,
+        const std::string& preferred_profile_token = ""
     );
 
     R_API void forget(const std::string& id);

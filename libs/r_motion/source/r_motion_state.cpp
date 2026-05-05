@@ -5,13 +5,15 @@ using namespace r_motion;
 using namespace r_utils;
 using cv::Size;
 
-r_motion_state::r_motion_state(size_t memory, 
+r_motion_state::r_motion_state(size_t memory,
                                double motionFreqThresh,
                                double freqDecayRate,
                                size_t minObservationFrames,
-                               bool enableMasking)
+                               bool enableMasking,
+                               double minAreaFraction)
 : _avg_motion(0, memory)
 , _mog2(cv::createBackgroundSubtractorMOG2(500, 16, true))
+, _minAreaFraction(minAreaFraction)
 , _motionFreqThresh(motionFreqThresh)
 , _freqDecayRate(freqDecayRate)
 , _minObservationFrames(minObservationFrames)
@@ -95,7 +97,6 @@ r_nullable<r_motion_info> r_motion_state::process(const cv::Mat& input, int roi_
     _warmupFrames++;
     if(_warmupFrames <= _warmupThreshold)
     {
-        R_LOG_INFO("MOTION: Warmup frame %zu/%zu - skipping stats", _warmupFrames, _warmupThreshold);
         return result;  // return empty until background model is stable
     }
 
@@ -110,7 +111,6 @@ r_nullable<r_motion_info> r_motion_state::process(const cv::Mat& input, int roi_
     const double changeRatio = cv::countNonZero(_fgMask) / static_cast<double>(_fgMask.total());
     if(changeRatio > _illumChangeThresh)
     {
-        R_LOG_INFO("MOTION: Illumination veto triggered - changeRatio=%.3f threshold=%.3f", changeRatio, _illumChangeThresh);
         return result;  // nothing emitted
     }
 

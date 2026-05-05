@@ -33,6 +33,14 @@ enum
     DEFAULT_MIN_MOTION_DISPLACEMENT = 15  // pixels
 };
 
+struct r_motion_tuning
+{
+    double min_area_fraction {0.003};
+    double min_motion_displacement {DEFAULT_MIN_MOTION_DISPLACEMENT};
+};
+
+using r_motion_tuning_fn = std::function<r_motion_tuning(const std::string& camera_id)>;
+
 // Entry for ring buffer 1: key frame motion detection results
 struct r_keyframe_motion_entry
 {
@@ -62,8 +70,9 @@ public:
                    const std::vector<uint8_t> ed,
                    std::unique_ptr<r_motion_storage_sink> storage_sink,
                    size_t motion_confirm_frames = DEFAULT_MOTION_CONFIRM_FRAMES,
-                   double min_motion_displacement = DEFAULT_MIN_MOTION_DISPLACEMENT) :
-        _motion_state(60),
+                   double min_motion_displacement = DEFAULT_MIN_MOTION_DISPLACEMENT,
+                   double min_area_fraction = 0.003) :
+        _motion_state(60, 0.95, 0.70, 100, true, min_area_fraction),
         _video_decoder(codec_id),
         _camera_id(camera_id),
         _storage_sink(std::move(storage_sink)),

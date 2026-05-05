@@ -73,100 +73,103 @@ static pair<int, string> _http_interact(
     const string& soap_action = ""
 )
 {
+    const int MAX_NET_ATTEMPTS = 2;
     int redirect_count = 0;
 
-retry:
+retry_redirect:
     if (redirect_count >= MAX_REDIRECTS)
         throw std::runtime_error("Too many redirects (max " + std::to_string(MAX_REDIRECTS) + ")");
 
-    R_LOG_INFO("HTTP interact: %s(%d)(%s)", host.c_str(), port, uri.c_str());
-
-    std::unique_ptr<r_utils::r_socket_base> sock;
-
-    if (port == 443)
-        sock = std::make_unique<r_utils::r_ssl_socket>();
-    else
-        sock = std::make_unique<r_utils::r_socket>();
-
-    sock->connect(host, port);
-
-    r_http::r_client_request request(host, port);
-    request.set_method(r_http::method_type(http_method));
-    request.set_uri(uri);
-    request.set_body(body);
-
-    // Set SOAP-specific headers
-    if (soap_ver == soap_version::soap_1_2)
+    for (int net_attempt = 0; net_attempt < MAX_NET_ATTEMPTS; ++net_attempt)
     {
-        // SOAP 1.2: Content-Type with action parameter
-        if (!soap_action.empty())
-            request.add_header("Content-Type", "application/soap+xml; charset=utf-8; action=\"" + soap_action + "\"");
-        else
-            request.add_header("Content-Type", "application/soap+xml; charset=utf-8");
-    }
-    else if (soap_ver == soap_version::soap_1_1)
-    {
-        // SOAP 1.1: text/xml + SOAPAction header
-        request.add_header("Content-Type", "text/xml; charset=utf-8");
-        if (!soap_action.empty())
-            request.add_header("SOAPAction", "\"" + soap_action + "\"");
-    }
-
-    // Connection: close - some cameras don't handle keep-alive well
-    request.add_header("Connection", "close");
-
-    // User-Agent - some stacks behave differently with empty UA
-    request.add_header("User-Agent", "ONVIF-Client/1.0");
-
-    request.write_request(*sock, 30000);
-
-    r_http::r_client_response response;
-    response.read_response(*sock, 30000);
-
-    //sock->close();
-
-    if(response.get_status() == 302 || response.get_status() == 301 || response.get_status() == 307)
-    {
-        string location = response.get_header("Location");
-        R_LOG_INFO("Redirect response to %s", location.c_str());
-        if(location.empty())
-            throw std::runtime_error("Redirect response but no Location header");
-
-        // Check if Location is absolute or relative
-        if (location.find("://") != string::npos)
+        if (net_attempt > 0)
         {
-            // Absolute URL - parse all parts
-            string protocol, new_uri;
-            r_http::parse_url_parts(location, host, port, protocol, new_uri);
-            uri = new_uri;
+            R_LOG_INFO("HTTP retry %d/%d after 300ms...", net_attempt + 1, MAX_NET_ATTEMPTS);
+            this_thread::sleep_for(chrono::milliseconds(300));
         }
-        else if (location[0] == '/')
+
+        try
         {
-            // Absolute path - keep host/port, use new path
-            uri = location;
-        }
-        else
-        {
-            // Relative path - resolve against current URI
-            size_t last_slash = uri.rfind('/');
-            if (last_slash != string::npos)
-                uri = uri.substr(0, last_slash + 1) + location;
+            R_LOG_INFO("HTTP interact: %s(%d)(%s)", host.c_str(), port, uri.c_str());
+
+            std::unique_ptr<r_utils::r_socket_base> sock;
+            if (port == 443)
+                sock = std::make_unique<r_utils::r_ssl_socket>();
             else
-                uri = "/" + location;
+                sock = std::make_unique<r_utils::r_socket>();
+
+            sock->connect(host, port);
+
+            r_http::r_client_request request(host, port);
+            request.set_method(r_http::method_type(http_method));
+            request.set_uri(uri);
+            request.set_body(body);
+
+            if (soap_ver == soap_version::soap_1_2)
+            {
+                if (!soap_action.empty())
+                    request.add_header("Content-Type", "application/soap+xml; charset=utf-8; action=\"" + soap_action + "\"");
+                else
+                    request.add_header("Content-Type", "application/soap+xml; charset=utf-8");
+            }
+            else if (soap_ver == soap_version::soap_1_1)
+            {
+                request.add_header("Content-Type", "text/xml; charset=utf-8");
+                if (!soap_action.empty())
+                    request.add_header("SOAPAction", "\"" + soap_action + "\"");
+            }
+
+            request.add_header("Connection", "close");
+            request.add_header("User-Agent", "ONVIF-Client/1.0");
+
+            request.write_request(*sock, 30000);
+
+            r_http::r_client_response response;
+            response.read_response(*sock, 30000);
+
+            if(response.get_status() == 302 || response.get_status() == 301 || response.get_status() == 307)
+            {
+                string location = response.get_header("Location");
+                R_LOG_INFO("Redirect response to %s", location.c_str());
+                if(location.empty())
+                    throw std::runtime_error("Redirect response but no Location header");
+
+                if (location.find("://") != string::npos)
+                {
+                    string protocol, new_uri;
+                    r_http::parse_url_parts(location, host, port, protocol, new_uri);
+                    uri = new_uri;
+                }
+                else if (location[0] == '/')
+                    uri = location;
+                else
+                {
+                    size_t last_slash = uri.rfind('/');
+                    if (last_slash != string::npos)
+                        uri = uri.substr(0, last_slash + 1) + location;
+                    else
+                        uri = "/" + location;
+                }
+
+                R_LOG_INFO("Redirecting to (%s)(%d)(%s)", host.c_str(), port, uri.c_str());
+                redirect_count++;
+                goto retry_redirect;
+            }
+
+            auto maybe_body = response.get_body_as_string();
+            if(maybe_body.is_null())
+                return make_pair(response.get_status(), string());
+            return make_pair(response.get_status(), maybe_body.value());
         }
-
-        R_LOG_INFO("Redirecting to (%s)(%d)(%s)", host.c_str(), port, uri.c_str());
-
-        redirect_count++;
-        goto retry;
+        catch (const std::exception& ex)
+        {
+            if (net_attempt + 1 == MAX_NET_ATTEMPTS)
+                throw;
+            R_LOG_INFO("HTTP attempt %d/%d failed (%s), retrying...", net_attempt + 1, MAX_NET_ATTEMPTS, ex.what());
+        }
     }
 
-    auto maybe_body = response.get_body_as_string();
-
-    if(maybe_body.is_null())
-        return make_pair(response.get_status(), string());
-
-    return make_pair(response.get_status(), maybe_body.value());
+    throw std::runtime_error("HTTP interaction failed after retries");
 }
 
 static time_t _portable_timegm(struct tm* t)
@@ -504,11 +507,19 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
     multicastAddr.sin_port = htons(3702);
     multicastAddr.sin_addr.s_addr = inet_addr("239.255.255.250");
 
-    // Send discovery message
-    int bytesSent = ::sendto(sock, broadcast_message.c_str(), (int)broadcast_message.length(), 0,
-                            (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
+    // Send discovery probe 3 times for reliability (multicast UDP can be dropped)
+    bool any_sent = false;
+    for (int probe = 0; probe < 3; ++probe)
+    {
+        if (probe > 0)
+            this_thread::sleep_for(chrono::milliseconds(150));
+        int bytesSent = ::sendto(sock, broadcast_message.c_str(), (int)broadcast_message.length(), 0,
+                                (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
+        if (bytesSent > 0)
+            any_sent = true;
+    }
 
-    if (bytesSent < 0) {
+    if (!any_sent) {
         closesocket(sock);
         return discovered;
     }
@@ -588,11 +599,19 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
     multicastAddr.sin_port = htons(3702);
     multicastAddr.sin_addr.s_addr = inet_addr("239.255.255.250");
 
-    // Send discovery message
-    int bytesSent = sendto(sock, broadcast_message.c_str(), broadcast_message.length(), 0,
-                          (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
+    // Send discovery probe 3 times for reliability (multicast UDP can be dropped)
+    bool any_sent = false;
+    for (int probe = 0; probe < 3; ++probe)
+    {
+        if (probe > 0)
+            this_thread::sleep_for(chrono::milliseconds(150));
+        int bytesSent = sendto(sock, broadcast_message.c_str(), broadcast_message.length(), 0,
+                              (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
+        if (bytesSent > 0)
+            any_sent = true;
+    }
 
-    if (bytesSent < 0) {
+    if (!any_sent) {
         close(sock);
         return discovered;
     }
@@ -1063,22 +1082,46 @@ std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::s
     return filtered;
 }
 
-r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::string& protocol, const std::string& uri, const r_utils::r_nullable<std::string>& username, const r_utils::r_nullable<std::string>& password)
+r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::string& protocol, const std::string& uri, const r_utils::r_nullable<std::string>& username, const r_utils::r_nullable<std::string>& password, soap_version soap_hint, auth_mode auth_hint)
 {
     _service_host = host;
     _service_port = port;
     _service_protocol = protocol;
     _service_uri = uri;
-    _soap_ver = soap_version::unknown;
-    _auth_mode = auth_mode::unknown;
-
-    auto now = chrono::system_clock::to_time_t(chrono::system_clock::now());
-    auto camera_time = get_camera_system_date_and_time();
-
-    _time_offset_seconds = (int)((int64_t)camera_time - (int64_t)now);
+    _soap_ver = soap_hint;
+    _auth_mode = auth_hint;
 
     _username = username;
     _password = password;
+
+    auto now = chrono::system_clock::to_time_t(chrono::system_clock::now());
+    time_t camera_time = now;
+
+    const int max_time_sync_attempts = 3;
+    for (int attempt = 0; attempt < max_time_sync_attempts; ++attempt)
+    {
+        try
+        {
+            camera_time = get_camera_system_date_and_time();
+            break;
+        }
+        catch (const std::exception& ex)
+        {
+            if (attempt + 1 < max_time_sync_attempts)
+            {
+                int delay_ms = 1000 * (1 << attempt); // 1s, 2s
+                R_LOG_INFO("GetSystemDateAndTime attempt %d/%d failed: %s, retrying in %dms...",
+                           attempt + 1, max_time_sync_attempts, ex.what(), delay_ms);
+                this_thread::sleep_for(chrono::milliseconds(delay_ms));
+                now = chrono::system_clock::to_time_t(chrono::system_clock::now());
+            }
+            else
+                R_LOG_INFO("GetSystemDateAndTime failed after %d attempts: %s. Assuming zero clock offset.",
+                           max_time_sync_attempts, ex.what());
+        }
+    }
+
+    _time_offset_seconds = (int)((int64_t)camera_time - (int64_t)now);
 }
 
 // Helper to check if response indicates SOAP version mismatch

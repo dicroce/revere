@@ -27,6 +27,8 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <chrono>
+#include <random>
 
 namespace r_pipeline
 {
@@ -176,6 +178,10 @@ public:
     R_API void stop();
     R_API bool running() const;
 
+    // Simulated failure for leak testing: stream silently stops delivering samples
+    // after a random interval near mttf_seconds. 0 = disabled.
+    R_API void set_sim_mttf_seconds(uint32_t mttf) { _sim_mttf_seconds = mttf; }
+
     R_API void set_video_sample_cb(r_sample_cb cb) {_video_sample_cb = cb;}
     R_API void set_audio_sample_cb(r_sample_cb cb) {_audio_sample_cb = cb;}
     R_API void set_ready_cb(r_ready_cb cb) {_ready_cb = cb;}
@@ -269,6 +275,9 @@ private:
 
     bool _last_valid_a_sample_pts_set;
     uint64_t _last_valid_a_sample_pts;
+
+    uint32_t _sim_mttf_seconds;
+    std::chrono::steady_clock::time_point _sim_fail_at;
 };
 
 }

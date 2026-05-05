@@ -120,7 +120,7 @@ struct playback_restreaming_state
 class r_recording_context
 {
 public:
-    R_API r_recording_context(r_stream_keeper* sk, const r_disco::r_camera& camera, const std::string& top_dir, r_ws& ws);
+    R_API r_recording_context(r_stream_keeper* sk, const r_disco::r_camera& camera, const std::string& top_dir, r_ws& ws, uint32_t sim_mttf_seconds = 0);
     R_API r_recording_context(const r_recording_context&) = delete;
     R_API r_recording_context(r_recording_context&&) = delete;
     R_API ~r_recording_context() noexcept;

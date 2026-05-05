@@ -33,12 +33,13 @@ struct r_motion_info
 class r_motion_state
 {
 public:
-    explicit R_API r_motion_state(size_t memory = 500, 
+    explicit R_API r_motion_state(size_t memory = 500,
                                   double motionFreqThresh = 0.95,
                                   // higher = more weight on history, slower to react. lower = less weight on history, faster to react
                                   double freqDecayRate = 0.70,
                                   size_t minObservationFrames = 100,
-                                  bool enableMasking = true);
+                                  bool enableMasking = true,
+                                  double minAreaFraction = 0.003);
     R_API r_motion_state(const r_motion_state&)            = delete;
     R_API r_motion_state(r_motion_state&&)                 = delete;
     R_API ~r_motion_state() noexcept;
@@ -82,7 +83,7 @@ private:
 
     // tuning parameters
     const double _illumChangeThresh = 0.25;   // % of pixels changed ⇒ treat as illumination event
-    const double _minAreaFraction   = 0.003;   // 1% of frame (adjustable)
+    const double _minAreaFraction;            // minimum contour area as fraction of frame
 
     // warmup tracking - skip first few frames while MOG2 builds background model
     const size_t _warmupThreshold {5};        // number of frames to skip at startup

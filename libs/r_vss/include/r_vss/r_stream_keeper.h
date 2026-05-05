@@ -162,6 +162,12 @@ public:
     R_API r_overflow_type get_current_overflow_flags() const;
     R_API size_t get_total_dropped_frames() const;
 
+    // Simulated failure for leak testing. 0 = disabled. Must be set before streams start.
+    R_API void set_sim_mttf_seconds(uint32_t mttf) { _sim_mttf_seconds = mttf; }
+
+    R_API void set_motion_tuning_fn(r_motion_tuning_fn fn);
+    R_API void set_system_plugin_api_result_cb(std::function<void(const std::string&, const std::string&)> fn);
+
 private:
     void _entry_point();
     void _rtsp_server_entry_point();
@@ -181,6 +187,7 @@ private:
     r_disco::r_devices& _devices;
     std::string _top_dir;
     std::thread _th;
+    uint32_t _sim_mttf_seconds {0};
     bool _running;
     mutable std::mutex _streams_mutex;  // Protects _streams from concurrent access
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
@@ -200,6 +207,7 @@ private:
     GstRTSPServer* _server;
     GstRTSPMountPoints* _mounts;
     std::vector<GstRTSPMediaFactory*> _factories;
+    r_motion_tuning_fn _motion_tuning_fn;
     r_motion_event_plugin_host _meph;
     r_motion_engine _motionEngine;
     r_system_plugin_host _system_plugin_host;

@@ -56,7 +56,10 @@ enum class auth_mode
 class r_onvif_cam
 {
 public:
-    R_API r_onvif_cam(const std::string& host, int port, const std::string& protocol, const std::string& uri, const r_utils::r_nullable<std::string>& username, const r_utils::r_nullable<std::string>& password);
+    R_API r_onvif_cam(const std::string& host, int port, const std::string& protocol, const std::string& uri,
+                      const r_utils::r_nullable<std::string>& username, const r_utils::r_nullable<std::string>& password,
+                      soap_version soap_hint = soap_version::unknown,
+                      auth_mode auth_hint = auth_mode::unknown);
 
     R_API time_t get_camera_system_date_and_time();
 
@@ -67,6 +70,9 @@ public:
     R_API std::vector<onvif_profile_info> get_profile_tokens(onvif_media_service media_service);
 
     R_API std::string get_stream_uri(onvif_media_service media_service, onvif_profile_token profile_token);
+
+    soap_version get_soap_version() const { return _soap_ver; }
+    auth_mode get_auth_mode() const { return _auth_mode; }
 
 private:
     std::pair<int, std::string> _soap_request(

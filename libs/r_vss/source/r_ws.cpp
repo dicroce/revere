@@ -35,6 +35,26 @@ using json = nlohmann::json;
 
 const int WEB_SERVER_PORT = 10080;
 
+namespace {
+
+r_server_response mcp_ok(const json& id, const json& result)
+{
+    r_server_response resp;
+    resp.set_content_type("application/json");
+    resp.set_body(json({{"jsonrpc","2.0"},{"id",id},{"result",result}}).dump());
+    return resp;
+}
+
+r_server_response mcp_err(const json& id, int code, const string& msg)
+{
+    r_server_response resp;
+    resp.set_content_type("application/json");
+    resp.set_body(json({{"jsonrpc","2.0"},{"id",id},{"error",{{"code",code},{"message",msg}}}}).dump());
+    return resp;
+}
+
+} // namespace
+
 r_ws::r_ws(const string& top_dir, r_devices& devices) :
     _top_dir(top_dir),
     _devices(devices),
@@ -53,6 +73,7 @@ r_ws::r_ws(const string& top_dir, r_devices& devices) :
     _server.add_route(METHOD_GET, "/transcode", std::bind(&r_ws::_get_transcode, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/finalize_transcode_stream", std::bind(&r_ws::_get_finalize_transcode_stream, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/transcode_export", std::bind(&r_ws::_get_transcode_export, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/mcp", std::bind(&r_ws::_post_mcp, this, _1, _2, _3));
 
     _server.start();
 }
@@ -692,10 +713,6 @@ r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_
     {
         auto args = request.get_uri().get_get_args();
 
-        uint8_t motion_threshold = 1;
-        if(args.count("motion_threshold") > 0)
-            motion_threshold = r_string_utils::s_to_uint8(args["motion_threshold"]);
-
         if(args.find("start_time") == args.end())
             R_THROW(("Missing start_time."));
 
@@ -712,7 +729,7 @@ r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_
 
         auto end_tp = r_time_utils::iso_8601_to_tp(end_time_s);
 
-        auto motion_events = query_get_motion_events(_top_dir, _devices, args["camera_id"], motion_threshold, start_tp, end_tp);
+        auto motion_events = query_get_motion_events(_top_dir, _devices, args["camera_id"], start_tp, end_tp);
 
         json j;
         j["motion_events"] = json::array();
@@ -1514,4 +1531,243 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to transcode export."));
+}
+
+r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
+                                   r_socket&,
+                                   const r_server_request& request)
+{
+    json id = nullptr;
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+
+        // Notifications have no id - acknowledge without a body
+        if(!req.contains("id"))
+        {
+            r_server_response resp;
+            resp.set_content_type("application/json");
+            resp.set_body("{}");
+            return resp;
+        }
+
+        id = req["id"];
+        string method = req.value("method", "");
+
+        if(method == "initialize")
+        {
+            return mcp_ok(id, {
+                {"protocolVersion", "2024-11-05"},
+                {"capabilities", {{"tools", json::object()}}},
+                {"serverInfo", {{"name", "revere"}, {"version", "1.0.0"}}}
+            });
+        }
+
+        if(method == "tools/list")
+        {
+            auto tools = json::array();
+
+            tools.push_back({
+                {"name", "list_cameras"},
+                {"description", "Returns all configured cameras with their IDs, friendly names, IP addresses, and recording state. Always call this first in a session to discover available camera IDs before querying any other tools."},
+                {"inputSchema", {
+                    {"type", "object"},
+                    {"properties", json::object()},
+                    {"required", json::array()}
+                }}
+            });
+
+            tools.push_back({
+                {"name", "get_recording_segments"},
+                {"description", "Returns contiguous recording segments for a camera in a time range. Gaps between segments indicate missing footage. Use this to verify that recording exists before querying frames or analytics for a specific time window."},
+                {"inputSchema", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"camera_id", {{"type","string"},{"description","Camera ID from list_cameras"}}},
+                        {"start_time", {{"type","string"},{"description","ISO-8601 start timestamp e.g. 2024-01-15T12:00:00Z"}}},
+                        {"end_time",   {{"type","string"},{"description","ISO-8601 end timestamp"}}}
+                    }},
+                    {"required", json::array({"camera_id","start_time","end_time"})}
+                }}
+            });
+
+            tools.push_back({
+                {"name", "get_motion_events"},
+                {"description", "Returns motion detection events (pixel-level) for a camera in a time range. "
+                                "PREFERRED FIRST PASS: Use this as a cheap index before calling get_frame_image or get_analytics. "
+                                "Query a large time window here to quickly find WHEN activity occurred, then zoom in with other tools. "
+                                "For 'did X get left behind?' questions (e.g. package on porch, car parked): call this first, then call "
+                                "get_frame_image at motion_end_time -- that frame shows the scene after the person/vehicle left, revealing anything deposited. "
+                                "For cross-camera flow detection: query all cameras over the same window, sort events by start_time, "
+                                "then use get_frame_image to visually confirm whether nearby events on different cameras show the same object moving through the scene."},
+                {"inputSchema", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"camera_id",        {{"type","string"},  {"description","Camera ID from list_cameras"}}},
+                        {"start_time",       {{"type","string"},  {"description","ISO-8601 start timestamp"}}},
+                        {"end_time",         {{"type","string"},  {"description","ISO-8601 end timestamp"}}},
+                    }},
+                    {"required", json::array({"camera_id","start_time","end_time"})}
+                }}
+            });
+
+            tools.push_back({
+                {"name", "get_analytics"},
+                {"description", "Returns AI object detection events (persons, vehicles, etc.) for a camera in a time range. "
+                                "Each event has a timestamp (when the object was first identified by the neural net), "
+                                "motion_start_time (when pixel motion began, may be earlier), motion_end_time, "
+                                "and a detections array with per-frame class, confidence, and timestamp. "
+                                "Use get_motion_events first to find the right time window, then call this to get object-level detail. "
+                                "For 'who/what was there?' questions use this; for 'when did anything move?' use get_motion_events. "
+                                "For highlight reel or flow detection across cameras: query all cameras, merge and sort by timestamp, "
+                                "then group nearby events that may represent the same object moving across camera views."},
+                {"inputSchema", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"camera_id",  {{"type","string"}, {"description","Camera ID from list_cameras"}}},
+                        {"start_time", {{"type","string"}, {"description","ISO-8601 start timestamp"}}},
+                        {"end_time",   {{"type","string"}, {"description","ISO-8601 end timestamp"}}},
+                        {"stream_tag", {{"type","string"}, {"description","Optional: filter by analytics stream tag e.g. person_metadata"}}}
+                    }},
+                    {"required", json::array({"camera_id","start_time","end_time"})}
+                }}
+            });
+
+            tools.push_back({
+                {"name", "get_frame_image"},
+                {"description", "Returns a JPEG image from a camera at a specific timestamp for visual inspection. "
+                                "Always use millisecond-precision timestamps from analytics or motion events -- rounding to the second can return the wrong keyframe. "
+                                "For 'what was left behind?' questions: use motion_end_time from get_motion_events (shows the scene after activity ended). "
+                                "For 'what triggered this event?': use the detection timestamp from get_analytics detections array. "
+                                "For cross-camera flow confirmation: fetch frames from each camera at their respective event timestamps and visually compare to determine if the same object (vehicle color/type, person appearance) appears across views."},
+                {"inputSchema", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"camera_id",  {{"type","string"},  {"description","Camera ID from list_cameras"}}},
+                        {"start_time", {{"type","string"},  {"description","ISO-8601 timestamp of the frame to retrieve — use full millisecond precision from event data"}}},
+                        {"width",      {{"type","integer"}, {"description","Output width in pixels (default 640)"}}},
+                        {"height",     {{"type","integer"}, {"description","Output height in pixels (default 480)"}}}
+                    }},
+                    {"required", json::array({"camera_id","start_time"})}
+                }}
+            });
+
+            return mcp_ok(id, {{"tools", tools}});
+        }
+
+        if(method == "tools/call")
+        {
+            string name = req["params"]["name"].get<string>();
+            json args = req["params"].value("arguments", json::object());
+
+            if(name == "list_cameras")
+            {
+                auto cameras = query_get_cameras(_devices);
+                json j;
+                j["cameras"] = json::array();
+                for(auto& c : cameras)
+                {
+                    j["cameras"].push_back({
+                        {"id",                 c.id},
+                        {"camera_name",        c.camera_name.is_null()   ? "" : c.camera_name.value()},
+                        {"friendly_name",      c.friendly_name.is_null() ? "" : c.friendly_name.value()},
+                        {"ipv4",               c.ipv4.is_null()          ? "" : c.ipv4.value()},
+                        {"state",              c.state},
+                        {"do_motion_detection", !c.do_motion_detection.is_null() && c.do_motion_detection.value()}
+                    });
+                }
+                return mcp_ok(id, {{"content", json::array({{{"type","text"},{"text",j.dump(2)}}})}});
+            }
+
+            if(name == "get_recording_segments")
+            {
+                auto start_tp = r_time_utils::iso_8601_to_tp(args["start_time"].get<string>());
+                auto end_tp   = r_time_utils::iso_8601_to_tp(args["end_time"].get<string>());
+                auto result   = query_get_contents(_top_dir, _devices, args["camera_id"].get<string>(), start_tp, end_tp);
+                json j;
+                j["segments"] = json::array();
+                for(auto& s : result.segments)
+                {
+                    j["segments"].push_back({
+                        {"start_time", r_time_utils::tp_to_iso_8601(s.start, true)},
+                        {"end_time",   r_time_utils::tp_to_iso_8601(s.end,   true)}
+                    });
+                }
+                return mcp_ok(id, {{"content", json::array({{{"type","text"},{"text",j.dump(2)}}})}});
+            }
+
+            if(name == "get_motion_events")
+            {
+                auto start_tp = r_time_utils::iso_8601_to_tp(args["start_time"].get<string>());
+                auto end_tp   = r_time_utils::iso_8601_to_tp(args["end_time"].get<string>());
+                auto events   = query_get_motion_events(_top_dir, _devices, args["camera_id"].get<string>(), start_tp, end_tp);
+                json j;
+                j["motion_events"] = json::array();
+                for(auto& e : events)
+                {
+                    j["motion_events"].push_back({
+                        {"start_time", r_time_utils::tp_to_iso_8601(e.start, true)},
+                        {"end_time",   r_time_utils::tp_to_iso_8601(e.end,   true)},
+                        {"motion",     e.motion},
+                        {"avg_motion", e.avg_motion},
+                        {"stddev",     e.stddev}
+                    });
+                }
+                return mcp_ok(id, {{"content", json::array({{{"type","text"},{"text",j.dump(2)}}})}});
+            }
+
+            if(name == "get_analytics")
+            {
+                auto start_tp = r_time_utils::iso_8601_to_tp(args["start_time"].get<string>());
+                auto end_tp   = r_time_utils::iso_8601_to_tp(args["end_time"].get<string>());
+                r_nullable<string> stream_tag;
+                if(args.contains("stream_tag") && !args["stream_tag"].is_null())
+                    stream_tag.set_value(args["stream_tag"].get<string>());
+                auto entries = query_get_analytics(_top_dir, _devices, args["camera_id"].get<string>(), start_tp, end_tp, stream_tag);
+                json j;
+                j["analytics"] = json::array();
+                for(const auto& entry : entries)
+                {
+                    try
+                    {
+                        auto ts  = system_clock::time_point(milliseconds(entry.timestamp_ms));
+                        auto parsed = json::parse(entry.json_data);
+                        json item = {{"timestamp", r_time_utils::tp_to_iso_8601(ts, true)}};
+                        item["data"] = parsed.contains("analytics") ? parsed["analytics"] : parsed;
+                        j["analytics"].push_back(item);
+                    }
+                    catch(...) {}
+                }
+                return mcp_ok(id, {{"content", json::array({{{"type","text"},{"text",j.dump(2)}}})}});
+            }
+
+            if(name == "get_frame_image")
+            {
+                auto start_tp = r_time_utils::iso_8601_to_tp(args["start_time"].get<string>());
+                uint16_t w = (uint16_t)args.value("width",  640);
+                uint16_t h = (uint16_t)args.value("height", 480);
+                auto camera_id  = args["camera_id"].get<string>();
+                auto start_time = args["start_time"].get<string>();
+                auto jpeg = query_get_jpg(_top_dir, _devices, camera_id, start_tp, w, h);
+                auto b64  = r_string_utils::to_base64(jpeg.data(), jpeg.size());
+                auto url  = string("http://localhost:10080/jpg?camera_id=") + camera_id
+                          + "&start_time=" + start_time
+                          + "&width=" + to_string(w)
+                          + "&height=" + to_string(h);
+                return mcp_ok(id, {{"content", json::array({
+                    {{"type","image"},{"data",b64},{"mimeType","image/jpeg"}},
+                    {{"type","text"},{"text","Frame URL: " + url}}
+                })}});
+            }
+
+            return mcp_err(id, -32602, "Unknown tool: " + name);
+        }
+
+        return mcp_err(id, -32601, "Method not found: " + method);
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+        return mcp_err(id, -32603, string("Internal error: ") + ex.what());
+    }
 }

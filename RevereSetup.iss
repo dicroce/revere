@@ -73,6 +73,9 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Filename: "{tmp}\VC_redist.x64.exe"; Parameters: "/quiet /norestart"; StatusMsg: "Installing Visual C++ 2022 Runtime..."; Flags: waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
+[InstallDelete]
+Type: files; Name: "{app}\motion_plugins\yolov8_person_plugin.dll"
+
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\gstreamer_plugins"
 Type: filesandordirs; Name: "{app}\models"

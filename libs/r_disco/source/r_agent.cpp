@@ -1,5 +1,6 @@
 
 #include "r_disco/r_agent.h"
+#include "r_onvif/r_onvif_session.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_md5.h"
 #include <algorithm>
@@ -45,13 +46,24 @@ void r_agent::stop()
     }
 }
 
+vector<r_onvif::onvif_profile_info> r_agent::get_camera_profiles(
+    const string& ipv4,
+    const string& xaddrs,
+    r_nullable<string> username,
+    r_nullable<string> password
+)
+{
+    return _onvif_provider->get_camera_profiles(ipv4, xaddrs, username, password);
+}
+
 void r_agent::interrogate_camera(
     const std::string& camera_name,
     const std::string& ipv4,
     const std::string& xaddrs,
     const std::string& address,
     r_nullable<string> username,
-    r_nullable<string> password
+    r_nullable<string> password,
+    const std::string& preferred_profile_token
 )
 {
     r_md5 hash;
@@ -59,7 +71,7 @@ void r_agent::interrogate_camera(
     hash.finalize();
     auto id = hash.get_as_uuid();
 
-    auto sc = _onvif_provider->interrogate_camera(id, camera_name, ipv4, xaddrs, address, username, password);
+    auto sc = _onvif_provider->interrogate_camera(id, camera_name, ipv4, xaddrs, address, username, password, preferred_profile_token);
 
     vector<pair<r_stream_config, string>> output;
     output.push_back(make_pair(sc.value(), hash_stream_config(sc.value())));

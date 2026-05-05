@@ -6,9 +6,11 @@ file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/motion_plugins)
 # Add plugin subdirectories
 add_subdirectory(test_plugin)
 
+add_subdirectory(ollama_motion_plugin)
+
 # Add NCNN-based plugins only if NCNN is available
 if(NCNN_AVAILABLE)
 #    add_subdirectory(mobilenet_person_plugin)
 #    add_subdirectory(picodet_person_plugin)
-    add_subdirectory(yolov8_person_plugin)
+    add_subdirectory(yolov8_motion_plugin)
 endif()

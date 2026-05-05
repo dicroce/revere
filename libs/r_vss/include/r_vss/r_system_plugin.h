@@ -3,6 +3,7 @@
 #define _r_system_plugin_h
 
 #include "r_utils/r_macro.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,6 +56,30 @@ R_API const char* system_plugin_get_status(r_system_plugin_handle plugin);
 // Optional: Get additional status detail (e.g., user code, URL during auth)
 // Returns: A detail string, empty if no details available
 R_API const char* system_plugin_get_status_message(r_system_plugin_handle plugin);
+
+// Optional: Receive a detection event emitted by a motion plugin
+// Implement this if your system plugin wants to consume detection events
+R_API void system_plugin_post_detection(r_system_plugin_handle plugin,
+    const char* camera_id, int64_t ts, const char* class_name,
+    float confidence, float x1, float y1, float x2, float y2);
+
+// Callback type the plugin invokes to deliver API results back to the host.
+// name: identifies the payload (e.g. "camera_answers")
+// json: the result payload as a JSON string
+typedef void (*system_plugin_api_result_cb)(const char* name, const char* json, void* user_data);
+
+// Optional: host calls this after loading the plugin to give it the callback.
+// Implement this if your plugin needs to deliver results back to the host.
+R_API void system_plugin_set_api_result_cb(r_system_plugin_handle plugin,
+    system_plugin_api_result_cb cb, void* user_data);
+
+// Convenience: call this to post a result — null-safe wrapper around the callback.
+static inline void system_plugin_post_api_result(system_plugin_api_result_cb cb, void* user_data,
+    const char* name, const char* json)
+{
+    if(cb)
+        cb(name, json, user_data);
+}
 
 #ifdef __cplusplus
 }

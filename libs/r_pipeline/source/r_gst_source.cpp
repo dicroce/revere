@@ -266,7 +266,9 @@ r_gst_source::r_gst_source(const string& name_prefix) :
     _last_valid_v_sample_pts_set(false),
     _last_valid_v_sample_pts(0),
     _last_valid_a_sample_pts_set(false),
-    _last_valid_a_sample_pts(0)
+    _last_valid_a_sample_pts(0),
+    _sim_mttf_seconds(0),
+    _sim_fail_at((std::chrono::steady_clock::time_point::max)())
 {
 }
 
@@ -343,6 +345,23 @@ void r_gst_source::play()
     _bus_watch_id = gst_bus_add_watch(_bus, _bus_callbackS, this);
 
     gst_element_set_state(_pipeline, GST_STATE_PLAYING);
+
+    if(_sim_mttf_seconds > 0)
+    {
+        std::mt19937 rng{std::random_device{}()};
+        // Uniform between 50% and 150% of the requested mean
+        std::uniform_int_distribution<uint32_t> dist(
+            _sim_mttf_seconds / 2,
+            _sim_mttf_seconds + _sim_mttf_seconds / 2
+        );
+        auto delay = dist(rng);
+        _sim_fail_at = std::chrono::steady_clock::now() + std::chrono::seconds(delay);
+        R_LOG_INFO("[sim] stream failure scheduled in %u seconds", delay);
+    }
+    else
+    {
+        _sim_fail_at = (std::chrono::steady_clock::time_point::max)();
+    }
 
     _running = true;
 }
@@ -901,7 +920,6 @@ void r_gst_source::_attach_mulaw_audio_pipeline(GstPad* new_pad)
 
 void r_gst_source::_attach_alaw_audio_pipeline(GstPad* new_pad)
 {
-    R_LOG_INFO("_attach_alaw_audio_pipeline called");
     GstElement* a_depay = gst_element_factory_make("rtppcmadepay", (_name_prefix + "rtppcmadepay").c_str());
 
     // Check if element creation succeeded
@@ -942,6 +960,11 @@ GstFlowReturn r_gst_source::_new_video_sample(GstElement* elt, r_gst_source* src
         gst_app_sink_pull_sample(GST_APP_SINK(elt)),
         [](GstSample* sample){gst_sample_unref(sample);}
     );
+
+    // Simulated failure: silently drop samples after the deadline.
+    // The recording context will stop seeing updates and dead() will trigger after 20s.
+    if(std::chrono::steady_clock::now() >= src->_sim_fail_at)
+        return GST_FLOW_OK;
 
     GstSegment* seg = gst_sample_get_segment(sample.get());
 
@@ -1033,6 +1056,10 @@ GstFlowReturn r_gst_source::_new_audio_sample(GstElement* elt, r_gst_source* src
         gst_app_sink_pull_sample(GST_APP_SINK(elt)),
         [](GstSample* sample){gst_sample_unref(sample);}
     );
+
+    // Simulated failure: silently drop samples after the deadline.
+    if(std::chrono::steady_clock::now() >= src->_sim_fail_at)
+        return GST_FLOW_OK;
 
     GstSegment* seg = gst_sample_get_segment(sample.get());
 

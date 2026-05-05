@@ -52,7 +52,7 @@ R_API r_utils::r_nullable<std::chrono::system_clock::time_point> query_get_first
 
 R_API std::vector<r_disco::r_camera> query_get_cameras(r_disco::r_devices& devices);
 
-R_API std::vector<motion_event_info> query_get_motion_events(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, uint8_t motion_threshold, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
+R_API std::vector<motion_event_info> query_get_motion_events(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
 
 R_API std::vector<segment> query_get_blocks(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start = {}, std::chrono::system_clock::time_point end = {});
 
