@@ -41,7 +41,8 @@ public:
         uint32_t initial_bitrate,
         uint32_t max_bitrate,
         uint32_t min_bitrate,
-        bool enable_dynamic_bitrate = true
+        bool enable_dynamic_bitrate = true,
+        const std::string& passphrase = ""
     );
 
     R_API ~r_transcoder();

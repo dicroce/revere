@@ -40,6 +40,7 @@ struct main_client_state
 {
     one_by_one_state obos;
     std::string selected_stream_name {"0_onebyone_0"};  // Track selected stream for multi-view timeline
+    bool sync_scrub {false};
 };
 
 template<typename EXIT_CB, typename SETTINGS_CB, typename ONE_BY_ONE_CB, typename TWO_BY_TWO_CB, typename FOUR_BY_FOUR_CB>
@@ -238,7 +239,9 @@ void control_bar(
     CONTROL_BAR_BUTTON_CB control_bar_button_cb,
     UPDATE_DATA_CB update_data_cb,
     EXPORT_CB export_cb,
-    bool playing
+    bool playing,
+    bool is_multiview,
+    bool& sync_scrub
 )
 {
     if(!cbs.entered)
@@ -315,6 +318,24 @@ void control_bar(
     // Render play/live button
     renderer.render_play_live_button(render_layout, cbs, calc, stream_name, control_bar_button_cb, update_data_cb, playing);
 
+    if(is_multiview)
+    {
+        if(!is_at_live)
+        {
+            float right_edge = calc.center_box_left + calc.center_box_width;
+            float top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
+            ImGui::SetCursorScreenPos(ImVec2(right_edge - 360.0f, top_line_top));
+            if(ImGui::Checkbox("Sync", &sync_scrub) && sync_scrub)
+            {
+                auto current_time = cbs.tr.time_in_range(0, 1000, cbs.playhead_pos);
+                control_bar_slider_cb(stream_name, current_time);
+            }
+        }
+        else
+        {
+            sync_scrub = false;
+        }
+    }
 
     // Playhead bounds check
     cbs.playhead_pos = (std::max)((std::min)(cbs.playhead_pos, 1000), 0);
@@ -574,7 +595,9 @@ void main_client(
             control_bar_button_cb,
             update_data_cb,
             export_cb,
-            playing
+            playing,
+            false,
+            mcs.sync_scrub
         );
     }
     else if(l == LAYOUT_TWO_BY_TWO)
@@ -604,7 +627,9 @@ void main_client(
             control_bar_button_cb,
             update_data_cb,
             export_cb,
-            playing
+            playing,
+            true,
+            mcs.sync_scrub
         );
     }
     else if(l == LAYOUT_FOUR_BY_FOUR)
@@ -634,7 +659,9 @@ void main_client(
             control_bar_button_cb,
             update_data_cb,
             export_cb,
-            playing
+            playing,
+            true,
+            mcs.sync_scrub
         );
     }
 }

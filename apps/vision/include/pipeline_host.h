@@ -51,6 +51,9 @@ public:
     void update_render_context_timestamp(const std::string& name, int64_t pts);
 
     void control_bar_cb(const std::string& name, const std::chrono::system_clock::time_point& pos);
+    void sync_control_bar_cb(const std::chrono::system_clock::time_point& pos);
+    void sync_play_cb(const std::chrono::system_clock::time_point& range_end);
+    void sync_live_cb();
     void control_bar_button_cb(const std::string& name, control_bar_button_type type);
     void control_bar_update_data_cb(const std::string& stream_name, control_bar_state& cbs);
     void control_bar_export_cb(const std::string& stream_name, const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end, control_bar_state& cbs);
@@ -187,6 +190,11 @@ private:
     bool _running;
     std::chrono::steady_clock::time_point _last_dead_check;
     std::chrono::steady_clock::time_point _last_stream_start;
+
+    // Stored so the dead-check loop can retry collect_stream_info() if the
+    // local server wasn't ready when change_layout() was first called.
+    int _retry_window{-1};
+    layout _retry_layout{LAYOUT_ONE_BY_ONE};
 
     // Flag to signal main loop that new frames are available
     std::atomic<bool> _has_new_frames{false};

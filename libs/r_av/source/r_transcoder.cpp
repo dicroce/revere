@@ -20,13 +20,14 @@ r_transcoder::r_transcoder(
     uint32_t initial_bitrate,
     uint32_t max_bitrate,
     uint32_t min_bitrate,
-    bool enable_dynamic_bitrate
+    bool enable_dynamic_bitrate,
+    const std::string& passphrase
 ) :
     _running(false),
     _max_queue_size(30),
     _decoder(input_codec),
     _encoder(),
-    _muxer(output_url, false, output_format),
+    _muxer(passphrase.empty() ? output_url : output_url + "&passphrase=" + passphrase, false, output_format),
     _current_bitrate(initial_bitrate),
     _max_bitrate(max_bitrate),
     _min_bitrate(min_bitrate),

@@ -44,12 +44,17 @@ public:
     inline int64_t a_pts_at_check() const {return _a_pts_at_check;}
     inline void set_a_pts_at_check(int64_t a_pts) {_a_pts_at_check = a_pts;}
 
-    // Returns true if enough time has passed since last play to perform dead check
-    // Playback streams need more time to start than live streams
+    // Before the first frame arrives use a short fuse — a stream that hasn't
+    // produced anything in 3 s is almost certainly stuck and should be retried
+    // immediately. Once frames are flowing use the original 15 s warmup so a
+    // momentary stall doesn't trigger a spurious restart.
     inline bool ready_for_dead_check() const
     {
         auto elapsed = std::chrono::steady_clock::now() - _last_play_time;
-        return elapsed > std::chrono::seconds(15);
+        auto threshold = _received_first_frame
+            ? std::chrono::seconds(15)
+            : std::chrono::seconds(3);
+        return elapsed > threshold;
     }
 
     inline void update_range(std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
@@ -82,6 +87,7 @@ private:
     r_utils::r_nullable<sample> _last_video_sample;
     r_utils::r_nullable<r_av::r_video_decoder> _video_decoder;
     bool _has_audio;
+    bool _received_first_frame;
     int64_t _last_v_pts;
     int64_t _last_a_pts;
 

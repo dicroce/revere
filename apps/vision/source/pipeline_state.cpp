@@ -81,6 +81,7 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
     _last_video_sample(),
     _video_decoder(),
     _has_audio(false),
+    _received_first_frame(false),
     _last_v_pts(0),
     _last_a_pts(0),
     _v_pts_at_check(0),
@@ -146,6 +147,7 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
         s.media_type = VIDEO_MEDIA;
         // Calculate absolute timestamp: stream start + pts
         this->_last_v_pts = sc.stream_start_ts() + pts;
+        this->_received_first_frame = true;
         this->_process_q.post(s);
     });
 

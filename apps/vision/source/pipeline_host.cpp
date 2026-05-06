@@ -82,6 +82,9 @@ void pipeline_host::change_layout(int window, layout l)
 
         for(auto si : sis)
             _stream_infos.insert(make_pair(si.name, si));
+
+        _retry_window = window;
+        _retry_layout = l;
     }  // Lock is released here
 
     // Destroy old pipelines outside the critical section
@@ -380,6 +383,47 @@ void pipeline_host::control_bar_cb(const string& name, const std::chrono::system
     }
 }
 
+void pipeline_host::sync_control_bar_cb(const std::chrono::system_clock::time_point& pos)
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    for(auto& [name, pipe] : _pipes)
+    {
+        if(pipe->running())
+            pipe->stop();
+        _playback_start_positions.erase(name);
+        _playback_start_pts.erase(name);
+        pipe->control_bar(pos);
+    }
+}
+
+void pipeline_host::sync_play_cb(const std::chrono::system_clock::time_point& range_end)
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    for(auto& [name, pipe] : _pipes)
+    {
+        if(!pipe->running())
+        {
+            pipe->update_range(pipe->get_last_control_bar_pos(), range_end);
+            _playback_start_positions[name] = pipe->get_last_control_bar_pos();
+            _playback_start_pts[name] = 0;
+            pipe->play();
+        }
+    }
+}
+
+void pipeline_host::sync_live_cb()
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    for(auto& [name, pipe] : _pipes)
+    {
+        if(pipe->running())
+            pipe->stop();
+        _playback_start_positions.erase(name);
+        _playback_start_pts.erase(name);
+        pipe->play_live();
+    }
+}
+
 void pipeline_host::control_bar_button_cb(const string& name, control_bar_button_type type)
 {
     lock_guard<mutex> pipes_lock(_internals_lok);
@@ -535,6 +579,19 @@ void pipeline_host::_entry_point()
             _last_dead_check = now;
 
             lock_guard<mutex> pipes_lock(_internals_lok);
+
+            // If collect_stream_info() returned nothing at change_layout() time
+            // (local server not ready), retry now so the layout eventually connects.
+            if(_stream_infos.empty() && _retry_window != -1)
+            {
+                auto sis = _cfg.collect_stream_info(_retry_window, _retry_layout);
+                if(!sis.empty())
+                {
+                    R_LOG_INFO("pipeline_host: stream info now available, populating %zu streams", sis.size());
+                    for(auto& si : sis)
+                        _stream_infos.insert(make_pair(si.name, si));
+                }
+            }
             auto curr = begin(_pipes);
             while(curr != end(_pipes))
             {

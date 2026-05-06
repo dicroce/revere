@@ -567,6 +567,7 @@ int main(int, char**)
 
         auto last_ui_update_ts = chrono::steady_clock::now();
         const auto frame_duration = chrono::microseconds(16667);  // ~60fps
+        auto cameras_validation_start = chrono::steady_clock::now();
 
         r_ui_utils::texture_loader tl;
         tl.set_renderer(renderer);
@@ -651,6 +652,15 @@ int main(int, char**)
                 {
                     ph.set_cameras_validated();
                 }
+            }
+
+            // Fallback: if the local Revere server never responded within 10 s, unlock
+            // pipeline creation anyway so cameras can still attempt to connect.
+            if (!ph.cameras_validated() &&
+                chrono::steady_clock::now() - cameras_validation_start > chrono::seconds(10))
+            {
+                R_LOG_WARNING("Camera validation timed out — enabling pipelines without server confirmation");
+                ph.set_cameras_validated();
             }
 
             // Start the Dear ImGui frame
@@ -911,8 +921,20 @@ int main(int, char**)
                                 ImGui::PopStyleColor();
                             }
                         },
-                        std::bind(&pipeline_host::control_bar_cb, &ph, std::placeholders::_1, std::placeholders::_2),
-                        std::bind(&pipeline_host::control_bar_button_cb, &ph, std::placeholders::_1, std::placeholders::_2),
+                        [&ph, &ui_state](const std::string& name, const std::chrono::system_clock::time_point& pos) {
+                            if(ui_state.mcs.sync_scrub)
+                                ph.sync_control_bar_cb(pos);
+                            else
+                                ph.control_bar_cb(name, pos);
+                        },
+                        [&ph, &ui_state](const std::string& name, control_bar_button_type type) {
+                            if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_PLAY)
+                                ph.sync_play_cb(ui_state.mcs.obos.cbs.get_range().second);
+                            else if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_LIVE)
+                                ph.sync_live_cb();
+                            else
+                                ph.control_bar_button_cb(name, type);
+                        },
                         std::bind(&pipeline_host::control_bar_update_data_cb, &ph, std::placeholders::_1, std::placeholders::_2),
                         std::bind(&pipeline_host::control_bar_export_cb, &ph, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4),
                         ph.playing(ui_state.mcs.selected_stream_name)
