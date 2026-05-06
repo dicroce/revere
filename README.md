@@ -111,7 +111,7 @@ If you have a camera that doesn't work with Revere send me a message, maybe we c
 - [Dear ImGui](https://github.com/ocornut/imgui) (v1.88) - Immediate-mode GUI framework
 - [ImGuiFileDialog](https://github.com/aiekick/ImGuiFileDialog) - File dialog extension for ImGui
 - [GLFW](https://www.glfw.org/) (3.4) - Cross-platform window and input management
-- OpenGL - Graphics rendering
+- SDL - Graphics rendering
 
 **Storage & Data:**
 - [nanots](https://github.com/dicroce/nanots) - Time-series storage for video recording
