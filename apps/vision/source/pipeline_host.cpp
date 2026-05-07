@@ -30,7 +30,7 @@ pipeline_host::pipeline_host(configure_state& cfg, SDL_Renderer* renderer) :
     _th(),
     _running(false),
     _last_dead_check(steady_clock::now()),
-    _last_stream_start(steady_clock::now())
+    _last_stream_start(steady_clock::now() - seconds(10))
 {
 }
 
@@ -292,11 +292,18 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
         auto found_ps = _pipes.find(name);
         if(found_ps == end(_pipes))
         {
+            // Stagger stream starts to prevent simultaneous GStreamer/RTSP connection storms
+            // that cause unreliable startup in multi-view layouts.
+            auto now_steady = steady_clock::now();
+            if(duration_cast<milliseconds>(now_steady - _last_stream_start).count() < 500)
+                return r_nullable<shared_ptr<render_context>>();
+
             try
             {
                 auto ps = make_shared<pipeline_state>(found_si->second, this, w, h, _cfg);
                 ps->play_live();
                 _pipes.insert(make_pair(name, ps));
+                _last_stream_start = now_steady;
             }
             catch(const std::exception& e)
             {
