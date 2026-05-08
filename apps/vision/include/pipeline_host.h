@@ -181,6 +181,7 @@ private:
 
     std::map<std::string, std::shared_ptr<render_context>> _render_contexts;
     std::map<std::string, frame> _video_frames;
+    std::map<std::string, std::string> _name_remap; // pipeline's internal name → current layout name
 
     // Playback tracking for relative timestamp calculation
     std::map<std::string, std::chrono::system_clock::time_point> _playback_start_positions;

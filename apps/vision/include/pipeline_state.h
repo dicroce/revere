@@ -32,6 +32,7 @@ public:
 
     void control_bar(const std::chrono::system_clock::time_point& pos);
 
+    inline std::string name() const {return _si.name;}
     inline uint16_t width() const {return _w;}
     inline uint16_t height() const {return _h;}
 

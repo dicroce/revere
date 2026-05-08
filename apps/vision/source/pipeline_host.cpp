@@ -72,16 +72,70 @@ void pipeline_host::change_layout(int window, layout l)
     {
         lock_guard<mutex> g(_internals_lok);
 
-        _stream_infos.clear();
-        old_pipes = std::move(_pipes);
-        _pipes.clear();
-        _render_contexts.clear();
-        _video_frames.clear();
-
         auto sis = _cfg.collect_stream_info(window, l);
 
-        for(auto si : sis)
-            _stream_infos.insert(make_pair(si.name, si));
+        // Build camera_id → (posting_name, pipeline) for all currently running pipes.
+        // posting_name is _si.name inside the pipeline — what it passes to post_video_frame.
+        std::map<std::string, std::pair<std::string, std::shared_ptr<pipeline_state>>> camera_to_pipe;
+        for(auto& [map_name, si] : _stream_infos)
+        {
+            auto pipe_it = _pipes.find(map_name);
+            if(pipe_it != end(_pipes))
+                camera_to_pipe[si.camera_id] = {pipe_it->second->name(), pipe_it->second};
+        }
+
+        // Determine which pipelines can be reused by matching camera_id.
+        _name_remap.clear();
+        std::map<std::string, std::shared_ptr<pipeline_state>> new_pipes;
+        std::map<std::string, std::shared_ptr<render_context>> new_rc;
+        std::map<std::string, frame> new_vf;
+        std::set<std::string> reused_posting_names;
+
+        for(auto& si : sis)
+        {
+            auto it = camera_to_pipe.find(si.camera_id);
+            if(it != end(camera_to_pipe))
+            {
+                const auto& posting_name = it->second.first;
+                reused_posting_names.insert(posting_name);
+                new_pipes[si.name] = it->second.second;
+
+                if(posting_name != si.name)
+                    _name_remap[posting_name] = si.name;
+
+                // Transfer render context and video frame under the new name.
+                for(auto& [map_name, old_si] : _stream_infos)
+                {
+                    if(old_si.camera_id == si.camera_id)
+                    {
+                        auto rc_it = _render_contexts.find(map_name);
+                        if(rc_it != end(_render_contexts))
+                            new_rc[si.name] = rc_it->second;
+
+                        auto vf_it = _video_frames.find(map_name);
+                        if(vf_it != end(_video_frames))
+                            new_vf[si.name] = vf_it->second;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Pipelines not being reused go into old_pipes for teardown outside the lock.
+        for(auto& [map_name, si] : _stream_infos)
+        {
+            auto pipe_it = _pipes.find(map_name);
+            if(pipe_it != end(_pipes) && !reused_posting_names.count(pipe_it->second->name()))
+                old_pipes[map_name] = pipe_it->second;
+        }
+
+        _stream_infos.clear();
+        for(auto& si : sis)
+            _stream_infos[si.name] = si;
+
+        _pipes = std::move(new_pipes);
+        _render_contexts = std::move(new_rc);
+        _video_frames = std::move(new_vf);
 
         _retry_window = window;
         _retry_layout = l;
@@ -188,6 +242,10 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
         return;
     }
 
+    // Translate the pipeline's internal name to the current layout name if it was reused.
+    auto remap_it = _name_remap.find(name);
+    const string& effective_name = (remap_it != end(_name_remap)) ? remap_it->second : name;
+
     // Debug: Log frame reception with pixel sample
     static int frame_log_count = 0;
     if (frame_log_count++ < 5)
@@ -199,18 +257,18 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
 
     // Calculate playback-relative timestamp if we're in playback mode
     int64_t display_pts = pts;
-    auto playback_start_pos_it = _playback_start_positions.find(name);
-    
+    auto playback_start_pos_it = _playback_start_positions.find(effective_name);
+
     if (playback_start_pos_it != _playback_start_positions.end())
     {
-        auto playback_start_pts_it = _playback_start_pts.find(name);
+        auto playback_start_pts_it = _playback_start_pts.find(effective_name);
         if (playback_start_pts_it != _playback_start_pts.end())
         {
             // We're in playback mode - calculate relative timestamp
             if (playback_start_pts_it->second == 0)
             {
                 // First frame of playback - record the starting PTS
-                _playback_start_pts[name] = pts;
+                _playback_start_pts[effective_name] = pts;
                 display_pts = std::chrono::duration_cast<std::chrono::milliseconds>(
                     playback_start_pos_it->second.time_since_epoch()).count();
             }
@@ -244,10 +302,10 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
         SDL_PushEvent(&event);
     }
 
-    _video_frames.insert(make_pair(name, f));
+    _video_frames.insert(make_pair(effective_name, f));
 
     // Update render context timestamp if it exists
-    auto found_rc = _render_contexts.find(name);
+    auto found_rc = _render_contexts.find(effective_name);
     if(found_rc != end(_render_contexts))
     {
         found_rc->second->pts = display_pts;
@@ -295,7 +353,7 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
             // Stagger stream starts to prevent simultaneous GStreamer/RTSP connection storms
             // that cause unreliable startup in multi-view layouts.
             auto now_steady = steady_clock::now();
-            if(duration_cast<milliseconds>(now_steady - _last_stream_start).count() < 500)
+            if(duration_cast<milliseconds>(now_steady - _last_stream_start).count() < 1000)
                 return r_nullable<shared_ptr<render_context>>();
 
             try
