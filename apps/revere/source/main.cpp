@@ -1647,7 +1647,7 @@ int main(int argc, char** argv)
     _set_window_icon(window);
 #endif
 
-    bool close_requested = false;
+    std::atomic<bool> close_requested{false};
     bool user_close_handled = false;
 
     R_LOG_INFO("wd=%s\n",r_fs::working_directory().c_str());
@@ -1659,7 +1659,6 @@ int main(int argc, char** argv)
     Tray::Tray tray("Revere", icon_path);
     tray.addEntry(Tray::Button("Exit", [&]{
         close_requested = true;
-        tray.exit();
     }));
     tray.addEntry(Tray::Button("Show", [&]{
         SDL_ShowWindow(window);
@@ -1785,7 +1784,6 @@ int main(int argc, char** argv)
                     {
                         // OS-initiated quit (system shutdown/restart). Actually quit.
                         close_requested = true;
-                        tray.exit();
                     }
                 }
                 if (event.type == SDL_WINDOWEVENT)
@@ -1836,14 +1834,12 @@ int main(int argc, char** argv)
         if(hQuitEvent && WaitForSingleObject(hQuitEvent, 0) == WAIT_OBJECT_0)
         {
             close_requested = true;
-            tray.exit();
         }
 #endif
 #if defined(IS_LINUX) || defined(IS_MACOS)
         if(g_sigterm_received)
         {
             close_requested = true;
-            tray.exit();
         }
 #endif
 
@@ -1920,7 +1916,6 @@ int main(int argc, char** argv)
         auto client_top = revere::main_menu(
             [&](){
                 close_requested = true;
-                tray.exit();
             },
             [&](){
                 camera_setup_wizard.next("minimize_to_tray");
@@ -2224,6 +2219,8 @@ int main(int argc, char** argv)
 
         SDL_RenderPresent(renderer);
     }
+
+    tray.exit();
 
     // Cleanup — order matters:
     // 1. Stop background workers first so they stop touching SDL textures
