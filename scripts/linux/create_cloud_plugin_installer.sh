@@ -9,12 +9,13 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 PLUGIN_PATH="$BUILD_DIR/system_plugins/revere_cloud_system_plugin.so"
 
 VERSION="$(git -C "$PROJECT_DIR" describe --tags --always)"
-OUTPUT_FILE="$BUILD_DIR/install-revere-cloud-plugin-${VERSION}.run"
+[[ "$VERSION" =~ ^v ]] || VERSION="v$VERSION"
+OUTPUT_FILE="$BUILD_DIR/revere-${VERSION}-linux-cloud.run"
 
 # Check plugin exists
 if [ ! -f "$PLUGIN_PATH" ]; then
