@@ -13,8 +13,11 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 PLUGIN_PATH="$BUILD_DIR/system_plugins/revere_cloud_system_plugin.so"
 
-VERSION="$(git -C "$PROJECT_DIR" describe --tags --always)"
-[[ "$VERSION" =~ ^v ]] || VERSION="v$VERSION"
+if VERSION="$(git -C "$PROJECT_DIR" describe --tags --exact-match 2>/dev/null)"; then
+    :
+else
+    VERSION="$(git -C "$PROJECT_DIR" rev-parse --short HEAD)"
+fi
 OUTPUT_FILE="$BUILD_DIR/revere-${VERSION}-linux-cloud.run"
 
 # Check plugin exists

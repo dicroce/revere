@@ -21,8 +21,11 @@ if [ -z "$SNAP_FILE" ]; then
     exit 1
 fi
 
-VERSION="$(echo "$SNAP_FILE" | sed -E 's/^revere_(.+)_amd64\.snap$/\1/')"
-[[ "$VERSION" =~ ^v ]] || VERSION="v$VERSION"
+if VERSION="$(git describe --tags --exact-match 2>/dev/null)"; then
+    :
+else
+    VERSION="$(git rev-parse --short HEAD)"
+fi
 OUTPUT_FILE="revere-${VERSION}-linux-app.snap"
 
 mv -f "$SNAP_FILE" "$OUTPUT_FILE"
