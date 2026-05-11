@@ -158,8 +158,7 @@ void r_utils::r_logger::write(LOG_LEVEL level,
     _state->approx_bytes_logged += (uint32_t)msg.length();
     auto lines = r_string_utils::split(msg, "\n");
 
-#if defined(IS_WINDOWS) || defined(IS_LINUX)
-    // Add timestamp for file logging (Windows, or Linux in Flatpak mode)
+#if defined(IS_WINDOWS) || defined(IS_LINUX) || defined(IS_MACOS)
     auto now = std::chrono::system_clock::now();
     auto timestamp = r_time_utils::tp_to_iso_8601(now, false);
 #endif
@@ -188,14 +187,17 @@ void r_utils::r_logger::write(LOG_LEVEL level,
         }
     }
 
-#if defined(IS_WINDOWS) || defined(IS_LINUX)
-    // File logging for Windows, or Linux in Flatpak mode
+#if defined(IS_WINDOWS) || defined(IS_LINUX) || defined(IS_MACOS)
+    // File logging for Windows, Linux in Flatpak/Snap, and macOS
     bool use_file_logging = false;
 #ifdef IS_WINDOWS
     use_file_logging = true;
 #endif
 #ifdef IS_LINUX
     use_file_logging = _state->is_sandboxed;
+#endif
+#ifdef IS_MACOS
+    use_file_logging = true;
 #endif
     if(use_file_logging && _state->log_file)
     {
@@ -241,16 +243,12 @@ void r_utils::r_logger::write(LOG_LEVEL level,
 #endif
 
 #ifdef IS_MACOS
+    for(auto l : lines)
     {
-        auto now = std::chrono::system_clock::now();
-        auto timestamp = r_time_utils::tp_to_iso_8601(now, false);
-        for(auto l : lines)
-        {
-            fprintf(stdout, "%s %s\n", timestamp.c_str(), l.c_str());
-        }
-        if(level <= LOG_LEVEL_ERROR)
-            fflush(stdout);
+        fprintf(stdout, "%s %s\n", timestamp.c_str(), l.c_str());
     }
+    if(level <= LOG_LEVEL_ERROR)
+        fflush(stdout);
 #endif
 }
 
@@ -297,7 +295,7 @@ void r_utils::r_logger::install_logger(const std::string& log_dir, const std::st
 
     _state->approx_bytes_logged = (r_fs::file_exists(log_path))?(uint32_t)r_fs::file_size(log_path):0;
 
-    // Open log file for Windows, or Linux in Flatpak mode
+    // Open log file for Windows, Linux in Flatpak/Snap, and macOS
 #ifdef IS_WINDOWS
     open_log_file(log_path);
 #endif
@@ -306,6 +304,9 @@ void r_utils::r_logger::install_logger(const std::string& log_dir, const std::st
     {
         open_log_file(log_path);
     }
+#endif
+#ifdef IS_MACOS
+    open_log_file(log_path);
 #endif
 }
 
