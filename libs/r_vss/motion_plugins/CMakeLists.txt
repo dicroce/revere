@@ -6,7 +6,7 @@ file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/motion_plugins)
 # Add plugin subdirectories
 add_subdirectory(test_plugin)
 
-add_subdirectory(ollama_motion_plugin)
+#add_subdirectory(ollama_motion_plugin)
 
 # Add NCNN-based plugins only if NCNN is available
 if(NCNN_AVAILABLE)

@@ -951,7 +951,11 @@ void camera_properties_modal(
 
         ImGui::Checkbox("Motion Detection", &do_motion_detection);
 
+        if(!do_motion_detection)
+            do_motion_pruning = false;
+        ImGui::BeginDisabled(!do_motion_detection);
         ImGui::Checkbox("Prune Still Video", &do_motion_pruning);
+        ImGui::EndDisabled();
 
         static char retention_hours[64] = {0};
         r_ui_utils::copy_s(retention_hours, 64, min_continuous_retention_hours);

@@ -61,7 +61,10 @@ public:
                       soap_version soap_hint = soap_version::unknown,
                       auth_mode auth_hint = auth_mode::unknown);
 
-    R_API time_t get_camera_system_date_and_time();
+    R_API time_t get_camera_system_date_and_time(
+        r_utils::r_nullable<std::string> username,
+        r_utils::r_nullable<std::string> password
+    );
 
     R_API onvif_capabilities get_camera_capabilities();
 
@@ -80,7 +83,9 @@ private:
         int port,
         const std::string& uri,
         const std::string& soap_action,
-        const std::function<void(pugi::xml_node&)>& build_body
+        const std::function<void(pugi::xml_node&)>& build_body,
+        r_utils::r_nullable<std::string> username,
+        r_utils::r_nullable<std::string> password
     );
 
     std::vector<std::string> _xaddrs_services;

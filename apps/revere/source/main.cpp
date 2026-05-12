@@ -1046,8 +1046,8 @@ void configure_camera_setup_wizard(
                         initial_md_file_name = camera.motion_detection_file_path.value();
 
                     string motion_file_name = initial_md_file_name;
-                    auto existing_path = revere::join_path(revere::sub_dir("video"), motion_file_name);
-                    if(!r_fs::file_exists(existing_path) || motion_file_name.empty())
+                    auto existing_path = _get_storage_path(motion_file_name);
+                    if(motion_file_name.empty() || !r_fs::file_exists(existing_path))
                     {
                         motion_file_name = camera.record_file_path.value();
 
@@ -1055,7 +1055,7 @@ void configure_camera_setup_wizard(
 
                         motion_file_name = (dot_pos == string::npos)?motion_file_name+".mdb":motion_file_name.substr(0, dot_pos)+".mdb";
 
-                        auto motion_path = revere::join_path(revere::sub_dir("video"), motion_file_name);
+                        auto motion_path = _get_storage_path(motion_file_name);
 
                         _create_motion_files(motion_path);
                     }

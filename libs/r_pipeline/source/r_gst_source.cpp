@@ -295,24 +295,37 @@ void r_gst_source::set_args(const vector<r_arg>& args)
     _password = _args["password"];
 }
 
+static uint32_t _parse_protocol_flags(const string& protocols_str)
+{
+    uint32_t flags = 0;
+    for(auto& token : r_string_utils::split(protocols_str, ','))
+    {
+        if(token == "TCP")      flags |= 0x00000004;
+        else if(token == "UDP") flags |= 0x00000001;
+        else if(token == "TLS") flags |= 0x00000020;
+    }
+    return flags;
+}
+
 void r_gst_source::play()
 {
     lock_guard<mutex> g(_state_lok);
 
     GstElement* rtspsrc = gst_element_factory_make("rtspsrc", "src");
 
-    if(!_protocols.is_null())
     {
         // Protocol flags from GstRTSPLowerTrans:
         // 0x00000001 = GST_RTSP_LOWER_TRANS_UDP
         // 0x00000004 = GST_RTSP_LOWER_TRANS_TCP
         // 0x00000020 = GST_RTSP_LOWER_TRANS_TLS
-        // Allow TCP, UDP, and TLS (TCP preferred, UDP fallback, TLS for RTSPS URLs)
-        g_object_set(G_OBJECT(rtspsrc), "protocols", 0x00000025, NULL);  // TCP | UDP | TLS
-        g_object_set(G_OBJECT(rtspsrc), "buffer-mode", 1, NULL);
-        // Use GStreamer's default latency (typically 2000ms) for better reliability
-        // across different network conditions (LAN, WAN, cellular, satellite)
-        R_LOG_INFO("RTSP protocols set to TCP|UDP|TLS (TCP preferred, UDP fallback, TLS for RTSPS)");
+        // Note: GStreamer tries UDP before TCP regardless of string order.
+        // To force TCP only, pass protocols="TCP".
+        auto protocols_str = _protocols.is_null() ? string("TCP,UDP,TLS") : _protocols.value();
+        uint32_t protocol_flags = _parse_protocol_flags(protocols_str);
+        g_object_set(G_OBJECT(rtspsrc), "protocols", protocol_flags, NULL);
+        if(!_protocols.is_null())
+            g_object_set(G_OBJECT(rtspsrc), "buffer-mode", 1, NULL);
+        R_LOG_INFO("RTSP protocols set to %s (0x%08x)", protocols_str.c_str(), protocol_flags);
     }
 
     g_object_set(G_OBJECT(rtspsrc), "do-rtsp-keep-alive", true, NULL);

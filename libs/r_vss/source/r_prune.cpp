@@ -16,7 +16,7 @@ r_prune::r_prune(const std::string& top_dir, r_disco::r_devices& devices) :
     _top_dir(top_dir),
     _devices(devices),
     _cameras(),
-    _last_camera_fetch(system_clock::now()),
+    _last_camera_fetch(system_clock::time_point{}),
     _ps()
 {
 }
@@ -53,11 +53,6 @@ void r_prune::_entry_point()
     {
         try
         {
-            // Current pruning has a bug:
-            // - Consider a motion event that spans 3 blocks, but whose motion
-            //   threshold during the middle block is not high enough to create
-            //   an event.  The middle block will be pruned.
-            
             std::this_thread::sleep_for(std::chrono::seconds(1));
 
             auto now = system_clock::now();
@@ -102,6 +97,14 @@ void r_prune::_entry_point()
                         continue;
                     }
 
+                    auto retention_cutoff = now - chrono::hours(current_ps.camera.min_continuous_recording_hours.value());
+                    if(block_start > retention_cutoff)
+                    {
+                        _rotate_cameras();
+                        _ps.clear();
+                        continue;
+                    }
+
                     auto motion_events = query_get_motion_events(
                         _top_dir,
                         _devices,
@@ -112,27 +115,23 @@ void r_prune::_entry_point()
 
                     if(motion_events.empty())
                     {
-#if 1
-                        R_LOG_INFO(
-                            "Pruning %s FROM %s -> %s\n", 
+                        R_LOG_INFO("r_prune: pruning %s FROM %s -> %s\n",
                             current_ps.camera.friendly_name.value().c_str(),
                             r_time_utils::tp_to_iso_8601(block_start, false).c_str(),
                             r_time_utils::tp_to_iso_8601(block_end, false).c_str()
                         );
-#endif
                         query_remove_blocks(
                             _top_dir,
                             _devices,
                             current_ps.camera.id,
                             block_start,
                             block_end
-                        );                        
+                        );
                     }
 
                     ++current_ps.bi;
 
-                    if(current_ps.bi >= current_ps.blocks.size() ||
-                       block_start > (now - chrono::hours(current_ps.camera.min_continuous_recording_hours.value())))
+                    if(current_ps.bi >= current_ps.blocks.size())
                     {
                         _rotate_cameras();
                         _ps.clear();
@@ -141,12 +140,6 @@ void r_prune::_entry_point()
                 }
             }
 
-            // - Have a cache of cameras we're pruning
-            // - For each camera, start at the time of the oldest video and work forward till now
-            // -   For each 5 minute block from oldest video till now
-            // -     If block is not in last 24 hours
-            // -         Query motions for this block
-            // -         If there are no motions, issue delete for the block
         }
         catch(const std::exception& e)
         {
@@ -160,20 +153,42 @@ void r_prune::_update_cameras()
 {
     auto cameras = query_get_cameras(_devices);
 
-    for(auto& c : cameras)
+    // Remove cameras that are no longer eligible (pruning disabled or unassigned)
+    for(auto it = _cameras.begin(); it != _cameras.end(); )
     {
-        bool found = false;
-        for(auto& cc : _cameras)
+        bool still_eligible = false;
+        for(auto& c : cameras)
         {
-            if(cc.id == c.id)
+            if(c.id == it->id && c.do_motion_pruning.value() == true && c.state == "assigned")
             {
-                cc = c; // update cc in case a field has changed...
-                found = true;
+                *it = c; // refresh in case fields changed
+                still_eligible = true;
                 break;
             }
         }
 
-        if(!found && (c.do_motion_pruning.value() == true) && (c.state == "assigned"))
+        if(!still_eligible)
+        {
+            if(!_ps.is_null() && _ps.value().camera.id == it->id)
+                _ps.clear();
+            it = _cameras.erase(it);
+        }
+        else ++it;
+    }
+
+    // Add newly eligible cameras not yet in the list
+    for(auto& c : cameras)
+    {
+        if(c.do_motion_pruning.value() != true || c.state != "assigned")
+            continue;
+
+        bool found = false;
+        for(auto& cc : _cameras)
+        {
+            if(cc.id == c.id) { found = true; break; }
+        }
+
+        if(!found)
             _cameras.push_back(c);
     }
 }

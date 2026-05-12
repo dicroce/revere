@@ -6,6 +6,7 @@
 #include "r_utils/r_nullable.h"
 #include "r_vss/r_ws.h"
 #include "r_disco/r_camera.h"
+#include <atomic>
 #include <thread>
 #include <deque>
 #include <chrono>
@@ -34,7 +35,7 @@ private:
     void _update_cameras();
     void _rotate_cameras();
 
-    bool _running;
+    std::atomic<bool> _running;
     std::thread _prune_th;
     std::string _top_dir;
     r_disco::r_devices& _devices;

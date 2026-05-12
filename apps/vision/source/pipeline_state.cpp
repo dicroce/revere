@@ -178,7 +178,6 @@ void pipeline_state::play_live()
 
     vector<r_arg> arguments;
     add_argument(arguments, "url", _si.rtsp_url);
-    add_argument(arguments, "protocols", string("tcp"));
     _source.set_args(arguments);
 
     _source.play();
