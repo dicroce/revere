@@ -205,6 +205,22 @@ void pipeline_host::disconnect_stream(int window, const string& name)
     old_pipeline.reset();
 }
 
+void pipeline_host::set_active_audio_stream(const string& name)
+{
+    lock_guard<mutex> g(_internals_lok);
+    _active_audio_stream = name;
+    for(auto& p : _pipes)
+        p.second->set_audio_active(p.first == name);
+}
+
+void pipeline_host::set_stream_volume(const string& name, float gain)
+{
+    lock_guard<mutex> g(_internals_lok);
+    auto it = _pipes.find(name);
+    if(it != end(_pipes))
+        it->second->set_volume_gain(gain);
+}
+
 void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8_t>> buffer, uint16_t w, uint16_t h, uint16_t original_w, uint16_t original_h, int64_t pts)
 {
     lock_guard<mutex> g(_internals_lok);
@@ -360,6 +376,7 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
             {
                 auto ps = make_shared<pipeline_state>(found_si->second, this, w, h, _cfg);
                 ps->play_live();
+                ps->set_audio_active(!_active_audio_stream.empty() && name == _active_audio_stream);
                 _pipes.insert(make_pair(name, ps));
                 _last_stream_start = now_steady;
             }

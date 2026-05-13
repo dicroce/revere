@@ -300,9 +300,10 @@ static uint32_t _parse_protocol_flags(const string& protocols_str)
     uint32_t flags = 0;
     for(auto& token : r_string_utils::split(protocols_str, ','))
     {
-        if(token == "TCP")      flags |= 0x00000004;
-        else if(token == "UDP") flags |= 0x00000001;
-        else if(token == "TLS") flags |= 0x00000020;
+        auto lower = r_string_utils::to_lower(token);
+        if(lower == "tcp")      flags |= 0x00000004;
+        else if(lower == "udp") flags |= 0x00000001;
+        else if(lower == "tls") flags |= 0x00000020;
     }
     return flags;
 }

@@ -43,6 +43,7 @@ void r_prune::stop()
         R_THROW(("Cannot stop r_prune if its not running!"));
 
     _running = false;
+    _stop_cv.notify_all();
 
     _prune_th.join();
 }
@@ -51,10 +52,16 @@ void r_prune::_entry_point()
 {
     while(_running)
     {
+        {
+            std::unique_lock<std::mutex> lock(_stop_mutex);
+            _stop_cv.wait_for(lock, std::chrono::seconds(1), [this]{ return !_running.load(); });
+        }
+
+        if(!_running)
+            break;
+
         try
         {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-
             auto now = system_clock::now();
 
             // - Periodically, fetch the camera list
@@ -63,6 +70,8 @@ void r_prune::_entry_point()
                 _last_camera_fetch = now;
                 _update_cameras();
             }
+
+            if(!_running) break;
 
             if(!_cameras.empty())
             {
@@ -83,6 +92,8 @@ void r_prune::_entry_point()
                 }
                 else
                 {
+                    if(!_running) break;
+
                     auto current_ps = _ps.value();
 
                     auto block_start = current_ps.blocks[current_ps.bi].start;
@@ -112,6 +123,8 @@ void r_prune::_entry_point()
                         block_start - chrono::seconds(30),
                         block_end + chrono::seconds(30)
                     );
+
+                    if(!_running) break;
 
                     if(motion_events.empty())
                     {

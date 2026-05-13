@@ -46,6 +46,9 @@ public:
 
     void post_video_frame(const std::string& name, std::shared_ptr<std::vector<uint8_t>> buffer, uint16_t w, uint16_t h, uint16_t original_w, uint16_t original_h, int64_t pts);
 
+    void set_active_audio_stream(const std::string& name);
+    void set_stream_volume(const std::string& name, float gain);
+
     r_utils::r_nullable<std::shared_ptr<render_context>> lookup_render_context(const std::string& name, uint16_t w, uint16_t h);
 
     void update_render_context_timestamp(const std::string& name, int64_t pts);
@@ -202,6 +205,8 @@ private:
 
     // Flag to indicate camera list has been validated - don't connect until this is true
     bool _cameras_validated{false};
+
+    std::string _active_audio_stream;
 
 public:
     // Call after camera list validation to enable connections

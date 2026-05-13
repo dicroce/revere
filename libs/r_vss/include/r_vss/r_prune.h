@@ -8,6 +8,8 @@
 #include "r_disco/r_camera.h"
 #include <atomic>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <deque>
 #include <chrono>
 
@@ -37,6 +39,8 @@ private:
 
     std::atomic<bool> _running;
     std::thread _prune_th;
+    std::mutex _stop_mutex;
+    std::condition_variable _stop_cv;
     std::string _top_dir;
     r_disco::r_devices& _devices;
 

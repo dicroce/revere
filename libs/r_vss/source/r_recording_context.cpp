@@ -543,8 +543,11 @@ void r_recording_context::create_playback_mount(GstRTSPServer*, GstRTSPMountPoin
     auto video_encoding = r_pipeline::str_to_encoding(video_codec_name);
 
     r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding;
-    if(has_audio)
-        maybe_audio_encoding.set_value(r_pipeline::str_to_encoding(audio_codec_name));
+    if(has_audio && !audio_codec_name.empty())
+    {
+        try { maybe_audio_encoding.set_value(r_pipeline::str_to_encoding(audio_codec_name)); }
+        catch(const std::exception& e) { R_LOG_WARNING("Unrecognized audio codec '%s' for playback mount, proceeding without audio: %s", audio_codec_name.c_str(), e.what()); }
+    }
 
     auto launch_str = _sk->create_restream_launch_string(
         video_encoding,
@@ -641,7 +644,14 @@ _fetch_stream_info(shared_ptr<playback_restreaming_state> prs, const string& cam
     r_nullable<r_encoding> maybe_audio_encoding;
 
     if(has_audio)
-        maybe_audio_encoding.set_value(r_pipeline::str_to_encoding(bt["audio_codec_name"].get_string()));
+    {
+        auto audio_name = bt["audio_codec_name"].get_string();
+        if(!audio_name.empty())
+        {
+            try { maybe_audio_encoding.set_value(r_pipeline::str_to_encoding(audio_name)); }
+            catch(const std::exception& e) { R_LOG_WARNING("Unrecognized audio codec '%s' in stored segment, treating as no audio: %s", audio_name.c_str(), e.what()); }
+        }
+    }
 
     return make_tuple(
         has_audio,

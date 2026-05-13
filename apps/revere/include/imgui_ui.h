@@ -505,10 +505,11 @@ void sidebar_list(
 
     // Third pass: draw health indicator dots
     ImDrawList* health_draw_list = ImGui::GetWindowDrawList();
+    auto window_pos = ImGui::GetWindowPos();
+    auto scroll_y = ImGui::GetScrollY();
     for(const auto& dot : health_dots)
     {
-        auto screen_pos = ImGui::GetWindowPos();
-        ImVec2 center(screen_pos.x + dot.position.x, screen_pos.y + dot.position.y);
+        ImVec2 center(window_pos.x + dot.position.x, window_pos.y + dot.position.y - scroll_y);
         float radius = 5.0f;
         ImU32 color = (dot.health == stream_health::healthy) ?
             IM_COL32(0, 200, 0, 255) :   // green

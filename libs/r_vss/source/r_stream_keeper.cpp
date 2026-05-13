@@ -148,6 +148,10 @@ void r_stream_keeper::stop()
     if(!_running)
         R_THROW(("Cannot stop stream keeper if its not running!"));
 
+    R_LOG_INFO("Stopping prune...");
+    _prune.stop();
+    R_LOG_INFO("Prune stopped");
+
     // Stop web server first to prevent new HTTP requests during shutdown
     R_LOG_INFO("Stopping web server...");
     _ws.stop();
@@ -182,10 +186,6 @@ void r_stream_keeper::stop()
     R_LOG_INFO("Joining rtsp server thread...");
     _rtsp_server_th.join();
     R_LOG_INFO("Rtsp server thread joined");
-
-    R_LOG_INFO("Stopping prune...");
-    _prune.stop();
-    R_LOG_INFO("Prune stopped");
 
     R_LOG_INFO("Stopping system plugins...");
     _system_plugin_host.stop_all();

@@ -7,6 +7,8 @@
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_blob_tree.h"
 #include "pipeline_state.h"
+#include <algorithm>
+#include <cstdint>
 #include "pipeline_host.h"
 #include "query.h"
 
@@ -80,6 +82,10 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
     _process_q(),
     _last_video_sample(),
     _video_decoder(),
+    _audio_decoder(),
+    _sdl_audio_device(0),
+    _volume_gain(1.0f),
+    _audio_active(false),
     _has_audio(false),
     _received_first_frame(false),
     _last_v_pts(0),
@@ -96,12 +102,95 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
     // and decodes them.
 
     _source.set_audio_sample_cb([this](const sample_context& sc, const r_gst_buffer& buffer, bool key, int64_t pts){
-        sample s;
-        s.buffer = buffer;
-        s.media_type = AUDIO_MEDIA;
         this->_has_audio = true;
         this->_last_a_pts = pts;
-        this->_process_q.post(s);
+
+        if(_audio_decoder.is_null())
+        {
+            auto maybe_encoding = sc.audio_encoding();
+            if(!maybe_encoding.is_null())
+            {
+                auto enc = maybe_encoding.value();
+                auto sr = sc.audio_sample_rate();
+                auto ch = sc.audio_channels();
+                int sample_rate = sr.is_null() ? 8000 : (int)sr.value();
+                int channels   = ch.is_null() ? 1    : (int)ch.value();
+
+                if(enc == PCMU_ENCODING)
+                {
+                    _audio_decoder.assign(r_av::r_audio_decoder(AV_CODEC_ID_PCM_MULAW));
+                    _audio_decoder.raw().set_pcm_params(sample_rate, channels);
+                }
+                else if(enc == PCMA_ENCODING)
+                {
+                    _audio_decoder.assign(r_av::r_audio_decoder(AV_CODEC_ID_PCM_ALAW));
+                    _audio_decoder.raw().set_pcm_params(sample_rate, channels);
+                }
+                else if(enc == AAC_LATM_ENCODING || enc == AAC_GENERIC_ENCODING)
+                {
+                    auto codec_id = (enc == AAC_LATM_ENCODING) ? AV_CODEC_ID_AAC_LATM : AV_CODEC_ID_AAC;
+                    _audio_decoder.assign(r_av::r_audio_decoder(codec_id));
+                    auto media = sc.sdp_media(AUDIO_MEDIA);
+                    string audio_codec_name, audio_codec_params;
+                    int audio_timebase;
+                    tie(audio_codec_name, audio_codec_params, audio_timebase) = sdp_media_to_s(media);
+                    auto asc = get_audio_codec_extradata(audio_codec_params);
+                    if(!asc.empty())
+                        _audio_decoder.raw().set_extradata(asc);
+                }
+
+                if(!_audio_decoder.is_null() && _sdl_audio_device == 0)
+                {
+                    SDL_AudioSpec want, have;
+                    SDL_zero(want);
+                    want.freq     = 44100;
+                    want.format   = AUDIO_S16SYS;
+                    want.channels = 2;
+                    want.samples  = 4096;
+                    want.callback = nullptr;
+                    _sdl_audio_device = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+                    if(_sdl_audio_device != 0)
+                    {
+                        R_LOG_INFO("Audio device opened: freq=%d channels=%d", have.freq, have.channels);
+                        SDL_PauseAudioDevice(_sdl_audio_device, _audio_active.load() ? 0 : 1);
+                    }
+                    else R_LOG_ERROR("SDL_OpenAudioDevice failed: %s", SDL_GetError());
+                }
+            }
+        }
+
+        // Decode and queue to SDL directly in this callback — never post audio to _process_q.
+        // Posting audio to the video process queue starves video decode and can trigger the
+        // dead-stream restart (which switches back to live).
+        if(!_audio_decoder.is_null() && _sdl_audio_device != 0)
+        {
+            // Cap the SDL queue to ~200ms to prevent buffer buildup during fast playback delivery.
+            static const Uint32 MAX_QUEUED = 44100 * 2 * sizeof(int16_t) / 5; // 200ms S16 stereo
+            if(SDL_GetQueuedAudioSize(_sdl_audio_device) < MAX_QUEUED)
+            {
+                auto m = buffer.map(r_gst_buffer::MT_READ);
+                _audio_decoder.raw().attach_buffer(m.data(), m.size());
+                if(_audio_decoder.raw().decode() == r_av::R_CODEC_STATE_HAS_OUTPUT)
+                {
+                    auto pcm = _audio_decoder.raw().get(AV_SAMPLE_FMT_S16, 44100, 2);
+                    if(pcm && !pcm->empty())
+                    {
+                        float gain = _volume_gain.load();
+                        if(gain != 1.0f)
+                        {
+                            int16_t* samples = reinterpret_cast<int16_t*>(pcm->data());
+                            size_t n = pcm->size() / sizeof(int16_t);
+                            for(size_t i = 0; i < n; ++i)
+                            {
+                                int32_t v = (int32_t)((float)samples[i] * gain);
+                                samples[i] = (int16_t)std::clamp(v, (int32_t)INT16_MIN, (int32_t)INT16_MAX);
+                            }
+                        }
+                        SDL_QueueAudio(_sdl_audio_device, pcm->data(), (Uint32)pcm->size());
+                    }
+                }
+            }
+        }
     });
 
     _source.set_video_sample_cb([this](const sample_context& sc, const r_gst_buffer& buffer, bool key, int64_t pts){
@@ -160,6 +249,11 @@ pipeline_state::~pipeline_state()
     _running = false;
     _process_q.wake();
     _process_th.join();
+    if(_sdl_audio_device != 0)
+    {
+        SDL_CloseAudioDevice(_sdl_audio_device);
+        _sdl_audio_device = 0;
+    }
 }
 
 void pipeline_state::resize(uint16_t w, uint16_t h)
@@ -207,7 +301,7 @@ void pipeline_state::play()
 
     vector<r_arg> arguments;
     add_argument(arguments, "url", url);
-    add_argument(arguments, "protocols", string("tcp"));
+    add_argument(arguments, "protocols", string("TCP"));
     _source.set_args(arguments);
 
     _source.play();

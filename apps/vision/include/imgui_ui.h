@@ -311,7 +311,22 @@ void control_bar(
     
     // Render timerange text
     renderer.render_timerange_text(render_layout, cbs, calc);
-    
+
+    // Volume slider — top row, left of Export button
+    {
+        auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
+        auto right_edge = calc.center_box_left + calc.center_box_width;
+        ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_14()].roboto_regular);
+        ImGui::SetCursorScreenPos(ImVec2(right_edge - 560.0f, top_line_top + 7.0f));
+        ImGui::Text("Vol");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(100.0f);
+        ImGui::PushID("volume_gain");
+        ImGui::SliderFloat("##vol", &cbs.volume_gain, 0.0f, 4.0f, "");
+        ImGui::PopID();
+        ImGui::PopFont();
+    }
+
     // Render export controls
     renderer.render_export_controls(render_layout, cbs, calc, stream_name, export_cb);
     
@@ -320,7 +335,7 @@ void control_bar(
 
     if(is_multiview)
     {
-        if(!is_at_live)
+        if(!is_at_live && cbs.exp_state != EXPORT_STATE_CONFIGURING)
         {
             float right_edge = calc.center_box_left + calc.center_box_width;
             float top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;

@@ -396,7 +396,7 @@ int main(int, char**)
     auto top_dir = vision::top_dir();
 
     // Setup SDL
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) != 0)
     {
         R_LOG_ERROR("SDL_Init error: %s", SDL_GetError());
         return 1;
@@ -944,6 +944,16 @@ int main(int, char**)
             );
 
             ph.load_video_textures();
+
+            {
+                static string last_audio_stream;
+                if(ui_state.mcs.selected_stream_name != last_audio_stream)
+                {
+                    last_audio_stream = ui_state.mcs.selected_stream_name;
+                    ph.set_active_audio_stream(last_audio_stream);
+                }
+                ph.set_stream_volume(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs.volume_gain);
+            }
 
             //ImGui::ShowDemoWindow();
 
