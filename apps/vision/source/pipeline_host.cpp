@@ -221,6 +221,13 @@ void pipeline_host::set_stream_volume(const string& name, float gain)
         it->second->set_volume_gain(gain);
 }
 
+bool pipeline_host::has_audio(const string& name) const
+{
+    lock_guard<mutex> g(_internals_lok);
+    auto it = _pipes.find(name);
+    return it != end(_pipes) && it->second->has_audio();
+}
+
 void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8_t>> buffer, uint16_t w, uint16_t h, uint16_t original_w, uint16_t original_h, int64_t pts)
 {
     lock_guard<mutex> g(_internals_lok);

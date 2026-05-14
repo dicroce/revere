@@ -48,6 +48,7 @@ public:
 
     void set_active_audio_stream(const std::string& name);
     void set_stream_volume(const std::string& name, float gain);
+    bool has_audio(const std::string& name) const;
 
     r_utils::r_nullable<std::shared_ptr<render_context>> lookup_render_context(const std::string& name, uint16_t w, uint16_t h);
 

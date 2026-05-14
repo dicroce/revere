@@ -953,6 +953,7 @@ int main(int, char**)
                     ph.set_active_audio_stream(last_audio_stream);
                 }
                 ph.set_stream_volume(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs.volume_gain);
+                ui_state.mcs.obos.cbs.has_audio = ph.has_audio(ui_state.mcs.selected_stream_name);
             }
 
             //ImGui::ShowDemoWindow();

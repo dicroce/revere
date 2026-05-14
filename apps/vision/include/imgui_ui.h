@@ -313,6 +313,7 @@ void control_bar(
     renderer.render_timerange_text(render_layout, cbs, calc);
 
     // Volume slider — top row, left of Export button
+    if(cbs.has_audio && playing)
     {
         auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
         auto right_edge = calc.center_box_left + calc.center_box_width;

@@ -35,7 +35,8 @@ enum export_state
 
 struct control_bar_state
 {
-    float volume_gain {1.0f};
+    bool has_audio {false};
+    float volume_gain {0.0f};
     int playhead_pos {1000};
     uint16_t playhead_x {4};
     uint16_t playhead_width {3};
