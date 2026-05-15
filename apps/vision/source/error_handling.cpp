@@ -505,14 +505,6 @@ namespace state_validate
 
         auto duration = end - start;
 
-        // Check for overflow when converting to milliseconds
-        auto max_duration = std::chrono::milliseconds(std::numeric_limits<int64_t>::max());
-        if (duration > max_duration)
-        {
-            R_LOG_ERROR("Duration too large for milliseconds conversion");
-            return std::nullopt;
-        }
-
         return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
     }
 

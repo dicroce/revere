@@ -74,6 +74,7 @@ public:
     
     // UI control rendering methods
     void render_timerange_text(const control_bar_layout& layout, const control_bar_state& cbs, const control_bar_calculated_layout& calc);
+    void render_zoom_buttons(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc);
     
     template<typename EXPORT_CB>
     void render_export_controls(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, const std::string& stream_name, EXPORT_CB export_cb);
@@ -267,6 +268,8 @@ void control_bar_renderer::render_navigation_buttons(const control_bar_layout& l
 
     ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_14()].roboto_regular);
 
+    auto jump_minutes = std::chrono::minutes((std::max)(1u, (unsigned)cbs.get_timerange_minutes() / 5));
+
     // Backward button
     ImGui::PushID("backward");
     auto backward_button_x = ((layout.left + left_box_width) - rs_backward_forward_button_dim) - (calc.text_line_height / 2);
@@ -274,7 +277,7 @@ void control_bar_renderer::render_navigation_buttons(const control_bar_layout& l
     ImGui::SetCursorScreenPos(ImVec2((float)backward_button_x, (float)backward_button_y));
     if(ImGui::Button("<", ImVec2((float)rs_backward_forward_button_dim, (float)rs_backward_forward_button_dim)))
     {
-        cbs.backward(std::chrono::minutes(10));
+        cbs.backward(jump_minutes);
         update_data_cb(stream_name, cbs);
     }
     ImGui::PopID();
@@ -286,7 +289,7 @@ void control_bar_renderer::render_navigation_buttons(const control_bar_layout& l
     ImGui::SetCursorScreenPos(ImVec2((float)forward_button_x, (float)forward_button_y));
     if(ImGui::Button(">", ImVec2((float)rs_backward_forward_button_dim, (float)rs_backward_forward_button_dim)))
     {
-        cbs.forward(std::chrono::minutes(10));
+        cbs.forward(jump_minutes);
         update_data_cb(stream_name, cbs);
     }
     ImGui::PopID();

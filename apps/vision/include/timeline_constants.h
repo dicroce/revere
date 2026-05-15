@@ -19,6 +19,7 @@ namespace timeline_constants
     constexpr int PLAYHEAD_MIN_POSITION = 0;
     constexpr int PLAYHEAD_DEFAULT_WIDTH = 3;
     constexpr int TIMERANGE_MIN_MINUTES = 10;
+    constexpr int TIMERANGE_MAX_MINUTES = 480;
     
     // Layout constants
     constexpr float LEFT_PANEL_WIDTH_RATIO = 0.04f;  // 4% for left button area

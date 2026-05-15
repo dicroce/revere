@@ -309,8 +309,9 @@ void control_bar(
     // Use renderer for all UI components
     auto calc = renderer.calculate_layout(render_layout);
     
-    // Render timerange text
+    // Render timerange text and zoom buttons
     renderer.render_timerange_text(render_layout, cbs, calc);
+    renderer.render_zoom_buttons(render_layout, cbs, calc);
 
     // Volume slider — top row, left of Export button
     if(cbs.has_audio && playing)
