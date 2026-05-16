@@ -203,7 +203,7 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
 
             if(video_encoding == H264_ENCODING)
             {
-                this->_video_decoder.assign(r_av::r_video_decoder(AV_CODEC_ID_H264));
+                this->_video_decoder.assign(r_av::r_video_decoder(AV_CODEC_ID_H264, r_av::r_find_best_hw_accel(AV_CODEC_ID_H264)));
 
                 string video_codec_name, h264_codec_parameters;
                 int video_timebase;
@@ -216,7 +216,7 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
             }
             else if(video_encoding == H265_ENCODING)
             {
-                this->_video_decoder.assign(r_av::r_video_decoder(AV_CODEC_ID_H265));
+                this->_video_decoder.assign(r_av::r_video_decoder(AV_CODEC_ID_H265, r_av::r_find_best_hw_accel(AV_CODEC_ID_H265)));
 
                 string video_codec_name, h265_codec_parameters;
                 int video_timebase;

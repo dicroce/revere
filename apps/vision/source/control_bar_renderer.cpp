@@ -1,5 +1,5 @@
 // Prevent Windows.h from defining min/max macros that conflict with std::min/std::max
-#ifdef _WIN32
+#ifdef IS_WINDOWS
 #define NOMINMAX
 #endif
 
@@ -26,7 +26,7 @@ using namespace std::chrono;
 static std::tm safe_localtime(const std::time_t& time_t_val)
 {
     std::tm result;
-#ifdef _WIN32
+#ifdef IS_WINDOWS
     localtime_s(&result, &time_t_val);
 #else
     result = *std::localtime(&time_t_val);

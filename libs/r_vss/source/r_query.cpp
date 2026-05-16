@@ -58,7 +58,8 @@ static shared_ptr<vector<uint8_t>> _decode_single_frame(
     uint16_t h)
 {
     // Enable parsing to properly handle Annex B streams with multiple NAL units
-    r_video_decoder decoder(r_av::encoding_to_av_codec_id(video_codec_name), true);
+    auto codec_id = r_av::encoding_to_av_codec_id(video_codec_name);
+    r_video_decoder decoder(codec_id, r_av::r_find_best_hw_accel(codec_id), true);
 
     // Only set extradata if stream doesn't have inline SPS/PPS
     if(!_has_inline_sps(frame))

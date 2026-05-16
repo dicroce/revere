@@ -7,7 +7,9 @@ Usage:
     python build_installers.py [options]
 
 Options:
-    --skip-build        Skip the CMake build step (use existing build)
+    --skip-configure    Skip the CMake configure step (WARNING: new/removed source files
+                        will not be detected — only use when you are certain nothing changed)
+    --skip-build        Skip the CMake compile step (configure still runs unless --skip-configure)
     --skip-install      Skip the CMake install step
     --skip-inno         Skip Inno Setup compilation
     --clean             Clean build directory before building
@@ -237,7 +239,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
-    parser.add_argument("--skip-build", action="store_true", help="Skip CMake build step")
+    parser.add_argument("--skip-configure", action="store_true",
+                        help="Skip CMake configure step (WARNING: new/removed source files will not be detected)")
+    parser.add_argument("--skip-build", action="store_true", help="Skip CMake compile step")
     parser.add_argument("--skip-install", action="store_true", help="Skip CMake install step")
     parser.add_argument("--skip-inno", action="store_true", help="Skip Inno Setup compilation")
     parser.add_argument("--clean", action="store_true", help="Clean build directory before building")
@@ -259,9 +263,15 @@ def main():
     if args.clean:
         clean_build_directory()
 
-    # Build steps
-    if not args.skip_build:
+    # Configure step — always runs unless explicitly skipped so that
+    # file(GLOB) in CMakeLists picks up any new or removed source files.
+    if not args.skip_configure:
         configure_cmake()
+    else:
+        print("\nSkipping configure step (--skip-configure)")
+
+    # Compile step
+    if not args.skip_build:
         build_release()
     else:
         print("\nSkipping build step (--skip-build)")

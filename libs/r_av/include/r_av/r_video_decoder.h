@@ -5,12 +5,14 @@
 extern "C"
 {
 #include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixfmt.h>
 }
 
 #include "r_av/r_codec_state.h"
+#include "r_av/r_hw_accel.h"
 #include "r_utils/r_macro.h"
 #include <vector>
 #include <cstdint>
@@ -39,7 +41,7 @@ class r_video_decoder final
 {
 public:
     R_API r_video_decoder();
-    R_API r_video_decoder(AVCodecID codec_id, bool parse_input = false);
+    R_API r_video_decoder(AVCodecID codec_id, r_hw_accel accel = r_hw_accel::none, bool parse_input = false);
     R_API r_video_decoder(const r_video_decoder&) = delete;
     R_API r_video_decoder(r_video_decoder&& obj);
     R_API ~r_video_decoder();
@@ -63,6 +65,7 @@ private:
     void _clear();
 
     AVCodecID _codec_id;
+    r_hw_accel _hw_accel;
     const AVCodec* _codec;
     AVCodecContext* _context;
     AVCodecParserContext* _parser;
@@ -72,10 +75,14 @@ private:
     const uint8_t* _pos;
     int _remaining_size;
     AVFrame* _frame;
+    AVFrame* _sw_frame;        // staging frame for hw->cpu transfer
+    AVBufferRef* _hw_device_ctx;
+    AVPixelFormat _hw_pix_fmt; // hw pixel format expected from decoder
     std::map<r_scaler_state, SwsContext*> _scalers;
     bool _codec_opened;
 
     void _open_codec();
+    static AVPixelFormat _get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);
 };
 
 }

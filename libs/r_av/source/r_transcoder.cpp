@@ -25,7 +25,7 @@ r_transcoder::r_transcoder(
 ) :
     _running(false),
     _max_queue_size(30),
-    _decoder(input_codec),
+    _decoder(input_codec, r_find_best_hw_accel(input_codec)),
     _encoder(),
     _muxer(passphrase.empty() ? output_url : output_url + "&passphrase=" + passphrase, false, output_format),
     _current_bitrate(initial_bitrate),

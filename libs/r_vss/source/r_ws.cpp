@@ -979,7 +979,7 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
 
             auto extradata = r_pipeline::get_video_codec_extradata(video_codec_name, video_codec_params);
 
-            session.decoder = make_unique<r_video_decoder>(codec_id);
+            session.decoder = make_unique<r_video_decoder>(codec_id, r_av::r_find_best_hw_accel(codec_id));
             if(!extradata.empty())
                 session.decoder->set_extradata(extradata);
 
@@ -999,7 +999,10 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
                 0,
                 (uint16_t)session.framerate_num,
                 profile,
-                level
+                level,
+                "",
+                "",
+                r_find_best_hw_accel_encoder(out_codec_id)
             );
 
             float fr = (float)session.framerate_num / (float)session.framerate_den;
@@ -1395,7 +1398,7 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
                 auto in_codec_id  = r_av::encoding_to_av_codec_id(in_codec_name);
                 auto in_extradata = r_pipeline::get_video_codec_extradata(in_codec_name, in_codec_params);
 
-                decoder = make_unique<r_video_decoder>(in_codec_id);
+                decoder = make_unique<r_video_decoder>(in_codec_id, r_av::r_find_best_hw_accel(in_codec_id));
                 if(!in_extradata.empty())
                     decoder->set_extradata(in_extradata);
 
@@ -1415,7 +1418,10 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
                     0,
                     (uint16_t)framerate_num,
                     profile,
-                    level
+                    level,
+                    "",
+                    "",
+                    r_find_best_hw_accel_encoder(out_codec_id)
                 );
 
                 // Use the encoder's own AVCC/HVCC extradata to configure the muxer.

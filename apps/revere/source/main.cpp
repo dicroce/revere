@@ -474,7 +474,8 @@ static r_nullable<shared_ptr<vector<uint8_t>>> _decode_frame(const r_pipeline::s
         return r_nullable<shared_ptr<vector<uint8_t>>>();
 
     // Enable parsing to properly handle Annex B streams with multiple NAL units
-    r_av::r_video_decoder decoder(_r_encoding_to_avcodec_id(video_enc.value()), true);
+    auto codec_id = _r_encoding_to_avcodec_id(video_enc.value());
+    r_av::r_video_decoder decoder(codec_id, r_av::r_find_best_hw_accel(codec_id), true);
 
     std::vector<uint8_t> ed;
     std::vector<uint8_t> start_code = {0x00, 0x00, 0x00, 0x01};
