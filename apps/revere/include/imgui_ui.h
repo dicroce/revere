@@ -46,8 +46,8 @@ void error_modal(
     }
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb)
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb)
 {
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("Cameras"))
@@ -64,6 +64,8 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
     {
         if (ImGui::MenuItem("Launch Vision"))
             launch_vision_cb();
+        if (ImGui::MenuItem("Open Web UI"))
+            open_web_ui_cb();
         if (ImGui::MenuItem("Minimize to system tray"))
             minimize_cb();
 

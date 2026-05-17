@@ -1945,6 +1945,9 @@ int main(int argc, char** argv)
                 {
                     camera_setup_wizard.next("startup_enabled_notification");
                 }
+            },
+            [&](){
+                revere::open_url_in_browser("http://localhost:8088");
             }
         );
 
