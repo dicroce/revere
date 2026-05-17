@@ -10,10 +10,12 @@
 #include "r_utils/r_server_threaded.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_macro.h"
+#include "r_utils/r_blob_tree.h"
 #include <functional>
 #include <thread>
 #include <map>
 #include <string>
+#include <vector>
 
 #define WS_CATCH(type, code) \
     catch(type& ex) \
@@ -72,6 +74,73 @@ public:
     void add_route( int method, const std::string& path, http_cb cb )
     {
         _cbs[method][path] = cb;
+    }
+
+    // Serve a pre-packed r_blob_tree bundle under url_prefix.
+    // Bundle format (per file): node["bytes"]=content, node["mime"]=mime-type, node["etag"]=hash.
+    // Supports ETag-based 304 responses and CORS preflight (OPTIONS).
+    // Unknown paths that look like SPA routes (no file extension) fall back to index.html.
+    void serve_bundle(const std::string& url_prefix, r_utils::r_blob_tree bundle)
+    {
+        _bundles[url_prefix] = std::move(bundle);
+        const r_utils::r_blob_tree* bundlePtr = &_bundles[url_prefix];
+
+        add_route(METHOD_GET, url_prefix, [bundlePtr, url_prefix](const r_web_server<SOK_T>&, SOK_T&, const r_server_request& request) -> r_server_response {
+            auto path = request.get_uri().get_full_resource_path();
+
+            std::string relative = path.substr(url_prefix == "/" ? 1 : url_prefix.size());
+            while(!relative.empty() && relative.front() == '/')
+                relative = relative.substr(1);
+            if(relative.empty())
+                relative = "index.html";
+
+            std::vector<std::string> segments;
+            std::string seg;
+            for(char c : relative)
+            {
+                if(c == '/') { if(!seg.empty()) { segments.push_back(seg); seg.clear(); } }
+                else seg += c;
+            }
+            if(!seg.empty()) segments.push_back(seg);
+
+            const r_utils::r_blob_tree* node = bundlePtr;
+            for(const auto& s : segments)
+            {
+                if(!node->has_key(s))
+                {
+                    // SPA fallback: no extension means a client-side route — serve index.html
+                    if(s.find('.') == std::string::npos && bundlePtr->has_key("index.html"))
+                        node = &bundlePtr->at("index.html");
+                    else
+                        R_STHROW(r_http_404_exception, ("File not found in bundle: %s", path.c_str()));
+                    break;
+                }
+                node = &node->at(s);
+            }
+
+            const auto& etag = node->at("etag").get_string();
+            auto if_none_match = request.get_header("if-none-match");
+            if(!if_none_match.is_null() && if_none_match.value() == etag)
+                return r_server_response(response_not_modified);
+
+            const auto& bytes = node->at("bytes").get_blob();
+            const auto& mime  = node->at("mime").get_string();
+
+            r_server_response response;
+            response.set_content_type(mime);
+            response.set_body(bytes.size(), bytes.data());
+            response.add_additional_header("ETag", etag);
+            response.add_additional_header("Cache-Control", "no-cache");
+            return response;
+        });
+
+        add_route(METHOD_OPTIONS, url_prefix, [](const r_web_server<SOK_T>&, SOK_T&, const r_server_request&) -> r_server_response {
+            r_server_response response(response_no_content);
+            response.add_additional_header("Access-Control-Allow-Origin", "*");
+            response.add_additional_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            response.add_additional_header("Access-Control-Allow-Headers", "Content-Type, Authorization, If-None-Match");
+            return response;
+        });
     }
 
     SOK_T& get_socket() { return _server.get_socket(); }
@@ -144,6 +213,7 @@ private:
     }
 
     std::map<int, std::map<std::string, http_cb>> _cbs;
+    std::map<std::string, r_utils::r_blob_tree> _bundles;
     r_utils::r_server_threaded<SOK_T> _server;
     std::thread _serverThread;
 };

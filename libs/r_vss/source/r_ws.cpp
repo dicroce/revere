@@ -21,6 +21,7 @@
 #include "r_av/r_audio_encoder.h"
 #include <functional>
 #include <array>
+#include <fstream>
 
 using namespace r_utils;
 using namespace r_http;
@@ -74,6 +75,25 @@ r_ws::r_ws(const string& top_dir, r_devices& devices) :
     _server.add_route(METHOD_GET, "/finalize_transcode_stream", std::bind(&r_ws::_get_finalize_transcode_stream, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/transcode_export", std::bind(&r_ws::_get_transcode_export, this, _1, _2, _3));
     _server.add_route(METHOD_POST, "/mcp", std::bind(&r_ws::_post_mcp, this, _1, _2, _3));
+
+    // Load the web UI bundle if present alongside the binary (CWD is set to
+    // the binary directory by _set_working_dir() before this is constructed).
+    if(r_fs::file_exists("ui.rbt"))
+    {
+        try
+        {
+            ifstream f("ui.rbt", ios::binary);
+            vector<uint8_t> buf((istreambuf_iterator<char>(f)), {});
+            uint32_t version = 0;
+            auto bundle = r_blob_tree::deserialize(buf.data(), buf.size(), version);
+            _server.serve_bundle("/", std::move(bundle));
+            R_LOG_INFO("Web UI available at http://localhost:%d/", WEB_SERVER_PORT);
+        }
+        catch(const exception& ex)
+        {
+            R_LOG_WARNING("Failed to load web UI bundle (ui.rbt): %s", ex.what());
+        }
+    }
 
     _server.start();
 }

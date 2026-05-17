@@ -36,3 +36,4 @@ if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 endif()
 
 add_subdirectory(ut)
+add_subdirectory(tools)

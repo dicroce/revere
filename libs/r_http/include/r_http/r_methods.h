@@ -14,7 +14,8 @@ enum webbie_method
     METHOD_PUT = 3,
     METHOD_DELETE = 4,
     METHOD_PATCH = 5,
-    METHOD_HEAD = 6
+    METHOD_HEAD = 6,
+    METHOD_OPTIONS = 7
 };
 
 R_API std::string method_text( int method );

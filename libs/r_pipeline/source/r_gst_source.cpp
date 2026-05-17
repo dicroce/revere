@@ -386,16 +386,48 @@ void r_gst_source::stop()
 
     if(_pipeline && _running)
     {
+        // Disconnect before state change so no callbacks fire during RTSP teardown.
+        // The bus watch removal is safe to call from within the bus callback itself (GLib allows it).
+        if(_bus_watch_id)
+        {
+            g_source_remove(_bus_watch_id);
+            _bus_watch_id = 0;
+        }
+
+        if(_v_appsink && G_IS_OBJECT(_v_appsink))
+        {
+            g_object_set(G_OBJECT(_v_appsink), "emit-signals", FALSE, NULL);
+            g_signal_handlers_disconnect_by_data(_v_appsink, this);
+        }
+
+        if(_a_appsink && G_IS_OBJECT(_a_appsink))
+        {
+            g_object_set(G_OBJECT(_a_appsink), "emit-signals", FALSE, NULL);
+            g_signal_handlers_disconnect_by_data(_a_appsink, this);
+        }
+
         auto result = gst_element_set_state(_pipeline, GST_STATE_NULL);
 
-        auto done = false;
+        // Poll with a finite timeout per iteration and an absolute deadline so we never
+        // hang indefinitely waiting for an unresponsive camera's RTSP TEARDOWN response.
+        auto deadline = steady_clock::now() + seconds(5);
+        bool done = false;
         while(!done)
         {
             if(result == GST_STATE_CHANGE_FAILURE)
-                R_THROW(("Unable to stop the pipeline."));
+            {
+                R_LOG_WARNING("Pipeline state change failed during stop, forcing cleanup");
+                done = true;
+            }
             else if(result == GST_STATE_CHANGE_SUCCESS || result == GST_STATE_CHANGE_NO_PREROLL)
                 done = true;
-            else result = gst_element_get_state(_pipeline, NULL, NULL, GST_CLOCK_TIME_NONE);
+            else if(steady_clock::now() >= deadline)
+            {
+                R_LOG_WARNING("Pipeline shutdown timed out after 5s, forcing cleanup");
+                done = true;
+            }
+            else
+                result = gst_element_get_state(_pipeline, NULL, NULL, 500 * GST_MSECOND);
         }
 
         _running = false;

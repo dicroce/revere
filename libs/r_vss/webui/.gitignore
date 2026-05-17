@@ -1,0 +1,5 @@
+node_modules/
+
+# dist/ is intentionally NOT ignored here.
+# It is checked into git so that building Revere does not require Node.js.
+# Regenerate it by running: npm install && npm run build
