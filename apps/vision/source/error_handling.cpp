@@ -101,7 +101,7 @@ namespace network_safe
         // Parse URL to extract host, port, and path
         // Simple parsing for http://host:port/path format
         std::string host = "127.0.0.1";
-        int port = 10080;
+        int port = 8088;
         std::string path = "/";
 
         // Extract path from URL for now (basic implementation)

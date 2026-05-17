@@ -606,9 +606,9 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
         );
 
         r_socket sok;
-        sok.connect("127.0.0.1", 10080);
+        sok.connect("127.0.0.1", 8088);
 
-        r_http::r_client_request req("127.0.0.1", 10080);
+        r_http::r_client_request req("127.0.0.1", 8088);
         req.set_uri(
             r_string_utils::format(
                 "/export?camera_id=%s&start_time=%s&end_time=%s&file_name=%s",

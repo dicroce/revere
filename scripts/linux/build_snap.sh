@@ -26,6 +26,7 @@ if VERSION="$(git describe --tags --exact-match 2>/dev/null)"; then
 else
     VERSION="$(git rev-parse --short HEAD)"
 fi
+[[ "$VERSION" != v* ]] && VERSION="v${VERSION}"
 OUTPUT_FILE="revere-${VERSION}-linux-app.snap"
 
 mv -f "$SNAP_FILE" "$OUTPUT_FILE"

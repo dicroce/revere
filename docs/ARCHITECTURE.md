@@ -56,8 +56,8 @@ The main surveillance application that handles camera management, recording, and
 - ONVIF camera discovery and configuration
 - Video recording and storage management
 - Motion detection coordination
-- RTSP stream restreaming (default: rtsp://127.0.0.1:10554/{camera_name})
-- HTTP API server (default port: 10080)
+- RTSP stream restreaming (default: rtsp://127.0.0.1:8554/{camera_name})
+- HTTP API server (default port: 8088)
 - Desktop tray integration
 - Recording retention policy management
 
@@ -76,7 +76,7 @@ The playback and analytics viewer application.
 - Video export functionality
 - Live streaming visualization
 
-**Relationship to revere:** Acts as a client to the revere HTTP API (connects to port 10080)
+**Relationship to revere:** Acts as a client to the revere HTTP API (connects to port 8088)
 
 ## Core Libraries
 
@@ -381,7 +381,7 @@ Disk (video segments + time-series index)
 ### Playback Flow
 
 ```
-1. vision app sends HTTP request to revere (:10080)
+1. vision app sends HTTP request to revere (:8088)
 2. Request: GET /contents?camera_id=X&start_time=Y&end_time=Z
 3. r_http receives request
 4. r_storage queries nanots for matching segments
@@ -452,8 +452,8 @@ The plugin system uses a C interface for maximum compatibility:
 | 3702 | UDP | ONVIF WS-Discovery (multicast) |
 | 80/8080 | TCP | ONVIF HTTP communication with cameras |
 | 554 | TCP | RTSP camera streams (inbound from cameras) |
-| 10080 | TCP | Revere HTTP API server (for vision app) |
-| 10554 | TCP | Revere RTSP restreaming server (outbound) |
+| 8088 | TCP | Revere HTTP API server (for vision app) |
+| 8554 | TCP | Revere RTSP restreaming server (outbound) |
 
 ## Design Decisions
 

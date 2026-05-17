@@ -18,6 +18,7 @@ if VERSION="$(git -C "$PROJECT_DIR" describe --tags --exact-match 2>/dev/null)";
 else
     VERSION="$(git -C "$PROJECT_DIR" rev-parse --short HEAD)"
 fi
+[[ "$VERSION" != v* ]] && VERSION="v${VERSION}"
 OUTPUT_FILE="$BUILD_DIR/revere-${VERSION}-linux-cloud.run"
 
 # Check plugin exists

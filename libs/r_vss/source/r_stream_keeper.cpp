@@ -69,7 +69,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
 
     gst_rtsp_server_set_address(_server, "0.0.0.0");
 
-    gst_rtsp_server_set_service(_server, "10554");
+    gst_rtsp_server_set_service(_server, "8554");
 
     _mounts = gst_rtsp_server_get_mount_points(_server);
 

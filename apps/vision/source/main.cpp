@@ -266,7 +266,7 @@ void change_one_by_one_config_and_layout(configure_state& cfg, pipeline_host& ph
     auto url_label = label;
     replace(begin(url_label), end(url_label), ' ', '_');
 
-    si.rtsp_url = r_string_utils::format("rtsp://%s:10554/%s", maybe_revere_ip.value().c_str(), url_label.c_str());
+    si.rtsp_url = r_string_utils::format("rtsp://%s:8554/%s", maybe_revere_ip.value().c_str(), url_label.c_str());
     si.camera_id = camera_id;
     si.do_motion_detection = do_motion_detection;
 
@@ -888,7 +888,7 @@ int main(int, char**)
                                                 auto url_label = c.label;
                                                 replace(begin(url_label), end(url_label), ' ', '_');
 
-                                                auto rtsp_url = r_string_utils::format("rtsp://%s:10554/%s", maybe_revere_ip.value().c_str(), url_label.c_str());
+                                                auto rtsp_url = r_string_utils::format("rtsp://%s:8554/%s", maybe_revere_ip.value().c_str(), url_label.c_str());
 
                                                 stream_info si;
                                                 si.name = name;

@@ -34,7 +34,7 @@ using namespace std::chrono;
 using namespace std::placeholders;
 using json = nlohmann::json;
 
-const int WEB_SERVER_PORT = 10080;
+const int WEB_SERVER_PORT = 8088;
 
 namespace {
 
@@ -1776,7 +1776,7 @@ r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
                 auto start_time = args["start_time"].get<string>();
                 auto jpeg = query_get_jpg(_top_dir, _devices, camera_id, start_tp, w, h);
                 auto b64  = r_string_utils::to_base64(jpeg.data(), jpeg.size());
-                auto url  = string("http://localhost:10080/jpg?camera_id=") + camera_id
+                auto url  = string("http://localhost:8088/jpg?camera_id=") + camera_id
                           + "&start_time=" + start_time
                           + "&width=" + to_string(w)
                           + "&height=" + to_string(h);

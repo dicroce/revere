@@ -970,11 +970,11 @@ void configure_camera_setup_wizard(
                     std::string base_url = "https://github.com/dicroce/revere/releases/download/v" + version + "/";
                     std::string filename;
 #if defined(IS_WINDOWS)
-                    filename = "revere_cloud-v" + version + "-x86_64-windows-setup.exe";
+                    filename = "revere-v" + version + "-windows-cloud-setup.exe";
 #elif defined(IS_LINUX)
-                    filename = "revere_cloud-v" + version + "-x86_64-linux.run";
+                    filename = "revere-v" + version + "-linux-cloud.run";
 #elif defined(IS_MACOS)
-                    filename = "revere_cloud-v" + version + "-x86_64-macos.command";
+                    filename = "revere-v" + version + "-macos-cloud.command";
 #else
                     #error "Unsupported platform"
 #endif
@@ -1888,7 +1888,7 @@ int main(int argc, char** argv)
                     {
                         ui_state.friendly_name = status.camera.friendly_name.value();
                         ui_state.ipv4 = status.camera.ipv4.value();
-                        ui_state.restream_url = r_string_utils::format("rtsp://127.0.0.1:10554/%s",ui_state.friendly_name.c_str());
+                        ui_state.restream_url = r_string_utils::format("rtsp://127.0.0.1:8554/%s",ui_state.friendly_name.c_str());
                         ui_state.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
                         auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
                         ui_state.retention = r_string_utils::format("%.2f days", retention_days);
