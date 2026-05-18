@@ -185,10 +185,13 @@ vector<uint8_t> r_utils::r_fs::read_file(const string& path)
     if(r_utils::r_fs::stat(path, &fi) < 0)
         R_STHROW(r_not_found_exception, ("Unable to stat: %s", path.c_str()));
 
+    vector<uint8_t> out(fi.file_size);
+    if(fi.file_size == 0)
+        return out;
+
     uint32_t numBlocks = (fi.file_size > 4096) ? (uint32_t)(fi.file_size / 4096) : 0;
     uint32_t remainder = (fi.file_size > 4096) ? (uint32_t)(fi.file_size % 4096) : (uint32_t)fi.file_size;
 
-    vector<uint8_t> out(fi.file_size);
     uint8_t* writer = &out[0];
 
     auto f = r_file::open(path, "rb");
