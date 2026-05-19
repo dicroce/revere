@@ -54,7 +54,9 @@ set(WEBUI_BUNDLE ${CMAKE_CURRENT_BINARY_DIR}/ui.rbt)
 
 add_custom_command(
     OUTPUT  ${WEBUI_BUNDLE}
-    COMMAND $<TARGET_FILE:r_bundle> ${WEBUI_DIST} ${WEBUI_BUNDLE}
+    COMMAND ${CMAKE_COMMAND} -E env
+        "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:r_utils>:$ENV{LD_LIBRARY_PATH}"
+        $<TARGET_FILE:r_bundle> ${WEBUI_DIST} ${WEBUI_BUNDLE}
     DEPENDS r_bundle ${WEBUI_DIST}/index.html
     COMMENT "Packing Revere web UI bundle"
 )

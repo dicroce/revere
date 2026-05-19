@@ -14,6 +14,7 @@
 #include "r_utils/r_macro.h"
 #include "r_pipeline/r_stream_info.h"
 #include <map>
+#include <set>
 #include <vector>
 #include <thread>
 #include <mutex>
@@ -92,6 +93,8 @@ enum r_stream_keeper_commands
     R_SK_FETCH_STREAM_STATUS,
     R_SK_IS_RECORDING,
     R_SK_STOP,
+    R_SK_SUSPEND,
+    R_SK_RESUME,
     R_SK_CREATE_PLAYBACK_MOUNT
 };
 
@@ -138,6 +141,9 @@ public:
     R_API std::chrono::hours get_retention_hours(const std::string& camera_id);
 
     R_API void bounce(const std::string& camera_id);
+
+    R_API void suspend(const std::string& camera_id);
+    R_API void resume(const std::string& camera_id);
 
     R_API std::string create_restream_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding, int audio_format);
 
@@ -189,8 +195,9 @@ private:
     std::thread _th;
     uint32_t _sim_mttf_seconds {0};
     bool _running;
-    mutable std::mutex _streams_mutex;  // Protects _streams from concurrent access
+    mutable std::mutex _streams_mutex;  // Protects _streams and _suspended_cameras
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
+    std::set<std::string> _suspended_cameras;
     r_utils::r_work_q<r_stream_keeper_cmd, r_stream_keeper_result> _cmd_q;
 
     // Cached stream status for non-blocking reads from GUI thread

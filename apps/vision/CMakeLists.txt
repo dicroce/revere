@@ -77,7 +77,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     include(GNUInstallDirs)
 
     # Desktop file
-    install(FILES ${CMAKE_SOURCE_DIR}/flatpak/io.github.dicroce.Revere.Vision.desktop
+    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/vision.desktop
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
 
     # Icon
