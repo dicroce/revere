@@ -960,11 +960,31 @@ int main(int, char**)
 
             configure_wizard();
             
-            if(ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_FINISHED_SUCCESS)
+            if(ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_IN_PROGRESS ||
+               ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_FINISHED_SUCCESS)
             {
-                _pop_export_folder();
-                ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE;
+                if(ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_IN_PROGRESS)
+                {
+                    static auto last_poll = std::chrono::steady_clock::time_point{};
+                    auto now = std::chrono::steady_clock::now();
+                    if(now - last_poll >= std::chrono::milliseconds(500))
+                    {
+                        last_poll = now;
+                        ph.control_bar_export_progress_cb(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs);
+                    }
+                }
 
+                ImGui::OpenPopup("Exporting...");
+                vision::progress_modal(
+                    GImGui,
+                    "Exporting...",
+                    ui_state.mcs.obos.cbs.export_percent_complete,
+                    [&](){
+                        _pop_export_folder();
+                        ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE;
+                    },
+                    [&](){ ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE; }
+                );
             }
             else if(ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_FINISHED_ERROR)
             {

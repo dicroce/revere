@@ -436,28 +436,35 @@ vector<r_vss::motion_event_info> r_vss::query_get_motion_events(const std::strin
                 // End of current event
                 in_event = false;
 
-                motion_event_info mi;
-                mi.start = system_clock::time_point(seconds(event_start_second));
-                mi.end = system_clock::time_point(seconds(current_second));
-                mi.motion = 0;      // Dummy value for now
-                mi.avg_motion = 0;  // Dummy value for now
-                mi.stddev = 0;      // Dummy value for now
+                if((current_second - event_start_second) >= 2)
+                {
+                    motion_event_info mi;
+                    mi.start = system_clock::time_point(seconds(event_start_second));
+                    mi.end = system_clock::time_point(seconds(current_second));
+                    mi.motion = 0;      // Dummy value for now
+                    mi.avg_motion = 0;  // Dummy value for now
+                    mi.stddev = 0;      // Dummy value for now
 
-                result.push_back(mi);
+                    result.push_back(mi);
+                }
             }
         }
 
         // Handle case where event extends to end of query range
         if(in_event)
         {
-            motion_event_info mi;
-            mi.start = system_clock::time_point(seconds(event_start_second));
-            mi.end = system_clock::time_point(seconds(start_seconds + (int64_t)motion_data.size()));
-            mi.motion = 0;      // Dummy value for now
-            mi.avg_motion = 0;  // Dummy value for now
-            mi.stddev = 0;      // Dummy value for now
+            int64_t end_second = start_seconds + (int64_t)motion_data.size();
+            if((end_second - event_start_second) >= 2)
+            {
+                motion_event_info mi;
+                mi.start = system_clock::time_point(seconds(event_start_second));
+                mi.end = system_clock::time_point(seconds(end_second));
+                mi.motion = 0;      // Dummy value for now
+                mi.avg_motion = 0;  // Dummy value for now
+                mi.stddev = 0;      // Dummy value for now
 
-            result.push_back(mi);
+                result.push_back(mi);
+            }
         }
     }
     catch(const std::exception& e)

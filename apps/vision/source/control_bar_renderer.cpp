@@ -326,62 +326,32 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                     continue; // Skip this icon to prevent overlap
                 }
 
-                // First, always draw a colored rectangle as debug indicator
-                float center_y = (calc.contents_top + calc.contents_bottom) / 2.0f;
-                float rect_size = 12.0f;
-
-                ImU32 rect_color = IM_COL32(255, 255, 255, 255); // White default
-                std::string class_name;
-
-                // Get class from first detection
-                if (!event.detections.empty())
-                {
-                    class_name = event.detections[0].class_name;
-                    if (class_name == "person")
-                    {
-                        rect_color = IM_COL32(100, 200, 255, 255); // Light blue
-                    }
-                    else if (class_name == "car" || class_name == "vehicle")
-                    {
-                        rect_color = IM_COL32(255, 150, 100, 255); // Light orange
-                    }
-                }
-                
-                // Draw colored rectangle as background/debug indicator
-                draw_list->AddRectFilled(
-                    ImVec2(x - rect_size/2, center_y - rect_size/2),
-                    ImVec2(x + rect_size/2, center_y + rect_size/2),
-                    rect_color
-                );
-                
-                // Try to draw icon on top
+                std::string class_name = event.detections[0].class_name;
                 void* texture_id = get_icon_texture_id(class_name);
 
-                if (texture_id != nullptr)
-                {
-                    // Draw the icon using the texture
-                    float icon_size = 48.0f; // Match the size we created the textures at
-                    float icon_x = x - icon_size / 2.0f;
-                    float icon_y = center_y - icon_size / 2.0f;
+                if (texture_id == nullptr)
+                    continue;
 
-                    // Draw background rectangle matching recording segments color
-                    ImU32 bg_color = IM_COL32(73, 106, 129, 255); // RGB(0.286, 0.415, 0.505) converted to 0-255
-                    draw_list->AddRectFilled(
-                        ImVec2(icon_x, icon_y),
-                        ImVec2(icon_x + icon_size, icon_y + icon_size),
-                        bg_color
-                    );
+                float center_y = (calc.contents_top + calc.contents_bottom) / 2.0f;
+                float icon_size = 48.0f;
+                float icon_x = x - icon_size / 2.0f;
+                float icon_y = center_y - icon_size / 2.0f;
 
-                    // Draw the icon on top of the background
-                    draw_list->AddImage(
-                        (ImTextureID)texture_id,
-                        ImVec2(icon_x, icon_y),
-                        ImVec2(icon_x + icon_size, icon_y + icon_size),
-                        ImVec2(0, 0),
-                        ImVec2(1, 1),
-                        IM_COL32_WHITE
-                    );
-                }
+                ImU32 bg_color = IM_COL32(73, 106, 129, 255);
+                draw_list->AddRectFilled(
+                    ImVec2(icon_x, icon_y),
+                    ImVec2(icon_x + icon_size, icon_y + icon_size),
+                    bg_color
+                );
+
+                draw_list->AddImage(
+                    (ImTextureID)texture_id,
+                    ImVec2(icon_x, icon_y),
+                    ImVec2(icon_x + icon_size, icon_y + icon_size),
+                    ImVec2(0, 0),
+                    ImVec2(1, 1),
+                    IM_COL32_WHITE
+                );
                 
                 // Update last_x position after successfully drawing
                 last_x = x;

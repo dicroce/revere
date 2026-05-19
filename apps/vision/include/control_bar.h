@@ -29,6 +29,7 @@ enum export_state
     EXPORT_STATE_NONE,
     EXPORT_STATE_CONFIGURING,
     EXPORT_STATE_STARTED,
+    EXPORT_STATE_IN_PROGRESS,
     EXPORT_STATE_FINISHED_SUCCESS,
     EXPORT_STATE_FINISHED_ERROR
 };
@@ -51,6 +52,8 @@ struct control_bar_state
     bool need_update_data {true};
     export_state exp_state {EXPORT_STATE_NONE};
     std::chrono::system_clock::time_point export_start_time;
+    std::string export_id;
+    int export_percent_complete {0};
 
     // Set the number of minutes in the timerange.
     // This is centered around the current playhead position.

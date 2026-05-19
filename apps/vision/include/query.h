@@ -19,6 +19,8 @@ std::vector<motion_event> query_motion_events(const configure_state& cs, const s
 
 std::vector<analytics_event> query_analytics(const configure_state& cs, const std::string& camera_id, const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end, const std::string& stream_tag = "");
 
+int query_export_progress(const configure_state& cs, const std::string& export_id);
+
 }
 
 #endif

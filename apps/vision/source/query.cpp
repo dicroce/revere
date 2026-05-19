@@ -220,3 +220,38 @@ vector<analytics_event> vision::query_analytics(const configure_state& cs, const
 
     return result;
 }
+
+int vision::query_export_progress(const configure_state& cs, const string& export_id)
+{
+    try
+    {
+        auto maybe_revere_ipv4 = cs.get_revere_ipv4();
+        auto ip = maybe_revere_ipv4.is_null() ? string("127.0.0.1") : maybe_revere_ipv4.value();
+
+        r_socket sok;
+        sok.set_io_timeout(5000);
+        sok.connect(ip, 8088);
+
+        r_client_request req(ip, 8088);
+        req.set_uri("/export_progress?id=" + export_id);
+        req.write_request(sok);
+
+        r_client_response resp;
+        resp.read_response(sok);
+        sok.close();
+
+        if(resp.get_status() == 404)
+            return 100;
+
+        if(!resp.is_success())
+            return -1;
+
+        auto body = resp.get_body_as_string();
+        if(body.is_null())
+            return -1;
+
+        auto j = json::parse(body.value());
+        return j["percent_complete"].get<int>();
+    }
+    catch(...) { return -1; }
+}

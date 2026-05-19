@@ -38,7 +38,7 @@ static deque<string> _get_file_names(const std::string& log_dir)
     deque<string> output;
 
 #ifdef IS_WINDOWS
-    wstring spec = r_string_utils::convert_multi_byte_string_to_wide_string(string("*.*"));
+    wstring spec = r_string_utils::convert_multi_byte_string_to_wide_string(log_dir + "\\*.*");
     struct _wfinddata_t fs;
     intptr_t handle;
     if((handle=_wfindfirst(spec.c_str(), &fs)) == -1)
@@ -84,7 +84,14 @@ static string _next_log_name(const string& log_dir, const string& log_prefix, bo
         end(file_names)
     );
 
-    sort(begin(file_names), end(file_names));
+    auto extract_num = [&log_prefix](const string& s) {
+        auto inner = s.substr(log_prefix.length());
+        auto dot = inner.rfind('.');
+        return r_string_utils::s_to_uint32(dot != string::npos ? inner.substr(0, dot) : inner);
+    };
+    sort(begin(file_names), end(file_names), [&extract_num](const string& a, const string& b) {
+        return extract_num(a) < extract_num(b);
+    });
 
     auto n_file_names = file_names.size();
 
@@ -101,7 +108,7 @@ static string _next_log_name(const string& log_dir, const string& log_prefix, bo
             return file_names.back();
 
         auto newest_log_path = file_names.back();
-        auto n = r_string_utils::s_to_uint32(newest_log_path.substr(log_prefix.length()));
+        auto n = extract_num(newest_log_path);
         ++n;
         return log_prefix + r_string_utils::uint32_to_s(n) + ".txt";
     }

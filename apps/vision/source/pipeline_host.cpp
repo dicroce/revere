@@ -2,6 +2,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_socket.h"
+#include "r_utils/3rdparty/json/json.h"
 #include "r_http/r_client_request.h"
 #include "r_http/r_client_response.h"
 #include <SDL.h>
@@ -16,6 +17,7 @@ using namespace r_pipeline;
 using namespace r_utils;
 using namespace std;
 using namespace std::chrono;
+using json = nlohmann::json;
 
 pipeline_host::pipeline_host(configure_state& cfg, SDL_Renderer* renderer) :
     _internals_lok(),
@@ -625,17 +627,31 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
 
         if(res.is_success())
         {
-            cbs.exp_state = EXPORT_STATE_FINISHED_SUCCESS;
-            R_LOG_INFO("Export finished successfully.");
-            fflush(stdout);
+            auto body = res.get_body_as_string();
+            if(!body.is_null())
+                cbs.export_id = json::parse(body.value())["id"].get<string>();
+            cbs.export_percent_complete = 0;
+            cbs.exp_state = EXPORT_STATE_IN_PROGRESS;
+            R_LOG_INFO("Export enqueued, id=%s", cbs.export_id.c_str());
         }
         else
         {
             cbs.exp_state = EXPORT_STATE_FINISHED_ERROR;
-            R_LOG_INFO("Export finished with error.");
-            fflush(stdout);
+            R_LOG_INFO("Export request failed.");
         }
     }
+}
+
+void pipeline_host::control_bar_export_progress_cb(const std::string& /*stream_name*/, control_bar_state& cbs)
+{
+    int percent = query_export_progress(_cfg, cbs.export_id);
+    if(percent < 0)
+        return;  // transient error, retry next poll
+
+    cbs.export_percent_complete = percent;
+
+    if(percent >= 100)
+        cbs.exp_state = EXPORT_STATE_FINISHED_SUCCESS;
 }
 
 bool pipeline_host::playing(const std::string& stream_name) const

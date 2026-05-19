@@ -147,6 +147,44 @@ void error_modal(
     }
 }
 
+template<typename DONE_CB, typename DISMISS_CB>
+void progress_modal(
+    ImGuiContext* GImGui,
+    const std::string& name,
+    int percent_complete,
+    DONE_CB done_cb,
+    DISMISS_CB dismiss_cb
+)
+{
+    ImGui::SetNextWindowSize(ImVec2(400, 120));
+    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        if(percent_complete >= 100)
+        {
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+            done_cb();
+            return;
+        }
+
+        char overlay[16];
+        snprintf(overlay, sizeof(overlay), "%d%%", percent_complete);
+        ImGui::ProgressBar(percent_complete / 100.0f, ImVec2(-1, 0), overlay);
+
+        float button_x = (400.0f - 90.0f) * 0.5f;
+        ImGui::SetCursorPosX(button_x);
+        if(ImGui::Button("Dismiss", ImVec2(90, 30)))
+        {
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+            dismiss_cb();
+            return;
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
 template<typename SIDEBAR_CB, typename MAIN_CB>
 void main_layout(
     uint16_t client_top,

@@ -14,11 +14,14 @@
 #include "r_av/r_audio_decoder.h"
 #include "r_av/r_audio_encoder.h"
 #include "r_utils/r_uuid.h"
+#include "r_utils/r_blocking_q.h"
 #include <vector>
 #include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <atomic>
 #include <string>
 
 namespace r_vss
@@ -60,6 +63,33 @@ class r_ws final
     };
 
     static constexpr size_t MAX_TRANSCODE_SESSIONS = 5;
+
+    enum class export_type { standard, transcode };
+
+    struct export_job
+    {
+        std::string id;
+        export_type type = export_type::standard;
+        std::string camera_id;
+        std::chrono::system_clock::time_point start_time;
+        std::chrono::system_clock::time_point end_time;
+        std::string file_name;
+        std::string exports_path;
+        // transcode-only
+        uint16_t width = 0;
+        uint16_t height = 0;
+        uint32_t bitrate = 0;
+        uint32_t framerate_num = 0;
+        uint32_t framerate_den = 0;
+        std::string codec;
+        int percent_complete = 0;
+    };
+
+    struct export_progress
+    {
+        int percent_complete = 0;
+        std::chrono::steady_clock::time_point completed_at{};
+    };
 
 public:
     R_API r_ws(const std::string& top_dir, r_disco::r_devices& devices);
@@ -122,17 +152,31 @@ private:
                                                     r_utils::r_socket& conn,
                                                     const r_http::r_server_request& request);
 
+    r_http::r_server_response _get_export_progress(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                    r_utils::r_socket& conn,
+                                                    const r_http::r_server_request& request);
+
     r_http::r_server_response _post_mcp(const r_http::r_web_server<r_utils::r_socket>& ws,
                                         r_utils::r_socket& conn,
                                         const r_http::r_server_request& request);
 
     void _evict_oldest_transcode_session();
 
+    void _export_entry_point();
+    void _export(export_job& job);
+    void _transcode_export(export_job& job);
+
     std::string _top_dir;
     r_disco::r_devices& _devices;
     r_http::r_web_server<r_utils::r_socket> _server;
     std::map<std::string, r_transcode_session> _sessions;
     std::mutex _sessions_mutex;
+
+    std::thread _export_th;
+    std::atomic<bool> _export_running {false};
+    r_utils::r_blocking_q<export_job> _export_q;
+    std::map<std::string, export_progress> _export_progress;
+    std::mutex _export_progress_mutex;
 };
 
 }

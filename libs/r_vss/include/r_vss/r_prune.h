@@ -11,6 +11,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <chrono>
 
 namespace r_vss
@@ -19,8 +20,7 @@ namespace r_vss
 struct prune_state
 {
     r_disco::r_camera camera;
-    std::vector<segment> blocks;
-    size_t bi;
+    std::chrono::system_clock::time_point cursor;
 };
 
 class r_prune final
@@ -48,6 +48,7 @@ private:
     std::chrono::system_clock::time_point _last_camera_fetch;
 
     r_utils::r_nullable<prune_state> _ps;
+    std::map<std::string, std::chrono::system_clock::time_point> _prune_hwm;
 };
 
 }

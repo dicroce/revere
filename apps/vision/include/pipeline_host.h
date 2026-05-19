@@ -61,6 +61,7 @@ public:
     void control_bar_button_cb(const std::string& name, control_bar_button_type type);
     void control_bar_update_data_cb(const std::string& stream_name, control_bar_state& cbs);
     void control_bar_export_cb(const std::string& stream_name, const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end, control_bar_state& cbs);
+    void control_bar_export_progress_cb(const std::string& stream_name, control_bar_state& cbs);
 
     void destroy_video_textures()
     {
