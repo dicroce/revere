@@ -52,9 +52,14 @@ add_subdirectory(ut)
 set(WEBUI_DIST   ${CMAKE_CURRENT_SOURCE_DIR}/webui/dist)
 set(WEBUI_BUNDLE ${CMAKE_CURRENT_BINARY_DIR}/ui.rbt)
 
+# r_bundle links against libr_utils.so. At build time the .so lives in its
+# own build dir, not next to the binary, so set LD_LIBRARY_PATH for the call.
+# (The baked-in $ORIGIN RPATH only resolves once everything is installed.)
 add_custom_command(
     OUTPUT  ${WEBUI_BUNDLE}
-    COMMAND $<TARGET_FILE:r_bundle> ${WEBUI_DIST} ${WEBUI_BUNDLE}
+    COMMAND ${CMAKE_COMMAND} -E env
+            "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:r_utils>:$ENV{LD_LIBRARY_PATH}"
+            $<TARGET_FILE:r_bundle> ${WEBUI_DIST} ${WEBUI_BUNDLE}
     DEPENDS r_bundle ${WEBUI_DIST}/index.html
     COMMENT "Packing Revere web UI bundle"
 )

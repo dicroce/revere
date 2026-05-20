@@ -3,8 +3,8 @@
 Version=1.0
 Type=Application
 Name=revere
-Exec=/usr/local/revere/revere
+Exec=@REVERE_EXEC@
 Comment=An open source video surveillance application
-Icon=/usr/local/revere/R.ico
+Icon=revere
 Terminal=false
 Categories=Utility;GTK;
