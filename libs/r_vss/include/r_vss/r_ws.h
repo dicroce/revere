@@ -52,6 +52,7 @@ class r_ws final
         int audio_channels = 0;
         int audio_sample_rate = 0;
         int64_t audio_pts = 0;
+        int64_t audio_first_ts = -1;  // abs ms timestamp of first audio input packet
         std::string output_audio_codec_params;
 
         // Target output audio params (0 = use source values)
@@ -59,7 +60,11 @@ class r_ws final
         int target_audio_channels = 0;
 
         std::chrono::steady_clock::time_point last_used;
-        int64_t encoder_frame_count = 0; // monotonic counter used as encoder PTS
+
+        // Framerate resampling state (persists across chunked transcode calls)
+        int64_t next_pts = -1;        // current position in encoder timebase units
+        int64_t first_ts = -1;        // ms timestamp of first video frame (for relative PTS)
+        std::shared_ptr<std::vector<uint8_t>> last_decoded_frame; // last YUV frame for duplication
     };
 
     static constexpr size_t MAX_TRANSCODE_SESSIONS = 5;

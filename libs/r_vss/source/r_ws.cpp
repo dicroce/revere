@@ -269,14 +269,14 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
         );
 
         json j;
+        j["first_ts"] = contents.first_ts.is_null() ? "" : r_time_utils::tp_to_iso_8601(contents.first_ts.value(), input_z_time);
+        j["last_ts"]  = contents.last_ts.is_null()  ? "" : r_time_utils::tp_to_iso_8601(contents.last_ts.value(),  input_z_time);
         j["segments"] = json::array();
 
         for(auto& s : contents.segments)
         {
-            // note: instead of push_back here its also possible to use += operator to append json object to array
             j["segments"].push_back({{"start_time", r_time_utils::tp_to_iso_8601(s.start, input_z_time)},
                                     {"end_time", r_time_utils::tp_to_iso_8601(s.end, input_z_time)}});
-
         }
 
         r_server_response response;
@@ -1194,13 +1194,57 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
 
                 if(dec_state != R_CODEC_STATE_HAS_OUTPUT && dec_state != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
                     continue;
+
                 auto decoded = session.decoder->get(AV_PIX_FMT_YUV420P, session.output_width, session.output_height, 1);
-                // Use a monotonic frame counter as the encoder PTS rather than the
-                // raw millisecond wall-clock timestamp.  With time_base {1, fps}, a
-                // counter of 0,1,2,... means one frame per time unit (correct).
-                // Passing ms timestamps (e.g. 1706000000033) would make libx264 think
-                // consecutive frames are ~1 second apart, breaking rate control.
-                session.encoder->attach_buffer(decoded->data(), decoded->size(), session.encoder_frame_count++);
+
+                // Record the first frame's timestamp so we can compute relative positions.
+                if(session.first_ts == -1)
+                    session.first_ts = ts;
+
+                // Convert relative ms timestamp to encoder timebase units (e.g. 1/30 s for 30fps),
+                // using midpoint rounding: pts = (rel_ms * fps_num + 500 * fps_den) / (1000 * fps_den)
+                int64_t relative_ts  = ts - session.first_ts;
+                int64_t rescaled_pts = (relative_ts  * (int64_t)session.framerate_num
+                                        + 500LL       * (int64_t)session.framerate_den)
+                                       / (1000LL      * (int64_t)session.framerate_den);
+
+                if(session.next_pts == -1)
+                    session.next_pts = rescaled_pts;
+
+                // Drop: frame is behind where the encoder already is — discard it.
+                if(rescaled_pts < session.next_pts)
+                    continue;
+
+                // Fill: input is ahead — duplicate the last encoded frame into the gap.
+                while(rescaled_pts > session.next_pts && session.last_decoded_frame)
+                {
+                    int64_t dup_ts = session.first_ts
+                                     + session.next_pts * 1000LL * (int64_t)session.framerate_den
+                                     / (int64_t)session.framerate_num;
+
+                    session.encoder->attach_buffer(session.last_decoded_frame->data(),
+                                                   session.last_decoded_frame->size(),
+                                                   session.next_pts);
+                    while(true)
+                    {
+                        auto enc_state = session.encoder->encode();
+                        if(enc_state != R_CODEC_STATE_HAS_OUTPUT) break;
+                        auto pi = session.encoder->get();
+                        if(dup_ts >= start_ms)
+                        {
+                            out_bt["frames"][out_frame_idx]["stream_id"] = to_string((int)R_STORAGE_MEDIA_TYPE_VIDEO);
+                            out_bt["frames"][out_frame_idx]["ts"]        = to_string(dup_ts);
+                            out_bt["frames"][out_frame_idx]["key"]       = string(pi.key ? "true" : "false");
+                            out_bt["frames"][out_frame_idx]["data"]      = vector<uint8_t>(pi.data, pi.data + pi.size);
+                            ++out_frame_idx;
+                        }
+                    }
+                    ++session.next_pts;
+                }
+
+                // Encode the current frame at next_pts.
+                session.encoder->attach_buffer(decoded->data(), decoded->size(), session.next_pts);
+                session.last_decoded_frame = decoded;
 
                 while(true)
                 {
@@ -1218,9 +1262,13 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
                         ++out_frame_idx;
                     }
                 }
+                ++session.next_pts;
             }
             else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO && session.audio_initialized && ts >= start_ms)
             {
+                if(session.audio_first_ts == -1)
+                    session.audio_first_ts = ts;
+
                 session.audio_decoder->attach_buffer(frame_data.data(), frame_data.size());
                 auto dec_state = session.audio_decoder->decode();
 
@@ -1253,15 +1301,21 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
                             chbuf.erase(chbuf.begin(), chbuf.begin() + frame_size);
                         }
 
+                        int64_t frame_sample_pos = session.audio_pts;
                         session.audio_encoder->attach_buffer(enc_buf.data(), enc_buf.size(), session.audio_pts);
                         session.audio_pts += frame_size;
 
                         auto enc_state = session.audio_encoder->encode();
                         if(enc_state == R_CODEC_STATE_HAS_OUTPUT)
                         {
+                            // Compute a sample-accurate absolute timestamp so that each encoded
+                            // AAC frame gets a unique PTS even when multiple frames are produced
+                            // from a single decoded input packet.
+                            int64_t audio_out_ts = session.audio_first_ts
+                                                   + frame_sample_pos * 1000LL / session.audio_sample_rate;
                             auto pi = session.audio_encoder->get();
                             out_bt["frames"][out_frame_idx]["stream_id"] = to_string((int)R_STORAGE_MEDIA_TYPE_AUDIO);
-                            out_bt["frames"][out_frame_idx]["ts"]        = to_string(ts);
+                            out_bt["frames"][out_frame_idx]["ts"]        = to_string(audio_out_ts);
                             out_bt["frames"][out_frame_idx]["key"]       = string("true");
                             out_bt["frames"][out_frame_idx]["data"]      = vector<uint8_t>(pi.data, pi.data + pi.size);
                             ++out_frame_idx;

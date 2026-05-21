@@ -358,6 +358,14 @@ contents r_vss::query_get_contents(const string& top_dir, r_devices& devices, co
     contents c;
     c.segments = result;
 
+    auto raw_first = sf.first_ts();
+    if(!raw_first.is_null())
+        c.first_ts.set_value(r_time_utils::epoch_millis_to_tp(raw_first.value()));
+
+    auto raw_last = sf.last_ts();
+    if(!raw_last.is_null())
+        c.last_ts.set_value(r_time_utils::epoch_millis_to_tp(raw_last.value()));
+
     return c;
 }
 
