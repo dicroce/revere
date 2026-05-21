@@ -71,7 +71,7 @@ vector<uint8_t> vision::query_key(const string& ip_address, const string& camera
     return response.release_body();
 }
 
-vector<segment> vision::query_segments(const configure_state& cs, const std::string& camera_id, const system_clock::time_point& start, const system_clock::time_point& end)
+contents_result vision::query_segments(const configure_state& cs, const std::string& camera_id, const system_clock::time_point& start, const system_clock::time_point& end)
 {
     auto maybe_revere_ipv4 = cs.get_revere_ipv4();
     if(maybe_revere_ipv4.is_null())
@@ -94,18 +94,23 @@ vector<segment> vision::query_segments(const configure_state& cs, const std::str
         R_THROW(("Could not query segments."));
 
     auto doc = resp.get_body_as_string().value();
-
     auto j = json::parse(doc);
 
-    vector<segment> result;
-    result.reserve(j["segments"].size());
+    contents_result result;
+    result.segments.reserve(j["segments"].size());
     for(auto s : j["segments"])
     {
         segment seg;
         seg.start = r_time_utils::iso_8601_to_tp(s["start_time"]);
         seg.end = r_time_utils::iso_8601_to_tp(s["end_time"]);
-        result.push_back(seg);
+        result.segments.push_back(seg);
     }
+
+    if(j.contains("first_ts") && j["first_ts"].is_string() && !j["first_ts"].get<string>().empty())
+        result.first_ts.set_value(r_time_utils::iso_8601_to_tp(j["first_ts"].get<string>()));
+
+    if(j.contains("last_ts") && j["last_ts"].is_string() && !j["last_ts"].get<string>().empty())
+        result.last_ts.set_value(r_time_utils::iso_8601_to_tp(j["last_ts"].get<string>()));
 
     return result;
 }

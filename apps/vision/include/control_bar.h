@@ -14,6 +14,7 @@
 #include "motion_event.h"
 #include "analytics_event.h"
 #include "error_handling.h"
+#include "r_utils/r_nullable.h"
 
 namespace vision
 {
@@ -54,6 +55,7 @@ struct control_bar_state
     std::chrono::system_clock::time_point export_start_time;
     std::string export_id;
     int export_percent_complete {0};
+    r_utils::r_nullable<std::chrono::system_clock::time_point> scrollback_limit;
 
     // Set the number of minutes in the timerange.
     // This is centered around the current playhead position.
@@ -238,6 +240,14 @@ struct control_bar_state
 
         tr.set_start(tr.get_start() - d);
         tr.set_end(tr.get_end() - d);
+
+        // Clamp against the oldest recorded data so we don't scroll into the void.
+        if(!scrollback_limit.is_null() && tr.get_start() < scrollback_limit.value())
+        {
+            auto window = tr.get_end() - tr.get_start();
+            tr.set_start(scrollback_limit.value());
+            tr.set_end(scrollback_limit.value() + window);
+        }
 
         // If the old playhead time is outside the new range, move it to the start or end of the range
         if(playhead_time < tr.get_start())

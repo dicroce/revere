@@ -558,7 +558,10 @@ void pipeline_host::control_bar_update_data_cb(const std::string& stream_name, c
         {
             auto range = cbs.get_range();
             found_pipe->second->update_range(range.first, range.second);
-            cbs.set_contents(query_segments(_cfg, found_si->second.camera_id, range.first, range.second));
+            auto cr = query_segments(_cfg, found_si->second.camera_id, range.first, range.second);
+            cbs.set_contents(cr.segments);
+            if(!cr.first_ts.is_null())
+                cbs.scrollback_limit.set_value(cr.first_ts.value());
 
             // Query motion events
             auto motion_events = query_motion_events(_cfg, found_si->second.camera_id, range.first, range.second);
