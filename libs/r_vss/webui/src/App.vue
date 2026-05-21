@@ -20,9 +20,11 @@
 
       <div v-else class="camera-grid">
         <CameraCard
-          v-for="camera in cameras"
+          v-for="(camera, index) in cameras"
           :key="camera.id"
           :camera="camera"
+          :index="index"
+          :total="cameras.length"
           @click="selectedCamera = camera"
         />
       </div>

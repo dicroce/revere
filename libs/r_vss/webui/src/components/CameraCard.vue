@@ -16,17 +16,42 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
-  camera: Object
+  camera: Object,
+  index:  { type: Number, default: 0 },
+  total:  { type: Number, default: 1 }
 })
 
-const snapError = ref(false)
+const snapError   = ref(false)
+const snapshotUrl = ref('')
 
-const snapshotUrl = computed(() => {
+function buildUrl() {
   const t = new Date(Date.now() - 5000).toISOString()
   return `/jpg?camera_id=${props.camera.id}&start_time=${encodeURIComponent(t)}&width=640&height=360`
+}
+
+function refresh() {
+  snapError.value   = false
+  snapshotUrl.value = buildUrl()
+}
+
+let intervalId = null
+let timeoutId  = null
+
+onMounted(() => {
+  snapshotUrl.value = buildUrl()
+  const stagger = (props.index / Math.max(props.total, 1)) * 3000
+  timeoutId = setTimeout(() => {
+    refresh()
+    intervalId = setInterval(refresh, 3000)
+  }, stagger)
+})
+
+onUnmounted(() => {
+  clearTimeout(timeoutId)
+  clearInterval(intervalId)
 })
 </script>
 
