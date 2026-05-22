@@ -195,7 +195,6 @@ private:
     std::thread _th;
     bool _running;
     std::chrono::steady_clock::time_point _last_dead_check;
-    std::chrono::steady_clock::time_point _last_stream_start;
 
     // Stored so the dead-check loop can retry collect_stream_info() if the
     // local server wasn't ready when change_layout() was first called.

@@ -55,9 +55,9 @@ public:
     inline bool ready_for_dead_check() const
     {
         auto elapsed = std::chrono::steady_clock::now() - _last_play_time;
-        auto threshold = _received_first_frame
+        auto threshold = _received_first_frame.load()
             ? std::chrono::seconds(15)
-            : std::chrono::seconds(3);
+            : std::chrono::seconds(8);
         return elapsed > threshold;
     }
 
@@ -113,7 +113,7 @@ private:
     std::atomic<float> _volume_gain;
     std::atomic<bool> _audio_active;
     bool _has_audio;
-    bool _received_first_frame;
+    std::atomic<bool> _received_first_frame;
     int64_t _last_v_pts;
     int64_t _last_a_pts;
 

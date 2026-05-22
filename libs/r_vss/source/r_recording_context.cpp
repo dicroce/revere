@@ -312,7 +312,70 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 );
             }
 
+            // Maintain the per-camera GOP cache so a freshly-connected viewer can
+            // get frames immediately rather than waiting for the next IDR. Clear
+            // on every key so the cache always starts with a keyframe (until the
+            // safety cap kicks in for a misbehaving source).
+            if(key)
+                _video_gop_cache.clear();
+            _video_gop_cache.push_back({pts, key, buffer});
+            while(_video_gop_cache.size() > GOP_CACHE_MAX_FRAMES)
+                _video_gop_cache.pop_front();
+
             this->_sk->iterate_live_restreaming_states(this->_camera.id, [&](live_restreaming_state& lrs) {
+                // Fast-start path: a new viewer just connected. Burst the cached
+                // GOP into their queue with COMPRESSED timestamps (1ms apart) so
+                // the client decodes and plays them as fast as possible instead
+                // of pacing them out at the source's 33ms rhythm (which would
+                // leave the viewer permanently a GOP behind live).
+                //
+                // After the burst, we shift first_restream_v_pts so that the
+                // next live frame (this current frame's successor) lands exactly
+                // one source frame-interval after the last burst frame's
+                // (compressed) gst_pts — and live cadence resumes naturally.
+                if(lrs.needs_gop_replay)
+                {
+                    lrs.needs_gop_replay = false;
+
+                    if(!_video_gop_cache.empty() && _video_gop_cache.front().key)
+                    {
+                        constexpr uint64_t BURST_INTERVAL_NS = 1000000; // 1ms
+
+                        size_t n = _video_gop_cache.size();
+                        size_t i = 0;
+                        for(auto& e : _video_gop_cache)
+                        {
+                            _frame_context fc;
+                            fc.gst_pts = i * BURST_INTERVAL_NS;
+                            fc.gst_dts = i * BURST_INTERVAL_NS;
+                            fc.key = e.key;
+                            fc.buffer = e.buffer;
+                            lrs.video_samples.post(fc);
+                            ++i;
+                        }
+
+                        // Anchor live so the next live frame's gst_pts =
+                        //   last_burst_gst_pts + (p_next - p_last_burst)*1e6
+                        // i.e. natural source-rate continuation from the end
+                        // of the compressed burst.
+                        auto last_burst_gst_pts = (n - 1) * BURST_INTERVAL_NS;
+                        auto last_burst_source_pts_ns = (uint64_t)_video_gop_cache.back().pts * 1000000;
+                        auto anchor_ns = last_burst_source_pts_ns - last_burst_gst_pts;
+
+                        lrs.first_restream_v_times_set = true;
+                        lrs.first_restream_v_pts = anchor_ns;
+                        lrs.first_restream_v_dts = anchor_ns;
+                        lrs.first_restream_a_times_set = true;
+                        lrs.first_restream_a_pts = anchor_ns;
+                        lrs.first_restream_a_dts = anchor_ns;
+                        lrs.live_restream_key_sent = true;
+
+                        return;  // current frame already included via cache tail
+                    }
+                    // Cache doesn't start with a key (cap blew past it). Fall
+                    // through to the key-gated path below.
+                }
+
                 if(lrs.live_restream_key_sent || key)
                 {
                     lrs.live_restream_key_sent = true;
@@ -470,6 +533,7 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
     gst_util_set_object_arg(G_OBJECT(lrs->v_appsrc), "format", "time");
 
     g_object_set(G_OBJECT(lrs->v_appsrc), "caps", (GstCaps*)_video_caps.value(), NULL);
+    g_object_set(G_OBJECT(lrs->v_appsrc), "is-live", TRUE, NULL);
 
     g_signal_connect(lrs->v_appsrc, "need-data", (GCallback)_need_live_data_cbs, lrs.get());
 
@@ -480,6 +544,7 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
         gst_util_set_object_arg(G_OBJECT(lrs->a_appsrc), "format", "time");
 
         g_object_set(G_OBJECT(lrs->a_appsrc), "caps", (GstCaps*)_audio_caps.value(), NULL);
+        g_object_set(G_OBJECT(lrs->a_appsrc), "is-live", TRUE, NULL);
 
         g_signal_connect(lrs->a_appsrc, "need-data", (GCallback)_need_live_data_cbs, lrs.get());
     }
@@ -601,10 +666,6 @@ tuple<string, system_clock::time_point, system_clock::time_point> r_recording_co
 
 void r_recording_context::_live_restream_cleanup_cbs(live_restreaming_state* lrs)
 {
-    // This callback is called by GStreamer when the media object is destroyed.
-    // It's now safe to access lrs->sk because r_stream_keeper outlives all
-    // r_recording_context instances and the GStreamer main loop.
-    // The shared_ptr in the map keeps the lrs alive until we erase it.
     lrs->sk->remove_live_restreaming_state(lrs->media);
 }
 
