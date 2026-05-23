@@ -54,6 +54,65 @@ r_server_response mcp_err(const json& id, int code, const string& msg)
     return resp;
 }
 
+// Returns the camera's source video resolution by parsing the SPS from the
+// codec params stored alongside the latest recorded key frame. We can't use
+// r_camera::video_codec_parameters directly — those come from the discovery-
+// time SDP and frequently lack sprop-parameter-sets for cameras that only
+// emit SPS/PPS inline in the bitstream. The stored params, by contrast, are
+// populated by r_recording_context with the actual sprop bytes from the
+// running stream, so they're always present for any camera that's recorded
+// at least one key frame. Null on any failure (codec unknown, no recording,
+// SPS missing) — resolution is best-effort metadata.
+r_utils::r_nullable<std::pair<uint16_t, uint16_t>> _camera_source_resolution(const std::string& top_dir, const r_disco::r_camera& c)
+{
+    r_utils::r_nullable<std::pair<uint16_t, uint16_t>> out;
+    if(c.record_file_path.is_null())
+        return out;
+    try
+    {
+        // Path resolution mirrors _get_storage_path() in r_query.cpp.
+        const auto& rfp = c.record_file_path.value();
+        std::string path = (rfp.find('/') != std::string::npos || rfp.find('\\') != std::string::npos)
+            ? rfp
+            : (top_dir + PATH_SLASH + "video" + PATH_SLASH + rfp);
+
+        r_storage::r_storage_file_reader sf(path);
+        auto last_ts = sf.last_ts();
+        if(last_ts.is_null())
+            return out;
+
+        auto key_bt_buf = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, last_ts.value());
+        uint32_t version = 0;
+        auto bt = r_utils::r_blob_tree::deserialize(key_bt_buf.data(), key_bt_buf.size(), version);
+
+        if(!bt.has_key("video_codec_name") || !bt.has_key("video_codec_parameters"))
+            return out;
+        auto codec = bt["video_codec_name"].get_string();
+        auto params = bt["video_codec_parameters"].get_string();
+
+        if(codec == "h264")
+        {
+            auto sps = r_pipeline::get_h264_sps(params);
+            if(!sps.is_null())
+            {
+                auto info = r_pipeline::parse_h264_sps(sps.value());
+                out.set_value({info.width, info.height});
+            }
+        }
+        else if(codec == "h265")
+        {
+            auto sps = r_pipeline::get_h265_sps(params);
+            if(!sps.is_null())
+            {
+                auto info = r_pipeline::parse_h265_sps(sps.value());
+                out.set_value({info.width, info.height});
+            }
+        }
+    }
+    catch(...) { /* swallow — resolution is best-effort metadata */ }
+    return out;
+}
+
 } // namespace
 
 r_ws::r_ws(const string& top_dir, r_devices& devices) :
@@ -306,6 +365,7 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
         for(auto c : cameras)
         {
             bool do_motion_detection = (c.do_motion_detection.is_null())?false:c.do_motion_detection.value();
+            auto res = _camera_source_resolution(_top_dir, c);
 
             j["cameras"].push_back(
                 {
@@ -317,7 +377,9 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                     {"video_codec", (c.video_codec.is_null())?"":c.video_codec.value()},
                     {"audio_codec", (c.audio_codec.is_null())?"":c.audio_codec.value()},
                     {"state", c.state},
-                    {"do_motion_detection", do_motion_detection}
+                    {"do_motion_detection", do_motion_detection},
+                    {"width", res.is_null() ? 0 : res.value().first},
+                    {"height", res.is_null() ? 0 : res.value().second}
                 }
             );
         }
