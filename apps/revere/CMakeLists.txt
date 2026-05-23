@@ -179,6 +179,13 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/R.png $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/R.png
     )
 
+    # Copy web UI bundle next to the binary (r_ws.cpp looks for ui.rbt in CWD,
+    # which is set to the binary's directory at startup).
+    add_dependencies(revere r_vss_webui)
+    add_custom_command(TARGET revere POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/libs/r_vss/ui.rbt $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/ui.rbt
+    )
+
     # Copy system plugins into the app bundle (if they were built)
     if(EXISTS "${CMAKE_BINARY_DIR}/system_plugins")
         add_custom_command(TARGET revere POST_BUILD
