@@ -661,6 +661,15 @@ bool pipeline_host::playing(const std::string& stream_name) const
     return false;
 }
 
+std::chrono::system_clock::time_point pipeline_host::last_control_bar_pos(const std::string& stream_name) const
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    auto found_pipe = _pipes.find(stream_name);
+    if(found_pipe != end(_pipes))
+        return found_pipe->second->get_last_control_bar_pos();
+    return std::chrono::system_clock::time_point{};
+}
+
 void pipeline_host::_entry_point()
 {
     _running = true;

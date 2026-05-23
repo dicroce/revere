@@ -167,6 +167,7 @@ public:
     }
 
     bool playing(const std::string& stream_name) const;
+    std::chrono::system_clock::time_point last_control_bar_pos(const std::string& stream_name) const;
 
     // Returns true if new frames have arrived since last call (and clears the flag)
     bool consume_new_frames_flag()

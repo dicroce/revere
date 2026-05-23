@@ -954,6 +954,38 @@ int main(int, char**)
                 }
                 ph.set_stream_volume(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs.volume_gain);
                 ui_state.mcs.obos.cbs.has_audio = ph.has_audio(ui_state.mcs.selected_stream_name);
+
+                // Sync the control bar to the newly-selected camera. Keyed on
+                // camera_id rather than stream name so layout transitions that
+                // remap the same camera to a different slot don't re-trigger
+                // (the carried-over playhead is already correct in that case).
+                static string last_selected_camera_id;
+                auto sel_si = cfg_state.get_stream_info(ui_state.mcs.selected_stream_name);
+                string current_camera_id = !sel_si.is_null() ? sel_si.value().camera_id : string();
+                if(current_camera_id != last_selected_camera_id)
+                {
+                    last_selected_camera_id = current_camera_id;
+                    if(!current_camera_id.empty())
+                    {
+                        if(ph.playing(ui_state.mcs.selected_stream_name))
+                        {
+                            ui_state.mcs.obos.cbs.live();
+                        }
+                        else
+                        {
+                            auto pos = ph.last_control_bar_pos(ui_state.mcs.selected_stream_name);
+                            if(pos != std::chrono::system_clock::time_point{})
+                            {
+                                ui_state.mcs.obos.cbs.set_range(pos);
+                                ui_state.mcs.obos.cbs.playhead_pos = 1000;
+                            }
+                            else
+                            {
+                                ui_state.mcs.obos.cbs.live();
+                            }
+                        }
+                    }
+                }
             }
 
             //ImGui::ShowDemoWindow();
