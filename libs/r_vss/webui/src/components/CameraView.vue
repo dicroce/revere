@@ -11,7 +11,12 @@
     </div>
 
     <div class="timeline-bar">
-      <TimelineBar :camera-id="camera.id" @seek="onSeek" @live="onLive" />
+      <TimelineBar
+        :camera-id="camera.id"
+        :camera-name="camera.friendly_name || camera.camera_name"
+        @seek="onSeek"
+        @live="onLive"
+      />
     </div>
   </div>
 </template>

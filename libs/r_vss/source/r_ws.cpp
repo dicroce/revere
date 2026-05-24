@@ -137,6 +137,7 @@ r_ws::r_ws(const string& top_dir, r_devices& devices) :
     _server.add_route(METHOD_GET, "/export", std::bind(&r_ws::_get_export, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/transcode_export", std::bind(&r_ws::_get_transcode_export, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/export_progress", std::bind(&r_ws::_get_export_progress, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/export_download", std::bind(&r_ws::_get_export_download, this, _1, _2, _3));
 
     _server.add_route(METHOD_POST, "/mcp", std::bind(&r_ws::_post_mcp, this, _1, _2, _3));
 
@@ -551,7 +552,10 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
 
         {
             lock_guard<mutex> lock(_export_progress_mutex);
-            _export_progress[job.id] = {0, {}};
+            auto& p = _export_progress[job.id];
+            p.percent_complete = 0;
+            p.completed_at = {};
+            p.file_path = exports_path + PATH_SLASH + job.file_name;
         }
 
         _export_q.post(job);
@@ -1824,6 +1828,64 @@ r_http::r_server_response r_ws::_get_export_progress(const r_http::r_web_server<
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to get export progress."));
+}
+
+r_http::r_server_response r_ws::_get_export_download(const r_http::r_web_server<r_utils::r_socket>&,
+                                                       r_utils::r_socket&,
+                                                       const r_http::r_server_request& request)
+{
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("id") == args.end())
+            R_THROW(("Missing id."));
+        auto id = args["id"];
+
+        std::string file_path;
+        {
+            lock_guard<mutex> lock(_export_progress_mutex);
+            auto it = _export_progress.find(id);
+            if(it == _export_progress.end())
+                R_STHROW(r_http_404_exception, ("Export not found: %s", id.c_str()));
+            if(it->second.percent_complete < 100)
+                R_STHROW(r_http_500_exception, ("Export not yet complete: %s", id.c_str()));
+            file_path = it->second.file_path;
+        }
+
+        if(!r_fs::file_exists(file_path))
+            R_STHROW(r_http_404_exception, ("Export file missing on disk: %s", file_path.c_str()));
+
+        // basename for Content-Disposition.
+        auto slash = file_path.find_last_of("/\\");
+        auto file_name = (slash == std::string::npos) ? file_path : file_path.substr(slash + 1);
+
+        auto bytes = r_fs::read_file(file_path);
+
+        r_server_response response;
+        response.set_content_type("video/quicktime");
+        response.add_additional_header(
+            "Content-Disposition",
+            string("attachment; filename=\"") + file_name + "\""
+        );
+        response.set_body(std::move(bytes));
+
+        // Delete the file and forget the job once we've assembled the response.
+        // If write_response then fails, the user can't retry — but they can just
+        // re-run the export. Cleaner than letting orphaned files accumulate.
+        try { r_fs::remove_file(file_path); } catch(...) {}
+        {
+            lock_guard<mutex> lock(_export_progress_mutex);
+            _export_progress.erase(id);
+        }
+
+        return response;
+    }
+    catch(const r_http_404_exception&) { throw; }
+    catch(const exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to download export."));
 }
 
 r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,

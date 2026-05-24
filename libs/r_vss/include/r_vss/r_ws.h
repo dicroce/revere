@@ -94,6 +94,7 @@ class r_ws final
     {
         int percent_complete = 0;
         std::chrono::steady_clock::time_point completed_at{};
+        std::string file_path;
     };
 
 public:
@@ -158,6 +159,10 @@ private:
                                                     const r_http::r_server_request& request);
 
     r_http::r_server_response _get_export_progress(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                    r_utils::r_socket& conn,
+                                                    const r_http::r_server_request& request);
+
+    r_http::r_server_response _get_export_download(const r_http::r_web_server<r_utils::r_socket>& ws,
                                                     r_utils::r_socket& conn,
                                                     const r_http::r_server_request& request);
 
