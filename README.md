@@ -15,6 +15,7 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 - Cross-platform (Linux/Windows/Mac)
 - Full featured API
 - YOLOv8 object detection of people and cars
+- Storage management: move recording files to a new drive or reset storage in-place via the camera Properties dialog
 
 ## Screenshots
 
@@ -64,6 +65,22 @@ should appear in the Discovered list. Once it appears click Record and follow th
 - [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
 - [Contributing](CONTRIBUTING.md) - How to contribute to the project
 
+## Building from Source (quick reference)
+
+```bash
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build .
+```
+
+To include the optional `revere_cloud` plugin:
+
+```bash
+cmake .. -DCMAKE_BUILD_TYPE=Release -DEXTERNAL_PLUGIN_REPOS=/path/to/revere_cloud
+```
+
+Multiple plugin repos can be separated by semicolons.
+
 ## Platform Support
 
 | Platform | Status |
@@ -72,7 +89,6 @@ should appear in the Discovered list. Once it appears click Record and follow th
 | Windows 10/11 | ✅ Tested |
 | macOS 10.15+ | ✅ Tested |
 | Snap | ✅ Tested |
-| flatpak | ✅ Tested |
 
 ## System Requirements
 
