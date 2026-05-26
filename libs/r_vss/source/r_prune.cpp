@@ -10,6 +10,8 @@ using namespace r_utils;
 using namespace std;
 using namespace std::chrono;
 
+static const chrono::minutes PRUNE_CHUNK_SIZE{15};
+
 r_prune::r_prune(const std::string& top_dir, r_disco::r_devices& devices) :
     _running(false),
     _prune_th(),
@@ -79,14 +81,23 @@ void r_prune::_entry_point()
                 {
                     prune_state ps;
                     ps.camera = _cameras.front();
-                    auto blocks = query_get_blocks(_top_dir, _devices, ps.camera.id);
 
-                    if(blocks.empty())
+                    auto first_ts = query_get_first_ts(_top_dir, _devices, ps.camera.id);
+                    auto retention_cutoff = now - chrono::hours(ps.camera.min_continuous_recording_hours.value());
+
+                    if(first_ts.is_null() || first_ts.value() >= retention_cutoff)
+                    {
                         _rotate_cameras();
+                    }
                     else
                     {
-                        ps.blocks = blocks;
-                        ps.bi = 0;
+                        auto it = _prune_hwm.find(ps.camera.id);
+                        if(it != _prune_hwm.end())
+                            ps.cursor = max(first_ts.value(), it->second - PRUNE_CHUNK_SIZE);
+                        else
+                            ps.cursor = first_ts.value();
+
+                        R_LOG_INFO("r_prune: switching to camera %s\n", ps.camera.friendly_name.value().c_str());
                         _ps = ps;
                     }
                 }
@@ -96,21 +107,33 @@ void r_prune::_entry_point()
 
                     auto current_ps = _ps.value();
 
-                    auto block_start = current_ps.blocks[current_ps.bi].start;
-                    auto block_end = current_ps.blocks[current_ps.bi].end;
+                    auto retention_cutoff = now - chrono::hours(current_ps.camera.min_continuous_recording_hours.value());
 
-                    // Skip blocks that are too recent - the +30 second overlap on the motion
-                    // query would exceed what the ring buffer has recorded
-                    if(block_end + chrono::seconds(30) > now)
+                    if(current_ps.cursor >= retention_cutoff)
                     {
+                        _prune_hwm[current_ps.camera.id] = retention_cutoff;
                         _rotate_cameras();
                         _ps.clear();
                         continue;
                     }
 
-                    auto retention_cutoff = now - chrono::hours(current_ps.camera.min_continuous_recording_hours.value());
-                    if(block_start > retention_cutoff)
+                    auto chunk_end = current_ps.cursor + PRUNE_CHUNK_SIZE;
+                    if(chunk_end > retention_cutoff)
+                        chunk_end = retention_cutoff;
+
+                    // Not enough remaining range to meaningfully prune - done with this camera
+                    if(chunk_end - current_ps.cursor < PRUNE_CHUNK_SIZE / 2)
                     {
+                        _prune_hwm[current_ps.camera.id] = retention_cutoff;
+                        _rotate_cameras();
+                        _ps.clear();
+                        continue;
+                    }
+
+                    // Don't process chunks whose end would require querying beyond now
+                    if(chunk_end + chrono::seconds(30) > now)
+                    {
+                        _prune_hwm[current_ps.camera.id] = retention_cutoff;
                         _rotate_cameras();
                         _ps.clear();
                         continue;
@@ -120,36 +143,25 @@ void r_prune::_entry_point()
                         _top_dir,
                         _devices,
                         current_ps.camera.id,
-                        block_start - chrono::seconds(30),
-                        block_end + chrono::seconds(30)
+                        current_ps.cursor - chrono::seconds(30),
+                        chunk_end + chrono::seconds(30)
                     );
 
                     if(!_running) break;
 
                     if(motion_events.empty())
                     {
-                        R_LOG_INFO("r_prune: pruning %s FROM %s -> %s\n",
-                            current_ps.camera.friendly_name.value().c_str(),
-                            r_time_utils::tp_to_iso_8601(block_start, false).c_str(),
-                            r_time_utils::tp_to_iso_8601(block_end, false).c_str()
-                        );
                         query_remove_blocks(
                             _top_dir,
                             _devices,
                             current_ps.camera.id,
-                            block_start,
-                            block_end
+                            current_ps.cursor,
+                            chunk_end
                         );
                     }
 
-                    ++current_ps.bi;
-
-                    if(current_ps.bi >= current_ps.blocks.size())
-                    {
-                        _rotate_cameras();
-                        _ps.clear();
-                    }
-                    else _ps = current_ps;
+                    current_ps.cursor = chunk_end;
+                    _ps = current_ps;
                 }
             }
 
@@ -184,6 +196,7 @@ void r_prune::_update_cameras()
         {
             if(!_ps.is_null() && _ps.value().camera.id == it->id)
                 _ps.clear();
+            _prune_hwm.erase(it->id);
             it = _cameras.erase(it);
         }
         else ++it;

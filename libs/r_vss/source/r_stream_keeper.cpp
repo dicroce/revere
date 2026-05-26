@@ -699,7 +699,7 @@ void r_stream_keeper::_rtsp_server_entry_point()
         while (g_main_context_pending(context))
             g_main_context_iteration(context, false);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     g_main_context_pop_thread_default(context);
     g_main_context_unref(context);

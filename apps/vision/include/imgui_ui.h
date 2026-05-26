@@ -147,6 +147,44 @@ void error_modal(
     }
 }
 
+template<typename DONE_CB, typename DISMISS_CB>
+void progress_modal(
+    ImGuiContext* GImGui,
+    const std::string& name,
+    int percent_complete,
+    DONE_CB done_cb,
+    DISMISS_CB dismiss_cb
+)
+{
+    ImGui::SetNextWindowSize(ImVec2(400, 120));
+    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        if(percent_complete >= 100)
+        {
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+            done_cb();
+            return;
+        }
+
+        char overlay[16];
+        snprintf(overlay, sizeof(overlay), "%d%%", percent_complete);
+        ImGui::ProgressBar(percent_complete / 100.0f, ImVec2(-1, 0), overlay);
+
+        float button_x = (400.0f - 90.0f) * 0.5f;
+        ImGui::SetCursorPosX(button_x);
+        if(ImGui::Button("Dismiss", ImVec2(90, 30)))
+        {
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+            dismiss_cb();
+            return;
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
 template<typename SIDEBAR_CB, typename MAIN_CB>
 void main_layout(
     uint16_t client_top,
@@ -589,6 +627,31 @@ void main_client(
     uint16_t control_bar_height = (uint16_t)(6 * ImGui::GetTextLineHeightWithSpacing());
     uint16_t video_pane_height = h - control_bar_height;
 
+    // On layout transition, try to keep the user's previously-selected camera
+    // selected in the new layout. Otherwise the selection always snaps to the
+    // top-left slot, which is confusing if the user was scrubbed into the past
+    // on a different camera (the control bar then drives a stream other than
+    // the one they were just looking at).
+    auto preserve_or_default_selection = [&](layout new_l, const std::string& fallback) {
+        if(mcs.selected_stream_name.find(layout_to_s(new_l)) != std::string::npos)
+            return;  // Already in this layout, leave as-is.
+
+        auto old_si = cs.get_stream_info(mcs.selected_stream_name);
+        if(!old_si.is_null())
+        {
+            auto target_camera_id = old_si.value().camera_id;
+            for(auto& si : cs.collect_stream_info(window, new_l))
+            {
+                if(si.camera_id == target_camera_id)
+                {
+                    mcs.selected_stream_name = si.name;
+                    return;
+                }
+            }
+        }
+        mcs.selected_stream_name = fallback;
+    };
+
     if(l == LAYOUT_ONE_BY_ONE)
     {
         vision::one_by_one(
@@ -619,9 +682,7 @@ void main_client(
     }
     else if(l == LAYOUT_TWO_BY_TWO)
     {
-        // Initialize selected stream if empty or invalid for this layout
-        if(mcs.selected_stream_name.find("twobytwo") == std::string::npos)
-            mcs.selected_stream_name = "0_twobytwo_0";
+        preserve_or_default_selection(LAYOUT_TWO_BY_TWO, "0_twobytwo_0");
 
         vision::two_by_two(
             x, y, w, video_pane_height,
@@ -651,9 +712,7 @@ void main_client(
     }
     else if(l == LAYOUT_FOUR_BY_FOUR)
     {
-        // Initialize selected stream if empty or invalid for this layout
-        if(mcs.selected_stream_name.find("fourbyfour") == std::string::npos)
-            mcs.selected_stream_name = "0_fourbyfour_0";
+        preserve_or_default_selection(LAYOUT_FOUR_BY_FOUR, "0_fourbyfour_0");
 
         vision::four_by_four(
             x, y, w, video_pane_height,
@@ -703,6 +762,10 @@ void sidebar_list(
 {
     auto pos = ImGui::GetCursorPos();
 
+    static int s_tooltip_hover_idx = -1;
+    static double s_tooltip_hover_start = 0.0;
+    int hovered_this_frame = -1;
+
     float largest_label = 0;
     for(int i = 0; i < (int)labels.size(); ++i)
     {
@@ -736,6 +799,18 @@ void sidebar_list(
         ImGui::PopStyleColor();
         ImGui::PopStyleColor();
 
+        if(ImGui::IsItemHovered())
+        {
+            hovered_this_frame = i;
+            if(s_tooltip_hover_idx != i)
+            {
+                s_tooltip_hover_idx = i;
+                s_tooltip_hover_start = ImGui::GetTime();
+            }
+            if(ImGui::GetTime() - s_tooltip_hover_start >= 0.5)
+                ImGui::SetTooltip("Drag to the main view");
+        }
+
         if(ImGui::BeginDragDropSource(ImGuiDragDropFlags_None))
         {
             ImGui::SetDragDropPayload("camera_id", labels[i].camera_id.c_str(), labels[i].camera_id.size());
@@ -760,6 +835,9 @@ void sidebar_list(
 
         ImGui::PopID();
     }
+
+    if(hovered_this_frame == -1)
+        s_tooltip_hover_idx = -1;
 }
 
 }

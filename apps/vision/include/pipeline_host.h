@@ -61,6 +61,7 @@ public:
     void control_bar_button_cb(const std::string& name, control_bar_button_type type);
     void control_bar_update_data_cb(const std::string& stream_name, control_bar_state& cbs);
     void control_bar_export_cb(const std::string& stream_name, const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end, control_bar_state& cbs);
+    void control_bar_export_progress_cb(const std::string& stream_name, control_bar_state& cbs);
 
     void destroy_video_textures()
     {
@@ -166,6 +167,7 @@ public:
     }
 
     bool playing(const std::string& stream_name) const;
+    std::chrono::system_clock::time_point last_control_bar_pos(const std::string& stream_name) const;
 
     // Returns true if new frames have arrived since last call (and clears the flag)
     bool consume_new_frames_flag()
@@ -194,7 +196,6 @@ private:
     std::thread _th;
     bool _running;
     std::chrono::steady_clock::time_point _last_dead_check;
-    std::chrono::steady_clock::time_point _last_stream_start;
 
     // Stored so the dead-check loop can retry collect_stream_info() if the
     // local server wasn't ready when change_layout() was first called.

@@ -2,18 +2,28 @@
   <div class="timeline">
     <div class="controls">
       <div class="left">
-        <button class="ctrl-btn" @click="shiftBack">&#8592;</button>
-        <button class="ctrl-btn" @click="shiftForward">&#8594;</button>
+        <button class="ctrl-btn" @click="shiftBack" :disabled="exporting">&#8592;</button>
+        <button class="ctrl-btn" @click="shiftForward" :disabled="exporting">&#8594;</button>
         <span class="time-label">{{ fmtTime(playheadTime) }}</span>
       </div>
       <div class="right">
-        <select class="zoom-sel" v-model="rangeMinutes" @change="onZoomChange">
-          <option :value="10">10m</option>
-          <option :value="20">20m</option>
-          <option :value="60">1h</option>
-          <option :value="120">2h</option>
-        </select>
-        <button class="ctrl-btn" :class="{ active: isLive }" @click="goLive">Live</button>
+        <span v-if="exporting" class="exporting-label">Exporting {{ exportPercent }}%</span>
+
+        <template v-else-if="exportMode">
+          <button class="ctrl-btn export-finish" @click="finishExport">Finish Export</button>
+          <button class="ctrl-btn" @click="cancelExport">Cancel</button>
+        </template>
+
+        <template v-else>
+          <select class="zoom-sel" v-model="rangeMinutes" @change="onZoomChange">
+            <option :value="10">10m</option>
+            <option :value="20">20m</option>
+            <option :value="60">1h</option>
+            <option :value="120">2h</option>
+          </select>
+          <button class="ctrl-btn" @click="startExport">Export</button>
+          <button class="ctrl-btn" :class="{ active: isLive }" @click="goLive">Live</button>
+        </template>
       </div>
     </div>
     <canvas
@@ -30,7 +40,10 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 
-const props = defineProps({ cameraId: String })
+const props = defineProps({
+  cameraId:   String,
+  cameraName: { type: String, default: '' }
+})
 const emit  = defineEmits(['seek', 'live'])
 
 const canvas          = ref(null)
@@ -43,6 +56,16 @@ const segments        = ref([])
 const motionEvents    = ref([])
 const analyticsEvents = ref([])
 const dragging        = ref(false)
+
+// Export selection state. When exportMode is true, the user is positioning
+// the end marker; the original playhead is frozen as the start. Once they
+// click Finish Export we kick off /export and poll progress until the file
+// is ready, then trigger a browser download via /export_download.
+const exportMode    = ref(false)
+const exportStart   = ref(null)  // Date — frozen start marker (was playheadTime when Export clicked)
+const exportEnd     = ref(null)  // Date — user-positioned end marker
+const exporting     = ref(false) // server-side export running (between Finish Export and download)
+const exportPercent = ref(0)
 
 // --- icon preload ---
 const ICON_NAMES = ['airplane','backpack','bicycle','bird','boat','bus','car','cat',
@@ -263,15 +286,23 @@ function draw() {
   ctx.lineTo(W, TICK_H)
   ctx.stroke()
 
-  // playhead
-  const px = msToX(playheadTime.value.getTime())
-  if (px >= 0 && px <= W) {
-    ctx.strokeStyle = '#4caf50'
-    ctx.lineWidth = 2
-    ctx.beginPath()
-    ctx.moveTo(px, 0)
-    ctx.lineTo(px, H)
-    ctx.stroke()
+  // playhead(s)
+  ctx.strokeStyle = '#4caf50'
+  ctx.lineWidth = 2
+  const drawHead = (t) => {
+    const x = msToX(t.getTime())
+    if (x >= 0 && x <= W) {
+      ctx.beginPath()
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x, H)
+      ctx.stroke()
+    }
+  }
+  if (exportMode.value) {
+    if (exportStart.value) drawHead(exportStart.value)
+    if (exportEnd.value)   drawHead(exportEnd.value)
+  } else {
+    drawHead(playheadTime.value)
   }
 }
 
@@ -279,10 +310,20 @@ function draw() {
 let seekTimer = null
 
 function handleSeek(e) {
+  if (exporting.value) return
   const rect = canvas.value.getBoundingClientRect()
   const x    = (e.clientX - rect.left) * (canvas.value.width / rect.width)
   const ms   = Math.min(xToMs(x), Date.now())
   if (ms < rangeStart.value.getTime()) return
+
+  if (exportMode.value) {
+    // Drag the end marker only; clamp so it can't precede the start marker.
+    const minMs = exportStart.value.getTime() + 1000  // at least 1 second of clip
+    exportEnd.value = new Date(Math.max(ms, minMs))
+    draw()
+    return
+  }
+
   isLive.value      = false
   playheadTime.value = new Date(ms)
   draw()
@@ -290,10 +331,90 @@ function handleSeek(e) {
   seekTimer = setTimeout(() => emit('seek', playheadTime.value.toISOString()), 100)
 }
 
-function onMouseDown(e) { dragging.value = true;  handleSeek(e) }
-function onMouseMove(e) { if (dragging.value) handleSeek(e) }
+function onMouseDown(e) { if (exporting.value) return; dragging.value = true;  handleSeek(e) }
+function onMouseMove(e) { if (dragging.value)  handleSeek(e) }
 function onMouseUp()    { dragging.value = false }
 function onMouseLeave() { dragging.value = false }
+
+// --- export ---
+function startExport() {
+  // Freeze current playhead as start, default end one minute later (clamped
+  // to now in case the user is already near-live).
+  const startMs = playheadTime.value.getTime()
+  const endMs   = Math.min(startMs + 60_000, Date.now())
+  exportStart.value = new Date(startMs)
+  exportEnd.value   = new Date(Math.max(endMs, startMs + 1000))
+  exportMode.value  = true
+  draw()
+}
+
+function cancelExport() {
+  exportMode.value  = false
+  exportStart.value = null
+  exportEnd.value   = null
+  draw()
+}
+
+function safeFileBase(name) {
+  return (name || 'camera').trim().replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'camera'
+}
+
+function fmtForFile(d) {
+  // 2026-05-23_16-03-09 — filesystem-safe variant of the ISO timestamp.
+  return d.toISOString().replace('T', '_').replace(/[:.]/g, '-').replace(/Z$/, '')
+}
+
+let exportPoll = null
+
+async function finishExport() {
+  if (!exportStart.value || !exportEnd.value) return
+  const s = exportStart.value.toISOString()
+  const e = exportEnd.value.toISOString()
+  const fileName = `${safeFileBase(props.cameraName)}_${fmtForFile(exportStart.value)}_${fmtForFile(exportEnd.value)}.mov`
+
+  exporting.value     = true
+  exportPercent.value = 0
+
+  const params = new URLSearchParams({
+    camera_id:  props.cameraId,
+    start_time: s,
+    end_time:   e,
+    file_name:  fileName
+  })
+
+  let id
+  try {
+    const res = await fetch('/export?' + params.toString())
+    if (!res.ok) throw new Error(`server returned ${res.status}`)
+    id = (await res.json()).id
+  } catch (err) {
+    alert('Failed to start export: ' + err.message)
+    exporting.value = false
+    return
+  }
+
+  exportPoll = setInterval(async () => {
+    try {
+      const r = await fetch('/export_progress?id=' + encodeURIComponent(id))
+      if (!r.ok) return
+      const j = await r.json()
+      exportPercent.value = j.percent_complete | 0
+      if (exportPercent.value >= 100) {
+        clearInterval(exportPoll)
+        exportPoll = null
+        // Trigger the browser download. /export_download serves with
+        // Content-Disposition: attachment so the browser saves rather than navigates.
+        window.location.href = '/export_download?id=' + encodeURIComponent(id)
+        // Reset selection state.
+        exporting.value   = false
+        exportMode.value  = false
+        exportStart.value = null
+        exportEnd.value   = null
+        draw()
+      }
+    } catch (_) { /* keep polling */ }
+  }, 1000)
+}
 
 // --- resize ---
 let ro = null
@@ -335,6 +456,7 @@ onUnmounted(() => {
   clearInterval(liveTimer)
   clearInterval(drawTimer)
   clearTimeout(seekTimer)
+  if (exportPoll) clearInterval(exportPoll)
   if (ro) ro.disconnect()
 })
 </script>
@@ -378,6 +500,22 @@ onUnmounted(() => {
 .ctrl-btn.active {
   border-color: #4caf50;
   color: #4caf50;
+}
+
+.ctrl-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ctrl-btn.export-finish {
+  border-color: #4caf50;
+  color: #4caf50;
+}
+
+.exporting-label {
+  font-size: 0.8rem;
+  color: #4caf50;
+  font-variant-numeric: tabular-nums;
 }
 
 .time-label {

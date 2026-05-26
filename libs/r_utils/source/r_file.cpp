@@ -236,8 +236,15 @@ void r_utils::r_fs::write_file(const uint8_t* bytes, size_t len, const string& p
 
 void r_utils::r_fs::atomic_rename_file(const string& oldPath, const string& newPath)
 {
+#ifdef IS_WINDOWS
+    auto oldW = r_string_utils::convert_multi_byte_string_to_wide_string(oldPath);
+    auto newW = r_string_utils::convert_multi_byte_string_to_wide_string(newPath);
+    if(!MoveFileExW(oldW.c_str(), newW.c_str(), MOVEFILE_REPLACE_EXISTING))
+        R_STHROW(r_internal_exception, ("Unable to rename %s to %s", oldPath.c_str(), newPath.c_str()));
+#else
     if(rename(oldPath.c_str(), newPath.c_str()) < 0)
         R_STHROW(r_internal_exception, ("Unable to rename %s to %s", oldPath.c_str(), newPath.c_str()));
+#endif
 }
 
 bool r_utils::r_fs::file_exists(const string& path)

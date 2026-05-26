@@ -3,8 +3,8 @@
 Version=1.0
 Type=Application
 Name=vision
-Exec=/usr/local/revere/vision
+Exec=@VISION_EXEC@
 Comment=A video viewing application for Revere
-Icon=/usr/local/revere/V.png
+Icon=vision
 Terminal=false
 Categories=Utility;GTK;

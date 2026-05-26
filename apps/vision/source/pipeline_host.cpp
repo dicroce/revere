@@ -2,6 +2,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_socket.h"
+#include "r_utils/3rdparty/json/json.h"
 #include "r_http/r_client_request.h"
 #include "r_http/r_client_response.h"
 #include <SDL.h>
@@ -16,6 +17,7 @@ using namespace r_pipeline;
 using namespace r_utils;
 using namespace std;
 using namespace std::chrono;
+using json = nlohmann::json;
 
 pipeline_host::pipeline_host(configure_state& cfg, SDL_Renderer* renderer) :
     _internals_lok(),
@@ -29,8 +31,7 @@ pipeline_host::pipeline_host(configure_state& cfg, SDL_Renderer* renderer) :
     _playback_start_pts(),
     _th(),
     _running(false),
-    _last_dead_check(steady_clock::now()),
-    _last_stream_start(steady_clock::now() - seconds(10))
+    _last_dead_check(steady_clock::now())
 {
 }
 
@@ -373,19 +374,12 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
         auto found_ps = _pipes.find(name);
         if(found_ps == end(_pipes))
         {
-            // Stagger stream starts to prevent simultaneous GStreamer/RTSP connection storms
-            // that cause unreliable startup in multi-view layouts.
-            auto now_steady = steady_clock::now();
-            if(duration_cast<milliseconds>(now_steady - _last_stream_start).count() < 1000)
-                return r_nullable<shared_ptr<render_context>>();
-
             try
             {
                 auto ps = make_shared<pipeline_state>(found_si->second, this, w, h, _cfg);
                 ps->play_live();
                 ps->set_audio_active(!_active_audio_stream.empty() && name == _active_audio_stream);
                 _pipes.insert(make_pair(name, ps));
-                _last_stream_start = now_steady;
             }
             catch(const std::exception& e)
             {
@@ -556,7 +550,10 @@ void pipeline_host::control_bar_update_data_cb(const std::string& stream_name, c
         {
             auto range = cbs.get_range();
             found_pipe->second->update_range(range.first, range.second);
-            cbs.set_contents(query_segments(_cfg, found_si->second.camera_id, range.first, range.second));
+            auto cr = query_segments(_cfg, found_si->second.camera_id, range.first, range.second);
+            cbs.set_contents(cr.segments);
+            if(!cr.first_ts.is_null())
+                cbs.scrollback_limit.set_value(cr.first_ts.value());
 
             // Query motion events
             auto motion_events = query_motion_events(_cfg, found_si->second.camera_id, range.first, range.second);
@@ -625,17 +622,31 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
 
         if(res.is_success())
         {
-            cbs.exp_state = EXPORT_STATE_FINISHED_SUCCESS;
-            R_LOG_INFO("Export finished successfully.");
-            fflush(stdout);
+            auto body = res.get_body_as_string();
+            if(!body.is_null())
+                cbs.export_id = json::parse(body.value())["id"].get<string>();
+            cbs.export_percent_complete = 0;
+            cbs.exp_state = EXPORT_STATE_IN_PROGRESS;
+            R_LOG_INFO("Export enqueued, id=%s", cbs.export_id.c_str());
         }
         else
         {
             cbs.exp_state = EXPORT_STATE_FINISHED_ERROR;
-            R_LOG_INFO("Export finished with error.");
-            fflush(stdout);
+            R_LOG_INFO("Export request failed.");
         }
     }
+}
+
+void pipeline_host::control_bar_export_progress_cb(const std::string& /*stream_name*/, control_bar_state& cbs)
+{
+    int percent = query_export_progress(_cfg, cbs.export_id);
+    if(percent < 0)
+        return;  // transient error, retry next poll
+
+    cbs.export_percent_complete = percent;
+
+    if(percent >= 100)
+        cbs.exp_state = EXPORT_STATE_FINISHED_SUCCESS;
 }
 
 bool pipeline_host::playing(const std::string& stream_name) const
@@ -648,6 +659,15 @@ bool pipeline_host::playing(const std::string& stream_name) const
         return found_pipe->second->playing();
 
     return false;
+}
+
+std::chrono::system_clock::time_point pipeline_host::last_control_bar_pos(const std::string& stream_name) const
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    auto found_pipe = _pipes.find(stream_name);
+    if(found_pipe != end(_pipes))
+        return found_pipe->second->get_last_control_bar_pos();
+    return std::chrono::system_clock::time_point{};
 }
 
 void pipeline_host::_entry_point()
