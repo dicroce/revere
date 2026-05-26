@@ -76,7 +76,7 @@ void r_storage_file::write_frame(const r_storage_write_context& ctx, r_storage_m
     
     uint8_t flags = key ? 1 : 0;
 
-    _writer->write(*ctx.wc, p, size, ts, flags);
+    _writer->write(*ctx.wc, p, size, flags, ts);
 }
 
 size_t r_storage_file::remove_blocks(const std::string& file_name, int64_t start_ts, int64_t end_ts)
@@ -84,14 +84,14 @@ size_t r_storage_file::remove_blocks(const std::string& file_name, int64_t start
     size_t removed_count = 0;
     
     try {
-        nanots_writer::free_blocks(file_name, "video", start_ts, end_ts);
+        nanots_writer::free_blocks(file_name, "video", start_ts, NANOTS_SEC_KEY_UNSET, end_ts, INT64_MAX);
         removed_count++;
     } catch(const nanots_exception&) {
         // Video stream might not exist or have blocks in this range
     }
-    
+
     try {
-        nanots_writer::free_blocks(file_name, "audio", start_ts, end_ts);
+        nanots_writer::free_blocks(file_name, "audio", start_ts, NANOTS_SEC_KEY_UNSET, end_ts, INT64_MAX);
         removed_count++;
     } catch(const nanots_exception&) {
         // Audio stream might not exist or have blocks in this range

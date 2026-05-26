@@ -231,14 +231,14 @@ vector<pair<int64_t, int64_t>> r_storage_file_reader::query_segments(int64_t sta
     
     try {
         // Use nanots_reader to query contiguous segments
-        auto video_segments = _reader->query_contiguous_segments("video", start_ts, end_ts);
+        auto video_segments = _reader->query_contiguous_segments("video", start_ts, NANOTS_SEC_KEY_UNSET, end_ts, INT64_MAX);
         for (const auto& seg : video_segments) {
             segments.push_back(make_pair(seg.start_timestamp, (seg.end_timestamp==0)?duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count():seg.end_timestamp));
         }
     } catch (const nanots_exception&) {
         try {
             // Fallback to audio stream if video doesn't exist
-            auto audio_segments = _reader->query_contiguous_segments("audio", start_ts, end_ts);
+            auto audio_segments = _reader->query_contiguous_segments("audio", start_ts, NANOTS_SEC_KEY_UNSET, end_ts, INT64_MAX);
             for (const auto& seg : audio_segments) {
                 segments.push_back(make_pair(seg.start_timestamp, seg.end_timestamp));
             }
