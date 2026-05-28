@@ -122,8 +122,6 @@ r_video_decoder::r_video_decoder(AVCodecID codec_id, r_hw_accel accel, bool pars
 
     _context->flags |= AV_CODEC_FLAG_LOW_DELAY;
     _context->workaround_bugs = FF_BUG_AUTODETECT;
-
-    R_LOG_INFO("r_video_decoder: using %s backend", _accel_name(_hw_accel));
 }
 
 r_video_decoder::r_video_decoder(r_video_decoder&& obj) :

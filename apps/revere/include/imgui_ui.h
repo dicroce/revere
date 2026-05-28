@@ -769,26 +769,15 @@ void retention_modal(
         ImGui::Separator();
         ImGui::Spacing();
 
-        static char continuous_retention_days_buffer[64] = {0};
-        static int last_continuous_retention_days = -1;
-
-        if (ImGui::IsWindowAppearing() || last_continuous_retention_days != as.continuous_retention_days)
-        {
-            r_ui_utils::copy_s(continuous_retention_days_buffer, 64, std::to_string(as.continuous_retention_days));
-            last_continuous_retention_days = as.continuous_retention_days;
-        }
-
-        if(ImGui::InputText("Retention Days", continuous_retention_days_buffer, 64))
-        {
-            auto s = std::string(continuous_retention_days_buffer);
-            as.continuous_retention_days = std::stoi((!s.empty()) ? s : "0");
-        }
+        ImGui::InputDouble("Retention Days", &as.continuous_retention_days, 0.0, 0.0, "%.2f");
+        if(as.continuous_retention_days < 0.0)
+            as.continuous_retention_days = 0.0;
 
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
 
-        auto sz_info = r_storage::required_file_size_for_retention_hours((as.continuous_retention_days*24), as.byte_rate);
+        auto sz_info = r_storage::required_file_size_for_retention_hours((int64_t)(as.continuous_retention_days * 24.0), as.byte_rate);
 
         as.num_storage_file_blocks.set_value(sz_info.first);
         as.storage_file_block_size.set_value(sz_info.second);

@@ -71,14 +71,12 @@ r_video_encoder::r_video_encoder(
         _codec = avcodec_find_encoder_by_name(enc_name);
         if(!_codec)
             R_THROW(("Failed to find hw encoder: %s", enc_name));
-        R_LOG_INFO("r_video_encoder: using %s encoder (%s)", enc_name, r_hw_accel_encoder_name(_hw_accel, _codec_id));
     }
     else
     {
         _codec = avcodec_find_encoder(_codec_id);
         if(!_codec)
             R_THROW(("Failed to find codec"));
-        R_LOG_INFO("r_video_encoder: using software encoder");
     }
 
     _context = avcodec_alloc_context3(_codec);

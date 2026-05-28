@@ -69,7 +69,6 @@ AVPixelFormat r_av::r_hw_accel_encoder_pix_fmt(r_hw_accel accel)
 
 r_hw_accel r_av::r_find_best_hw_accel_encoder(AVCodecID codec_id)
 {
-    R_LOG_INFO("r_find_best_hw_accel_encoder: probing for codec_id=%d", (int)codec_id);
 
 #if defined(IS_WINDOWS)
     static const r_hw_accel candidates[] = {
@@ -102,7 +101,6 @@ r_hw_accel r_av::r_find_best_hw_accel_encoder(AVCodecID codec_id)
 
         if(!avcodec_find_encoder_by_name(enc_name))
         {
-            R_LOG_INFO("r_find_best_hw_accel_encoder: skipping %s — encoder '%s' not in FFmpeg build", _accel_name(accel), enc_name);
             continue;
         }
 
@@ -115,28 +113,22 @@ r_hw_accel r_av::r_find_best_hw_accel_encoder(AVCodecID codec_id)
             {
                 char errbuf[256];
                 av_strerror(ret, errbuf, sizeof(errbuf));
-                R_LOG_INFO("r_find_best_hw_accel_encoder: skipping %s — device creation failed: %s", _accel_name(accel), errbuf);
                 continue;
             }
             av_buffer_unref(&hw_device_ctx);
         }
 
-        R_LOG_INFO("r_find_best_hw_accel_encoder: selected %s (%s)", _accel_name(accel), enc_name);
         return accel;
     }
 
-    R_LOG_INFO("r_find_best_hw_accel_encoder: all candidates exhausted, falling back to software");
     return r_hw_accel::none;
 }
 
 r_hw_accel r_av::r_find_best_hw_accel(AVCodecID codec_id)
 {
-    R_LOG_INFO("r_find_best_hw_accel: probing for codec_id=%d", (int)codec_id);
-
     const AVCodec* codec = avcodec_find_decoder(codec_id);
     if(!codec)
     {
-        R_LOG_INFO("r_find_best_hw_accel: avcodec_find_decoder returned null, falling back to software");
         return r_hw_accel::none;
     }
 
@@ -170,7 +162,6 @@ r_hw_accel r_av::r_find_best_hw_accel(AVCodecID codec_id)
 
         if(r_hw_accel_get_pix_fmt(codec, device_type) == AV_PIX_FMT_NONE)
         {
-            R_LOG_INFO("r_find_best_hw_accel: skipping %s — codec has no hw config for this device type", _accel_name(accel));
             continue;
         }
 
@@ -180,7 +171,6 @@ r_hw_accel r_av::r_find_best_hw_accel(AVCodecID codec_id)
         {
             char errbuf[256];
             av_strerror(ret, errbuf, sizeof(errbuf));
-            R_LOG_INFO("r_find_best_hw_accel: skipping %s — device creation failed: %s", _accel_name(accel), errbuf);
             continue;
         }
 
@@ -188,6 +178,5 @@ r_hw_accel r_av::r_find_best_hw_accel(AVCodecID codec_id)
         return accel;
     }
 
-    R_LOG_INFO("r_find_best_hw_accel: all candidates exhausted, falling back to software");
     return r_hw_accel::none;
 }
