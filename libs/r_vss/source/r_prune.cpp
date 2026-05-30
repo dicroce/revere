@@ -97,7 +97,6 @@ void r_prune::_entry_point()
                         else
                             ps.cursor = first_ts.value();
 
-                        R_LOG_INFO("r_prune: switching to camera %s\n", ps.camera.friendly_name.value().c_str());
                         _ps = ps;
                     }
                 }
