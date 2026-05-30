@@ -11,6 +11,7 @@ extern "C"
 }
 
 #include "r_av/r_codec_state.h"
+#include "r_av/r_hw_accel.h"
 #include "r_utils/r_std_utils.h"
 #include "r_utils/r_macro.h"
 
@@ -49,7 +50,8 @@ public:
         int profile,
         int level,
         const std::string& preset = "",
-        const std::string& tune = ""
+        const std::string& tune = "",
+        r_hw_accel accel = r_hw_accel::none
     );
 
     R_API r_video_encoder(const r_video_encoder&) = delete;
@@ -75,8 +77,11 @@ private:
     void _clear();
 
     AVCodecID _codec_id;
+    r_hw_accel _hw_accel;
     const AVCodec* _codec;
     AVCodecContext* _context;
+    AVPixelFormat _input_pix_fmt;
+    SwsContext* _sws_ctx;
     int64_t _pts;
     bool _frame_sent;
     std::vector<uint8_t> _buffer;

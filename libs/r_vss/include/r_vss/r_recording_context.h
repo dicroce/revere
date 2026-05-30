@@ -23,6 +23,7 @@
 #include <tuple>
 #include <thread>
 #include <utility>
+#include <deque>
 
 struct _GstRTSPMediaFactory;
 typedef _GstRTSPMediaFactory GstRTSPMediaFactory;
@@ -44,12 +45,27 @@ constexpr size_t LIVE_RESTREAM_MAX_QUEUE_SIZE = 300;
 // 300 frame buffer ensures no drops for both streams
 constexpr size_t PLAYBACK_RESTREAM_MAX_QUEUE_SIZE = 300;
 
+// Safety cap for the per-camera video GOP cache used for fast-start of new
+// live RTSP viewers. The cache is normally cleared on every keyframe, so it
+// only grows beyond a typical GOP if a source stops producing keyframes.
+constexpr size_t GOP_CACHE_MAX_FRAMES = 300;
+
 class r_recording_context;
 
 struct _frame_context
 {
     uint64_t gst_pts;
     uint64_t gst_dts;
+    bool key;
+    r_pipeline::r_gst_buffer buffer;
+};
+
+// One entry in the per-camera GOP cache. Stores the original source pts
+// (in milliseconds, as delivered by the gst source) so the relative spacing
+// can be reconstructed when bursting into a newly-connected viewer's queue.
+struct _gop_cache_entry
+{
+    int64_t pts;
     bool key;
     r_pipeline::r_gst_buffer buffer;
 };
@@ -64,6 +80,11 @@ struct live_restreaming_state
     GstElement* v_appsrc {nullptr};
     GstElement* a_appsrc {nullptr};
     bool live_restream_key_sent {false};
+    // Set true at LRS creation; the source thread drains the recording
+    // context's GOP cache into this LRS on the next video frame, then clears
+    // the flag. This lets a new viewer get frames immediately instead of
+    // waiting for the source's next IDR.
+    bool needs_gop_replay {true};
     bool first_restream_v_times_set {false};
     uint64_t first_restream_v_pts {0};
     uint64_t first_restream_v_dts {0};
@@ -189,6 +210,11 @@ private:
     void _record_byte_sample();
     bool _die;
     r_ws& _ws;
+    // Per-camera rolling cache of video frames since the last keyframe.
+    // Only touched by the source thread inside the video sample callback —
+    // no mutex needed. Drained into a new live RTSP viewer's queue when
+    // their LRS appears with needs_gop_replay set.
+    std::deque<_gop_cache_entry> _video_gop_cache;
 };
 
 }

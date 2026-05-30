@@ -2,6 +2,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_socket.h"
+#include "r_utils/3rdparty/json/json.h"
 #include "r_http/r_client_request.h"
 #include "r_http/r_client_response.h"
 #include <SDL.h>
@@ -16,6 +17,7 @@ using namespace r_pipeline;
 using namespace r_utils;
 using namespace std;
 using namespace std::chrono;
+using json = nlohmann::json;
 
 pipeline_host::pipeline_host(configure_state& cfg, SDL_Renderer* renderer) :
     _internals_lok(),
@@ -29,8 +31,7 @@ pipeline_host::pipeline_host(configure_state& cfg, SDL_Renderer* renderer) :
     _playback_start_pts(),
     _th(),
     _running(false),
-    _last_dead_check(steady_clock::now()),
-    _last_stream_start(steady_clock::now())
+    _last_dead_check(steady_clock::now())
 {
 }
 
@@ -72,16 +73,73 @@ void pipeline_host::change_layout(int window, layout l)
     {
         lock_guard<mutex> g(_internals_lok);
 
-        _stream_infos.clear();
-        old_pipes = std::move(_pipes);
-        _pipes.clear();
-        _render_contexts.clear();
-        _video_frames.clear();
-
         auto sis = _cfg.collect_stream_info(window, l);
 
-        for(auto si : sis)
-            _stream_infos.insert(make_pair(si.name, si));
+        // Build camera_id → (posting_name, pipeline) for all currently running pipes.
+        // posting_name is _si.name inside the pipeline — what it passes to post_video_frame.
+        std::map<std::string, std::pair<std::string, std::shared_ptr<pipeline_state>>> camera_to_pipe;
+        for(auto& [map_name, si] : _stream_infos)
+        {
+            auto pipe_it = _pipes.find(map_name);
+            if(pipe_it != end(_pipes))
+                camera_to_pipe[si.camera_id] = {pipe_it->second->name(), pipe_it->second};
+        }
+
+        // Determine which pipelines can be reused by matching camera_id.
+        _name_remap.clear();
+        std::map<std::string, std::shared_ptr<pipeline_state>> new_pipes;
+        std::map<std::string, std::shared_ptr<render_context>> new_rc;
+        std::map<std::string, frame> new_vf;
+        std::set<std::string> reused_posting_names;
+
+        for(auto& si : sis)
+        {
+            auto it = camera_to_pipe.find(si.camera_id);
+            if(it != end(camera_to_pipe))
+            {
+                const auto& posting_name = it->second.first;
+                reused_posting_names.insert(posting_name);
+                new_pipes[si.name] = it->second.second;
+
+                if(posting_name != si.name)
+                    _name_remap[posting_name] = si.name;
+
+                // Transfer render context and video frame under the new name.
+                for(auto& [map_name, old_si] : _stream_infos)
+                {
+                    if(old_si.camera_id == si.camera_id)
+                    {
+                        auto rc_it = _render_contexts.find(map_name);
+                        if(rc_it != end(_render_contexts))
+                            new_rc[si.name] = rc_it->second;
+
+                        auto vf_it = _video_frames.find(map_name);
+                        if(vf_it != end(_video_frames))
+                            new_vf[si.name] = vf_it->second;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Pipelines not being reused go into old_pipes for teardown outside the lock.
+        for(auto& [map_name, si] : _stream_infos)
+        {
+            auto pipe_it = _pipes.find(map_name);
+            if(pipe_it != end(_pipes) && !reused_posting_names.count(pipe_it->second->name()))
+                old_pipes[map_name] = pipe_it->second;
+        }
+
+        _stream_infos.clear();
+        for(auto& si : sis)
+            _stream_infos[si.name] = si;
+
+        _pipes = std::move(new_pipes);
+        _render_contexts = std::move(new_rc);
+        _video_frames = std::move(new_vf);
+
+        _retry_window = window;
+        _retry_layout = l;
     }  // Lock is released here
 
     // Destroy old pipelines outside the critical section
@@ -148,6 +206,29 @@ void pipeline_host::disconnect_stream(int window, const string& name)
     old_pipeline.reset();
 }
 
+void pipeline_host::set_active_audio_stream(const string& name)
+{
+    lock_guard<mutex> g(_internals_lok);
+    _active_audio_stream = name;
+    for(auto& p : _pipes)
+        p.second->set_audio_active(p.first == name);
+}
+
+void pipeline_host::set_stream_volume(const string& name, float gain)
+{
+    lock_guard<mutex> g(_internals_lok);
+    auto it = _pipes.find(name);
+    if(it != end(_pipes))
+        it->second->set_volume_gain(gain);
+}
+
+bool pipeline_host::has_audio(const string& name) const
+{
+    lock_guard<mutex> g(_internals_lok);
+    auto it = _pipes.find(name);
+    return it != end(_pipes) && it->second->has_audio();
+}
+
 void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8_t>> buffer, uint16_t w, uint16_t h, uint16_t original_w, uint16_t original_h, int64_t pts)
 {
     lock_guard<mutex> g(_internals_lok);
@@ -185,6 +266,10 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
         return;
     }
 
+    // Translate the pipeline's internal name to the current layout name if it was reused.
+    auto remap_it = _name_remap.find(name);
+    const string& effective_name = (remap_it != end(_name_remap)) ? remap_it->second : name;
+
     // Debug: Log frame reception with pixel sample
     static int frame_log_count = 0;
     if (frame_log_count++ < 5)
@@ -196,18 +281,18 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
 
     // Calculate playback-relative timestamp if we're in playback mode
     int64_t display_pts = pts;
-    auto playback_start_pos_it = _playback_start_positions.find(name);
-    
+    auto playback_start_pos_it = _playback_start_positions.find(effective_name);
+
     if (playback_start_pos_it != _playback_start_positions.end())
     {
-        auto playback_start_pts_it = _playback_start_pts.find(name);
+        auto playback_start_pts_it = _playback_start_pts.find(effective_name);
         if (playback_start_pts_it != _playback_start_pts.end())
         {
             // We're in playback mode - calculate relative timestamp
             if (playback_start_pts_it->second == 0)
             {
                 // First frame of playback - record the starting PTS
-                _playback_start_pts[name] = pts;
+                _playback_start_pts[effective_name] = pts;
                 display_pts = std::chrono::duration_cast<std::chrono::milliseconds>(
                     playback_start_pos_it->second.time_since_epoch()).count();
             }
@@ -241,10 +326,10 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
         SDL_PushEvent(&event);
     }
 
-    _video_frames.insert(make_pair(name, f));
+    _video_frames.insert(make_pair(effective_name, f));
 
     // Update render context timestamp if it exists
-    auto found_rc = _render_contexts.find(name);
+    auto found_rc = _render_contexts.find(effective_name);
     if(found_rc != end(_render_contexts))
     {
         found_rc->second->pts = display_pts;
@@ -293,6 +378,7 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
             {
                 auto ps = make_shared<pipeline_state>(found_si->second, this, w, h, _cfg);
                 ps->play_live();
+                ps->set_audio_active(!_active_audio_stream.empty() && name == _active_audio_stream);
                 _pipes.insert(make_pair(name, ps));
             }
             catch(const std::exception& e)
@@ -380,6 +466,47 @@ void pipeline_host::control_bar_cb(const string& name, const std::chrono::system
     }
 }
 
+void pipeline_host::sync_control_bar_cb(const std::chrono::system_clock::time_point& pos)
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    for(auto& [name, pipe] : _pipes)
+    {
+        if(pipe->running())
+            pipe->stop();
+        _playback_start_positions.erase(name);
+        _playback_start_pts.erase(name);
+        pipe->control_bar(pos);
+    }
+}
+
+void pipeline_host::sync_play_cb(const std::chrono::system_clock::time_point& range_end)
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    for(auto& [name, pipe] : _pipes)
+    {
+        if(!pipe->running())
+        {
+            pipe->update_range(pipe->get_last_control_bar_pos(), range_end);
+            _playback_start_positions[name] = pipe->get_last_control_bar_pos();
+            _playback_start_pts[name] = 0;
+            pipe->play();
+        }
+    }
+}
+
+void pipeline_host::sync_live_cb()
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    for(auto& [name, pipe] : _pipes)
+    {
+        if(pipe->running())
+            pipe->stop();
+        _playback_start_positions.erase(name);
+        _playback_start_pts.erase(name);
+        pipe->play_live();
+    }
+}
+
 void pipeline_host::control_bar_button_cb(const string& name, control_bar_button_type type)
 {
     lock_guard<mutex> pipes_lock(_internals_lok);
@@ -423,7 +550,10 @@ void pipeline_host::control_bar_update_data_cb(const std::string& stream_name, c
         {
             auto range = cbs.get_range();
             found_pipe->second->update_range(range.first, range.second);
-            cbs.set_contents(query_segments(_cfg, found_si->second.camera_id, range.first, range.second));
+            auto cr = query_segments(_cfg, found_si->second.camera_id, range.first, range.second);
+            cbs.set_contents(cr.segments);
+            if(!cr.first_ts.is_null())
+                cbs.scrollback_limit.set_value(cr.first_ts.value());
 
             // Query motion events
             auto motion_events = query_motion_events(_cfg, found_si->second.camera_id, range.first, range.second);
@@ -473,9 +603,9 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
         );
 
         r_socket sok;
-        sok.connect("127.0.0.1", 10080);
+        sok.connect("127.0.0.1", 8088);
 
-        r_http::r_client_request req("127.0.0.1", 10080);
+        r_http::r_client_request req("127.0.0.1", 8088);
         req.set_uri(
             r_string_utils::format(
                 "/export?camera_id=%s&start_time=%s&end_time=%s&file_name=%s",
@@ -492,17 +622,31 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
 
         if(res.is_success())
         {
-            cbs.exp_state = EXPORT_STATE_FINISHED_SUCCESS;
-            R_LOG_INFO("Export finished successfully.");
-            fflush(stdout);
+            auto body = res.get_body_as_string();
+            if(!body.is_null())
+                cbs.export_id = json::parse(body.value())["id"].get<string>();
+            cbs.export_percent_complete = 0;
+            cbs.exp_state = EXPORT_STATE_IN_PROGRESS;
+            R_LOG_INFO("Export enqueued, id=%s", cbs.export_id.c_str());
         }
         else
         {
             cbs.exp_state = EXPORT_STATE_FINISHED_ERROR;
-            R_LOG_INFO("Export finished with error.");
-            fflush(stdout);
+            R_LOG_INFO("Export request failed.");
         }
     }
+}
+
+void pipeline_host::control_bar_export_progress_cb(const std::string& /*stream_name*/, control_bar_state& cbs)
+{
+    int percent = query_export_progress(_cfg, cbs.export_id);
+    if(percent < 0)
+        return;  // transient error, retry next poll
+
+    cbs.export_percent_complete = percent;
+
+    if(percent >= 100)
+        cbs.exp_state = EXPORT_STATE_FINISHED_SUCCESS;
 }
 
 bool pipeline_host::playing(const std::string& stream_name) const
@@ -515,6 +659,15 @@ bool pipeline_host::playing(const std::string& stream_name) const
         return found_pipe->second->playing();
 
     return false;
+}
+
+std::chrono::system_clock::time_point pipeline_host::last_control_bar_pos(const std::string& stream_name) const
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    auto found_pipe = _pipes.find(stream_name);
+    if(found_pipe != end(_pipes))
+        return found_pipe->second->get_last_control_bar_pos();
+    return std::chrono::system_clock::time_point{};
 }
 
 void pipeline_host::_entry_point()
@@ -535,6 +688,19 @@ void pipeline_host::_entry_point()
             _last_dead_check = now;
 
             lock_guard<mutex> pipes_lock(_internals_lok);
+
+            // If collect_stream_info() returned nothing at change_layout() time
+            // (local server not ready), retry now so the layout eventually connects.
+            if(_stream_infos.empty() && _retry_window != -1)
+            {
+                auto sis = _cfg.collect_stream_info(_retry_window, _retry_layout);
+                if(!sis.empty())
+                {
+                    R_LOG_INFO("pipeline_host: stream info now available, populating %zu streams", sis.size());
+                    for(auto& si : sis)
+                        _stream_infos.insert(make_pair(si.name, si));
+                }
+            }
             auto curr = begin(_pipes);
             while(curr != end(_pipes))
             {

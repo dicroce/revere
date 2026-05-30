@@ -2,6 +2,7 @@
 #include "r_utils/r_file.h"
 #include "r_utils/r_file_lock.h"
 #include <atomic>
+#include <filesystem>
 
 #ifdef IS_WINDOWS
 #include <windows.h>
@@ -385,6 +386,294 @@ void _delete_camera_files(const r_disco::r_camera& camera)
     }
 }
 
+struct storage_op_state
+{
+    std::string camera_id;
+    std::string camera_name;
+    std::string new_dir;
+    std::atomic<float> progress{0.f};
+    std::mutex mtx;
+    std::string status;
+    std::atomic<bool> running{false};
+    std::atomic<bool> done{false};
+    std::atomic<bool> error{false};
+    std::atomic<bool> cancel_requested{false};
+    bool start_fresh{false};
+    bool delete_confirmed{false};
+};
+
+static storage_op_state s_storage_op;
+
+static vector<pair<string,string>> _get_storage_file_pairs(const r_disco::r_camera& camera)
+{
+    vector<pair<string,string>> files;
+
+    if(!camera.record_file_path.is_null())
+    {
+        auto p = _get_storage_path(camera.record_file_path.value());
+        if(r_fs::file_exists(p))
+        {
+            auto fn = std::filesystem::path(p).filename().string();
+            files.push_back({p, fn});
+        }
+    }
+
+    if(!camera.motion_detection_file_path.is_null())
+    {
+        auto mdb = _get_storage_path(camera.motion_detection_file_path.value());
+        auto base = (mdb.size() >= 4 && mdb.substr(mdb.size()-4) == ".mdb")
+                    ? mdb.substr(0, mdb.size()-4) : mdb;
+        for(const char* ext : {".mdb", ".db", ".mdnts", ".mdnts.db", ".mdnts.db-shm", ".mdnts.db-wal"})
+        {
+            auto p = base + ext;
+            if(r_fs::file_exists(p))
+            {
+                auto fn = std::filesystem::path(p).filename().string();
+                files.push_back({p, fn});
+            }
+        }
+    }
+
+    return files;
+}
+
+// Copy src to dst in chunks. progress_cb returns false to cancel.
+static void _copy_file_chunked(const string& src, const string& dst,
+                                std::function<bool(uint64_t, uint64_t)> progress_cb)
+{
+    constexpr size_t CHUNK = 4 * 1024 * 1024; // 4 MB
+    auto file_size = std::filesystem::file_size(src);
+
+    std::ifstream in(src, std::ios::binary);
+    if(!in) R_THROW(("Failed to open %s for reading", src.c_str()));
+    std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+    if(!out) R_THROW(("Failed to open %s for writing", dst.c_str()));
+
+    vector<char> buf(CHUNK);
+    uint64_t copied = 0;
+    while(in)
+    {
+        in.read(buf.data(), CHUNK);
+        auto n = in.gcount();
+        if(n <= 0) break;
+        out.write(buf.data(), n);
+        if(!out) R_THROW(("Write error on %s", dst.c_str()));
+        copied += n;
+        if(!progress_cb(copied, file_size))
+        {
+            out.close();
+            std::filesystem::remove(dst);
+            return; // cancelled
+        }
+    }
+}
+
+static void _do_move_storage(
+    r_vss::r_stream_keeper& stream_keeper,
+    r_disco::r_devices& devices,
+    r_disco::r_camera camera,
+    const string& new_dir,
+    storage_op_state& op
+)
+{
+    auto set_status = [&](const string& s) {
+        std::lock_guard<std::mutex> g(op.mtx);
+        op.status = s;
+    };
+
+    bool suspended = false;
+    try
+    {
+        auto files = _get_storage_file_pairs(camera);
+
+        // Check for conflicts before touching anything
+        for(auto& [src, fn] : files)
+        {
+            auto dst = revere::join_path(new_dir, fn);
+            if(std::filesystem::exists(dst) && src != dst)
+                R_THROW(("Destination file already exists: %s\nRemove it first or choose a different directory.", dst.c_str()));
+        }
+
+        stream_keeper.suspend(camera.id);
+        suspended = true;
+
+        if(files.empty())
+        {
+            set_status("No storage files found.");
+            op.progress = 1.f;
+            op.done = true;
+            op.running = false;
+            stream_keeper.resume(camera.id);
+            return;
+        }
+
+        // Weight progress by file size so the big .nts drives the bar
+        uint64_t total_bytes = 0;
+        for(auto& [src, fn] : files)
+        {
+            std::error_code ec;
+            auto sz = std::filesystem::file_size(src, ec);
+            total_bytes += ec ? 0 : sz;
+        }
+        if(total_bytes == 0) total_bytes = 1;
+
+        string new_nts_path;
+        string new_mdb_path;
+        uint64_t bytes_done = 0;
+
+        for(auto& [src, fn] : files)
+        {
+            auto dst = revere::join_path(new_dir, fn);
+            set_status("Moving: " + fn);
+
+            std::error_code ec;
+            std::filesystem::rename(src, dst, ec);
+            if(ec)
+            {
+                // Cross-device: chunked copy so we can report progress
+                uint64_t file_size = std::filesystem::file_size(src, ec);
+                if(ec) file_size = 0;
+                uint64_t bytes_done_before = bytes_done;
+
+                _copy_file_chunked(src, dst, [&](uint64_t copied, uint64_t /*sz*/) -> bool {
+                    op.progress = (float)(bytes_done_before + copied) / (float)total_bytes;
+                    return !op.cancel_requested.load();
+                });
+                if(op.cancel_requested) R_THROW(("Cancelled"));
+                std::filesystem::remove(src, ec);
+                bytes_done += file_size;
+            }
+            else
+            {
+                // rename was instant (same filesystem)
+                uint64_t sz = 0;
+                auto fsz = std::filesystem::file_size(dst, ec);
+                if(!ec) sz = fsz;
+                bytes_done += sz;
+            }
+
+            op.progress = (float)bytes_done / (float)total_bytes;
+
+            if(!camera.record_file_path.is_null())
+                if(src == _get_storage_path(camera.record_file_path.value()))
+                    new_nts_path = dst;
+            if(!camera.motion_detection_file_path.is_null())
+                if(src == _get_storage_path(camera.motion_detection_file_path.value()))
+                    new_mdb_path = dst;
+        }
+
+        set_status("Updating database...");
+        if(!new_nts_path.empty())
+            camera.record_file_path.set_value(new_nts_path);
+        if(!new_mdb_path.empty())
+            camera.motion_detection_file_path.set_value(new_mdb_path);
+        devices.save_camera(camera);
+
+        set_status("Move complete. Recording will resume.");
+        op.progress = 1.f;
+        op.done = true;
+        op.running = false;
+        stream_keeper.resume(camera.id);
+    }
+    catch(const std::exception& e)
+    {
+        if(op.cancel_requested)
+        {
+            set_status("Move cancelled. Recording will resume.");
+            op.cancel_requested = false;
+        }
+        else
+        {
+            set_status(string("Error: ") + e.what());
+            op.error = true;
+        }
+        op.done = true;
+        op.running = false;
+        if(suspended)
+            stream_keeper.resume(camera.id);
+    }
+}
+
+static void _do_reset_storage(
+    r_vss::r_stream_keeper& stream_keeper,
+    r_disco::r_devices& devices,
+    r_disco::r_camera camera,
+    const string& new_dir,
+    storage_op_state& op
+)
+{
+    auto set_status = [&](const string& s) {
+        std::lock_guard<std::mutex> g(op.mtx);
+        op.status = s;
+    };
+
+    try
+    {
+        stream_keeper.suspend(camera.id);
+
+        set_status("Deleting old storage files...");
+        _delete_camera_files(camera);
+        op.progress = 0.3f;
+
+        // Compute target directory
+        string target_dir = new_dir;
+        if(target_dir.empty() && !camera.record_file_path.is_null())
+            target_dir = std::filesystem::path(_get_storage_path(camera.record_file_path.value())).parent_path().string();
+        if(target_dir.empty())
+            target_dir = revere::sub_dir("video");
+
+        string new_nts_path;
+        string new_mdb_path;
+
+        if(!camera.record_file_path.is_null())
+        {
+            auto fn = std::filesystem::path(_get_storage_path(camera.record_file_path.value())).filename().string();
+            new_nts_path = revere::join_path(target_dir, fn);
+        }
+        if(!camera.motion_detection_file_path.is_null())
+        {
+            auto fn = std::filesystem::path(_get_storage_path(camera.motion_detection_file_path.value())).filename().string();
+            new_mdb_path = revere::join_path(target_dir, fn);
+        }
+
+        set_status("Allocating new storage files...");
+
+        if(!new_nts_path.empty() && !camera.n_record_file_blocks.is_null() && !camera.record_file_block_size.is_null())
+        {
+            r_storage::r_storage_file::allocate(
+                new_nts_path,
+                camera.record_file_block_size.value(),
+                camera.n_record_file_blocks.value()
+            );
+        }
+        op.progress = 0.7f;
+
+        if(!new_mdb_path.empty())
+            _create_motion_files(new_mdb_path);
+        op.progress = 0.9f;
+
+        set_status("Updating database...");
+        if(!new_nts_path.empty())
+            camera.record_file_path.set_value(new_nts_path);
+        if(!new_mdb_path.empty())
+            camera.motion_detection_file_path.set_value(new_mdb_path);
+        devices.save_camera(camera);
+
+        set_status("Reset complete. Recording will resume.");
+        op.progress = 1.f;
+        op.done = true;
+        op.running = false;
+        stream_keeper.resume(camera.id);
+    }
+    catch(const std::exception& e)
+    {
+        set_status(string("Error: ") + e.what());
+        op.error = true;
+        op.running = false;
+        stream_keeper.resume(camera.id);
+    }
+}
+
 void _on_new_file(revere::assignment_state& as, r_ui_utils::wizard& camera_setup_wizard, r_disco::r_devices& devices, revere_ui_state& ui_state, r_vss::r_stream_keeper& streamKeeper)
 {
     // Use selected storage directory (defaults to standard video path)
@@ -474,7 +763,8 @@ static r_nullable<shared_ptr<vector<uint8_t>>> _decode_frame(const r_pipeline::s
         return r_nullable<shared_ptr<vector<uint8_t>>>();
 
     // Enable parsing to properly handle Annex B streams with multiple NAL units
-    r_av::r_video_decoder decoder(_r_encoding_to_avcodec_id(video_enc.value()), true);
+    auto codec_id = _r_encoding_to_avcodec_id(video_enc.value());
+    r_av::r_video_decoder decoder(codec_id, r_av::r_find_best_hw_accel(codec_id), true);
 
     std::vector<uint8_t> ed;
     std::vector<uint8_t> start_code = {0x00, 0x00, 0x00, 0x01};
@@ -969,11 +1259,11 @@ void configure_camera_setup_wizard(
                     std::string base_url = "https://github.com/dicroce/revere/releases/download/v" + version + "/";
                     std::string filename;
 #if defined(IS_WINDOWS)
-                    filename = "revere_cloud-v" + version + "-x86_64-windows-setup.exe";
+                    filename = "revere-v" + version + "-windows-cloud-setup.exe";
 #elif defined(IS_LINUX)
-                    filename = "revere_cloud-v" + version + "-x86_64-linux.run";
+                    filename = "revere-v" + version + "-linux-cloud.run";
 #elif defined(IS_MACOS)
-                    filename = "revere_cloud-v" + version + "-x86_64-macos.command";
+                    filename = "revere-v" + version + "-macos-cloud.command";
 #else
                     #error "Unsupported platform"
 #endif
@@ -1046,8 +1336,8 @@ void configure_camera_setup_wizard(
                         initial_md_file_name = camera.motion_detection_file_path.value();
 
                     string motion_file_name = initial_md_file_name;
-                    auto existing_path = revere::join_path(revere::sub_dir("video"), motion_file_name);
-                    if(!r_fs::file_exists(existing_path) || motion_file_name.empty())
+                    auto existing_path = _get_storage_path(motion_file_name);
+                    if(motion_file_name.empty() || !r_fs::file_exists(existing_path))
                     {
                         motion_file_name = camera.record_file_path.value();
 
@@ -1055,7 +1345,7 @@ void configure_camera_setup_wizard(
 
                         motion_file_name = (dot_pos == string::npos)?motion_file_name+".mdb":motion_file_name.substr(0, dot_pos)+".mdb";
 
-                        auto motion_path = revere::join_path(revere::sub_dir("video"), motion_file_name);
+                        auto motion_path = _get_storage_path(motion_file_name);
 
                         _create_motion_files(motion_path);
                     }
@@ -1080,6 +1370,102 @@ void configure_camera_setup_wizard(
                     ui_state.min_continuous_recording_hours = "24";
 
                     camera_setup_wizard.cancel();
+                },
+                [&](){
+                    // Move Storage button
+                    auto cid = ui_state.selected_camera_id();
+                    if(!cid.is_null())
+                    {
+                        auto maybe_camera = devices.get_camera_by_id(cid.value());
+                        if(!maybe_camera.is_null())
+                        {
+                            auto& c = maybe_camera.value();
+                            s_storage_op.camera_id = c.id;
+                            s_storage_op.camera_name = c.friendly_name.is_null() ? c.camera_name.value() : c.friendly_name.value();
+                            s_storage_op.new_dir.clear();
+                            s_storage_op.running = false;
+                            s_storage_op.done = false;
+                            s_storage_op.error = false;
+                            s_storage_op.progress = 0.f;
+                            s_storage_op.start_fresh = false;
+                            s_storage_op.delete_confirmed = false;
+                        }
+                    }
+                    camera_setup_wizard.next("move_storage_modal");
+                }
+            );
+        }
+    );
+
+    camera_setup_wizard.add_step(
+        "move_storage_modal",
+        [&camera_setup_wizard, &devices, &stream_keeper](){
+            ImGui::OpenPopup("Move Storage");
+
+            string status_copy;
+            {
+                std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                status_copy = s_storage_op.status;
+            }
+
+            revere::move_storage_modal(
+                GImGui,
+                "Move Storage",
+                s_storage_op.camera_name,
+                s_storage_op.new_dir,
+                s_storage_op.start_fresh,
+                s_storage_op.delete_confirmed,
+                s_storage_op.progress.load(),
+                s_storage_op.running.load(),
+                s_storage_op.done.load(),
+                s_storage_op.error.load(),
+                status_copy,
+                [&](){
+                    auto maybe_camera = devices.get_camera_by_id(s_storage_op.camera_id);
+                    if(maybe_camera.is_null()) return;
+                    s_storage_op.running = true;
+                    s_storage_op.done = false;
+                    s_storage_op.error = false;
+                    s_storage_op.progress = 0.f;
+                    s_storage_op.cancel_requested = false;
+                    {
+                        std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                        s_storage_op.status.clear();
+                    }
+                    auto camera = maybe_camera.value();
+                    auto new_dir = s_storage_op.new_dir;
+                    bool start_fresh = s_storage_op.start_fresh;
+                    if(start_fresh)
+                    {
+                        std::thread([&stream_keeper, &devices, camera, new_dir](){
+                            _do_reset_storage(stream_keeper, devices, camera, new_dir, s_storage_op);
+                        }).detach();
+                    }
+                    else
+                    {
+                        std::thread([&stream_keeper, &devices, camera, new_dir](){
+                            _do_move_storage(stream_keeper, devices, camera, new_dir, s_storage_op);
+                        }).detach();
+                    }
+                },
+                [&](){
+                    s_storage_op.cancel_requested = false;
+                    s_storage_op.new_dir.clear();
+                    s_storage_op.running = false;
+                    s_storage_op.done = false;
+                    s_storage_op.error = false;
+                    s_storage_op.progress = 0.f;
+                    s_storage_op.start_fresh = false;
+                    s_storage_op.delete_confirmed = false;
+                    {
+                        std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                        s_storage_op.status.clear();
+                    }
+                    camera_setup_wizard.cancel();
+                },
+                [&](){
+                    // Cancel in-progress op: signal thread, then wait for done before closing
+                    s_storage_op.cancel_requested = true;
                 }
             );
         }
@@ -1647,7 +2033,7 @@ int main(int argc, char** argv)
     _set_window_icon(window);
 #endif
 
-    bool close_requested = false;
+    std::atomic<bool> close_requested{false};
     bool user_close_handled = false;
 
     R_LOG_INFO("wd=%s\n",r_fs::working_directory().c_str());
@@ -1659,7 +2045,6 @@ int main(int argc, char** argv)
     Tray::Tray tray("Revere", icon_path);
     tray.addEntry(Tray::Button("Exit", [&]{
         close_requested = true;
-        tray.exit();
     }));
     tray.addEntry(Tray::Button("Show", [&]{
         SDL_ShowWindow(window);
@@ -1785,7 +2170,6 @@ int main(int argc, char** argv)
                     {
                         // OS-initiated quit (system shutdown/restart). Actually quit.
                         close_requested = true;
-                        tray.exit();
                     }
                 }
                 if (event.type == SDL_WINDOWEVENT)
@@ -1836,14 +2220,12 @@ int main(int argc, char** argv)
         if(hQuitEvent && WaitForSingleObject(hQuitEvent, 0) == WAIT_OBJECT_0)
         {
             close_requested = true;
-            tray.exit();
         }
 #endif
 #if defined(IS_LINUX) || defined(IS_MACOS)
         if(g_sigterm_received)
         {
             close_requested = true;
-            tray.exit();
         }
 #endif
 
@@ -1891,7 +2273,7 @@ int main(int argc, char** argv)
                     {
                         ui_state.friendly_name = status.camera.friendly_name.value();
                         ui_state.ipv4 = status.camera.ipv4.value();
-                        ui_state.restream_url = r_string_utils::format("rtsp://127.0.0.1:10554/%s",ui_state.friendly_name.c_str());
+                        ui_state.restream_url = r_string_utils::format("rtsp://127.0.0.1:8554/%s",ui_state.friendly_name.c_str());
                         ui_state.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
                         auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
                         ui_state.retention = r_string_utils::format("%.2f days", retention_days);
@@ -1920,7 +2302,6 @@ int main(int argc, char** argv)
         auto client_top = revere::main_menu(
             [&](){
                 close_requested = true;
-                tray.exit();
             },
             [&](){
                 camera_setup_wizard.next("minimize_to_tray");
@@ -1949,6 +2330,9 @@ int main(int argc, char** argv)
                 {
                     camera_setup_wizard.next("startup_enabled_notification");
                 }
+            },
+            [&](){
+                revere::open_url_in_browser("http://localhost:8088");
             }
         );
 
@@ -2224,6 +2608,8 @@ int main(int argc, char** argv)
 
         SDL_RenderPresent(renderer);
     }
+
+    tray.exit();
 
     // Cleanup — order matters:
     // 1. Stop background workers first so they stop touching SDL textures

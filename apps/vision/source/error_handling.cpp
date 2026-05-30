@@ -101,7 +101,7 @@ namespace network_safe
         // Parse URL to extract host, port, and path
         // Simple parsing for http://host:port/path format
         std::string host = "127.0.0.1";
-        int port = 10080;
+        int port = 8088;
         std::string path = "/";
 
         // Extract path from URL for now (basic implementation)
@@ -504,14 +504,6 @@ namespace state_validate
         }
 
         auto duration = end - start;
-
-        // Check for overflow when converting to milliseconds
-        auto max_duration = std::chrono::milliseconds(std::numeric_limits<int64_t>::max());
-        if (duration > max_duration)
-        {
-            R_LOG_ERROR("Duration too large for milliseconds conversion");
-            return std::nullopt;
-        }
 
         return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
     }

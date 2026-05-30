@@ -3,6 +3,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_std_utils.h"
 #include <cstring>
+#include <libavutil/hwcontext.h>
 
 using namespace r_av;
 using namespace r_utils;
@@ -10,6 +11,19 @@ using namespace r_utils::r_std_utils;
 using namespace std;
 
 static const uint8_t READ_PADDING = 32;
+
+static const char* _accel_name(r_hw_accel accel)
+{
+    switch(accel)
+    {
+        case r_hw_accel::cuda:         return "cuda";
+        case r_hw_accel::qsv:          return "qsv";
+        case r_hw_accel::d3d11va:      return "d3d11va";
+        case r_hw_accel::vaapi:        return "vaapi";
+        case r_hw_accel::videotoolbox: return "videotoolbox";
+        default:                       return "software";
+    }
+}
 
 static string _ff_rc_to_msg(int rc)
 {
@@ -33,6 +47,7 @@ bool r_av::operator<(const r_scaler_state& lhs, const r_scaler_state& rhs)
 
 r_video_decoder::r_video_decoder() :
     _codec_id(AV_CODEC_ID_NONE),
+    _hw_accel(r_hw_accel::none),
     _codec(nullptr),
     _context(nullptr),
     _parser(nullptr),
@@ -42,13 +57,17 @@ r_video_decoder::r_video_decoder() :
     _pos(nullptr),
     _remaining_size(0),
     _frame(nullptr),
+    _sw_frame(nullptr),
+    _hw_device_ctx(nullptr),
+    _hw_pix_fmt(AV_PIX_FMT_NONE),
     _scalers(),
     _codec_opened(false)
 {
 }
 
-r_video_decoder::r_video_decoder(AVCodecID codec_id, bool parse_input) :
+r_video_decoder::r_video_decoder(AVCodecID codec_id, r_hw_accel accel, bool parse_input) :
     _codec_id(codec_id),
+    _hw_accel(accel),
     _codec(avcodec_find_decoder(_codec_id)),
     _context(avcodec_alloc_context3(_codec)),
     _parser(av_parser_init(_codec_id)),
@@ -58,6 +77,9 @@ r_video_decoder::r_video_decoder(AVCodecID codec_id, bool parse_input) :
     _pos(nullptr),
     _remaining_size(0),
     _frame(av_frame_alloc()),
+    _sw_frame(nullptr),
+    _hw_device_ctx(nullptr),
+    _hw_pix_fmt(AV_PIX_FMT_NONE),
     _scalers(),
     _codec_opened(false)
 {
@@ -71,23 +93,40 @@ r_video_decoder::r_video_decoder(AVCodecID codec_id, bool parse_input) :
     _context->extradata = nullptr;
     _context->extradata_size = 0;
 
-    if(_codec->capabilities & AV_CODEC_CAP_FRAME_THREADS)
-        _context->thread_type = FF_THREAD_FRAME;
-    else if(_codec->capabilities & AV_CODEC_CAP_SLICE_THREADS)
-        _context->thread_type = FF_THREAD_SLICE;
-    else _context->thread_count = 1; //don't use multithreading
+    if(_hw_accel != r_hw_accel::none)
+    {
+        auto device_type = r_hw_accel_to_device_type(_hw_accel);
 
-    _context->flags |= AV_CODEC_FLAG_LOW_DELAY;  // Try reducing buffering
-    _context->workaround_bugs = FF_BUG_AUTODETECT;  // Enable autodetection of bugs
+        _hw_pix_fmt = r_hw_accel_get_pix_fmt(_codec, device_type);
+        if(_hw_pix_fmt == AV_PIX_FMT_NONE)
+            R_THROW(("Codec does not support requested hw accel"));
 
-    // Critical for H.264
-    // if (_codec->id == AV_CODEC_ID_H264) {
-    //    _context->flags2 |= AV_CODEC_FLAG2_CHUNKS;  // Process incomplete frames
-    // }
+        int ret = av_hwdevice_ctx_create(&_hw_device_ctx, device_type, nullptr, nullptr, 0);
+        if(ret < 0)
+            R_THROW(("Failed to create hw device context: %s", _ff_rc_to_msg(ret).c_str()));
+
+        _sw_frame = av_frame_alloc();
+        if(!_sw_frame)
+            R_THROW(("Failed to allocate sw frame"));
+
+        _context->thread_count = 1;  // hw handles parallelism
+    }
+    else
+    {
+        if(_codec->capabilities & AV_CODEC_CAP_FRAME_THREADS)
+            _context->thread_type = FF_THREAD_FRAME;
+        else if(_codec->capabilities & AV_CODEC_CAP_SLICE_THREADS)
+            _context->thread_type = FF_THREAD_SLICE;
+        else _context->thread_count = 1;
+    }
+
+    _context->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    _context->workaround_bugs = FF_BUG_AUTODETECT;
 }
 
 r_video_decoder::r_video_decoder(r_video_decoder&& obj) :
     _codec_id(std::move(obj._codec_id)),
+    _hw_accel(std::move(obj._hw_accel)),
     _codec(std::move(obj._codec)),
     _context(std::move(obj._context)),
     _parser(std::move(obj._parser)),
@@ -97,10 +136,14 @@ r_video_decoder::r_video_decoder(r_video_decoder&& obj) :
     _pos(std::move(obj._pos)),
     _remaining_size(std::move(obj._remaining_size)),
     _frame(std::move(obj._frame)),
+    _sw_frame(std::move(obj._sw_frame)),
+    _hw_device_ctx(std::move(obj._hw_device_ctx)),
+    _hw_pix_fmt(std::move(obj._hw_pix_fmt)),
     _scalers(std::move(obj._scalers)),
     _codec_opened(std::move(obj._codec_opened))
 {
     obj._codec_id = AV_CODEC_ID_NONE;
+    obj._hw_accel = r_hw_accel::none;
     obj._codec = nullptr;
     obj._context = nullptr;
     obj._parser = nullptr;
@@ -108,6 +151,13 @@ r_video_decoder::r_video_decoder(r_video_decoder&& obj) :
     obj._buffer_size = 0;
     obj._pos = nullptr;
     obj._frame = nullptr;
+    obj._sw_frame = nullptr;
+    obj._hw_device_ctx = nullptr;
+    obj._hw_pix_fmt = AV_PIX_FMT_NONE;
+
+    // _context->opaque points into obj's _hw_pix_fmt — redirect to ours
+    if(_context && _hw_accel != r_hw_accel::none)
+        _context->opaque = &_hw_pix_fmt;
 }
 
 r_video_decoder::~r_video_decoder()
@@ -123,6 +173,8 @@ r_video_decoder& r_video_decoder::operator=(r_video_decoder&& obj)
 
         _codec_id = std::move(obj._codec_id);
         obj._codec_id = AV_CODEC_ID_NONE;
+        _hw_accel = std::move(obj._hw_accel);
+        obj._hw_accel = r_hw_accel::none;
         _codec = std::move(obj._codec);
         obj._codec = nullptr;
         _context = std::move(obj._context);
@@ -139,8 +191,18 @@ r_video_decoder& r_video_decoder::operator=(r_video_decoder&& obj)
         _remaining_size = std::move(obj._remaining_size);
         _frame = std::move(obj._frame);
         obj._frame = nullptr;
+        _sw_frame = std::move(obj._sw_frame);
+        obj._sw_frame = nullptr;
+        _hw_device_ctx = std::move(obj._hw_device_ctx);
+        obj._hw_device_ctx = nullptr;
+        _hw_pix_fmt = std::move(obj._hw_pix_fmt);
+        obj._hw_pix_fmt = AV_PIX_FMT_NONE;
         _scalers = std::move(obj._scalers);
         _codec_opened = std::move(obj._codec_opened);
+
+        // _context->opaque points into obj's _hw_pix_fmt — redirect to ours
+        if(_context && _hw_accel != r_hw_accel::none)
+            _context->opaque = &_hw_pix_fmt;
     }
 
     return *this;
@@ -163,14 +225,29 @@ void r_video_decoder::set_extradata(const vector<uint8_t>& ed)
     memcpy(_context->extradata, ed.data(), ed.size());
 }
 
+AVPixelFormat r_video_decoder::_get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts)
+{
+    auto* target = static_cast<AVPixelFormat*>(ctx->opaque);
+    for(const AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p)
+        if(*p == *target)
+            return *p;
+    return AV_PIX_FMT_NONE;
+}
+
 void r_video_decoder::_open_codec()
 {
     if(_codec_opened)
         return;
 
-    // Open the codec with explicit parameters
+    if(_hw_accel != r_hw_accel::none)
+    {
+        _context->hw_device_ctx = av_buffer_ref(_hw_device_ctx);
+        _context->get_format    = _get_hw_format;
+        _context->opaque        = &_hw_pix_fmt;
+    }
+
     AVDictionary* opts = nullptr;
-    av_dict_set(&opts, "strict", "experimental", 0);  // Be more lenient with decoding
+    av_dict_set(&opts, "strict", "experimental", 0);
     int ret = avcodec_open2(_context, _codec, &opts);
     av_dict_free(&opts);
     if(ret < 0)
@@ -252,8 +329,18 @@ r_codec_state r_video_decoder::decode()
         // Try to receive a frame
         int recv_result = avcodec_receive_frame(_context, _frame);
 
-        if (recv_result >= 0)
+        if(recv_result >= 0)
+        {
+            if(_hw_accel != r_hw_accel::none && _frame->format == _hw_pix_fmt)
+            {
+                int tr = av_hwframe_transfer_data(_sw_frame, _frame, 0);
+                if(tr < 0)
+                    R_THROW(("Failed to transfer hw frame to cpu: %s", _ff_rc_to_msg(tr).c_str()));
+                av_frame_unref(_frame);
+                av_frame_move_ref(_frame, _sw_frame);
+            }
             return R_CODEC_STATE_HAS_OUTPUT;
+        }
         else if (recv_result == AVERROR_EOF)
             return R_CODEC_STATE_EOF;
         else if (recv_result == AVERROR(EAGAIN))
@@ -318,10 +405,12 @@ r_codec_state r_video_decoder::flush()
 
 shared_ptr<vector<uint8_t>> r_video_decoder::get(AVPixelFormat output_format, uint16_t output_width, uint16_t output_height, int alignment)
 {
+    // Use frame properties directly: in the hw path _context->pix_fmt is the
+    // hw pixel format, but after transfer _frame holds the sw format.
     r_scaler_state state;
-    state.input_format = _context->pix_fmt;
-    state.input_width = (uint16_t)_context->width;
-    state.input_height = (uint16_t)_context->height;
+    state.input_format = (AVPixelFormat)_frame->format;
+    state.input_width = (uint16_t)_frame->width;
+    state.input_height = (uint16_t)_frame->height;
     state.output_format = output_format;
     state.output_width = output_width;
     state.output_height = output_height;
@@ -331,9 +420,9 @@ shared_ptr<vector<uint8_t>> r_video_decoder::get(AVPixelFormat output_format, ui
     if(found == end(_scalers))
     {
         _scalers[state] = sws_getContext(
-            _context->width,
-            _context->height,
-            _context->pix_fmt,
+            _frame->width,
+            _frame->height,
+            (AVPixelFormat)_frame->format,
             output_width,
             output_height,
             output_format,
@@ -360,7 +449,7 @@ shared_ptr<vector<uint8_t>> r_video_decoder::get(AVPixelFormat output_format, ui
                     _frame->data,
                     _frame->linesize,
                     0,
-                    _context->height,
+                    _frame->height,
                     fields,
                     linesizes);
 
@@ -386,6 +475,11 @@ void r_video_decoder::_clear()
         sws_freeContext(s.second);
     _scalers.clear();
 
+    if(_sw_frame)
+    {
+        av_frame_free(&_sw_frame);
+        _sw_frame = nullptr;
+    }
     if(_frame)
     {
         av_frame_free(&_frame);
@@ -404,9 +498,12 @@ void r_video_decoder::_clear()
             _context->extradata = nullptr;
             _context->extradata_size = 0;
         }
-        //avcodec_close(_context);
         avcodec_free_context(&_context);
-        //av_free(_context);
         _context = nullptr;
+    }
+    if(_hw_device_ctx)
+    {
+        av_buffer_unref(&_hw_device_ctx);
+        _hw_device_ctx = nullptr;
     }
 }

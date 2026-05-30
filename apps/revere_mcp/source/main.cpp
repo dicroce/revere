@@ -13,7 +13,7 @@ using namespace r_utils;
 using json = nlohmann::json;
 
 static const char* REVERE_HOST = "127.0.0.1";
-static const int   REVERE_PORT = 10080;
+static const int   REVERE_PORT = 8088;
 
 int main()
 {

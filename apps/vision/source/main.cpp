@@ -266,7 +266,7 @@ void change_one_by_one_config_and_layout(configure_state& cfg, pipeline_host& ph
     auto url_label = label;
     replace(begin(url_label), end(url_label), ' ', '_');
 
-    si.rtsp_url = r_string_utils::format("rtsp://%s:10554/%s", maybe_revere_ip.value().c_str(), url_label.c_str());
+    si.rtsp_url = r_string_utils::format("rtsp://%s:8554/%s", maybe_revere_ip.value().c_str(), url_label.c_str());
     si.camera_id = camera_id;
     si.do_motion_detection = do_motion_detection;
 
@@ -396,7 +396,7 @@ int main(int, char**)
     auto top_dir = vision::top_dir();
 
     // Setup SDL
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) != 0)
     {
         R_LOG_ERROR("SDL_Init error: %s", SDL_GetError());
         return 1;
@@ -567,6 +567,7 @@ int main(int, char**)
 
         auto last_ui_update_ts = chrono::steady_clock::now();
         const auto frame_duration = chrono::microseconds(16667);  // ~60fps
+        auto cameras_validation_start = chrono::steady_clock::now();
 
         r_ui_utils::texture_loader tl;
         tl.set_renderer(renderer);
@@ -651,6 +652,15 @@ int main(int, char**)
                 {
                     ph.set_cameras_validated();
                 }
+            }
+
+            // Fallback: if the local Revere server never responded within 10 s, unlock
+            // pipeline creation anyway so cameras can still attempt to connect.
+            if (!ph.cameras_validated() &&
+                chrono::steady_clock::now() - cameras_validation_start > chrono::seconds(10))
+            {
+                R_LOG_WARNING("Camera validation timed out — enabling pipelines without server confirmation");
+                ph.set_cameras_validated();
             }
 
             // Start the Dear ImGui frame
@@ -878,7 +888,7 @@ int main(int, char**)
                                                 auto url_label = c.label;
                                                 replace(begin(url_label), end(url_label), ' ', '_');
 
-                                                auto rtsp_url = r_string_utils::format("rtsp://%s:10554/%s", maybe_revere_ip.value().c_str(), url_label.c_str());
+                                                auto rtsp_url = r_string_utils::format("rtsp://%s:8554/%s", maybe_revere_ip.value().c_str(), url_label.c_str());
 
                                                 stream_info si;
                                                 si.name = name;
@@ -911,8 +921,20 @@ int main(int, char**)
                                 ImGui::PopStyleColor();
                             }
                         },
-                        std::bind(&pipeline_host::control_bar_cb, &ph, std::placeholders::_1, std::placeholders::_2),
-                        std::bind(&pipeline_host::control_bar_button_cb, &ph, std::placeholders::_1, std::placeholders::_2),
+                        [&ph, &ui_state](const std::string& name, const std::chrono::system_clock::time_point& pos) {
+                            if(ui_state.mcs.sync_scrub)
+                                ph.sync_control_bar_cb(pos);
+                            else
+                                ph.control_bar_cb(name, pos);
+                        },
+                        [&ph, &ui_state](const std::string& name, control_bar_button_type type) {
+                            if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_PLAY)
+                                ph.sync_play_cb(ui_state.mcs.obos.cbs.get_range().second);
+                            else if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_LIVE)
+                                ph.sync_live_cb();
+                            else
+                                ph.control_bar_button_cb(name, type);
+                        },
                         std::bind(&pipeline_host::control_bar_update_data_cb, &ph, std::placeholders::_1, std::placeholders::_2),
                         std::bind(&pipeline_host::control_bar_export_cb, &ph, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4),
                         ph.playing(ui_state.mcs.selected_stream_name)
@@ -923,15 +945,78 @@ int main(int, char**)
 
             ph.load_video_textures();
 
+            {
+                static string last_audio_stream;
+                if(ui_state.mcs.selected_stream_name != last_audio_stream)
+                {
+                    last_audio_stream = ui_state.mcs.selected_stream_name;
+                    ph.set_active_audio_stream(last_audio_stream);
+                }
+                ph.set_stream_volume(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs.volume_gain);
+                ui_state.mcs.obos.cbs.has_audio = ph.has_audio(ui_state.mcs.selected_stream_name);
+
+                // Sync the control bar to the newly-selected camera. Keyed on
+                // camera_id rather than stream name so layout transitions that
+                // remap the same camera to a different slot don't re-trigger
+                // (the carried-over playhead is already correct in that case).
+                static string last_selected_camera_id;
+                auto sel_si = cfg_state.get_stream_info(ui_state.mcs.selected_stream_name);
+                string current_camera_id = !sel_si.is_null() ? sel_si.value().camera_id : string();
+                if(current_camera_id != last_selected_camera_id)
+                {
+                    last_selected_camera_id = current_camera_id;
+                    if(!current_camera_id.empty())
+                    {
+                        if(ph.playing(ui_state.mcs.selected_stream_name))
+                        {
+                            ui_state.mcs.obos.cbs.live();
+                        }
+                        else
+                        {
+                            auto pos = ph.last_control_bar_pos(ui_state.mcs.selected_stream_name);
+                            if(pos != std::chrono::system_clock::time_point{})
+                            {
+                                ui_state.mcs.obos.cbs.set_range(pos);
+                                ui_state.mcs.obos.cbs.playhead_pos = 1000;
+                            }
+                            else
+                            {
+                                ui_state.mcs.obos.cbs.live();
+                            }
+                        }
+                    }
+                }
+            }
+
             //ImGui::ShowDemoWindow();
 
             configure_wizard();
             
-            if(ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_FINISHED_SUCCESS)
+            if(ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_IN_PROGRESS ||
+               ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_FINISHED_SUCCESS)
             {
-                _pop_export_folder();
-                ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE;
+                if(ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_IN_PROGRESS)
+                {
+                    static auto last_poll = std::chrono::steady_clock::time_point{};
+                    auto now = std::chrono::steady_clock::now();
+                    if(now - last_poll >= std::chrono::milliseconds(500))
+                    {
+                        last_poll = now;
+                        ph.control_bar_export_progress_cb(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs);
+                    }
+                }
 
+                ImGui::OpenPopup("Exporting...");
+                vision::progress_modal(
+                    GImGui,
+                    "Exporting...",
+                    ui_state.mcs.obos.cbs.export_percent_complete,
+                    [&](){
+                        _pop_export_folder();
+                        ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE;
+                    },
+                    [&](){ ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE; }
+                );
             }
             else if(ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_FINISHED_ERROR)
             {

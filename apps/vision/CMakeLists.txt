@@ -70,20 +70,20 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     if (CMAKE_BUILD_TYPE STREQUAL "Debug")
         target_compile_options(vision PUBLIC -rdynamic -ggdb3 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fasynchronous-unwind-tables -Wl,--whole-archive)
     endif()
-endif()
 
-# Linux XDG install (desktop file, icon)
-if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-    include(GNUInstallDirs)
-
-    # Desktop file
-    install(FILES ${CMAKE_SOURCE_DIR}/flatpak/io.github.dicroce.Revere.Vision.desktop
-        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
-
-    # Icon
-    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/V.png
-        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/256x256/apps
-        RENAME io.github.dicroce.Revere.Vision.png)
+    # XDG desktop entry + icon for plain `make install` on Linux.
+    # Snap builds skip this — snap/snapcraft.yaml's desktop-integration part installs its own.
+    if(NOT PACKAGED_BUILD)
+        include(GNUInstallDirs)
+        set(VISION_EXEC "${CMAKE_INSTALL_PREFIX}/${REVERE_INSTALL_BINDIR}/vision")
+        configure_file(${CMAKE_CURRENT_SOURCE_DIR}/vision.desktop.in
+            ${CMAKE_CURRENT_BINARY_DIR}/vision.desktop @ONLY)
+        install(FILES ${CMAKE_CURRENT_BINARY_DIR}/vision.desktop
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/V.png
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/256x256/apps
+            RENAME vision.png)
+    endif()
 endif()
 
 # macOS app bundle configuration

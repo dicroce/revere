@@ -30,6 +30,8 @@ struct segment
 struct contents
 {
     std::vector<segment> segments;
+    r_utils::r_nullable<std::chrono::system_clock::time_point> first_ts;
+    r_utils::r_nullable<std::chrono::system_clock::time_point> last_ts;
 };
 
 R_API std::vector<uint8_t> query_get_jpg(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h);

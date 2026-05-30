@@ -4,8 +4,6 @@
 
 Revere is an open source video surveillance system with ONVIF camera support, motion detection, recording, playback and object detection.
 
-**Revere is extremely beta software at the moment. I have only been able to test this on a small number of cameras.**
-
 ## Key Features
 
 - ONVIF camera discovery and management
@@ -17,6 +15,7 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 - Cross-platform (Linux/Windows/Mac)
 - Full featured API
 - YOLOv8 object detection of people and cars
+- Storage management: move recording files to a new drive or reset storage in-place via the camera Properties dialog
 
 ## Screenshots
 
@@ -66,6 +65,22 @@ should appear in the Discovered list. Once it appears click Record and follow th
 - [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
 - [Contributing](CONTRIBUTING.md) - How to contribute to the project
 
+## Building from Source (quick reference)
+
+```bash
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build .
+```
+
+To include the optional `revere_cloud` plugin:
+
+```bash
+cmake .. -DCMAKE_BUILD_TYPE=Release -DEXTERNAL_PLUGIN_REPOS=/path/to/revere_cloud
+```
+
+Multiple plugin repos can be separated by semicolons.
+
 ## Platform Support
 
 | Platform | Status |
@@ -74,7 +89,6 @@ should appear in the Discovered list. Once it appears click Record and follow th
 | Windows 10/11 | ✅ Tested |
 | macOS 10.15+ | ✅ Tested |
 | Snap | ✅ Tested |
-| flatpak | ✅ Tested |
 
 ## System Requirements
 
@@ -111,7 +125,7 @@ If you have a camera that doesn't work with Revere send me a message, maybe we c
 - [Dear ImGui](https://github.com/ocornut/imgui) (v1.88) - Immediate-mode GUI framework
 - [ImGuiFileDialog](https://github.com/aiekick/ImGuiFileDialog) - File dialog extension for ImGui
 - [GLFW](https://www.glfw.org/) (3.4) - Cross-platform window and input management
-- OpenGL - Graphics rendering
+- SDL - Graphics rendering
 
 **Storage & Data:**
 - [nanots](https://github.com/dicroce/nanots) - Time-series storage for video recording

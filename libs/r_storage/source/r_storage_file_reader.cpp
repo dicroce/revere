@@ -231,14 +231,14 @@ vector<pair<int64_t, int64_t>> r_storage_file_reader::query_segments(int64_t sta
     
     try {
         // Use nanots_reader to query contiguous segments
-        auto video_segments = _reader->query_contiguous_segments("video", start_ts, end_ts);
+        auto video_segments = _reader->query_contiguous_segments("video", start_ts, NANOTS_SEC_KEY_UNSET, end_ts, INT64_MAX);
         for (const auto& seg : video_segments) {
             segments.push_back(make_pair(seg.start_timestamp, (seg.end_timestamp==0)?duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count():seg.end_timestamp));
         }
     } catch (const nanots_exception&) {
         try {
             // Fallback to audio stream if video doesn't exist
-            auto audio_segments = _reader->query_contiguous_segments("audio", start_ts, end_ts);
+            auto audio_segments = _reader->query_contiguous_segments("audio", start_ts, NANOTS_SEC_KEY_UNSET, end_ts, INT64_MAX);
             for (const auto& seg : audio_segments) {
                 segments.push_back(make_pair(seg.start_timestamp, seg.end_timestamp));
             }
@@ -252,68 +252,7 @@ vector<pair<int64_t, int64_t>> r_storage_file_reader::query_segments(int64_t sta
 
 vector<pair<int64_t, int64_t>> r_storage_file_reader::query_blocks(int64_t start_ts, int64_t end_ts)
 {
-    vector<pair<int64_t, int64_t>> blocks;
-    
-    auto base_name = _file_name.substr(0, (_file_name.find_last_of('.')));
-    auto nanots_file_name = base_name + ".nts";
-    
-    try {
-        // Use video stream to determine blocks (assuming video is primary)
-        nanots_iterator video_iterator(nanots_file_name, "video");
-        video_iterator.find(start_ts);
-        
-        int64_t current_block_start = -1;
-        int64_t last_ts = -1;
-        
-        while (video_iterator.valid() && video_iterator->timestamp < end_ts) {
-            int64_t ts = video_iterator->timestamp;
-            
-            if (current_block_start == -1) {
-                current_block_start = ts;
-            } else if (ts - last_ts > 1000000) { // Gap larger than 1 second indicates block boundary
-                blocks.push_back(make_pair(current_block_start, last_ts));
-                current_block_start = ts;
-            }
-            
-            last_ts = ts;
-            ++video_iterator;
-        }
-        
-        if (current_block_start != -1 && last_ts != -1) {
-            blocks.push_back(make_pair(current_block_start, last_ts));
-        }
-    } catch (const nanots_exception&) {
-        try {
-            // Fallback to audio stream if video doesn't exist
-            nanots_iterator audio_iterator(nanots_file_name, "audio");
-            audio_iterator.find(start_ts);
-            
-            int64_t current_block_start = -1;
-            int64_t last_ts = -1;
-            
-            while (audio_iterator.valid() && audio_iterator->timestamp < end_ts) {
-                int64_t ts = audio_iterator->timestamp;
-                
-                if (current_block_start == -1) {
-                    current_block_start = ts;
-                } else if (ts - last_ts > 1000000) { // Gap larger than 1 second indicates block boundary
-                    blocks.push_back(make_pair(current_block_start, last_ts));
-                    current_block_start = ts;
-                }
-                
-                last_ts = ts;
-                ++audio_iterator;
-            }
-            
-            if (current_block_start != -1 && last_ts != -1) {
-                blocks.push_back(make_pair(current_block_start, last_ts));
-            }
-        } catch (const nanots_exception&) {
-            // No streams exist, return empty
-        }
-    }
-    
-    return blocks;
+    return query_segments(start_ts, end_ts);
 }
 
 vector<int64_t> r_storage_file_reader::key_frame_start_times(r_storage_media_type media_type, int64_t start_ts, int64_t end_ts)

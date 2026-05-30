@@ -18,6 +18,8 @@ string r_http::method_text( int method )
         return "PATCH";
     else if( method == METHOD_HEAD )
         return "HEAD";
+    else if( method == METHOD_OPTIONS )
+        return "OPTIONS";
 
     R_STHROW( r_http_exception_generic, ("Unsupported method.") );
 }
@@ -38,6 +40,8 @@ int r_http::method_type( const string& methodText )
         return METHOD_PATCH;
     else if( lowerMethod == "head" )
         return METHOD_HEAD;
+    else if( lowerMethod == "options" )
+        return METHOD_OPTIONS;
 
     R_STHROW( r_http_exception_generic, ("Unsupported method.") );
 }

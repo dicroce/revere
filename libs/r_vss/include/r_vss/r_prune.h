@@ -6,8 +6,12 @@
 #include "r_utils/r_nullable.h"
 #include "r_vss/r_ws.h"
 #include "r_disco/r_camera.h"
+#include <atomic>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <deque>
+#include <map>
 #include <chrono>
 
 namespace r_vss
@@ -16,8 +20,7 @@ namespace r_vss
 struct prune_state
 {
     r_disco::r_camera camera;
-    std::vector<segment> blocks;
-    size_t bi;
+    std::chrono::system_clock::time_point cursor;
 };
 
 class r_prune final
@@ -34,8 +37,10 @@ private:
     void _update_cameras();
     void _rotate_cameras();
 
-    bool _running;
+    std::atomic<bool> _running;
     std::thread _prune_th;
+    std::mutex _stop_mutex;
+    std::condition_variable _stop_cv;
     std::string _top_dir;
     r_disco::r_devices& _devices;
 
@@ -43,6 +48,7 @@ private:
     std::chrono::system_clock::time_point _last_camera_fetch;
 
     r_utils::r_nullable<prune_state> _ps;
+    std::map<std::string, std::chrono::system_clock::time_point> _prune_hwm;
 };
 
 }

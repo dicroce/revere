@@ -21,6 +21,7 @@
 #include "r_av/r_audio_encoder.h"
 #include <functional>
 #include <array>
+#include <fstream>
 
 using namespace r_utils;
 using namespace r_http;
@@ -33,7 +34,7 @@ using namespace std::chrono;
 using namespace std::placeholders;
 using json = nlohmann::json;
 
-const int WEB_SERVER_PORT = 10080;
+const int WEB_SERVER_PORT = 8088;
 
 namespace {
 
@@ -53,6 +54,65 @@ r_server_response mcp_err(const json& id, int code, const string& msg)
     return resp;
 }
 
+// Returns the camera's source video resolution by parsing the SPS from the
+// codec params stored alongside the latest recorded key frame. We can't use
+// r_camera::video_codec_parameters directly — those come from the discovery-
+// time SDP and frequently lack sprop-parameter-sets for cameras that only
+// emit SPS/PPS inline in the bitstream. The stored params, by contrast, are
+// populated by r_recording_context with the actual sprop bytes from the
+// running stream, so they're always present for any camera that's recorded
+// at least one key frame. Null on any failure (codec unknown, no recording,
+// SPS missing) — resolution is best-effort metadata.
+r_utils::r_nullable<std::pair<uint16_t, uint16_t>> _camera_source_resolution(const std::string& top_dir, const r_disco::r_camera& c)
+{
+    r_utils::r_nullable<std::pair<uint16_t, uint16_t>> out;
+    if(c.record_file_path.is_null())
+        return out;
+    try
+    {
+        // Path resolution mirrors _get_storage_path() in r_query.cpp.
+        const auto& rfp = c.record_file_path.value();
+        std::string path = (rfp.find('/') != std::string::npos || rfp.find('\\') != std::string::npos)
+            ? rfp
+            : (top_dir + PATH_SLASH + "video" + PATH_SLASH + rfp);
+
+        r_storage::r_storage_file_reader sf(path);
+        auto last_ts = sf.last_ts();
+        if(last_ts.is_null())
+            return out;
+
+        auto key_bt_buf = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, last_ts.value());
+        uint32_t version = 0;
+        auto bt = r_utils::r_blob_tree::deserialize(key_bt_buf.data(), key_bt_buf.size(), version);
+
+        if(!bt.has_key("video_codec_name") || !bt.has_key("video_codec_parameters"))
+            return out;
+        auto codec = bt["video_codec_name"].get_string();
+        auto params = bt["video_codec_parameters"].get_string();
+
+        if(codec == "h264")
+        {
+            auto sps = r_pipeline::get_h264_sps(params);
+            if(!sps.is_null())
+            {
+                auto info = r_pipeline::parse_h264_sps(sps.value());
+                out.set_value({info.width, info.height});
+            }
+        }
+        else if(codec == "h265")
+        {
+            auto sps = r_pipeline::get_h265_sps(params);
+            if(!sps.is_null())
+            {
+                auto info = r_pipeline::parse_h265_sps(sps.value());
+                out.set_value({info.width, info.height});
+            }
+        }
+    }
+    catch(...) { /* swallow — resolution is best-effort metadata */ }
+    return out;
+}
+
 } // namespace
 
 r_ws::r_ws(const string& top_dir, r_devices& devices) :
@@ -60,31 +120,64 @@ r_ws::r_ws(const string& top_dir, r_devices& devices) :
     _devices(devices),
     _server(WEB_SERVER_PORT)
 {
+    _server.add_route(METHOD_GET, "/cameras", std::bind(&r_ws::_get_cameras, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/contents", std::bind(&r_ws::_get_contents, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/motion_events", std::bind(&r_ws::_get_motion_events, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/analytics", std::bind(&r_ws::_get_analytics, this, _1, _2, _3));
+
+    _server.add_route(METHOD_GET, "/key_frame", std::bind(&r_ws::_get_key_frame, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/video", std::bind(&r_ws::_get_video, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/jpg", std::bind(&r_ws::_get_jpg, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/webp", std::bind(&r_ws::_get_webp, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/contents", std::bind(&r_ws::_get_contents, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/cameras", std::bind(&r_ws::_get_cameras, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/export", std::bind(&r_ws::_get_export, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/motion_events", std::bind(&r_ws::_get_motion_events, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/key_frame", std::bind(&r_ws::_get_key_frame, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/analytics", std::bind(&r_ws::_get_analytics, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/video", std::bind(&r_ws::_get_video, this, _1, _2, _3));
+
     _server.add_route(METHOD_GET, "/create_transcode_stream", std::bind(&r_ws::_get_create_transcode_stream, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/transcode", std::bind(&r_ws::_get_transcode, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/finalize_transcode_stream", std::bind(&r_ws::_get_finalize_transcode_stream, this, _1, _2, _3));
+
+    _server.add_route(METHOD_GET, "/export", std::bind(&r_ws::_get_export, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/transcode_export", std::bind(&r_ws::_get_transcode_export, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/export_progress", std::bind(&r_ws::_get_export_progress, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/export_download", std::bind(&r_ws::_get_export_download, this, _1, _2, _3));
+
     _server.add_route(METHOD_POST, "/mcp", std::bind(&r_ws::_post_mcp, this, _1, _2, _3));
 
+    // Load the web UI bundle if present alongside the binary (CWD is set to
+    // the binary directory by _set_working_dir() before this is constructed).
+    if(r_fs::file_exists("ui.rbt"))
+    {
+        try
+        {
+            ifstream f("ui.rbt", ios::binary);
+            vector<uint8_t> buf((istreambuf_iterator<char>(f)), {});
+            uint32_t version = 0;
+            auto bundle = r_blob_tree::deserialize(buf.data(), buf.size(), version);
+            _server.serve_bundle("/", std::move(bundle));
+            R_LOG_INFO("Web UI available at http://localhost:%d/", WEB_SERVER_PORT);
+        }
+        catch(const exception& ex)
+        {
+            R_LOG_WARNING("Failed to load web UI bundle (ui.rbt): %s", ex.what());
+        }
+    }
+
     _server.start();
+
+    _export_running = true;
+    _export_th = thread(&r_ws::_export_entry_point, this);
 }
 
 r_ws::~r_ws()
 {
-    _server.stop();
+    stop();
 }
 
 void r_ws::stop()
 {
+    if(_export_running.exchange(false))
+    {
+        _export_q.wake();
+        _export_th.join();
+    }
     _server.stop();
 }
 
@@ -236,14 +329,14 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
         );
 
         json j;
+        j["first_ts"] = contents.first_ts.is_null() ? "" : r_time_utils::tp_to_iso_8601(contents.first_ts.value(), input_z_time);
+        j["last_ts"]  = contents.last_ts.is_null()  ? "" : r_time_utils::tp_to_iso_8601(contents.last_ts.value(),  input_z_time);
         j["segments"] = json::array();
 
         for(auto& s : contents.segments)
         {
-            // note: instead of push_back here its also possible to use += operator to append json object to array
             j["segments"].push_back({{"start_time", r_time_utils::tp_to_iso_8601(s.start, input_z_time)},
                                     {"end_time", r_time_utils::tp_to_iso_8601(s.end, input_z_time)}});
-
         }
 
         r_server_response response;
@@ -273,6 +366,7 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
         for(auto c : cameras)
         {
             bool do_motion_detection = (c.do_motion_detection.is_null())?false:c.do_motion_detection.value();
+            auto res = _camera_source_resolution(_top_dir, c);
 
             j["cameras"].push_back(
                 {
@@ -284,7 +378,9 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                     {"video_codec", (c.video_codec.is_null())?"":c.video_codec.value()},
                     {"audio_codec", (c.audio_codec.is_null())?"":c.audio_codec.value()},
                     {"state", c.state},
-                    {"do_motion_detection", do_motion_detection}
+                    {"do_motion_detection", do_motion_detection},
+                    {"width", res.is_null() ? 0 : res.value().first},
+                    {"height", res.is_null() ? 0 : res.value().second}
                 }
             );
         }
@@ -381,14 +477,56 @@ static void _check_timestamps(const r_blob_tree& bt)
     }
 }
 
+void r_ws::_export_entry_point()
+{
+    while(true)
+    {
+        auto item = _export_q.poll();
+        if(item.is_null())
+            break;
+
+        auto job = item.value();
+        auto job_id = job.id;
+
+        try
+        {
+            if(job.type == export_type::standard)
+                _export(job);
+            else
+                _transcode_export(job);
+        }
+        catch(const exception& ex)
+        {
+            R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+        }
+
+        {
+            lock_guard<mutex> lock(_export_progress_mutex);
+            auto it = _export_progress.find(job_id);
+            if(it != _export_progress.end())
+            {
+                it->second.percent_complete = 100;
+                it->second.completed_at = steady_clock::now();
+            }
+            auto cutoff = steady_clock::now() - minutes(5);
+            for(auto it2 = _export_progress.begin(); it2 != _export_progress.end(); )
+            {
+                if(it2->second.percent_complete == 100 && it2->second.completed_at < cutoff)
+                    it2 = _export_progress.erase(it2);
+                else
+                    ++it2;
+            }
+        }
+    }
+}
+
 r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::r_socket>&,
                                             r_utils::r_socket&,
                                             const r_http::r_server_request& request)
 {
     try
-    {    
+    {
         auto exports_path = _top_dir + PATH_SLASH + "exports";
-
         if(!r_fs::file_exists(exports_path))
             r_fs::mkdir(exports_path);
 
@@ -396,55 +534,92 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
 
         if(args.find("camera_id") == args.end())
             R_THROW(("Missing camera_id."));
-
-
         if(args.find("start_time") == args.end())
             R_THROW(("Missing start_time."));
-
-        auto start_time_s = args["start_time"];
-
         if(args.find("end_time") == args.end())
             R_THROW(("Missing end_time."));
-        
-        auto end_time_s = args["end_time"];
-
         if(args.find("file_name") == args.end())
             R_THROW(("Missing file name."));
 
-        r_muxer muxer(exports_path + PATH_SLASH + args["file_name"]);
-        muxer.enable_faststart();
+        export_job job;
+        job.id = r_uuid::generate();
+        job.type = export_type::standard;
+        job.camera_id = args["camera_id"];
+        job.start_time = r_time_utils::iso_8601_to_tp(args["start_time"]);
+        job.end_time = r_time_utils::iso_8601_to_tp(args["end_time"]);
+        job.file_name = args["file_name"];
+        job.exports_path = exports_path;
 
-        auto qs = r_time_utils::iso_8601_to_tp(start_time_s);
-
-        auto qe = r_time_utils::iso_8601_to_tp(end_time_s);
-
-        bool muxer_opened = false;
-
-        int64_t ts_first_frame = 0;
-
-        bool done = false;
-
-        while(!done)
         {
-            auto rs = qs;
-            auto re = rs;
-            if(rs + std::chrono::minutes(5) >= qe)
-            {
-                re = qe;
-                done = true;
-            }
-            else re = rs + std::chrono::minutes(5);
+            lock_guard<mutex> lock(_export_progress_mutex);
+            auto& p = _export_progress[job.id];
+            p.percent_complete = 0;
+            p.completed_at = {};
+            p.file_path = exports_path + PATH_SLASH + job.file_name;
+        }
 
-            auto qr_buffer = query_get_video(
-                _top_dir,
-                _devices,
-                args["camera_id"],
-                rs,
-                re
-            );
+        _export_q.post(job);
 
-            qs = re;
+        json j;
+        j["id"] = job.id;
 
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+
+    R_STHROW(r_http_500_exception, ("Failed to enqueue export."));
+}
+
+void r_ws::_export(export_job& job)
+{
+    auto dot = job.file_name.rfind('.');
+    auto ext = (dot != string::npos) ? job.file_name.substr(dot) : string{};
+    auto output_path = job.exports_path + PATH_SLASH + job.file_name;
+    auto temp_path = r_fs::temp_file_name(job.exports_path, "tmp_") + ext;
+
+    r_muxer muxer(temp_path);
+    muxer.enable_faststart();
+
+    auto qs = job.start_time;
+    auto qe = job.end_time;
+
+    bool muxer_opened = false;
+    int64_t ts_first_frame = 0;
+    bool done = false;
+
+    while(!done)
+    {
+        if(!_export_running) break;
+
+        auto rs = qs;
+        auto re = rs;
+        if(rs + chrono::minutes(5) >= qe)
+        {
+            re = qe;
+            done = true;
+        }
+        else re = rs + chrono::minutes(5);
+
+        auto qr_buffer = query_get_video(_top_dir, _devices, job.camera_id, rs, re);
+        qs = re;
+
+        {
+            lock_guard<mutex> lock(_export_progress_mutex);
+            auto total_ms = duration_cast<milliseconds>(job.end_time - job.start_time).count();
+            auto done_ms  = duration_cast<milliseconds>(qs - job.start_time).count();
+            auto pit = _export_progress.find(job.id);
+            if(pit != _export_progress.end())
+                pit->second.percent_complete = (total_ms > 0) ? (int)(done_ms * 100 / total_ms) : 100;
+        }
+
+        try
+        {
             uint32_t version = 0;
             auto bt = r_blob_tree::deserialize(qr_buffer.data(), qr_buffer.size(), version);
 
@@ -452,10 +627,6 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
 
             if(!muxer_opened)
             {
-                muxer_opened = true;
-
-                // first extract metadata from the blob tree
-
                 if(!bt.has_key("has_audio"))
                     R_THROW(("Blob tree missing audio indicator."));
 
@@ -483,8 +654,6 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
                     audio_codec_parameters = bt["audio_codec_parameters"].get_string();
                 }
 
-                // now, look for the sc_framerate or estimate it...
-
                 r_nullable<float> fr;
 
                 auto parts = r_string_utils::split(video_codec_parameters, ",");
@@ -501,8 +670,6 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
                 if(fr.is_null())
                     fr.set_value(_compute_framerate(bt));
 
-                // get the video codec information and add the right kinds of video stream...
-
                 auto video_codec_id = r_av::encoding_to_av_codec_id(video_codec_name);
 
                 if(video_codec_id == AV_CODEC_ID_H264)
@@ -511,15 +678,7 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
                     if(!maybe_sps.is_null())
                     {
                         auto sps_info = r_pipeline::parse_h264_sps(maybe_sps.value());
-
-                        muxer.add_video_stream(
-                            av_d2q(fr, 10000),
-                            video_codec_id,
-                            sps_info.width,
-                            sps_info.height,
-                            sps_info.profile_idc,
-                            sps_info.level_idc
-                        );
+                        muxer.add_video_stream(av_d2q(fr, 10000), video_codec_id, sps_info.width, sps_info.height, sps_info.profile_idc, sps_info.level_idc);
                     }
                     auto maybe_pps = r_pipeline::get_h264_pps(video_codec_parameters);
                     muxer.set_video_extradata(r_pipeline::make_h264_extradata(maybe_sps, maybe_pps));
@@ -531,23 +690,11 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
                     if(!maybe_sps.is_null())
                     {
                         auto sps_info = r_pipeline::parse_h265_sps(maybe_sps.value());
-
-                        muxer.add_video_stream(
-                            av_d2q(fr, 10000),
-                            video_codec_id,
-                            sps_info.width,
-                            sps_info.height,
-                            sps_info.profile_idc,
-                            sps_info.level_idc
-                        );
-
-                        //muxer.set_video_bitstream_filter("hevc_mp4toannexb");
+                        muxer.add_video_stream(av_d2q(fr, 10000), video_codec_id, sps_info.width, sps_info.height, sps_info.profile_idc, sps_info.level_idc);
                     }
                     auto maybe_pps = r_pipeline::get_h265_pps(video_codec_parameters);
                     muxer.set_video_extradata(r_pipeline::make_h265_extradata(maybe_vps, maybe_sps, maybe_pps));
                 }
-
-                // If there is audio, add the audio stream...
 
                 if(has_audio)
                 {
@@ -581,26 +728,21 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
                     if(audio_rate.is_null())
                         R_THROW(("Missing audio rate."));
 
-                    muxer.add_audio_stream(
-                        audio_codec_id,
-                        (uint8_t)audio_channels.value(),
-                        (uint16_t)audio_rate.value()
-                    );
+                    muxer.add_audio_stream(audio_codec_id, (uint8_t)audio_channels.value(), (uint16_t)audio_rate.value());
                 }
 
                 muxer.open();
+                muxer_opened = true;
             }
 
             if(!bt.has_key("frames"))
                 R_THROW(("Blob tree missing frames."));
 
             auto n_frames = bt["frames"].size();
-
             for(size_t fi = 0; fi < n_frames; ++fi)
             {
                 if(!bt["frames"].has_index(fi))
                     R_THROW(("Blob tree missing frame."));
-
                 if(!bt["frames"][fi].has_key("stream_id"))
                     R_THROW(("Blob tree missing stream id."));
 
@@ -630,18 +772,21 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
                     muxer.write_audio_frame(frame.data(), frame.size(), ts-ts_first_frame, {1, 1000});
             }
         }
-
-        muxer.finalize();
-
-        r_server_response response;
-        return response;
+        catch(const exception& ex)
+        {
+            R_LOG_WARNING("_export(): skipping chunk [%s -> %s]: %s",
+                r_time_utils::tp_to_iso_8601(rs, false).c_str(),
+                r_time_utils::tp_to_iso_8601(re, false).c_str(),
+                ex.what()
+            );
+        }
     }
-    catch(const std::exception& ex)
+
+    if(muxer_opened)
     {
-        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+        muxer.finalize();
+        r_fs::atomic_rename_file(temp_path, output_path);
     }
-
-    R_STHROW(r_http_500_exception, ("Failed to export."));
 }
 
 r_http::r_server_response r_ws::_get_analytics(const r_http::r_web_server<r_utils::r_socket>&,
@@ -979,7 +1124,7 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
 
             auto extradata = r_pipeline::get_video_codec_extradata(video_codec_name, video_codec_params);
 
-            session.decoder = make_unique<r_video_decoder>(codec_id);
+            session.decoder = make_unique<r_video_decoder>(codec_id, r_av::r_find_best_hw_accel(codec_id));
             if(!extradata.empty())
                 session.decoder->set_extradata(extradata);
 
@@ -999,7 +1144,10 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
                 0,
                 (uint16_t)session.framerate_num,
                 profile,
-                level
+                level,
+                "",
+                "",
+                r_find_best_hw_accel_encoder(out_codec_id)
             );
 
             float fr = (float)session.framerate_num / (float)session.framerate_den;
@@ -1112,13 +1260,57 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
 
                 if(dec_state != R_CODEC_STATE_HAS_OUTPUT && dec_state != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
                     continue;
+
                 auto decoded = session.decoder->get(AV_PIX_FMT_YUV420P, session.output_width, session.output_height, 1);
-                // Use a monotonic frame counter as the encoder PTS rather than the
-                // raw millisecond wall-clock timestamp.  With time_base {1, fps}, a
-                // counter of 0,1,2,... means one frame per time unit (correct).
-                // Passing ms timestamps (e.g. 1706000000033) would make libx264 think
-                // consecutive frames are ~1 second apart, breaking rate control.
-                session.encoder->attach_buffer(decoded->data(), decoded->size(), session.encoder_frame_count++);
+
+                // Record the first frame's timestamp so we can compute relative positions.
+                if(session.first_ts == -1)
+                    session.first_ts = ts;
+
+                // Convert relative ms timestamp to encoder timebase units (e.g. 1/30 s for 30fps),
+                // using midpoint rounding: pts = (rel_ms * fps_num + 500 * fps_den) / (1000 * fps_den)
+                int64_t relative_ts  = ts - session.first_ts;
+                int64_t rescaled_pts = (relative_ts  * (int64_t)session.framerate_num
+                                        + 500LL       * (int64_t)session.framerate_den)
+                                       / (1000LL      * (int64_t)session.framerate_den);
+
+                if(session.next_pts == -1)
+                    session.next_pts = rescaled_pts;
+
+                // Drop: frame is behind where the encoder already is — discard it.
+                if(rescaled_pts < session.next_pts)
+                    continue;
+
+                // Fill: input is ahead — duplicate the last encoded frame into the gap.
+                while(rescaled_pts > session.next_pts && session.last_decoded_frame)
+                {
+                    int64_t dup_ts = session.first_ts
+                                     + session.next_pts * 1000LL * (int64_t)session.framerate_den
+                                     / (int64_t)session.framerate_num;
+
+                    session.encoder->attach_buffer(session.last_decoded_frame->data(),
+                                                   session.last_decoded_frame->size(),
+                                                   session.next_pts);
+                    while(true)
+                    {
+                        auto enc_state = session.encoder->encode();
+                        if(enc_state != R_CODEC_STATE_HAS_OUTPUT) break;
+                        auto pi = session.encoder->get();
+                        if(dup_ts >= start_ms)
+                        {
+                            out_bt["frames"][out_frame_idx]["stream_id"] = to_string((int)R_STORAGE_MEDIA_TYPE_VIDEO);
+                            out_bt["frames"][out_frame_idx]["ts"]        = to_string(dup_ts);
+                            out_bt["frames"][out_frame_idx]["key"]       = string(pi.key ? "true" : "false");
+                            out_bt["frames"][out_frame_idx]["data"]      = vector<uint8_t>(pi.data, pi.data + pi.size);
+                            ++out_frame_idx;
+                        }
+                    }
+                    ++session.next_pts;
+                }
+
+                // Encode the current frame at next_pts.
+                session.encoder->attach_buffer(decoded->data(), decoded->size(), session.next_pts);
+                session.last_decoded_frame = decoded;
 
                 while(true)
                 {
@@ -1136,9 +1328,13 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
                         ++out_frame_idx;
                     }
                 }
+                ++session.next_pts;
             }
             else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO && session.audio_initialized && ts >= start_ms)
             {
+                if(session.audio_first_ts == -1)
+                    session.audio_first_ts = ts;
+
                 session.audio_decoder->attach_buffer(frame_data.data(), frame_data.size());
                 auto dec_state = session.audio_decoder->decode();
 
@@ -1171,15 +1367,21 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
                             chbuf.erase(chbuf.begin(), chbuf.begin() + frame_size);
                         }
 
+                        int64_t frame_sample_pos = session.audio_pts;
                         session.audio_encoder->attach_buffer(enc_buf.data(), enc_buf.size(), session.audio_pts);
                         session.audio_pts += frame_size;
 
                         auto enc_state = session.audio_encoder->encode();
                         if(enc_state == R_CODEC_STATE_HAS_OUTPUT)
                         {
+                            // Compute a sample-accurate absolute timestamp so that each encoded
+                            // AAC frame gets a unique PTS even when multiple frames are produced
+                            // from a single decoded input packet.
+                            int64_t audio_out_ts = session.audio_first_ts
+                                                   + frame_sample_pos * 1000LL / session.audio_sample_rate;
                             auto pi = session.audio_encoder->get();
                             out_bt["frames"][out_frame_idx]["stream_id"] = to_string((int)R_STORAGE_MEDIA_TYPE_AUDIO);
-                            out_bt["frames"][out_frame_idx]["ts"]        = to_string(ts);
+                            out_bt["frames"][out_frame_idx]["ts"]        = to_string(audio_out_ts);
                             out_bt["frames"][out_frame_idx]["key"]       = string("true");
                             out_bt["frames"][out_frame_idx]["data"]      = vector<uint8_t>(pi.data, pi.data + pi.size);
                             ++out_frame_idx;
@@ -1333,54 +1535,106 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
         if(args.find("framerate_den") == args.end())
             R_THROW(("Missing framerate_den."));
 
-        string output_codec = "h264";
-        if(args.find("codec") != args.end())
-            output_codec = r_string_utils::to_lower(args["codec"]);
+        export_job job;
+        job.id = r_uuid::generate();
+        job.type = export_type::transcode;
+        job.camera_id = args["camera_id"];
+        job.start_time = r_time_utils::iso_8601_to_tp(args["start_time"]);
+        job.end_time = r_time_utils::iso_8601_to_tp(args["end_time"]);
+        job.file_name = args["file_name"];
+        job.exports_path = exports_path;
+        job.width = r_string_utils::s_to_uint16(args["width"]);
+        job.height = r_string_utils::s_to_uint16(args["height"]);
+        job.bitrate = r_string_utils::s_to_uint32(args["bitrate"]);
+        job.framerate_num = r_string_utils::s_to_uint32(args["framerate_num"]);
+        job.framerate_den = r_string_utils::s_to_uint32(args["framerate_den"]);
+        job.codec = (args.find("codec") != args.end()) ? r_string_utils::to_lower(args["codec"]) : "h264";
 
-        auto output_width    = r_string_utils::s_to_uint16(args["width"]);
-        auto output_height   = r_string_utils::s_to_uint16(args["height"]);
-        auto bitrate         = r_string_utils::s_to_uint32(args["bitrate"]);
-        auto framerate_num   = r_string_utils::s_to_uint32(args["framerate_num"]);
-        auto framerate_den   = r_string_utils::s_to_uint32(args["framerate_den"]);
-
-        AVRational framerate{(int)framerate_num, (int)framerate_den};
-
-        auto qs = r_time_utils::iso_8601_to_tp(args["start_time"]);
-        auto qe = r_time_utils::iso_8601_to_tp(args["end_time"]);
-
-        r_muxer muxer(exports_path + PATH_SLASH + args["file_name"]);
-        muxer.enable_faststart();
-
-        bool initialized = false;
-        bool has_audio = false;
-        int64_t ts_first_frame = 0;
-        int64_t encoder_frame_count = 0; // monotonic counter; avoids rounding when converting ms→frames
-
-        unique_ptr<r_video_decoder> decoder;
-        unique_ptr<r_video_encoder> encoder;
-
-        bool done = false;
-        while(!done)
         {
-            auto rs = qs;
-            auto re = rs;
-            if(rs + chrono::minutes(5) >= qe)
-            {
-                re = qe;
-                done = true;
-            }
-            else re = rs + chrono::minutes(5);
+            lock_guard<mutex> lock(_export_progress_mutex);
+            _export_progress[job.id] = {0, {}};
+        }
 
-            auto qr_buffer = query_get_video(_top_dir, _devices, args["camera_id"], rs, re);
-            qs = re;
+        _export_q.post(job);
 
+        json j;
+        j["id"] = job.id;
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+
+    R_STHROW(r_http_500_exception, ("Failed to enqueue transcode export."));
+}
+
+void r_ws::_transcode_export(export_job& job)
+{
+    auto dot = job.file_name.rfind('.');
+    auto ext = (dot != string::npos) ? job.file_name.substr(dot) : string{};
+    auto output_path = job.exports_path + PATH_SLASH + job.file_name;
+    auto temp_path = r_fs::temp_file_name(job.exports_path, "tmp_") + ext;
+
+    r_muxer muxer(temp_path);
+    muxer.enable_faststart();
+
+    auto output_width = job.width;
+    auto output_height = job.height;
+    auto bitrate = job.bitrate;
+    auto framerate_num = job.framerate_num;
+    auto framerate_den = job.framerate_den;
+    string output_codec = job.codec;
+    AVRational framerate{(int)framerate_num, (int)framerate_den};
+
+    auto qs = job.start_time;
+    auto qe = job.end_time;
+
+    bool initialized = false;
+    bool has_audio = false;
+    int64_t ts_first_frame = 0;
+    int64_t encoder_frame_count = 0;
+
+    unique_ptr<r_video_decoder> decoder;
+    unique_ptr<r_video_encoder> encoder;
+
+    bool done = false;
+    while(!done)
+    {
+        if(!_export_running) break;
+
+        auto rs = qs;
+        auto re = rs;
+        if(rs + chrono::minutes(5) >= qe)
+        {
+            re = qe;
+            done = true;
+        }
+        else re = rs + chrono::minutes(5);
+
+        auto qr_buffer = query_get_video(_top_dir, _devices, job.camera_id, rs, re);
+        qs = re;
+
+        {
+            lock_guard<mutex> lock(_export_progress_mutex);
+            auto total_ms = duration_cast<milliseconds>(job.end_time - job.start_time).count();
+            auto done_ms  = duration_cast<milliseconds>(qs - job.start_time).count();
+            auto pit = _export_progress.find(job.id);
+            if(pit != _export_progress.end())
+                pit->second.percent_complete = (total_ms > 0) ? (int)(done_ms * 100 / total_ms) : 100;
+        }
+
+        try
+        {
             uint32_t version = 0;
             auto bt = r_blob_tree::deserialize(qr_buffer.data(), qr_buffer.size(), version);
 
             if(!initialized)
             {
-                initialized = true;
-
                 if(!bt.has_key("video_codec_name"))
                     R_THROW(("Blob tree missing video_codec_name."));
                 if(!bt.has_key("video_codec_parameters"))
@@ -1391,15 +1645,13 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
 
                 has_audio = bt.has_key("has_audio") && (bt["has_audio"].get_string() == "true");
 
-                // Build decoder from input stream codec.
                 auto in_codec_id  = r_av::encoding_to_av_codec_id(in_codec_name);
                 auto in_extradata = r_pipeline::get_video_codec_extradata(in_codec_name, in_codec_params);
 
-                decoder = make_unique<r_video_decoder>(in_codec_id);
+                decoder = make_unique<r_video_decoder>(in_codec_id, r_av::r_find_best_hw_accel(in_codec_id));
                 if(!in_extradata.empty())
                     decoder->set_extradata(in_extradata);
 
-                // Build encoder targeting the requested output codec.
                 bool is_h265 = (output_codec == "h265" || output_codec == "hevc");
                 auto out_codec_id = r_av::encoding_to_av_codec_id(output_codec);
                 int profile = is_h265 ? AV_PROFILE_HEVC_MAIN : AV_PROFILE_H264_MAIN;
@@ -1415,7 +1667,10 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
                     0,
                     (uint16_t)framerate_num,
                     profile,
-                    level
+                    level,
+                    "",
+                    "",
+                    r_find_best_hw_accel_encoder(out_codec_id)
                 );
 
                 // Use the encoder's own AVCC/HVCC extradata to configure the muxer.
@@ -1456,6 +1711,7 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
                 }
 
                 muxer.open();
+                initialized = true;
             }
 
             if(!bt.has_key("frames"))
@@ -1466,9 +1722,9 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
             {
                 if(!bt["frames"].has_index(fi)) continue;
 
-                auto sid       = bt["frames"][fi]["stream_id"].get_value<int>();
-                auto ts        = bt["frames"][fi]["ts"].get_value<int64_t>();
-                auto frame_data = bt["frames"][fi]["data"].get_blob(); // copy: muxer needs non-const ptr
+                auto sid        = bt["frames"][fi]["stream_id"].get_value<int>();
+                auto ts         = bt["frames"][fi]["ts"].get_value<int64_t>();
+                auto frame_data = bt["frames"][fi]["data"].get_blob();
 
                 if(ts_first_frame == 0)
                     ts_first_frame = ts;
@@ -1507,8 +1763,18 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
                 }
             }
         }
+        catch(const exception& ex)
+        {
+            R_LOG_WARNING("_transcode_export(): skipping chunk [%s -> %s]: %s",
+                r_time_utils::tp_to_iso_8601(rs, false).c_str(),
+                r_time_utils::tp_to_iso_8601(re, false).c_str(),
+                ex.what()
+            );
+        }
+    }
 
-        // Drain any frames still buffered in the encoder.
+    if(initialized)
+    {
         if(encoder)
         {
             auto flush_state = encoder->flush();
@@ -1522,15 +1788,104 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
         }
 
         muxer.finalize();
+        r_fs::atomic_rename_file(temp_path, output_path);
+    }
+}
+
+r_http::r_server_response r_ws::_get_export_progress(const r_http::r_web_server<r_utils::r_socket>&,
+                                                       r_utils::r_socket&,
+                                                       const r_http::r_server_request& request)
+{
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+
+        if(args.find("id") == args.end())
+            R_THROW(("Missing id."));
+
+        auto id = args["id"];
+
+        lock_guard<mutex> lock(_export_progress_mutex);
+        auto it = _export_progress.find(id);
+        if(it == _export_progress.end())
+            R_STHROW(r_http_404_exception, ("Export not found: %s", id.c_str()));
+
+        json j;
+        j["id"] = id;
+        j["percent_complete"] = it->second.percent_complete;
 
         r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
         return response;
     }
-    catch(const std::exception& ex)
+    catch(const r_http_404_exception&)
+    {
+        throw;
+    }
+    catch(const exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
-    R_STHROW(r_http_500_exception, ("Failed to transcode export."));
+    R_STHROW(r_http_500_exception, ("Failed to get export progress."));
+}
+
+r_http::r_server_response r_ws::_get_export_download(const r_http::r_web_server<r_utils::r_socket>&,
+                                                       r_utils::r_socket&,
+                                                       const r_http::r_server_request& request)
+{
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("id") == args.end())
+            R_THROW(("Missing id."));
+        auto id = args["id"];
+
+        std::string file_path;
+        {
+            lock_guard<mutex> lock(_export_progress_mutex);
+            auto it = _export_progress.find(id);
+            if(it == _export_progress.end())
+                R_STHROW(r_http_404_exception, ("Export not found: %s", id.c_str()));
+            if(it->second.percent_complete < 100)
+                R_STHROW(r_http_500_exception, ("Export not yet complete: %s", id.c_str()));
+            file_path = it->second.file_path;
+        }
+
+        if(!r_fs::file_exists(file_path))
+            R_STHROW(r_http_404_exception, ("Export file missing on disk: %s", file_path.c_str()));
+
+        // basename for Content-Disposition.
+        auto slash = file_path.find_last_of("/\\");
+        auto file_name = (slash == std::string::npos) ? file_path : file_path.substr(slash + 1);
+
+        auto bytes = r_fs::read_file(file_path);
+
+        r_server_response response;
+        response.set_content_type("video/quicktime");
+        response.add_additional_header(
+            "Content-Disposition",
+            string("attachment; filename=\"") + file_name + "\""
+        );
+        response.set_body(std::move(bytes));
+
+        // Delete the file and forget the job once we've assembled the response.
+        // If write_response then fails, the user can't retry — but they can just
+        // re-run the export. Cleaner than letting orphaned files accumulate.
+        try { r_fs::remove_file(file_path); } catch(...) {}
+        {
+            lock_guard<mutex> lock(_export_progress_mutex);
+            _export_progress.erase(id);
+        }
+
+        return response;
+    }
+    catch(const r_http_404_exception&) { throw; }
+    catch(const exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to download export."));
 }
 
 r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
@@ -1750,7 +2105,7 @@ r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
                 auto start_time = args["start_time"].get<string>();
                 auto jpeg = query_get_jpg(_top_dir, _devices, camera_id, start_tp, w, h);
                 auto b64  = r_string_utils::to_base64(jpeg.data(), jpeg.size());
-                auto url  = string("http://localhost:10080/jpg?camera_id=") + camera_id
+                auto url  = string("http://localhost:8088/jpg?camera_id=") + camera_id
                           + "&start_time=" + start_time
                           + "&width=" + to_string(w)
                           + "&height=" + to_string(h);

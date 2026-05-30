@@ -44,7 +44,7 @@ r_schedule_state r_weekly_schedule::query(const chrono::system_clock::time_point
     // Convert time_point to local time
     auto time_t_val = chrono::system_clock::to_time_t(tp);
     tm local_tm;
-#ifdef _WIN32
+#ifdef IS_WINDOWS
     localtime_s(&local_tm, &time_t_val);
 #else
     localtime_r(&time_t_val, &local_tm);

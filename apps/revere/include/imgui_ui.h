@@ -46,8 +46,8 @@ void error_modal(
     }
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb)
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb)
 {
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("Cameras"))
@@ -64,6 +64,8 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
     {
         if (ImGui::MenuItem("Launch Vision"))
             launch_vision_cb();
+        if (ImGui::MenuItem("Open Web UI"))
+            open_web_ui_cb();
         if (ImGui::MenuItem("Minimize to system tray"))
             minimize_cb();
 
@@ -738,26 +740,15 @@ void retention_modal(
         ImGui::Separator();
         ImGui::Spacing();
 
-        static char continuous_retention_days_buffer[64] = {0};
-        static int last_continuous_retention_days = -1;
-
-        if (ImGui::IsWindowAppearing() || last_continuous_retention_days != as.continuous_retention_days)
-        {
-            r_ui_utils::copy_s(continuous_retention_days_buffer, 64, std::to_string(as.continuous_retention_days));
-            last_continuous_retention_days = as.continuous_retention_days;
-        }
-
-        if(ImGui::InputText("Retention Days", continuous_retention_days_buffer, 64))
-        {
-            auto s = std::string(continuous_retention_days_buffer);
-            as.continuous_retention_days = std::stoi((!s.empty()) ? s : "0");
-        }
+        ImGui::InputDouble("Retention Days", &as.continuous_retention_days, 0.0, 0.0, "%.2f");
+        if(as.continuous_retention_days < 0.0)
+            as.continuous_retention_days = 0.0;
 
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
 
-        auto sz_info = r_storage::required_file_size_for_retention_hours((as.continuous_retention_days*24), as.byte_rate);
+        auto sz_info = r_storage::required_file_size_for_retention_hours((int64_t)(as.continuous_retention_days * 24.0), as.byte_rate);
 
         as.num_storage_file_blocks.set_value(sz_info.first);
         as.storage_file_block_size.set_value(sz_info.second);
@@ -896,7 +887,7 @@ void configure_rtsp_source_camera_modal(
     }
 }
 
-template<typename OK_CB, typename CANCEL_CB>
+template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB>
 void camera_properties_modal(
     ImGuiContext*,
     const std::string& name,
@@ -905,7 +896,8 @@ void camera_properties_modal(
     std::string& min_continuous_retention_hours,
     const std::string& record_file_path,
     OK_CB ok_cb,
-    CANCEL_CB cancel_cb
+    CANCEL_CB cancel_cb,
+    MOVE_STORAGE_CB move_storage_cb
 )
 {
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
@@ -923,13 +915,35 @@ void camera_properties_modal(
 
         ImGui::Checkbox("Motion Detection", &do_motion_detection);
 
+        if(!do_motion_detection)
+            do_motion_pruning = false;
+        ImGui::BeginDisabled(!do_motion_detection);
         ImGui::Checkbox("Prune Still Video", &do_motion_pruning);
+        ImGui::EndDisabled();
 
         static char retention_hours[64] = {0};
         r_ui_utils::copy_s(retention_hours, 64, min_continuous_retention_hours);
         if(ImGui::InputText("Minimum continuous retention hours", retention_hours, 64))
             min_continuous_retention_hours = std::string(retention_hours);
 
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::Text("Storage Management:");
+        ImGui::Spacing();
+
+        if(ImGui::Button("Move Storage"))
+        {
+            ImGui::CloseCurrentPopup();
+            move_storage_cb();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if(ImGui::IsItemHovered())
+            ImGui::SetTooltip("Move recording files to a new location.\nOptionally start fresh and discard old recordings.");
+
+        ImGui::Spacing();
+        ImGui::Separator();
         ImGui::Spacing();
 
         if(ImGui::Button("Cancel"))
@@ -1076,6 +1090,116 @@ void about_revere_cloud_modal(
         }
 
         ImGui::Spacing();
+
+        ImGui::EndPopup();
+    }
+}
+
+template<typename START_CB, typename CLOSE_CB, typename CANCEL_OP_CB>
+void move_storage_modal(
+    ImGuiContext*,
+    const std::string& name,
+    const std::string& camera_name,
+    std::string& new_dir,
+    bool& start_fresh,
+    bool& delete_confirmed,
+    float progress,
+    bool running,
+    bool done,
+    bool error,
+    const std::string& status,
+    START_CB start_cb,
+    CLOSE_CB close_cb,
+    CANCEL_OP_CB cancel_op_cb
+)
+{
+    ImGui::SetNextWindowSize(ImVec2(540, 0), ImGuiCond_Always);
+    if(ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        if(!running && !done)
+        {
+            if(ImGui::IsWindowAppearing())
+            {
+                start_fresh = false;
+                delete_confirmed = false;
+            }
+
+            ImGui::Text("Camera: %s", camera_name.c_str());
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::Text("Destination:");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(300);
+            ImGui::InputText("##move_dir", const_cast<char*>(new_dir.c_str()), new_dir.size() + 1, ImGuiInputTextFlags_ReadOnly);
+            ImGui::SameLine();
+            if(ImGui::Button("Browse..."))
+                ImGuiFileDialog::Instance()->OpenDialog("MoveStorageDirDlg", "Choose Destination", nullptr, new_dir.empty() ? "." : new_dir, "", 1, nullptr, 0);
+
+            if(ImGuiFileDialog::Instance()->Display("MoveStorageDirDlg", ImGuiWindowFlags_None, ImVec2(800, 400)))
+            {
+                if(ImGuiFileDialog::Instance()->IsOk())
+                    new_dir = ImGuiFileDialog::Instance()->GetCurrentPath();
+                ImGuiFileDialog::Instance()->Close();
+            }
+
+            ImGui::Spacing();
+            ImGui::Checkbox("Start fresh (don't copy existing recordings)", &start_fresh);
+
+            if(start_fresh)
+            {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "All existing recordings will be permanently deleted.");
+                ImGui::Checkbox("I understand the recordings will be deleted", &delete_confirmed);
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            if(ImGui::Button("Cancel", ImVec2(120, 30)))
+            {
+                ImGui::CloseCurrentPopup();
+                close_cb();
+            }
+
+            ImGui::SameLine();
+
+            bool can_start = !new_dir.empty() && (!start_fresh || delete_confirmed);
+            ImGui::BeginDisabled(!can_start);
+            if(ImGui::Button("Move", ImVec2(120, 30)))
+                start_cb();
+            ImGui::EndDisabled();
+        }
+        else if(running)
+        {
+            ImGui::Text(start_fresh ? "Resetting storage..." : "Moving storage files...");
+            ImGui::Spacing();
+            ImGui::ProgressBar(progress, ImVec2(-1, 0));
+            ImGui::Spacing();
+            ImGui::TextWrapped("%s", status.c_str());
+            ImGui::Spacing();
+            if(ImGui::Button("Cancel", ImVec2(120, 30)))
+                cancel_op_cb();
+        }
+        else if(done && !error)
+        {
+            ImGui::CloseCurrentPopup();
+            close_cb();
+        }
+        else if(error)
+        {
+            ImGui::TextColored(ImVec4(1.f, 0.3f, 0.3f, 1.f), "Error:");
+            ImGui::Spacing();
+            ImGui::TextWrapped("%s", status.c_str());
+            ImGui::Spacing();
+            if(ImGui::Button("Close", ImVec2(120, 30)))
+            {
+                ImGui::CloseCurrentPopup();
+                close_cb();
+            }
+        }
 
         ImGui::EndPopup();
     }

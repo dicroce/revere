@@ -73,7 +73,7 @@ public:
                    double min_motion_displacement = DEFAULT_MIN_MOTION_DISPLACEMENT,
                    double min_area_fraction = 0.003) :
         _motion_state(60, 0.95, 0.70, 100, true, min_area_fraction),
-        _video_decoder(codec_id),
+        _video_decoder(codec_id, r_av::r_find_best_hw_accel(codec_id)),
         _camera_id(camera_id),
         _storage_sink(std::move(storage_sink)),
         _in_event(false),

@@ -30,15 +30,15 @@ vector<r_metadata_entry> r_md_storage_file_reader::query_stream(const string& st
     
     try {
         // Use the nanots reader callback interfac
-        _reader->read(stream_tag, start_ts, end_ts, 
-            [&](const uint8_t* data, size_t size, uint8_t flags, int64_t timestamp, int64_t block_sequence, const string& metadata) {
+        _reader->read(stream_tag, start_ts, NANOTS_SEC_KEY_UNSET, end_ts, INT64_MAX,
+            [&](const uint8_t* data, size_t size, uint32_t flags, int64_t timestamp, int64_t sec_key, int64_t block_sequence, const string& metadata) {
                 r_metadata_entry entry;
                 entry.stream_tag = stream_tag;
                 entry.timestamp_ms = timestamp;
-                
+
                 // Convert the data back to string
                 entry.json_data = string(reinterpret_cast<const char*>(data), size);
-                
+
                 results.push_back(move(entry));
             });
     } catch(const nanots_exception&) {
@@ -73,7 +73,7 @@ vector<string> r_md_storage_file_reader::get_stream_tags()
 {
     try {
         // Query stream tags for the entire time range
-        return _reader->query_stream_tags(0, LLONG_MAX);
+        return _reader->query_stream_tags(0, NANOTS_SEC_KEY_UNSET, LLONG_MAX, INT64_MAX);
     } catch(const nanots_exception&) {
         // Return empty vector if no streams exist
         return vector<string>();
@@ -106,7 +106,7 @@ pair<int64_t, int64_t> r_md_storage_file_reader::get_stream_time_range(const str
 {
     try {
         // Get contiguous segments for the stream to determine time range
-        auto segments = _reader->query_contiguous_segments(stream_tag, 0, LLONG_MAX);
+        auto segments = _reader->query_contiguous_segments(stream_tag, 0, NANOTS_SEC_KEY_UNSET, LLONG_MAX, INT64_MAX);
         
         if(segments.empty())
             R_THROW(("No data found for stream '%s'", stream_tag.c_str()));

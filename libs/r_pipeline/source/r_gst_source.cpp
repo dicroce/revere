@@ -295,24 +295,38 @@ void r_gst_source::set_args(const vector<r_arg>& args)
     _password = _args["password"];
 }
 
+static uint32_t _parse_protocol_flags(const string& protocols_str)
+{
+    uint32_t flags = 0;
+    for(auto& token : r_string_utils::split(protocols_str, ','))
+    {
+        auto lower = r_string_utils::to_lower(token);
+        if(lower == "tcp")      flags |= 0x00000004;
+        else if(lower == "udp") flags |= 0x00000001;
+        else if(lower == "tls") flags |= 0x00000020;
+    }
+    return flags;
+}
+
 void r_gst_source::play()
 {
     lock_guard<mutex> g(_state_lok);
 
     GstElement* rtspsrc = gst_element_factory_make("rtspsrc", "src");
 
-    if(!_protocols.is_null())
     {
         // Protocol flags from GstRTSPLowerTrans:
         // 0x00000001 = GST_RTSP_LOWER_TRANS_UDP
         // 0x00000004 = GST_RTSP_LOWER_TRANS_TCP
         // 0x00000020 = GST_RTSP_LOWER_TRANS_TLS
-        // Allow TCP, UDP, and TLS (TCP preferred, UDP fallback, TLS for RTSPS URLs)
-        g_object_set(G_OBJECT(rtspsrc), "protocols", 0x00000025, NULL);  // TCP | UDP | TLS
-        g_object_set(G_OBJECT(rtspsrc), "buffer-mode", 1, NULL);
-        // Use GStreamer's default latency (typically 2000ms) for better reliability
-        // across different network conditions (LAN, WAN, cellular, satellite)
-        R_LOG_INFO("RTSP protocols set to TCP|UDP|TLS (TCP preferred, UDP fallback, TLS for RTSPS)");
+        // Note: GStreamer tries UDP before TCP regardless of string order.
+        // To force TCP only, pass protocols="TCP".
+        auto protocols_str = _protocols.is_null() ? string("TCP,UDP,TLS") : _protocols.value();
+        uint32_t protocol_flags = _parse_protocol_flags(protocols_str);
+        g_object_set(G_OBJECT(rtspsrc), "protocols", protocol_flags, NULL);
+        if(!_protocols.is_null())
+            g_object_set(G_OBJECT(rtspsrc), "buffer-mode", 1, NULL);
+        R_LOG_INFO("RTSP protocols set to %s (0x%08x)", protocols_str.c_str(), protocol_flags);
     }
 
     g_object_set(G_OBJECT(rtspsrc), "do-rtsp-keep-alive", true, NULL);
@@ -372,16 +386,48 @@ void r_gst_source::stop()
 
     if(_pipeline && _running)
     {
+        // Disconnect before state change so no callbacks fire during RTSP teardown.
+        // The bus watch removal is safe to call from within the bus callback itself (GLib allows it).
+        if(_bus_watch_id)
+        {
+            g_source_remove(_bus_watch_id);
+            _bus_watch_id = 0;
+        }
+
+        if(_v_appsink && G_IS_OBJECT(_v_appsink))
+        {
+            g_object_set(G_OBJECT(_v_appsink), "emit-signals", FALSE, NULL);
+            g_signal_handlers_disconnect_by_data(_v_appsink, this);
+        }
+
+        if(_a_appsink && G_IS_OBJECT(_a_appsink))
+        {
+            g_object_set(G_OBJECT(_a_appsink), "emit-signals", FALSE, NULL);
+            g_signal_handlers_disconnect_by_data(_a_appsink, this);
+        }
+
         auto result = gst_element_set_state(_pipeline, GST_STATE_NULL);
 
-        auto done = false;
+        // Poll with a finite timeout per iteration and an absolute deadline so we never
+        // hang indefinitely waiting for an unresponsive camera's RTSP TEARDOWN response.
+        auto deadline = steady_clock::now() + seconds(5);
+        bool done = false;
         while(!done)
         {
             if(result == GST_STATE_CHANGE_FAILURE)
-                R_THROW(("Unable to stop the pipeline."));
+            {
+                R_LOG_WARNING("Pipeline state change failed during stop, forcing cleanup");
+                done = true;
+            }
             else if(result == GST_STATE_CHANGE_SUCCESS || result == GST_STATE_CHANGE_NO_PREROLL)
                 done = true;
-            else result = gst_element_get_state(_pipeline, NULL, NULL, GST_CLOCK_TIME_NONE);
+            else if(steady_clock::now() >= deadline)
+            {
+                R_LOG_WARNING("Pipeline shutdown timed out after 5s, forcing cleanup");
+                done = true;
+            }
+            else
+                result = gst_element_get_state(_pipeline, NULL, NULL, 500 * GST_MSECOND);
         }
 
         _running = false;

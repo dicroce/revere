@@ -38,7 +38,7 @@ static deque<string> _get_file_names(const std::string& log_dir)
     deque<string> output;
 
 #ifdef IS_WINDOWS
-    wstring spec = r_string_utils::convert_multi_byte_string_to_wide_string(string("*.*"));
+    wstring spec = r_string_utils::convert_multi_byte_string_to_wide_string(log_dir + "\\*.*");
     struct _wfinddata_t fs;
     intptr_t handle;
     if((handle=_wfindfirst(spec.c_str(), &fs)) == -1)
@@ -84,7 +84,14 @@ static string _next_log_name(const string& log_dir, const string& log_prefix, bo
         end(file_names)
     );
 
-    sort(begin(file_names), end(file_names));
+    auto extract_num = [&log_prefix](const string& s) {
+        auto inner = s.substr(log_prefix.length());
+        auto dot = inner.rfind('.');
+        return r_string_utils::s_to_uint32(dot != string::npos ? inner.substr(0, dot) : inner);
+    };
+    sort(begin(file_names), end(file_names), [&extract_num](const string& a, const string& b) {
+        return extract_num(a) < extract_num(b);
+    });
 
     auto n_file_names = file_names.size();
 
@@ -101,7 +108,7 @@ static string _next_log_name(const string& log_dir, const string& log_prefix, bo
             return file_names.back();
 
         auto newest_log_path = file_names.back();
-        auto n = r_string_utils::s_to_uint32(newest_log_path.substr(log_prefix.length()));
+        auto n = extract_num(newest_log_path);
         ++n;
         return log_prefix + r_string_utils::uint32_to_s(n) + ".txt";
     }
@@ -158,8 +165,7 @@ void r_utils::r_logger::write(LOG_LEVEL level,
     _state->approx_bytes_logged += (uint32_t)msg.length();
     auto lines = r_string_utils::split(msg, "\n");
 
-#if defined(IS_WINDOWS) || defined(IS_LINUX)
-    // Add timestamp for file logging (Windows, or Linux in Flatpak mode)
+#if defined(IS_WINDOWS) || defined(IS_LINUX) || defined(IS_MACOS)
     auto now = std::chrono::system_clock::now();
     auto timestamp = r_time_utils::tp_to_iso_8601(now, false);
 #endif
@@ -188,14 +194,17 @@ void r_utils::r_logger::write(LOG_LEVEL level,
         }
     }
 
-#if defined(IS_WINDOWS) || defined(IS_LINUX)
-    // File logging for Windows, or Linux in Flatpak mode
+#if defined(IS_WINDOWS) || defined(IS_LINUX) || defined(IS_MACOS)
+    // File logging for Windows, Linux in Flatpak/Snap, and macOS
     bool use_file_logging = false;
 #ifdef IS_WINDOWS
     use_file_logging = true;
 #endif
 #ifdef IS_LINUX
     use_file_logging = _state->is_sandboxed;
+#endif
+#ifdef IS_MACOS
+    use_file_logging = true;
 #endif
     if(use_file_logging && _state->log_file)
     {
@@ -241,16 +250,12 @@ void r_utils::r_logger::write(LOG_LEVEL level,
 #endif
 
 #ifdef IS_MACOS
+    for(auto l : lines)
     {
-        auto now = std::chrono::system_clock::now();
-        auto timestamp = r_time_utils::tp_to_iso_8601(now, false);
-        for(auto l : lines)
-        {
-            fprintf(stdout, "%s %s\n", timestamp.c_str(), l.c_str());
-        }
-        if(level <= LOG_LEVEL_ERROR)
-            fflush(stdout);
+        fprintf(stdout, "%s %s\n", timestamp.c_str(), l.c_str());
     }
+    if(level <= LOG_LEVEL_ERROR)
+        fflush(stdout);
 #endif
 }
 
@@ -297,7 +302,7 @@ void r_utils::r_logger::install_logger(const std::string& log_dir, const std::st
 
     _state->approx_bytes_logged = (r_fs::file_exists(log_path))?(uint32_t)r_fs::file_size(log_path):0;
 
-    // Open log file for Windows, or Linux in Flatpak mode
+    // Open log file for Windows, Linux in Flatpak/Snap, and macOS
 #ifdef IS_WINDOWS
     open_log_file(log_path);
 #endif
@@ -306,6 +311,9 @@ void r_utils::r_logger::install_logger(const std::string& log_dir, const std::st
     {
         open_log_file(log_path);
     }
+#endif
+#ifdef IS_MACOS
+    open_log_file(log_path);
 #endif
 }
 

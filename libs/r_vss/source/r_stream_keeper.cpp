@@ -69,7 +69,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
 
     gst_rtsp_server_set_address(_server, "0.0.0.0");
 
-    gst_rtsp_server_set_service(_server, "10554");
+    gst_rtsp_server_set_service(_server, "8554");
 
     _mounts = gst_rtsp_server_get_mount_points(_server);
 
@@ -148,6 +148,10 @@ void r_stream_keeper::stop()
     if(!_running)
         R_THROW(("Cannot stop stream keeper if its not running!"));
 
+    R_LOG_INFO("Stopping prune...");
+    _prune.stop();
+    R_LOG_INFO("Prune stopped");
+
     // Stop web server first to prevent new HTTP requests during shutdown
     R_LOG_INFO("Stopping web server...");
     _ws.stop();
@@ -182,10 +186,6 @@ void r_stream_keeper::stop()
     R_LOG_INFO("Joining rtsp server thread...");
     _rtsp_server_th.join();
     R_LOG_INFO("Rtsp server thread joined");
-
-    R_LOG_INFO("Stopping prune...");
-    _prune.stop();
-    R_LOG_INFO("Prune stopped");
 
     R_LOG_INFO("Stopping system plugins...");
     _system_plugin_host.stop_all();
@@ -508,6 +508,24 @@ void r_stream_keeper::bounce(const std::string& camera_id)
     _cmd_q.post(cmd).get();
 }
 
+void r_stream_keeper::suspend(const std::string& camera_id)
+{
+    r_stream_keeper_cmd cmd;
+    cmd.cmd = R_SK_SUSPEND;
+    cmd.id = camera_id;
+
+    _cmd_q.post(cmd).get();
+}
+
+void r_stream_keeper::resume(const std::string& camera_id)
+{
+    r_stream_keeper_cmd cmd;
+    cmd.cmd = R_SK_RESUME;
+    cmd.id = camera_id;
+
+    _cmd_q.post(cmd).get();
+}
+
 string r_stream_keeper::create_restream_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding, int audio_format)
 {
     string launch_str = r_string_utils::format("( appsrc name=videosrc ! ");
@@ -616,6 +634,41 @@ void r_stream_keeper::_entry_point()
 
                     cmd.second.set_value(result);
                 }
+                else if(cmd.first.cmd == R_SK_SUSPEND)
+                {
+                    r_stream_keeper_result result;
+
+                    std::shared_ptr<r_recording_context> rc;
+                    {
+                        std::lock_guard<std::mutex> lock(_streams_mutex);
+                        auto it = _streams.find(cmd.first.id);
+                        if(it != _streams.end())
+                        {
+                            rc = it->second;
+                            _streams.erase(it);
+                        }
+                        _suspended_cameras.insert(cmd.first.id);
+                    }
+
+                    if(rc)
+                    {
+                        rc->stop();
+                        _motionEngine.remove_work_context(cmd.first.id);
+                    }
+
+                    cmd.second.set_value(result);
+                }
+                else if(cmd.first.cmd == R_SK_RESUME)
+                {
+                    r_stream_keeper_result result;
+
+                    {
+                        std::lock_guard<std::mutex> lock(_streams_mutex);
+                        _suspended_cameras.erase(cmd.first.id);
+                    }
+
+                    cmd.second.set_value(result);
+                }
                 else if(cmd.first.cmd == R_SK_CREATE_PLAYBACK_MOUNT)
                 {
                     r_stream_keeper_result result;
@@ -649,7 +702,7 @@ void r_stream_keeper::_rtsp_server_entry_point()
         while (g_main_context_pending(context))
             g_main_context_iteration(context, false);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     g_main_context_pop_thread_default(context);
     g_main_context_unref(context);
@@ -668,7 +721,7 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
 {
     for(const auto& camera : cameras)
     {
-        if(_streams.count(camera.id) == 0)
+        if(_streams.count(camera.id) == 0 && _suspended_cameras.count(camera.id) == 0)
         {
             auto name = camera.friendly_name.is_null() ?
                 (camera.camera_name.is_null() ? camera.id : camera.camera_name.value()) :

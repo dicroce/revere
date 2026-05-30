@@ -34,7 +34,7 @@ struct assignment_state
     r_utils::r_nullable<std::string> rtsp_password;
     std::string camera_friendly_name;
     int64_t byte_rate {64000};
-    int continuous_retention_days {3};
+    double continuous_retention_days {3.0};
     int motion_retention_days {10};
     int motion_percentage_estimate {5};
     std::string file_name;

@@ -14,11 +14,14 @@
 #include "r_av/r_audio_decoder.h"
 #include "r_av/r_audio_encoder.h"
 #include "r_utils/r_uuid.h"
+#include "r_utils/r_blocking_q.h"
 #include <vector>
 #include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <atomic>
 #include <string>
 
 namespace r_vss
@@ -49,6 +52,7 @@ class r_ws final
         int audio_channels = 0;
         int audio_sample_rate = 0;
         int64_t audio_pts = 0;
+        int64_t audio_first_ts = -1;  // abs ms timestamp of first audio input packet
         std::string output_audio_codec_params;
 
         // Target output audio params (0 = use source values)
@@ -56,10 +60,42 @@ class r_ws final
         int target_audio_channels = 0;
 
         std::chrono::steady_clock::time_point last_used;
-        int64_t encoder_frame_count = 0; // monotonic counter used as encoder PTS
+
+        // Framerate resampling state (persists across chunked transcode calls)
+        int64_t next_pts = -1;        // current position in encoder timebase units
+        int64_t first_ts = -1;        // ms timestamp of first video frame (for relative PTS)
+        std::shared_ptr<std::vector<uint8_t>> last_decoded_frame; // last YUV frame for duplication
     };
 
     static constexpr size_t MAX_TRANSCODE_SESSIONS = 5;
+
+    enum class export_type { standard, transcode };
+
+    struct export_job
+    {
+        std::string id;
+        export_type type = export_type::standard;
+        std::string camera_id;
+        std::chrono::system_clock::time_point start_time;
+        std::chrono::system_clock::time_point end_time;
+        std::string file_name;
+        std::string exports_path;
+        // transcode-only
+        uint16_t width = 0;
+        uint16_t height = 0;
+        uint32_t bitrate = 0;
+        uint32_t framerate_num = 0;
+        uint32_t framerate_den = 0;
+        std::string codec;
+        int percent_complete = 0;
+    };
+
+    struct export_progress
+    {
+        int percent_complete = 0;
+        std::chrono::steady_clock::time_point completed_at{};
+        std::string file_path;
+    };
 
 public:
     R_API r_ws(const std::string& top_dir, r_disco::r_devices& devices);
@@ -122,17 +158,35 @@ private:
                                                     r_utils::r_socket& conn,
                                                     const r_http::r_server_request& request);
 
+    r_http::r_server_response _get_export_progress(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                    r_utils::r_socket& conn,
+                                                    const r_http::r_server_request& request);
+
+    r_http::r_server_response _get_export_download(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                    r_utils::r_socket& conn,
+                                                    const r_http::r_server_request& request);
+
     r_http::r_server_response _post_mcp(const r_http::r_web_server<r_utils::r_socket>& ws,
                                         r_utils::r_socket& conn,
                                         const r_http::r_server_request& request);
 
     void _evict_oldest_transcode_session();
 
+    void _export_entry_point();
+    void _export(export_job& job);
+    void _transcode_export(export_job& job);
+
     std::string _top_dir;
     r_disco::r_devices& _devices;
     r_http::r_web_server<r_utils::r_socket> _server;
     std::map<std::string, r_transcode_session> _sessions;
     std::mutex _sessions_mutex;
+
+    std::thread _export_th;
+    std::atomic<bool> _export_running {false};
+    r_utils::r_blocking_q<export_job> _export_q;
+    std::map<std::string, export_progress> _export_progress;
+    std::mutex _export_progress_mutex;
 };
 
 }

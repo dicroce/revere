@@ -21,6 +21,7 @@ enum status_code
     response_multiple_choices        = 300, ///< Resource has multiple choices.
     response_moved                   = 301, ///< Resource moved permanently.
     response_found                   = 302, ///< Response body should contain temporary URI.
+    response_not_modified            = 304, ///< Cached resource is still valid.
 
     /// ERROR RESPONSES
     response_bad_request             = 400, ///< Request could not be understood by server.

@@ -20,9 +20,9 @@ vector<sidebar_list_ui_item> vision::query_cameras(const string& ip_address)
 
     r_socket sok;
     sok.set_io_timeout(10000);
-    sok.connect(ip_address, 10080);
+    sok.connect(ip_address, 8088);
 
-    r_client_request req(ip_address, 10080);
+    r_client_request req(ip_address, 8088);
     req.set_uri(r_uri("/cameras"));
     req.write_request(sok);
 
@@ -57,9 +57,9 @@ vector<uint8_t> vision::query_key(const string& ip_address, const string& camera
     r_socket sok;
     sok.set_io_timeout(10000);
 
-    sok.connect(ip_address, 10080);
+    sok.connect(ip_address, 8088);
 
-    r_client_request req(ip_address, 10080);
+    r_client_request req(ip_address, 8088);
     req.set_uri("/key_frame?camera_id=" + camera_id + "&start_time=" + start_time);
     req.write_request(sok);
 
@@ -71,7 +71,7 @@ vector<uint8_t> vision::query_key(const string& ip_address, const string& camera
     return response.release_body();
 }
 
-vector<segment> vision::query_segments(const configure_state& cs, const std::string& camera_id, const system_clock::time_point& start, const system_clock::time_point& end)
+contents_result vision::query_segments(const configure_state& cs, const std::string& camera_id, const system_clock::time_point& start, const system_clock::time_point& end)
 {
     auto maybe_revere_ipv4 = cs.get_revere_ipv4();
     if(maybe_revere_ipv4.is_null())
@@ -79,9 +79,9 @@ vector<segment> vision::query_segments(const configure_state& cs, const std::str
 
     r_socket sok;
     sok.set_io_timeout(10000);
-    sok.connect(maybe_revere_ipv4.value(), 10080);
+    sok.connect(maybe_revere_ipv4.value(), 8088);
 
-    r_client_request req(maybe_revere_ipv4.value(), 10080);
+    r_client_request req(maybe_revere_ipv4.value(), 8088);
     auto uri = r_string_utils::format("/contents?camera_id=%s&start_time=%s&end_time=%s", camera_id.c_str(), r_time_utils::tp_to_iso_8601(start, false).c_str(), r_time_utils::tp_to_iso_8601(end, false).c_str());
     req.set_uri(uri);
     req.write_request(sok);
@@ -94,18 +94,23 @@ vector<segment> vision::query_segments(const configure_state& cs, const std::str
         R_THROW(("Could not query segments."));
 
     auto doc = resp.get_body_as_string().value();
-
     auto j = json::parse(doc);
 
-    vector<segment> result;
-    result.reserve(j["segments"].size());
+    contents_result result;
+    result.segments.reserve(j["segments"].size());
     for(auto s : j["segments"])
     {
         segment seg;
         seg.start = r_time_utils::iso_8601_to_tp(s["start_time"]);
         seg.end = r_time_utils::iso_8601_to_tp(s["end_time"]);
-        result.push_back(seg);
+        result.segments.push_back(seg);
     }
+
+    if(j.contains("first_ts") && j["first_ts"].is_string() && !j["first_ts"].get<string>().empty())
+        result.first_ts.set_value(r_time_utils::iso_8601_to_tp(j["first_ts"].get<string>()));
+
+    if(j.contains("last_ts") && j["last_ts"].is_string() && !j["last_ts"].get<string>().empty())
+        result.last_ts.set_value(r_time_utils::iso_8601_to_tp(j["last_ts"].get<string>()));
 
     return result;
 }
@@ -118,9 +123,9 @@ vector<motion_event> vision::query_motion_events(const configure_state& cs, cons
 
     r_socket sok;
     sok.set_io_timeout(10000);
-    sok.connect(maybe_revere_ipv4.value(), 10080);
+    sok.connect(maybe_revere_ipv4.value(), 8088);
 
-    r_client_request req(maybe_revere_ipv4.value(), 10080);
+    r_client_request req(maybe_revere_ipv4.value(), 8088);
     auto uri = r_string_utils::format("/motion_events?camera_id=%s&start_time=%s&end_time=%s", camera_id.c_str(), r_time_utils::tp_to_iso_8601(start, false).c_str(), r_time_utils::tp_to_iso_8601(end, false).c_str());
     req.set_uri(uri);
     req.write_request(sok);
@@ -165,7 +170,7 @@ vector<analytics_event> vision::query_analytics(const configure_state& cs, const
 
     r_socket sok;
     sok.set_io_timeout(10000);
-    sok.connect(maybe_revere_ipv4.value(), 10080);
+    sok.connect(maybe_revere_ipv4.value(), 8088);
 
     // Build query string
     string query = "/analytics?camera_id=" + camera_id + 
@@ -178,7 +183,7 @@ vector<analytics_event> vision::query_analytics(const configure_state& cs, const
     }
     
 
-    r_client_request req(maybe_revere_ipv4.value(), 10080);
+    r_client_request req(maybe_revere_ipv4.value(), 8088);
     req.set_uri(query);
     req.write_request(sok);
 
@@ -219,4 +224,39 @@ vector<analytics_event> vision::query_analytics(const configure_state& cs, const
     }
 
     return result;
+}
+
+int vision::query_export_progress(const configure_state& cs, const string& export_id)
+{
+    try
+    {
+        auto maybe_revere_ipv4 = cs.get_revere_ipv4();
+        auto ip = maybe_revere_ipv4.is_null() ? string("127.0.0.1") : maybe_revere_ipv4.value();
+
+        r_socket sok;
+        sok.set_io_timeout(5000);
+        sok.connect(ip, 8088);
+
+        r_client_request req(ip, 8088);
+        req.set_uri("/export_progress?id=" + export_id);
+        req.write_request(sok);
+
+        r_client_response resp;
+        resp.read_response(sok);
+        sok.close();
+
+        if(resp.get_status() == 404)
+            return 100;
+
+        if(!resp.is_success())
+            return -1;
+
+        auto body = resp.get_body_as_string();
+        if(body.is_null())
+            return -1;
+
+        auto j = json::parse(body.value());
+        return j["percent_complete"].get<int>();
+    }
+    catch(...) { return -1; }
 }

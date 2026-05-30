@@ -1097,27 +1097,41 @@ r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::
     auto now = chrono::system_clock::to_time_t(chrono::system_clock::now());
     time_t camera_time = now;
 
-    const int max_time_sync_attempts = 3;
-    for (int attempt = 0; attempt < max_time_sync_attempts; ++attempt)
+    // ONVIF spec requires GetSystemDateAndTime to be accessible without authentication.
+    // Try unauthenticated first so we can determine the clock offset before making
+    // WS-Security digest requests (digest tokens are time-sensitive).
+    bool time_synced = false;
+    try
     {
-        try
+        camera_time = get_camera_system_date_and_time(r_nullable<string>(), r_nullable<string>());
+        time_synced = true;
+    }
+    catch (...) {}
+
+    if (!time_synced)
+    {
+        const int max_time_sync_attempts = 3;
+        for (int attempt = 0; attempt < max_time_sync_attempts; ++attempt)
         {
-            camera_time = get_camera_system_date_and_time();
-            break;
-        }
-        catch (const std::exception& ex)
-        {
-            if (attempt + 1 < max_time_sync_attempts)
+            try
             {
-                int delay_ms = 1000 * (1 << attempt); // 1s, 2s
-                R_LOG_INFO("GetSystemDateAndTime attempt %d/%d failed: %s, retrying in %dms...",
-                           attempt + 1, max_time_sync_attempts, ex.what(), delay_ms);
-                this_thread::sleep_for(chrono::milliseconds(delay_ms));
-                now = chrono::system_clock::to_time_t(chrono::system_clock::now());
+                camera_time = get_camera_system_date_and_time(_username, _password);
+                break;
             }
-            else
-                R_LOG_INFO("GetSystemDateAndTime failed after %d attempts: %s. Assuming zero clock offset.",
-                           max_time_sync_attempts, ex.what());
+            catch (const std::exception& ex)
+            {
+                if (attempt + 1 < max_time_sync_attempts)
+                {
+                    int delay_ms = 1000 * (1 << attempt); // 1s, 2s
+                    R_LOG_INFO("GetSystemDateAndTime attempt %d/%d failed: %s, retrying in %dms...",
+                               attempt + 1, max_time_sync_attempts, ex.what(), delay_ms);
+                    this_thread::sleep_for(chrono::milliseconds(delay_ms));
+                    now = chrono::system_clock::to_time_t(chrono::system_clock::now());
+                }
+                else
+                    R_LOG_INFO("GetSystemDateAndTime failed after %d attempts: %s. Assuming zero clock offset.",
+                               max_time_sync_attempts, ex.what());
+            }
         }
     }
 
@@ -1215,7 +1229,9 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
     int port,
     const string& uri,
     const string& soap_action,
-    const function<void(pugi::xml_node&)>& build_body
+    const function<void(pugi::xml_node&)>& build_body,
+    r_nullable<string> username,
+    r_nullable<string> password
 )
 {
     // Determine which SOAP version(s) to try
@@ -1237,10 +1253,12 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
     // Try each SOAP version
     for (auto ver : versions_to_try)
     {
+        bool soap_ver_error_detected = false;
+
         // Try each auth mode for this SOAP version
         for (auto auth : auth_modes_to_try)
         {
-            string body = _build_soap_envelope(ver, auth, build_body, _username, _password, _time_offset_seconds);
+            string body = _build_soap_envelope(ver, auth, build_body, username, password, _time_offset_seconds);
 
             // Pass SOAP version and action to set appropriate headers
             result = _http_interact(host, port, "POST", uri, body, ver, soap_action);
@@ -1269,6 +1287,7 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
             {
                 R_LOG_INFO("SOAP %s rejected, trying fallback...",
                            ver == soap_version::soap_1_2 ? "1.2" : "1.1");
+                soap_ver_error_detected = true;
                 break;
             }
 
@@ -1276,25 +1295,32 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
             return result;
         }
 
-        // If we broke out of auth loop due to version error, continue to next version
-        if (_is_soap_version_error(result.first, result.second))
+        // Only try the next SOAP version if a genuine version error caused the break.
+        // Cameras like Axis return HTTP 400 for auth failures too, so we cannot use
+        // _is_soap_version_error() on the last result here -- it would trigger on the
+        // auth-error response and send an unnecessary SOAP 1.1 request.
+        if (soap_ver_error_detected)
             continue;
 
-        // If auth loop exhausted without success, don't try other versions
         break;
     }
 
     return result;
 }
 
-time_t r_onvif::r_onvif_cam::get_camera_system_date_and_time()
+time_t r_onvif::r_onvif_cam::get_camera_system_date_and_time(
+    r_nullable<string> username,
+    r_nullable<string> password
+)
 {
     auto result = _soap_request(
         _service_host, _service_port, _service_uri,
         "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime",
         [](pugi::xml_node& body) {
             body.append_child("tds:GetSystemDateAndTime");
-        }
+        },
+        username,
+        password
     );
 
     auto maybe_parsed_ts = _parse_onvif_date_time(result.second);
@@ -1314,7 +1340,9 @@ r_onvif::onvif_capabilities r_onvif::r_onvif_cam::get_camera_capabilities()
             pugi::xml_node capabilities = body.append_child("tds:GetCapabilities");
             pugi::xml_node category = capabilities.append_child("tds:Category");
             category.text().set("All");
-        }
+        },
+        _username,
+        _password
     );
 
     if (result.first != 200)
@@ -1383,7 +1411,9 @@ std::vector<r_onvif::onvif_profile_info> r_onvif::r_onvif_cam::get_profile_token
         "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
         [](pugi::xml_node& body) {
             body.append_child("trt:GetProfiles");
-        }
+        },
+        _username,
+        _password
     );
 
     if(result.first != 200)
@@ -1521,7 +1551,9 @@ string r_onvif::r_onvif_cam::get_stream_uri(onvif_media_service media_service, o
 
             pugi::xml_node profileTokenElem = getStreamUri.append_child("trt:ProfileToken");
             profileTokenElem.text().set(profile_token.c_str());
-        }
+        },
+        _username,
+        _password
     );
 
     if(result.first != 200)

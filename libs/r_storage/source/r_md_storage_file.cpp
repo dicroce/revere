@@ -35,8 +35,8 @@ void r_md_storage_file::write_metadata(const string& stream_tag, const string& j
     _writer->write(ctx, 
                    reinterpret_cast<const uint8_t*>(json_data.data()), 
                    json_data.size(), 
-                   timestamp_ms, 
-                   0); // flags = 0 for metadata
+                   0, // nanots flags, set to 0 for metadata
+                   timestamp_ms); // flags = 0 for metadata
 }
 
 write_context& r_md_storage_file::_get_or_create_context(const string& stream_tag)

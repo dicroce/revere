@@ -156,8 +156,7 @@ void r_server_response::write_response(r_socket_base& socket, uint64_t timeout_m
                                              _get_status_message(_status).c_str(),
                                              timeString.c_str() );
 
-    if( _connectionClose )
-        responseHeader += string("connection: close\r\n");
+    responseHeader += string("connection: close\r\n");
 
     if( _contentType.length() > 0 )
         responseHeader += r_string_utils::format( "Content-Type: %s\r\n",
@@ -292,6 +291,9 @@ string r_server_response::_get_status_message(status_code sc) const
 
     case response_reset_content:
         return string("Reset Content");
+
+    case response_not_modified:
+        return string("Not Modified");
 
     case response_bad_request:
         return string("Bad Request");

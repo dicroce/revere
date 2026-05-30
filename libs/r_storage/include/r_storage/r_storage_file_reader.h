@@ -46,7 +46,7 @@ private:
     struct frame_data {
         int64_t ts;
         uint8_t stream_id;
-        uint8_t flags;
+        uint32_t flags;
         std::vector<uint8_t> data;
         std::string codec_name;
         std::string codec_parameters;

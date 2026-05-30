@@ -1,5 +1,5 @@
 // Prevent Windows.h from defining min/max macros that conflict with std::min/std::max
-#ifdef _WIN32
+#ifdef IS_WINDOWS
 #define NOMINMAX
 #endif
 
@@ -26,7 +26,7 @@ using namespace std::chrono;
 static std::tm safe_localtime(const std::time_t& time_t_val)
 {
     std::tm result;
-#ifdef _WIN32
+#ifdef IS_WINDOWS
     localtime_s(&result, &time_t_val);
 #else
     result = *std::localtime(&time_t_val);
@@ -326,62 +326,32 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                     continue; // Skip this icon to prevent overlap
                 }
 
-                // First, always draw a colored rectangle as debug indicator
-                float center_y = (calc.contents_top + calc.contents_bottom) / 2.0f;
-                float rect_size = 12.0f;
-
-                ImU32 rect_color = IM_COL32(255, 255, 255, 255); // White default
-                std::string class_name;
-
-                // Get class from first detection
-                if (!event.detections.empty())
-                {
-                    class_name = event.detections[0].class_name;
-                    if (class_name == "person")
-                    {
-                        rect_color = IM_COL32(100, 200, 255, 255); // Light blue
-                    }
-                    else if (class_name == "car" || class_name == "vehicle")
-                    {
-                        rect_color = IM_COL32(255, 150, 100, 255); // Light orange
-                    }
-                }
-                
-                // Draw colored rectangle as background/debug indicator
-                draw_list->AddRectFilled(
-                    ImVec2(x - rect_size/2, center_y - rect_size/2),
-                    ImVec2(x + rect_size/2, center_y + rect_size/2),
-                    rect_color
-                );
-                
-                // Try to draw icon on top
+                std::string class_name = event.detections[0].class_name;
                 void* texture_id = get_icon_texture_id(class_name);
 
-                if (texture_id != nullptr)
-                {
-                    // Draw the icon using the texture
-                    float icon_size = 48.0f; // Match the size we created the textures at
-                    float icon_x = x - icon_size / 2.0f;
-                    float icon_y = center_y - icon_size / 2.0f;
+                if (texture_id == nullptr)
+                    continue;
 
-                    // Draw background rectangle matching recording segments color
-                    ImU32 bg_color = IM_COL32(73, 106, 129, 255); // RGB(0.286, 0.415, 0.505) converted to 0-255
-                    draw_list->AddRectFilled(
-                        ImVec2(icon_x, icon_y),
-                        ImVec2(icon_x + icon_size, icon_y + icon_size),
-                        bg_color
-                    );
+                float center_y = (calc.contents_top + calc.contents_bottom) / 2.0f;
+                float icon_size = 48.0f;
+                float icon_x = x - icon_size / 2.0f;
+                float icon_y = center_y - icon_size / 2.0f;
 
-                    // Draw the icon on top of the background
-                    draw_list->AddImage(
-                        (ImTextureID)texture_id,
-                        ImVec2(icon_x, icon_y),
-                        ImVec2(icon_x + icon_size, icon_y + icon_size),
-                        ImVec2(0, 0),
-                        ImVec2(1, 1),
-                        IM_COL32_WHITE
-                    );
-                }
+                ImU32 bg_color = IM_COL32(73, 106, 129, 255);
+                draw_list->AddRectFilled(
+                    ImVec2(icon_x, icon_y),
+                    ImVec2(icon_x + icon_size, icon_y + icon_size),
+                    bg_color
+                );
+
+                draw_list->AddImage(
+                    (ImTextureID)texture_id,
+                    ImVec2(icon_x, icon_y),
+                    ImVec2(icon_x + icon_size, icon_y + icon_size),
+                    ImVec2(0, 0),
+                    ImVec2(1, 1),
+                    IM_COL32_WHITE
+                );
                 
                 // Update last_x position after successfully drawing
                 last_x = x;
@@ -487,34 +457,44 @@ bool control_bar_renderer::render_tick_marks(ImDrawList* draw_list, const contro
             // Convert to time_t for easier manipulation
             auto start_time_t = system_clock::to_time_t(start_time);
             
-            // Get local time and round to next 5-minute mark
+            // Choose tick interval based on timerange
+            int tick_interval;
+            if (cbs.get_timerange_minutes() <= 60)
+                tick_interval = 5;
+            else if (cbs.get_timerange_minutes() <= 120)
+                tick_interval = 15;
+            else if (cbs.get_timerange_minutes() <= 240)
+                tick_interval = 30;
+            else
+                tick_interval = 60;
+
+            // Get local time and round up to next tick mark
             std::tm start_tm = safe_localtime(start_time_t);
-            
-            // Round up to next 5-minute mark
-            int minutes_to_next_5 = 5 - (start_tm.tm_min % 5);
-            if (minutes_to_next_5 == 5) minutes_to_next_5 = 0;
-            
+
+            int minutes_to_next = tick_interval - (start_tm.tm_min % tick_interval);
+            if (minutes_to_next == tick_interval) minutes_to_next = 0;
+
             // Create first tick time
             std::tm tick_tm = start_tm;
-            tick_tm.tm_min += minutes_to_next_5;
+            tick_tm.tm_min += minutes_to_next;
             tick_tm.tm_sec = 0;
             std::mktime(&tick_tm); // Normalize the time structure
-            
-            // Draw tick marks at every 5-minute interval
+
+            // Draw tick marks at the computed interval
             while (true)
             {
                 auto tick_time_t = std::mktime(&tick_tm);
                 auto tick_time = system_clock::from_time_t(tick_time_t);
-                
+
                 // Check if we've passed the end time
                 if (tick_time > end_time)
                     break;
-                
+
                 // Calculate position on timeline
                 auto millis_from_start = duration_cast<milliseconds>(tick_time - start_time).count();
                 float tick_ratio = calculate_position_ratio(millis_from_start, bar_duration_millis);
                 float tick_x = calc.center_box_left + (tick_ratio * calc.center_box_width);
-                
+
                 // Draw tick mark (vertical line over the content area)
                 draw_list->AddLine(
                     ImVec2(tick_x, calc.contents_top),
@@ -522,9 +502,9 @@ bool control_bar_renderer::render_tick_marks(ImDrawList* draw_list, const contro
                     ImColor(0.6f, 0.65f, 0.7f, 0.55f),  // Lighter bluish-gray with transparency
                     1.0f
                 );
-                
-                // Move to next 5-minute mark
-                tick_tm.tm_min += 5;
+
+                // Advance to next tick
+                tick_tm.tm_min += tick_interval;
                 std::mktime(&tick_tm); // Normalize the time structure
             }
         },
@@ -540,6 +520,44 @@ void control_bar_renderer::render_timerange_text(const control_bar_layout& layou
     ImGui::SetCursorScreenPos(ImVec2(calc.center_box_left, (float)top_line_top));
     auto timerange_s = r_utils::r_string_utils::format("%u minute time range", cbs.get_timerange_minutes());
     ImGui::Text("%s", timerange_s.c_str());
+    ImGui::PopFont();
+}
+
+void control_bar_renderer::render_zoom_buttons(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc)
+{
+    auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
+
+    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].roboto_regular);
+
+    auto timerange_s = r_utils::r_string_utils::format("%u minute time range", cbs.get_timerange_minutes());
+    auto text_size = ImGui::CalcTextSize(timerange_s.c_str());
+
+    const float gap = 6.0f;
+    const float btn_w = calc.text_line_height;
+    float x = calc.center_box_left + text_size.x + gap;
+
+    ImGui::PushID("zoom_shrink");
+    ImGui::SetCursorScreenPos(ImVec2(x, (float)top_line_top));
+    if (ImGui::Button("-", ImVec2(btn_w, 0)))
+    {
+        uint16_t m = cbs.get_timerange_minutes();
+        uint16_t new_m = (uint16_t)(std::max)((int)(m / 2), (int)timeline_constants::TIMERANGE_MIN_MINUTES);
+        if (new_m != m)
+            cbs.set_timerange_minutes(new_m);
+    }
+    ImGui::PopID();
+
+    ImGui::PushID("zoom_grow");
+    ImGui::SetCursorScreenPos(ImVec2(x + btn_w + gap, (float)top_line_top));
+    if (ImGui::Button("+", ImVec2(btn_w, 0)))
+    {
+        uint16_t m = cbs.get_timerange_minutes();
+        uint16_t new_m = (uint16_t)(std::min)((int)(m * 2), (int)timeline_constants::TIMERANGE_MAX_MINUTES);
+        if (new_m != m)
+            cbs.set_timerange_minutes(new_m);
+    }
+    ImGui::PopID();
+
     ImGui::PopFont();
 }
 
