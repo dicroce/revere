@@ -203,27 +203,51 @@ jobs:
 
       - name: Smoke test
         run: |
-          set -euo pipefail
-          # 1) No unresolved shared libraries in the main binaries or plugins.
+          # NOTE: no `set -e`/`pipefail` here — the diagnostics below intentionally
+          # run commands that return non-zero (grep with no match, etc.). We track
+          # failure explicitly via $fail and exit at the end.
+          set -u
           fail=0
-          while IFS= read -r bin; do
-            echo "== ldd $bin =="
-            if ldd "$bin" 2>/dev/null | grep -E "not found"; then
-              echo "::error::unresolved library in $bin"; fail=1
-            fi
-          done < <(find AppDir/usr/bin -maxdepth 2 -type f \( -name 'revere' -o -name 'vision' -o -name '*.so' \))
-          [ "$fail" -eq 0 ] || exit 1
-          # 2) The AppImage launches under a virtual display without crashing.
+
+          # 1) Unresolved shared libraries? Inspect the AppImage's REAL runtime tree
+          # (extract it so rpaths/AppRun env match what users get), printing full
+          # ldd output so any missing lib is visible.
           chmod +x Revere-x86_64.AppImage
-          xvfb-run -a timeout --preserve-status 25s ./Revere-x86_64.AppImage & pid=$!
+          ./Revere-x86_64.AppImage --appimage-extract >/dev/null 2>&1 || true
+          echo "=== checking for unresolved libraries (excluding intentionally-unbundled host libGL) ==="
+          while IFS= read -r bin; do
+            echo "----- ldd $bin"
+            out="$(ldd "$bin" 2>/dev/null || true)"
+            echo "$out"
+            # Ignore libGL/EGL/GLX/driver libs — deliberately NOT bundled (host SDL2 provides them).
+            miss="$(echo "$out" | grep 'not found' | grep -viE 'libGL|libEGL|libGLX|libGLdispatch|i965|iris|swrast|libgallium' || true)"
+            if [ -n "$miss" ]; then
+              echo "::warning::unresolved libs in $bin:"; echo "$miss"
+              fail=1
+            fi
+          done < <(find squashfs-root/usr/bin -maxdepth 2 -type f \( -name 'revere' -o -name 'vision' -o -name '*.so' \) 2>/dev/null)
+
+          # 2) Launch under a virtual display with a writable HOME (app uses
+          # $HOME/Documents/revere) and confirm it stays alive (doesn't crash).
+          export HOME="$(mktemp -d)"
+          echo "=== launching AppImage under xvfb (HOME=$HOME) ==="
+          xvfb-run -a timeout --preserve-status 25s ./Revere-x86_64.AppImage >/tmp/revere_run.log 2>&1 &
+          pid=$!
           sleep 18
           if kill -0 "$pid" 2>/dev/null; then
-            echo "AppImage is running after 18s — smoke test OK"
+            echo "AppImage still running after 18s — launch OK"
             kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
           else
             wait "$pid"; rc=$?
-            echo "::error::AppImage exited early (rc=$rc)"; exit 1
+            echo "::error::AppImage exited early (rc=$rc). Output:"
+            cat /tmp/revere_run.log || true
+            fail=1
           fi
+
+          echo "=== run log (tail) ==="; tail -n 40 /tmp/revere_run.log 2>/dev/null || true
+          [ "$fail" -eq 0 ] || { echo "::error::smoke test failed"; exit 1; }
+          echo "smoke test OK"
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
