@@ -215,9 +215,11 @@ jobs:
 
       - name: Smoke test
         run: |
-          # NOTE: no `set -e`/`pipefail` here — the diagnostics below intentionally
-          # run commands that return non-zero (grep with no match, etc.). We track
-          # failure explicitly via $fail and exit at the end.
+          # GitHub's default shell is `bash -eo pipefail {0}`, so errexit is ON
+          # unless we disable it. The diagnostics below intentionally run commands
+          # that return non-zero (grep no-match, `wait` on a crashed app), and we
+          # MUST keep running to print the app's stderr. Disable errexit explicitly.
+          set +e
           set -u
           fail=0
 
