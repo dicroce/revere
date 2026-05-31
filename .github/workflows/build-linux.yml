@@ -7,12 +7,14 @@ on:
   workflow_dispatch:
 
 env:
-  # NCNN is built from source (not in apt 22.04) and cached. Bump to rebuild.
+  # NCNN is built from source (not in apt) and cached. Bump to rebuild.
   NCNN_VERSION: "20240820"
 
 jobs:
   build-linux:
-    runs-on: ubuntu-22.04
+    # 24.04 ships FFmpeg 6 (new channel-layout API the code requires) and matches
+    # the snap's core24 base. AppImage targets glibc 2.39 (Ubuntu 24.04+/Debian 13+).
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout revere
@@ -76,7 +78,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ncnn-install
-          key: ncnn-${{ runner.os }}-2204-${{ env.NCNN_VERSION }}
+          key: ncnn-${{ runner.os }}-2404-${{ env.NCNN_VERSION }}
 
       - name: Build NCNN (cache miss only)
         if: steps.cache-ncnn.outputs.cache-hit != 'true'
