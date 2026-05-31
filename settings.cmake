@@ -23,6 +23,12 @@ if(FLATPAK_BUILD OR SNAP_BUILD)
     set(PACKAGED_BUILD TRUE)
 endif()
 
+# Portable build (e.g. AppImage): keep the normal single-directory install layout
+# (so relative model/plugin/webui lookups stay consistent) but drop -march=native
+# so the binary runs on CPUs other than the build machine. Default OFF leaves
+# local/dev builds untouched; CI passes -DREVERE_PORTABLE_BUILD=ON.
+option(REVERE_PORTABLE_BUILD "Build portable binaries (no -march=native) for redistribution" OFF)
+
 # Install destinations - packaged builds (Flatpak/Snap) use standard FHS paths, portable uses single directory
 if(PACKAGED_BUILD)
     set(REVERE_INSTALL_BINDIR bin)
@@ -90,8 +96,9 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_link_options(
         $<$<CONFIG:Release>:-O3>
     )
-    # -march=native breaks Flatpak/Snap portability (different CPUs)
-    if(NOT PACKAGED_BUILD)
+    # -march=native breaks portability (different CPUs): skip it for packaged
+    # (Flatpak/Snap) and portable (AppImage) builds meant to run elsewhere.
+    if(NOT PACKAGED_BUILD AND NOT REVERE_PORTABLE_BUILD)
         add_compile_options($<$<CONFIG:Release>:-march=native>)
         add_link_options($<$<CONFIG:Release>:-march=native>)
     endif()
