@@ -1,0 +1,132 @@
+name: Build Windows
+
+# Manual trigger while we stabilize the pipeline. Once this is green, add a
+# tag trigger so real releases build automatically:
+#
+#   on:
+#     push:
+#       tags: ['v*']
+#     workflow_dispatch:
+#
+# NOTE: the in-app "Download Revere Cloud" URL embeds REVERE_VERSION, which only
+# resolves to a clean X.Y.Z when HEAD is exactly on a v* tag. workflow_dispatch
+# runs off a branch, so installers built here are named with the short git hash
+# (e.g. revere-v<hash>-windows-cloud-setup.exe) — fine for testing the build,
+# but real cloud-download links only work from tagged release builds.
+on:
+  workflow_dispatch:
+
+env:
+  # Bump these together when publishing a new dependency bundle from revere-deps.
+  DEPS_REPO: dicroce/revere-deps
+  DEPS_VERSION: windows-deps-v1
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout revere
+        uses: actions/checkout@v4
+        with:
+          path: revere
+          # Full history + tags so CMake's `git describe` version detection works.
+          fetch-depth: 0
+
+      - name: Checkout revere_cloud
+        uses: actions/checkout@v4
+        with:
+          repository: dicroce/revere_cloud
+          path: revere_cloud
+          fetch-depth: 0
+          # revere_cloud is PRIVATE and lives in a different repo than this
+          # workflow, so the default GITHUB_TOKEN can't read it. Provide a PAT
+          # (or fine-grained token) with read access to revere_cloud as the
+          # repo secret REVERE_CLOUD_TOKEN. Create one with:
+          #   gh secret set REVERE_CLOUD_TOKEN --repo dicroce/revere --body <token>
+          token: ${{ secrets.REVERE_CLOUD_TOKEN }}
+
+      - name: Checkout revere-deps (manifest only)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DEPS_REPO }}
+          path: revere-deps
+
+      # Native deps (OpenCV/GStreamer/FFmpeg/NCNN) are restored from cache keyed
+      # on DEPS_VERSION. On a hit, nothing is downloaded. On a miss, the next step
+      # fetches + sha256-verifies each asset from the revere-deps release.
+      - name: Restore cached dependencies
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-${{ env.DEPS_VERSION }}
+
+      - name: Download & verify dependencies (cache miss only)
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $manifest = Get-Content revere-deps/manifest.json -Raw | ConvertFrom-Json
+          if ($manifest.deps_version -ne "${{ env.DEPS_VERSION }}") {
+            throw "manifest deps_version '$($manifest.deps_version)' != expected '${{ env.DEPS_VERSION }}'. Update DEPS_VERSION or the manifest."
+          }
+          New-Item -ItemType Directory -Force -Path deps | Out-Null
+          foreach ($p in $manifest.deps.PSObject.Properties) {
+            $name = $p.Name
+            $d    = $p.Value
+            $zip  = Join-Path $env:RUNNER_TEMP $d.file
+            Write-Host "==> $name : downloading $($d.url)"
+            Invoke-WebRequest -Uri $d.url -OutFile $zip
+            $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+            if ($sha -ne $d.sha256.ToLower()) {
+              throw "sha256 mismatch for ${name}: got $sha expected $($d.sha256)"
+            }
+            Write-Host "    sha256 OK; extracting to deps/$name"
+            Expand-Archive -Path $zip -DestinationPath (Join-Path deps $name) -Force
+            Remove-Item $zip -Force
+          }
+
+      - name: Set dependency environment variables
+        shell: pwsh
+        run: |
+          $root = "${{ github.workspace }}\deps"
+          # Each zip was packaged without a base dir, so the tree root (bin/, include/,
+          # x64/, ...) sits directly under deps\<name> — exactly what *_TOP_DIR expects.
+          Add-Content $env:GITHUB_ENV "OPENCV_TOP_DIR=$root\opencv"
+          Add-Content $env:GITHUB_ENV "GST_TOP_DIR=$root\gstreamer"
+          Add-Content $env:GITHUB_ENV "FFMPEG_TOP_DIR=$root\ffmpeg"
+          Add-Content $env:GITHUB_ENV "NCNN_TOP_DIR=$root\ncnn"
+
+      # Sets up the MSVC x64 toolchain and exports the VS dev-env vars (incl.
+      # VSCMD_ARG_TGT_ARCH=x64, which build_installers.py checks for).
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Download VC++ redistributable
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://aka.ms/vs/17/release/vc_redist.x64.exe `
+            -OutFile "${{ github.workspace }}\vc_redist.x64.exe"
+
+      - name: Build installers
+        shell: pwsh
+        env:
+          REVERE_DIR: ${{ github.workspace }}\revere
+          REVERE_CLOUD_DIR: ${{ github.workspace }}\revere_cloud
+          REVERE_RELEASES_DIR: ${{ github.workspace }}\artifacts
+          VC_REDIST_PATH: ${{ github.workspace }}\vc_redist.x64.exe
+          INNO_COMPILER: C:\Program Files (x86)\Inno Setup 6\ISCC.exe
+        run: |
+          python revere\scripts\windows\build_installers.py --clean
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: artifacts/*.exe
+          if-no-files-found: error
