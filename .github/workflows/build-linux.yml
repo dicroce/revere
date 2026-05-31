@@ -155,10 +155,13 @@ jobs:
       # cwd up front so relative lookups are correct even before _set_working_dir),
       # wire GStreamer to the bundled plugins, and DO NOT touch libGL/driver libs
       # (SDL2 uses the host's GL — bundling them is what broke earlier attempts).
+      # Write the custom AppRun OUTSIDE AppDir. linuxdeploy's --custom-apprun
+      # copies this into AppDir/AppRun, so source and destination must differ
+      # (pointing it at AppDir/AppRun itself is a self-copy and errors out).
       - name: Write AppRun
         run: |
           set -euo pipefail
-          cat > AppDir/AppRun <<'EOF'
+          cat > AppRun.custom <<'EOF'
           #!/bin/bash
           HERE="$(dirname "$(readlink -f "$0")")"
           export LD_LIBRARY_PATH="$HERE/usr/lib:$HERE/usr/bin:${LD_LIBRARY_PATH:-}"
@@ -169,7 +172,7 @@ jobs:
           cd "$HERE/usr/bin"
           exec "$HERE/usr/bin/revere" "$@"
           EOF
-          chmod +x AppDir/AppRun
+          chmod +x AppRun.custom
 
       - name: Download AppImage tooling
         run: |
@@ -191,7 +194,7 @@ jobs:
             --appdir AppDir \
             --executable AppDir/usr/bin/revere \
             --executable AppDir/usr/bin/vision \
-            --custom-apprun AppDir/AppRun \
+            --custom-apprun AppRun.custom \
             --desktop-file AppDir/revere.desktop \
             --icon-file AppDir/revere.png \
             --plugin gstreamer \
