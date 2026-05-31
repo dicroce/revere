@@ -1,6 +1,7 @@
 build/
 .claude/
 .vscode/
+__pycache__/
 
 # Flatpak build artifacts
 flatpak/build-dir/
