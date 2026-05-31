@@ -70,10 +70,9 @@ if(NOT TARGET opencv::opencv)
             else()
                 message(STATUS "Using OpenCV individual module libraries")
                 set(OPENCV_MODULES
-                    opencv_bgsegm opencv_calib3d opencv_core opencv_dnn
+                    opencv_calib3d opencv_core opencv_dnn
                     opencv_features2d opencv_flann opencv_imgcodecs opencv_imgproc
-                    opencv_optflow opencv_plot opencv_tracking opencv_video
-                    opencv_xfeatures2d opencv_ximgproc
+                    opencv_video
                 )
                 foreach(module ${OPENCV_MODULES})
                     target_link_libraries(opencv::opencv INTERFACE
@@ -107,7 +106,6 @@ if(NOT TARGET opencv::opencv)
                 # Fallback to common module names
                 target_link_libraries(opencv::opencv INTERFACE
                     opencv_core opencv_imgproc opencv_imgcodecs opencv_video
-                    opencv_bgsegm opencv_tracking opencv_optflow opencv_ximgproc
                 )
             endif()
         endif()

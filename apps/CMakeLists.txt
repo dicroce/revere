@@ -183,8 +183,9 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     file(TO_CMAKE_PATH $ENV{OPENCV_TOP_DIR} OPENCV_TOP_DIR)
     
     # Define OpenCV modules list for easier maintenance
+    # NOTE: only core (non-contrib) modules are needed. Motion detection uses
+    # cv::BackgroundSubtractorMOG2 which lives in opencv_video, not contrib.
     set(OPENCV_MODULES
-        opencv_bgsegm
         opencv_calib3d
         opencv_core
         opencv_dnn
@@ -192,12 +193,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
         opencv_flann
         opencv_imgcodecs
         opencv_imgproc
-        opencv_optflow
-        opencv_plot
-        opencv_tracking
         opencv_video
-        opencv_xfeatures2d
-        opencv_ximgproc
     )
     
     # Install FFmpeg and GStreamer DLLs (these remain the same regardless of build type)

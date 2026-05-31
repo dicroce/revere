@@ -90,8 +90,7 @@ parts:
     cmake-parameters:
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_INSTALL_PREFIX=/usr
-      - -DBUILD_LIST=core,imgproc,imgcodecs,video,videoio,calib3d,features2d,flann,dnn,bgsegm,tracking,optflow,ximgproc,xfeatures2d,plot
-      - -DOPENCV_EXTRA_MODULES_PATH=$CRAFT_PART_SRC/../opencv-contrib/modules
+      - -DBUILD_LIST=core,imgproc,imgcodecs,video,videoio,calib3d,features2d,flann,dnn
       - -DBUILD_opencv_python2=OFF
       - -DBUILD_opencv_python3=OFF
       - -DBUILD_TESTS=OFF
@@ -105,15 +104,8 @@ parts:
       - -DWITH_VA=OFF
       - -DWITH_VA_INTEL=OFF
       - -DBUILD_SHARED_LIBS=ON
-    override-pull: |
-      craftctl default
-      # Download opencv_contrib for extra modules
-      mkdir -p $CRAFT_PART_SRC/../opencv-contrib
-      curl -L https://github.com/opencv/opencv_contrib/archive/refs/tags/4.10.0.tar.gz | \
-        tar xz --strip-components=1 -C $CRAFT_PART_SRC/../opencv-contrib
     build-packages:
       - g++
-      - curl
       - libavcodec-dev
       - libavformat-dev
       - libavutil-dev
