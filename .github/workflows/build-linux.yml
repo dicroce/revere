@@ -188,12 +188,24 @@ jobs:
         run: |
           set -euo pipefail
           export OUTPUT="Revere-x86_64.AppImage"
-          # Help linuxdeploy find our own libs (next to the executables).
-          export LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/AppDir/usr/bin:${LD_LIBRARY_PATH:-}"
+          # linuxdeploy must find (a) our own libs, which the install put next to
+          # the executables in usr/bin, and (b) libncnn from the NCNN build, which
+          # only the dlopen'd yolov8 plugin needs.
+          export LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/AppDir/usr/bin:${GITHUB_WORKSPACE}/ncnn-install/lib:${LD_LIBRARY_PATH:-}"
+          # The motion plugins are dlopen'd at runtime, so they are NOT dependencies
+          # of revere/vision and linuxdeploy won't process them by default — meaning
+          # libncnn (+ libgomp) would be missing. --deploy-deps-only makes linuxdeploy
+          # bundle each plugin's transitive deps into usr/lib without relocating the
+          # plugin itself (it stays in usr/bin/motion_plugins for the app's lookup).
+          deps_only=()
+          for so in AppDir/usr/bin/motion_plugins/*.so; do
+            deps_only+=( --deploy-deps-only "$so" )
+          done
           ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
             --appdir AppDir \
             --executable AppDir/usr/bin/revere \
             --executable AppDir/usr/bin/vision \
+            "${deps_only[@]}" \
             --custom-apprun AppRun.custom \
             --desktop-file AppDir/revere.desktop \
             --icon-file AppDir/revere.png \
@@ -214,15 +226,19 @@ jobs:
           # ldd output so any missing lib is visible.
           chmod +x Revere-x86_64.AppImage
           ./Revere-x86_64.AppImage --appimage-extract >/dev/null 2>&1 || true
-          echo "=== checking for unresolved libraries (excluding intentionally-unbundled host libGL) ==="
+          # ldd with the SAME library path the app uses at runtime (AppRun adds
+          # usr/lib + usr/bin), so dlopen'd plugins' deps resolve as they actually
+          # will. Anything still "not found" (minus deliberately-unbundled host
+          # libGL/driver libs) is a genuine packaging bug.
+          export LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib:$PWD/squashfs-root/usr/bin:${LD_LIBRARY_PATH:-}"
+          echo "=== checking for unresolved libraries (runtime LD_LIBRARY_PATH applied; host libGL excluded) ==="
           while IFS= read -r bin; do
             echo "----- ldd $bin"
             out="$(ldd "$bin" 2>/dev/null || true)"
             echo "$out"
-            # Ignore libGL/EGL/GLX/driver libs — deliberately NOT bundled (host SDL2 provides them).
             miss="$(echo "$out" | grep 'not found' | grep -viE 'libGL|libEGL|libGLX|libGLdispatch|i965|iris|swrast|libgallium' || true)"
             if [ -n "$miss" ]; then
-              echo "::warning::unresolved libs in $bin:"; echo "$miss"
+              echo "::error::unresolved libs in $bin:"; echo "$miss"
               fail=1
             fi
           done < <(find squashfs-root/usr/bin -maxdepth 2 -type f \( -name 'revere' -o -name 'vision' -o -name '*.so' \) 2>/dev/null)
