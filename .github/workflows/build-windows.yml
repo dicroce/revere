@@ -1,20 +1,26 @@
-name: Build Windows
+name: Build & Release Windows
 
-# Manual trigger while we stabilize the pipeline. Once this is green, add a
-# tag trigger so real releases build automatically:
-#
-#   on:
-#     push:
-#       tags: ['v*']
-#     workflow_dispatch:
+# Two triggers:
+#   - push of a v* tag  -> build AND publish a (draft, prerelease) GitHub Release
+#   - workflow_dispatch -> build only (for testing); no release is created
 #
 # NOTE: the in-app "Download Revere Cloud" URL embeds REVERE_VERSION, which only
 # resolves to a clean X.Y.Z when HEAD is exactly on a v* tag. workflow_dispatch
-# runs off a branch, so installers built here are named with the short git hash
-# (e.g. revere-v<hash>-windows-cloud-setup.exe) — fine for testing the build,
-# but real cloud-download links only work from tagged release builds.
+# runs off a branch, so installers built that way are named with the short git
+# hash (revere-v<hash>-...) — fine for testing, but real cloud-download links
+# only work from tagged release builds.
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
+
+# NOTE: a v* tag publishes a PUBLIC release immediately (live in-app download
+# links, no human step). A bad tag ships publicly until deleted — push tags
+# deliberately. The version guard below is the safety net against dead links.
+
+# The release job needs to create a Release + upload assets on this repo.
+permissions:
+  contents: write
 
 env:
   # Bump these together when publishing a new dependency bundle from revere-deps.
@@ -130,3 +136,58 @@ jobs:
           name: windows-installers
           path: artifacts/*.exe
           if-no-files-found: error
+
+  # Only runs for tag pushes. Gathers the built installers and attaches them to
+  # a PUBLIC GitHub Release on this repo (published immediately — in-app download
+  # links are live the moment this job finishes). The version guard above
+  # prevents publishing assets whose names don't match the tag.
+  release:
+    needs: [build-windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows installers
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installers
+          path: dist
+
+      - name: Verify installer versions match the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Tag is refs/tags/vX.Y.Z; the installers must be named with that exact
+          # version, or the in-app download URL (which is built from the binary's
+          # baked-in version) would point at assets that don't exist.
+          tag="${GITHUB_REF_NAME}"            # e.g. v0.0.1
+          version="${tag#v}"                  # e.g. 0.0.1
+          echo "Tag: $tag  ->  expected version: $version"
+          echo "Built installers:"; ls -1 dist
+          for kind in app cloud; do
+            expected="revere-v${version}-windows-${kind}-setup.exe"
+            if [ ! -f "dist/${expected}" ]; then
+              echo "::error::Expected installer '${expected}' not found. The build's"
+              echo "::error::git-derived version does not match tag '${tag}'. Refusing"
+              echo "::error::to release, or in-app download links would be dead."
+              exit 1
+            fi
+          done
+          echo "Version guard passed: both installers match $tag."
+
+      - name: Create/update public release and upload installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # Create the release if it doesn't exist yet (public, published), then
+          # upload (clobbering so re-runs replace assets cleanly).
+          if ! gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "$tag" \
+              --generate-notes
+          fi
+          gh release upload "$tag" dist/*.exe --repo "${GITHUB_REPOSITORY}" --clobber
+          echo "Published release $tag with Windows installers."
