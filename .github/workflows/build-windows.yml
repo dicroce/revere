@@ -39,10 +39,37 @@ jobs:
           # Full history + tags so CMake's `git describe` version detection works.
           fetch-depth: 0
 
+      # Releases are version-locked: a v* tag build uses the SAME tag in
+      # revere_cloud. Tag builds fail loudly if revere_cloud is missing that tag
+      # (rather than silently shipping main). Non-tag (workflow_dispatch) test
+      # builds just use revere_cloud's main.
+      - name: Determine revere_cloud ref
+        id: cloudref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.REVERE_CLOUD_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+            if gh api "repos/dicroce/revere_cloud/git/ref/tags/${tag}" >/dev/null 2>&1; then
+              echo "Using revere_cloud @ ${tag}"
+              echo "ref=${tag}" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::revere_cloud is missing tag '${tag}'. Releases are version-locked:"
+              echo "::error::tag revere_cloud too -> (cd revere_cloud && git tag ${tag} && git push origin ${tag})"
+              exit 1
+            fi
+          else
+            echo "Non-tag build; using revere_cloud @ main"
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout revere_cloud
         uses: actions/checkout@v4
         with:
           repository: dicroce/revere_cloud
+          ref: ${{ steps.cloudref.outputs.ref }}
           path: revere_cloud
           fetch-depth: 0
           # revere_cloud is PRIVATE and lives in a different repo than this
