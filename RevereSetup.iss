@@ -5,6 +5,17 @@
 #define MyAppVersion "1.0"
 #define MyAppExeName "revere.exe"
 
+; StagingDir: the staged Revere tree (the 'revere' subdir of the CMake install
+; prefix) that this installer packages. VCRedistPath: the bundled VC++ runtime.
+; Both default to the historical local-dev locations and are overridable from the
+; command line, e.g. iscc /DStagingDir="C:\path\stage\revere" /DVCRedistPath="C:\path\VC_redist.x64.exe"
+#ifndef StagingDir
+  #define StagingDir "C:\Program Files (x86)\revere\revere"
+#endif
+#ifndef VCRedistPath
+  #define VCRedistPath "C:\dev\VC_redist.x64.exe"
+#endif
+
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
 ; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
@@ -27,7 +38,7 @@ DisableProgramGroupPage=yes
 ;PrivilegesRequired=lowest
 OutputDir=C:\dev
 OutputBaseFilename=RevereSetup
-SetupIconFile=C:\Program Files (x86)\revere\revere\R.ico
+SetupIconFile={#StagingDir}\R.ico
 SolidCompression=yes
 WizardStyle=modern
 
@@ -53,16 +64,16 @@ begin
 end;
 
 [Files]
-Source: "C:\Program Files (x86)\revere\revere\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Program Files (x86)\revere\revere\*"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Program Files (x86)\revere\revere\gstreamer_plugins"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "C:\Program Files (x86)\revere\revere\gstreamer_plugins\*"; DestDir: "{app}\gstreamer_plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "C:\Program Files (x86)\revere\revere\models"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "C:\Program Files (x86)\revere\revere\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "C:\Program Files (x86)\revere\revere\motion_plugins"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "C:\Program Files (x86)\revere\revere\motion_plugins\*"; DestDir: "{app}\motion_plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StagingDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StagingDir}\*"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StagingDir}\gstreamer_plugins"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StagingDir}\gstreamer_plugins\*"; DestDir: "{app}\gstreamer_plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StagingDir}\models"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StagingDir}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StagingDir}\motion_plugins"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StagingDir}\motion_plugins\*"; DestDir: "{app}\motion_plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-Source: "C:\dev\VC_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+Source: "{#VCRedistPath}"; DestDir: "{tmp}"; Flags: deleteafterinstall
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
@@ -70,7 +81,7 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 
 [Run]
 ; Install Visual C++ 2022 Redistributable (required for application to run)
-Filename: "{tmp}\VC_redist.x64.exe"; Parameters: "/quiet /norestart"; StatusMsg: "Installing Visual C++ 2022 Runtime..."; Flags: waituntilterminated
+Filename: "{tmp}\{#ExtractFileName(VCRedistPath)}"; Parameters: "/quiet /norestart"; StatusMsg: "Installing Visual C++ 2022 Runtime..."; Flags: waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [InstallDelete]

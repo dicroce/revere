@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
 Automated build script for Revere and RevereCloud Windows installers.
-Must be run from x64 Native Tools Command Prompt for Visual Studio with Administrator privileges.
+Must be run from x64 Native Tools Command Prompt for Visual Studio.
+
+Installs to a local staging directory (build/stage by default), so no admin
+rights are required. All paths are overridable via environment variables
+(REVERE_DIR, REVERE_CLOUD_DIR, REVERE_INSTALL_DIR, REVERE_RELEASES_DIR,
+INNO_COMPILER, VC_REDIST_PATH) for CI use.
 
 Usage:
     python build_installers.py [options]
@@ -25,13 +30,19 @@ from pathlib import Path
 import argparse
 
 
-# Configuration
-REVERE_DIR = Path(r"c:\dev\revere")
-REVERE_CLOUD_DIR = Path(r"c:\dev\revere_cloud")
+# Configuration — every path is overridable via an environment variable (for CI)
+# and falls back to the historical local-dev default when the variable is unset.
+REVERE_DIR = Path(os.environ.get("REVERE_DIR", r"c:\dev\revere"))
+REVERE_CLOUD_DIR = Path(os.environ.get("REVERE_CLOUD_DIR", r"c:\dev\revere_cloud"))
 BUILD_DIR = REVERE_DIR / "build"
-INSTALL_DIR = Path(r"C:\Program Files (x86)\revere")
-INNO_COMPILER = Path(r"C:\Program Files (x86)\Inno Setup 6\iscc.exe")
-OUTPUT_DIR = Path(r"C:\dev\revere_releases")
+# Install/staging directory. Defaults to a local staging dir inside the build tree
+# so packaging needs no admin rights and never touches Program Files. CMake lays
+# files under <prefix>/revere, and that subdir is what the Inno scripts consume.
+INSTALL_DIR = Path(os.environ.get("REVERE_INSTALL_DIR", str(BUILD_DIR / "stage")))
+STAGING_DIR = INSTALL_DIR / "revere"
+INNO_COMPILER = Path(os.environ.get("INNO_COMPILER", r"C:\Program Files (x86)\Inno Setup 6\iscc.exe"))
+OUTPUT_DIR = Path(os.environ.get("REVERE_RELEASES_DIR", r"C:\dev\revere_releases"))
+VC_REDIST = Path(os.environ.get("VC_REDIST_PATH", r"C:\dev\VC_redist.x64.exe"))
 
 
 def run_command(cmd, cwd=None, description=None):
@@ -161,13 +172,18 @@ def build_release():
 
 
 def install_binaries():
-    """Install binaries to Program Files."""
+    """Install binaries to the staging directory (CMAKE_INSTALL_PREFIX)."""
     cmd = ["cmake", "--build", ".", "--target", "install", "--config", "Release"]
-    run_command(cmd, cwd=BUILD_DIR, description="Installing binaries to Program Files")
+    run_command(cmd, cwd=BUILD_DIR, description=f"Installing binaries to {INSTALL_DIR}")
 
 
-def compile_inno_setup(iss_file, project_dir, project_name):
-    """Compile Inno Setup script."""
+def compile_inno_setup(iss_file, project_dir, project_name, defines=None):
+    """Compile Inno Setup script.
+
+    defines: optional dict of ISPP #define overrides passed as /DName=Value.
+             Each .iss provides #ifndef defaults, so these only need to be
+             passed when overriding (as CI/this script does).
+    """
     iss_path = project_dir / iss_file
 
     if not iss_path.exists():
@@ -181,8 +197,13 @@ def compile_inno_setup(iss_file, project_dir, project_name):
     # Create output directory if it doesn't exist
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Use /O to override OutputDir in the .iss file
-    cmd = [str(INNO_COMPILER), f'/O{OUTPUT_DIR}', str(iss_path)]
+    # Use /O to override OutputDir, and /D to override source paths in the .iss.
+    # Values may contain spaces; subprocess (shell=False) quotes each arg, which
+    # is exactly the quoted-switch form iscc expects.
+    cmd = [str(INNO_COMPILER), f'/O{OUTPUT_DIR}']
+    for key, value in (defines or {}).items():
+        cmd.append(f'/D{key}={value}')
+    cmd.append(str(iss_path))
     run_command(cmd, description=f"Compiling {project_name} Inno Setup installer")
 
 
@@ -284,8 +305,14 @@ def main():
 
     # Inno Setup compilation
     if not args.skip_inno:
-        compile_inno_setup("RevereSetup.iss", REVERE_DIR, "Revere")
-        compile_inno_setup("RevereCloudSetup.iss", REVERE_CLOUD_DIR, "RevereCloud")
+        compile_inno_setup(
+            "RevereSetup.iss", REVERE_DIR, "Revere",
+            defines={"StagingDir": STAGING_DIR, "VCRedistPath": VC_REDIST},
+        )
+        compile_inno_setup(
+            "RevereCloudSetup.iss", REVERE_CLOUD_DIR, "RevereCloud",
+            defines={"StagingDir": STAGING_DIR},
+        )
 
         # Rename installers with version
         rename_installer(
