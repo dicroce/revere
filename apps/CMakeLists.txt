@@ -151,13 +151,10 @@ else()
     )
 endif()
 
-# Install desktop files for system installs (not Flatpak/Snap - handled by their manifests)
-if(${CMAKE_SYSTEM_NAME} MATCHES "Linux" AND NOT PACKAGED_BUILD)
-    install(
-        FILES vision/vision.desktop revere/revere.desktop
-        DESTINATION /usr/share/applications
-    )
-endif()
+# NOTE: desktop-file installation is handled per-app in apps/revere/CMakeLists.txt
+# and apps/vision/CMakeLists.txt, which configure_file the .desktop.in templates
+# into the build tree and install those. (A previous duplicate rule here tried to
+# install non-existent source-tree .desktop files and broke non-packaged installs.)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     # Install resources into app bundles on macOS

@@ -208,7 +208,7 @@ jobs:
             if ldd "$bin" 2>/dev/null | grep -E "not found"; then
               echo "::error::unresolved library in $bin"; fail=1
             fi
-          done < <(find AppDir/usr/revere -maxdepth 2 -type f \( -name 'revere' -o -name 'vision' -o -name '*.so' \))
+          done < <(find AppDir/usr/bin -maxdepth 2 -type f \( -name 'revere' -o -name 'vision' -o -name '*.so' \))
           [ "$fail" -eq 0 ] || exit 1
           # 2) The AppImage launches under a virtual display without crashing.
           chmod +x Revere-x86_64.AppImage
