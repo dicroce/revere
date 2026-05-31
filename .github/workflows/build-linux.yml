@@ -1,0 +1,222 @@
+name: Build Linux
+
+# Manual-only while stabilizing. This first cut builds the app AppImage and
+# smoke-tests it. Once green, follow-ups add: the cloud .run installer, a v* tag
+# trigger, and attaching the Linux assets to the release.
+on:
+  workflow_dispatch:
+
+env:
+  # NCNN is built from source (not in apt 22.04) and cached. Bump to rebuild.
+  NCNN_VERSION: "20240820"
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout revere
+        uses: actions/checkout@v4
+        with:
+          path: revere
+          fetch-depth: 0
+
+      # Version-lock revere_cloud to the tag on tag builds (same policy as
+      # Windows). For workflow_dispatch this resolves to main.
+      - name: Determine revere_cloud ref
+        id: cloudref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.REVERE_CLOUD_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+            if gh api "repos/dicroce/revere_cloud/git/ref/tags/${tag}" >/dev/null 2>&1; then
+              echo "ref=${tag}" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::revere_cloud is missing tag '${tag}'. Tag it too:"
+              echo "::error::(cd revere_cloud && git tag ${tag} && git push origin ${tag})"
+              exit 1
+            fi
+          else
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout revere_cloud
+        uses: actions/checkout@v4
+        with:
+          repository: dicroce/revere_cloud
+          ref: ${{ steps.cloudref.outputs.ref }}
+          path: revere_cloud
+          fetch-depth: 0
+          token: ${{ secrets.REVERE_CLOUD_TOKEN }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake git pkg-config patchelf file \
+            libopencv-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
+            libssl-dev libsqlite3-dev uuid-dev \
+            libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libasound2-dev libpulse-dev \
+            xvfb
+
+      # NCNN: build from source (apt has no suitable package), cached by version.
+      - name: Restore cached NCNN
+        id: cache-ncnn
+        uses: actions/cache@v4
+        with:
+          path: ncnn-install
+          key: ncnn-${{ runner.os }}-2204-${{ env.NCNN_VERSION }}
+
+      - name: Build NCNN (cache miss only)
+        if: steps.cache-ncnn.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${NCNN_VERSION}" https://github.com/Tencent/ncnn.git
+          cmake -S ncnn -B ncnn-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/ncnn-install" \
+            -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF \
+            -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_BENCHMARK=OFF \
+            -DNCNN_SHARED_LIB=ON -DNCNN_VULKAN=OFF
+          cmake --build ncnn-build --parallel "$(nproc)"
+          cmake --install ncnn-build
+
+      - name: Configure
+        run: |
+          cmake -S revere -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DREVERE_PORTABLE_BUILD=ON \
+            -DEXTERNAL_PLUGIN_REPOS="${GITHUB_WORKSPACE}/revere_cloud" \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/AppDir/usr"
+        env:
+          NCNN_TOP_DIR: ${{ github.workspace }}/ncnn-install
+
+      - name: Build
+        run: cmake --build build --parallel "$(nproc)"
+
+      - name: Install into AppDir
+        run: cmake --install build
+        env:
+          NCNN_TOP_DIR: ${{ github.workspace }}/ncnn-install
+
+      # The CMake install lays everything (exe, our .so, ui.rbt, models/,
+      # motion_plugins/, gstreamer_plugins/, system_plugins/) under usr/revere/.
+      # The app chdir's to its exe dir at startup, so those relative dirs resolve.
+      # We:
+      #  - drop system_plugins (the cloud plugin) — the app AppImage ships
+      #    cloud-free; cloud is delivered separately as a .run (follow-up).
+      #  - drop the app's bundled gstreamer_plugins and let
+      #    linuxdeploy-plugin-gstreamer bundle a complete, rpath-correct set into
+      #    usr/lib/gstreamer-1.0 (avoids the $ORIGIN/.. rpath mismatch between
+      #    plugins in usr/revere and system libs linuxdeploy puts in usr/lib).
+      - name: Prune AppDir (cloud-free app, let linuxdeploy own GStreamer)
+        run: |
+          set -euo pipefail
+          rm -rf AppDir/usr/revere/system_plugins
+          rm -rf AppDir/usr/revere/gstreamer_plugins
+          echo "AppDir/usr/revere contents:"; ls -la AppDir/usr/revere
+
+      - name: Stage desktop file and icon
+        run: |
+          set -euo pipefail
+          mkdir -p AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+          cp revere/apps/revere/R.png AppDir/revere.png
+          cp revere/apps/revere/R.png AppDir/usr/share/icons/hicolor/256x256/apps/revere.png
+          cat > AppDir/revere.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Revere
+          Exec=revere
+          Icon=revere
+          Categories=AudioVideo;Video;
+          Terminal=false
+          EOF
+          cp AppDir/revere.desktop AppDir/usr/share/applications/revere.desktop
+
+      # AppRun: enter the exe directory (the app also does this itself, but we set
+      # cwd up front so relative lookups are correct even before _set_working_dir),
+      # wire GStreamer to the bundled plugins, and DO NOT touch libGL/driver libs
+      # (SDL2 uses the host's GL — bundling them is what broke earlier attempts).
+      - name: Write AppRun
+        run: |
+          set -euo pipefail
+          cat > AppDir/AppRun <<'EOF'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export LD_LIBRARY_PATH="$HERE/usr/lib:$HERE/usr/revere:${LD_LIBRARY_PATH:-}"
+          export GST_PLUGIN_SYSTEM_PATH="$HERE/usr/lib/gstreamer-1.0"
+          export GST_PLUGIN_PATH="$HERE/usr/lib/gstreamer-1.0"
+          export GST_PLUGIN_SCANNER="$HERE/usr/lib/gstreamer-1.0/gst-plugin-scanner"
+          export GIO_USE_PROXY_RESOLVER=dummy
+          cd "$HERE/usr/revere"
+          exec "$HERE/usr/revere/revere" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+      - name: Download AppImage tooling
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}"
+          base=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
+          gst=https://github.com/linuxdeploy/linuxdeploy-plugin-gstreamer/raw/master
+          curl -sSLO "$base/linuxdeploy-x86_64.AppImage"
+          curl -sSLO "$gst/linuxdeploy-plugin-gstreamer.sh"
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gstreamer.sh
+
+      - name: Bundle dependencies and build AppImage
+        run: |
+          set -euo pipefail
+          export OUTPUT="Revere-x86_64.AppImage"
+          # Help linuxdeploy find our own libs (next to the executables).
+          export LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/AppDir/usr/revere:${LD_LIBRARY_PATH:-}"
+          ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
+            --appdir AppDir \
+            --executable AppDir/usr/revere/revere \
+            --executable AppDir/usr/revere/vision \
+            --custom-apprun AppDir/AppRun \
+            --desktop-file AppDir/revere.desktop \
+            --icon-file AppDir/revere.png \
+            --plugin gstreamer \
+            --output appimage
+          ls -la *.AppImage
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          # 1) No unresolved shared libraries in the main binaries or plugins.
+          fail=0
+          while IFS= read -r bin; do
+            echo "== ldd $bin =="
+            if ldd "$bin" 2>/dev/null | grep -E "not found"; then
+              echo "::error::unresolved library in $bin"; fail=1
+            fi
+          done < <(find AppDir/usr/revere -maxdepth 2 -type f \( -name 'revere' -o -name 'vision' -o -name '*.so' \))
+          [ "$fail" -eq 0 ] || exit 1
+          # 2) The AppImage launches under a virtual display without crashing.
+          chmod +x Revere-x86_64.AppImage
+          xvfb-run -a timeout --preserve-status 25s ./Revere-x86_64.AppImage & pid=$!
+          sleep 18
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "AppImage is running after 18s — smoke test OK"
+            kill "$pid" 2>/dev/null || true
+          else
+            wait "$pid"; rc=$?
+            echo "::error::AppImage exited early (rc=$rc)"; exit 1
+          fi
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: Revere-x86_64.AppImage
+          if-no-files-found: error
