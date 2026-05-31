@@ -161,13 +161,21 @@ jobs:
       - name: Write AppRun
         run: |
           set -euo pipefail
+          # IMPORTANT: source linuxdeploy's apprun-hooks rather than hand-setting
+          # GStreamer env. linuxdeploy-plugin-gstreamer installs a hook that points
+          # GST_PLUGIN_SYSTEM_PATH and GST_PLUGIN_SCANNER at the correct bundled
+          # locations (helpers live under usr/lib/gstreamer1.0/gstreamer-1.0, NOT
+          # usr/lib/gstreamer-1.0). Hand-rolling those got the scanner path wrong,
+          # so plugins were scanned in-process and one crashed (GStreamer caught a
+          # signal). Hooks reference $APPDIR, so set it before sourcing.
           cat > AppRun.custom <<'EOF'
           #!/bin/bash
           HERE="$(dirname "$(readlink -f "$0")")"
+          export APPDIR="$HERE"
           export LD_LIBRARY_PATH="$HERE/usr/lib:$HERE/usr/bin:${LD_LIBRARY_PATH:-}"
-          export GST_PLUGIN_SYSTEM_PATH="$HERE/usr/lib/gstreamer-1.0"
-          export GST_PLUGIN_PATH="$HERE/usr/lib/gstreamer-1.0"
-          export GST_PLUGIN_SCANNER="$HERE/usr/lib/gstreamer-1.0/gst-plugin-scanner"
+          for hook in "$HERE"/apprun-hooks/*.sh; do
+            [ -e "$hook" ] && . "$hook"
+          done
           export GIO_USE_PROXY_RESOLVER=dummy
           cd "$HERE/usr/bin"
           exec "$HERE/usr/bin/revere" "$@"
@@ -267,12 +275,16 @@ jobs:
           rc=$?
           echo "=== app exited rc=$rc ==="
           echo "=== BEGIN app output ==="; cat /tmp/revere_run.log 2>&1 || true; echo "=== END app output ==="
-          if [ "$rc" = "124" ] || [ "$rc" = "143" ]; then
-            echo "launch OK (ran until timeout)"
-          else
-            echo "::error::app did not stay up (rc=$rc) — see output above"
-            fail=1
-          fi
+          # Pass criteria: the bundle loaded and ran WITHOUT crashing.
+          #   124/143 = still running when the timeout killed it (ideal)
+          #   0       = exited cleanly (e.g. immediate SDL_QUIT under a headless,
+          #             no-window-manager xvfb — not a packaging failure)
+          # Fail on crash signals: 134=SIGABRT 135=SIGBUS 136=SIGFPE 139=SIGSEGV.
+          case "$rc" in
+            0|124|143) echo "launch OK (rc=$rc: clean exit or ran-until-timeout)";;
+            134|135|136|139) echo "::error::app CRASHED (rc=$rc) — see output above"; fail=1;;
+            *) echo "::error::app exited abnormally (rc=$rc) — see output above"; fail=1;;
+          esac
 
           [ "$fail" -eq 0 ] || { echo "::error::smoke test failed"; exit 1; }
           echo "smoke test OK"
