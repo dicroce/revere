@@ -243,20 +243,26 @@ jobs:
             fi
           done < <(find squashfs-root/usr/bin -maxdepth 2 -type f \( -name 'revere' -o -name 'vision' -o -name '*.so' \) 2>/dev/null)
 
-          # 2) Launch under a virtual display with a writable HOME (app uses
-          # $HOME/Documents/revere) and confirm it stays alive (doesn't crash).
+          # Diagnostics: show the real layout inside the extracted image.
+          echo "=== squashfs-root/usr ==="; ls -la squashfs-root/usr || true
+          echo "=== file squashfs-root/usr/bin ==="; file squashfs-root/usr/bin || true
+          echo "=== squashfs-root/usr/bin (head) ==="; ls -la squashfs-root/usr/bin 2>&1 | head -20 || true
+
+          # 2) Launch via the EXTRACTED AppRun (no FUSE — the standard CI pattern,
+          # equivalent to --appimage-extract-and-run) with a writable HOME (app
+          # uses $HOME/Documents/revere). Confirm it stays alive (doesn't crash).
           export HOME="$(mktemp -d)"
-          echo "=== launching AppImage under xvfb (HOME=$HOME) ==="
-          xvfb-run -a timeout --preserve-status 25s ./Revere-x86_64.AppImage >/tmp/revere_run.log 2>&1 &
+          echo "=== launching extracted AppRun under xvfb (HOME=$HOME) ==="
+          xvfb-run -a timeout --preserve-status 25s ./squashfs-root/AppRun >/tmp/revere_run.log 2>&1 &
           pid=$!
           sleep 18
           if kill -0 "$pid" 2>/dev/null; then
-            echo "AppImage still running after 18s — launch OK"
+            echo "App still running after 18s — launch OK"
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
           else
             wait "$pid"; rc=$?
-            echo "::error::AppImage exited early (rc=$rc). Output:"
+            echo "::error::App exited early (rc=$rc). Output:"
             cat /tmp/revere_run.log || true
             fail=1
           fi
