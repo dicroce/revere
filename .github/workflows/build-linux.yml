@@ -70,7 +70,7 @@ jobs:
             libgl1-mesa-dev libglu1-mesa-dev \
             libgtk-3-dev libayatana-appindicator3-dev libcairo2-dev \
             libasound2-dev libpulse-dev \
-            xvfb
+            xvfb libgl1-mesa-dri
 
       # NCNN: build from source (apt has no suitable package), cached by version.
       - name: Restore cached NCNN
@@ -257,8 +257,13 @@ jobs:
           # startup failure. We always print the app's output for diagnostics.
           # NOTE: the app derives its data dir from getpwuid()->pw_dir (NOT $HOME),
           # i.e. /home/runner, and now creates ~/Documents itself if missing.
-          echo "=== launching extracted AppRun under xvfb ==="
-          xvfb-run -a timeout --preserve-status 20s ./squashfs-root/AppRun > /tmp/revere_run.log 2>&1
+          # The app needs OpenGL for SDL_CreateWindow; plain xvfb has no GL driver,
+          # so force Mesa software rendering (llvmpipe via libgl1-mesa-dri). This
+          # is the HOST providing GL — consistent with not bundling libGL.
+          export LIBGL_ALWAYS_SOFTWARE=1
+          export GALLIUM_DRIVER=llvmpipe
+          echo "=== launching extracted AppRun under xvfb (software GL) ==="
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" timeout --preserve-status 20s ./squashfs-root/AppRun > /tmp/revere_run.log 2>&1
           rc=$?
           echo "=== app exited rc=$rc ==="
           echo "=== BEGIN app output ==="; cat /tmp/revere_run.log 2>&1 || true; echo "=== END app output ==="
