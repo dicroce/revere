@@ -68,11 +68,13 @@ string vision::top_dir()
     if(ret != 0)
         R_THROW(("Could not get path to documents folder."));
     string path = string(pwd.pw_dir) + PATH_SLASH + "Documents" + PATH_SLASH + "revere";
+    // mkdir_p (not mkdir): a fresh/headless Linux account may not have ~/Documents
+    // yet; single-level mkdir would throw on the missing parent and abort startup.
     if(!r_fs::file_exists(path))
-        r_fs::mkdir(path);
+        r_fs::mkdir_p(path);
     path += PATH_SLASH + "revere";
     if(!r_fs::file_exists(path))
-        r_fs::mkdir(path);
+        r_fs::mkdir_p(path);
     return path;
 #endif
 

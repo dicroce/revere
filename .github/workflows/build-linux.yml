@@ -250,23 +250,27 @@ jobs:
           echo "=== file squashfs-root/usr/bin ==="; file squashfs-root/usr/bin || true
           echo "=== squashfs-root/usr/bin (head) ==="; ls -la squashfs-root/usr/bin 2>&1 | head -20 || true
 
-          # 2) Launch in the FOREGROUND under xvfb with an explicit timeout, capture
-          # the exit code, and ALWAYS print the app's output inline. Foreground +
-          # explicit rc removes the backgrounding/timing ambiguity that previously
-          # swallowed the diagnostics. DIAGNOSTIC-ONLY for now: this never fails the
-          # step, so we can read the real startup error AND still upload the
-          # AppImage artifact below. We'll re-add a hard pass/fail gate once the
-          # startup crash is understood and fixed.
-          export HOME="$(mktemp -d)"
-          echo "=== launching extracted AppRun under xvfb (HOME=$HOME) ==="
+          # 2) Launch in the foreground under xvfb with an explicit timeout and
+          # capture the exit code. The app runs until we kill it via timeout, so a
+          # clean run exits 124 (timeout sent TERM) or 143 (128+SIGTERM) — those are
+          # SUCCESS (it stayed up). Any other code (e.g. 134 = abort) is a real
+          # startup failure. We always print the app's output for diagnostics.
+          # NOTE: the app derives its data dir from getpwuid()->pw_dir (NOT $HOME),
+          # i.e. /home/runner, and now creates ~/Documents itself if missing.
+          echo "=== launching extracted AppRun under xvfb ==="
           xvfb-run -a timeout --preserve-status 20s ./squashfs-root/AppRun > /tmp/revere_run.log 2>&1
           rc=$?
-          echo "=== app exited rc=$rc (124/143 = stayed up until timeout = good; 134 = abort) ==="
-          echo "=== BEGIN app output ==="
-          cat /tmp/revere_run.log 2>&1 || echo "(no output captured)"
-          echo "=== END app output ==="
-          echo "(smoke test is diagnostic-only this run; not failing the build)"
-          true
+          echo "=== app exited rc=$rc ==="
+          echo "=== BEGIN app output ==="; cat /tmp/revere_run.log 2>&1 || true; echo "=== END app output ==="
+          if [ "$rc" = "124" ] || [ "$rc" = "143" ]; then
+            echo "launch OK (ran until timeout)"
+          else
+            echo "::error::app did not stay up (rc=$rc) — see output above"
+            fail=1
+          fi
+
+          [ "$fail" -eq 0 ] || { echo "::error::smoke test failed"; exit 1; }
+          echo "smoke test OK"
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
