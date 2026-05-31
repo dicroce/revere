@@ -116,18 +116,23 @@ jobs:
       # motion_plugins/, gstreamer_plugins/, system_plugins/) under usr/revere/.
       # The app chdir's to its exe dir at startup, so those relative dirs resolve.
       # We:
+      #  - rename usr/revere -> usr/bin: linuxdeploy requires the main executable
+      #    in the FHS usr/bin. Keeping the whole self-contained dir AS usr/bin
+      #    means the exe is where linuxdeploy expects AND all the sibling
+      #    resources (models/, ui.rbt, plugins) stay next to it for the app's
+      #    chdir-relative lookups. ($ORIGIN rpath survives the dir move.)
       #  - drop system_plugins (the cloud plugin) — the app AppImage ships
       #    cloud-free; cloud is delivered separately as a .run (follow-up).
       #  - drop the app's bundled gstreamer_plugins and let
       #    linuxdeploy-plugin-gstreamer bundle a complete, rpath-correct set into
-      #    usr/lib/gstreamer-1.0 (avoids the $ORIGIN/.. rpath mismatch between
-      #    plugins in usr/revere and system libs linuxdeploy puts in usr/lib).
-      - name: Prune AppDir (cloud-free app, let linuxdeploy own GStreamer)
+      #    usr/lib/gstreamer-1.0.
+      - name: Prune AppDir and align to FHS bin layout
         run: |
           set -euo pipefail
           rm -rf AppDir/usr/revere/system_plugins
           rm -rf AppDir/usr/revere/gstreamer_plugins
-          echo "AppDir/usr/revere contents:"; ls -la AppDir/usr/revere
+          mv AppDir/usr/revere AppDir/usr/bin
+          echo "AppDir/usr/bin contents:"; ls -la AppDir/usr/bin
 
       - name: Stage desktop file and icon
         run: |
@@ -156,13 +161,13 @@ jobs:
           cat > AppDir/AppRun <<'EOF'
           #!/bin/bash
           HERE="$(dirname "$(readlink -f "$0")")"
-          export LD_LIBRARY_PATH="$HERE/usr/lib:$HERE/usr/revere:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="$HERE/usr/lib:$HERE/usr/bin:${LD_LIBRARY_PATH:-}"
           export GST_PLUGIN_SYSTEM_PATH="$HERE/usr/lib/gstreamer-1.0"
           export GST_PLUGIN_PATH="$HERE/usr/lib/gstreamer-1.0"
           export GST_PLUGIN_SCANNER="$HERE/usr/lib/gstreamer-1.0/gst-plugin-scanner"
           export GIO_USE_PROXY_RESOLVER=dummy
-          cd "$HERE/usr/revere"
-          exec "$HERE/usr/revere/revere" "$@"
+          cd "$HERE/usr/bin"
+          exec "$HERE/usr/bin/revere" "$@"
           EOF
           chmod +x AppDir/AppRun
 
@@ -181,11 +186,11 @@ jobs:
           set -euo pipefail
           export OUTPUT="Revere-x86_64.AppImage"
           # Help linuxdeploy find our own libs (next to the executables).
-          export LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/AppDir/usr/revere:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/AppDir/usr/bin:${LD_LIBRARY_PATH:-}"
           ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
             --appdir AppDir \
-            --executable AppDir/usr/revere/revere \
-            --executable AppDir/usr/revere/vision \
+            --executable AppDir/usr/bin/revere \
+            --executable AppDir/usr/bin/vision \
             --custom-apprun AppDir/AppRun \
             --desktop-file AppDir/revere.desktop \
             --icon-file AppDir/revere.png \
