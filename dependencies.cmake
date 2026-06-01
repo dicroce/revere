@@ -69,8 +69,13 @@ if(NOT TARGET opencv::opencv)
                 )
             else()
                 message(STATUS "Using OpenCV individual module libraries")
+                # NOTE: opencv_dnn is intentionally NOT linked. We do inference
+                # via NCNN, not cv::dnn. opencv_dnn drags in libprotobuf, which
+                # (when a separately-built plugin pulls a 2nd protobuf) caused a
+                # descriptor double-registration crash. Dropping it removes that
+                # whole class of bug and shrinks the package.
                 set(OPENCV_MODULES
-                    opencv_calib3d opencv_core opencv_dnn
+                    opencv_calib3d opencv_core
                     opencv_features2d opencv_flann opencv_imgcodecs opencv_imgproc
                     opencv_video
                 )
@@ -100,6 +105,12 @@ if(NOT TARGET opencv::opencv)
                 foreach(lib ${OPENCV_LIBS})
                     get_filename_component(lib_name ${lib} NAME_WE)
                     string(REGEX REPLACE "^lib" "" lib_name ${lib_name})
+                    # Skip opencv_dnn: unused (we use NCNN) and it pulls protobuf,
+                    # which caused a duplicate-protobuf crash when a separately
+                    # built plugin loaded a second copy.
+                    if(lib_name MATCHES "opencv_dnn")
+                        continue()
+                    endif()
                     target_link_libraries(opencv::opencv INTERFACE ${lib_name})
                 endforeach()
             else()
@@ -118,8 +129,18 @@ if(NOT TARGET opencv::opencv)
             add_library(opencv::opencv INTERFACE IMPORTED GLOBAL)
             target_include_directories(opencv::opencv INTERFACE ${OPENCV_INCLUDE_DIRS})
             target_link_directories(opencv::opencv INTERFACE ${OPENCV_LIBRARY_DIRS})
-            target_link_libraries(opencv::opencv INTERFACE ${OPENCV_LIBRARIES})
-            message(STATUS "Using system OpenCV via pkg-config")
+            # Drop opencv_dnn from the pkg-config link list: unused (we use NCNN)
+            # and it pulls libprotobuf, whose duplicate-load (from a separately
+            # built plugin) crashed the app. This is the path macOS/brew uses.
+            set(OPENCV_LINK_LIBS "")
+            foreach(_l ${OPENCV_LIBRARIES})
+                if(_l MATCHES "opencv_dnn")
+                    continue()
+                endif()
+                list(APPEND OPENCV_LINK_LIBS ${_l})
+            endforeach()
+            target_link_libraries(opencv::opencv INTERFACE ${OPENCV_LINK_LIBS})
+            message(STATUS "Using system OpenCV via pkg-config (opencv_dnn excluded)")
         else()
             message(WARNING "OpenCV not found - motion detection features will be limited")
             add_library(opencv::opencv INTERFACE IMPORTED GLOBAL)

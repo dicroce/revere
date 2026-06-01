@@ -89,6 +89,18 @@ jobs:
           echo "=== macos-install ==="; ls -la macos-install || true
           echo "=== Revere.app/Contents/MacOS ==="; ls -la "macos-install/Revere.app/Contents/MacOS" | head -40 || true
 
+      # Ship the app CLOUD-FREE, matching Windows/Linux: the cloud plugin is
+      # delivered SEPARATELY as the .command installer. The macOS CMake install
+      # copies system_plugins/ into the .app, so remove it here (Linux does the
+      # equivalent prune in its workflow). Leaving it in caused the app to ship
+      # AND load a bundled cloud plugin in addition to any user-installed one.
+      - name: Prune bundled cloud plugin (cloud-free app)
+        run: |
+          set -euo pipefail
+          rm -rf "macos-install/Revere.app/Contents/MacOS/system_plugins"
+          echo "system_plugins after prune (should be gone):"
+          ls -la "macos-install/Revere.app/Contents/MacOS/system_plugins" 2>&1 || echo "(removed)"
+
       # Gather non-system dylibs (OpenCV/GStreamer/FFmpeg/ncnn/glib/...) into the
       # app bundle and rewrite install names to @executable_path/../lib so the
       # .dmg runs on a machine WITHOUT Homebrew. This is the macOS analog of

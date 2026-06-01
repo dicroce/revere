@@ -76,7 +76,8 @@ private:
 
     std::string _top_dir;
     std::list<plugin_info> _plugins;
-    std::set<std::string> _loaded_guids;  // Track loaded plugin GUIDs to prevent duplicates
+    std::set<std::string> _loaded_guids;       // Track loaded plugin GUIDs to prevent duplicates
+    std::set<std::string> _loaded_filenames;   // Track loaded plugin filenames (dedupe BEFORE dlopen)
     std::function<void(const std::string&, const std::string&)> _api_result_fn;
 };
 

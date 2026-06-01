@@ -72,11 +72,26 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                     {
                         try
                         {
+                            // Dedupe by filename BEFORE dlopen. The same plugin can
+                            // exist in both search dirs (e.g. shipped next to the exe
+                            // AND installed in the user data dir). dlopen runs the
+                            // library's static initializers immediately, so loading a
+                            // second copy can crash (e.g. a duplicate protobuf/OpenCV
+                            // pulled in by a differently-built copy) before we ever
+                            // reach the GUID check below. Skipping by filename here
+                            // means the first dir scanned (next-to-exe) wins.
+                            if (_loaded_filenames.count(filename) > 0)
+                            {
+                                R_LOG_INFO("System plugin %s already loaded from an earlier directory, skipping duplicate", filename.c_str());
+                                continue;
+                            }
+
                             // Extract plugin name (filename without extension)
                             std::string plugin_name = filename.substr(0, filename.size() - plugin_ext.size());
 
                             // Load the dynamic library
                             auto lib = std::make_unique<r_dynamic_library>(entry.path().string());
+                            _loaded_filenames.insert(filename);
 
                             // Look for the required C API symbols
                             void* guid_symbol = lib->resolve_symbol("get_system_plugin_guid");

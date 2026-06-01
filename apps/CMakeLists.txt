@@ -182,10 +182,12 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     # Define OpenCV modules list for easier maintenance
     # NOTE: only core (non-contrib) modules are needed. Motion detection uses
     # cv::BackgroundSubtractorMOG2 which lives in opencv_video, not contrib.
+    # opencv_dnn is intentionally excluded: we infer via NCNN, and dnn drags in
+    # libprotobuf (a duplicate-protobuf load from a separately built plugin
+    # crashed the app on macOS). Keep this list in sync with dependencies.cmake.
     set(OPENCV_MODULES
         opencv_calib3d
         opencv_core
-        opencv_dnn
         opencv_features2d
         opencv_flann
         opencv_imgcodecs
