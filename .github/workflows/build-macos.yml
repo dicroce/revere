@@ -1,0 +1,233 @@
+name: Build & Release macOS
+
+# Two triggers (mirrors Windows/Linux):
+#   - push of a v* tag  -> build AND attach the .dmg + cloud .command to the
+#                          PUBLIC GitHub Release for that tag
+#   - workflow_dispatch -> build only (assets named with the short git hash)
+#
+# Target: Apple Silicon (arm64) on macos-14. Unsigned (users clear quarantine).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-14   # Apple Silicon (arm64)
+
+    steps:
+      - name: Checkout revere
+        uses: actions/checkout@v4
+        with:
+          path: revere
+          fetch-depth: 0
+
+      # Version-lock revere_cloud to the tag on tag builds (same policy as the
+      # other platforms). For workflow_dispatch this resolves to main.
+      - name: Determine revere_cloud ref
+        id: cloudref
+        env:
+          GH_TOKEN: ${{ secrets.REVERE_CLOUD_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+            if gh api "repos/dicroce/revere_cloud/git/ref/tags/${tag}" >/dev/null 2>&1; then
+              echo "ref=${tag}" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::revere_cloud is missing tag '${tag}'. Tag it too:"
+              echo "::error::(cd revere_cloud && git tag ${tag} && git push origin ${tag})"
+              exit 1
+            fi
+          else
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout revere_cloud
+        uses: actions/checkout@v4
+        with:
+          repository: dicroce/revere_cloud
+          ref: ${{ steps.cloudref.outputs.ref }}
+          path: revere_cloud
+          fetch-depth: 0
+          token: ${{ secrets.REVERE_CLOUD_TOKEN }}
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          brew update
+          # Runtime/build deps via Homebrew. ncnn is in brew (arm64) so the
+          # yolov8 plugin builds without a from-source NCNN. dylibbundler gathers
+          # the non-system dylibs into the .app and rewrites their load paths.
+          brew install \
+            cmake pkg-config dylibbundler \
+            opencv ffmpeg \
+            gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad \
+            glfw sqlite ncnn
+          # Make sure pkg-config sees the Homebrew prefix (Apple Silicon).
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix)/share/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          cmake -S revere -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DEXTERNAL_PLUGIN_REPOS="${GITHUB_WORKSPACE}/revere_cloud" \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/macos-install" \
+            -DNCNN_TOP_DIR="$(brew --prefix ncnn)"
+
+      - name: Build
+        run: cmake --build build --parallel "$(sysctl -n hw.ncpu)"
+
+      - name: Install (.app bundles)
+        run: |
+          set -euo pipefail
+          cmake --install build
+          echo "=== macos-install ==="; ls -la macos-install || true
+          echo "=== Revere.app/Contents/MacOS ==="; ls -la "macos-install/Revere.app/Contents/MacOS" | head -40 || true
+
+      # Gather non-system dylibs (OpenCV/GStreamer/FFmpeg/ncnn/glib/...) into the
+      # app bundle and rewrite install names to @executable_path/../lib so the
+      # .dmg runs on a machine WITHOUT Homebrew. This is the macOS analog of
+      # linuxdeploy. Run for the main executables; -x adds the dlopen'd plugins
+      # (motion + system) whose deps would otherwise be missed.
+      - name: Bundle dylibs into Revere.app
+        run: |
+          set -euo pipefail
+          app="macos-install/Revere.app"
+          macos="$app/Contents/MacOS"
+          libdir="$app/Contents/libs"
+          extra=()
+          while IFS= read -r so; do extra+=( -x "$so" ); done < <(find "$macos" \( -name '*.dylib' -o -name '*.so' \) -type f)
+          dylibbundler -cd -b \
+            -x "$macos/revere" \
+            "${extra[@]}" \
+            -d "$libdir" \
+            -p "@executable_path/../libs/"
+          echo "=== bundled libs ==="; ls -la "$libdir" | head -40 || true
+
+      - name: Determine version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            ver="${GITHUB_REF_NAME}"
+          else
+            ver="v$(git -C revere rev-parse --short HEAD)"
+          fi
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "Version: $ver"
+
+      # Build the .dmg directly with hdiutil (the repo's CPack DragNDrop config
+      # references a background image + ds_store script that aren't in the repo).
+      - name: Create .dmg
+        run: |
+          set -euo pipefail
+          ver="${{ steps.ver.outputs.ver }}"
+          mkdir -p dist dmgroot
+          cp -R "macos-install/Revere.app" dmgroot/
+          [ -d "macos-install/Vision.app" ] && cp -R "macos-install/Vision.app" dmgroot/ || true
+          ln -s /Applications dmgroot/Applications
+          hdiutil create -volname "Revere" -srcfolder dmgroot -ov -format UDBZ \
+            "dist/revere-${ver}-macos-app.dmg"
+          echo "=== dist ==="; ls -la dist
+
+      # Cloud plugin .command (self-extracting, installs the dylib into
+      # ~/Library/Application Support/Revere/revere/system_plugins). The plugin
+      # was built in-tree against this run's libs via EXTERNAL_PLUGIN_REPOS; it
+      # lands under build/_deps/revere_cloud-build/.
+      - name: Create cloud .command
+        run: |
+          set -euo pipefail
+          ver="${{ steps.ver.outputs.ver }}"
+          plugin="$(find build -name 'revere_cloud_system_plugin.dylib' -type f | head -1)"
+          if [ -z "$plugin" ]; then echo "::error::cloud plugin dylib not found"; exit 1; fi
+          echo "plugin: $plugin"
+          out="dist/revere-${ver}-macos-cloud.command"
+          cat > "$out" <<'HDR'
+          #!/bin/bash
+          set -e
+          PLUGIN_DIR="$HOME/Library/Application Support/Revere/revere/system_plugins"
+          PLUGIN_NAME="revere_cloud_system_plugin.dylib"
+          echo "Revere Cloud Plugin Installer"; echo "=============================="; echo ""
+          if [ ! -d "$HOME/Library/Application Support/Revere/revere" ]; then
+            echo "Error: Revere does not appear to be installed."
+            echo "Please run Revere at least once before installing the plugin."
+            read -p "Press Enter to exit..."; exit 1
+          fi
+          mkdir -p "$PLUGIN_DIR"
+          ARCHIVE_START=$(awk '/^__PAYLOAD__$/{print NR + 1; exit 0; }' "$0")
+          tail -n +"$ARCHIVE_START" "$0" > "$PLUGIN_DIR/$PLUGIN_NAME"
+          chmod 755 "$PLUGIN_DIR/$PLUGIN_NAME"
+          echo ""; echo "Installation complete! Restart Revere to load the cloud plugin."
+          read -p "Press Enter to exit..."; exit 0
+          __PAYLOAD__
+          HDR
+          cat "$plugin" >> "$out"
+          chmod +x "$out"
+          echo "=== dist ==="; ls -la dist
+
+      # Light smoke check: confirm the bundled app has no unresolved non-system
+      # dylib references (otool). A full GUI launch needs a display we don't have.
+      - name: Smoke test (otool linkage)
+        run: |
+          set +e
+          fail=0
+          bin="macos-install/Revere.app/Contents/MacOS/revere"
+          echo "=== otool -L $bin ==="; otool -L "$bin"
+          # Any remaining /opt/homebrew or /usr/local references = unbundled dep.
+          leaked="$(otool -L "$bin" | grep -E '/opt/homebrew|/usr/local/' || true)"
+          if [ -n "$leaked" ]; then
+            echo "::warning::executable still references Homebrew paths (dylibbundler may need -x for more libs):"
+            echo "$leaked"
+          fi
+          echo "smoke check done (non-fatal this first cut)"
+          exit 0
+
+      - name: Upload macOS assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-assets
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [build-macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS assets
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-assets
+          path: dist
+
+      - name: Verify asset versions match the tag
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"; version="${tag#v}"
+          echo "Tag: $tag -> expected version: $version"; ls -1 dist
+          for expected in "revere-v${version}-macos-app.dmg" "revere-v${version}-macos-cloud.command"; do
+            if [ ! -f "dist/${expected}" ]; then
+              echo "::error::Expected asset '${expected}' not found — refusing to release."
+              exit 1
+            fi
+          done
+          echo "Version guard passed: both macOS assets match $tag."
+
+      - name: Create/update public release and upload macOS assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # Shared per-tag Release; tolerate the cross-workflow create race.
+          if ! gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "${GITHUB_REPOSITORY}" --title "$tag" --generate-notes \
+              || gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1
+          fi
+          gh release upload "$tag" dist/* --repo "${GITHUB_REPOSITORY}" --clobber
+          echo "Published macOS assets to release $tag."
