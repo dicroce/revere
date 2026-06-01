@@ -79,21 +79,6 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/macos-install" \
             -DNCNN_TOP_DIR="$(brew --prefix ncnn)"
 
-      # DIAGNOSTIC: a build error showed configure_state.cpp compiling its
-      # IS_WINDOWS branch on macOS. Print CMAKE_SYSTEM_NAME and the exact
-      # preprocessor defines CMake generated for the revere target so we can see
-      # whether IS_MACOS is actually defined (expected) or IS_WINDOWS leaked.
-      - name: Diagnose platform defines
-        run: |
-          set +e
-          echo "=== CMakeCache platform vars ==="
-          grep -E 'CMAKE_SYSTEM_NAME|APPLE|CMAKE_HOST_SYSTEM_NAME' build/CMakeCache.txt
-          echo "=== flags.make for configure_state (defines) ==="
-          find build -path '*revere.dir*' -name 'flags.make' -exec sh -c 'echo "--- $1"; grep -E "IS_WINDOWS|IS_MACOS|IS_LINUX|CXX_DEFINES|DEFINES" "$1"' _ {} \;
-          echo "=== any IS_WINDOWS anywhere in build/ defines ==="
-          grep -rEl 'IS_WINDOWS' build --include='flags.make' --include='*.make' --include='*.ninja' 2>/dev/null | head
-          echo "(diagnostic only)"; true
-
       - name: Build
         run: cmake --build build --parallel "$(sysctl -n hw.ncpu)"
 
