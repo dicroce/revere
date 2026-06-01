@@ -1,10 +1,17 @@
-name: Build Linux
+name: Build & Release Linux
 
-# Manual-only while stabilizing. This first cut builds the app AppImage and
-# smoke-tests it. Once green, follow-ups add: the cloud .run installer, a v* tag
-# trigger, and attaching the Linux assets to the release.
+# Two triggers (mirrors Windows):
+#   - push of a v* tag  -> build AND attach the AppImage + cloud .run to the
+#                          PUBLIC GitHub Release for that tag
+#   - workflow_dispatch -> build only (assets named with the short git hash)
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
+
+# The release job needs to create a Release + upload assets on this repo.
+permissions:
+  contents: write
 
 env:
   # NCNN is built from source (not in apt) and cached. Bump to rebuild.
@@ -289,9 +296,93 @@ jobs:
           [ "$fail" -eq 0 ] || { echo "::error::smoke test failed"; exit 1; }
           echo "smoke test OK"
 
-      - name: Upload AppImage
+      # Compute the release version: the tag on tag builds (e.g. v0.0.22), else
+      # the short git hash (workflow_dispatch test builds). Used to name both the
+      # AppImage and the cloud .run so they match the in-app download contract.
+      - name: Determine version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            ver="${GITHUB_REF_NAME}"            # already vX.Y.Z
+          else
+            ver="v$(git -C revere rev-parse --short HEAD)"
+          fi
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "Version: $ver"
+
+      # Build the cloud plugin self-extracting .run. The cloud plugin .so was
+      # built (EXTERNAL_PLUGIN_REPOS set) and CMake copied it to
+      # build/system_plugins/; the AppDir prune removed only the AppImage's copy,
+      # so the build-tree copy is still here. The .run is delivered SEPARATELY —
+      # it installs into ~/Documents/revere/revere/system_plugins on the user's
+      # machine, exactly where the app loads system plugins from.
+      - name: Stage release assets (versioned AppImage + cloud .run)
+        run: |
+          set -euo pipefail
+          ver="${{ steps.ver.outputs.ver }}"
+          mkdir -p dist
+          cp Revere-x86_64.AppImage "dist/revere-${ver}-linux-app.AppImage"
+          chmod +x revere/scripts/linux/create_cloud_plugin_installer.sh
+          VERSION="$ver" \
+          REVERE_BUILD_DIR="${GITHUB_WORKSPACE}/build" \
+          REVERE_CLOUD_PLUGIN_PATH="${GITHUB_WORKSPACE}/build/system_plugins/revere_cloud_system_plugin.so" \
+          REVERE_RELEASES_DIR="${GITHUB_WORKSPACE}/dist" \
+          bash revere/scripts/linux/create_cloud_plugin_installer.sh
+          echo "=== dist/ ==="; ls -la dist
+
+      - name: Upload Linux assets
         uses: actions/upload-artifact@v4
         with:
-          name: linux-appimage
-          path: Revere-x86_64.AppImage
+          name: linux-assets
+          path: dist/*
           if-no-files-found: error
+
+  # Only runs for tag pushes. Attaches the AppImage + cloud .run to the PUBLIC
+  # GitHub Release for this tag (shared with the Windows workflow's release job).
+  release:
+    needs: [build-linux]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux assets
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-assets
+          path: dist
+
+      - name: Verify asset versions match the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The cloud .run name must contain the tag's version, or the in-app
+          # "Download Revere Cloud" URL (built from the binary's baked-in version)
+          # would 404. Guard both assets.
+          tag="${GITHUB_REF_NAME}"; version="${tag#v}"
+          echo "Tag: $tag  -> expected version: $version"
+          echo "Built assets:"; ls -1 dist
+          for expected in "revere-v${version}-linux-app.AppImage" "revere-v${version}-linux-cloud.run"; do
+            if [ ! -f "dist/${expected}" ]; then
+              echo "::error::Expected asset '${expected}' not found — refusing to release"
+              echo "::error::(would leave dead in-app download links)."
+              exit 1
+            fi
+          done
+          echo "Version guard passed: both Linux assets match $tag."
+
+      - name: Create/update public release and upload Linux assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # Create the release if missing. The Windows workflow's release job races
+          # us for the same tag, so tolerate "already exists".
+          if ! gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "${GITHUB_REPOSITORY}" --title "$tag" --generate-notes \
+              || gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1
+          fi
+          # Distinct filenames per platform → concurrent --clobber uploads are safe.
+          gh release upload "$tag" dist/* --repo "${GITHUB_REPOSITORY}" --clobber
+          echo "Published Linux assets to release $tag."

@@ -10,16 +10,24 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BUILD_DIR="$PROJECT_DIR/build"
-PLUGIN_PATH="$BUILD_DIR/system_plugins/revere_cloud_system_plugin.so"
+# All paths/version are overridable via env (for CI) and fall back to the
+# historical local-dev defaults when unset.
+BUILD_DIR="${REVERE_BUILD_DIR:-$PROJECT_DIR/build}"
+PLUGIN_PATH="${REVERE_CLOUD_PLUGIN_PATH:-$BUILD_DIR/system_plugins/revere_cloud_system_plugin.so}"
+OUTPUT_DIR="${REVERE_RELEASES_DIR:-$BUILD_DIR}"
 
-if VERSION="$(git -C "$PROJECT_DIR" describe --tags --exact-match 2>/dev/null)"; then
-    :
-else
-    VERSION="$(git -C "$PROJECT_DIR" rev-parse --short HEAD)"
+# Honor a caller-supplied VERSION (CI passes the release version so the .run
+# name matches the in-app download URL exactly); otherwise derive from git.
+if [ -z "${VERSION:-}" ]; then
+    if VERSION="$(git -C "$PROJECT_DIR" describe --tags --exact-match 2>/dev/null)"; then
+        :
+    else
+        VERSION="$(git -C "$PROJECT_DIR" rev-parse --short HEAD)"
+    fi
 fi
 [[ "$VERSION" != v* ]] && VERSION="v${VERSION}"
-OUTPUT_FILE="$BUILD_DIR/revere-${VERSION}-linux-cloud.run"
+mkdir -p "$OUTPUT_DIR"
+OUTPUT_FILE="$OUTPUT_DIR/revere-${VERSION}-linux-cloud.run"
 
 # Check plugin exists
 if [ ! -f "$PLUGIN_PATH" ]; then

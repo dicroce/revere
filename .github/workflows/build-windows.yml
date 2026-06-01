@@ -208,13 +208,14 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          # Create the release if it doesn't exist yet (public, published), then
-          # upload (clobbering so re-runs replace assets cleanly).
+          # Create the release if missing. The Linux workflow's release job races
+          # us for the same tag, so tolerate "already exists": create may fail
+          # because the other job won — then just confirm it now exists.
           if ! gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release create "$tag" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "$tag" \
-              --generate-notes
+            gh release create "$tag" --repo "${GITHUB_REPOSITORY}" --title "$tag" --generate-notes \
+              || gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1
           fi
+          # Per-asset upload with --clobber is concurrency-safe (each platform's
+          # job uploads distinct filenames).
           gh release upload "$tag" dist/*.exe --repo "${GITHUB_REPOSITORY}" --clobber
           echo "Published release $tag with Windows installers."
