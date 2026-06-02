@@ -577,9 +577,19 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
         char conf_buf[32];
         snprintf(conf_buf, sizeof(conf_buf), "%.3f", detection.score);
 
+        char x1_buf[16], y1_buf[16], x2_buf[16], y2_buf[16];
+        snprintf(x1_buf, sizeof(x1_buf), "%.4f", detection.x1 / 640.0f);
+        snprintf(y1_buf, sizeof(y1_buf), "%.4f", detection.y1 / 640.0f);
+        snprintf(x2_buf, sizeof(x2_buf), "%.4f", detection.x2 / 640.0f);
+        snprintf(y2_buf, sizeof(y2_buf), "%.4f", detection.y2 / 640.0f);
+
         json_metadata += R"({"timestamp": ")" + det_time_str +
                         R"(", "class_name": ")" + class_name +
-                        R"(", "confidence": )" + conf_buf + "}";
+                        R"(", "confidence": )" + conf_buf +
+                        R"(, "x1": )" + x1_buf +
+                        R"(, "y1": )" + y1_buf +
+                        R"(, "x2": )" + x2_buf +
+                        R"(, "y2": )" + y2_buf + "}";
     }
 
     json_metadata += R"(], "total_detections": )" + std::to_string(valid_detection_count) + "}}";

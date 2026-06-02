@@ -217,6 +217,10 @@ vector<analytics_event> vision::query_analytics(const configure_state& cs, const
             ad.class_name = det["class_name"].get<string>();
             ad.confidence = det["confidence"].get<float>();
             ad.timestamp = r_time_utils::iso_8601_to_tp(det["timestamp"]);
+            ad.x1 = det.value("x1", 0.0f);
+            ad.y1 = det.value("y1", 0.0f);
+            ad.x2 = det.value("x2", 0.0f);
+            ad.y2 = det.value("y2", 0.0f);
             ae.detections.push_back(ad);
         }
 
