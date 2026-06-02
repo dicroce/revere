@@ -121,6 +121,27 @@ jobs:
             -p "@executable_path/../libs/"
           echo "=== bundled libs ==="; ls -la "$libdir" | head -40 || true
 
+      # Vision.app needs the same treatment as Revere.app: the CMake install
+      # copies project dylibs into it but its OpenCV/GStreamer/etc deps still
+      # point at /opt/homebrew (would fail to load on a user Mac). Bundle them
+      # into Vision.app/Contents/libs too. (Without this Vision also can't load
+      # its deps even once the signature is fixed below.)
+      - name: Bundle dylibs into Vision.app
+        run: |
+          set -euo pipefail
+          app="macos-install/Vision.app"
+          if [ ! -d "$app" ]; then echo "Vision.app not present; skipping"; exit 0; fi
+          macos="$app/Contents/MacOS"
+          libdir="$app/Contents/libs"
+          extra=()
+          while IFS= read -r so; do extra+=( -x "$so" ); done < <(find "$macos" \( -name '*.dylib' -o -name '*.so' \) -type f)
+          dylibbundler -cd -b \
+            -x "$macos/vision" \
+            "${extra[@]}" \
+            -d "$libdir" \
+            -p "@executable_path/../libs/"
+          echo "=== Vision bundled libs ==="; ls -la "$libdir" | head -40 || true
+
       - name: Determine version
         id: ver
         run: |
@@ -132,6 +153,25 @@ jobs:
           fi
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           echo "Version: $ver"
+
+      # Re-sign both .app bundles AFTER all modifications. On Apple Silicon every
+      # macho must carry a valid signature; the linker's automatic ad-hoc seal is
+      # invalidated the moment we copy/rewrite dylibs into the bundle, which makes
+      # macOS reject the app as "damaged and can't be opened". (Revere happened to
+      # get re-signed as a side effect of dylibbundler; Vision did not -> it showed
+      # "damaged".) Do an explicit deep ad-hoc re-sign of both as the final step.
+      # NOTE: ad-hoc (-) only fixes the "damaged" rejection; it is NOT notarization
+      # (users still clear quarantine on first open). Proper Developer ID signing
+      # is a separate, later step.
+      - name: Ad-hoc re-sign app bundles
+        run: |
+          set -euo pipefail
+          for app in macos-install/Revere.app macos-install/Vision.app; do
+            [ -d "$app" ] || continue
+            echo "=== re-signing $app ==="
+            codesign --force --deep --sign - "$app"
+            codesign --verify --deep --verbose=2 "$app" && echo "verify OK: $app"
+          done
 
       # Build the .dmg directly with hdiutil (the repo's CPack DragNDrop config
       # references a background image + ds_store script that aren't in the repo).
@@ -189,6 +229,10 @@ jobs:
           echo "=== any /opt/homebrew refs left? (should be none) ==="
           otool -L "$plugin" | grep -i "/opt/homebrew" && echo "::warning::homebrew refs remain" || echo "clean"
           echo "=== bundled lib basenames (for cross-check) ==="; echo $bundled | tr ' ' '\n' | sort | head -80
+          # install_name_tool invalidated the plugin's signature; re-sign ad-hoc or
+          # dlopen can be rejected for a bad signature on arm64.
+          codesign --force --sign - "$plugin"
+          codesign --verify --verbose=2 "$plugin" && echo "plugin verify OK"
 
       # Cloud plugin .command (self-extracting, installs the dylib into
       # ~/Library/Application Support/Revere/revere/system_plugins). The plugin
