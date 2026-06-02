@@ -204,31 +204,49 @@ jobs:
           libdir="macos-install/Revere.app/Contents/libs"
           echo "=== plugin deps BEFORE rewrite ==="; otool -L "$plugin"
 
-          # Build a basename set of what's actually bundled, for match-checking.
-          bundled=""; for f in "$libdir"/*.dylib; do bundled="$bundled $(basename "$f")"; done
+          # Map each dependency to the ACTUAL bundled filename. The plugin links
+          # against SHORT sonames (libopencv_gapi.413.dylib, libavcodec.62.dylib)
+          # but dylibbundler copies the symlink TARGETS under their full versioned
+          # names (libopencv_gapi.4.13.0.dylib, libavcodec.62.28.101.dylib) and
+          # does NOT recreate the short-name symlinks. So a naive basename repoint
+          # lands on a file that isn't there. Resolve by library "stem" (the part
+          # before the first version digit) to whatever the bundle actually has.
+          resolve_bundled() {  # $1 = dep basename -> echoes bundled basename or empty
+            local b="$1"
+            if [ -e "$libdir/$b" ]; then echo "$b"; return; fi
+            # stem = strip from the first ".<digit>" onward, e.g.
+            #   libopencv_gapi.413.dylib   -> libopencv_gapi
+            #   libavcodec.62.dylib        -> libavcodec
+            local stem="${b%%.[0-9]*}"
+            local m
+            m="$(cd "$libdir" && ls -1 "${stem}".*.dylib "${stem}".dylib 2>/dev/null | head -1 || true)"
+            echo "$m"
+          }
 
-          # For every non-system dependency (skip /usr/lib + /System), repoint it
-          # at @executable_path/../libs/<basename>. install_name_tool -change needs
-          # the EXACT old path, so derive each from otool output.
           otool -L "$plugin" | tail -n +2 | awk '{print $1}' | while read -r dep; do
             case "$dep" in
               /usr/lib/*|/System/*|@executable_path/*|@rpath/*|@loader_path/*) continue;;
             esac
             base="$(basename "$dep")"
-            # Warn if the exact basename isn't in the bundle (soname mismatch like
-            # libopencv_gapi.413.dylib vs libopencv_gapi.4.13.0.dylib). Diagnostic
-            # only this pass — we still rewrite; the otool AFTER dump shows reality.
-            case " $bundled " in
-              *" $base "*) : ;;
-              *) echo "::warning::plugin dep '$base' not found by exact name in bundle libs";;
-            esac
-            install_name_tool -change "$dep" "@executable_path/../libs/$base" "$plugin" || \
+            target="$(resolve_bundled "$base")"
+            if [ -z "$target" ]; then
+              echo "::warning::no bundled lib matches plugin dep '$base' — leaving as-is"
+              continue
+            fi
+            install_name_tool -change "$dep" "@executable_path/../libs/$target" "$plugin" || \
               echo "::warning::install_name_tool failed to change $dep"
           done
           echo "=== plugin deps AFTER rewrite ==="; otool -L "$plugin"
-          echo "=== any /opt/homebrew refs left? (should be none) ==="
-          otool -L "$plugin" | grep -i "/opt/homebrew" && echo "::warning::homebrew refs remain" || echo "clean"
-          echo "=== bundled lib basenames (for cross-check) ==="; echo $bundled | tr ' ' '\n' | sort | head -80
+          echo "=== verify: no /opt/homebrew or /opt/ refs, and every @executable_path lib exists ==="
+          bad=0
+          otool -L "$plugin" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+            case "$dep" in
+              /opt/*|/usr/local/*) echo "::warning::leftover external ref: $dep";;
+              @executable_path/../libs/*)
+                f="${dep#@executable_path/../libs/}"
+                [ -e "$libdir/$f" ] || echo "::warning::dangling bundled ref (no such file): $dep";;
+            esac
+          done
           # install_name_tool invalidated the plugin's signature; re-sign ad-hoc or
           # dlopen can be rejected for a bad signature on arm64.
           codesign --force --sign - "$plugin"
