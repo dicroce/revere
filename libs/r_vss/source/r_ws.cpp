@@ -34,7 +34,7 @@ using namespace std::chrono;
 using namespace std::placeholders;
 using json = nlohmann::json;
 
-const int WEB_SERVER_PORT = 8088;
+const int WEB_SERVER_PORT = 10080;
 
 namespace {
 
