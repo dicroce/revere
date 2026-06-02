@@ -147,6 +147,49 @@ jobs:
             "dist/revere-${ver}-macos-app.dmg"
           echo "=== dist ==="; ls -la dist
 
+      # Rewrite the cloud plugin's dependency load-commands so it reuses the libs
+      # ALREADY bundled in Revere.app/Contents/libs, instead of its build-time
+      # /opt/homebrew/... paths (which don't exist on a user's Mac -> dlopen fails
+      # -> "plugin doesn't load"). The plugin is dlopen'd by the running `revere`
+      # executable, so @executable_path = Revere.app/Contents/MacOS and
+      # @executable_path/../libs resolves to the app's bundled libs regardless of
+      # where the plugin file itself sits (~/Library/Application Support/...).
+      # Reusing the app's libs means the plugin loads ZERO extra dylibs — no
+      # duplicate OpenCV/protobuf, so no descriptor-collision crash either.
+      - name: Rewrite cloud plugin deps to the app bundle libs
+        run: |
+          set -euo pipefail
+          plugin="$(find build -name 'revere_cloud_system_plugin.dylib' -type f | head -1)"
+          if [ -z "$plugin" ]; then echo "::error::cloud plugin dylib not found"; exit 1; fi
+          libdir="macos-install/Revere.app/Contents/libs"
+          echo "=== plugin deps BEFORE rewrite ==="; otool -L "$plugin"
+
+          # Build a basename set of what's actually bundled, for match-checking.
+          bundled=""; for f in "$libdir"/*.dylib; do bundled="$bundled $(basename "$f")"; done
+
+          # For every non-system dependency (skip /usr/lib + /System), repoint it
+          # at @executable_path/../libs/<basename>. install_name_tool -change needs
+          # the EXACT old path, so derive each from otool output.
+          otool -L "$plugin" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+            case "$dep" in
+              /usr/lib/*|/System/*|@executable_path/*|@rpath/*|@loader_path/*) continue;;
+            esac
+            base="$(basename "$dep")"
+            # Warn if the exact basename isn't in the bundle (soname mismatch like
+            # libopencv_gapi.413.dylib vs libopencv_gapi.4.13.0.dylib). Diagnostic
+            # only this pass — we still rewrite; the otool AFTER dump shows reality.
+            case " $bundled " in
+              *" $base "*) : ;;
+              *) echo "::warning::plugin dep '$base' not found by exact name in bundle libs";;
+            esac
+            install_name_tool -change "$dep" "@executable_path/../libs/$base" "$plugin" || \
+              echo "::warning::install_name_tool failed to change $dep"
+          done
+          echo "=== plugin deps AFTER rewrite ==="; otool -L "$plugin"
+          echo "=== any /opt/homebrew refs left? (should be none) ==="
+          otool -L "$plugin" | grep -i "/opt/homebrew" && echo "::warning::homebrew refs remain" || echo "clean"
+          echo "=== bundled lib basenames (for cross-check) ==="; echo $bundled | tr ' ' '\n' | sort | head -80
+
       # Cloud plugin .command (self-extracting, installs the dylib into
       # ~/Library/Application Support/Revere/revere/system_plugins). The plugin
       # was built in-tree against this run's libs via EXTERNAL_PLUGIN_REPOS; it
