@@ -223,6 +223,17 @@ jobs:
           done
           echo "PHASE: plugins with leftover /opt refs = $leftover"
 
+          # GROUND-TRUTH DIAGNOSTIC (one-time): dump the EXACT dependency strings
+          # of one plugin so we can see what form the /opt refs take and why the
+          # rewrite/dylibbundler didn't touch them. Also show the plugin's own id
+          # and a sample of what's in libdir to compare names.
+          echo "===== DIAG: otool -L libgstrtsp.dylib ====="
+          otool -L "$plugdir/libgstrtsp.dylib" 2>&1 || true
+          echo "===== DIAG: otool -L libgstlibav.dylib ====="
+          otool -L "$plugdir/libgstlibav.dylib" 2>&1 || true
+          echo "===== DIAG: does libdir actually contain the gst core libs the plugins want? ====="
+          ls -1 "$libdir" | grep -iE 'libgst(reamer|base|rtsp|rtp|app|video|audio)' 2>/dev/null || echo "(no libgst* core libs in libdir!)"
+
           echo "PHASE: re-signing plugins (install_name_tool invalidated signatures)"
           for p in "$plugdir"/*.dylib; do codesign --force --sign - "$p" || { echo "::error::codesign failed for $p"; fail=1; }; done
 
@@ -270,8 +281,18 @@ jobs:
           cp -R "macos-install/Revere.app" dmgroot/
           [ -d "macos-install/Vision.app" ] && cp -R "macos-install/Vision.app" dmgroot/ || true
           ln -s /Applications dmgroot/Applications
-          hdiutil create -volname "Revere" -srcfolder dmgroot -ov -format UDBZ \
-            "dist/revere-${ver}-macos-app.dmg"
+          # hdiutil intermittently fails with "Resource busy" on CI runners (disk
+          # automount race), unrelated to bundle contents. Retry a few times.
+          out="dist/revere-${ver}-macos-app.dmg"
+          ok=0
+          for attempt in 1 2 3 4 5; do
+            if hdiutil create -volname "Revere" -srcfolder dmgroot -ov -format UDBZ "$out"; then
+              ok=1; break
+            fi
+            echo "hdiutil attempt $attempt failed (likely 'Resource busy'); retrying in 10s..."
+            sleep 10
+          done
+          [ "$ok" -eq 1 ] || { echo "::error::hdiutil create failed after retries"; exit 1; }
           echo "=== dist ==="; ls -la dist
 
       # Rewrite the cloud plugin's dependency load-commands so it reuses the libs
