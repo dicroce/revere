@@ -155,16 +155,28 @@ jobs:
       # plugins catches any transitive lib the app didn't already bundle.
       - name: Bundle GStreamer plugins into Revere.app
         run: |
-          set -euo pipefail
+          # NOTE: NOT using `set -e`. This step runs many pipelines that
+          # legitimately exit nonzero (grep with no match = success here, otool on
+          # odd files, etc.); errexit turned those into spurious step failures.
+          # Track real failures explicitly via $fail and phase markers.
+          set -uo pipefail
+          fail=0
           app="macos-install/Revere.app"
           macos="$app/Contents/MacOS"
           libdir="$app/Contents/libs"
           plugdir="$macos/gstreamer_plugins"
           src="$(brew --prefix gstreamer)/lib/gstreamer-1.0"
-          echo "gstreamer plugin source: $src"
+          echo "PHASE: source = $src"
+          [ -d "$src" ] || { echo "::error::gstreamer plugin source dir not found: $src"; exit 1; }
           mkdir -p "$plugdir"
-          # Full set (matches Linux/snap): copy every plugin module. .dylib on mac.
-          cp -v "$src"/libgst*.dylib "$plugdir"/ 2>/dev/null | wc -l | sed 's/^/copied plugins: /'
+
+          # Full set (matches Linux/snap): copy every plugin module (.dylib on mac).
+          # Copy real files (Homebrew plugins are regular files, but -L derefs any
+          # symlinks just in case). Count what landed.
+          cp -L "$src"/libgst*.dylib "$plugdir"/ 2>/dev/null || true
+          n_copied=$(ls -1 "$plugdir"/*.dylib 2>/dev/null | wc -l | tr -d ' ')
+          echo "PHASE: copied $n_copied plugins"
+          [ "$n_copied" -gt 0 ] || { echo "::error::no gstreamer plugins copied"; exit 1; }
 
           resolve_bundled() {  # $1 = dep basename -> bundled basename or empty
             local b="$1"
@@ -174,9 +186,11 @@ jobs:
             echo "$m"
           }
 
-          # Repoint each plugin's /opt/homebrew (and @rpath) deps at the app libs.
+          echo "PHASE: rewriting plugin deps to bundled libs"
           for p in "$plugdir"/*.dylib; do
-            otool -L "$p" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+            deps="$(otool -L "$p" 2>/dev/null | tail -n +2 | awk '{print $1}')"
+            while IFS= read -r dep; do
+              [ -n "$dep" ] || continue
               case "$dep" in
                 /usr/lib/*|/System/*|@executable_path/*) continue;;
               esac
@@ -185,12 +199,10 @@ jobs:
               if [ -n "$target" ]; then
                 install_name_tool -change "$dep" "@executable_path/../libs/$target" "$p" 2>/dev/null || true
               fi
-            done
+            done <<< "$deps"
           done
 
-          # Catch any transitive deps the plugins need that the app didn't already
-          # bundle (e.g. codec libs only an element references). dylibbundler adds
-          # them to Contents/libs and fixes the plugins' references to them.
+          echo "PHASE: dylibbundler over plugins (gather any new transitive deps)"
           extra=()
           while IFS= read -r so; do extra+=( -x "$so" ); done < <(find "$plugdir" -name '*.dylib' -type f)
           dylibbundler -cd -b -of \
@@ -198,12 +210,21 @@ jobs:
             -d "$libdir" \
             -p "@executable_path/../libs/" || echo "::warning::dylibbundler over gstreamer plugins reported issues"
 
-          echo "=== plugin count in bundle ==="; ls -1 "$plugdir"/*.dylib | wc -l
-          echo "=== any leftover /opt refs across plugins? (want none) ==="
-          for p in "$plugdir"/*.dylib; do otool -L "$p" | grep -i "/opt/" && echo "  ^ in $(basename "$p")" || true; done | head -20
-          # install_name_tool invalidated each plugin's signature; re-sign ad-hoc.
-          for p in "$plugdir"/*.dylib; do codesign --force --sign - "$p"; done
-          echo "gstreamer plugins bundled + signed"
+          echo "PHASE: verify no leftover /opt refs across plugins (want none)"
+          leftover=0
+          for p in "$plugdir"/*.dylib; do
+            if otool -L "$p" 2>/dev/null | grep -q "/opt/"; then
+              echo "::warning::leftover /opt ref in $(basename "$p")"
+              leftover=$((leftover+1))
+            fi
+          done
+          echo "PHASE: plugins with leftover /opt refs = $leftover"
+
+          echo "PHASE: re-signing plugins (install_name_tool invalidated signatures)"
+          for p in "$plugdir"/*.dylib; do codesign --force --sign - "$p" || { echo "::error::codesign failed for $p"; fail=1; }; done
+
+          [ "$fail" -eq 0 ] || { echo "::error::gstreamer plugin bundling had failures"; exit 1; }
+          echo "PHASE: gstreamer plugins bundled + signed ($n_copied plugins)"
 
       - name: Determine version
         id: ver
