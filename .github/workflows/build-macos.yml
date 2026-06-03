@@ -142,6 +142,69 @@ jobs:
             -p "@executable_path/../libs/"
           echo "=== Vision bundled libs ==="; ls -la "$libdir" | head -40 || true
 
+      # Bundle GStreamer ELEMENT PLUGINS into Revere.app. These are dlopen'd by
+      # GStreamer at runtime (rtspsrc, rtp*, decodebin, libav decoders, ...), so
+      # they are NOT linked deps and dylibbundler never sees them — without this
+      # the app has GStreamer's core libs but ZERO elements, and RTSP camera
+      # interrogation fails with "Unable to fetch video stream information".
+      # The app scans <exe dir>/gstreamer_plugins at startup (r_gst_source.cpp),
+      # so install them to Revere.app/Contents/MacOS/gstreamer_plugins, then
+      # rewrite each plugin's non-system deps to the bundled libs (same stem
+      # resolution used for the cloud plugin: Homebrew dylibs use full versioned
+      # names while plugins link short sonames). Finally dylibbundler -x over the
+      # plugins catches any transitive lib the app didn't already bundle.
+      - name: Bundle GStreamer plugins into Revere.app
+        run: |
+          set -euo pipefail
+          app="macos-install/Revere.app"
+          macos="$app/Contents/MacOS"
+          libdir="$app/Contents/libs"
+          plugdir="$macos/gstreamer_plugins"
+          src="$(brew --prefix gstreamer)/lib/gstreamer-1.0"
+          echo "gstreamer plugin source: $src"
+          mkdir -p "$plugdir"
+          # Full set (matches Linux/snap): copy every plugin module. .dylib on mac.
+          cp -v "$src"/libgst*.dylib "$plugdir"/ 2>/dev/null | wc -l | sed 's/^/copied plugins: /'
+
+          resolve_bundled() {  # $1 = dep basename -> bundled basename or empty
+            local b="$1"
+            if [ -e "$libdir/$b" ]; then echo "$b"; return; fi
+            local stem="${b%%.[0-9]*}" m
+            m="$(cd "$libdir" && ls -1 "${stem}".*.dylib "${stem}".dylib 2>/dev/null | head -1 || true)"
+            echo "$m"
+          }
+
+          # Repoint each plugin's /opt/homebrew (and @rpath) deps at the app libs.
+          for p in "$plugdir"/*.dylib; do
+            otool -L "$p" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+              case "$dep" in
+                /usr/lib/*|/System/*|@executable_path/*) continue;;
+              esac
+              base="$(basename "$dep")"
+              target="$(resolve_bundled "$base")"
+              if [ -n "$target" ]; then
+                install_name_tool -change "$dep" "@executable_path/../libs/$target" "$p" 2>/dev/null || true
+              fi
+            done
+          done
+
+          # Catch any transitive deps the plugins need that the app didn't already
+          # bundle (e.g. codec libs only an element references). dylibbundler adds
+          # them to Contents/libs and fixes the plugins' references to them.
+          extra=()
+          while IFS= read -r so; do extra+=( -x "$so" ); done < <(find "$plugdir" -name '*.dylib' -type f)
+          dylibbundler -cd -b -of \
+            "${extra[@]}" \
+            -d "$libdir" \
+            -p "@executable_path/../libs/" || echo "::warning::dylibbundler over gstreamer plugins reported issues"
+
+          echo "=== plugin count in bundle ==="; ls -1 "$plugdir"/*.dylib | wc -l
+          echo "=== any leftover /opt refs across plugins? (want none) ==="
+          for p in "$plugdir"/*.dylib; do otool -L "$p" | grep -i "/opt/" && echo "  ^ in $(basename "$p")" || true; done | head -20
+          # install_name_tool invalidated each plugin's signature; re-sign ad-hoc.
+          for p in "$plugdir"/*.dylib; do codesign --force --sign - "$p"; done
+          echo "gstreamer plugins bundled + signed"
+
       - name: Determine version
         id: ver
         run: |
