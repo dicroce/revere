@@ -170,12 +170,29 @@ jobs:
           [ -d "$src" ] || { echo "::error::gstreamer plugin source dir not found: $src"; exit 1; }
           mkdir -p "$plugdir"
 
-          # Full set (matches Linux/snap): copy every plugin module (.dylib on mac).
-          # Copy real files (Homebrew plugins are regular files, but -L derefs any
-          # symlinks just in case). Count what landed.
-          cp -L "$src"/libgst*.dylib "$plugdir"/ 2>/dev/null || true
+          # CURATED set (matches the proven Windows list + what decodebin needs),
+          # NOT the full 274. Homebrew splits GStreamer across formulae, so copying
+          # every plugin pulls in ones (webrtc, etc.) whose backing libs aren't
+          # installed -> dylibbundler then hangs on an interactive "can't find it"
+          # prompt. We only need the RTSP/RTP ingest + parse/decode elements.
+          want="\
+            libgstapp libgstcoreelements libgstrtp libgstrtpmanager libgstrtsp \
+            libgsttcp libgstudp libgstsdpelem \
+            libgstaudioparsers libgstvideoparsersbad \
+            libgstplayback libgsttypefindfunctions libgstvideoconvertscale \
+            libgstaudioconvert libgstaudioresample libgstcoreelements \
+            libgstlibav libgstvideofilter libgstautodetect libgstvideorate"
+          copied=0; missing=""
+          for name in $want; do
+            if [ -e "$src/$name.dylib" ]; then
+              cp -L "$src/$name.dylib" "$plugdir"/ && copied=$((copied+1))
+            else
+              missing="$missing $name"
+            fi
+          done
           n_copied=$(ls -1 "$plugdir"/*.dylib 2>/dev/null | wc -l | tr -d ' ')
-          echo "PHASE: copied $n_copied plugins"
+          echo "PHASE: copied $n_copied curated plugins"
+          [ -n "$missing" ] && echo "::warning::curated plugins not present in brew gstreamer:$missing" || true
           [ "$n_copied" -gt 0 ] || { echo "::error::no gstreamer plugins copied"; exit 1; }
 
           resolve_bundled() {  # $1 = dep basename -> bundled basename or empty
@@ -205,10 +222,13 @@ jobs:
           echo "PHASE: dylibbundler over plugins (gather any new transitive deps)"
           extra=()
           while IFS= read -r so; do extra+=( -x "$so" ); done < <(find "$plugdir" -name '*.dylib' -type f)
+          # </dev/null is critical: if dylibbundler can't find a dep it PROMPTS
+          # interactively ("... does not exist. Try again"), which in CI loops
+          # forever on EOF. Feeding /dev/null makes it give up immediately instead.
           dylibbundler -cd -b -of \
             "${extra[@]}" \
             -d "$libdir" \
-            -p "@executable_path/../libs/" || echo "::warning::dylibbundler over gstreamer plugins reported issues"
+            -p "@executable_path/../libs/" </dev/null || echo "::warning::dylibbundler over gstreamer plugins reported issues"
 
           echo "PHASE: verify no leftover /opt refs across plugins (want none)"
           leftover=0
