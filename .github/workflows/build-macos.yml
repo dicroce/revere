@@ -195,31 +195,13 @@ jobs:
           [ -n "$missing" ] && echo "::warning::curated plugins not present in brew gstreamer:$missing" || true
           [ "$n_copied" -gt 0 ] || { echo "::error::no gstreamer plugins copied"; exit 1; }
 
-          resolve_bundled() {  # $1 = dep basename -> bundled basename or empty
-            local b="$1"
-            if [ -e "$libdir/$b" ]; then echo "$b"; return; fi
-            local stem="${b%%.[0-9]*}" m
-            m="$(cd "$libdir" && ls -1 "${stem}".*.dylib "${stem}".dylib 2>/dev/null | head -1 || true)"
-            echo "$m"
-          }
-
-          echo "PHASE: rewriting plugin deps to bundled libs"
-          for p in "$plugdir"/*.dylib; do
-            deps="$(otool -L "$p" 2>/dev/null | tail -n +2 | awk '{print $1}')"
-            while IFS= read -r dep; do
-              [ -n "$dep" ] || continue
-              case "$dep" in
-                /usr/lib/*|/System/*|@executable_path/*) continue;;
-              esac
-              base="$(basename "$dep")"
-              target="$(resolve_bundled "$base")"
-              if [ -n "$target" ]; then
-                install_name_tool -change "$dep" "@executable_path/../libs/$target" "$p" 2>/dev/null || true
-              fi
-            done <<< "$deps"
-          done
-
-          echo "PHASE: dylibbundler over plugins (gather any new transitive deps)"
+          # Let dylibbundler do ALL dependency rewriting (no hand-rolled
+          # install_name_tool pass — that mis-resolved the libgstX-1.0.0 core-lib
+          # names and produced unresolvable @executable_path refs). The app's
+          # GStreamer core libs + ffmpeg/opencv are ALREADY in Contents/libs from
+          # the earlier app-bundle step, so point dylibbundler at that dir with -s
+          # so it finds them there instead of re-copying or prompting.
+          echo "PHASE: dylibbundler over plugins (-s libdir so it finds bundled core libs)"
           extra=()
           while IFS= read -r so; do extra+=( -x "$so" ); done < <(find "$plugdir" -name '*.dylib' -type f)
           # </dev/null is critical: if dylibbundler can't find a dep it PROMPTS
@@ -227,6 +209,7 @@ jobs:
           # forever on EOF. Feeding /dev/null makes it give up immediately instead.
           dylibbundler -cd -b -of \
             "${extra[@]}" \
+            -s "$libdir" \
             -d "$libdir" \
             -p "@executable_path/../libs/" </dev/null || echo "::warning::dylibbundler over gstreamer plugins reported issues"
 
