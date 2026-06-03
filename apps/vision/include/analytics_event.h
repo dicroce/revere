@@ -13,6 +13,7 @@ struct analytics_detection
     std::string class_name;
     float confidence;
     std::chrono::system_clock::time_point timestamp;
+    float x1 = 0, y1 = 0, x2 = 0, y2 = 0;  // normalized 0-1 (letterbox coords / 640)
 };
 
 struct analytics_event
