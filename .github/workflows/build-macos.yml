@@ -153,22 +153,20 @@ jobs:
       # resolution used for the cloud plugin: Homebrew dylibs use full versioned
       # names while plugins link short sonames). Finally dylibbundler -x over the
       # plugins catches any transitive lib the app didn't already bundle.
-      - name: Bundle GStreamer plugins into Revere.app
+      # Bundle GStreamer element plugins into BOTH app bundles. On Windows/Linux
+      # Revere and Vision live in one dir and share a single gstreamer_plugins
+      # folder; on macOS they are separate .app bundles with isolated exe dirs
+      # (r_gst_source.cpp scans <exe dir>/gstreamer_plugins), so each .app needs
+      # its own copy or Vision logs "No plugins found" and streams won't play.
+      - name: Bundle GStreamer plugins into app bundles
         run: |
-          # NOTE: NOT using `set -e`. This step runs many pipelines that
-          # legitimately exit nonzero (grep with no match = success here, otool on
-          # odd files, etc.); errexit turned those into spurious step failures.
-          # Track real failures explicitly via $fail and phase markers.
+          # NOT using `set -e`: this runs pipelines that legitimately exit nonzero
+          # (grep no-match, etc.). Track failures explicitly via $fail.
           set -uo pipefail
           fail=0
-          app="macos-install/Revere.app"
-          macos="$app/Contents/MacOS"
-          libdir="$app/Contents/libs"
-          plugdir="$macos/gstreamer_plugins"
           src="$(brew --prefix gstreamer)/lib/gstreamer-1.0"
-          echo "PHASE: source = $src"
+          echo "PHASE: gstreamer source = $src"
           [ -d "$src" ] || { echo "::error::gstreamer plugin source dir not found: $src"; exit 1; }
-          mkdir -p "$plugdir"
 
           # CURATED set (matches the proven Windows list + what decodebin needs),
           # NOT the full 274. Homebrew splits GStreamer across formulae, so copying
@@ -180,77 +178,80 @@ jobs:
             libgsttcp libgstudp libgstsdpelem \
             libgstaudioparsers libgstvideoparsersbad \
             libgstplayback libgsttypefindfunctions libgstvideoconvertscale \
-            libgstaudioconvert libgstaudioresample libgstcoreelements \
+            libgstaudioconvert libgstaudioresample \
             libgstlibav libgstvideofilter libgstautodetect libgstvideorate"
-          copied=0; missing=""
-          for name in $want; do
-            if [ -e "$src/$name.dylib" ]; then
-              cp -L "$src/$name.dylib" "$plugdir"/ && copied=$((copied+1))
-            else
-              missing="$missing $name"
+
+          bundle_gst_plugins() {  # $1 = path to .app
+            local app="$1"
+            [ -d "$app" ] || { echo "PHASE: $app not present, skipping"; return 0; }
+            local macos="$app/Contents/MacOS"
+            local libdir="$app/Contents/libs"
+            local plugdir="$macos/gstreamer_plugins"
+            echo "PHASE: ===== bundling gstreamer plugins into $app ====="
+            mkdir -p "$plugdir"
+
+            local copied=0 missing="" name
+            for name in $want; do
+              if [ -e "$src/$name.dylib" ]; then
+                cp -L "$src/$name.dylib" "$plugdir"/ && copied=$((copied+1))
+              else
+                missing="$missing $name"
+              fi
+            done
+            # Homebrew dylibs are read-only (444); without this, install_name_tool
+            # / dylibbundler / codesign get "Permission denied" and silently leave
+            # /opt deps unfixed.
+            chmod -R u+w "$plugdir"
+            local n_copied
+            n_copied=$(ls -1 "$plugdir"/*.dylib 2>/dev/null | wc -l | tr -d ' ')
+            echo "PHASE: copied $n_copied curated plugins into $(basename "$app")"
+            [ -n "$missing" ] && echo "::warning::curated plugins not present in brew gstreamer:$missing" || true
+            [ "$n_copied" -gt 0 ] || { echo "::error::no gstreamer plugins copied into $app"; fail=1; return 1; }
+
+            # Let dylibbundler do ALL dependency rewriting; -s points at the app's
+            # already-bundled core libs so it finds them. </dev/null so a missing
+            # dep can't drop it into an infinite interactive prompt in CI.
+            local extra=()
+            local so
+            while IFS= read -r so; do extra+=( -x "$so" ); done < <(find "$plugdir" -name '*.dylib' -type f)
+            dylibbundler -cd -b -of \
+              "${extra[@]}" \
+              -s "$libdir" \
+              -d "$libdir" \
+              -p "@executable_path/../libs/" </dev/null || echo "::warning::dylibbundler over $(basename "$app") plugins reported issues"
+
+            # Rewrite each plugin's own install-id (line 1 of otool -L) off /opt.
+            # Harmless either way (plugins load by path) but keeps the bundle clean.
+            local p
+            for p in "$plugdir"/*.dylib; do
+              install_name_tool -id "@executable_path/../libs/gstreamer_plugins/$(basename "$p")" "$p" 2>/dev/null || true
+            done
+
+            # Verify DEPENDENCIES only (skip line 1 = the lib's own id via tail+2).
+            local leftover=0
+            for p in "$plugdir"/*.dylib; do
+              if otool -L "$p" 2>/dev/null | tail -n +2 | grep -q "/opt/"; then
+                echo "::warning::leftover /opt dependency in $(basename "$app")/$(basename "$p")"
+                leftover=$((leftover+1))
+              fi
+            done
+            echo "PHASE: $(basename "$app") plugins with leftover /opt dependencies = $leftover"
+            if [ "$leftover" -gt 0 ]; then
+              otool -L "$plugdir/libgstrtsp.dylib" 2>&1 || true
+              echo "::error::$leftover plugin(s) in $app still have a /opt dependency"
+              fail=1
             fi
-          done
-          # CRITICAL: Homebrew dylibs are installed read-only (mode 444). Without
-          # this chmod, install_name_tool / dylibbundler / codesign all get
-          # "Permission denied" and silently leave the plugins' /opt deps unfixed
-          # (this was the real reason 19 plugins kept their /opt refs).
-          chmod -R u+w "$plugdir"
-          n_copied=$(ls -1 "$plugdir"/*.dylib 2>/dev/null | wc -l | tr -d ' ')
-          echo "PHASE: copied $n_copied curated plugins"
-          [ -n "$missing" ] && echo "::warning::curated plugins not present in brew gstreamer:$missing" || true
-          [ "$n_copied" -gt 0 ] || { echo "::error::no gstreamer plugins copied"; exit 1; }
 
-          # Let dylibbundler do ALL dependency rewriting (no hand-rolled
-          # install_name_tool pass — that mis-resolved the libgstX-1.0.0 core-lib
-          # names and produced unresolvable @executable_path refs). The app's
-          # GStreamer core libs + ffmpeg/opencv are ALREADY in Contents/libs from
-          # the earlier app-bundle step, so point dylibbundler at that dir with -s
-          # so it finds them there instead of re-copying or prompting.
-          echo "PHASE: dylibbundler over plugins (-s libdir so it finds bundled core libs)"
-          extra=()
-          while IFS= read -r so; do extra+=( -x "$so" ); done < <(find "$plugdir" -name '*.dylib' -type f)
-          # </dev/null is critical: if dylibbundler can't find a dep it PROMPTS
-          # interactively ("... does not exist. Try again"), which in CI loops
-          # forever on EOF. Feeding /dev/null makes it give up immediately instead.
-          dylibbundler -cd -b -of \
-            "${extra[@]}" \
-            -s "$libdir" \
-            -d "$libdir" \
-            -p "@executable_path/../libs/" </dev/null || echo "::warning::dylibbundler over gstreamer plugins reported issues"
+            # install_name_tool invalidated signatures; re-sign ad-hoc.
+            for p in "$plugdir"/*.dylib; do codesign --force --sign - "$p" || { echo "::error::codesign failed for $p"; fail=1; }; done
+            echo "PHASE: $(basename "$app") gstreamer plugins bundled + signed ($n_copied)"
+          }
 
-          # Fix each plugin's own install-id (LC_ID_DYLIB) — it still says
-          # /opt/homebrew/.../<plugin>.dylib (line 1 of otool -L is the lib's own
-          # identity, not a dependency). Harmless for GStreamer plugins (loaded by
-          # path, nothing links them), but rewrite it so the bundle has zero /opt
-          # strings and the check below can be strict.
-          for p in "$plugdir"/*.dylib; do
-            install_name_tool -id "@executable_path/../libs/gstreamer_plugins/$(basename "$p")" "$p" 2>/dev/null || true
-          done
-
-          echo "PHASE: verify no leftover /opt refs in plugin DEPENDENCIES (want none)"
-          # Check DEPENDENCIES only: skip line 1 of otool -L (the lib's own id) via
-          # `tail -n +2`. A real dependency on /opt would fail to load on a user
-          # Mac; the self-id does not.
-          leftover=0
-          for p in "$plugdir"/*.dylib; do
-            if otool -L "$p" 2>/dev/null | tail -n +2 | grep -q "/opt/"; then
-              echo "::warning::leftover /opt dependency in $(basename "$p")"
-              leftover=$((leftover+1))
-            fi
-          done
-          echo "PHASE: plugins with leftover /opt dependencies = $leftover"
-          if [ "$leftover" -gt 0 ]; then
-            echo "=== otool -L libgstrtsp.dylib (sample of unresolved deps) ==="
-            otool -L "$plugdir/libgstrtsp.dylib" 2>&1 || true
-            echo "::error::$leftover plugin(s) still have a /opt dependency — not self-contained"
-            fail=1
-          fi
-
-          echo "PHASE: re-signing plugins (install_name_tool invalidated signatures)"
-          for p in "$plugdir"/*.dylib; do codesign --force --sign - "$p" || { echo "::error::codesign failed for $p"; fail=1; }; done
+          bundle_gst_plugins "macos-install/Revere.app"
+          bundle_gst_plugins "macos-install/Vision.app"
 
           [ "$fail" -eq 0 ] || { echo "::error::gstreamer plugin bundling had failures"; exit 1; }
-          echo "PHASE: gstreamer plugins bundled + signed ($n_copied plugins)"
+          echo "PHASE: gstreamer plugins bundled into all app bundles"
 
       - name: Determine version
         id: ver
