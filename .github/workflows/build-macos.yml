@@ -190,6 +190,11 @@ jobs:
               missing="$missing $name"
             fi
           done
+          # CRITICAL: Homebrew dylibs are installed read-only (mode 444). Without
+          # this chmod, install_name_tool / dylibbundler / codesign all get
+          # "Permission denied" and silently leave the plugins' /opt deps unfixed
+          # (this was the real reason 19 plugins kept their /opt refs).
+          chmod -R u+w "$plugdir"
           n_copied=$(ls -1 "$plugdir"/*.dylib 2>/dev/null | wc -l | tr -d ' ')
           echo "PHASE: copied $n_copied curated plugins"
           [ -n "$missing" ] && echo "::warning::curated plugins not present in brew gstreamer:$missing" || true
@@ -222,17 +227,15 @@ jobs:
             fi
           done
           echo "PHASE: plugins with leftover /opt refs = $leftover"
-
-          # GROUND-TRUTH DIAGNOSTIC (one-time): dump the EXACT dependency strings
-          # of one plugin so we can see what form the /opt refs take and why the
-          # rewrite/dylibbundler didn't touch them. Also show the plugin's own id
-          # and a sample of what's in libdir to compare names.
-          echo "===== DIAG: otool -L libgstrtsp.dylib ====="
-          otool -L "$plugdir/libgstrtsp.dylib" 2>&1 || true
-          echo "===== DIAG: otool -L libgstlibav.dylib ====="
-          otool -L "$plugdir/libgstlibav.dylib" 2>&1 || true
-          echo "===== DIAG: does libdir actually contain the gst core libs the plugins want? ====="
-          ls -1 "$libdir" | grep -iE 'libgst(reamer|base|rtsp|rtp|app|video|audio)' 2>/dev/null || echo "(no libgst* core libs in libdir!)"
+          # FAIL on leftover /opt refs — a plugin still pointing at /opt won't load
+          # on a user's Mac. (Previously this only warned, so the build went green
+          # while shipping broken plugins.) Dump one plugin's deps for the record.
+          if [ "$leftover" -gt 0 ]; then
+            echo "=== otool -L libgstrtsp.dylib (sample of unresolved deps) ==="
+            otool -L "$plugdir/libgstrtsp.dylib" 2>&1 || true
+            echo "::error::$leftover plugin(s) still reference /opt — not self-contained"
+            fail=1
+          fi
 
           echo "PHASE: re-signing plugins (install_name_tool invalidated signatures)"
           for p in "$plugdir"/*.dylib; do codesign --force --sign - "$p" || { echo "::error::codesign failed for $p"; fail=1; }; done
