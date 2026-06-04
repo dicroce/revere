@@ -218,22 +218,31 @@ jobs:
             -d "$libdir" \
             -p "@executable_path/../libs/" </dev/null || echo "::warning::dylibbundler over gstreamer plugins reported issues"
 
-          echo "PHASE: verify no leftover /opt refs across plugins (want none)"
+          # Fix each plugin's own install-id (LC_ID_DYLIB) — it still says
+          # /opt/homebrew/.../<plugin>.dylib (line 1 of otool -L is the lib's own
+          # identity, not a dependency). Harmless for GStreamer plugins (loaded by
+          # path, nothing links them), but rewrite it so the bundle has zero /opt
+          # strings and the check below can be strict.
+          for p in "$plugdir"/*.dylib; do
+            install_name_tool -id "@executable_path/../libs/gstreamer_plugins/$(basename "$p")" "$p" 2>/dev/null || true
+          done
+
+          echo "PHASE: verify no leftover /opt refs in plugin DEPENDENCIES (want none)"
+          # Check DEPENDENCIES only: skip line 1 of otool -L (the lib's own id) via
+          # `tail -n +2`. A real dependency on /opt would fail to load on a user
+          # Mac; the self-id does not.
           leftover=0
           for p in "$plugdir"/*.dylib; do
-            if otool -L "$p" 2>/dev/null | grep -q "/opt/"; then
-              echo "::warning::leftover /opt ref in $(basename "$p")"
+            if otool -L "$p" 2>/dev/null | tail -n +2 | grep -q "/opt/"; then
+              echo "::warning::leftover /opt dependency in $(basename "$p")"
               leftover=$((leftover+1))
             fi
           done
-          echo "PHASE: plugins with leftover /opt refs = $leftover"
-          # FAIL on leftover /opt refs — a plugin still pointing at /opt won't load
-          # on a user's Mac. (Previously this only warned, so the build went green
-          # while shipping broken plugins.) Dump one plugin's deps for the record.
+          echo "PHASE: plugins with leftover /opt dependencies = $leftover"
           if [ "$leftover" -gt 0 ]; then
             echo "=== otool -L libgstrtsp.dylib (sample of unresolved deps) ==="
             otool -L "$plugdir/libgstrtsp.dylib" 2>&1 || true
-            echo "::error::$leftover plugin(s) still reference /opt — not self-contained"
+            echo "::error::$leftover plugin(s) still have a /opt dependency — not self-contained"
             fail=1
           fi
 
