@@ -1841,6 +1841,72 @@ static std::atomic<bool> g_sigterm_received{false};
 static void _sigterm_handler(int) { g_sigterm_received = true; }
 #endif
 
+// ---- headless mode shutdown handling --------------------------------------
+// Headless mode runs the recording/discovery/web core with no GUI and blocks
+// until asked to stop. POSIX: SIGINT/SIGTERM. Windows: a console ctrl event
+// (Ctrl+C) or the named "Local\RevereHeadlessStop" event — needed because this
+// is a GUI-subsystem binary with no console of its own.
+#if defined(IS_LINUX) || defined(IS_MACOS)
+#include <csignal>
+#include <pthread.h>
+
+static sigset_t g_headless_sigset;
+
+static void _headless_arm_shutdown()
+{
+    // Block the shutdown signals in this (main) thread BEFORE starting any
+    // worker threads, so they inherit the block and only this thread's sigwait
+    // receives them.
+    sigemptyset(&g_headless_sigset);
+    sigaddset(&g_headless_sigset, SIGINT);
+    sigaddset(&g_headless_sigset, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &g_headless_sigset, nullptr);
+}
+
+static void _headless_wait_for_shutdown()
+{
+    int sig = 0;
+    sigwait(&g_headless_sigset, &sig);
+    R_LOG_INFO("Received signal %d.", sig);
+}
+#endif
+
+#ifdef IS_WINDOWS
+static HANDLE g_headless_stop_event = nullptr;
+
+static BOOL WINAPI _headless_console_ctrl_handler(DWORD ctrl_type)
+{
+    switch(ctrl_type)
+    {
+        case CTRL_C_EVENT:
+        case CTRL_BREAK_EVENT:
+        case CTRL_CLOSE_EVENT:
+        case CTRL_LOGOFF_EVENT:
+        case CTRL_SHUTDOWN_EVENT:
+            if(g_headless_stop_event)
+                SetEvent(g_headless_stop_event);
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+
+static void _headless_arm_shutdown()
+{
+    // GUI-subsystem process has no console of its own; attach to the launching
+    // one (if any) so Ctrl+C and stdout work when started from a terminal.
+    AttachConsole(ATTACH_PARENT_PROCESS);
+    g_headless_stop_event = CreateEventA(nullptr, TRUE, FALSE, "Local\\RevereHeadlessStop");
+    SetConsoleCtrlHandler(_headless_console_ctrl_handler, TRUE);
+}
+
+static void _headless_wait_for_shutdown()
+{
+    if(g_headless_stop_event)
+        WaitForSingleObject(g_headless_stop_event, INFINITE);
+}
+#endif
+
 #ifdef IS_WINDOWS
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 #endif
@@ -2120,6 +2186,35 @@ int main(int argc, char** argv)
     });
 
     // Note: streamKeeper, devices, and agent will be started after log callback is registered
+
+    // Headless mode: run the recording/discovery/web core with no GUI and block
+    // until told to stop. Everything the web UI drives — camera setup/recording,
+    // the REST API and bundled web UI on :8088 — works without the desktop
+    // window. This is the entry point for running Revere as a Linux/macOS daemon.
+    if(r_args::check_argument(args, "--headless"))
+    {
+        R_LOG_INFO("========================================");
+        R_LOG_INFO("Revere Video Surveillance System (headless)");
+        R_LOG_INFO("========================================");
+
+        _headless_arm_shutdown();   // arm before starting worker threads
+
+        streamKeeper.start();
+        devices.start();
+        agent.start();
+
+        R_LOG_INFO("Revere running headless. Web UI: http://localhost:8088/");
+
+        _headless_wait_for_shutdown();
+
+        R_LOG_INFO("Stopping...");
+        streamKeeper.stop();
+        agent.stop();
+        // devices.stop() runs from its destructor after streamKeeper is gone.
+
+        r_pipeline::gstreamer_deinit();
+        return 0;
+    }
 
     // Setup SDL2
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
