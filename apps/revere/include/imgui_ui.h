@@ -334,6 +334,8 @@ void sidebar_list(
 )
 {
     auto pos = ImGui::GetCursorPos();
+    const float start_x = pos.x;
+    const float start_y = pos.y;
 
     // Only calculate text sizes if cache is invalid (< 0) or list changed
     if(cached_largest_label < 0.0f)
@@ -361,13 +363,29 @@ void sidebar_list(
     std::vector<TextRenderInfo> text_to_render;
     text_to_render.reserve(labels.size() * 2);
 
-    // Store health indicator positions for drawing after text
-    struct HealthDotInfo {
-        ImVec2 position;
-        stream_health health;
-    };
-    std::vector<HealthDotInfo> health_dots;
-    health_dots.reserve(labels.size());
+    // Card layout. Recording cards have two extra rows (bitrate / retention)
+    // tucked between the IP and the buttons, so they're taller. Discovered
+    // cards have no stats at all — using the tall layout there leaves a big
+    // empty gap between the IP and the Record button. Detect which list this
+    // is by looking for any stats anywhere in the list, and pick the layout
+    // once for the whole list (mixed pitch in one list would break alignment).
+    bool any_has_stats = false;
+    for(const auto& lbl : labels)
+    {
+        if(!lbl.kbps.empty() || !lbl.retention.empty())
+        {
+            any_has_stats = true;
+            break;
+        }
+    }
+    const int card_height = any_has_stats ? 140 : 92;   // selectable height
+    const int card_pitch  = any_has_stats ? 150 : 102;  // 10px gap between cards
+    const int label_y     = 5;
+    const int sub_label_y = 30;
+    const int bitrate_y   = 54;
+    const int retention_y = 74;
+    // Leave a little room for the retention line (~20px tall at 18pt) before the buttons.
+    const int buttons_y   = any_has_stats ? 101 : 54;
 
     // selectable list - first pass: interactive elements
     for(int i = 0; i < (int)labels.size(); ++i)
@@ -380,7 +398,7 @@ void sidebar_list(
         // the Selectable will steal the click event.
         const int button_width = 100;
         const int button_height = 35;
-        ImGui::SetCursorPos(ImVec2(pos.x+10, pos.y + 55));
+        ImGui::SetCursorPos(ImVec2(pos.x+10, pos.y + buttons_y));
         if(ImGui::Button(button_label.c_str(), ImVec2(button_width, button_height)))
         {
             item_click_cb(i);
@@ -406,56 +424,8 @@ void sidebar_list(
         ImGui::PushStyleColor(ImGuiCol_NavHighlight, IM_COL32(255, 0, 0, 200));
         ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(25, 47, 63, 200));
         ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(49, 55, 62, 200));
-        if (ImGui::Selectable(name.c_str(), i == selected, 0, ImVec2((float)width, 100))) {
+        if (ImGui::Selectable(name.c_str(), i == selected, 0, ImVec2((float)width, (float)card_height))) {
             item_click_cb(i);
-        }
-
-        // Show tooltip with kbps and retention info when hovering (with delay and stationary mouse)
-        static int last_hovered_item = -1;
-        static float hover_start_time = 0.0f;
-        static ImVec2 last_mouse_pos = ImVec2(0, 0);
-
-        if (ImGui::IsItemHovered() && !labels[i].kbps.empty() && labels[i].kbps != "N/A")
-        {
-            const float tooltip_delay = 0.5f; // 0.5 seconds delay
-
-#ifdef IS_MACOS
-            // On macOS, only check if we switched to a different item (ignore mouse movement)
-            // Mouse sensitivity and Retina scaling make movement detection unreliable
-            if (last_hovered_item != i)
-            {
-                last_hovered_item = i;
-                hover_start_time = (float)ImGui::GetTime();
-            }
-#else
-            const float mouse_move_threshold = 2.0f; // pixels - small threshold to ignore tiny movements
-
-            ImVec2 current_mouse_pos = ImGui::GetMousePos();
-            float mouse_delta_x = current_mouse_pos.x - last_mouse_pos.x;
-            float mouse_delta_y = current_mouse_pos.y - last_mouse_pos.y;
-            float mouse_distance = sqrtf(mouse_delta_x * mouse_delta_x + mouse_delta_y * mouse_delta_y);
-
-            if (last_hovered_item != i || mouse_distance > mouse_move_threshold)
-            {
-                // Started hovering a new item or mouse moved
-                last_hovered_item = i;
-                last_mouse_pos = current_mouse_pos;
-                hover_start_time = (float)ImGui::GetTime();
-            }
-#endif
-
-            float hover_duration = (float)ImGui::GetTime() - hover_start_time;
-            if (hover_duration >= tooltip_delay)
-            {
-                ImGui::BeginTooltip();
-                ImGui::Text("kbps: %s", labels[i].kbps.c_str());
-                ImGui::Text("retention: %s", labels[i].retention.c_str());
-                ImGui::EndTooltip();
-            }
-        }
-        else
-        {
-            last_hovered_item = -1; // Reset when not hovering
         }
 
         ImGui::PopStyleColor();
@@ -470,14 +440,10 @@ void sidebar_list(
         draw_list->AddLine(ImVec2(cursor_pos.x, cursor_pos.y), ImVec2(cursor_pos.x + width, cursor_pos.y), IM_COL32(40, 40, 40, 200));
 
         // Store text for batched rendering
-        text_to_render.push_back({ImVec2(pos.x+10, pos.y+5), labels[i].label, true});
-        text_to_render.push_back({ImVec2(pos.x+10, pos.y+28), labels[i].sub_label, false});
+        text_to_render.push_back({ImVec2(pos.x+10, pos.y + label_y), labels[i].label, true});
+        text_to_render.push_back({ImVec2(pos.x+10, pos.y + sub_label_y), labels[i].sub_label, false});
 
-        // Store health indicator position (right-aligned in the selectable area)
-        if(labels[i].health != stream_health::unknown)
-            health_dots.push_back({ImVec2(pos.x + width - 30, pos.y + 12), labels[i].health});
-
-        pos.y += 110;
+        pos.y += card_pitch;
 
         ImGui::PopID();
     }
@@ -505,19 +471,37 @@ void sidebar_list(
     }
     ImGui::PopFont();
 
-    // Third pass: draw health indicator dots
-    ImDrawList* health_draw_list = ImGui::GetWindowDrawList();
-    auto window_pos = ImGui::GetWindowPos();
-    auto scroll_y = ImGui::GetScrollY();
-    for(const auto& dot : health_dots)
+    // Third pass: render labeled bitrate / retention rows. These replace the old
+    // green/red health-dot indicator. If stream_health is error, the text is
+    // rendered in red so the "something is wrong" signal is preserved.
+    //
+    // The rows are left-aligned below the IP address so they don't collide with
+    // the camera name when the sidebar is narrow.
+    ImGui::PushFont(r_ui_utils::fonts["18.00"].roboto_regular);
+    for(size_t i = 0; i < labels.size(); ++i)
     {
-        ImVec2 center(window_pos.x + dot.position.x, window_pos.y + dot.position.y - scroll_y);
-        float radius = 5.0f;
-        ImU32 color = (dot.health == stream_health::healthy) ?
-            IM_COL32(0, 200, 0, 255) :   // green
-            IM_COL32(200, 0, 0, 255);     // red
-        health_draw_list->AddCircleFilled(center, radius, color);
+        const auto& lbl = labels[i];
+        if(lbl.kbps.empty() && lbl.retention.empty())
+            continue;
+
+        float item_y = start_y + (float)i * (float)card_pitch;
+        bool is_error = (lbl.health == stream_health::error);
+        ImVec4 color = is_error
+            ? ImVec4(0.86f, 0.31f, 0.31f, 1.0f)   // red (matches previous dot)
+            : ImVec4(0.70f, 0.70f, 0.70f, 1.0f);  // muted gray
+
+        if(!lbl.kbps.empty())
+        {
+            ImGui::SetCursorPos(ImVec2(start_x + 10.0f, item_y + (float)bitrate_y));
+            ImGui::TextColored(color, "bitrate: %s", lbl.kbps.c_str());
+        }
+        if(!lbl.retention.empty())
+        {
+            ImGui::SetCursorPos(ImVec2(start_x + 10.0f, item_y + (float)retention_y));
+            ImGui::TextColored(color, "retention: %s", lbl.retention.c_str());
+        }
     }
+    ImGui::PopFont();
 }
 
 template<typename OK_CB, typename CANCEL_CB>
@@ -567,6 +551,7 @@ template<typename CANCEL_CB>
 void please_wait_modal(
     ImGuiContext*,
     const std::string& name,
+    const std::string& status_line,  // current step description (empty = hide)
     CANCEL_CB cancel_cb
 )
 {
@@ -574,9 +559,17 @@ void please_wait_modal(
 
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_NoTitleBar))
     {
-        auto msg_width = ImGui::CalcTextSize("Please wait while we communicate with your camera...");
+        const char* header = "Please wait while we communicate with your camera...";
+        auto msg_width = ImGui::CalcTextSize(header);
         ImGui::SetCursorPos(ImVec2(300-(msg_width.x/2), 50-15));
-        ImGui::Text("Please wait while we communicate with your camera...");
+        ImGui::Text("%s", header);
+
+        if(!status_line.empty())
+        {
+            auto status_width = ImGui::CalcTextSize(status_line.c_str());
+            ImGui::SetCursorPos(ImVec2(300-(status_width.x/2), 90-15));
+            ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.70f, 1.0f), "%s", status_line.c_str());
+        }
 
         ImGui::SetCursorPos(ImVec2(300-35, 150-15));
         if(ImGui::Button("Cancel",ImVec2(70,30)))

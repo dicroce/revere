@@ -34,7 +34,8 @@ public:
         r_stream_config& sc,
         r_utils::r_nullable<std::string> username,
         r_utils::r_nullable<std::string> password,
-        const std::string& preferred_profile_token = ""
+        const std::string& preferred_profile_token = "",
+        bool force = false  // skip the "skip if already recording" guard; used by background re-interrogation
     );
 
     R_API r_utils::r_nullable<r_stream_config> interrogate_camera(
@@ -47,6 +48,11 @@ public:
         r_utils::r_nullable<std::string> password,
         const std::string& preferred_profile_token = ""
     );
+
+    // Drop the cached interrogation result for an id so the next
+    // interrogate_camera() call re-queries the camera. Used after detecting
+    // a network change (IP/port) so we don't return a stale rtsp_url.
+    R_API void invalidate_cache(const std::string& id);
 
 private:
     std::vector<r_stream_config> _fetch_configs(const std::string& top_dir);

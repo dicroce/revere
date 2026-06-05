@@ -87,6 +87,52 @@ using namespace std;
 using namespace r_utils;
 using namespace revere;
 
+// Strip the [0] [1] [2]... backtrace lines that r_utils exceptions append to
+// what() so the user-facing error modal shows only the human-readable cause.
+static string _user_friendly_error(const std::exception& e)
+{
+    string msg = e.what();
+    auto pos = msg.find('\n');
+    if(pos == string::npos)
+        return msg;
+    // Trim any trailing whitespace/CR before the first newline.
+    while(pos > 0 && (msg[pos-1] == '\r' || msg[pos-1] == ' ' || msg[pos-1] == '\t'))
+        --pos;
+    return msg.substr(0, pos);
+}
+
+// Format the per-camera retention string as "N of M days", where N is the
+// current days on disk and M is the steady-state capacity of the ring file at
+// the current bitrate (file_bytes / bytes_per_second). The wizard sizes the
+// ring file to hold the user's requested days at the expected bitrate, so
+// capacity is effectively the user's target — and reflects reality if the
+// runtime bitrate diverges. Both numbers are floored; current is clamped at
+// capacity so a transient bitrate dip doesn't render as e.g. "15 of 5 days".
+static string _format_retention_days(const r_disco::r_camera& cam, int64_t bytes_per_second, double current_days)
+{
+    int64_t n_blocks = cam.n_record_file_blocks.is_null() ? 0 : cam.n_record_file_blocks.value();
+    int64_t block_size = cam.record_file_block_size.is_null() ? 0 : cam.record_file_block_size.value();
+
+    // No usable ring-size info or no bitrate yet — just show what's on disk.
+    if(n_blocks <= 0 || block_size <= 0 || bytes_per_second <= 0)
+        return r_string_utils::format("%lld days", (long long)current_days);
+
+    int64_t file_bytes = n_blocks * block_size;
+    double capacity_days = (double)file_bytes / (double)bytes_per_second / 86400.0;
+
+    // Once current has caught up to capacity (steady-state, ring is full), the
+    // "of M" half adds no information — both numbers track the same value as
+    // bitrate jitters. Drop it. Note: current can legitimately exceed capacity
+    // when video is sparse (low-motion stretches pack more wall-time per byte
+    // than the average bitrate predicts), so don't clamp.
+    if(current_days + 1.0 >= capacity_days)
+        return r_string_utils::format("%lld days", (long long)current_days);
+
+    return r_string_utils::format("%lld of %lld days",
+        (long long)current_days,
+        (long long)capacity_days);
+}
+
 struct revere_ui_state
 {
     int recording_selected_item {-1};
@@ -203,10 +249,22 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
         if(status_by_id.find(c.first) != status_by_id.end())
         {
             auto& status = status_by_id[c.first];
-            item.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
-            auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
-            item.retention = r_string_utils::format("%.2f days", retention_days);
-            item.health = status.receiving_video ? revere::stream_health::healthy : revere::stream_health::error;
+            if(status.failed)
+            {
+                // Recording context construction is failing (e.g. legacy nanots v1
+                // file). Show the cause in the card so the user has a hint about
+                // what's wrong without digging through logs.
+                item.kbps = "failed to start";
+                item.retention = status.failure_message;
+                item.health = revere::stream_health::error;
+            }
+            else
+            {
+                item.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
+                auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
+                item.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
+                item.health = status.receiving_video ? revere::stream_health::healthy : revere::stream_health::error;
+            }
         }
         else
         {
@@ -916,7 +974,7 @@ void configure_camera_setup_wizard(
                         }
                         catch(const std::exception& e)
                         {
-                            as.error_message = e.what();
+                            as.error_message = _user_friendly_error(e);
                             camera_setup_wizard.next("error_modal");
                         }
                     });
@@ -976,9 +1034,12 @@ void configure_camera_setup_wizard(
         "complete_interrogation",
         [&as, &camera_setup_wizard, &agent, &devices](){
             auto camera = as.camera.value();
+            as.interrogation_phase.store(0);
+            as.interrogation_start = std::chrono::steady_clock::now();
             std::thread th([&, camera](){
                 try
                 {
+                    as.interrogation_phase.store(1);  // ONVIF interrogation
                     agent.interrogate_camera(
                         camera.camera_name.value(),
                         camera.ipv4.value(),
@@ -990,6 +1051,7 @@ void configure_camera_setup_wizard(
                     );
                     as.camera = devices.get_camera_by_id(as.camera_id);
 
+                    as.interrogation_phase.store(2);  // RTSP probe
                     auto cp = r_pipeline::fetch_camera_params(as.camera.value().rtsp_url.value(), as.rtsp_username, as.rtsp_password);
 
                     if(cp.sdp_medias.empty() || cp.bytes_per_second == 0)
@@ -997,6 +1059,8 @@ void configure_camera_setup_wizard(
 
                     as.byte_rate = cp.bytes_per_second;
                     as.sdp_medias = cp.sdp_medias;
+
+                    as.interrogation_phase.store(3);  // Decoding key frame
                     as.maybe_key_frame = _decode_frame(cp.sample_ctx, cp.video_key_frame, 320, 240, AV_PIX_FMT_BGRA);
 
                     as.key_frame_texture.reset();
@@ -1010,6 +1074,7 @@ void configure_camera_setup_wizard(
                         );
                     }
 
+                    as.interrogation_phase.store(4);  // Done
                     if(camera_setup_wizard.active())
                         camera_setup_wizard.next("friendly_name");
                 }
@@ -1020,7 +1085,7 @@ void configure_camera_setup_wizard(
                 }
                 catch(const std::exception& e)
                 {
-                    as.error_message = e.what();
+                    as.error_message = _user_friendly_error(e);
                     camera_setup_wizard.next("error_modal");
                 }
             });
@@ -1052,9 +1117,26 @@ void configure_camera_setup_wizard(
             as.wizard_step = 2;
             auto title = as.step_title("Please Wait");
             ImGui::OpenPopup(title.c_str());
+
+            // Build a per-phase status line so the user can see what the
+            // interrogation thread is actually doing (and how long it's taken).
+            const char* phase_text = "Starting...";
+            switch(as.interrogation_phase.load())
+            {
+                case 0: phase_text = "Starting..."; break;
+                case 1: phase_text = "Querying camera (ONVIF)..."; break;
+                case 2: phase_text = "Probing video stream (RTSP)..."; break;
+                case 3: phase_text = "Decoding key frame..."; break;
+                case 4: phase_text = "Done."; break;
+            }
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - as.interrogation_start).count();
+            auto status_line = r_string_utils::format("%s  (%llds)", phase_text, (long long)elapsed);
+
             revere::please_wait_modal(
                 GImGui,
                 title,
+                status_line,
                 [&](){camera_setup_wizard.cancel();}
             );
         }
@@ -1928,6 +2010,20 @@ int main(int argc, char** argv)
     agent.set_credential_cb(bind(&r_disco::r_devices::get_credentials, &devices, placeholders::_1));
     agent.set_is_recording_cb(bind(&r_vss::r_stream_keeper::is_recording, &streamKeeper, placeholders::_1));
 
+    // Background re-interrogation pipeline: when ONVIF discovery sees an
+    // assigned camera move (new IP after a router reboot etc.), r_agent uses
+    // these to refresh the stored rtsp_url silently, or to raise a per-camera
+    // alert when the change is too significant to auto-apply (codec/profile
+    // changed) and the user needs to remove + re-add the camera.
+    agent.set_camera_lookup_cb(bind(&r_disco::r_devices::get_camera_by_id, &devices, placeholders::_1));
+    agent.set_save_camera_cb(bind(&r_disco::r_devices::save_camera, &devices, placeholders::_1));
+    agent.set_camera_alert_cb([&devices](const std::string& id, const std::string& msg){
+        if(msg.empty())
+            devices.clear_camera_alert(id);
+        else
+            devices.set_camera_alert(id, msg);
+    });
+
     // Note: streamKeeper, devices, and agent will be started after log callback is registered
 
     // Setup SDL2
@@ -2276,7 +2372,7 @@ int main(int argc, char** argv)
                         ui_state.restream_url = r_string_utils::format("rtsp://127.0.0.1:8554/%s",ui_state.friendly_name.c_str());
                         ui_state.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
                         auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
-                        ui_state.retention = r_string_utils::format("%.2f days", retention_days);
+                        ui_state.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
                     }
                 }
             }

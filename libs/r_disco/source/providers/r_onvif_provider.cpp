@@ -33,6 +33,11 @@ vector<r_stream_config> r_onvif_provider::poll()
     return _fetch_configs(_top_dir);
 }
 
+void r_onvif_provider::invalidate_cache(const std::string& id)
+{
+    _cache.erase(id);
+}
+
 vector<r_onvif::onvif_profile_info> r_onvif_provider::get_camera_profiles(
     const string& ipv4,
     const string& xaddrs,
@@ -50,7 +55,8 @@ void r_onvif_provider::interrogate_camera(
     r_stream_config& sc,
     r_utils::r_nullable<std::string> username,
     r_utils::r_nullable<std::string> password,
-    const std::string& preferred_profile_token
+    const std::string& preferred_profile_token,
+    bool force
 )
 {
     _cache_check_expiration(sc.id);
@@ -59,7 +65,11 @@ void r_onvif_provider::interrogate_camera(
 
     if(it == _cache.end())
     {
-        if(_agent && _agent->_is_recording(sc.id))
+        // Normal polling avoids interrupting a recording stream, but background
+        // re-interrogation (force=true) explicitly wants to re-query — that's
+        // the whole point of the call (e.g. the stream is failing because the
+        // stored rtsp_url got stale after a router IP change).
+        if(!force && _agent && _agent->_is_recording(sc.id))
             return;
 
         const int max_attempts = 3;

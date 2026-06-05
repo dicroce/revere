@@ -191,7 +191,30 @@ pair<r_nullable<string>, r_nullable<string>> r_devices::get_credentials(const st
     {
         R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
     }
-    
+
+    return result;
+}
+
+void r_devices::set_camera_alert(const std::string& camera_id, const std::string& message)
+{
+    lock_guard<mutex> g(_camera_alerts_mutex);
+    _camera_alerts[camera_id] = message;
+}
+
+void r_devices::clear_camera_alert(const std::string& camera_id)
+{
+    lock_guard<mutex> g(_camera_alerts_mutex);
+    _camera_alerts.erase(camera_id);
+}
+
+r_nullable<string> r_devices::get_camera_alert(const std::string& camera_id) const
+{
+    lock_guard<mutex> g(_camera_alerts_mutex);
+    auto it = _camera_alerts.find(camera_id);
+    if(it == _camera_alerts.end())
+        return r_nullable<string>();
+    r_nullable<string> result;
+    result.set_value(it->second);
     return result;
 }
 
