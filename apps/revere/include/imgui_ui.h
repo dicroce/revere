@@ -538,6 +538,7 @@ template<typename CANCEL_CB>
 void please_wait_modal(
     ImGuiContext*,
     const std::string& name,
+    const std::string& status_line,  // current step description (empty = hide)
     CANCEL_CB cancel_cb
 )
 {
@@ -545,9 +546,17 @@ void please_wait_modal(
 
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_NoTitleBar))
     {
-        auto msg_width = ImGui::CalcTextSize("Please wait while we communicate with your camera...");
+        const char* header = "Please wait while we communicate with your camera...";
+        auto msg_width = ImGui::CalcTextSize(header);
         ImGui::SetCursorPos(ImVec2(300-(msg_width.x/2), 50-15));
-        ImGui::Text("Please wait while we communicate with your camera...");
+        ImGui::Text("%s", header);
+
+        if(!status_line.empty())
+        {
+            auto status_width = ImGui::CalcTextSize(status_line.c_str());
+            ImGui::SetCursorPos(ImVec2(300-(status_width.x/2), 90-15));
+            ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.70f, 1.0f), "%s", status_line.c_str());
+        }
 
         ImGui::SetCursorPos(ImVec2(300-35, 150-15));
         if(ImGui::Button("Cancel",ImVec2(70,30)))

@@ -12,6 +12,8 @@
 #include <memory>
 #include <cstdint>
 #include <map>
+#include <atomic>
+#include <chrono>
 
 namespace revere
 {
@@ -48,6 +50,16 @@ struct assignment_state
     bool do_motion_detection {true};
     std::string motion_detection_file_path;
     r_utils::r_nullable<std::string> error_message;
+
+    // Live status for the "Please wait while we communicate with your camera..."
+    // modal. Written from the detached interrogation thread, read from the UI
+    // thread; std::atomic for the phase keeps it lock-free. interrogation_start
+    // is set right before the thread is launched and is only read from the UI
+    // thread once the modal is active, so it doesn't need to be atomic.
+    // Phases: 0 = starting, 1 = ONVIF interrogation, 2 = RTSP probe,
+    //         3 = decoding key frame, 4 = done.
+    std::atomic<int> interrogation_phase {0};
+    std::chrono::steady_clock::time_point interrogation_start;
 };
 
 }

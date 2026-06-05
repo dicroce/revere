@@ -87,6 +87,20 @@ using namespace std;
 using namespace r_utils;
 using namespace revere;
 
+// Strip the [0] [1] [2]... backtrace lines that r_utils exceptions append to
+// what() so the user-facing error modal shows only the human-readable cause.
+static string _user_friendly_error(const std::exception& e)
+{
+    string msg = e.what();
+    auto pos = msg.find('\n');
+    if(pos == string::npos)
+        return msg;
+    // Trim any trailing whitespace/CR before the first newline.
+    while(pos > 0 && (msg[pos-1] == '\r' || msg[pos-1] == ' ' || msg[pos-1] == '\t'))
+        --pos;
+    return msg.substr(0, pos);
+}
+
 // Format the per-camera retention string as "N of M days", where N is the
 // current days on disk and M is the steady-state capacity of the ring file at
 // the current bitrate (file_bytes / bytes_per_second). The wizard sizes the
@@ -948,7 +962,7 @@ void configure_camera_setup_wizard(
                         }
                         catch(const std::exception& e)
                         {
-                            as.error_message = e.what();
+                            as.error_message = _user_friendly_error(e);
                             camera_setup_wizard.next("error_modal");
                         }
                     });
@@ -1008,9 +1022,12 @@ void configure_camera_setup_wizard(
         "complete_interrogation",
         [&as, &camera_setup_wizard, &agent, &devices](){
             auto camera = as.camera.value();
+            as.interrogation_phase.store(0);
+            as.interrogation_start = std::chrono::steady_clock::now();
             std::thread th([&, camera](){
                 try
                 {
+                    as.interrogation_phase.store(1);  // ONVIF interrogation
                     agent.interrogate_camera(
                         camera.camera_name.value(),
                         camera.ipv4.value(),
@@ -1022,6 +1039,7 @@ void configure_camera_setup_wizard(
                     );
                     as.camera = devices.get_camera_by_id(as.camera_id);
 
+                    as.interrogation_phase.store(2);  // RTSP probe
                     auto cp = r_pipeline::fetch_camera_params(as.camera.value().rtsp_url.value(), as.rtsp_username, as.rtsp_password);
 
                     if(cp.sdp_medias.empty() || cp.bytes_per_second == 0)
@@ -1029,6 +1047,8 @@ void configure_camera_setup_wizard(
 
                     as.byte_rate = cp.bytes_per_second;
                     as.sdp_medias = cp.sdp_medias;
+
+                    as.interrogation_phase.store(3);  // Decoding key frame
                     as.maybe_key_frame = _decode_frame(cp.sample_ctx, cp.video_key_frame, 320, 240, AV_PIX_FMT_BGRA);
 
                     as.key_frame_texture.reset();
@@ -1042,6 +1062,7 @@ void configure_camera_setup_wizard(
                         );
                     }
 
+                    as.interrogation_phase.store(4);  // Done
                     if(camera_setup_wizard.active())
                         camera_setup_wizard.next("friendly_name");
                 }
@@ -1052,7 +1073,7 @@ void configure_camera_setup_wizard(
                 }
                 catch(const std::exception& e)
                 {
-                    as.error_message = e.what();
+                    as.error_message = _user_friendly_error(e);
                     camera_setup_wizard.next("error_modal");
                 }
             });
@@ -1084,9 +1105,26 @@ void configure_camera_setup_wizard(
             as.wizard_step = 2;
             auto title = as.step_title("Please Wait");
             ImGui::OpenPopup(title.c_str());
+
+            // Build a per-phase status line so the user can see what the
+            // interrogation thread is actually doing (and how long it's taken).
+            const char* phase_text = "Starting...";
+            switch(as.interrogation_phase.load())
+            {
+                case 0: phase_text = "Starting..."; break;
+                case 1: phase_text = "Querying camera (ONVIF)..."; break;
+                case 2: phase_text = "Probing video stream (RTSP)..."; break;
+                case 3: phase_text = "Decoding key frame..."; break;
+                case 4: phase_text = "Done."; break;
+            }
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - as.interrogation_start).count();
+            auto status_line = r_string_utils::format("%s  (%llds)", phase_text, (long long)elapsed);
+
             revere::please_wait_modal(
                 GImGui,
                 title,
+                status_line,
                 [&](){camera_setup_wizard.cancel();}
             );
         }
