@@ -71,6 +71,16 @@ public:
 
     R_API std::pair<r_utils::r_nullable<std::string>, r_utils::r_nullable<std::string>> get_credentials(const std::string& id);
 
+    // In-memory per-camera alerts. Used by r_agent to flag a camera that needs
+    // user attention (e.g. the camera was reconfigured in a way that the
+    // background re-interrogation can't safely auto-apply). Not persisted —
+    // the alert clears on restart, and is cleared automatically when a
+    // successful save_camera() lands for the camera. r_stream_keeper reads
+    // these and surfaces them in the per-camera UI card.
+    R_API void set_camera_alert(const std::string& camera_id, const std::string& message);
+    R_API void clear_camera_alert(const std::string& camera_id);
+    R_API r_utils::r_nullable<std::string> get_camera_alert(const std::string& camera_id) const;
+
 private:
     void _entry_point();
 
@@ -114,6 +124,10 @@ private:
     std::vector<r_camera> _all_cameras_cache;
     std::vector<r_camera> _assigned_cameras_cache;
     void _update_caches();
+
+    // In-memory per-camera alert messages — see set_camera_alert() above.
+    mutable std::mutex _camera_alerts_mutex;
+    std::map<std::string, std::string> _camera_alerts;
 };
 
 }

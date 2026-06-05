@@ -249,10 +249,22 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
         if(status_by_id.find(c.first) != status_by_id.end())
         {
             auto& status = status_by_id[c.first];
-            item.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
-            auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
-            item.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
-            item.health = status.receiving_video ? revere::stream_health::healthy : revere::stream_health::error;
+            if(status.failed)
+            {
+                // Recording context construction is failing (e.g. legacy nanots v1
+                // file). Show the cause in the card so the user has a hint about
+                // what's wrong without digging through logs.
+                item.kbps = "failed to start";
+                item.retention = status.failure_message;
+                item.health = revere::stream_health::error;
+            }
+            else
+            {
+                item.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
+                auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
+                item.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
+                item.health = status.receiving_video ? revere::stream_health::healthy : revere::stream_health::error;
+            }
         }
         else
         {
@@ -1997,6 +2009,20 @@ int main(int argc, char** argv)
     agent.set_stream_change_cb(bind(&r_disco::r_devices::insert_or_update_devices, &devices, placeholders::_1));
     agent.set_credential_cb(bind(&r_disco::r_devices::get_credentials, &devices, placeholders::_1));
     agent.set_is_recording_cb(bind(&r_vss::r_stream_keeper::is_recording, &streamKeeper, placeholders::_1));
+
+    // Background re-interrogation pipeline: when ONVIF discovery sees an
+    // assigned camera move (new IP after a router reboot etc.), r_agent uses
+    // these to refresh the stored rtsp_url silently, or to raise a per-camera
+    // alert when the change is too significant to auto-apply (codec/profile
+    // changed) and the user needs to remove + re-add the camera.
+    agent.set_camera_lookup_cb(bind(&r_disco::r_devices::get_camera_by_id, &devices, placeholders::_1));
+    agent.set_save_camera_cb(bind(&r_disco::r_devices::save_camera, &devices, placeholders::_1));
+    agent.set_camera_alert_cb([&devices](const std::string& id, const std::string& msg){
+        if(msg.empty())
+            devices.clear_camera_alert(id);
+        else
+            devices.set_camera_alert(id, msg);
+    });
 
     // Note: streamKeeper, devices, and agent will be started after log callback is registered
 
