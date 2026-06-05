@@ -87,6 +87,38 @@ using namespace std;
 using namespace r_utils;
 using namespace revere;
 
+// Format the per-camera retention string as "N of M days", where N is the
+// current days on disk and M is the steady-state capacity of the ring file at
+// the current bitrate (file_bytes / bytes_per_second). The wizard sizes the
+// ring file to hold the user's requested days at the expected bitrate, so
+// capacity is effectively the user's target — and reflects reality if the
+// runtime bitrate diverges. Both numbers are floored; current is clamped at
+// capacity so a transient bitrate dip doesn't render as e.g. "15 of 5 days".
+static string _format_retention_days(const r_disco::r_camera& cam, int64_t bytes_per_second, double current_days)
+{
+    int64_t n_blocks = cam.n_record_file_blocks.is_null() ? 0 : cam.n_record_file_blocks.value();
+    int64_t block_size = cam.record_file_block_size.is_null() ? 0 : cam.record_file_block_size.value();
+
+    // No usable ring-size info or no bitrate yet — just show what's on disk.
+    if(n_blocks <= 0 || block_size <= 0 || bytes_per_second <= 0)
+        return r_string_utils::format("%lld days", (long long)current_days);
+
+    int64_t file_bytes = n_blocks * block_size;
+    double capacity_days = (double)file_bytes / (double)bytes_per_second / 86400.0;
+
+    // Once current has caught up to capacity (steady-state, ring is full), the
+    // "of M" half adds no information — both numbers track the same value as
+    // bitrate jitters. Drop it. Note: current can legitimately exceed capacity
+    // when video is sparse (low-motion stretches pack more wall-time per byte
+    // than the average bitrate predicts), so don't clamp.
+    if(current_days + 1.0 >= capacity_days)
+        return r_string_utils::format("%lld days", (long long)current_days);
+
+    return r_string_utils::format("%lld of %lld days",
+        (long long)current_days,
+        (long long)capacity_days);
+}
+
 struct revere_ui_state
 {
     int recording_selected_item {-1};
@@ -205,7 +237,7 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
             auto& status = status_by_id[c.first];
             item.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
             auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
-            item.retention = r_string_utils::format("%.2f days", retention_days);
+            item.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
             item.health = status.receiving_video ? revere::stream_health::healthy : revere::stream_health::error;
         }
         else
@@ -2276,7 +2308,7 @@ int main(int argc, char** argv)
                         ui_state.restream_url = r_string_utils::format("rtsp://127.0.0.1:8554/%s",ui_state.friendly_name.c_str());
                         ui_state.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
                         auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
-                        ui_state.retention = r_string_utils::format("%.2f days", retention_days);
+                        ui_state.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
                     }
                 }
             }
