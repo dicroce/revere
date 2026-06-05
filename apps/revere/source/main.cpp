@@ -910,6 +910,29 @@ void configure_camera_setup_wizard(
         }
     );
     camera_setup_wizard.add_step(
+        "set_system_password",
+        [&as, &camera_setup_wizard, &stream_keeper](){
+            ImGui::OpenPopup("Set System Password");
+            revere::system_password_modal(
+                GImGui,
+                "Set System Password",
+                [&](const std::string& pw){
+                    try
+                    {
+                        stream_keeper.set_system_password(pw);
+                        camera_setup_wizard.cancel();
+                    }
+                    catch(const std::exception& e)
+                    {
+                        as.error_message = e.what();
+                        camera_setup_wizard.next("error_modal");
+                    }
+                },
+                [&](){ camera_setup_wizard.cancel(); }
+            );
+        }
+    );
+    camera_setup_wizard.add_step(
         "camera_credentials",
         [&](){
             as.wizard_step = 1;
@@ -1056,6 +1079,78 @@ void configure_camera_setup_wizard(
 
                     if(cp.sdp_medias.empty() || cp.bytes_per_second == 0)
                         R_THROW(("Unable to communicate with camera."));
+
+                    as.byte_rate = cp.bytes_per_second;
+                    as.sdp_medias = cp.sdp_medias;
+
+                    as.interrogation_phase.store(3);  // Decoding key frame
+                    as.maybe_key_frame = _decode_frame(cp.sample_ctx, cp.video_key_frame, 320, 240, AV_PIX_FMT_BGRA);
+
+                    as.key_frame_texture.reset();
+                    if(!as.maybe_key_frame.is_null())
+                    {
+                        as.key_frame_texture = r_ui_utils::texture::create_from_rgb(
+                            g_renderer,
+                            as.maybe_key_frame.raw()->data(),
+                            320,
+                            240
+                        );
+                    }
+
+                    as.interrogation_phase.store(4);  // Done
+                    if(camera_setup_wizard.active())
+                        camera_setup_wizard.next("friendly_name");
+                }
+                catch(const r_utils::r_unauthorized_exception&)
+                {
+                    as.error_message = "Invalid Credentials";
+                    camera_setup_wizard.next("error_modal");
+                }
+                catch(const std::exception& e)
+                {
+                    as.error_message = _user_friendly_error(e);
+                    camera_setup_wizard.next("error_modal");
+                }
+            });
+            th.detach();
+            camera_setup_wizard.next("please_wait");
+        }
+    );
+    camera_setup_wizard.add_step(
+        "interrogate_rtsp_source",
+        [&as, &camera_setup_wizard, &devices](){
+            auto camera = as.camera.value();
+            as.interrogation_phase.store(0);
+            as.interrogation_start = std::chrono::steady_clock::now();
+            std::thread th([&, camera]() mutable {
+                try
+                {
+                    // Manually-added RTSP camera: no ONVIF. Probe the RTSP URL
+                    // directly for bitrate + a key frame, and derive the codec
+                    // params from the SDP (the RTSP equivalent of interrogation).
+                    as.interrogation_phase.store(2);  // RTSP probe
+                    auto cp = r_pipeline::fetch_camera_params(camera.rtsp_url.value(), as.rtsp_username, as.rtsp_password);
+
+                    if(cp.sdp_medias.empty() || cp.bytes_per_second == 0)
+                        R_THROW(("Unable to communicate with camera."));
+                    if(cp.sdp_medias.find("video") == cp.sdp_medias.end())
+                        R_THROW(("Camera stream has no video media."));
+
+                    std::string vcodec, vparams; int vtb = 0;
+                    std::tie(vcodec, vparams, vtb) = r_pipeline::sdp_media_map_to_s(r_pipeline::VIDEO_MEDIA, cp.sdp_medias);
+                    camera.video_codec.set_value(vcodec);
+                    camera.video_codec_parameters.set_value(vparams);
+                    camera.video_timebase.set_value(vtb);
+                    if(cp.sdp_medias.find("audio") != cp.sdp_medias.end())
+                    {
+                        std::string acodec, aparams; int atb = 0;
+                        std::tie(acodec, aparams, atb) = r_pipeline::sdp_media_map_to_s(r_pipeline::AUDIO_MEDIA, cp.sdp_medias);
+                        camera.audio_codec.set_value(acodec);
+                        camera.audio_codec_parameters.set_value(aparams);
+                        camera.audio_timebase.set_value(atb);
+                    }
+                    devices.save_camera(camera);
+                    as.camera = camera;
 
                     as.byte_rate = cp.bytes_per_second;
                     as.sdp_medias = cp.sdp_medias;
@@ -1967,7 +2062,7 @@ int main(int argc, char** argv)
 
     r_disco::r_agent agent(r_fs::platform_path(top_dir));
     r_disco::r_devices devices(r_fs::platform_path(top_dir));
-    r_vss::r_stream_keeper streamKeeper(devices, r_fs::platform_path(top_dir));
+    r_vss::r_stream_keeper streamKeeper(devices, agent, r_fs::platform_path(top_dir));
     streamKeeper.set_system_plugin_api_result_cb([&cfg_state](const std::string& name, const std::string& json) {
         if(name == "camera_answers")
         {
@@ -2429,6 +2524,9 @@ int main(int argc, char** argv)
             },
             [&](){
                 revere::open_url_in_browser("http://localhost:8088");
+            },
+            [&](){
+                camera_setup_wizard.next("set_system_password");
             }
         );
 
@@ -2473,11 +2571,26 @@ int main(int argc, char** argv)
                             [&](int i){
                                 as.camera_id = ui_state.discovered_items[i].camera_id;
                                 as.camera = devices.get_camera_by_id(as.camera_id);
-                                as.ipv4 = as.camera.value().ipv4.value();
+                                auto& cam = as.camera.value();
+                                as.ipv4 = cam.ipv4.is_null() ? "" : cam.ipv4.value();
                                 as.wizard_step = 1;
                                 as.wizard_total_steps = 9;
 
-                                camera_setup_wizard.next("camera_credentials");
+                                // A manually-added RTSP camera has a stream URL but no
+                                // ONVIF address — skip the credentials/profile/ONVIF
+                                // steps and probe the RTSP URL directly, reusing the
+                                // credentials captured in the Add dialog.
+                                if(cam.xaddrs.is_null() && !cam.rtsp_url.is_null())
+                                {
+                                    as.rtsp_username = cam.rtsp_username;
+                                    as.rtsp_password = cam.rtsp_password;
+                                    as.selected_profile_token = "";
+                                    camera_setup_wizard.next("interrogate_rtsp_source");
+                                }
+                                else
+                                {
+                                    camera_setup_wizard.next("camera_credentials");
+                                }
                             },
                             [&](int i){
                                 ui_state.reset_selection();

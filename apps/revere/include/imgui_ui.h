@@ -46,8 +46,8 @@ void error_modal(
     }
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb)
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb)
 {
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("Cameras"))
@@ -76,6 +76,9 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
         bool startup_enabled = get_startup_state_cb();
         if (ImGui::MenuItem("Start Revere with system", nullptr, &startup_enabled))
             set_startup_state_cb(startup_enabled);
+
+        if (ImGui::MenuItem("Set System Password..."))
+            set_system_password_cb();
 
         ImGui::EndMenu();
     }
@@ -291,6 +294,67 @@ void rtsp_credentials_modal(
         {
             ImGui::CloseCurrentPopup();
             ok_cb();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+// Modal for setting/changing the system password used to authenticate the web
+// UI. ok_cb is invoked with the new password only when the two fields are
+// non-empty and match.
+template<typename OK_CB, typename CANCEL_CB>
+void system_password_modal(
+    ImGuiContext*,
+    const std::string& name,
+    OK_CB ok_cb,
+    CANCEL_CB cancel_cb
+)
+{
+    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("Set the system password used to authenticate the web UI:");
+
+        static char password[64] = {0};
+        static char confirm[64] = {0};
+
+        if(ImGui::IsWindowAppearing())
+        {
+            password[0] = '\0';
+            confirm[0] = '\0';
+        }
+
+        ImGui::InputText("Password", password, 64, ImGuiInputTextFlags_Password);
+        ImGui::InputText("Confirm",  confirm,  64, ImGuiInputTextFlags_Password);
+
+        bool empty    = (std::string(password).empty());
+        bool mismatch = (std::string(password) != std::string(confirm));
+
+        if(empty)
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Password must not be empty.");
+        else if(mismatch)
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Passwords do not match.");
+
+        if(ImGui::Button("Cancel"))
+        {
+            password[0] = '\0';
+            confirm[0] = '\0';
+            ImGui::CloseCurrentPopup();
+            cancel_cb();
+        }
+
+        ImGui::SameLine();
+
+        if(ImGui::Button("Ok"))
+        {
+            if(!empty && !mismatch)
+            {
+                std::string pw(password);
+                password[0] = '\0';
+                confirm[0] = '\0';
+                ImGui::CloseCurrentPopup();
+                ok_cb(pw);
+            }
         }
 
         ImGui::EndPopup();

@@ -56,6 +56,7 @@ vector<r_onvif::onvif_profile_info> r_agent::get_camera_profiles(
     r_nullable<string> password
 )
 {
+    lock_guard<mutex> lk(_interrogation_mutex);
     return _onvif_provider->get_camera_profiles(ipv4, xaddrs, username, password);
 }
 
@@ -69,6 +70,8 @@ void r_agent::interrogate_camera(
     const std::string& preferred_profile_token
 )
 {
+    lock_guard<mutex> lk(_interrogation_mutex);
+
     r_md5 hash;
     hash.update((uint8_t*)address.c_str(), address.size());
     hash.finalize();

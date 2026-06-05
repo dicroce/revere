@@ -1,5 +1,6 @@
 
 #include "r_vss/r_ws.h"
+#include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_query.h"
 #include "r_vss/r_vss_utils.h"
 #include "r_vss/r_motion_engine.h"
@@ -115,9 +116,11 @@ r_utils::r_nullable<std::pair<uint16_t, uint16_t>> _camera_source_resolution(con
 
 } // namespace
 
-r_ws::r_ws(const string& top_dir, r_devices& devices) :
+r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_keeper& stream_keeper) :
     _top_dir(top_dir),
     _devices(devices),
+    _agent(agent),
+    _stream_keeper(stream_keeper),
     _server(WEB_SERVER_PORT)
 {
     _server.add_route(METHOD_GET, "/cameras", std::bind(&r_ws::_get_cameras, this, _1, _2, _3));
@@ -140,6 +143,28 @@ r_ws::r_ws(const string& top_dir, r_devices& devices) :
     _server.add_route(METHOD_GET, "/export_download", std::bind(&r_ws::_get_export_download, this, _1, _2, _3));
 
     _server.add_route(METHOD_POST, "/mcp", std::bind(&r_ws::_post_mcp, this, _1, _2, _3));
+
+    // "Record" web flow: discover profiles, measure bitrate + snapshot, then
+    // configure the camera for recording.
+    _server.add_route(METHOD_GET, "/camera_profiles", std::bind(&r_ws::_get_camera_profiles, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/measure_camera", std::bind(&r_ws::_get_measure_camera, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/measure_progress", std::bind(&r_ws::_get_measure_progress, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/measure_result", std::bind(&r_ws::_get_measure_result, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/configure_camera", std::bind(&r_ws::_post_configure_camera, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/remove_camera", std::bind(&r_ws::_post_remove_camera, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/update_camera_properties", std::bind(&r_ws::_post_update_camera_properties, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/forget_camera", std::bind(&r_ws::_post_forget_camera, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/add_rtsp_camera", std::bind(&r_ws::_post_add_rtsp_camera, this, _1, _2, _3));
+
+    _server.add_route(METHOD_GET, "/auth_status", std::bind(&r_ws::_get_auth_status, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/login", std::bind(&r_ws::_post_login, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/set_password", std::bind(&r_ws::_post_set_password, this, _1, _2, _3));
+
+    // Cache the OS-protected master key once (used to encrypt/decrypt the system
+    // password). Best-effort: if secure storage is unavailable the auth helpers
+    // will fail closed (no token can be issued).
+    try { _master_key = r_secure_store().get_master_key(); }
+    catch(const exception& ex) { R_LOG_WARNING("r_ws: secure store unavailable, auth disabled: %s", ex.what()); }
 
     // Load the web UI bundle if present alongside the binary (CWD is set to
     // the binary directory by _set_working_dir() before this is constructed).
@@ -164,6 +189,9 @@ r_ws::r_ws(const string& top_dir, r_devices& devices) :
 
     _export_running = true;
     _export_th = thread(&r_ws::_export_entry_point, this);
+
+    _measure_running = true;
+    _measure_th = thread(&r_ws::_measure_entry_point, this);
 }
 
 r_ws::~r_ws()
@@ -177,6 +205,11 @@ void r_ws::stop()
     {
         _export_q.wake();
         _export_th.join();
+    }
+    if(_measure_running.exchange(false))
+    {
+        _measure_q.wake();
+        _measure_th.join();
     }
     _server.stop();
 }
@@ -360,6 +393,12 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
     {
         auto cameras = query_get_cameras(_devices);
 
+        // Live recording health, keyed by camera id (assigned cameras only). Lets
+        // the UI show a real connected/not-connected indicator like the desktop.
+        std::map<std::string, r_stream_status> status_by_id;
+        for(auto& s : _stream_keeper.fetch_stream_status())
+            status_by_id[s.camera.id] = s;
+
         json j;
         j["cameras"] = json::array();
 
@@ -367,6 +406,15 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
         {
             bool do_motion_detection = (c.do_motion_detection.is_null())?false:c.do_motion_detection.value();
             auto res = _camera_source_resolution(_top_dir, c);
+
+            bool receiving_video = false;
+            bool stream_failed = false;
+            auto sit = status_by_id.find(c.id);
+            if(sit != status_by_id.end())
+            {
+                receiving_video = sit->second.receiving_video;
+                stream_failed = sit->second.failed;
+            }
 
             j["cameras"].push_back(
                 {
@@ -379,6 +427,12 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                     {"audio_codec", (c.audio_codec.is_null())?"":c.audio_codec.value()},
                     {"state", c.state},
                     {"do_motion_detection", do_motion_detection},
+                    {"do_motion_pruning", (c.do_motion_pruning.is_null())?false:c.do_motion_pruning.value()},
+                    {"min_continuous_recording_hours", (c.min_continuous_recording_hours.is_null())?24:c.min_continuous_recording_hours.value()},
+                    {"record_file_path", (c.record_file_path.is_null())?"":c.record_file_path.value()},
+                    {"receiving_video", receiving_video},
+                    {"stream_failed", stream_failed},
+                    {"manual", (c.xaddrs.is_null() && !c.rtsp_url.is_null())},
                     {"width", res.is_null() ? 0 : res.value().first},
                     {"height", res.is_null() ? 0 : res.value().second}
                 }
@@ -1886,6 +1940,703 @@ r_http::r_server_response r_ws::_get_export_download(const r_http::r_web_server<
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to download export."));
+}
+
+r_http::r_server_response r_ws::_get_camera_profiles(const r_http::r_web_server<r_utils::r_socket>&,
+                                                     r_utils::r_socket&,
+                                                     const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+
+        if(args.find("camera_id") == args.end())
+            R_THROW(("Missing camera_id."));
+
+        auto maybe_camera = _devices.get_camera_by_id(args["camera_id"]);
+        if(maybe_camera.is_null())
+            R_THROW(("Unknown camera id: %s", args["camera_id"].c_str()));
+        auto camera = maybe_camera.value();
+
+        if(camera.ipv4.is_null() || camera.xaddrs.is_null())
+            R_THROW(("Camera is missing ipv4/xaddrs (not an ONVIF discovery)."));
+
+        r_nullable<string> username, password;
+        if(args.find("username") != args.end()) username.set_value(args["username"]);
+        if(args.find("password") != args.end()) password.set_value(args["password"]);
+
+        auto profiles = _agent.get_camera_profiles(camera.ipv4.value(), camera.xaddrs.value(), username, password);
+
+        json j;
+        j["profiles"] = json::array();
+        for(auto& p : profiles)
+        {
+            // Only H.264/H.265 are recordable; hide anything else (e.g. MJPEG).
+            if(p.encoding != "H264" && p.encoding != "H265")
+                continue;
+            j["profiles"].push_back({
+                {"token",    p.token},
+                {"encoding", p.encoding},
+                {"width",    p.width},
+                {"height",   p.height}
+            });
+        }
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to get camera profiles."));
+}
+
+r_http::r_server_response r_ws::_get_measure_camera(const r_http::r_web_server<r_utils::r_socket>&,
+                                                    r_utils::r_socket&,
+                                                    const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+
+        if(args.find("camera_id") == args.end())
+            R_THROW(("Missing camera_id."));
+
+        measure_job job;
+        job.camera_id = args["camera_id"];
+        if(args.find("username") != args.end()) job.username.set_value(args["username"]);
+        if(args.find("password") != args.end()) job.password.set_value(args["password"]);
+        if(args.find("profile_token") != args.end()) job.profile_token = args["profile_token"];
+
+        auto id = r_uuid::generate();
+
+        {
+            lock_guard<mutex> lock(_measure_mutex);
+            _measure_jobs[id] = job;
+            _measure_results[id] = measure_result{};   // percent_complete = 0
+        }
+
+        _measure_q.post(id);
+
+        json j;
+        j["id"] = id;
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to start camera measurement."));
+}
+
+void r_ws::_measure_entry_point()
+{
+    while(true)
+    {
+        auto item = _measure_q.poll();
+        if(item.is_null())
+            break;
+
+        auto job_id = item.value();
+
+        try
+        {
+            _measure(job_id);
+        }
+        catch(const exception& ex)
+        {
+            R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+            lock_guard<mutex> lock(_measure_mutex);
+            auto it = _measure_results.find(job_id);
+            if(it != _measure_results.end())
+            {
+                it->second.failed = true;
+                it->second.error = ex.what();
+            }
+        }
+
+        lock_guard<mutex> lock(_measure_mutex);
+        auto it = _measure_results.find(job_id);
+        if(it != _measure_results.end())
+        {
+            it->second.percent_complete = 100;
+            it->second.completed_at = steady_clock::now();
+        }
+        _measure_jobs.erase(job_id);
+
+        // Drop results that were completed and never collected within 5 minutes.
+        auto cutoff = steady_clock::now() - minutes(5);
+        for(auto it2 = _measure_results.begin(); it2 != _measure_results.end(); )
+        {
+            if(it2->second.percent_complete == 100 && it2->second.completed_at < cutoff)
+                it2 = _measure_results.erase(it2);
+            else
+                ++it2;
+        }
+    }
+}
+
+void r_ws::_measure(const std::string& job_id)
+{
+    measure_job job;
+    {
+        lock_guard<mutex> lock(_measure_mutex);
+        auto it = _measure_jobs.find(job_id);
+        if(it == _measure_jobs.end())
+            R_THROW(("Measure job vanished: %s", job_id.c_str()));
+        job = it->second;
+    }
+
+    auto maybe_camera = _devices.get_camera_by_id(job.camera_id);
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", job.camera_id.c_str()));
+    auto camera = maybe_camera.value();
+
+    // Prefer the job's credentials; fall back to the camera's stored ones (a
+    // manually-added camera carries the creds entered in the Add dialog).
+    // get_camera_by_id returns them decrypted.
+    r_nullable<string> username = job.username;
+    r_nullable<string> password = job.password;
+    if(username.is_null() && !camera.rtsp_username.is_null()) username = camera.rtsp_username;
+    if(password.is_null() && !camera.rtsp_password.is_null()) password = camera.rtsp_password;
+
+    if(!camera.xaddrs.is_null())
+    {
+        // ONVIF camera: interrogate the chosen profile — resolves the RTSP URL
+        // and persists codec params into the devices DB (needed for measuring
+        // and recording).
+        if(camera.camera_name.is_null() || camera.ipv4.is_null() || camera.address.is_null())
+            R_THROW(("Camera is missing discovery fields needed for interrogation."));
+
+        _agent.interrogate_camera(
+            camera.camera_name.value(),
+            camera.ipv4.value(),
+            camera.xaddrs.value(),
+            camera.address.value(),
+            username,
+            password,
+            job.profile_token
+        );
+    }
+    else if(camera.rtsp_url.is_null())
+    {
+        R_THROW(("Camera has neither an ONVIF address nor an RTSP URL."));
+    }
+    // else: manually-added RTSP camera — query_measure_camera derives the codec
+    // params from the stream's SDP, so no ONVIF interrogation is needed.
+
+    // Stream ~15s to measure bitrate + grab a snapshot.
+    auto m = query_measure_camera(_top_dir, _devices, job.camera_id, username, password, 320, 240);
+
+    lock_guard<mutex> lock(_measure_mutex);
+    auto it = _measure_results.find(job_id);
+    if(it != _measure_results.end())
+    {
+        it->second.byte_rate   = m.byte_rate;
+        it->second.video_codec = m.video_codec;
+        it->second.jpeg        = std::move(m.jpeg);
+    }
+}
+
+r_http::r_server_response r_ws::_get_measure_progress(const r_http::r_web_server<r_utils::r_socket>&,
+                                                      r_utils::r_socket&,
+                                                      const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("id") == args.end())
+            R_THROW(("Missing id."));
+
+        lock_guard<mutex> lock(_measure_mutex);
+        auto it = _measure_results.find(args["id"]);
+        if(it == _measure_results.end())
+            R_STHROW(r_http_404_exception, ("Measure job not found: %s", args["id"].c_str()));
+
+        json j;
+        j["id"] = args["id"];
+        j["percent_complete"] = it->second.percent_complete;
+        j["failed"] = it->second.failed;
+        if(it->second.failed)
+            j["error"] = it->second.error;
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const r_http_404_exception&) { throw; }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to get measure progress."));
+}
+
+r_http::r_server_response r_ws::_get_measure_result(const r_http::r_web_server<r_utils::r_socket>&,
+                                                    r_utils::r_socket&,
+                                                    const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("id") == args.end())
+            R_THROW(("Missing id."));
+        auto id = args["id"];
+
+        json j;
+        {
+            lock_guard<mutex> lock(_measure_mutex);
+            auto it = _measure_results.find(id);
+            if(it == _measure_results.end())
+                R_STHROW(r_http_404_exception, ("Measure job not found: %s", id.c_str()));
+            if(it->second.percent_complete < 100)
+                R_STHROW(r_http_500_exception, ("Measurement not yet complete: %s", id.c_str()));
+            if(it->second.failed)
+                R_THROW(("Measurement failed: %s", it->second.error.c_str()));
+
+            j["byte_rate"]   = it->second.byte_rate;
+            j["video_codec"] = it->second.video_codec;
+            j["jpeg_b64"]    = it->second.jpeg.empty()
+                ? string()
+                : r_string_utils::to_base64(it->second.jpeg.data(), it->second.jpeg.size());
+
+            // One-shot: free the result (and its snapshot) once collected.
+            _measure_results.erase(it);
+        }
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const r_http_404_exception&) { throw; }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to get measure result."));
+}
+
+r_http::r_server_response r_ws::_post_configure_camera(const r_http::r_web_server<r_utils::r_socket>&,
+                                                       r_utils::r_socket&,
+                                                       const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+
+        if(!req.contains("camera_id"))
+            R_THROW(("Missing camera_id."));
+        if(!req.contains("byte_rate"))
+            R_THROW(("Missing byte_rate."));
+        if(!req.contains("retention_days"))
+            R_THROW(("Missing retention_days."));
+
+        auto camera_id      = req["camera_id"].get<string>();
+        auto friendly_name  = req.value("friendly_name", string());
+        bool do_motion      = req.value("do_motion_detection", true);
+        double retention    = req["retention_days"].get<double>();
+        int64_t byte_rate   = req["byte_rate"].get<int64_t>();
+
+        r_nullable<string> username, password;
+        if(req.contains("username") && !req["username"].is_null()) username.set_value(req["username"].get<string>());
+        if(req.contains("password") && !req["password"].is_null()) password.set_value(req["password"].get<string>());
+
+        query_configure_camera(_top_dir, _devices, camera_id, username, password, friendly_name, do_motion, retention, byte_rate);
+
+        json j;
+        j["camera_id"] = camera_id;
+        j["status"] = "assigned";
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to configure camera."));
+}
+
+r_http::r_server_response r_ws::_post_remove_camera(const r_http::r_web_server<r_utils::r_socket>&,
+                                                    r_utils::r_socket&,
+                                                    const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+
+        if(!req.contains("camera_id"))
+            R_THROW(("Missing camera_id."));
+
+        auto camera_id    = req["camera_id"].get<string>();
+        bool delete_files = req.value("delete_files", false);
+
+        query_remove_camera(_top_dir, _devices, camera_id, delete_files);
+
+        json j;
+        j["camera_id"] = camera_id;
+        j["status"] = "discovered";
+        j["files_deleted"] = delete_files;
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to remove camera."));
+}
+
+r_http::r_server_response r_ws::_post_update_camera_properties(const r_http::r_web_server<r_utils::r_socket>&,
+                                                               r_utils::r_socket&,
+                                                               const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+
+        if(!req.contains("camera_id"))
+            R_THROW(("Missing camera_id."));
+
+        auto camera_id     = req["camera_id"].get<string>();
+        bool do_motion     = req.value("do_motion_detection", false);
+        bool do_prune      = req.value("do_motion_pruning", false);
+        int  min_hours     = req.value("min_continuous_recording_hours", 24);
+
+        query_update_camera_properties(_top_dir, _devices, camera_id, do_motion, do_prune, min_hours);
+
+        // Restart the recording context so the new settings take effect live —
+        // the poll loop only re-applies stream-config changes, not these.
+        _stream_keeper.bounce(camera_id);
+
+        json j;
+        j["camera_id"] = camera_id;
+        j["status"] = "ok";
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to update camera properties."));
+}
+
+r_http::r_server_response r_ws::_post_forget_camera(const r_http::r_web_server<r_utils::r_socket>&,
+                                                    r_utils::r_socket&,
+                                                    const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+
+        if(!req.contains("camera_id"))
+            R_THROW(("Missing camera_id."));
+
+        auto camera_id = req["camera_id"].get<string>();
+
+        auto maybe_camera = _devices.get_camera_by_id(camera_id);
+        if(maybe_camera.is_null())
+            R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+        // Drop the camera's row and clear the discovery agent's memory of it.
+        // If the camera is still broadcasting ONVIF it will be re-discovered on
+        // the next poll; this mirrors the desktop "Forget" button.
+        auto camera = maybe_camera.value();
+        _devices.remove_camera(camera);
+        _agent.forget(camera_id);
+
+        json j;
+        j["camera_id"] = camera_id;
+        j["status"] = "forgotten";
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to forget camera."));
+}
+
+r_http::r_server_response r_ws::_post_add_rtsp_camera(const r_http::r_web_server<r_utils::r_socket>&,
+                                                      r_utils::r_socket&,
+                                                      const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+
+        if(!req.contains("rtsp_url") || req["rtsp_url"].get<string>().empty())
+            R_THROW(("Missing rtsp_url."));
+
+        // Manually-added RTSP camera. Mirrors the desktop "Add RTSP Source
+        // Camera" dialog: a bare camera row in the discovered state, identified
+        // only by its RTSP URL (no ONVIF xaddrs).
+        r_camera c;
+        c.id = r_uuid::generate();
+        c.state = "discovered";
+        c.camera_name.set_value(req.value("camera_name", string()));
+        if(req.contains("ipv4") && !req["ipv4"].get<string>().empty())
+            c.ipv4.set_value(req["ipv4"].get<string>());
+        c.rtsp_url.set_value(req["rtsp_url"].get<string>());
+
+        auto username = req.value("rtsp_username", string());
+        if(!username.empty())
+        {
+            c.rtsp_username.set_value(username);
+            c.rtsp_password.set_value(req.value("rtsp_password", string()));
+        }
+
+        _devices.save_camera(c);
+
+        json j;
+        j["camera_id"] = c.id;
+        j["status"] = "discovered";
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to add RTSP camera."));
+}
+
+std::string r_ws::_password_path() const
+{
+    return _top_dir + PATH_SLASH + "system_password";
+}
+
+bool r_ws::_system_password_set() const
+{
+    return r_fs::file_exists(_password_path());
+}
+
+r_utils::r_nullable<std::string> r_ws::_load_system_password()
+{
+    r_nullable<string> out;
+    if(_master_key.empty() || !r_fs::file_exists(_password_path()))
+        return out;
+    auto bytes = r_fs::read_file(_password_path());
+    string enc(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    out.set_value(r_credential_crypto::decrypt_credential(enc, _master_key));
+    return out;
+}
+
+void r_ws::_store_system_password(const std::string& password)
+{
+    if(_master_key.empty())
+        R_THROW(("Secure storage unavailable; cannot set system password."));
+    auto enc = r_credential_crypto::encrypt_credential(password, _master_key);
+    // Write to a temp file then atomically rename, so a crash mid-write can't
+    // leave a truncated (undecryptable) password file.
+    auto tmp = _password_path() + ".tmp";
+    r_fs::write_file(reinterpret_cast<const uint8_t*>(enc.data()), enc.size(), tmp);
+    r_fs::atomic_rename_file(tmp, _password_path());
+}
+
+void r_ws::set_system_password(const std::string& password)
+{
+    if(password.empty())
+        R_THROW(("System password must not be empty."));
+    _store_system_password(password);
+    // Existing web sessions must re-authenticate against the new password.
+    lock_guard<mutex> lock(_auth_mutex);
+    _tokens.clear();
+}
+
+bool r_ws::system_password_set() const
+{
+    return _system_password_set();
+}
+
+// Constant-time string compare to avoid leaking the password via timing.
+static bool _ct_equal(const std::string& a, const std::string& b)
+{
+    if(a.size() != b.size())
+        return false;
+    unsigned char acc = 0;
+    for(size_t i = 0; i < a.size(); ++i)
+        acc |= (unsigned char)(a[i] ^ b[i]);
+    return acc == 0;
+}
+
+bool r_ws::_token_valid(const r_http::r_server_request& request)
+{
+    auto auth = request.get_header("authorization");
+    if(auth.is_null())
+        return false;
+
+    const string prefix = "Bearer ";
+    auto val = auth.value();
+    if(val.size() <= prefix.size() || val.compare(0, prefix.size(), prefix) != 0)
+        return false;
+    auto token = val.substr(prefix.size());
+
+    lock_guard<mutex> lock(_auth_mutex);
+    auto it = _tokens.find(token);
+    if(it == _tokens.end())
+        return false;
+    if(steady_clock::now() > it->second)
+    {
+        _tokens.erase(it);
+        return false;
+    }
+    return true;
+}
+
+void r_ws::_require_auth(const r_http::r_server_request& request)
+{
+    if(!_token_valid(request))
+        R_STHROW(r_http_401_exception, ("Unauthorized."));
+}
+
+r_http::r_server_response r_ws::_get_auth_status(const r_http::r_web_server<r_utils::r_socket>&,
+                                                 r_utils::r_socket&,
+                                                 const r_http::r_server_request&)
+{
+    // Unauthenticated on purpose: lets the web UI decide between a first-run
+    // "create password" screen and a "login" screen. Only leaks whether a
+    // system password has been configured.
+    json j;
+    j["password_set"] = _system_password_set();
+
+    r_server_response response;
+    response.set_content_type("text/json");
+    response.set_body(j.dump());
+    return response;
+}
+
+r_http::r_server_response r_ws::_post_login(const r_http::r_web_server<r_utils::r_socket>&,
+                                            r_utils::r_socket&,
+                                            const r_http::r_server_request& request)
+{
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+        if(!req.contains("password"))
+            R_THROW(("Missing password."));
+
+        auto stored = _load_system_password();
+        if(stored.is_null())
+            R_STHROW(r_http_401_exception, ("No system password set."));
+
+        if(!_ct_equal(req["password"].get<string>(), stored.value()))
+            R_STHROW(r_http_401_exception, ("Invalid password."));
+
+        auto token = r_uuid::generate();
+        {
+            lock_guard<mutex> lock(_auth_mutex);
+            _tokens[token] = steady_clock::now() + hours(24);
+        }
+
+        json j;
+        j["token"] = token;
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const r_http_401_exception&) { throw; }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Login failed."));
+}
+
+r_http::r_server_response r_ws::_post_set_password(const r_http::r_web_server<r_utils::r_socket>&,
+                                                   r_utils::r_socket&,
+                                                   const r_http::r_server_request& request)
+{
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+        if(!req.contains("new_password"))
+            R_THROW(("Missing new_password."));
+        auto new_password = req["new_password"].get<string>();
+        if(new_password.empty())
+            R_THROW(("Password must not be empty."));
+
+        // Bootstrap: the first password can be set without auth. Once a password
+        // exists, changing it requires either a valid token or the current one.
+        if(_system_password_set())
+        {
+            bool authorized = _token_valid(request);
+            if(!authorized && req.contains("current_password"))
+            {
+                auto stored = _load_system_password();
+                authorized = !stored.is_null() && _ct_equal(req["current_password"].get<string>(), stored.value());
+            }
+            if(!authorized)
+                R_STHROW(r_http_401_exception, ("Provide a valid token or current_password to change the system password."));
+        }
+
+        _store_system_password(new_password);
+
+        // Invalidate all outstanding tokens on a password change.
+        {
+            lock_guard<mutex> lock(_auth_mutex);
+            _tokens.clear();
+        }
+
+        json j;
+        j["status"] = "ok";
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const r_http_401_exception&) { throw; }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to set system password."));
 }
 
 r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,

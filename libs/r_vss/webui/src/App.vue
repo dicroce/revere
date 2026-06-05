@@ -8,51 +8,71 @@
   <div v-else class="app">
     <header class="header">
       <h1>Revere</h1>
-      <span class="camera-count">{{ cameras.length }} camera{{ cameras.length !== 1 ? 's' : '' }}</span>
+      <nav class="tabs">
+        <button :class="{ active: tab === 'manage' }" @click="tab = 'manage'">Cameras</button>
+        <button :class="{ active: tab === 'live' }" @click="tab = 'live'">Live</button>
+      </nav>
     </header>
 
     <main class="content">
-      <div v-if="error" class="error">{{ error }}</div>
+      <ManageTab v-if="tab === 'manage'" />
 
-      <div v-else-if="cameras.length === 0 && !loading" class="empty">
-        No cameras found. Add a camera in the Revere app.
-      </div>
+      <template v-else>
+        <div v-if="error" class="error">{{ error }}</div>
 
-      <div v-else class="camera-grid">
-        <CameraCard
-          v-for="(camera, index) in cameras"
-          :key="camera.id"
-          :camera="camera"
-          :index="index"
-          :total="cameras.length"
-          @click="selectedCamera = camera"
-        />
-      </div>
+        <div v-else-if="liveCameras.length === 0 && !loading" class="empty">
+          No cameras are recording yet. Add one from the Cameras tab.
+        </div>
+
+        <div v-else class="camera-grid">
+          <CameraCard
+            v-for="(camera, index) in liveCameras"
+            :key="camera.id"
+            :camera="camera"
+            :index="index"
+            :total="liveCameras.length"
+            @click="selectedCamera = camera"
+          />
+        </div>
+      </template>
     </main>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import CameraCard from './components/CameraCard.vue'
 import CameraView from './components/CameraView.vue'
+import ManageTab from './components/ManageTab.vue'
 
-const cameras        = ref([])
+const tab            = ref('manage')
+const liveCameras    = ref([])
 const loading        = ref(true)
 const error          = ref(null)
 const selectedCamera = ref(null)
 
-onMounted(async () => {
+let pollId = null
+
+async function loadLive() {
   try {
     const res = await fetch('/cameras')
     if (!res.ok) throw new Error(`Server returned ${res.status}`)
-    cameras.value = ((await res.json()).cameras ?? []).filter(c => c.state === 'assigned')
+    liveCameras.value = ((await res.json()).cameras ?? []).filter(c => c.state === 'assigned')
+    error.value = null
   } catch (e) {
     error.value = `Could not reach Revere: ${e.message}`
   } finally {
     loading.value = false
   }
+}
+
+onMounted(() => {
+  loadLive()
+  // Keep the live grid current as cameras are added/removed from the Cameras tab.
+  pollId = setInterval(loadLive, 5000)
 })
+
+onUnmounted(() => clearInterval(pollId))
 </script>
 
 <style scoped>
@@ -65,7 +85,7 @@ onMounted(async () => {
 .header {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 1.5rem;
   padding: 0.75rem 1.5rem;
   background: #1a1a1a;
   border-bottom: 1px solid #2a2a2a;
@@ -77,9 +97,26 @@ onMounted(async () => {
   letter-spacing: 0.05em;
 }
 
-.camera-count {
-  font-size: 0.85rem;
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.tabs button {
+  background: none;
+  border: none;
   color: #888;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.9rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tabs button:hover { color: #ccc; }
+
+.tabs button.active {
+  color: #fff;
+  background: #2a2a2a;
 }
 
 .content {

@@ -128,7 +128,7 @@ class r_recording_context;
 class r_stream_keeper final
 {
 public:
-    R_API r_stream_keeper(r_disco::r_devices& devices, const std::string& top_dir);
+    R_API r_stream_keeper(r_disco::r_devices& devices, r_disco::r_agent& agent, const std::string& top_dir);
     R_API ~r_stream_keeper() noexcept;
 
     R_API void start();
@@ -155,6 +155,10 @@ public:
     R_API std::string create_restream_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding, int audio_format);
 
     R_API r_disco::r_devices& get_devices();
+
+    // System-password administration from the trusted local (desktop) admin UI.
+    R_API void set_system_password(const std::string& password);
+    R_API bool system_password_set() const;
 
     R_API void write_metadata(const std::string& camera_id, const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);
 
@@ -198,6 +202,7 @@ private:
     void _create_playback_mount(const std::string& friendly_name, const std::string& url, uint64_t start_ts, uint64_t end_ts);
 
     r_disco::r_devices& _devices;
+    r_disco::r_agent& _agent;
     std::string _top_dir;
     std::thread _th;
     uint32_t _sim_mttf_seconds {0};

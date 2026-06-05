@@ -7,12 +7,16 @@
 #include "r_storage/r_storage_file.h"
 #include "r_storage/r_storage_file_reader.h"
 #include "r_storage/r_ring.h"
+#include "r_storage/r_md_storage_file.h"
 #include "r_pipeline/r_stream_info.h"
+#include "r_pipeline/r_gst_source.h"
 #include "r_av/r_video_decoder.h"
 #include "r_av/r_video_encoder.h"
 #include "r_av/r_muxer.h"
 #include <functional>
 #include <array>
+#include <thread>
+#include <tuple>
 
 using namespace r_utils;
 using namespace r_disco;
@@ -139,6 +143,279 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
     }
 
     R_THROW(("Unable to JPG fail."));
+}
+
+// Reduce a friendly name to a filesystem-safe stem (no extension). Mirrors what
+// the desktop wizard ends up with after the user types a name and we append .nts.
+static string _safe_file_stem(const string& name)
+{
+    string out;
+    for(char c : name)
+    {
+        if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')
+            out.push_back(c);
+        else if(c == ' ')
+            out.push_back('_');
+        // everything else (slashes, dots, colons, ...) is dropped
+    }
+    if(out.empty())
+        out = "camera";
+    return out;
+}
+
+// Allocate the motion ring buffer + analytics metadata storage alongside the
+// recording file. Mirrors _create_motion_files() in the desktop app.
+static void _create_motion_files(const string& motion_path)
+{
+    if(r_fs::file_exists(motion_path))
+        return;
+    r_ring::allocate(motion_path, 11, 2592000);          // 1 flag/sec, ~30 days
+    r_md_storage_file::allocate(motion_path, 524288, 30); // 512KB blocks x 30
+}
+
+measured_camera r_vss::query_measure_camera(const string& top_dir, r_devices& devices, const string& camera_id, const r_nullable<string>& username, const r_nullable<string>& password, uint16_t w, uint16_t h)
+{
+    auto maybe_camera = devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    auto camera = maybe_camera.value();
+
+    if(camera.rtsp_url.is_null())
+        R_THROW(("Camera has not been interrogated (no rtsp_url)."));
+
+    // Streams the camera for ~15s to measure its bitrate and grab a keyframe.
+    auto cp = r_pipeline::fetch_camera_params(camera.rtsp_url.value(), username, password);
+
+    if(cp.sdp_medias.empty() || cp.bytes_per_second == 0)
+        R_THROW(("Unable to communicate with camera."));
+
+    // Resolve the video codec params. An ONVIF camera has them stored by
+    // interrogate_camera. A manually-added RTSP camera doesn't — but the SDP we
+    // just pulled with fetch_camera_params has everything we need, so derive the
+    // params from it and persist them (recording reads them too). This is the
+    // RTSP equivalent of interrogate_camera, minus the ONVIF profile resolution.
+    string video_codec, video_codec_params;
+    if(!camera.video_codec.is_null() && !camera.video_codec_parameters.is_null())
+    {
+        video_codec = camera.video_codec.value();
+        video_codec_params = camera.video_codec_parameters.value();
+    }
+    else
+    {
+        if(cp.sdp_medias.find("video") == cp.sdp_medias.end())
+            R_THROW(("Camera stream has no video media."));
+
+        int video_timebase = 0;
+        std::tie(video_codec, video_codec_params, video_timebase) =
+            r_pipeline::sdp_media_map_to_s(r_pipeline::VIDEO_MEDIA, cp.sdp_medias);
+
+        camera.video_codec.set_value(video_codec);
+        camera.video_codec_parameters.set_value(video_codec_params);
+        camera.video_timebase.set_value(video_timebase);
+
+        if(cp.sdp_medias.find("audio") != cp.sdp_medias.end())
+        {
+            string acodec, aparams; int atb = 0;
+            std::tie(acodec, aparams, atb) =
+                r_pipeline::sdp_media_map_to_s(r_pipeline::AUDIO_MEDIA, cp.sdp_medias);
+            camera.audio_codec.set_value(acodec);
+            camera.audio_codec_parameters.set_value(aparams);
+            camera.audio_timebase.set_value(atb);
+        }
+
+        devices.save_camera(camera);
+    }
+
+    measured_camera out;
+    out.byte_rate = cp.bytes_per_second;
+    out.video_codec = video_codec;
+
+    // Decode the freshly-grabbed keyframe and MJPEG-encode it as a snapshot for
+    // the friendly-name dialog. Handles both inline and out-of-band SPS/PPS.
+    // Best effort: a decode failure just yields no snapshot, not a failure.
+    if(!video_codec.empty() && !video_codec_params.empty() && !cp.video_key_frame.empty())
+    {
+        auto decoded = _decode_single_frame(video_codec, video_codec_params, cp.video_key_frame, AV_PIX_FMT_YUVJ420P, w, h);
+        if(decoded)
+        {
+            r_video_encoder encoder(AV_CODEC_ID_MJPEG, 100000, w, h, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
+            encoder.attach_buffer(decoded->data(), decoded->size(), 0);
+            auto es = encoder.encode();
+            if(es == R_CODEC_STATE_HAS_OUTPUT)
+            {
+                auto pi = encoder.get();
+                out.jpeg.assign(pi.data, pi.data + pi.size);
+            }
+        }
+    }
+
+    return out;
+}
+
+void r_vss::query_configure_camera(const string& top_dir, r_devices& devices, const string& camera_id, const r_nullable<string>& username, const r_nullable<string>& password, const string& friendly_name, bool do_motion_detection, double retention_days, int64_t byte_rate)
+{
+    auto maybe_camera = devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    auto camera = maybe_camera.value();
+
+    if(camera.rtsp_url.is_null())
+        R_THROW(("Camera has not been interrogated (no rtsp_url)."));
+
+    auto video_path = top_dir + PATH_SLASH + "video";
+    if(!r_fs::file_exists(video_path))
+        r_fs::mkdir(video_path);
+
+    // Derive a unique .nts filename from the friendly name.
+    auto stem = _safe_file_stem(friendly_name.empty() ? camera_id : friendly_name);
+    auto file_name = stem + ".nts";
+    auto storage_path = video_path + PATH_SLASH + file_name;
+    for(int n = 1; r_fs::file_exists(storage_path); ++n)
+    {
+        file_name = stem + "_" + to_string(n) + ".nts";
+        storage_path = video_path + PATH_SLASH + file_name;
+    }
+
+    // Size the ring buffer from the measured bitrate and requested retention.
+    auto sz = r_storage::required_file_size_for_retention_hours((int64_t)(retention_days * 24.0), byte_rate);
+    int64_t num_blocks = sz.first;
+    int64_t block_size = sz.second;
+
+    uint64_t fs_size = 0, fs_free = 0;
+    r_fs::get_fs_usage(video_path, fs_size, fs_free);
+    if(fs_free < (uint64_t)(block_size * num_blocks))
+        R_THROW(("Not enough free space on storage device."));
+
+    string motion_path;
+    if(do_motion_detection)
+    {
+        auto dot = file_name.find_last_of('.');
+        auto motion_file_name = (dot == string::npos) ? (file_name + ".mdb") : (file_name.substr(0, dot) + ".mdb");
+        motion_path = video_path + PATH_SLASH + motion_file_name;
+        _create_motion_files(motion_path);
+    }
+
+    r_storage_file::allocate(storage_path, block_size, num_blocks);
+
+    // Populate the camera row and flip it to "assigned"; the stream keeper's
+    // poll loop (~2s) notices the new assignment and starts recording.
+    // Only overwrite credentials when supplied — a manually-added camera keeps
+    // the credentials captured in the Add dialog (get_camera_by_id returns them
+    // decrypted; assign_camera re-encrypts on save).
+    if(!username.is_null())
+        camera.rtsp_username = username;
+    if(!password.is_null())
+        camera.rtsp_password = password;
+    camera.friendly_name = friendly_name;
+    camera.record_file_path = storage_path;
+    camera.n_record_file_blocks = num_blocks;
+    camera.record_file_block_size = block_size;
+    camera.do_motion_detection.set_value(do_motion_detection);
+    if(do_motion_detection)
+        camera.motion_detection_file_path.set_value(motion_path);
+
+    devices.assign_camera(camera);
+}
+
+// Best-effort deletion of a camera's storage files. Mirrors _delete_camera_files
+// in the desktop app: the main .nts plus the motion ring (.mdb), its sqlite
+// sidecar (.db), and the analytics metadata store (.mdnts/.mdnts.db and its
+// WAL/SHM journals). Each removal is independent — a missing or locked file is
+// logged and skipped, never fatal.
+static void _remove_if_exists(const string& path)
+{
+    if(path.empty() || !r_fs::file_exists(path))
+        return;
+    try
+    {
+        r_fs::remove_file(path);
+        R_LOG_INFO("Deleted camera storage file: %s", path.c_str());
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("Failed to delete %s: %s", path.c_str(), e.what());
+    }
+}
+
+static void _delete_camera_files(const string& top_dir, const r_camera& camera)
+{
+    if(!camera.record_file_path.is_null())
+        _remove_if_exists(_get_storage_path(camera.record_file_path.value(), top_dir));
+
+    if(!camera.motion_detection_file_path.is_null())
+    {
+        auto mdb = _get_storage_path(camera.motion_detection_file_path.value(), top_dir);
+        auto base = (mdb.size() >= 4 && mdb.substr(mdb.size() - 4) == ".mdb")
+                    ? mdb.substr(0, mdb.size() - 4)
+                    : mdb;
+        _remove_if_exists(base + ".mdb");            // motion ring buffer
+        _remove_if_exists(base + ".db");             // ring buffer sqlite sidecar
+        _remove_if_exists(base + ".mdnts");          // analytics metadata store
+        _remove_if_exists(base + ".mdnts.db");       // metadata sqlite
+        _remove_if_exists(base + ".mdnts.db-shm");   // WAL shared-memory
+        _remove_if_exists(base + ".mdnts.db-wal");   // WAL journal
+    }
+}
+
+void r_vss::query_remove_camera(const string& top_dir, r_devices& devices, const string& camera_id, bool delete_files)
+{
+    auto maybe_camera = devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    auto camera = maybe_camera.value();
+
+    // Unassign first: the stream keeper's poll loop (~2s) notices the camera
+    // left the assigned set, tears down its recording context and releases all
+    // file handles.
+    devices.unassign_camera(camera);
+
+    if(delete_files)
+    {
+        // Give the stream keeper time to close handles before we delete (Windows
+        // won't remove a file with open handles). Matches the desktop's wait.
+        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+        _delete_camera_files(top_dir, camera);
+    }
+}
+
+void r_vss::query_update_camera_properties(const string& top_dir, r_devices& devices, const string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours)
+{
+    auto maybe_camera = devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    auto camera = maybe_camera.value();
+
+    // When motion detection is on, make sure the motion files exist — a camera
+    // first recorded with motion off won't have them yet. Derive the path from
+    // the recording file (.nts -> .mdb), mirroring the desktop.
+    if(do_motion_detection)
+    {
+        string motion_file_name;
+        if(!camera.motion_detection_file_path.is_null())
+            motion_file_name = camera.motion_detection_file_path.value();
+
+        auto existing = motion_file_name.empty() ? string() : _get_storage_path(motion_file_name, top_dir);
+        if(motion_file_name.empty() || !r_fs::file_exists(existing))
+        {
+            if(camera.record_file_path.is_null())
+                R_THROW(("Camera has no recording file to derive a motion path from."));
+            auto base = camera.record_file_path.value();
+            auto dot = base.find_last_of('.');
+            motion_file_name = (dot == string::npos) ? (base + ".mdb") : (base.substr(0, dot) + ".mdb");
+            _create_motion_files(_get_storage_path(motion_file_name, top_dir));
+        }
+        camera.motion_detection_file_path.set_value(motion_file_name);
+    }
+
+    camera.do_motion_detection.set_value(do_motion_detection);
+    camera.do_motion_pruning.set_value(do_motion_pruning);
+    camera.min_continuous_recording_hours.set_value(min_continuous_recording_hours);
+
+    devices.save_camera(camera);
 }
 
 vector<uint8_t> r_vss::query_get_webp(const string& top_dir, r_devices& devices, const string& camera_id, chrono::system_clock::time_point ts, uint16_t w, uint16_t h)
