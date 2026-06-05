@@ -719,15 +719,63 @@ vector<r_camera> r_stream_keeper::_get_current_cameras()
 
 void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
 {
+    auto now = std::chrono::steady_clock::now();
     for(const auto& camera : cameras)
     {
-        if(_streams.count(camera.id) == 0 && _suspended_cameras.count(camera.id) == 0)
+        if(_streams.count(camera.id) > 0 || _suspended_cameras.count(camera.id) > 0)
+            continue;
+
+        auto name = camera.friendly_name.is_null() ?
+            (camera.camera_name.is_null() ? camera.id : camera.camera_name.value()) :
+            camera.friendly_name.value();
+
+        // r_agent may have raised an alert for this camera (e.g. background
+        // re-interrogation discovered a codec/profile change it can't safely
+        // auto-apply). Don't attempt to start the recording context — surface
+        // the alert via the existing _failed_cameras → r_stream_status path so
+        // the UI shows the message on the camera's card.
+        auto alert_n = _devices.get_camera_alert(camera.id);
+        if(!alert_n.is_null())
         {
-            auto name = camera.friendly_name.is_null() ?
-                (camera.camera_name.is_null() ? camera.id : camera.camera_name.value()) :
-                camera.friendly_name.value();
-            R_LOG_INFO("Starting camera stream: %s (%s)", name.c_str(), camera.id.c_str());
+            auto& fc = _failed_cameras[camera.id];
+            fc.friendly_name = name;
+            fc.last_error = alert_n.value();
+            // Don't bump attempt_count for alert-driven skips — the camera
+            // isn't "trying and failing", it's flagged for user attention.
+            // Leave next_retry_time at "now" (not pushed into the future) so
+            // that once r_agent clears the alert, we proceed to construction
+            // immediately on the next iteration without a leftover cooldown.
+            fc.next_retry_time = now;
+            continue;
+        }
+
+        // If this camera previously failed, honor the backoff window before retrying.
+        // Without this, the main loop spins and floods logs when an r_recording_context
+        // constructor throws (e.g. legacy nanots v1 .nts file rejected by v2 lib).
+        auto fc_it = _failed_cameras.find(camera.id);
+        if(fc_it != _failed_cameras.end() && fc_it->second.next_retry_time > now)
+            continue;
+
+        R_LOG_INFO("Starting camera stream: %s (%s)", name.c_str(), camera.id.c_str());
+        try
+        {
             _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds);
+            // Construction succeeded — clear any prior failure state for this camera.
+            _failed_cameras.erase(camera.id);
+        }
+        catch(const std::exception& e)
+        {
+            auto& fc = _failed_cameras[camera.id];
+            fc.attempt_count++;
+            fc.friendly_name = name;
+            fc.last_error = e.what();
+            // Exponential backoff: 1, 2, 4, 8, ..., capped at 300s (5 min).
+            int shift = std::min(8, fc.attempt_count - 1);
+            int delay_seconds = std::min(300, 1 << shift);
+            fc.next_retry_time = now + std::chrono::seconds(delay_seconds);
+            R_LOG_ERROR(
+                "Failed to start camera stream %s (%s): %s -- backing off %ds (attempt %d)",
+                name.c_str(), camera.id.c_str(), e.what(), delay_seconds, fc.attempt_count);
         }
     }
 }
@@ -736,6 +784,9 @@ void r_stream_keeper::_remove_recording_contexts(const std::vector<r_disco::r_ca
 {
     for(const auto& camera : cameras)
     {
+        // Always clear backoff entry so a remove+re-add resets the retry counter.
+        _failed_cameras.erase(camera.id);
+
         if(_streams.count(camera.id) > 0)
         {
             auto name = camera.friendly_name.is_null() ?
@@ -753,7 +804,7 @@ void r_stream_keeper::_remove_recording_contexts(const std::vector<r_disco::r_ca
 vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
 {
     vector<r_stream_status> statuses;
-    statuses.reserve(_streams.size());
+    statuses.reserve(_streams.size() + _failed_cameras.size());
 
     transform(
         _streams.begin(),
@@ -767,6 +818,21 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             return s;
         }
     );
+
+    // Surface backoff-failed cameras to the UI so the sidebar can show a
+    // meaningful error instead of "N/A". Only id + friendly_name are populated
+    // on the embedded r_camera here — the UI matches by id and shows the
+    // failure_message text.
+    for(const auto& kv : _failed_cameras)
+    {
+        r_stream_status s;
+        s.camera.id = kv.first;
+        s.camera.friendly_name.set_value(kv.second.friendly_name);
+        s.failed = true;
+        s.failure_message = kv.second.last_error;
+        s.failure_attempt_count = kv.second.attempt_count;
+        statuses.push_back(std::move(s));
+    }
 
     return statuses;
 }

@@ -86,6 +86,13 @@ struct r_stream_status
     bool receiving_video {false};
     r_overflow_type overflow_flags {r_overflow_type::none};
     size_t dropped_frames {0};  // Total frames dropped since last check
+
+    // Set when the camera has an assigned configuration but the recording
+    // context failed to construct (e.g. legacy nanots v1 file). The UI uses
+    // these to show a meaningful error in place of "N/A".
+    bool failed {false};
+    std::string failure_message;
+    int failure_attempt_count {0};
 };
 
 enum r_stream_keeper_commands
@@ -198,6 +205,21 @@ private:
     mutable std::mutex _streams_mutex;  // Protects _streams and _suspended_cameras
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
     std::set<std::string> _suspended_cameras;
+
+    // Per-camera backoff state for cameras whose r_recording_context construction
+    // throws (e.g. legacy nanots v1 .nts files that the v2 lib can't open).
+    // Without this, the main loop retries every iteration with no sleep, flooding
+    // logs and starving other work. Exponential backoff: 1s, 2s, 4s, ..., capped.
+    // friendly_name + last_error are kept here so fetch_stream_status() can
+    // surface failure info to the UI without re-resolving the camera object.
+    struct _failed_camera_state
+    {
+        std::chrono::steady_clock::time_point next_retry_time;
+        int attempt_count {0};
+        std::string friendly_name;
+        std::string last_error;
+    };
+    std::map<std::string, _failed_camera_state> _failed_cameras;
     r_utils::r_work_q<r_stream_keeper_cmd, r_stream_keeper_result> _cmd_q;
 
     // Cached stream status for non-blocking reads from GUI thread
