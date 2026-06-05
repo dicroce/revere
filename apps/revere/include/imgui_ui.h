@@ -363,16 +363,29 @@ void sidebar_list(
     std::vector<TextRenderInfo> text_to_render;
     text_to_render.reserve(labels.size() * 2);
 
-    // Card layout constants. The card grew taller (vs. the original 100px selectable)
-    // to give the per-camera stats (bitrate / retention) their own rows beneath the
-    // IP address so they don't crowd the name on narrow windows.
-    constexpr int card_height = 130;   // selectable height
-    constexpr int card_pitch  = 140;   // vertical stride between cards (10px gap)
-    constexpr int label_y     = 5;
-    constexpr int sub_label_y = 30;
-    constexpr int bitrate_y   = 54;
-    constexpr int retention_y = 74;
-    constexpr int buttons_y   = 92;
+    // Card layout. Recording cards have two extra rows (bitrate / retention)
+    // tucked between the IP and the buttons, so they're taller. Discovered
+    // cards have no stats at all — using the tall layout there leaves a big
+    // empty gap between the IP and the Record button. Detect which list this
+    // is by looking for any stats anywhere in the list, and pick the layout
+    // once for the whole list (mixed pitch in one list would break alignment).
+    bool any_has_stats = false;
+    for(const auto& lbl : labels)
+    {
+        if(!lbl.kbps.empty() || !lbl.retention.empty())
+        {
+            any_has_stats = true;
+            break;
+        }
+    }
+    const int card_height = any_has_stats ? 140 : 92;   // selectable height
+    const int card_pitch  = any_has_stats ? 150 : 102;  // 10px gap between cards
+    const int label_y     = 5;
+    const int sub_label_y = 30;
+    const int bitrate_y   = 54;
+    const int retention_y = 74;
+    // Leave a little room for the retention line (~20px tall at 18pt) before the buttons.
+    const int buttons_y   = any_has_stats ? 101 : 54;
 
     // selectable list - first pass: interactive elements
     for(int i = 0; i < (int)labels.size(); ++i)
