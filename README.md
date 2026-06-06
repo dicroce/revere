@@ -33,6 +33,14 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 
 ![Alt text](/assets/screenshots/vision.jpg "Vision")
 
+### Web UI
+
+![Alt text](/assets/screenshots/webui_cameras.jpg "Web UI Cameras")
+
+![Alt text](/assets/screenshots/webui_live.jpg "Live")
+
+![Alt text](/assets/screenshots/webui_single.jpg "Single Camera View")
+
 ## Quick Start
 
 On Windows the quickest way to try Revere is to download a release and run the installer (and optionally the revere_cloud installer if you want cloud access).
