@@ -94,8 +94,6 @@ cd revere
 ```
 
 - `./scripts/linux/build.sh --no-install` — configure and build only, skip the install step.
-- Extra CMake args are passed through, e.g.
-  `./scripts/linux/build.sh -DEXTERNAL_PLUGIN_REPOS=/path/to/revere_cloud`.
 
 After installing, run `/usr/local/revere/revere`, or set Revere up as an always-on
 headless service with `sudo /usr/local/revere/revere --install-service` (see
@@ -127,8 +125,7 @@ cd revere
 python3 scripts/macos/build_revere_macos.py
 ```
 
-This configures, builds, and produces a `.dmg` package. To point it at the
-optional cloud plugin, set `REVERE_CLOUD_DIR` before running.
+This configures, builds, and produces a `.dmg` package.
 
 ---
 
@@ -259,7 +256,7 @@ Pass these to the build script (which forwards them to CMake) as `-D<name>=<valu
 | Option | Default | Purpose |
 |--------|---------|---------|
 | `CMAKE_BUILD_TYPE` | `Release` | `Release` or `Debug`. |
-| `EXTERNAL_PLUGIN_REPOS` | (none) | Semicolon-separated paths to plugin repos (e.g. `revere_cloud`). |
+| `EXTERNAL_PLUGIN_REPOS` | (none) | Semicolon-separated paths to plugin repos. |
 | `REVERE_PORTABLE_BUILD` | `OFF` | Drop `-march=native` so the binary runs on other CPUs (for redistributables / AppImage). |
 | `PACKAGED_BUILD` | `OFF` | Use FHS install paths (`bin`/`lib`) instead of the single `/usr/local/revere` directory; used by the snap/flatpak builds. |
 
@@ -278,9 +275,8 @@ We regularly test these configurations:
 ## Getting help
 
 If you encounter issues not covered here, please:
-1. Check the [Troubleshooting Guide](TROUBLESHOOTING.md)
-2. Search existing [GitHub Issues](https://github.com/dicroce/revere/issues)
-3. Open a new issue with:
+1. Search existing [GitHub Issues](https://github.com/dicroce/revere/issues)
+2. Open a new issue with:
    - Your platform and versions
    - Full build log
    - Steps to reproduce
