@@ -84,17 +84,19 @@ Not yet documented — the equivalent packages should work. Contributions welcom
 
 ### Build
 
-Clone the repo and run the build script. It configures a Release build, compiles
-with all cores, and installs to `/usr/local/revere`:
+Clone the repo, build as a normal user, then install as root:
 
 ```bash
 git clone https://github.com/dicroce/revere.git
 cd revere
-./scripts/linux/build.sh
+./scripts/linux/build.sh                 # configure + build (run as a normal user)
+sudo ./scripts/linux/build.sh --install  # install to /usr/local/revere
 ```
 
-- `./scripts/linux/build.sh` — configure and build.
-- 'sudo ./scripts/linux/build.sh --install' - install the build.
+- The build step refuses to run as root (it would leave root-owned files); the
+  install step must be run as root.
+- Extra CMake args are passed through to the build step, e.g.
+  `./scripts/linux/build.sh -DEXTERNAL_PLUGIN_REPOS=/path/to/revere_cloud`.
 
 After installing, run `/usr/local/revere/revere`, or set Revere up as an always-on
 headless service with `sudo /usr/local/revere/revere --install-service` (see
