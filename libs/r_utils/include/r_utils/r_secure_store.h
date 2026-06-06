@@ -40,6 +40,14 @@ public:
     R_API r_secure_store();
     R_API ~r_secure_store();
 
+    /// Override the directory holding the master key file (encryption.key).
+    /// Must be called before the first r_secure_store use. Empty = platform
+    /// default (~/.config/revere on Unix, %LOCALAPPDATA%\Revere on Windows).
+    /// Lets a headless install keep the key alongside its --data-dir instead of
+    /// a home directory. On Windows the key blob is still DPAPI-encrypted, just
+    /// stored in the chosen directory.
+    R_API static void set_key_dir(const std::string& dir);
+
     // Disable copy
     r_secure_store(const r_secure_store&) = delete;
     r_secure_store& operator=(const r_secure_store&) = delete;

@@ -58,6 +58,9 @@
 std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 
 #include "utils.h"
+#include "r_utils/r_secure_store.h"
+#include "r_utils/r_platform.h"
+#include <cstdio>
 #include "gl_utils.h"
 
 #include "imgui_ui.h"
@@ -1907,6 +1910,147 @@ static void _headless_wait_for_shutdown()
 }
 #endif
 
+// ---- systemd service install/uninstall (Linux only) -----------------------
+// Opt-in: a desktop user just runs revere; someone who wants a 24/7 daemon runs
+// `sudo revere --install-service`. Decoupled from `make install` so the desktop
+// install never drags in a service/user/state dir. Mirrors the Windows
+// "Start Revere with system" deliberate action.
+#ifdef IS_LINUX
+#include <unistd.h>
+#include <pwd.h>
+#include <sys/stat.h>
+#include <cstdlib>
+#include <cstdio>
+
+static const char* REVERE_SERVICE_USER = "revere";
+static const char* REVERE_SERVICE_UNIT = "/etc/systemd/system/revere.service";
+
+static int _install_systemd_service(const std::string& data_dir_arg, const std::string& secret_dir_arg)
+{
+    if(geteuid() != 0)
+    {
+        fprintf(stderr, "revere --install-service must be run as root (try: sudo revere --install-service)\n");
+        return 1;
+    }
+
+    std::string data_dir   = data_dir_arg.empty()   ? std::string("/var/lib/revere") : data_dir_arg;
+    std::string secret_dir = secret_dir_arg.empty() ? (data_dir + "/secret")         : secret_dir_arg;
+    std::string exe_path   = r_fs::current_exe_path();
+
+    // 1. Create the dedicated system user if it doesn't exist.
+    if(getpwnam(REVERE_SERVICE_USER) == nullptr)
+    {
+        std::string cmd = std::string("useradd --system --no-create-home --shell /usr/sbin/nologin ") + REVERE_SERVICE_USER;
+        if(system(cmd.c_str()) != 0)
+        {
+            fprintf(stderr, "Failed to create system user '%s'.\n", REVERE_SERVICE_USER);
+            return 1;
+        }
+        printf("Created system user '%s'.\n", REVERE_SERVICE_USER);
+    }
+
+    struct passwd* pw = getpwnam(REVERE_SERVICE_USER);
+    if(pw == nullptr)
+    {
+        fprintf(stderr, "System user '%s' not found after creation.\n", REVERE_SERVICE_USER);
+        return 1;
+    }
+
+    // 2. Create + own the data dir (revere creates video/logs/config/db and the
+    //    secret/ subdir inside it itself on first run).
+    try
+    {
+        if(!r_fs::file_exists(data_dir))
+            r_fs::mkdir_p(data_dir);
+    }
+    catch(const std::exception& e)
+    {
+        fprintf(stderr, "Failed to create data dir %s: %s\n", data_dir.c_str(), e.what());
+        return 1;
+    }
+    if(chown(data_dir.c_str(), pw->pw_uid, pw->pw_gid) != 0)
+        fprintf(stderr, "Warning: could not chown %s to %s.\n", data_dir.c_str(), REVERE_SERVICE_USER);
+    chmod(data_dir.c_str(), 0700);
+
+    // 3. Write the unit with the running binary's absolute path baked in.
+    std::string unit =
+        "[Unit]\n"
+        "Description=Revere Video Surveillance System\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        "ExecStart=" + exe_path + " --headless --data-dir " + data_dir + " --secret-dir " + secret_dir + "\n"
+        "User=" + REVERE_SERVICE_USER + "\n"
+        "Group=" + REVERE_SERVICE_USER + "\n"
+        "Restart=always\n"
+        "RestartSec=3\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n";
+
+    try
+    {
+        r_fs::write_file(reinterpret_cast<const uint8_t*>(unit.data()), unit.size(), REVERE_SERVICE_UNIT);
+    }
+    catch(const std::exception& e)
+    {
+        fprintf(stderr, "Failed to write %s: %s\n", REVERE_SERVICE_UNIT, e.what());
+        return 1;
+    }
+    printf("Wrote %s\n", REVERE_SERVICE_UNIT);
+
+    // 4. Reload, enable and start.
+    if(system("systemctl daemon-reload") != 0)
+        fprintf(stderr, "Warning: 'systemctl daemon-reload' failed.\n");
+    if(system("systemctl enable --now revere.service") != 0)
+    {
+        fprintf(stderr, "Failed to enable/start revere.service. Check: systemctl status revere\n");
+        return 1;
+    }
+
+    printf("\nRevere is installed and running as a system service.\n");
+    printf("  Data dir:  %s\n", data_dir.c_str());
+    printf("  Status:    systemctl status revere\n");
+    printf("  Logs:      journalctl -u revere -f\n");
+    printf("  Web UI:    http://localhost:8088/\n");
+    return 0;
+}
+
+static int _uninstall_systemd_service()
+{
+    if(geteuid() != 0)
+    {
+        fprintf(stderr, "revere --uninstall-service must be run as root (try: sudo revere --uninstall-service)\n");
+        return 1;
+    }
+
+    // Best-effort: stop + disable, remove the unit, reload. Leaves the data dir
+    // and the 'revere' user intact so recordings/credentials aren't destroyed.
+    system("systemctl disable --now revere.service");
+
+    if(r_fs::file_exists(REVERE_SERVICE_UNIT))
+    {
+        try
+        {
+            r_fs::remove_file(REVERE_SERVICE_UNIT);
+            printf("Removed %s\n", REVERE_SERVICE_UNIT);
+        }
+        catch(const std::exception& e)
+        {
+            fprintf(stderr, "Failed to remove %s: %s\n", REVERE_SERVICE_UNIT, e.what());
+        }
+    }
+    system("systemctl daemon-reload");
+
+    printf("\nRevere service removed. The '%s' user and its data dir were left intact.\n", REVERE_SERVICE_USER);
+    printf("  Remove recordings + credentials:  sudo rm -rf /var/lib/revere\n");
+    printf("  Remove the service user:          sudo userdel %s\n", REVERE_SERVICE_USER);
+    return 0;
+}
+#endif
+
 #ifdef IS_WINDOWS
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 #endif
@@ -1931,6 +2075,36 @@ int main(int argc, char** argv)
     auto args = r_args::parse_arguments(argc, &argv[0]);
 
     auto maybe_quit = r_args::check_argument(args, "--quit");
+
+    // Path overrides must be applied before anything resolves top_dir() or the
+    // secure-store key path (lock file, db, recordings, credentials all derive
+    // from these). --data-dir relocates bulk state; --secret-dir relocates the
+    // master key (defaults to the home-based location when omitted).
+    std::string data_dir_arg;
+    if(r_args::check_argument(args, "--data-dir", data_dir_arg) && !data_dir_arg.empty())
+        revere::set_data_dir(r_fs::platform_path(data_dir_arg));
+
+    std::string secret_dir_arg;
+    if(r_args::check_argument(args, "--secret-dir", secret_dir_arg) && !secret_dir_arg.empty())
+        r_utils::r_secure_store::set_key_dir(r_fs::platform_path(secret_dir_arg));
+
+    // One-shot service management. Linux-only — on other platforms it says so
+    // and exits rather than silently launching the GUI. Runs before the single-
+    // instance lock / GUI / core startup.
+    if(r_args::check_argument(args, "--install-service") || r_args::check_argument(args, "--uninstall-service"))
+    {
+        if(!r_utils::r_platform::is_linux())
+        {
+            fprintf(stderr, "--install-service / --uninstall-service are only supported on Linux (this is %s).\n",
+                    r_utils::r_platform::os_name());
+            return 1;
+        }
+#ifdef IS_LINUX
+        if(r_args::check_argument(args, "--install-service"))
+            return _install_systemd_service(data_dir_arg, secret_dir_arg);
+        return _uninstall_systemd_service();
+#endif
+    }
 
     // Compute top_dir early for lock file path
     auto top_dir = revere::top_dir();
