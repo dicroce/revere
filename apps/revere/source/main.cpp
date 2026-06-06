@@ -2051,6 +2051,70 @@ static int _uninstall_systemd_service()
 }
 #endif
 
+static std::string _help_text()
+{
+    return
+        "Revere Video Surveillance System\n"
+        "\n"
+        "Usage:\n"
+        "  revere [options]\n"
+        "\n"
+        "With no options Revere starts the desktop application (minimizes to the\n"
+        "system tray).\n"
+        "\n"
+        "General:\n"
+        "  --help, -h               Show this message and exit.\n"
+        "  --start_minimized        Start minimized to the system tray.\n"
+        "  --quit                   Signal a running instance to quit, then exit.\n"
+        "\n"
+        "Headless / daemon:\n"
+        "  --headless               Run without a GUI: recording, discovery and the\n"
+        "                           REST API + web UI on http://localhost:8088/.\n"
+        "  --data-dir <path>        Store database, recordings, logs and config under\n"
+        "                           <path> (default: per-user data directory).\n"
+        "  --secret-dir <path>      Store the master encryption key under <path>\n"
+        "                           (default: per-user config directory).\n"
+        "\n"
+        "Service management (Linux only, run with sudo):\n"
+        "  --install-service        Create the 'revere' user and a systemd unit that\n"
+        "                           runs Revere headless on boot, then enable + start.\n"
+        "  --uninstall-service      Stop and remove the systemd unit (keeps the data\n"
+        "                           directory and the 'revere' user).\n"
+        "\n"
+        "Diagnostics:\n"
+        "  --sim_mttf_seconds <n>   Simulate random stream failures ~every n seconds\n"
+        "                           (robustness / leak testing).\n"
+        "\n"
+        "Examples:\n"
+        "  revere\n"
+        "  revere --headless --data-dir /var/lib/revere --secret-dir /var/lib/revere/secret\n"
+        "  sudo revere --install-service\n";
+}
+
+#ifdef IS_WINDOWS
+// revere.exe is a GUI-subsystem binary with no console of its own. Attach to the
+// launching console (if any) and write directly to it so `revere --help` from a
+// terminal actually shows output.
+static void _emit_console_text(const std::string& text)
+{
+    if(AttachConsole(ATTACH_PARENT_PROCESS))
+    {
+        HANDLE h = CreateFileA("CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if(h != INVALID_HANDLE_VALUE)
+        {
+            DWORD written = 0;
+            WriteFile(h, text.data(), (DWORD)text.size(), &written, nullptr);
+            CloseHandle(h);
+        }
+    }
+}
+#else
+static void _emit_console_text(const std::string& text)
+{
+    fputs(text.c_str(), stdout);
+}
+#endif
+
 #ifdef IS_WINDOWS
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 #endif
@@ -2073,6 +2137,12 @@ int main(int argc, char** argv)
         argv[i] = const_cast<char*>(arg_storage[i].c_str());
 #endif
     auto args = r_args::parse_arguments(argc, &argv[0]);
+
+    if(r_args::check_argument(args, "--help") || r_args::check_argument(args, "-h"))
+    {
+        _emit_console_text(_help_text());
+        return 0;
+    }
 
     auto maybe_quit = r_args::check_argument(args, "--quit");
 
