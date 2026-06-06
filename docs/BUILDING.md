@@ -93,7 +93,8 @@ cd revere
 ./scripts/linux/build.sh
 ```
 
-- `./scripts/linux/build.sh --no-install` — configure and build only, skip the install step.
+- `./scripts/linux/build.sh` — configure and build.
+- 'sudo ./scripts/linux/build.sh --install' - install the build.
 
 After installing, run `/usr/local/revere/revere`, or set Revere up as an always-on
 headless service with `sudo /usr/local/revere/revere --install-service` (see
