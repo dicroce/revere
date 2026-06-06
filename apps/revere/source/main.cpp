@@ -919,6 +919,7 @@ void configure_camera_setup_wizard(
             revere::system_password_modal(
                 GImGui,
                 "Set System Password",
+                stream_keeper.system_password_set(),
                 [&](const std::string& pw){
                     try
                     {
@@ -931,7 +932,19 @@ void configure_camera_setup_wizard(
                         camera_setup_wizard.next("error_modal");
                     }
                 },
-                [&](){ camera_setup_wizard.cancel(); }
+                [&](){ camera_setup_wizard.cancel(); },
+                [&](){
+                    try
+                    {
+                        stream_keeper.clear_system_password();
+                        camera_setup_wizard.cancel();
+                    }
+                    catch(const std::exception& e)
+                    {
+                        as.error_message = e.what();
+                        camera_setup_wizard.next("error_modal");
+                    }
+                }
             );
         }
     );

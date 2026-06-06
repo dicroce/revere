@@ -387,8 +387,17 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
 
 r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils::r_socket>&,
                                            r_utils::r_socket&,
-                                           const r_http::r_server_request&)
+                                           const r_http::r_server_request& request)
 {
+    // Optional auth: if the client supplies a bearer token it must be valid.
+    // Lets the web UI verify a stored token (and gate the page on it) while
+    // still allowing unauthenticated API clients to read camera info.
+    {
+        auto auth_hdr = request.get_header("authorization");
+        if(!auth_hdr.is_null() && !_token_valid(request))
+            R_STHROW(r_http_401_exception, ("Unauthorized."));
+    }
+
     try
     {
         auto cameras = query_get_cameras(_devices);
@@ -2490,6 +2499,16 @@ void r_ws::set_system_password(const std::string& password)
 bool r_ws::system_password_set() const
 {
     return _system_password_set();
+}
+
+void r_ws::clear_system_password()
+{
+    auto path = _password_path();
+    if(r_fs::file_exists(path))
+        r_fs::remove_file(path);
+    // Invalidate any outstanding web sessions.
+    lock_guard<mutex> lock(_auth_mutex);
+    _tokens.clear();
 }
 
 // Constant-time string compare to avoid leaking the password via timing.

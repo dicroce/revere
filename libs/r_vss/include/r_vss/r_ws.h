@@ -115,6 +115,8 @@ public:
     // access is the trust boundary. Invalidates outstanding web tokens.
     R_API void set_system_password(const std::string& password);
     R_API bool system_password_set() const;
+    // Remove the stored system password (web UI returns to first-run setup).
+    R_API void clear_system_password();
 
 private:
     r_http::r_server_response _get_jpg(const r_http::r_web_server<r_utils::r_socket>& r_ws,

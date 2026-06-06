@@ -159,6 +159,7 @@ public:
     // System-password administration from the trusted local (desktop) admin UI.
     R_API void set_system_password(const std::string& password);
     R_API bool system_password_set() const;
+    R_API void clear_system_password();
 
     R_API void write_metadata(const std::string& camera_id, const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);
 

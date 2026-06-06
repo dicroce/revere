@@ -131,7 +131,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: #0f0f0f;
+  background: #0a0a0a;
 }
 
 .header {
@@ -139,8 +139,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 1rem;
   padding: 0.75rem 1.5rem;
-  background: #1a1a1a;
-  border-bottom: 1px solid #2a2a2a;
+  background: #1e1e1e;
+  border-bottom: 1px solid #363636;
   flex-shrink: 0;
 }
 
@@ -154,7 +154,7 @@ onUnmounted(() => {
   font-size: 0.85rem;
 }
 
-.back-btn:hover { background: #2a2a2a; color: #fff; }
+.back-btn:hover { background: #363636; color: #fff; }
 
 .title {
   font-size: 1.1rem;
@@ -190,6 +190,6 @@ onUnmounted(() => {
   height: 112px;
   flex-shrink: 0;
   background: #111;
-  border-top: 1px solid #2a2a2a;
+  border-top: 1px solid #363636;
 }
 </style>

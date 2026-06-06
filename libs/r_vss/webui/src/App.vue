@@ -1,17 +1,27 @@
 <template>
+  <div v-if="!authChecked" class="splash">Loading…</div>
+
+  <LoginView
+    v-else-if="!authed"
+    :password-set="passwordSet"
+    @authenticated="onAuthenticated"
+  />
+
   <CameraView
-    v-if="selectedCamera"
+    v-else-if="selectedCamera"
     :camera="selectedCamera"
     @close="selectedCamera = null"
   />
 
   <div v-else class="app">
     <header class="header">
-      <h1>Revere</h1>
+      <img src="/logos/revere-lockup-white.svg" alt="Revere" class="logo" />
       <nav class="tabs">
         <button :class="{ active: tab === 'manage' }" @click="tab = 'manage'">Cameras</button>
         <button :class="{ active: tab === 'live' }" @click="tab = 'live'">Live</button>
       </nav>
+      <span class="spacer"></span>
+      <button class="signout" @click="signOut">Sign out</button>
     </header>
 
     <main class="content">
@@ -19,11 +29,9 @@
 
       <template v-else>
         <div v-if="error" class="error">{{ error }}</div>
-
-        <div v-else-if="liveCameras.length === 0 && !loading" class="empty">
+        <div v-else-if="liveCameras.length === 0" class="empty">
           No cameras are recording yet. Add one from the Cameras tab.
         </div>
-
         <div v-else class="camera-grid">
           <CameraCard
             v-for="(camera, index) in liveCameras"
@@ -40,35 +48,61 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { isAuthed, getAuthStatus, getCameras, logout } from './api.js'
 import CameraCard from './components/CameraCard.vue'
 import CameraView from './components/CameraView.vue'
 import ManageTab from './components/ManageTab.vue'
+import LoginView from './components/LoginView.vue'
 
-const tab            = ref('manage')
-const liveCameras    = ref([])
-const loading        = ref(true)
-const error          = ref(null)
+const authChecked = ref(false)
+const passwordSet = ref(true)
+const authed = computed(() => isAuthed())
+
+const tab = ref('manage')
+const liveCameras = ref([])
+const error = ref(null)
 const selectedCamera = ref(null)
 
 let pollId = null
 
 async function loadLive() {
+  if (!authed.value) return
   try {
-    const res = await fetch('/cameras')
-    if (!res.ok) throw new Error(`Server returned ${res.status}`)
-    liveCameras.value = ((await res.json()).cameras ?? []).filter(c => c.state === 'assigned')
+    const cams = await getCameras() // apiFetch attaches the token; clears it on 401
+    liveCameras.value = cams.filter((c) => c.state === 'assigned')
     error.value = null
   } catch (e) {
+    // A 401 clears the token (api.js) -> the gate flips back to the login screen.
     error.value = `Could not reach Revere: ${e.message}`
-  } finally {
-    loading.value = false
   }
 }
 
-onMounted(() => {
+function onAuthenticated() {
+  passwordSet.value = true
   loadLive()
-  // Keep the live grid current as cameras are added/removed from the Cameras tab.
+}
+
+function signOut() {
+  logout()
+  selectedCamera.value = null
+  liveCameras.value = []
+  tab.value = 'manage'
+}
+
+onMounted(async () => {
+  try {
+    passwordSet.value = !!(await getAuthStatus()).password_set
+  } catch {
+    passwordSet.value = true
+  }
+  // Verify a stored token (if any) before showing the app.
+  if (authed.value) {
+    try { await getCameras() } catch { /* invalid token cleared by api.js */ }
+  }
+  authChecked.value = true
+
+  if (authed.value) loadLive()
   pollId = setInterval(loadLive, 5000)
 })
 
@@ -87,14 +121,13 @@ onUnmounted(() => clearInterval(pollId))
   align-items: center;
   gap: 1.5rem;
   padding: 0.75rem 1.5rem;
-  background: #1a1a1a;
-  border-bottom: 1px solid #2a2a2a;
+  background: #1e1e1e;
+  border-bottom: 1px solid #363636;
 }
 
-.header h1 {
-  font-size: 1.25rem;
-  font-weight: 600;
-  letter-spacing: 0.05em;
+.header .logo {
+  height: 26px;
+  display: block;
 }
 
 .tabs {
@@ -113,11 +146,20 @@ onUnmounted(() => clearInterval(pollId))
 }
 
 .tabs button:hover { color: #ccc; }
+.tabs button.active { color: #fff; background: #363636; }
 
-.tabs button.active {
-  color: #fff;
-  background: #2a2a2a;
+.header .spacer { flex: 1; }
+
+.signout {
+  background: none;
+  border: 1px solid #333;
+  color: #ccc;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.8rem;
+  border-radius: 4px;
+  cursor: pointer;
 }
+.signout:hover { color: #fff; border-color: #4a4a4a; }
 
 .content {
   flex: 1;
@@ -138,7 +180,15 @@ onUnmounted(() => clearInterval(pollId))
   font-size: 0.95rem;
 }
 
-.error {
-  color: #e05555;
+.error { color: #e05555; }
+
+.splash {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  background: #111;
 }
 </style>

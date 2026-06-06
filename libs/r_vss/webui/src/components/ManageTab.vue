@@ -1,34 +1,5 @@
 <template>
   <div class="manage">
-    <!-- auth bar -->
-    <div class="auth-bar">
-      <template v-if="!authChecked">
-        <span class="muted">Checking…</span>
-      </template>
-
-      <template v-else-if="authed">
-        <span class="ok">✓ Signed in</span>
-        <button class="ghost small" @click="doLogout">Sign out</button>
-      </template>
-
-      <template v-else-if="passwordSet === false">
-        <span>First-time setup — create a system password:</span>
-        <input type="password" v-model="pw1" placeholder="New password" />
-        <input type="password" v-model="pw2" placeholder="Confirm" @keyup.enter="doSetPassword" />
-        <button class="primary small" :disabled="!pw1 || pw1 !== pw2 || authBusy" @click="doSetPassword">
-          Set password
-        </button>
-      </template>
-
-      <template v-else>
-        <span>Sign in to manage cameras:</span>
-        <input type="password" v-model="loginPw" placeholder="Password" @keyup.enter="doLogin" />
-        <button class="primary small" :disabled="!loginPw || authBusy" @click="doLogin">Sign in</button>
-      </template>
-
-      <span v-if="authError" class="err">{{ authError }}</span>
-    </div>
-
     <div v-if="error" class="error">{{ error }}</div>
 
     <div v-if="authed" class="toolbar">
@@ -183,21 +154,13 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import {
-  token, isAuthed, getCameras, getAuthStatus, login, logout, setSystemPassword,
+  isAuthed, getCameras,
   removeCamera, updateCameraProperties, forgetCamera, addRtspCamera,
 } from '../api.js'
 import RecordWizard from './RecordWizard.vue'
 
 const cameras = ref([])
 const error = ref(null)
-
-const authChecked = ref(false)
-const passwordSet = ref(null)
-const authBusy = ref(false)
-const authError = ref('')
-const pw1 = ref('')
-const pw2 = ref('')
-const loginPw = ref('')
 
 const wizardCamera = ref(null)
 const forgetting = ref(null)
@@ -232,52 +195,6 @@ async function refresh() {
   } catch (e) {
     error.value = `Could not reach Revere: ${e.message}`
   }
-}
-
-async function checkAuth() {
-  try {
-    const s = await getAuthStatus()
-    passwordSet.value = !!s.password_set
-  } catch {
-    passwordSet.value = null
-  } finally {
-    authChecked.value = true
-  }
-}
-
-async function doSetPassword() {
-  if (!pw1.value || pw1.value !== pw2.value) return
-  authBusy.value = true
-  authError.value = ''
-  try {
-    await setSystemPassword(pw1.value)
-    // First-run convenience: log straight in with the password just set.
-    await login(pw1.value)
-    passwordSet.value = true
-    pw1.value = pw2.value = ''
-  } catch (e) {
-    authError.value = e.message
-  } finally {
-    authBusy.value = false
-  }
-}
-
-async function doLogin() {
-  if (!loginPw.value) return
-  authBusy.value = true
-  authError.value = ''
-  try {
-    await login(loginPw.value)
-    loginPw.value = ''
-  } catch (e) {
-    authError.value = e.message
-  } finally {
-    authBusy.value = false
-  }
-}
-
-function doLogout() {
-  logout()
 }
 
 function startRecord(camera) {
@@ -388,7 +305,6 @@ async function confirmProps() {
 }
 
 onMounted(() => {
-  checkAuth()
   refresh()
   // New cameras appear via discovery; assigned cameras leave the discovered
   // list once recording starts — poll so the lists stay live.
@@ -425,26 +341,6 @@ onUnmounted(() => clearInterval(pollId))
   .lists { grid-template-columns: 1fr; }
 }
 
-.auth-bar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  padding: 0.6rem 0.85rem;
-  background: #161616;
-  border: 1px solid #2a2a2a;
-  border-radius: 6px;
-  font-size: 0.85rem;
-}
-.auth-bar input {
-  background: #111;
-  border: 1px solid #333;
-  border-radius: 4px;
-  color: #eee;
-  padding: 0.35rem 0.5rem;
-  font-size: 0.85rem;
-}
-.ok { color: #4caf72; }
 .muted { color: #888; }
 
 section h2 {
@@ -468,8 +364,8 @@ section h2 {
   align-items: center;
   gap: 0.75rem;
   padding: 0.55rem 0.75rem;
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
+  background: #1e1e1e;
+  border: 1px solid #363636;
   border-radius: 6px;
 }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
@@ -528,11 +424,11 @@ button:disabled { cursor: default; opacity: 0.6; }
 .dialog {
   width: 440px;
   max-width: calc(100vw - 2rem);
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
+  background: #1e1e1e;
+  border: 1px solid #363636;
   border-radius: 8px;
 }
-.dialog header { padding: 0.85rem 1.1rem; border-bottom: 1px solid #2a2a2a; }
+.dialog header { padding: 0.85rem 1.1rem; border-bottom: 1px solid #363636; }
 .dialog header h3 { font-size: 1rem; font-weight: 600; }
 .dialog .body { padding: 1.1rem; display: flex; flex-direction: column; gap: 0.6rem; }
 .dialog .check { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
@@ -554,7 +450,7 @@ button:disabled { cursor: default; opacity: 0.6; }
   align-items: center;
   gap: 0.6rem;
   padding: 0.85rem 1.1rem;
-  border-top: 1px solid #2a2a2a;
+  border-top: 1px solid #363636;
 }
 .dialog .spacer { flex: 1; }
 </style>

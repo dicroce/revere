@@ -465,6 +465,11 @@ bool r_stream_keeper::system_password_set() const
     return _ws.system_password_set();
 }
 
+void r_stream_keeper::clear_system_password()
+{
+    _ws.clear_system_password();
+}
+
 void r_stream_keeper::write_metadata(const string& camera_id, const string& stream_tag, const string& json_data, int64_t timestamp_ms)
 {
     std::shared_ptr<r_recording_context> rc;

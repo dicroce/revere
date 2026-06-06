@@ -106,8 +106,8 @@ onUnmounted(() => {
 
 <style scoped>
 .card {
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
+  background: #1e1e1e;
+  border: 1px solid #363636;
   border-radius: 6px;
   overflow: hidden;
   cursor: pointer;

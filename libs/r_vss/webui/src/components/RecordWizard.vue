@@ -241,8 +241,8 @@ async function configure() {
 .wizard {
   width: 420px;
   max-width: calc(100vw - 2rem);
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
+  background: #1e1e1e;
+  border: 1px solid #363636;
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -252,7 +252,7 @@ header {
   align-items: center;
   justify-content: space-between;
   padding: 0.85rem 1.1rem;
-  border-bottom: 1px solid #2a2a2a;
+  border-bottom: 1px solid #363636;
 }
 header h3 { font-size: 1rem; font-weight: 600; }
 .x {
@@ -297,7 +297,7 @@ footer {
   align-items: center;
   gap: 0.6rem;
   padding: 0.85rem 1.1rem;
-  border-top: 1px solid #2a2a2a;
+  border-top: 1px solid #363636;
 }
 .spacer { flex: 1; }
 button.primary {

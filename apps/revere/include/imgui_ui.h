@@ -303,12 +303,14 @@ void rtsp_credentials_modal(
 // Modal for setting/changing the system password used to authenticate the web
 // UI. ok_cb is invoked with the new password only when the two fields are
 // non-empty and match.
-template<typename OK_CB, typename CANCEL_CB>
+template<typename OK_CB, typename CANCEL_CB, typename DELETE_CB>
 void system_password_modal(
     ImGuiContext*,
     const std::string& name,
+    bool password_is_set,
     OK_CB ok_cb,
-    CANCEL_CB cancel_cb
+    CANCEL_CB cancel_cb,
+    DELETE_CB delete_cb
 )
 {
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
@@ -355,6 +357,27 @@ void system_password_modal(
                 ImGui::CloseCurrentPopup();
                 ok_cb(pw);
             }
+        }
+
+        // Only offer removal when a password is actually set. Clearing it sends
+        // the web UI back to its first-run "create a password" screen.
+        if(password_is_set)
+        {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(180, 50, 50, 255));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(200, 60, 60, 255));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(160, 40, 40, 255));
+            if(ImGui::Button("Delete System Password"))
+            {
+                password[0] = '\0';
+                confirm[0] = '\0';
+                ImGui::CloseCurrentPopup();
+                delete_cb();
+            }
+            ImGui::PopStyleColor(3);
         }
 
         ImGui::EndPopup();
