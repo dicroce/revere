@@ -1,5 +1,5 @@
 <template>
-  <div class="overlay" @click.self="tryClose">
+  <div class="overlay" @mousedown="onBackdropDown" @mouseup.self="backdropPress && tryClose()">
     <div class="wizard">
       <header>
         <h3>Set up “{{ camera.camera_name || camera.id }}”</h3>
@@ -89,6 +89,11 @@ const isManual = computed(() => !!props.camera.manual)
 const step = ref('credentials')
 const busy = ref(false)
 const error = ref('')
+
+// Backdrop-dismiss: only close when the press AND release both land on the
+// overlay (so dragging from inside the dialog to outside doesn't close it).
+const backdropPress = ref(false)
+function onBackdropDown(e) { backdropPress.value = e.target === e.currentTarget }
 
 const username = ref('')
 const password = ref('')

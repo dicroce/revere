@@ -71,7 +71,7 @@
     />
 
     <!-- remove confirmation -->
-    <div v-if="removeTarget" class="overlay" @click.self="cancelRemove">
+    <div v-if="removeTarget" class="overlay" @mousedown="onBackdropDown" @mouseup.self="backdropPress && cancelRemove()">
       <div class="dialog">
         <header><h3>Remove Camera</h3></header>
         <div class="body">
@@ -98,7 +98,7 @@
     </div>
 
     <!-- properties -->
-    <div v-if="propsTarget" class="overlay" @click.self="cancelProps">
+    <div v-if="propsTarget" class="overlay" @mousedown="onBackdropDown" @mouseup.self="backdropPress && cancelProps()">
       <div class="dialog">
         <header><h3>Camera Properties</h3></header>
         <div class="body">
@@ -129,7 +129,7 @@
     </div>
 
     <!-- add RTSP source camera -->
-    <div v-if="addOpen" class="overlay" @click.self="cancelAdd">
+    <div v-if="addOpen" class="overlay" @mousedown="onBackdropDown" @mouseup.self="backdropPress && cancelAdd()">
       <div class="dialog">
         <header><h3>Add RTSP Source Camera</h3></header>
         <div class="body">
@@ -161,6 +161,12 @@ import RecordWizard from './RecordWizard.vue'
 
 const cameras = ref([])
 const error = ref(null)
+
+// Backdrop-dismiss helper: only close a dialog when the press AND release both
+// land on the overlay itself, so a drag that starts inside the dialog (e.g.
+// selecting text) and releases outside doesn't close it.
+const backdropPress = ref(false)
+function onBackdropDown(e) { backdropPress.value = e.target === e.currentTarget }
 
 const wizardCamera = ref(null)
 const forgetting = ref(null)
