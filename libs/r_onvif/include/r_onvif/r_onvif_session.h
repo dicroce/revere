@@ -13,7 +13,10 @@
 namespace r_onvif
 {
 
-R_API std::vector<std::string> discover(const std::string& uuid);
+// should_continue, if set, is polled between (and during) per-interface probes;
+// returning false aborts discovery early. Used so a shutting-down caller isn't
+// forced to wait out the full multi-interface sweep. Empty = run to completion.
+R_API std::vector<std::string> discover(const std::string& uuid, const std::function<bool()>& should_continue = {});
 
 struct discovered_info
 {

@@ -17,7 +17,7 @@
     <header class="header">
       <img src="/logos/revere-lockup-white.svg" alt="Revere" class="logo" />
       <nav class="tabs">
-        <button :class="{ active: tab === 'manage' }" @click="tab = 'manage'">Cameras</button>
+        <button :class="{ active: tab === 'manage' }" @click="tab = 'manage'">Config</button>
         <button :class="{ active: tab === 'live' }" @click="tab = 'live'">Live</button>
       </nav>
       <span class="spacer"></span>

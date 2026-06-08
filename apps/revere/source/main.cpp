@@ -16,6 +16,11 @@
 #include <signal.h>
 #endif
 #include <SDL.h>
+#ifdef IS_WINDOWS
+#include <SDL_syswm.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
+#endif
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -2507,6 +2512,23 @@ int main(int argc, char** argv)
         return 1;
     }
 
+#ifdef IS_WINDOWS
+    // Make the native title bar dark so it matches the app's theme instead of
+    // clashing with a bright OS title bar. DWMWA_USE_IMMERSIVE_DARK_MODE is 20
+    // on Windows 10 2004+/11; some older 10 builds used 19 — try both.
+    {
+        SDL_SysWMinfo wmInfo;
+        SDL_VERSION(&wmInfo.version);
+        if (SDL_GetWindowWMInfo(window, &wmInfo))
+        {
+            HWND hwnd = wmInfo.info.win.window;
+            BOOL dark = TRUE;
+            if (FAILED(DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark))))
+                DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark));
+        }
+    }
+#endif
+
     // Platform-specific renderer selection:
     // - Windows: Use hardware-accelerated (Direct3D) - no packaging concerns
     // - Linux: Use software renderer - for AppImage/Snap compatibility (avoids OpenGL)
@@ -2586,9 +2608,6 @@ int main(int argc, char** argv)
     R_LOG_INFO("icon_path=%s\n",icon_path.c_str());
 
     Tray::Tray tray("Revere", icon_path);
-    tray.addEntry(Tray::Button("Exit", [&]{
-        close_requested = true;
-    }));
     tray.addEntry(Tray::Button("Show", [&]{
         SDL_ShowWindow(window);
         SDL_RaiseWindow(window);
@@ -2599,6 +2618,13 @@ int main(int argc, char** argv)
     tray.addEntry(Tray::Button("Launch Vision", [&]{
         if(!vision_process.running())
             vision_process.start();
+    }));
+    tray.addEntry(Tray::Button("Open Web UI", [&]{
+        revere::open_url_in_browser("http://localhost:8088");
+    }));
+    tray.addEntry(Tray::Separator());
+    tray.addEntry(Tray::Button("Exit", [&]{
+        close_requested = true;
     }));
 
     // Configure Dear ImGui (context already created earlier)

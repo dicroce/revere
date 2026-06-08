@@ -13,6 +13,7 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <atomic>
 #include <chrono>
 
 namespace r_disco
@@ -100,7 +101,10 @@ private:
     void _do_reinterrogation(const r_stream_config& discovered_sc, r_camera stored);
 
     std::thread _th;
-    bool _running;
+    // Atomic so the discovery sweep's should_continue predicate reliably observes
+    // stop() flipping this to false from another thread (and so the read isn't a
+    // data race with that write).
+    std::atomic<bool> _running;
     std::unique_ptr<r_onvif_provider> _onvif_provider;
     changed_streams_cb _changed_streams_cb;
     std::string _top_dir;

@@ -133,6 +133,7 @@
       <div class="dialog">
         <header><h3>Add RTSP Source Camera</h3></header>
         <div class="body">
+          <p class="blurb">RTSP Source Cameras in the Revere system are cameras that are not discoverable but do have an RTSP interface. Please configure your network to not change the IP addresses of these cameras.</p>
           <label class="field-row"><span>Camera Model</span><input v-model="addFields.camera_name" /></label>
           <label class="field-row"><span>IPv4</span><input v-model="addFields.ipv4" placeholder="192.168.0.x" /></label>
           <label class="field-row"><span>RTSP URL</span><input v-model="addFields.rtsp_url" placeholder="rtsp://…" @keyup.enter="confirmAdd" /></label>
@@ -451,6 +452,7 @@ button:disabled { cursor: default; opacity: 0.6; }
 .dialog .loc { font-size: 0.8rem; word-break: break-all; }
 .dialog .loc span { color: #aaa; }
 .dialog .err { color: #e05555; font-size: 0.85rem; }
+.dialog .blurb { font-size: 0.85rem; color: #999; line-height: 1.45; }
 .dialog footer {
   display: flex;
   align-items: center;

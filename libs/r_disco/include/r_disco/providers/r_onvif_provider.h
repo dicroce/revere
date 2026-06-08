@@ -8,6 +8,7 @@
 #include "r_onvif/r_onvif_session.h"
 
 #include <chrono>
+#include <functional>
 #include <map>
 
 namespace r_disco
@@ -21,7 +22,10 @@ public:
     R_API r_onvif_provider(const std::string& top_dir, r_agent* agent);
     R_API ~r_onvif_provider();
 
-    R_API std::vector<r_stream_config> poll();
+    // should_continue, if set, is polled during the (blocking, multi-interface)
+    // ONVIF discovery sweep; returning false aborts it early so a shutting-down
+    // caller isn't forced to wait it out. Empty = run to completion.
+    R_API std::vector<r_stream_config> poll(const std::function<bool()>& should_continue = {});
 
     R_API std::vector<r_onvif::onvif_profile_info> get_camera_profiles(
         const std::string& ipv4,
@@ -55,7 +59,7 @@ public:
     R_API void invalidate_cache(const std::string& id);
 
 private:
-    std::vector<r_stream_config> _fetch_configs(const std::string& top_dir);
+    std::vector<r_stream_config> _fetch_configs(const std::string& top_dir, const std::function<bool()>& should_continue);
     void _cache_check_expiration(const std::string& id);
     std::string _top_dir;
     r_agent* _agent;

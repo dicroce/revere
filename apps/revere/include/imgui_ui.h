@@ -948,6 +948,19 @@ void configure_rtsp_source_camera_modal(
 {
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
+        // Explain what an RTSP source camera is. Wrap at a fixed width so the
+        // AlwaysAutoResize popup doesn't stretch to the full paragraph width.
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+        ImGui::TextUnformatted(
+            "RTSP Source Cameras in the Revere system are cameras that are not "
+            "discoverable but do have an RTSP interface. Please configure your "
+            "network to not change the IP addresses of these cameras."
+        );
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
         static char camera_model_buffer[64] = {0};
         r_ui_utils::copy_s(camera_model_buffer, 64, rscc.camera_name);
 

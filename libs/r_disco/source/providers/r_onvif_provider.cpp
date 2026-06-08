@@ -28,9 +28,9 @@ r_onvif_provider::~r_onvif_provider()
 {
 }
 
-vector<r_stream_config> r_onvif_provider::poll()
+vector<r_stream_config> r_onvif_provider::poll(const std::function<bool()>& should_continue)
 {
-    return _fetch_configs(_top_dir);
+    return _fetch_configs(_top_dir, should_continue);
 }
 
 void r_onvif_provider::invalidate_cache(const std::string& id)
@@ -338,11 +338,11 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
 
 }
 
-vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir)
+vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir, const std::function<bool()>& should_continue)
 {
     std::vector<r_stream_config> configs;
 
-    auto envelopes = r_onvif::discover(r_uuid::generate());
+    auto envelopes = r_onvif::discover(r_uuid::generate(), should_continue);
 
     auto discovered_infos = r_onvif::filter_discovered(envelopes);
 
