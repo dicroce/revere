@@ -23,8 +23,24 @@
 using namespace std;
 using namespace r_utils;
 
+static string g_data_dir_override;
+
+void revere::set_data_dir(const string& dir)
+{
+    g_data_dir_override = dir;
+}
+
 string revere::top_dir()
 {
+    // Explicit override (--data-dir) wins and bypasses the home/passwd lookup
+    // below — important for daemon/service users that may have no usable home.
+    if(!g_data_dir_override.empty())
+    {
+        if(!r_fs::file_exists(g_data_dir_override))
+            r_fs::mkdir_p(g_data_dir_override);
+        return g_data_dir_override;
+    }
+
 #ifdef IS_WINDOWS
 
     wchar_t* localAppData = nullptr;

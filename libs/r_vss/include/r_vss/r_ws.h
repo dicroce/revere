@@ -7,6 +7,7 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/r_macro.h"
 #include "r_disco/r_devices.h"
+#include "r_disco/r_agent.h"
 #include "r_storage/r_storage_file.h"
 #include "r_vss/r_query.h"
 #include "r_av/r_video_decoder.h"
@@ -15,6 +16,8 @@
 #include "r_av/r_audio_encoder.h"
 #include "r_utils/r_uuid.h"
 #include "r_utils/r_blocking_q.h"
+#include "r_utils/r_secure_store.h"
+#include "r_utils/r_credential_crypto.h"
 #include <vector>
 #include <chrono>
 #include <map>
@@ -26,6 +29,8 @@
 
 namespace r_vss
 {
+
+class r_stream_keeper;
 
 class r_ws final
 {
@@ -98,12 +103,20 @@ class r_ws final
     };
 
 public:
-    R_API r_ws(const std::string& top_dir, r_disco::r_devices& devices);
+    R_API r_ws(const std::string& top_dir, r_disco::r_devices& devices, r_disco::r_agent& agent, r_stream_keeper& stream_keeper);
     R_API ~r_ws();
 
     R_API void stop();
     R_API const std::string& get_top_dir() const;
     R_API r_disco::r_devices& get_devices();
+
+    // System-password administration, intended for the trusted local (desktop)
+    // admin surface. Setting from here needs no current-password check — local
+    // access is the trust boundary. Invalidates outstanding web tokens.
+    R_API void set_system_password(const std::string& password);
+    R_API bool system_password_set() const;
+    // Remove the stored system password (web UI returns to first-run setup).
+    R_API void clear_system_password();
 
 private:
     r_http::r_server_response _get_jpg(const r_http::r_web_server<r_utils::r_socket>& r_ws,
@@ -170,6 +183,65 @@ private:
                                         r_utils::r_socket& conn,
                                         const r_http::r_server_request& request);
 
+    r_http::r_server_response _get_camera_profiles(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                   r_utils::r_socket& conn,
+                                                   const r_http::r_server_request& request);
+
+    r_http::r_server_response _get_measure_camera(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                  r_utils::r_socket& conn,
+                                                  const r_http::r_server_request& request);
+
+    r_http::r_server_response _get_measure_progress(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                    r_utils::r_socket& conn,
+                                                    const r_http::r_server_request& request);
+
+    r_http::r_server_response _get_measure_result(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                  r_utils::r_socket& conn,
+                                                  const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_configure_camera(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                     r_utils::r_socket& conn,
+                                                     const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_remove_camera(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                  r_utils::r_socket& conn,
+                                                  const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_update_camera_properties(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                             r_utils::r_socket& conn,
+                                                             const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_forget_camera(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                  r_utils::r_socket& conn,
+                                                  const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_add_rtsp_camera(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                    r_utils::r_socket& conn,
+                                                    const r_http::r_server_request& request);
+
+    void _measure_entry_point();
+    void _measure(const std::string& job_id);
+
+    r_http::r_server_response _get_auth_status(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                               r_utils::r_socket& conn,
+                                               const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_login(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                          r_utils::r_socket& conn,
+                                          const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_set_password(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                 r_utils::r_socket& conn,
+                                                 const r_http::r_server_request& request);
+
+    // Auth helpers for the camera-management ("Record") endpoints.
+    std::string _password_path() const;
+    bool _system_password_set() const;
+    r_utils::r_nullable<std::string> _load_system_password();
+    void _store_system_password(const std::string& password);
+    bool _token_valid(const r_http::r_server_request& request);
+    void _require_auth(const r_http::r_server_request& request);   // throws 401 if not authorized
+
     void _evict_oldest_transcode_session();
 
     void _export_entry_point();
@@ -178,6 +250,8 @@ private:
 
     std::string _top_dir;
     r_disco::r_devices& _devices;
+    r_disco::r_agent& _agent;
+    r_stream_keeper& _stream_keeper;
     r_http::r_web_server<r_utils::r_socket> _server;
     std::map<std::string, r_transcode_session> _sessions;
     std::mutex _sessions_mutex;
@@ -187,6 +261,43 @@ private:
     r_utils::r_blocking_q<export_job> _export_q;
     std::map<std::string, export_progress> _export_progress;
     std::mutex _export_progress_mutex;
+
+    // Camera-measurement jobs (used by the "Record" web flow). Measuring a
+    // camera's bitrate streams RTSP for ~15s, far too long to hold an HTTP
+    // connection open, so it runs as a background job that the client polls —
+    // mirroring the export flow above.
+    struct measure_job
+    {
+        std::string camera_id;
+        r_utils::r_nullable<std::string> username;
+        r_utils::r_nullable<std::string> password;
+        std::string profile_token;
+    };
+
+    struct measure_result
+    {
+        int percent_complete = 0;       // 0 until done, then 100
+        bool failed = false;
+        std::string error;
+        int64_t byte_rate = 0;
+        std::string video_codec;
+        std::vector<uint8_t> jpeg;      // small snapshot, JPEG-encoded
+        std::chrono::steady_clock::time_point completed_at{};
+    };
+
+    std::thread _measure_th;
+    std::atomic<bool> _measure_running {false};
+    r_utils::r_blocking_q<std::string> _measure_q;   // job ids
+    std::map<std::string, measure_job> _measure_jobs;
+    std::map<std::string, measure_result> _measure_results;
+    std::mutex _measure_mutex;
+
+    // Auth state for the camera-management endpoints. The system password is
+    // stored encrypted-at-rest with the OS-protected master key (same scheme as
+    // camera credentials). Login issues a bearer token held only in memory.
+    std::vector<uint8_t> _master_key;
+    std::map<std::string, std::chrono::steady_clock::time_point> _tokens;  // token -> expiry
+    std::mutex _auth_mutex;
 };
 
 }

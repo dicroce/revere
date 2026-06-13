@@ -13,6 +13,7 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <atomic>
 #include <chrono>
 
 namespace r_disco
@@ -111,13 +112,23 @@ private:
     std::vector<r_camera> _get_assigned_cameras();
 
     std::thread _th;
-    bool _running;
+    // Atomic so the discovery sweep's should_continue predicate reliably observes
+    // stop() flipping this to false from another thread (and so the read isn't a
+    // data race with that write).
+    std::atomic<bool> _running;
     std::unique_ptr<r_onvif_provider> _onvif_provider;
     changed_streams_cb _changed_streams_cb;
     std::string _top_dir;
     r_utils::r_timer _timer;
     std::mutex _device_config_hashes_mutex;
     std::map<std::string, std::string> _device_config_hashes;
+    // Serializes the on-demand ONVIF operations (get_camera_profiles /
+    // interrogate_camera) which can now be driven concurrently by the desktop
+    // "Record" wizard thread and the web server's measure-camera worker. These
+    // write r_onvif_provider's _cache/_negotiated_params maps, which are
+    // otherwise unguarded. The 60s discovery poll() does NOT touch those maps,
+    // so it intentionally runs lock-free and is never stalled by this.
+    std::mutex _interrogation_mutex;
     credential_cb _credential_cb;
     is_recording_cb _is_recording_cb;
     camera_lookup_cb _camera_lookup_cb;

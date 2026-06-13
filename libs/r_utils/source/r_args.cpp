@@ -11,10 +11,18 @@ vector<r_args::argument> r_utils::r_args::parse_arguments(int argc, char* argv[]
         string token = argv[i];
         if (token.size() >= 2 && token[0]=='-') {
             argument a;
-            a.name = token;
-            // if next exists and doesn’t start with '-', treat it as the value
-            if (i+1 < argc && argv[i+1][0] != '-') {
-                a.value = argv[++i];
+            // Support --name=value as well as the "--name value" form.
+            auto eq = token.find('=');
+            if (eq != string::npos) {
+                a.name  = token.substr(0, eq);
+                a.value = token.substr(eq + 1);
+            }
+            else {
+                a.name = token;
+                // if next exists and doesn’t start with '-', treat it as the value
+                if (i+1 < argc && argv[i+1][0] != '-') {
+                    a.value = argv[++i];
+                }
             }
             out.push_back(move(a));
         }

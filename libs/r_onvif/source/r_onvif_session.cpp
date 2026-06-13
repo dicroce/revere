@@ -454,7 +454,7 @@ static bool _is_link_local_address(const string& host)
 }
 
 // Helper function to discover ONVIF devices on a specific interface
-static vector<string> _discover_on_interface(const string& interface_ip, const string& broadcast_message)
+static vector<string> _discover_on_interface(const string& interface_ip, const string& broadcast_message, const std::function<bool()>& should_continue)
 {
     vector<string> discovered;
 
@@ -467,8 +467,9 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
     BOOL reuse = TRUE;
     ::setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
 
-    // Set receive timeout
-    DWORD recvTimeout = 5000; // 5 seconds
+    // Set receive timeout. Cameras answer a WS-Discovery probe within tens of
+    // milliseconds, so 2s of silence is a reliable "everyone has replied" signal.
+    DWORD recvTimeout = 2000; // 2 seconds
     ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recvTimeout, sizeof(recvTimeout));
 
     // Convert interface IP string to IN_ADDR
@@ -527,7 +528,9 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
     // Receive responses
     char buf[8192];
     int timeoutCounts = 0;
-    while (timeoutCounts < 2) {
+    while (timeoutCounts < 1) {
+        if (should_continue && !should_continue())
+            break;
         struct sockaddr_in fromAddr;
         int fromAddrLen = sizeof(fromAddr);
         int len = ::recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
@@ -557,9 +560,10 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
     int reuse = 1;
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
-    // Set receive timeout
+    // Set receive timeout. Cameras answer a WS-Discovery probe within tens of
+    // milliseconds, so 2s of silence is a reliable "everyone has replied" signal.
     struct timeval recvTimeout;
-    recvTimeout.tv_sec = 5;
+    recvTimeout.tv_sec = 2;
     recvTimeout.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout));
 
@@ -619,7 +623,9 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
     // Receive responses
     char buf[8192];
     int timeoutCounts = 0;
-    while (timeoutCounts < 2) {
+    while (timeoutCounts < 1) {
+        if (should_continue && !should_continue())
+            break;
         struct sockaddr_in fromAddr;
         socklen_t fromAddrLen = sizeof(fromAddr);
         int len = recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
@@ -893,7 +899,7 @@ static string _make_probe_message(const string& uuid)
     "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:a=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\"><SOAP-ENV:Header><a:Action SOAP-ENV:mustUnderstand=\"1\">http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action><a:MessageID>" + id + "</a:MessageID><a:ReplyTo><a:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</a:Address></a:ReplyTo><a:To SOAP-ENV:mustUnderstand=\"1\">urn:schemas-xmlsoap-org:ws:2005:04:discovery</a:To></SOAP-ENV:Header><SOAP-ENV:Body><p:Probe xmlns:p=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\"><d:Types xmlns:d=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\" xmlns:dp0=\"http://www.onvif.org/ver10/network/wsdl\">dp0:NetworkVideoTransmitter</d:Types></p:Probe></SOAP-ENV:Body></SOAP-ENV:Envelope>";
 }
 
-vector<string> r_onvif::discover(const string& uuid)
+vector<string> r_onvif::discover(const string& uuid, const std::function<bool()>& should_continue)
 {
     string broadcast_message = _make_probe_message(uuid);
 
@@ -902,10 +908,14 @@ vector<string> r_onvif::discover(const string& uuid)
     // Get all available network adapters (UP, not loopback, multicast capable, with IPv4)
     auto adapters = r_utils::r_networking::r_get_adapters();
 
-    // Send discovery probe on each interface and collect responses
+    // Send discovery probe on each interface and collect responses. Bail between
+    // interfaces if the caller has asked us to stop (e.g. app shutdown), so we
+    // don't pay the full per-interface listen window for every remaining adapter.
     for (const auto& adapter : adapters)
     {
-        auto responses = _discover_on_interface(adapter.ipv4_addr, broadcast_message);
+        if (should_continue && !should_continue())
+            break;
+        auto responses = _discover_on_interface(adapter.ipv4_addr, broadcast_message, should_continue);
         all_discovered.insert(all_discovered.end(), responses.begin(), responses.end());
     }
 
@@ -915,7 +925,7 @@ vector<string> r_onvif::discover(const string& uuid)
 // Send the Probe directly (unicast UDP) to each target on port 3702 and collect
 // any ProbeMatch responses. One socket: blast all probes, then read replies until
 // the receive window goes quiet. Same response format as the multicast path.
-static vector<string> _probe_unicast(const vector<string>& targets, const string& broadcast_message)
+static vector<string> _probe_unicast(const vector<string>& targets, const string& broadcast_message, const std::function<bool()>& should_continue)
 {
     vector<string> discovered;
     if (targets.empty())
@@ -957,6 +967,8 @@ static vector<string> _probe_unicast(const vector<string>& targets, const string
     char buf[8192];
     int timeoutCounts = 0;
     while (timeoutCounts < 2) {
+        if (should_continue && !should_continue())
+            break;
         struct sockaddr_in fromAddr;
         int fromAddrLen = sizeof(fromAddr);
         int len = ::recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
@@ -1013,6 +1025,8 @@ static vector<string> _probe_unicast(const vector<string>& targets, const string
     char buf[8192];
     int timeoutCounts = 0;
     while (timeoutCounts < 2) {
+        if (should_continue && !should_continue())
+            break;
         struct sockaddr_in fromAddr;
         socklen_t fromAddrLen = sizeof(fromAddr);
         int len = recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
@@ -1033,11 +1047,11 @@ static vector<string> _probe_unicast(const vector<string>& targets, const string
     return discovered;
 }
 
-vector<string> r_onvif::discover_unicast(const string& uuid, const vector<string>& target_ips)
+vector<string> r_onvif::discover_unicast(const string& uuid, const vector<string>& target_ips, const std::function<bool()>& should_continue)
 {
     if (target_ips.empty())
         return {};
-    return _probe_unicast(target_ips, _make_probe_message(uuid));
+    return _probe_unicast(target_ips, _make_probe_message(uuid), should_continue);
 }
 
 std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::string>& discovered)

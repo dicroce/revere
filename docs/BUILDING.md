@@ -1,57 +1,34 @@
 # Building Revere from Source
 
-This guide covers building Revere on all supported platforms.
+This guide covers **setting up a build environment** on each platform. Once your
+environment is ready, the actual build is driven by the scripts in `scripts/` —
+you shouldn't need to invoke CMake by hand.
 
 ## Table of Contents
 
-- [Prerequisites](#prerequisites)
-- [Building on Linux](#building-on-linux)
-  - [Ubuntu/Debian](#ubuntudebian)
-  - [Fedora/RHEL](#fedorarhel)
-  - [Arch Linux](#arch-linux)
-- [Building on macOS](#building-on-macos)
-- [Building on Windows](#building-on-windows)
-  - [Installing Dependencies](#installing-dependencies)
-  - [Setting Environment Variables](#setting-environment-variables)
-  - [Building with CMake](#building-with-cmake)
-- [Build Options](#build-options)
-- [Optional Dependencies](#optional-dependencies)
-- [Running Tests](#running-tests)
-- [Common Build Issues](#common-build-issues)
+- [Common prerequisites](#common-prerequisites)
+- [Linux](#linux)
+- [macOS](#macos)
+- [Windows](#windows)
+- [Optional: NCNN (AI detection)](#optional-ncnn-ai-detection)
+- [Build options](#build-options)
+- [Verified build configurations](#verified-build-configurations)
+- [Getting help](#getting-help)
 
-## Prerequisites
-
-### All Platforms
+## Common prerequisites
 
 - CMake 3.14 or higher
-- C++17 compatible compiler
+- A C++17 compatible compiler
 - Git
-- OpenCV 4.x
-- GStreamer 1.0
-- FFmpeg 4.x, 5.x, or 6.x
+- OpenCV 4.x, GStreamer 1.0, and FFmpeg 4.x/5.x/6.x (installed per-platform below)
 
-### Platform-Specific Tools
+---
 
-**Linux:**
-- GCC 9+ or Clang 10+
-- pkg-config
-- make or ninja
-- Development packages for all dependencies
+## Linux
 
-**macOS:**
-- macOS 10.15 (Catalina) or newer
-- Xcode Command Line Tools
-- Homebrew package manager
+### Set up the build environment
 
-**Windows:**
-- Visual Studio 2019 or newer (VS 2022/MSVC v17 recommended)
-- Windows SDK
-
-## Building on Linux
-
-### Ubuntu/Debian
-
-#### Installing Dependencies
+#### Ubuntu / Debian
 
 ```bash
 # System dependencies
@@ -94,80 +71,70 @@ sudo apt-get install -y \
     ffmpeg
 ```
 
-#### Optional: NCNN for AI Motion Detection
+(Optional: for the AI detection plugins, also build NCNN and export `NCNN_TOP_DIR`
+— see [Optional: NCNN](#optional-ncnn-ai-detection).)
 
-NCNN enables AI-based person detection plugins (YOLOv8, MobileNet, PicoDet).
+#### Fedora / RHEL
 
-```bash
-# Clone and build NCNN
-mkdir $HOME/NCNN_INSTALL
-git clone https://github.com/Tencent/ncnn.git
-cd ncnn
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release -DNCNN_BUILD_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX=$HOME/NCNN_INSTALL ..
-make -j$(nproc)
-sudo make install
-export NCNN_TOP_DIR=$HOME/NCNN_INSTALL
+Not yet documented — the equivalent `-devel` packages should work. Contributions welcome.
 
-```
+#### Arch Linux
 
-#### Building Revere
+Not yet documented — the equivalent packages should work. Contributions welcome.
+
+### Build
+
+Clone the repo, build as a normal user, then install as root:
 
 ```bash
-# Clone the repository
-git clone [<repository-url>](https://github.com/dicroce/revere.git)
+git clone https://github.com/dicroce/revere.git
 cd revere
-
-# Create build directory
-mkdir build
-cd build
-
-# Configure
-cmake -DCMAKE_BUILD_TYPE=Release ..
-
-# Build
-make -j$(nproc)
-
-# Install (optional)
-sudo make install
+./scripts/linux/build.sh                 # configure + build (run as a normal user)
+sudo ./scripts/linux/build.sh --install  # install to /usr/local/revere
 ```
 
-The executables will be in `build/apps/revere/` and `build/apps/vision/`. make install will install them to /usr/loca/revere (it also should add an icon to your gui).
+- The build step refuses to run as root (it would leave root-owned files); the
+  install step must be run as root.
+- Extra CMake args are passed through to the build step, e.g.
+  `./scripts/linux/build.sh -DEXTERNAL_PLUGIN_REPOS=/path/to/revere_cloud`.
 
-### Fedora/RHEL
+After installing, run `/usr/local/revere/revere`, or set Revere up as an always-on
+headless service with `sudo /usr/local/revere/revere --install-service` (see
+[Run Headless Service](../README.md#run-headless-service)).
 
-TBD (should probably work)
+To build the distributable **snap** instead, use `./scripts/linux/build_snap.sh`.
 
-### Arch Linux
+---
 
-TBD (should probably work)
+## macOS
 
-## Building on macOS
+### Set up the build environment
 
-For detailed macOS build instructions, see [BUILDING_MACOS.md](BUILDING_MACOS.md).
-
-### Quick Start
+- macOS 10.15 (Catalina) or newer
+- Xcode Command Line Tools: `xcode-select --install`
+- [Homebrew](https://brew.sh/)
 
 ```bash
-# Install dependencies with Homebrew
 brew install cmake pkg-config opencv gstreamer gst-plugins-base \
              gst-plugins-good gst-plugins-bad ffmpeg glfw sqlite \
              mbedtls pugixml
-
-# Clone and build
-git clone https://github.com/dicroce/revere.git
-cd revere
-./build_macos.sh
-
-# Or manually:
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make -j$(sysctl -n hw.ncpu)
 ```
 
-## Building on Windows
+### Build
 
-### Installing Dependencies
+```bash
+git clone https://github.com/dicroce/revere.git
+cd revere
+python3 scripts/macos/build_revere_macos.py
+```
+
+This configures, builds, and produces a `.dmg` package.
+
+---
+
+## Windows
+
+### Set up the build environment
 
 #### Visual Studio
 
@@ -175,15 +142,58 @@ Download and install Visual Studio 2019 or newer from [visualstudio.microsoft.co
 - Recommended: Visual Studio 2022 (MSVC v17)
 - Required components: "Desktop development with C++"
 
-#### GIT
+#### Git
 
-- Installing GIT will give you GIT bash. I usually do everything but the finall install from a git bash command line.
+Installing Git also gives you Git Bash, which is handy for the clone and most steps.
 
 #### CMake
 
 Download from [cmake.org](https://cmake.org/download/) and install, or use Visual Studio's included CMake.
 
-#### OpenCV
+#### Native dependencies — prebuilt (recommended)
+
+OpenCV, GStreamer, FFmpeg, and (optionally) NCNN are published as prebuilt
+Windows x64 zips at [revere-deps](https://github.com/dicroce/revere-deps/releases/tag/windows-deps-v1)
+— the same artifacts Revere's CI uses. This is the fast path; skip the manual
+component installs below.
+
+Download these assets from that release:
+- `opencv-win64.zip`
+- `gstreamer-win64.zip`
+- `ffmpeg-win64.zip`
+- `ncnn-win64.zip` *(optional — only needed for the AI detection plugins)*
+
+Each zip is packaged whole-tree (its root contains `bin/`, `include/`, `x64/`,
+etc. directly — there is no wrapping folder). Extract each into its own folder and
+point the matching environment variable at that folder:
+
+| Asset | Extract to (example) | Environment variable |
+|-------|----------------------|----------------------|
+| `opencv-win64.zip` | `C:\revere-deps\opencv` | `OPENCV_TOP_DIR` |
+| `gstreamer-win64.zip` | `C:\revere-deps\gstreamer` | `GST_TOP_DIR` |
+| `ffmpeg-win64.zip` | `C:\revere-deps\ffmpeg` | `FFMPEG_TOP_DIR` |
+| `ncnn-win64.zip` | `C:\revere-deps\ncnn` | `NCNN_TOP_DIR` |
+
+For example, in PowerShell (`setx` persists the variables for your user — open a
+new terminal afterwards so they take effect):
+
+```powershell
+setx OPENCV_TOP_DIR  C:\revere-deps\opencv
+setx GST_TOP_DIR     C:\revere-deps\gstreamer
+setx FFMPEG_TOP_DIR  C:\revere-deps\ffmpeg
+setx NCNN_TOP_DIR    C:\revere-deps\ncnn
+```
+
+That's all the dependency setup needed to build. The build copies the required
+GStreamer/FFmpeg runtime DLLs next to the executable, so you don't need to touch
+`PATH` for a normal build + install.
+
+#### Native dependencies — build or install them yourself
+
+Prefer to supply your own builds (or need a different version)? Install each
+component manually and set the same `*_TOP_DIR` variables.
+
+##### OpenCV
 
 Download OpenCV 4.x prebuilt binaries from [opencv.org](https://opencv.org/releases/).
 - Extract to a location like `C:\opencv`
@@ -191,58 +201,69 @@ Download OpenCV 4.x prebuilt binaries from [opencv.org](https://opencv.org/relea
 - Required structure: `OPENCV_TOP_DIR\x64\vc17\lib` (for VS 2022) or `vc16` (for VS 2019)
 - The build system expects OpenCV 4.12.0 or compatible
 
-#### GStreamer
+##### GStreamer
 
 Download GStreamer 1.0 MSVC runtime and development installers from [gstreamer.freedesktop.org](https://gstreamer.freedesktop.org/download/).
 - Install both "runtime" and "development" packages
 - Choose "Complete" installation to get all plugins
 - Set environment variable: `GST_TOP_DIR=C:\gstreamer\1.0\msvc_x86_64`
-- Add GStreamer bin directory to PATH: `C:\gstreamer\1.0\msvc_x86_64\bin`
+- Add the GStreamer bin directory to PATH: `C:\gstreamer\1.0\msvc_x86_64\bin`
 
-#### FFmpeg
+##### FFmpeg
 
 Download FFmpeg shared libraries from [ffmpeg.org](https://ffmpeg.org/download.html) or [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
 - Extract to a location like `C:\ffmpeg`
 - Set environment variable: `FFMPEG_TOP_DIR=C:\ffmpeg`
-- Required DLLs: avcodec-62.dll, avformat-62.dll, avutil-60.dll, swscale-9.dll (versions may vary for FFmpeg 4.x/5.x)
-- Ensure DLLs are in a directory added to PATH or copy them to the executable directory after build
+- Required DLLs: avcodec, avformat, avutil, swscale (version suffix varies by FFmpeg 4.x/5.x/6.x)
+- Ensure the DLLs are on PATH or copied next to the executable after build
 
-#### Optional: NCNN
+### Build
 
-For AI motion detection plugins:
-- Build NCNN from source or download prebuilt libraries
-- Set environment variable: `NCNN_TOP_DIR=C:\path\to\ncnn`
-- Structure should include `lib\ncnn.lib` (Release) or `lib\ncnnd.lib` (Debug)
+From an **x64 Native Tools Command Prompt for VS 2022**:
 
-### Building with CMake
-
-#### Building with git bash
-- Open git bash
-
-```bash
-# Clone the repository
-git clone [<repository-url>](https://github.com/dicroce/revere.git)
-cd revere
-
-# Create build directory
-mkdir build
-cd build
-
-# Configure
-cmake ..
-
-# Note: on windows Release is done while compiling not during previous configure step
-cmake --build . --config Release
-
-```
-#### Installing
-- Then open x64 Native Tools Command Prompt by right clicking and choosing "Run as Administrator"
-- cd to the revere/build dir. Then:
-```bash
-cmake --build . --config Reelase --target install
+```bat
+scripts\windows\build.bat
 ```
 
-## Verified Build Configurations
+`build.bat` wraps `build_installers.py`, which configures, builds Revere in
+Release, and produces the Windows installer.
+
+---
+
+## Optional: NCNN (AI detection)
+
+NCNN enables AI-based person/vehicle detection plugins (YOLOv8, MobileNet, PicoDet).
+Build and install it, then export `NCNN_TOP_DIR` before running the build script.
+
+```bash
+# Linux/macOS
+mkdir $HOME/NCNN_INSTALL
+git clone https://github.com/Tencent/ncnn.git
+cd ncnn
+mkdir build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release -DNCNN_BUILD_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX=$HOME/NCNN_INSTALL ..
+make -j$(nproc)
+make install
+export NCNN_TOP_DIR=$HOME/NCNN_INSTALL
+```
+
+On Windows, the easiest option is `ncnn-win64.zip` from
+[revere-deps](https://github.com/dicroce/revere-deps/releases/tag/windows-deps-v1)
+(see [Windows setup](#windows)); or build/download NCNN yourself and set
+`NCNN_TOP_DIR` (with `lib\ncnn.lib` for Release / `lib\ncnnd.lib` for Debug).
+
+## Build options
+
+Pass these to the build script (which forwards them to CMake) as `-D<name>=<value>`:
+
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `CMAKE_BUILD_TYPE` | `Release` | `Release` or `Debug`. |
+| `EXTERNAL_PLUGIN_REPOS` | (none) | Semicolon-separated paths to plugin repos. |
+| `REVERE_PORTABLE_BUILD` | `OFF` | Drop `-march=native` so the binary runs on other CPUs (for redistributables / AppImage). |
+| `PACKAGED_BUILD` | `OFF` | Use FHS install paths (`bin`/`lib`) instead of the single `/usr/local/revere` directory; used by the snap/flatpak builds. |
+
+## Verified build configurations
 
 We regularly test these configurations:
 
@@ -250,15 +271,15 @@ We regularly test these configurations:
 |----|----------|--------|-----------|--------|--------|
 | Ubuntu 22.04 | GCC 11 | 4.x | 1.20 | 4.x/5.x | ✅ |
 | Windows 11 | MSVC 2022 (v17) | 4.12.0 | 1.0 | 6.x | ✅ |
+| macOS 10.15+ | Apple Clang | 4.x | 1.0 | 4.x/5.x/6.x | ✅ |
 | Fedora | GCC 11+ | 4.x | 1.0 | 4.x/5.x | 🟡 Should work |
 | Arch Linux | GCC/Clang | 4.x | 1.0 | 4.x/5.x/6.x | 🟡 Should work |
 
-## Getting Help
+## Getting help
 
 If you encounter issues not covered here, please:
-1. Check the [Troubleshooting Guide](TROUBLESHOOTING.md)
-2. Search existing [GitHub Issues]
-3. Open a new issue with:
+1. Search existing [GitHub Issues](https://github.com/dicroce/revere/issues)
+2. Open a new issue with:
    - Your platform and versions
    - Full build log
    - Steps to reproduce

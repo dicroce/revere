@@ -31,9 +31,9 @@ r_onvif_provider::~r_onvif_provider()
 {
 }
 
-vector<r_stream_config> r_onvif_provider::poll()
+vector<r_stream_config> r_onvif_provider::poll(const std::function<bool()>& should_continue)
 {
-    return _fetch_configs(_top_dir);
+    return _fetch_configs(_top_dir, should_continue);
 }
 
 void r_onvif_provider::invalidate_cache(const std::string& id)
@@ -375,7 +375,7 @@ static std::vector<std::string> _subnet_sweep_targets()
     return targets;
 }
 
-vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir)
+vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir, const std::function<bool()>& should_continue)
 {
     std::vector<r_stream_config> configs;
     std::set<std::string> seen_ids;
@@ -414,7 +414,7 @@ vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir)
     };
 
     // 1. Multicast discovery (unchanged default behavior).
-    ingest(r_onvif::discover(r_uuid::generate()));
+    ingest(r_onvif::discover(r_uuid::generate(), should_continue));
 
     // 2. Unicast self-heal: relocate assigned cameras that multicast didn't
     //    surface (cheap cams routinely ignore multicast Probe). No-op when the
@@ -443,22 +443,25 @@ vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir)
         {
             R_LOG_INFO("onvif: unicast-probing %zu assigned camera(s) missing from multicast discovery",
                        known_targets.size());
-            ingest(r_onvif::discover_unicast(r_uuid::generate(), known_targets));
+            ingest(r_onvif::discover_unicast(r_uuid::generate(), known_targets, should_continue));
         }
 
         // 2b. If still missing, the camera likely changed IP (new DHCP lease).
         //     Sweep the local subnet(s) so it's re-discovered by stable id at
         //     its new address; the agent's background re-interrogation then
         //     rewrites the rtsp_url and the stream rebuilds automatically.
+        //     This re-runs each poll (~60s) while a camera stays missing — e.g.
+        //     one that's powered off — so the burst is intentionally bounded:
+        //     capped host count, a ~2s receive window, and aborts on shutdown.
         auto still = assigned_still_missing();
-        if(!still.empty())
+        if(!still.empty() && (!should_continue || should_continue()))
         {
             auto sweep_targets = _subnet_sweep_targets();
             if(!sweep_targets.empty())
             {
                 R_LOG_INFO("onvif: %zu assigned camera(s) still missing; unicast-sweeping %zu subnet host(s) to relocate",
                            still.size(), sweep_targets.size());
-                ingest(r_onvif::discover_unicast(r_uuid::generate(), sweep_targets));
+                ingest(r_onvif::discover_unicast(r_uuid::generate(), sweep_targets, should_continue));
             }
         }
     }

@@ -266,7 +266,7 @@ function draw() {
     const x = msToX(t)
     if (x < 0 || x > W) continue
     const major = t % majorMs === 0
-    ctx.strokeStyle = major ? '#555' : '#2a2a2a'
+    ctx.strokeStyle = major ? '#555' : '#363636'
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(x, 0)
@@ -495,7 +495,7 @@ onUnmounted(() => {
   line-height: 1.5;
 }
 
-.ctrl-btn:hover { background: #2a2a2a; color: #fff; }
+.ctrl-btn:hover { background: #363636; color: #fff; }
 
 .ctrl-btn.active {
   border-color: #4caf50;
@@ -527,7 +527,7 @@ onUnmounted(() => {
 }
 
 .zoom-sel {
-  background: #1a1a1a;
+  background: #1e1e1e;
   border: 1px solid #3a3a3a;
   color: #ccc;
   padding: 0.1rem 0.25rem;

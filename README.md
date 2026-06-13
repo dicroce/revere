@@ -20,7 +20,7 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 ## Screenshots
 
 ### Revere
-- Runs in the system tray
+- Runs in the system tray OR headless
 
 ![Alt text](/assets/screenshots/tray.jpg "Tray icon")
 - Pre-allocated storage means it wont suprise you by using up more hard drive than you have allocated to it.
@@ -32,6 +32,14 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 - Supports 2x2, 4x4 and single view.
 
 ![Alt text](/assets/screenshots/vision.jpg "Vision")
+
+### Web UI
+
+![Alt text](/assets/screenshots/webui_cameras.jpg "Web UI Cameras")
+
+![Alt text](/assets/screenshots/webui_live.jpg "Live")
+
+![Alt text](/assets/screenshots/webui_single.jpg "Single Camera View")
 
 ## Quick Start
 
@@ -49,8 +57,79 @@ On Linux the simplest way is to install the revere snap:
 
 ### Installation
 
-On Linux, install the snap and type 'snap run revere' (or double click on Revere in the system menu).
-On Windows run the installer and then choose Revere in the start menu.
+**Windows**
+- Download and run the installer from the [GitHub releases page](https://github.com/dicroce/revere/releases), then choose Revere from the Start menu.
+
+**macOS**
+- Download and run the `.dmg` from the [GitHub releases page](https://github.com/dicroce/revere/releases), then drag Revere into your Applications folder.
+
+**Linux**
+- **AppImage** — download the `.AppImage` from the [GitHub releases page](https://github.com/dicroce/revere/releases), make it executable and run it:
+  ```bash
+  chmod +x Revere-*.AppImage
+  ./Revere-*.AppImage
+  ```
+- **Snap** — install from the [Snap Store](https://snapcraft.io/revere), then launch it from the system menu or the command line:
+  ```bash
+  sudo snap install revere
+  snap run revere
+  ```
+- **Build from source** — build and install to `/usr/local/revere` (see [Building from Source](docs/BUILDING.md) for the build prerequisites):
+  ```bash
+  mkdir -p build && cd build
+  cmake .. -DCMAKE_BUILD_TYPE=Release
+  cmake --build .
+  sudo cmake --install .            # installs to /usr/local/revere
+  ```
+  Run it with `/usr/local/revere/revere`. To run it headless as a service instead, see [Run Headless Service](#run-headless-service) below.
+
+### Run Headless Service
+
+On Linux, Revere can run as a headless `systemd` service — recording, ONVIF discovery and the web UI (on http://localhost:8088/) with no desktop session. This is the recommended way to run Revere on a server, NAS or always-on mini-PC.
+
+Build from source and install (see [Building from Source](docs/BUILDING.md) for the full list of build prerequisites):
+
+```bash
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build .
+sudo cmake --install .            # installs to /usr/local/revere
+```
+
+Then install and start the service. Run it as root — it creates a dedicated `revere` system user and the `/var/lib/revere` data directory, writes `/etc/systemd/system/revere.service`, and enables it to start on boot:
+
+```bash
+sudo /usr/local/revere/revere --install-service
+```
+
+Check on it with:
+
+```bash
+systemctl status revere
+journalctl -u revere -f
+```
+
+Then open http://localhost:8088/ in a browser. On first run you'll be asked to set a system password, after which you can add and manage cameras from the web UI.
+
+By default recordings, the database and the encryption key live under `/var/lib/revere`. To put them somewhere else (e.g. a dedicated storage volume), pass the path through at install time:
+
+```bash
+sudo /usr/local/revere/revere --install-service --data-dir /mnt/storage/revere
+```
+
+To remove the service (this leaves your recordings and the `revere` user intact):
+
+```bash
+sudo /usr/local/revere/revere --uninstall-service
+```
+
+You can also run headless manually, without installing a service, by pointing `--data-dir` at a directory you can write to:
+
+```bash
+/usr/local/revere/revere --headless --data-dir ~/revere-data
+```
+
+Run `revere --help` to see all command line options.
 
 ### Adding Your First Camera
 

@@ -56,6 +56,7 @@ vector<r_onvif::onvif_profile_info> r_agent::get_camera_profiles(
     r_nullable<string> password
 )
 {
+    lock_guard<mutex> lk(_interrogation_mutex);
     return _onvif_provider->get_camera_profiles(ipv4, xaddrs, username, password);
 }
 
@@ -69,6 +70,8 @@ void r_agent::interrogate_camera(
     const std::string& preferred_profile_token
 )
 {
+    lock_guard<mutex> lk(_interrogation_mutex);
+
     r_md5 hash;
     hash.update((uint8_t*)address.c_str(), address.size());
     hash.finalize();
@@ -137,8 +140,10 @@ void r_agent::_entry_point()
 void r_agent::_process_new_or_changed_streams_configs()
 {
     lock_guard<mutex> lock(_device_config_hashes_mutex);
-    // fetch all our stream_configs from all providers
-    auto devices = _onvif_provider->poll();
+    // fetch all our stream_configs from all providers. Pass _running so the
+    // blocking discovery sweep aborts promptly when stop() is called — otherwise
+    // stop()'s _th.join() can stall for the full multi-interface listen window.
+    auto devices = _onvif_provider->poll([this]{ return _running.load(); });
 
     if(!devices.empty())
     {

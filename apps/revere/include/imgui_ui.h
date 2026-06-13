@@ -46,8 +46,8 @@ void error_modal(
     }
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb)
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb)
 {
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("Cameras"))
@@ -76,6 +76,9 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
         bool startup_enabled = get_startup_state_cb();
         if (ImGui::MenuItem("Start Revere with system", nullptr, &startup_enabled))
             set_startup_state_cb(startup_enabled);
+
+        if (ImGui::MenuItem("Set System Password..."))
+            set_system_password_cb();
 
         ImGui::EndMenu();
     }
@@ -291,6 +294,90 @@ void rtsp_credentials_modal(
         {
             ImGui::CloseCurrentPopup();
             ok_cb();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+// Modal for setting/changing the system password used to authenticate the web
+// UI. ok_cb is invoked with the new password only when the two fields are
+// non-empty and match.
+template<typename OK_CB, typename CANCEL_CB, typename DELETE_CB>
+void system_password_modal(
+    ImGuiContext*,
+    const std::string& name,
+    bool password_is_set,
+    OK_CB ok_cb,
+    CANCEL_CB cancel_cb,
+    DELETE_CB delete_cb
+)
+{
+    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("Set the system password used to authenticate the web UI:");
+
+        static char password[64] = {0};
+        static char confirm[64] = {0};
+
+        if(ImGui::IsWindowAppearing())
+        {
+            password[0] = '\0';
+            confirm[0] = '\0';
+        }
+
+        ImGui::InputText("Password", password, 64, ImGuiInputTextFlags_Password);
+        ImGui::InputText("Confirm",  confirm,  64, ImGuiInputTextFlags_Password);
+
+        bool empty    = (std::string(password).empty());
+        bool mismatch = (std::string(password) != std::string(confirm));
+
+        if(empty)
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Password must not be empty.");
+        else if(mismatch)
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Passwords do not match.");
+
+        if(ImGui::Button("Cancel"))
+        {
+            password[0] = '\0';
+            confirm[0] = '\0';
+            ImGui::CloseCurrentPopup();
+            cancel_cb();
+        }
+
+        ImGui::SameLine();
+
+        if(ImGui::Button("Ok"))
+        {
+            if(!empty && !mismatch)
+            {
+                std::string pw(password);
+                password[0] = '\0';
+                confirm[0] = '\0';
+                ImGui::CloseCurrentPopup();
+                ok_cb(pw);
+            }
+        }
+
+        // Only offer removal when a password is actually set. Clearing it sends
+        // the web UI back to its first-run "create a password" screen.
+        if(password_is_set)
+        {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(180, 50, 50, 255));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(200, 60, 60, 255));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(160, 40, 40, 255));
+            if(ImGui::Button("Delete System Password"))
+            {
+                password[0] = '\0';
+                confirm[0] = '\0';
+                ImGui::CloseCurrentPopup();
+                delete_cb();
+            }
+            ImGui::PopStyleColor(3);
         }
 
         ImGui::EndPopup();
@@ -861,6 +948,19 @@ void configure_rtsp_source_camera_modal(
 {
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
+        // Explain what an RTSP source camera is. Wrap at a fixed width so the
+        // AlwaysAutoResize popup doesn't stretch to the full paragraph width.
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+        ImGui::TextUnformatted(
+            "RTSP Source Cameras in the Revere system are cameras that are not "
+            "discoverable but do have an RTSP interface. Please configure your "
+            "network to not change the IP addresses of these cameras."
+        );
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
         static char camera_model_buffer[64] = {0};
         r_ui_utils::copy_s(camera_model_buffer, 64, rscc.camera_name);
 

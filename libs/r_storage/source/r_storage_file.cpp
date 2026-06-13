@@ -112,14 +112,14 @@ void r_storage_file::allocate(const std::string& file_name, size_t block_size, s
 pair<int64_t, int64_t> r_storage::required_file_size_for_retention_hours(int64_t retention_hours, int64_t byte_rate)
 {
     // Note: windows mmap implementation requires mapped regions to be a multiple of 65536.
-    const int64_t FIFTY_MB_FILE = 52428800;
+    const int64_t TEN_MB_FILE = 10485760; // 10 MiB
     const int64_t FUDGE_FACTOR = 2;
 
     int64_t natural_byte_size = (byte_rate * 60 * 60 * retention_hours);
 
-    int64_t num_blocks = (natural_byte_size / FIFTY_MB_FILE) + FUDGE_FACTOR;
+    int64_t num_blocks = (natural_byte_size / TEN_MB_FILE) + FUDGE_FACTOR;
 
-    return make_pair(num_blocks, FIFTY_MB_FILE);
+    return make_pair(num_blocks, TEN_MB_FILE);
 }
 
 string r_storage::human_readable_file_size(double size)

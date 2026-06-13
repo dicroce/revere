@@ -16,6 +16,11 @@
 #include <signal.h>
 #endif
 #include <SDL.h>
+#ifdef IS_WINDOWS
+#include <SDL_syswm.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
+#endif
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -58,6 +63,9 @@
 std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 
 #include "utils.h"
+#include "r_utils/r_secure_store.h"
+#include "r_utils/r_platform.h"
+#include <cstdio>
 #include "gl_utils.h"
 
 #include "imgui_ui.h"
@@ -910,6 +918,42 @@ void configure_camera_setup_wizard(
         }
     );
     camera_setup_wizard.add_step(
+        "set_system_password",
+        [&as, &camera_setup_wizard, &stream_keeper](){
+            ImGui::OpenPopup("Set System Password");
+            revere::system_password_modal(
+                GImGui,
+                "Set System Password",
+                stream_keeper.system_password_set(),
+                [&](const std::string& pw){
+                    try
+                    {
+                        stream_keeper.set_system_password(pw);
+                        camera_setup_wizard.cancel();
+                    }
+                    catch(const std::exception& e)
+                    {
+                        as.error_message = e.what();
+                        camera_setup_wizard.next("error_modal");
+                    }
+                },
+                [&](){ camera_setup_wizard.cancel(); },
+                [&](){
+                    try
+                    {
+                        stream_keeper.clear_system_password();
+                        camera_setup_wizard.cancel();
+                    }
+                    catch(const std::exception& e)
+                    {
+                        as.error_message = e.what();
+                        camera_setup_wizard.next("error_modal");
+                    }
+                }
+            );
+        }
+    );
+    camera_setup_wizard.add_step(
         "camera_credentials",
         [&](){
             as.wizard_step = 1;
@@ -1056,6 +1100,78 @@ void configure_camera_setup_wizard(
 
                     if(cp.sdp_medias.empty() || cp.bytes_per_second == 0)
                         R_THROW(("Unable to communicate with camera."));
+
+                    as.byte_rate = cp.bytes_per_second;
+                    as.sdp_medias = cp.sdp_medias;
+
+                    as.interrogation_phase.store(3);  // Decoding key frame
+                    as.maybe_key_frame = _decode_frame(cp.sample_ctx, cp.video_key_frame, 320, 240, AV_PIX_FMT_BGRA);
+
+                    as.key_frame_texture.reset();
+                    if(!as.maybe_key_frame.is_null())
+                    {
+                        as.key_frame_texture = r_ui_utils::texture::create_from_rgb(
+                            g_renderer,
+                            as.maybe_key_frame.raw()->data(),
+                            320,
+                            240
+                        );
+                    }
+
+                    as.interrogation_phase.store(4);  // Done
+                    if(camera_setup_wizard.active())
+                        camera_setup_wizard.next("friendly_name");
+                }
+                catch(const r_utils::r_unauthorized_exception&)
+                {
+                    as.error_message = "Invalid Credentials";
+                    camera_setup_wizard.next("error_modal");
+                }
+                catch(const std::exception& e)
+                {
+                    as.error_message = _user_friendly_error(e);
+                    camera_setup_wizard.next("error_modal");
+                }
+            });
+            th.detach();
+            camera_setup_wizard.next("please_wait");
+        }
+    );
+    camera_setup_wizard.add_step(
+        "interrogate_rtsp_source",
+        [&as, &camera_setup_wizard, &devices](){
+            auto camera = as.camera.value();
+            as.interrogation_phase.store(0);
+            as.interrogation_start = std::chrono::steady_clock::now();
+            std::thread th([&, camera]() mutable {
+                try
+                {
+                    // Manually-added RTSP camera: no ONVIF. Probe the RTSP URL
+                    // directly for bitrate + a key frame, and derive the codec
+                    // params from the SDP (the RTSP equivalent of interrogation).
+                    as.interrogation_phase.store(2);  // RTSP probe
+                    auto cp = r_pipeline::fetch_camera_params(camera.rtsp_url.value(), as.rtsp_username, as.rtsp_password);
+
+                    if(cp.sdp_medias.empty() || cp.bytes_per_second == 0)
+                        R_THROW(("Unable to communicate with camera."));
+                    if(cp.sdp_medias.find("video") == cp.sdp_medias.end())
+                        R_THROW(("Camera stream has no video media."));
+
+                    std::string vcodec, vparams; int vtb = 0;
+                    std::tie(vcodec, vparams, vtb) = r_pipeline::sdp_media_map_to_s(r_pipeline::VIDEO_MEDIA, cp.sdp_medias);
+                    camera.video_codec.set_value(vcodec);
+                    camera.video_codec_parameters.set_value(vparams);
+                    camera.video_timebase.set_value(vtb);
+                    if(cp.sdp_medias.find("audio") != cp.sdp_medias.end())
+                    {
+                        std::string acodec, aparams; int atb = 0;
+                        std::tie(acodec, aparams, atb) = r_pipeline::sdp_media_map_to_s(r_pipeline::AUDIO_MEDIA, cp.sdp_medias);
+                        camera.audio_codec.set_value(acodec);
+                        camera.audio_codec_parameters.set_value(aparams);
+                        camera.audio_timebase.set_value(atb);
+                    }
+                    devices.save_camera(camera);
+                    as.camera = camera;
 
                     as.byte_rate = cp.bytes_per_second;
                     as.sdp_medias = cp.sdp_medias;
@@ -1746,6 +1862,277 @@ static std::atomic<bool> g_sigterm_received{false};
 static void _sigterm_handler(int) { g_sigterm_received = true; }
 #endif
 
+// ---- headless mode shutdown handling --------------------------------------
+// Headless mode runs the recording/discovery/web core with no GUI and blocks
+// until asked to stop. POSIX: SIGINT/SIGTERM. Windows: a console ctrl event
+// (Ctrl+C) or the named "Local\RevereHeadlessStop" event — needed because this
+// is a GUI-subsystem binary with no console of its own.
+#if defined(IS_LINUX) || defined(IS_MACOS)
+#include <csignal>
+#include <pthread.h>
+
+static sigset_t g_headless_sigset;
+
+static void _headless_arm_shutdown()
+{
+    // Block the shutdown signals in this (main) thread BEFORE starting any
+    // worker threads, so they inherit the block and only this thread's sigwait
+    // receives them.
+    sigemptyset(&g_headless_sigset);
+    sigaddset(&g_headless_sigset, SIGINT);
+    sigaddset(&g_headless_sigset, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &g_headless_sigset, nullptr);
+}
+
+static void _headless_wait_for_shutdown()
+{
+    int sig = 0;
+    sigwait(&g_headless_sigset, &sig);
+    R_LOG_INFO("Received signal %d.", sig);
+}
+#endif
+
+#ifdef IS_WINDOWS
+static HANDLE g_headless_stop_event = nullptr;
+
+static BOOL WINAPI _headless_console_ctrl_handler(DWORD ctrl_type)
+{
+    switch(ctrl_type)
+    {
+        case CTRL_C_EVENT:
+        case CTRL_BREAK_EVENT:
+        case CTRL_CLOSE_EVENT:
+        case CTRL_LOGOFF_EVENT:
+        case CTRL_SHUTDOWN_EVENT:
+            if(g_headless_stop_event)
+                SetEvent(g_headless_stop_event);
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+
+static void _headless_arm_shutdown()
+{
+    // GUI-subsystem process has no console of its own; attach to the launching
+    // one (if any) so Ctrl+C and stdout work when started from a terminal.
+    AttachConsole(ATTACH_PARENT_PROCESS);
+    g_headless_stop_event = CreateEventA(nullptr, TRUE, FALSE, "Local\\RevereHeadlessStop");
+    SetConsoleCtrlHandler(_headless_console_ctrl_handler, TRUE);
+}
+
+static void _headless_wait_for_shutdown()
+{
+    if(g_headless_stop_event)
+        WaitForSingleObject(g_headless_stop_event, INFINITE);
+}
+#endif
+
+// ---- systemd service install/uninstall (Linux only) -----------------------
+// Opt-in: a desktop user just runs revere; someone who wants a 24/7 daemon runs
+// `sudo revere --install-service`. Decoupled from `make install` so the desktop
+// install never drags in a service/user/state dir. Mirrors the Windows
+// "Start Revere with system" deliberate action.
+#ifdef IS_LINUX
+#include <unistd.h>
+#include <pwd.h>
+#include <sys/stat.h>
+#include <cstdlib>
+#include <cstdio>
+
+static const char* REVERE_SERVICE_USER = "revere";
+static const char* REVERE_SERVICE_UNIT = "/etc/systemd/system/revere.service";
+
+static int _install_systemd_service(const std::string& data_dir_arg, const std::string& secret_dir_arg)
+{
+    if(geteuid() != 0)
+    {
+        fprintf(stderr, "revere --install-service must be run as root (try: sudo revere --install-service)\n");
+        return 1;
+    }
+
+    std::string data_dir   = data_dir_arg.empty()   ? std::string("/var/lib/revere") : data_dir_arg;
+    std::string secret_dir = secret_dir_arg.empty() ? (data_dir + "/secret")         : secret_dir_arg;
+    std::string exe_path   = r_fs::current_exe_path();
+
+    // 1. Create the dedicated system user if it doesn't exist.
+    if(getpwnam(REVERE_SERVICE_USER) == nullptr)
+    {
+        std::string cmd = std::string("useradd --system --no-create-home --shell /usr/sbin/nologin ") + REVERE_SERVICE_USER;
+        if(system(cmd.c_str()) != 0)
+        {
+            fprintf(stderr, "Failed to create system user '%s'.\n", REVERE_SERVICE_USER);
+            return 1;
+        }
+        printf("Created system user '%s'.\n", REVERE_SERVICE_USER);
+    }
+
+    struct passwd* pw = getpwnam(REVERE_SERVICE_USER);
+    if(pw == nullptr)
+    {
+        fprintf(stderr, "System user '%s' not found after creation.\n", REVERE_SERVICE_USER);
+        return 1;
+    }
+
+    // 2. Create + own the data dir (revere creates video/logs/config/db and the
+    //    secret/ subdir inside it itself on first run).
+    try
+    {
+        if(!r_fs::file_exists(data_dir))
+            r_fs::mkdir_p(data_dir);
+    }
+    catch(const std::exception& e)
+    {
+        fprintf(stderr, "Failed to create data dir %s: %s\n", data_dir.c_str(), e.what());
+        return 1;
+    }
+    if(chown(data_dir.c_str(), pw->pw_uid, pw->pw_gid) != 0)
+        fprintf(stderr, "Warning: could not chown %s to %s.\n", data_dir.c_str(), REVERE_SERVICE_USER);
+    chmod(data_dir.c_str(), 0700);
+
+    // 3. Write the unit with the running binary's absolute path baked in.
+    std::string unit =
+        "[Unit]\n"
+        "Description=Revere Video Surveillance System\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        "ExecStart=" + exe_path + " --headless --data-dir " + data_dir + " --secret-dir " + secret_dir + "\n"
+        "User=" + REVERE_SERVICE_USER + "\n"
+        "Group=" + REVERE_SERVICE_USER + "\n"
+        "Restart=always\n"
+        "RestartSec=3\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n";
+
+    try
+    {
+        r_fs::write_file(reinterpret_cast<const uint8_t*>(unit.data()), unit.size(), REVERE_SERVICE_UNIT);
+    }
+    catch(const std::exception& e)
+    {
+        fprintf(stderr, "Failed to write %s: %s\n", REVERE_SERVICE_UNIT, e.what());
+        return 1;
+    }
+    printf("Wrote %s\n", REVERE_SERVICE_UNIT);
+
+    // 4. Reload, enable and start.
+    if(system("systemctl daemon-reload") != 0)
+        fprintf(stderr, "Warning: 'systemctl daemon-reload' failed.\n");
+    if(system("systemctl enable --now revere.service") != 0)
+    {
+        fprintf(stderr, "Failed to enable/start revere.service. Check: systemctl status revere\n");
+        return 1;
+    }
+
+    printf("\nRevere is installed and running as a system service.\n");
+    printf("  Data dir:  %s\n", data_dir.c_str());
+    printf("  Status:    systemctl status revere\n");
+    printf("  Logs:      journalctl -u revere -f\n");
+    printf("  Web UI:    http://localhost:8088/\n");
+    return 0;
+}
+
+static int _uninstall_systemd_service()
+{
+    if(geteuid() != 0)
+    {
+        fprintf(stderr, "revere --uninstall-service must be run as root (try: sudo revere --uninstall-service)\n");
+        return 1;
+    }
+
+    // Best-effort: stop + disable, remove the unit, reload. Leaves the data dir
+    // and the 'revere' user intact so recordings/credentials aren't destroyed.
+    system("systemctl disable --now revere.service");
+
+    if(r_fs::file_exists(REVERE_SERVICE_UNIT))
+    {
+        try
+        {
+            r_fs::remove_file(REVERE_SERVICE_UNIT);
+            printf("Removed %s\n", REVERE_SERVICE_UNIT);
+        }
+        catch(const std::exception& e)
+        {
+            fprintf(stderr, "Failed to remove %s: %s\n", REVERE_SERVICE_UNIT, e.what());
+        }
+    }
+    system("systemctl daemon-reload");
+
+    printf("\nRevere service removed. The '%s' user and its data dir were left intact.\n", REVERE_SERVICE_USER);
+    printf("  Remove recordings + credentials:  sudo rm -rf /var/lib/revere\n");
+    printf("  Remove the service user:          sudo userdel %s\n", REVERE_SERVICE_USER);
+    return 0;
+}
+#endif
+
+static std::string _help_text()
+{
+    return
+        "Revere Video Surveillance System\n"
+        "\n"
+        "Usage:\n"
+        "  revere [options]\n"
+        "\n"
+        "With no options Revere starts the desktop application (minimizes to the\n"
+        "system tray).\n"
+        "\n"
+        "General:\n"
+        "  --help, -h               Show this message and exit.\n"
+        "  --start_minimized        Start minimized to the system tray.\n"
+        "  --quit                   Signal a running instance to quit, then exit.\n"
+        "\n"
+        "Headless / daemon:\n"
+        "  --headless               Run without a GUI: recording, discovery and the\n"
+        "                           REST API + web UI on http://localhost:8088/.\n"
+        "  --data-dir <path>        Store database, recordings, logs and config under\n"
+        "                           <path> (default: per-user data directory).\n"
+        "  --secret-dir <path>      Store the master encryption key under <path>\n"
+        "                           (default: per-user config directory).\n"
+        "\n"
+        "Service management (Linux only, run with sudo):\n"
+        "  --install-service        Create the 'revere' user and a systemd unit that\n"
+        "                           runs Revere headless on boot, then enable + start.\n"
+        "  --uninstall-service      Stop and remove the systemd unit (keeps the data\n"
+        "                           directory and the 'revere' user).\n"
+        "\n"
+        "Diagnostics:\n"
+        "  --sim_mttf_seconds <n>   Simulate random stream failures ~every n seconds\n"
+        "                           (robustness / leak testing).\n"
+        "\n"
+        "Examples:\n"
+        "  revere\n"
+        "  revere --headless --data-dir /var/lib/revere --secret-dir /var/lib/revere/secret\n"
+        "  sudo revere --install-service\n";
+}
+
+#ifdef IS_WINDOWS
+// revere.exe is a GUI-subsystem binary with no console of its own. Attach to the
+// launching console (if any) and write directly to it so `revere --help` from a
+// terminal actually shows output.
+static void _emit_console_text(const std::string& text)
+{
+    if(AttachConsole(ATTACH_PARENT_PROCESS))
+    {
+        HANDLE h = CreateFileA("CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if(h != INVALID_HANDLE_VALUE)
+        {
+            DWORD written = 0;
+            WriteFile(h, text.data(), (DWORD)text.size(), &written, nullptr);
+            CloseHandle(h);
+        }
+    }
+}
+#else
+static void _emit_console_text(const std::string& text)
+{
+    fputs(text.c_str(), stdout);
+}
+#endif
+
 #ifdef IS_WINDOWS
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 #endif
@@ -1769,7 +2156,43 @@ int main(int argc, char** argv)
 #endif
     auto args = r_args::parse_arguments(argc, &argv[0]);
 
+    if(r_args::check_argument(args, "--help") || r_args::check_argument(args, "-h"))
+    {
+        _emit_console_text(_help_text());
+        return 0;
+    }
+
     auto maybe_quit = r_args::check_argument(args, "--quit");
+
+    // Path overrides must be applied before anything resolves top_dir() or the
+    // secure-store key path (lock file, db, recordings, credentials all derive
+    // from these). --data-dir relocates bulk state; --secret-dir relocates the
+    // master key (defaults to the home-based location when omitted).
+    std::string data_dir_arg;
+    if(r_args::check_argument(args, "--data-dir", data_dir_arg) && !data_dir_arg.empty())
+        revere::set_data_dir(r_fs::platform_path(data_dir_arg));
+
+    std::string secret_dir_arg;
+    if(r_args::check_argument(args, "--secret-dir", secret_dir_arg) && !secret_dir_arg.empty())
+        r_utils::r_secure_store::set_key_dir(r_fs::platform_path(secret_dir_arg));
+
+    // One-shot service management. Linux-only — on other platforms it says so
+    // and exits rather than silently launching the GUI. Runs before the single-
+    // instance lock / GUI / core startup.
+    if(r_args::check_argument(args, "--install-service") || r_args::check_argument(args, "--uninstall-service"))
+    {
+        if(!r_utils::r_platform::is_linux())
+        {
+            fprintf(stderr, "--install-service / --uninstall-service are only supported on Linux (this is %s).\n",
+                    r_utils::r_platform::os_name());
+            return 1;
+        }
+#ifdef IS_LINUX
+        if(r_args::check_argument(args, "--install-service"))
+            return _install_systemd_service(data_dir_arg, secret_dir_arg);
+        return _uninstall_systemd_service();
+#endif
+    }
 
     // Compute top_dir early for lock file path
     auto top_dir = revere::top_dir();
@@ -1967,7 +2390,7 @@ int main(int argc, char** argv)
 
     r_disco::r_agent agent(r_fs::platform_path(top_dir));
     r_disco::r_devices devices(r_fs::platform_path(top_dir));
-    r_vss::r_stream_keeper streamKeeper(devices, r_fs::platform_path(top_dir));
+    r_vss::r_stream_keeper streamKeeper(devices, agent, r_fs::platform_path(top_dir));
     streamKeeper.set_system_plugin_api_result_cb([&cfg_state](const std::string& name, const std::string& json) {
         if(name == "camera_answers")
         {
@@ -2029,6 +2452,35 @@ int main(int argc, char** argv)
 
     // Note: streamKeeper, devices, and agent will be started after log callback is registered
 
+    // Headless mode: run the recording/discovery/web core with no GUI and block
+    // until told to stop. Everything the web UI drives — camera setup/recording,
+    // the REST API and bundled web UI on :8088 — works without the desktop
+    // window. This is the entry point for running Revere as a Linux/macOS daemon.
+    if(r_args::check_argument(args, "--headless"))
+    {
+        R_LOG_INFO("========================================");
+        R_LOG_INFO("Revere Video Surveillance System (headless)");
+        R_LOG_INFO("========================================");
+
+        _headless_arm_shutdown();   // arm before starting worker threads
+
+        streamKeeper.start();
+        devices.start();
+        agent.start();
+
+        R_LOG_INFO("Revere running headless. Web UI: http://localhost:8088/");
+
+        _headless_wait_for_shutdown();
+
+        R_LOG_INFO("Stopping...");
+        streamKeeper.stop();
+        agent.stop();
+        // devices.stop() runs from its destructor after streamKeeper is gone.
+
+        r_pipeline::gstreamer_deinit();
+        return 0;
+    }
+
     // Setup SDL2
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
     {
@@ -2062,6 +2514,23 @@ int main(int argc, char** argv)
         SDL_Quit();
         return 1;
     }
+
+#ifdef IS_WINDOWS
+    // Make the native title bar dark so it matches the app's theme instead of
+    // clashing with a bright OS title bar. DWMWA_USE_IMMERSIVE_DARK_MODE is 20
+    // on Windows 10 2004+/11; some older 10 builds used 19 — try both.
+    {
+        SDL_SysWMinfo wmInfo;
+        SDL_VERSION(&wmInfo.version);
+        if (SDL_GetWindowWMInfo(window, &wmInfo))
+        {
+            HWND hwnd = wmInfo.info.win.window;
+            BOOL dark = TRUE;
+            if (FAILED(DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark))))
+                DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark));
+        }
+    }
+#endif
 
     // Platform-specific renderer selection:
     // - Windows: Use hardware-accelerated (Direct3D) - no packaging concerns
@@ -2142,9 +2611,6 @@ int main(int argc, char** argv)
     R_LOG_INFO("icon_path=%s\n",icon_path.c_str());
 
     Tray::Tray tray("Revere", icon_path);
-    tray.addEntry(Tray::Button("Exit", [&]{
-        close_requested = true;
-    }));
     tray.addEntry(Tray::Button("Show", [&]{
         SDL_ShowWindow(window);
         SDL_RaiseWindow(window);
@@ -2155,6 +2621,13 @@ int main(int argc, char** argv)
     tray.addEntry(Tray::Button("Launch Vision", [&]{
         if(!vision_process.running())
             vision_process.start();
+    }));
+    tray.addEntry(Tray::Button("Open Web UI", [&]{
+        revere::open_url_in_browser("http://localhost:8088");
+    }));
+    tray.addEntry(Tray::Separator());
+    tray.addEntry(Tray::Button("Exit", [&]{
+        close_requested = true;
     }));
 
     // Configure Dear ImGui (context already created earlier)
@@ -2432,6 +2905,9 @@ int main(int argc, char** argv)
             },
             [&](){
                 revere::open_url_in_browser("http://localhost:8088");
+            },
+            [&](){
+                camera_setup_wizard.next("set_system_password");
             }
         );
 
@@ -2476,11 +2952,26 @@ int main(int argc, char** argv)
                             [&](int i){
                                 as.camera_id = ui_state.discovered_items[i].camera_id;
                                 as.camera = devices.get_camera_by_id(as.camera_id);
-                                as.ipv4 = as.camera.value().ipv4.value();
+                                auto& cam = as.camera.value();
+                                as.ipv4 = cam.ipv4.is_null() ? "" : cam.ipv4.value();
                                 as.wizard_step = 1;
                                 as.wizard_total_steps = 9;
 
-                                camera_setup_wizard.next("camera_credentials");
+                                // A manually-added RTSP camera has a stream URL but no
+                                // ONVIF address — skip the credentials/profile/ONVIF
+                                // steps and probe the RTSP URL directly, reusing the
+                                // credentials captured in the Add dialog.
+                                if(cam.xaddrs.is_null() && !cam.rtsp_url.is_null())
+                                {
+                                    as.rtsp_username = cam.rtsp_username;
+                                    as.rtsp_password = cam.rtsp_password;
+                                    as.selected_profile_token = "";
+                                    camera_setup_wizard.next("interrogate_rtsp_source");
+                                }
+                                else
+                                {
+                                    camera_setup_wizard.next("camera_credentials");
+                                }
                             },
                             [&](int i){
                                 ui_state.reset_selection();

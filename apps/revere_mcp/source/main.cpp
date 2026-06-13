@@ -45,17 +45,16 @@ int main()
             req.set_body(line);
             req.write_request(sock);
 
+            if(is_notification)
+                continue;                 // fire-and-forget: no response expected, don't block
+
             r_client_response resp;
             resp.read_response(sock);
-
-            if(!is_notification)
+            auto body = resp.get_body_as_string();
+            if(!body.is_null())
             {
-                auto body = resp.get_body_as_string();
-                if(!body.is_null())
-                {
-                    cout << body.value() << "\n";
-                    cout.flush();
-                }
+                cout << body.value() << "\n";
+                cout.flush();
             }
         }
         catch(const exception& ex)

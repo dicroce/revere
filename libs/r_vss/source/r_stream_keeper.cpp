@@ -21,8 +21,9 @@ using namespace r_utils::r_std_utils;
 using namespace r_disco;
 using namespace std;
 
-r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
+r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const string& top_dir) :
     _devices(devices),
+    _agent(agent),
     _top_dir(top_dir),
     _th(),
     _running(false),
@@ -59,7 +60,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, const string& top_dir) :
         _meph
     ),
     _system_plugin_host(top_dir),
-    _ws(top_dir, _devices),
+    _ws(top_dir, _devices, _agent, *this),
     _prune(_top_dir, _devices)
 {
     auto video_path = top_dir + PATH_SLASH + "video";
@@ -452,6 +453,21 @@ void r_stream_keeper::_update_retention_cache()
 r_devices& r_stream_keeper::get_devices()
 {
     return _devices;
+}
+
+void r_stream_keeper::set_system_password(const std::string& password)
+{
+    _ws.set_system_password(password);
+}
+
+bool r_stream_keeper::system_password_set() const
+{
+    return _ws.system_password_set();
+}
+
+void r_stream_keeper::clear_system_password()
+{
+    _ws.clear_system_password();
 }
 
 void r_stream_keeper::write_metadata(const string& camera_id, const string& stream_tag, const string& json_data, int64_t timestamp_ms)

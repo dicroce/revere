@@ -21,6 +21,15 @@
 
 using namespace r_utils;
 
+namespace {
+    std::string s_key_dir_override;
+}
+
+void r_secure_store::set_key_dir(const std::string& dir)
+{
+    s_key_dir_override = dir;
+}
+
 r_secure_store::r_secure_store()
     : _backend(_detect_backend()),
       _cached_key(),
@@ -88,6 +97,10 @@ bool r_secure_store::has_master_key() const
 
 std::string r_secure_store::_get_key_path() const
 {
+    // Explicit override (--secret-dir) wins on every platform.
+    if(!s_key_dir_override.empty())
+        return s_key_dir_override + PATH_SLASH + "encryption.key";
+
 #ifdef IS_WINDOWS
     // Use %LOCALAPPDATA%\Revere\encryption.key
     char local_app_data[MAX_PATH];
