@@ -884,12 +884,18 @@ static void _add_username_text_header(
     createdElem.text().set(time_buffer);
 }
 
-vector<string> r_onvif::discover(const string& uuid)
+// Build the WS-Discovery Probe SOAP envelope (NetworkVideoTransmitter type).
+// Shared by the multicast (discover) and unicast (discover_unicast) paths.
+static string _make_probe_message(const string& uuid)
 {
     auto id = r_string_utils::format("urn:uuid:%s", uuid.c_str());
-
-    string broadcast_message =
+    return
     "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:a=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\"><SOAP-ENV:Header><a:Action SOAP-ENV:mustUnderstand=\"1\">http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action><a:MessageID>" + id + "</a:MessageID><a:ReplyTo><a:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</a:Address></a:ReplyTo><a:To SOAP-ENV:mustUnderstand=\"1\">urn:schemas-xmlsoap-org:ws:2005:04:discovery</a:To></SOAP-ENV:Header><SOAP-ENV:Body><p:Probe xmlns:p=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\"><d:Types xmlns:d=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\" xmlns:dp0=\"http://www.onvif.org/ver10/network/wsdl\">dp0:NetworkVideoTransmitter</d:Types></p:Probe></SOAP-ENV:Body></SOAP-ENV:Envelope>";
+}
+
+vector<string> r_onvif::discover(const string& uuid)
+{
+    string broadcast_message = _make_probe_message(uuid);
 
     vector<string> all_discovered;
 
@@ -904,6 +910,134 @@ vector<string> r_onvif::discover(const string& uuid)
     }
 
     return all_discovered;
+}
+
+// Send the Probe directly (unicast UDP) to each target on port 3702 and collect
+// any ProbeMatch responses. One socket: blast all probes, then read replies until
+// the receive window goes quiet. Same response format as the multicast path.
+static vector<string> _probe_unicast(const vector<string>& targets, const string& broadcast_message)
+{
+    vector<string> discovered;
+    if (targets.empty())
+        return discovered;
+
+#ifdef IS_WINDOWS
+    SOCKET sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET)
+        return discovered;
+
+    BOOL reuse = TRUE;
+    ::setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+
+    DWORD recvTimeout = 1000; // 1 second
+    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recvTimeout, sizeof(recvTimeout));
+
+    struct sockaddr_in localAddr;
+    memset(&localAddr, 0, sizeof(localAddr));
+    localAddr.sin_family = AF_INET;
+    localAddr.sin_port = htons(0);
+    localAddr.sin_addr.s_addr = INADDR_ANY;
+    if (::bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) != 0) {
+        closesocket(sock);
+        return discovered;
+    }
+
+    for (const auto& tip : targets)
+    {
+        struct sockaddr_in dst;
+        memset(&dst, 0, sizeof(dst));
+        dst.sin_family = AF_INET;
+        dst.sin_port = htons(3702);
+        if (inet_pton(AF_INET, tip.c_str(), &dst.sin_addr) != 1)
+            continue;
+        ::sendto(sock, broadcast_message.c_str(), (int)broadcast_message.length(), 0,
+                 (struct sockaddr*)&dst, sizeof(dst));
+    }
+
+    char buf[8192];
+    int timeoutCounts = 0;
+    while (timeoutCounts < 2) {
+        struct sockaddr_in fromAddr;
+        int fromAddrLen = sizeof(fromAddr);
+        int len = ::recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
+        if (len < 0) {
+            int error = WSAGetLastError();
+            if (error == WSAETIMEDOUT)
+                timeoutCounts++;
+            else
+                break;
+        }
+        else if (len > 0) {
+            buf[len] = '\0';
+            discovered.push_back(string(buf, len));
+        }
+    }
+    closesocket(sock);
+#endif
+
+#if defined(IS_LINUX) || defined(IS_MACOS)
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0)
+        return discovered;
+
+    int reuse = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    struct timeval recvTimeout;
+    recvTimeout.tv_sec = 1;
+    recvTimeout.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout));
+
+    struct sockaddr_in localAddr;
+    memset(&localAddr, 0, sizeof(localAddr));
+    localAddr.sin_family = AF_INET;
+    localAddr.sin_port = htons(0);
+    localAddr.sin_addr.s_addr = INADDR_ANY;
+    if (::bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) < 0) {
+        close(sock);
+        return discovered;
+    }
+
+    for (const auto& tip : targets)
+    {
+        struct sockaddr_in dst;
+        memset(&dst, 0, sizeof(dst));
+        dst.sin_family = AF_INET;
+        dst.sin_port = htons(3702);
+        if (inet_pton(AF_INET, tip.c_str(), &dst.sin_addr) != 1)
+            continue;
+        sendto(sock, broadcast_message.c_str(), broadcast_message.length(), 0,
+               (struct sockaddr*)&dst, sizeof(dst));
+    }
+
+    char buf[8192];
+    int timeoutCounts = 0;
+    while (timeoutCounts < 2) {
+        struct sockaddr_in fromAddr;
+        socklen_t fromAddrLen = sizeof(fromAddr);
+        int len = recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
+        if (len < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                timeoutCounts++;
+            else
+                break;
+        }
+        else if (len > 0) {
+            buf[len] = '\0';
+            discovered.push_back(string(buf, len));
+        }
+    }
+    close(sock);
+#endif
+
+    return discovered;
+}
+
+vector<string> r_onvif::discover_unicast(const string& uuid, const vector<string>& target_ips)
+{
+    if (target_ips.empty())
+        return {};
+    return _probe_unicast(target_ips, _make_probe_message(uuid));
 }
 
 std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::string>& discovered)

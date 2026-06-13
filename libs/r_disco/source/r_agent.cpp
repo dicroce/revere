@@ -101,8 +101,17 @@ bool r_agent::_is_recording(const std::string& id)
 {
     if(!_is_recording_cb)
         R_THROW(("Please set a is_recording callback on r_agent before calling start."));
-    
+
     return _is_recording_cb(id);
+}
+
+std::vector<r_camera> r_agent::_get_assigned_cameras()
+{
+    // Optional: if the host didn't wire this up, unicast self-heal simply
+    // doesn't run (multicast discovery still works exactly as before).
+    if(!_assigned_cameras_cb)
+        return {};
+    return _assigned_cameras_cb();
 }
 
 void r_agent::_entry_point()

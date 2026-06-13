@@ -15,6 +15,14 @@ namespace r_onvif
 
 R_API std::vector<std::string> discover(const std::string& uuid);
 
+// Unicast variant of discover(): sends the same WS-Discovery Probe directly to
+// each target IP (UDP port 3702) instead of to the multicast group. Cheap ONVIF
+// cameras commonly ignore multicast Probe requests (they only multicast a Hello
+// at boot), so multicast discovery can miss a camera that is up and reachable.
+// The raw responses are in the same ProbeMatch format as discover(), so the
+// result feeds through filter_discovered() identically.
+R_API std::vector<std::string> discover_unicast(const std::string& uuid, const std::vector<std::string>& target_ips);
+
 struct discovered_info
 {
     std::string host;

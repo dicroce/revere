@@ -686,6 +686,18 @@ vector<r_networking::r_adapter_info> r_utils::r_networking::r_get_adapters()
                     info.name = &nameBuf[0];
                 }
                 info.ipv4_addr = ipStr;
+                // OnLinkPrefixLength is populated because we pass GAA_FLAG_INCLUDE_PREFIX.
+                {
+                    ULONG prefix = pUnicast->OnLinkPrefixLength;
+                    if (prefix <= 32)
+                    {
+                        uint32_t mask = (prefix == 0) ? 0 : htonl(0xFFFFFFFFu << (32 - prefix));
+                        struct in_addr nm; nm.s_addr = mask;
+                        char nmStr[INET_ADDRSTRLEN];
+                        if (inet_ntop(AF_INET, &nm, nmStr, INET_ADDRSTRLEN))
+                            info.ipv4_netmask = nmStr;
+                    }
+                }
                 adapters.push_back(info);
             }
         }
@@ -726,6 +738,13 @@ vector<r_networking::r_adapter_info> r_utils::r_networking::r_get_adapters()
         r_adapter_info info;
         info.name = ifa->ifa_name;
         info.ipv4_addr = ipStr;
+        if (ifa->ifa_netmask != nullptr && ifa->ifa_netmask->sa_family == AF_INET)
+        {
+            sockaddr_in* nm_in = reinterpret_cast<sockaddr_in*>(ifa->ifa_netmask);
+            char nmStr[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &nm_in->sin_addr, nmStr, INET_ADDRSTRLEN))
+                info.ipv4_netmask = nmStr;
+        }
         adapters.push_back(info);
     }
 
@@ -733,4 +752,47 @@ vector<r_networking::r_adapter_info> r_utils::r_networking::r_get_adapters()
 #endif
 
     return adapters;
+}
+
+vector<string> r_utils::r_networking::r_ipv4_subnet_hosts(const string& ipv4_addr, const string& netmask, size_t max_hosts)
+{
+    vector<string> hosts;
+
+    if(ipv4_addr.empty() || netmask.empty())
+        return hosts;
+
+    struct in_addr ip_a, nm_a;
+    if(inet_pton(AF_INET, ipv4_addr.c_str(), &ip_a) != 1)
+        return hosts;
+    if(inet_pton(AF_INET, netmask.c_str(), &nm_a) != 1)
+        return hosts;
+
+    uint32_t ip   = ntohl(ip_a.s_addr);
+    uint32_t mask = ntohl(nm_a.s_addr);
+
+    // A valid IPv4 netmask is a run of 1s followed by 0s. Reject a 0.0.0.0 or
+    // /32 mask (no usable host range) and any non-contiguous mask.
+    if(mask == 0 || mask == 0xFFFFFFFFu)
+        return hosts;
+    uint32_t hostmask = ~mask;
+    if((hostmask & (hostmask + 1)) != 0)  // hostmask must be 0b0..01..1
+        return hosts;
+
+    uint32_t network   = ip & mask;
+    uint32_t broadcast = network | hostmask;
+
+    // Usable hosts are network+1 .. broadcast-1.
+    uint64_t count = (broadcast > network + 1) ? ((uint64_t)broadcast - network - 1) : 0;
+    if(count == 0 || count > max_hosts)
+        return hosts;
+
+    hosts.reserve((size_t)count);
+    for(uint32_t a = network + 1; a < broadcast; ++a)
+    {
+        struct in_addr h; h.s_addr = htonl(a);
+        char buf[INET_ADDRSTRLEN];
+        if(inet_ntop(AF_INET, &h, buf, INET_ADDRSTRLEN))
+            hosts.push_back(buf);
+    }
+    return hosts;
 }

@@ -26,6 +26,7 @@
 #include <climits>
 #include <numeric>
 #include <cstdint>
+#include <algorithm>
 
 using namespace std;
 using namespace std::chrono;
@@ -1739,6 +1740,52 @@ void test_r_utils::test_ring_buffer_last_n_match()
 
     // Last 2 should NOT be non-significant
     RTF_ASSERT(!motion_rb.last_n_match(2, [](const motion_sample& s) { return !s.is_significant; }));
+}
+
+void test_r_utils::test_ipv4_subnet_hosts()
+{
+    // /24 -> 254 usable hosts, .1 .. .254, excluding network/broadcast.
+    {
+        auto hosts = r_networking::r_ipv4_subnet_hosts("192.168.1.50", "255.255.255.0", 4096);
+        RTF_ASSERT(hosts.size() == 254);
+        RTF_ASSERT(hosts.front() == "192.168.1.1");
+        RTF_ASSERT(hosts.back() == "192.168.1.254");
+        // network (.0) and broadcast (.255) must not be present
+        RTF_ASSERT(std::find(hosts.begin(), hosts.end(), "192.168.1.0") == hosts.end());
+        RTF_ASSERT(std::find(hosts.begin(), hosts.end(), "192.168.1.255") == hosts.end());
+    }
+
+    // /22 -> 1022 usable hosts spanning .68.1 .. .71.254.
+    {
+        auto hosts = r_networking::r_ipv4_subnet_hosts("192.168.68.69", "255.255.252.0", 4096);
+        RTF_ASSERT(hosts.size() == 1022);
+        RTF_ASSERT(hosts.front() == "192.168.68.1");
+        RTF_ASSERT(hosts.back() == "192.168.71.254");
+        RTF_ASSERT(std::find(hosts.begin(), hosts.end(), "192.168.68.67") != hosts.end());
+    }
+
+    // Over the cap -> empty (don't sweep a huge range).
+    {
+        auto hosts = r_networking::r_ipv4_subnet_hosts("192.168.68.69", "255.255.252.0", 1000);
+        RTF_ASSERT(hosts.empty());
+    }
+
+    // /30 -> 2 usable hosts.
+    {
+        auto hosts = r_networking::r_ipv4_subnet_hosts("10.0.0.1", "255.255.255.252", 4096);
+        RTF_ASSERT(hosts.size() == 2);
+        RTF_ASSERT(hosts.front() == "10.0.0.1");
+        RTF_ASSERT(hosts.back() == "10.0.0.2");
+    }
+
+    // Degenerate / invalid inputs -> empty.
+    {
+        RTF_ASSERT(r_networking::r_ipv4_subnet_hosts("10.0.0.1", "255.255.255.255", 4096).empty()); // /32
+        RTF_ASSERT(r_networking::r_ipv4_subnet_hosts("10.0.0.1", "0.0.0.0", 4096).empty());         // /0 rejected
+        RTF_ASSERT(r_networking::r_ipv4_subnet_hosts("10.0.0.1", "255.0.255.0", 4096).empty());     // non-contiguous
+        RTF_ASSERT(r_networking::r_ipv4_subnet_hosts("not-an-ip", "255.255.255.0", 4096).empty());
+        RTF_ASSERT(r_networking::r_ipv4_subnet_hosts("10.0.0.1", "", 4096).empty());
+    }
 }
 
 #ifdef WIN32
