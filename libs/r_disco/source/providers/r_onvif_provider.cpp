@@ -8,7 +8,10 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_md5.h"
 #include "r_utils/r_uuid.h"
+#include "r_utils/r_socket.h"
+#include "r_utils/r_logger.h"
 #include <string>
+#include <set>
 
 using namespace r_disco;
 using namespace r_utils;
@@ -338,39 +341,128 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
 
 }
 
+// Build the list of unicast sweep targets: every usable host on each local
+// IPv4 subnet, minus our own adapter addresses. Subnets larger than the cap are
+// skipped (and logged) so we never blast an enormous range.
+static std::vector<std::string> _subnet_sweep_targets()
+{
+    static const size_t MAX_SWEEP_HOSTS = 4096;  // ~/20; covers typical /24../22 LANs
+    std::vector<std::string> targets;
+    std::set<std::string> own;
+
+    auto adapters = r_utils::r_networking::r_get_adapters();
+    for(auto& a : adapters)
+        own.insert(a.ipv4_addr);
+
+    for(auto& a : adapters)
+    {
+        if(a.ipv4_addr.empty() || a.ipv4_netmask.empty())
+            continue;
+        if(a.ipv4_addr.rfind("169.254.", 0) == 0)  // skip link-local
+            continue;
+
+        auto hosts = r_utils::r_networking::r_ipv4_subnet_hosts(a.ipv4_addr, a.ipv4_netmask, MAX_SWEEP_HOSTS);
+        if(hosts.empty())
+        {
+            R_LOG_INFO("onvif: skipping subnet sweep on %s/%s (no usable hosts, invalid mask, or larger than %zu)",
+                       a.ipv4_addr.c_str(), a.ipv4_netmask.c_str(), MAX_SWEEP_HOSTS);
+            continue;
+        }
+        for(auto& h : hosts)
+            if(own.find(h) == own.end())
+                targets.push_back(h);
+    }
+    return targets;
+}
+
 vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir, const std::function<bool()>& should_continue)
 {
     std::vector<r_stream_config> configs;
+    std::set<std::string> seen_ids;
 
-    auto envelopes = r_onvif::discover(r_uuid::generate(), should_continue);
-
-    auto discovered_infos = r_onvif::filter_discovered(envelopes);
-
-    for(auto& di : discovered_infos)
-    {
-        try
+    // Turn raw ProbeMatch envelopes into stream_configs, de-duplicated by the
+    // device's stable id (MD5 of its ONVIF EndpointReference). First responder
+    // for an id wins, so multicast results take precedence over unicast ones.
+    auto ingest = [&](const std::vector<std::string>& envelopes) {
+        for(auto& di : r_onvif::filter_discovered(envelopes))
         {
-            r_stream_config config;
-            
-            // Onvif device id's are created by hashing the devices address.
-            r_md5 hash;
-            hash.update((uint8_t*)di.address.c_str(), di.address.size());
-            hash.finalize();
-            auto id = hash.get_as_uuid();
-            auto credentials = _agent->_get_credentials(id);
-            
-            config.id = id;
-            config.camera_name.set_value(di.camera_name);
-            config.ipv4.set_value(di.host);
-            config.port.set_value(di.port);  // Store discovered port
-            config.protocol.set_value(di.protocol);  // Store discovered protocol
-            config.xaddrs.set_value(di.uri);
-            config.address.set_value(di.address);
-            configs.push_back(config);
+            try
+            {
+                // Onvif device id's are created by hashing the devices address.
+                r_md5 hash;
+                hash.update((uint8_t*)di.address.c_str(), di.address.size());
+                hash.finalize();
+                auto id = hash.get_as_uuid();
+                if(!seen_ids.insert(id).second)
+                    continue;  // already have this device from an earlier probe
+
+                r_stream_config config;
+                config.id = id;
+                config.camera_name.set_value(di.camera_name);
+                config.ipv4.set_value(di.host);
+                config.port.set_value(di.port);          // Store discovered port
+                config.protocol.set_value(di.protocol);  // Store discovered protocol
+                config.xaddrs.set_value(di.uri);
+                config.address.set_value(di.address);
+                configs.push_back(config);
+            }
+            catch(const std::exception& e)
+            {
+                R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+            }
         }
-        catch(const std::exception& e)
+    };
+
+    // 1. Multicast discovery (unchanged default behavior).
+    ingest(r_onvif::discover(r_uuid::generate(), should_continue));
+
+    // 2. Unicast self-heal: relocate assigned cameras that multicast didn't
+    //    surface (cheap cams routinely ignore multicast Probe). No-op when the
+    //    host didn't wire up the assigned-cameras callback.
+    auto assigned = _agent ? _agent->_get_assigned_cameras() : std::vector<r_camera>();
+
+    auto assigned_still_missing = [&]() {
+        std::vector<r_camera> miss;
+        for(auto& c : assigned)
+            if(!c.id.empty() && seen_ids.find(c.id) == seen_ids.end())
+                miss.push_back(c);
+        return miss;
+    };
+
+    auto missing = assigned_still_missing();
+    if(!missing.empty())
+    {
+        // 2a. Always probe each missing camera's last-known IP directly — cheap,
+        //     and catches a camera that stayed put but doesn't answer multicast.
+        std::vector<std::string> known_targets;
+        for(auto& c : missing)
+            if(!c.ipv4.is_null() && !c.ipv4.value().empty())
+                known_targets.push_back(c.ipv4.value());
+
+        if(!known_targets.empty())
         {
-            R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+            R_LOG_INFO("onvif: unicast-probing %zu assigned camera(s) missing from multicast discovery",
+                       known_targets.size());
+            ingest(r_onvif::discover_unicast(r_uuid::generate(), known_targets, should_continue));
+        }
+
+        // 2b. If still missing, the camera likely changed IP (new DHCP lease).
+        //     Sweep the local subnet(s) so it's re-discovered by stable id at
+        //     its new address; the agent's background re-interrogation then
+        //     rewrites the rtsp_url and the stream rebuilds automatically.
+        //     This re-runs each poll (~60s) while a camera stays missing — e.g.
+        //     one that's powered off — so the burst is intentionally bounded:
+        //     capped host count, a ~2s receive window, and aborts on shutdown.
+        auto still = assigned_still_missing();
+        if(!still.empty() && (!should_continue || should_continue()))
+        {
+            auto sweep_targets = _subnet_sweep_targets();
+            if(!sweep_targets.empty())
+            {
+                R_LOG_INFO("onvif: %zu assigned camera(s) still missing; unicast-sweeping %zu subnet host(s) to relocate",
+                           still.size(), sweep_targets.size());
+                ingest(r_onvif::discover_unicast(r_uuid::generate(), sweep_targets, should_continue));
+            }
         }
     }
 

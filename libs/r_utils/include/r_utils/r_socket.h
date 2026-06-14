@@ -220,12 +220,20 @@ R_API uint64_t r_htonll(uint64_t x);
 
 struct r_adapter_info
 {
-    std::string name;        // interface name (e.g., "eth0", "Ethernet")
-    std::string ipv4_addr;   // IPv4 address as string
+    std::string name;          // interface name (e.g., "eth0", "Ethernet")
+    std::string ipv4_addr;     // IPv4 address as string
+    std::string ipv4_netmask;  // IPv4 netmask as string, e.g. "255.255.255.0" (empty if unknown)
 };
 
 // Returns network adapters that are: UP, not loopback, multicast capable, and have an IPv4 address
 R_API std::vector<r_adapter_info> r_get_adapters();
+
+// Enumerate the usable host addresses on the IPv4 subnet described by (ipv4_addr,
+// netmask), excluding the network and broadcast addresses. Returns an empty vector
+// if the inputs are invalid or the host count would exceed max_hosts (so callers
+// don't accidentally sweep a huge subnet). Used for unicast ONVIF discovery of
+// cameras that don't answer multicast probes.
+R_API std::vector<std::string> r_ipv4_subnet_hosts(const std::string& ipv4_addr, const std::string& netmask, size_t max_hosts);
 
 }
 

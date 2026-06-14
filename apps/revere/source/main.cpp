@@ -2446,6 +2446,9 @@ int main(int argc, char** argv)
         else
             devices.set_camera_alert(id, msg);
     });
+    // Lets the ONVIF provider unicast-probe assigned cameras (and sweep the
+    // subnet) to relocate any that changed IP and don't answer multicast Probe.
+    agent.set_assigned_cameras_cb(bind(&r_disco::r_devices::get_assigned_cameras_cached, &devices));
 
     // Note: streamKeeper, devices, and agent will be started after log callback is registered
 

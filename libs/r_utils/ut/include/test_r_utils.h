@@ -63,6 +63,7 @@ public:
       TEST(test_r_utils::test_ring_buffer_iteration);
       TEST(test_r_utils::test_ring_buffer_count_if);
       TEST(test_r_utils::test_ring_buffer_last_n_match);
+      TEST(test_r_utils::test_ipv4_subnet_hosts);
     RTF_FIXTURE_END();
 
     virtual ~test_r_utils() throw() {}
@@ -128,4 +129,5 @@ public:
     void test_ring_buffer_iteration();
     void test_ring_buffer_count_if();
     void test_ring_buffer_last_n_match();
+    void test_ipv4_subnet_hosts();
 };

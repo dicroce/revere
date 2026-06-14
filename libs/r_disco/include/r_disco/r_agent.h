@@ -50,6 +50,12 @@ typedef std::function<void(const r_camera&)> save_camera_cb;
 // failing, etc.).
 typedef std::function<void(const std::string& camera_id, const std::string& message)> camera_alert_cb;
 
+// Return the currently-assigned (recording-eligible) cameras. Used by the ONVIF
+// provider to drive unicast self-heal: it probes these cameras' last-known IPs
+// (and, if any are still unseen, sweeps the local subnet) so a camera that
+// changed IP and doesn't answer multicast Probe still gets re-discovered.
+typedef std::function<std::vector<r_camera>()> assigned_cameras_cb;
+
 class r_agent
 {
     friend class r_onvif_provider;
@@ -64,6 +70,7 @@ public:
     R_API void set_camera_lookup_cb(camera_lookup_cb cb) {_camera_lookup_cb = cb;}
     R_API void set_save_camera_cb(save_camera_cb cb) {_save_camera_cb = cb;}
     R_API void set_camera_alert_cb(camera_alert_cb cb) {_camera_alert_cb = cb;}
+    R_API void set_assigned_cameras_cb(assigned_cameras_cb cb) {_assigned_cameras_cb = cb;}
 
     R_API void start();
     R_API void stop();
@@ -100,6 +107,10 @@ private:
     void _maybe_schedule_reinterrogation(const r_stream_config& new_sc);
     void _do_reinterrogation(const r_stream_config& discovered_sc, r_camera stored);
 
+    // Assigned cameras as reported by the host (empty if no callback wired).
+    // Called by r_onvif_provider (friend) to drive unicast self-heal.
+    std::vector<r_camera> _get_assigned_cameras();
+
     std::thread _th;
     // Atomic so the discovery sweep's should_continue predicate reliably observes
     // stop() flipping this to false from another thread (and so the read isn't a
@@ -123,6 +134,7 @@ private:
     camera_lookup_cb _camera_lookup_cb;
     save_camera_cb _save_camera_cb;
     camera_alert_cb _camera_alert_cb;
+    assigned_cameras_cb _assigned_cameras_cb;
 
     // Per-camera state for the background re-interrogation worker.
     // `in_flight` blocks a second worker from spawning while one is running.
