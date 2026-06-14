@@ -30,6 +30,28 @@ from pathlib import Path
 import argparse
 
 
+# DLLs provided by Windows itself or the bundled VC++ redistributable. An import
+# of one of these is NOT a packaging error even though the file isn't staged.
+# Anything matching is treated as "resolvable on a clean machine".
+SYSTEM_DLL_RE = re.compile(
+    r"^(?:"
+    r"api-ms-win-.*|ext-ms-win-.*|"                      # API set stubs
+    r"msvcp140.*|vcruntime140.*|concrt140|msvcrt|"       # VC++ runtime (VCRedist)
+    r"kernel32|kernelbase|ntdll|user32|gdi32|gdiplus|"
+    r"advapi32|shell32|shlwapi|ole32|oleaut32|combase|"
+    r"rpcrt4|sechost|ws2_32|wsock32|crypt32|secur32|"
+    r"bcrypt|ncrypt|dnsapi|iphlpapi|winmm|setupapi|"
+    r"cfgmgr32|comctl32|comdlg32|version|userenv|psapi|"
+    r"dbghelp|powrprof|wtsapi32|imm32|uxtheme|propsys|"
+    r"dwmapi|d3d9|d3d11|d3d12|dxgi|d3dcompiler.*|"
+    r"opengl32|glu32|d2d1|dwrite|mf|mfplat|mfreadwrite|"  # d2d1/dwrite: pulled by avcodec
+    r"mfcore|avicap32|vfw32|winhttp|wininet|urlmon|"
+    r"normaliz|bcryptprimitives|win32u|gdi32full|msvcp_win"
+    r")\.dll$",
+    re.IGNORECASE,
+)
+
+
 # Configuration — every path is overridable via an environment variable (for CI)
 # and falls back to the historical local-dev default when the variable is unset.
 REVERE_DIR = Path(os.environ.get("REVERE_DIR", r"c:\dev\revere"))
@@ -177,6 +199,73 @@ def install_binaries():
     run_command(cmd, cwd=BUILD_DIR, description=f"Installing binaries to {INSTALL_DIR}")
 
 
+def verify_dependencies():
+    """Fail the build if any staged binary imports a DLL we don't ship.
+
+    Walks every .exe/.dll under STAGING_DIR, reads its import table with
+    dumpbin, and flags any imported DLL that is neither present somewhere in the
+    staged tree nor a known system/VCRedist DLL. This is the guard that would
+    have caught the opencv_dnn4120.dll regression: opencv_video4120.dll imports
+    opencv_dnn4120.dll, which loads on dev machines (OpenCV bin is on PATH) but
+    is absent on a clean install -> startup failure. A missing third-party DLL
+    here is a release blocker.
+    """
+    print(f"\n{'='*60}")
+    print("  Verifying bundled DLL dependencies")
+    print(f"{'='*60}")
+
+    if not STAGING_DIR.exists():
+        print(f"WARNING: staging dir not found ({STAGING_DIR}); skipping check.")
+        return
+
+    dumpbin = shutil.which("dumpbin")
+    if not dumpbin:
+        # dumpbin ships with MSVC and is on PATH in the x64 Native Tools prompt
+        # (and in CI after msvc-dev-cmd). If it's missing we can't verify; warn
+        # loudly rather than block the build on tooling.
+        print("WARNING: dumpbin not found on PATH; cannot verify dependencies.")
+        return
+
+    binaries = [p for p in STAGING_DIR.rglob("*")
+                if p.suffix.lower() in (".dll", ".exe")]
+    present = {p.name.lower() for p in binaries}
+
+    dep_line = re.compile(r"^\s+(\S+\.dll)\s*$", re.IGNORECASE)
+    missing = {}  # missing dll (lower) -> set of importers
+    for binary in binaries:
+        try:
+            out = subprocess.run(
+                [dumpbin, "/dependents", str(binary)],
+                capture_output=True, text=True, check=True,
+            ).stdout
+        except subprocess.CalledProcessError as e:
+            print(f"WARNING: dumpbin failed on {binary.name}: {e}")
+            continue
+        for line in out.splitlines():
+            m = dep_line.match(line)
+            if not m:
+                continue
+            dep = m.group(1)
+            dep_l = dep.lower()
+            if dep_l in present or SYSTEM_DLL_RE.match(dep):
+                continue
+            missing.setdefault(dep_l, set()).add(binary.name)
+
+    if missing:
+        print("\nERROR: staged binaries import DLLs that are not bundled and are")
+        print("not known system DLLs. The installer would fail on a clean machine:\n")
+        for dep in sorted(missing):
+            importers = ", ".join(sorted(missing[dep]))
+            print(f"  MISSING: {dep}   <- imported by: {importers}")
+        print("\nFix: bundle the DLL (see the OpenCV install block in")
+        print("apps/CMakeLists.txt for the pattern) or stop linking it, then")
+        print("rebuild. If a flagged DLL is genuinely a system DLL, add it to")
+        print("SYSTEM_DLL_RE in this script.")
+        sys.exit(1)
+
+    print(f"OK: all imports of {len(binaries)} staged binaries are bundled or system DLLs.")
+
+
 def compile_inno_setup(iss_file, project_dir, project_name, defines=None):
     """Compile Inno Setup script.
 
@@ -302,6 +391,11 @@ def main():
         install_binaries()
     else:
         print("\nSkipping install step (--skip-install)")
+
+    # Gate: every DLL the staged binaries import must be bundled or a system DLL.
+    # Catches the class of bug where a dependency resolves on the dev machine
+    # (deps bin dir on PATH) but is missing from the installed package.
+    verify_dependencies()
 
     # Inno Setup compilation
     if not args.skip_inno:
