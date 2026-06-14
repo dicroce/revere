@@ -179,12 +179,13 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     file(TO_CMAKE_PATH $ENV{GST_TOP_DIR} GST_TOP_DIR)
     file(TO_CMAKE_PATH $ENV{OPENCV_TOP_DIR} OPENCV_TOP_DIR)
     
-    # Define OpenCV modules list for easier maintenance
-    # NOTE: only core (non-contrib) modules are needed. Motion detection uses
-    # cv::BackgroundSubtractorMOG2 which lives in opencv_video, not contrib.
-    # opencv_dnn is intentionally excluded: we infer via NCNN, and dnn drags in
-    # libprotobuf (a duplicate-protobuf load from a separately built plugin
-    # crashed the app on macOS). Keep this list in sync with dependencies.cmake.
+    # OpenCV modules that Revere LINKS against (keep in sync with the link list
+    # in dependencies.cmake). Only core (non-contrib) modules are needed: motion
+    # detection uses cv::BackgroundSubtractorMOG2, which lives in opencv_video,
+    # not contrib. We deliberately do NOT link opencv_dnn (we infer via NCNN, and
+    # dnn drags in libprotobuf). NOTE: dnn must still be SHIPPED on Windows as a
+    # runtime DLL even though we don't link it -- see the opencv_dnn install
+    # below for the why.
     set(OPENCV_MODULES
         opencv_calib3d
         opencv_core
@@ -232,14 +233,35 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     # Use generator expressions to handle multi-config generators (like Visual Studio)
     foreach(module ${OPENCV_MODULES})
         install(
-            FILES 
+            FILES
                 "$<$<CONFIG:Debug>:${OPENCV_TOP_DIR}/x64/vc17/bin/${module}4120d.dll>"
                 "$<$<NOT:$<CONFIG:Debug>>:${OPENCV_TOP_DIR}/x64/vc17/bin/${module}4120.dll>"
             DESTINATION revere
             OPTIONAL
         )
     endforeach()
-    
+
+    # Ship opencv_dnn4120.dll even though Revere never links or calls cv::dnn.
+    # The prebuilt Windows OpenCV (revere-deps contrib build) compiles the video
+    # module WITH dnn enabled, so opencv_video4120.dll -- which we MUST ship for
+    # MOG2 -- has a load-time import of opencv_dnn4120.dll. Without this DLL the
+    # app fails to start on a clean machine with:
+    #     "The code execution cannot proceed because opencv_dnn4120.dll was not
+    #      found."
+    # It loads on dev machines only because OPENCV_TOP_DIR\x64\vc17\bin is on PATH.
+    # opencv_dnn4120.dll is self-contained here (statically links protobuf; only
+    # needs opencv_core + opencv_imgproc, already shipped), so this adds exactly
+    # one DLL and no new transitive deps. This is Windows-ONLY: on macOS/Linux the
+    # Homebrew/system OpenCV's video module does not reference dnn, which is why
+    # this lives inside the Windows block and is absent from those packages.
+    install(
+        FILES
+            "$<$<CONFIG:Debug>:${OPENCV_TOP_DIR}/x64/vc17/bin/opencv_dnn4120d.dll>"
+            "$<$<NOT:$<CONFIG:Debug>>:${OPENCV_TOP_DIR}/x64/vc17/bin/opencv_dnn4120.dll>"
+        DESTINATION revere
+        OPTIONAL
+    )
+
     # Install GStreamer plugins (remains the same)
     install(
         FILES
