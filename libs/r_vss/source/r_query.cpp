@@ -52,14 +52,44 @@ static bool _has_inline_sps(const vector<uint8_t>& frame)
     return false;
 }
 
-// Helper: decode a single frame with proper parser and flush support
+// Helper: scale (src_w x src_h) to fit *inside* the (w x h) box while preserving
+// aspect ratio, writing the fitted dimensions back into w/h. The result never
+// exceeds the box on either axis and is never upscaled past the source's native
+// resolution. Dimensions are rounded to even (4:2:0 encoders require it) and
+// clamped to a sane minimum. A zero source or box dimension leaves w/h untouched.
+static void _fit_inside(uint16_t src_w, uint16_t src_h, uint16_t& w, uint16_t& h)
+{
+    if(src_w == 0 || src_h == 0 || w == 0 || h == 0)
+        return;
+
+    double sx = (double)w / (double)src_w;
+    double sy = (double)h / (double)src_h;
+    double scale = (sx < sy) ? sx : sy;
+    if(scale > 1.0) scale = 1.0;  // never upscale beyond native resolution
+
+    int ow = (int)((double)src_w * scale + 0.5);
+    int oh = (int)((double)src_h * scale + 0.5);
+    ow &= ~1; oh &= ~1;           // even dimensions for 4:2:0 encoders
+    if(ow < 2) ow = 2;
+    if(oh < 2) oh = 2;
+
+    w = (uint16_t)ow;
+    h = (uint16_t)oh;
+}
+
+// Helper: decode a single frame with proper parser and flush support.
+// When preserve_aspect is true, w/h are treated as a bounding box: the frame is
+// scaled to fit inside while preserving aspect ratio, and w/h are overwritten
+// with the actual output dimensions (so callers can size their encoder to match).
+// When false, the frame is scaled to exactly w x h (legacy stretch behavior).
 static shared_ptr<vector<uint8_t>> _decode_single_frame(
     const string& video_codec_name,
     const string& video_codec_parameters,
     const vector<uint8_t>& frame,
     AVPixelFormat output_format,
-    uint16_t w,
-    uint16_t h)
+    uint16_t& w,
+    uint16_t& h,
+    bool preserve_aspect = false)
 {
     // Enable parsing to properly handle Annex B streams with multiple NAL units
     auto codec_id = r_av::encoding_to_av_codec_id(video_codec_name);
@@ -90,7 +120,11 @@ static shared_ptr<vector<uint8_t>> _decode_single_frame(
     }
 
     if(ds == R_CODEC_STATE_HAS_OUTPUT || ds == R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+    {
+        if(preserve_aspect)
+            _fit_inside(decoder.input_width(), decoder.input_height(), w, h);
         return decoder.get(output_format, w, h, 1);
+    }
 
     return nullptr;
 }
@@ -125,7 +159,9 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
 
     auto frame = bt["frames"][0]["data"].get_blob();
 
-    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_YUVJ420P, w, h);
+    // Treat w/h as a bounding box; _decode_single_frame rewrites them with the
+    // aspect-preserved output dimensions, which the encoder must then match.
+    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_YUVJ420P, w, h, true);
 
     if(decoded)
     {
@@ -448,7 +484,9 @@ vector<uint8_t> r_vss::query_get_webp(const string& top_dir, r_devices& devices,
 
     auto frame = bt["frames"][0]["data"].get_blob();
 
-    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_YUV420P, w, h);
+    // Treat w/h as a bounding box; _decode_single_frame rewrites them with the
+    // aspect-preserved output dimensions, which the encoder must then match.
+    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_YUV420P, w, h, true);
 
     if(decoded)
     {
