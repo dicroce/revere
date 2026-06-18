@@ -228,13 +228,23 @@ r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_s
         if(args.find("start_time") == end(args))
             R_THROW(("Missing start_time."));
 
-        uint16_t w = 640;
-        if(args.find("width") != end(args))
-            w = r_string_utils::s_to_uint16(args["width"]);
-
-        uint16_t h = 480;
-        if(args.find("height") != end(args))
-            h = r_string_utils::s_to_uint16(args["height"]);
+        // w/h are a bounding box (query_get_jpg preserves aspect ratio inside it).
+        // long_edge=N is shorthand for an NxN box, i.e. "cap the longer edge at N"
+        // regardless of camera orientation.
+        uint16_t w = 640, h = 480;
+        if(args.find("long_edge") != end(args))
+        {
+            uint16_t le = r_string_utils::s_to_uint16(args["long_edge"]);
+            w = le;
+            h = le;
+        }
+        else
+        {
+            if(args.find("width") != end(args))
+                w = r_string_utils::s_to_uint16(args["width"]);
+            if(args.find("height") != end(args))
+                h = r_string_utils::s_to_uint16(args["height"]);
+        }
 
         auto result = query_get_jpg(
             _top_dir,
@@ -272,13 +282,23 @@ r_http::r_server_response r_ws::_get_webp(const r_http::r_web_server<r_utils::r_
         if(args.find("start_time") == end(args))
             R_THROW(("Missing start_time."));
 
-        uint16_t w = 640;
-        if(args.find("width") != end(args))
-            w = r_string_utils::s_to_uint16(args["width"]);
-
-        uint16_t h = 480;
-        if(args.find("height") != end(args))
-            h = r_string_utils::s_to_uint16(args["height"]);
+        // w/h are a bounding box (query_get_webp preserves aspect ratio inside it).
+        // long_edge=N is shorthand for an NxN box, i.e. "cap the longer edge at N"
+        // regardless of camera orientation.
+        uint16_t w = 640, h = 480;
+        if(args.find("long_edge") != end(args))
+        {
+            uint16_t le = r_string_utils::s_to_uint16(args["long_edge"]);
+            w = le;
+            h = le;
+        }
+        else
+        {
+            if(args.find("width") != end(args))
+                w = r_string_utils::s_to_uint16(args["width"]);
+            if(args.find("height") != end(args))
+                h = r_string_utils::s_to_uint16(args["height"]);
+        }
 
         auto result = query_get_webp(
             _top_dir,
