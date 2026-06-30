@@ -6,13 +6,14 @@
     </header>
 
     <div class="player-wrap">
-      <CameraPlayer :camera="camera" :iso-time="seekedTime" />
+      <CameraPlayer :camera="camera" :iso-time="seekedTime" @timeupdate="onPlayerTime" />
     </div>
 
     <div class="timeline-bar">
       <TimelineBar
         :camera-id="camera.id"
         :camera-name="camera.friendly_name || camera.camera_name"
+        :playhead-iso="playheadIso"
         @seek="onSeek"
         @live="onLive"
       />
@@ -32,8 +33,13 @@ defineEmits(['close'])
 // this directly to switch between live refresh, scrub still, and video playback.
 const seekedTime = ref(null)
 
+// Absolute ISO of the frame currently being played, emitted by CameraPlayer; the
+// timeline uses it to advance the playhead marker during playback.
+const playheadIso = ref(null)
+
 function onSeek(isoString) { seekedTime.value = isoString }
-function onLive()          { seekedTime.value = null }
+function onLive()          { seekedTime.value = null; playheadIso.value = null }
+function onPlayerTime(iso) { playheadIso.value = iso }
 </script>
 
 <style scoped>

@@ -38,11 +38,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
   cameraId:   String,
-  cameraName: { type: String, default: '' }
+  cameraName: { type: String, default: '' },
+  // Absolute ISO of the currently-playing frame (null when not playing). Drives
+  // the playhead marker forward during playback.
+  playheadIso: { type: String, default: null }
 })
 const emit  = defineEmits(['seek', 'live'])
 
@@ -335,6 +338,23 @@ function onMouseDown(e) { if (exporting.value) return; dragging.value = true;  h
 function onMouseMove(e) { if (dragging.value)  handleSeek(e) }
 function onMouseUp()    { dragging.value = false }
 function onMouseLeave() { dragging.value = false }
+
+// Follow playback: advance the playhead marker as CameraPlayer reports progress.
+// Ignored while the user is dragging or selecting an export range so we don't
+// fight their interaction. If playback runs off the visible range, recenter on it.
+watch(() => props.playheadIso, (iso) => {
+  if (!iso || dragging.value || exportMode.value) return
+  const t = new Date(iso)
+  playheadTime.value = t
+  isLive.value = false
+  if (t.getTime() > rangeEnd.value.getTime() || t.getTime() < rangeStart.value.getTime()) {
+    const half = rangeMinutes.value * 60000 / 2
+    rangeStart.value = new Date(t.getTime() - half)
+    rangeEnd.value   = new Date(t.getTime() + half)
+    loadData()
+  }
+  draw()
+})
 
 // --- export ---
 function startExport() {

@@ -20,8 +20,10 @@
     <!-- Layer 1: the cheap scrub/live still. -->
     <img :src="stillUrl" class="layer still" alt="" @error="stillError = true" />
 
-    <!-- Layer 2: the video, pixel-aligned on top, revealed once it has a frame. -->
-    <video ref="video" class="layer video" :class="{ revealed }" muted playsinline></video>
+    <!-- Layer 2: the video, pixel-aligned on top, revealed once it has a frame.
+         Not muted: playback is started by the ▶ click (a user gesture), so audio
+         is allowed; cameras without audio simply play silent. -->
+    <video ref="video" class="layer video" :class="{ revealed }" playsinline></video>
 
     <div v-if="stillError && !revealed" class="msg">No image available</div>
 
@@ -62,8 +64,9 @@ const AHEAD_S      = 10     // keep this many seconds buffered ahead of playhead
 const BEHIND_S     = 30     // evict buffered media older than this behind playhead
 const MAX_W        = 1280   // cap transcode at 720p for v1 (within avc1 4.1, lighter)
 const MAX_H        = 720
-// h264 Main@4.1. The server transcodes to Main profile; 4.1 covers <=720p30.
-const MIME         = 'video/mp4; codecs="avc1.4d4029"'
+// Fallback MSE codec string if the server doesn't send X-Revere-Codecs (h264
+// Main@4.1, video only). Normally the first window's header supplies the real one.
+const FALLBACK_CODECS = 'avc1.4d4029'
 
 // --- refs / reactive state -------------------------------------------------
 const wrap       = ref(null)
@@ -82,6 +85,7 @@ let appendQueue  = []
 let feeding      = false        // still pulling windows from the server
 let fetching     = false        // a window request is in flight (single-flight)
 let firstSegment = true         // the first appended window carries the init segment
+let negotiatedCodecs = null     // exact MSE codec string from the first window's header
 let ptsBaseMs    = 0            // MSE timeline origin for this play session
 let windowStartMs = 0          // wall-clock start of the next window to fetch
 let vidW = 0, vidH = 0
@@ -151,20 +155,32 @@ async function startPlayback() {
 
   const sz = computeVideoSize()
   vidW = sz.w; vidH = sz.h
-  ptsBaseMs     = Date.parse(props.isoTime)
-  windowStartMs = ptsBaseMs
-  firstSegment  = true
-  abort         = new AbortController()
+  ptsBaseMs       = Date.parse(props.isoTime)
+  windowStartMs   = ptsBaseMs
+  firstSegment    = true
+  negotiatedCodecs = null
+  abort           = new AbortController()
 
   mediaSource = new MediaSource()
   video.value.src = URL.createObjectURL(mediaSource)
   await once(mediaSource, 'sourceopen')
   if (!mediaSource) return                 // torn down while we awaited
 
+  playing.value = true
+  feeding = true
+
+  // Fetch the first window before creating the SourceBuffer: the server reports
+  // the exact codec string (including whether audio is present) in a response
+  // header, and addSourceBuffer must be told the right codecs up front. pump()
+  // no-ops until sourceBuffer exists, so the bytes just queue.
+  await fetchNextWindow()
+  if (!mediaSource) return                 // torn down mid-fetch
+
+  const mime = `video/mp4; codecs="${negotiatedCodecs || FALLBACK_CODECS}"`
   try {
-    sourceBuffer = mediaSource.addSourceBuffer(MIME)
+    sourceBuffer = mediaSource.addSourceBuffer(mime)
   } catch (e) {
-    console.error('CameraPlayer: addSourceBuffer failed', e)
+    console.error('CameraPlayer: addSourceBuffer failed', mime, e)
     stopVideo()
     return
   }
@@ -174,9 +190,7 @@ async function startPlayback() {
   video.value.addEventListener('canplay', onCanPlay, { once: true })
   video.value.addEventListener('timeupdate', onVideoTime)
 
-  playing.value = true
-  feeding = true
-  await fetchNextWindow()
+  pump()                                   // drain the queued first window
   video.value.play().catch(() => {})
 }
 
@@ -201,6 +215,8 @@ async function fetchNextWindow() {
       + `&framerate_num=${FPS_NUM}&framerate_den=${FPS_DEN}&codec=h264`
     const res = await fetch(url, { signal: abort.signal })
     if (!res.ok) { feeding = false; return }
+    const codecs = res.headers.get('X-Revere-Codecs')
+    if (codecs) negotiatedCodecs = codecs
     const buf = await res.arrayBuffer()
     if (buf && buf.byteLength) {
       // Each window is a self-contained, 0-based fMP4 (ftyp+moov+fragments). MSE
