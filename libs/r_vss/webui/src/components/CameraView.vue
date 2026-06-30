@@ -5,9 +5,8 @@
       <span class="title">{{ camera.friendly_name || camera.camera_name }}</span>
     </header>
 
-    <div class="image-wrap" ref="imageWrap">
-      <img :src="snapshotUrl" class="snapshot" alt="" />
-      <div v-if="snapError" class="no-snapshot">No image available</div>
+    <div class="player-wrap">
+      <CameraPlayer :camera="camera" :iso-time="seekedTime" />
     </div>
 
     <div class="timeline-bar">
@@ -22,108 +21,19 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref } from 'vue'
 import TimelineBar from './TimelineBar.vue'
-import { fitAspect } from '../utils/aspect.js'
+import CameraPlayer from './CameraPlayer.vue'
 
-const props = defineProps({ camera: Object })
+defineProps({ camera: Object })
 defineEmits(['close'])
 
-const snapshotUrl = ref('')
-const snapError   = ref(false)
-const seekedTime  = ref(null)  // null = live mode
-const imageWrap   = ref(null)
-const reqW        = ref(1280)
-const reqH        = ref(720)
+// null = live; an ISO string = a seeked recorded position. CameraPlayer reads
+// this directly to switch between live refresh, scrub still, and video playback.
+const seekedTime = ref(null)
 
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
-
-function recomputeRequestSize() {
-  const el = imageWrap.value
-  if (!el || el.clientWidth === 0 || el.clientHeight === 0) return false
-  const dpr = window.devicePixelRatio || 1
-  const boxW = el.clientWidth  * dpr
-  const boxH = el.clientHeight * dpr
-
-  const srcW = Number(props.camera.width)  || 0
-  const srcH = Number(props.camera.height) || 0
-
-  let newW, newH
-  if (srcW > 0 && srcH > 0) {
-    // Fit the source's aspect ratio into the box, then cap at the native
-    // source resolution — no point asking the server to upscale beyond what
-    // the camera produces.
-    const fit = fitAspect(srcW, srcH, boxW, boxH)
-    newW = Math.round(Math.min(srcW, fit.width))
-    newH = Math.round(Math.min(srcH, fit.height))
-  } else {
-    // Source resolution unknown — fall back to box dims with generic clamp.
-    newW = clamp(Math.round(boxW), 640, 2560)
-    newH = clamp(Math.round(boxH), 360, 1440)
-  }
-  // Floor guard so we never request something silly-small on a collapsed pane.
-  newW = Math.max(320, newW)
-  newH = Math.max(180, newH)
-
-  // Only treat as a meaningful change if either dimension shifts >5%.
-  const changed = Math.abs(newW - reqW.value) > reqW.value * 0.05
-              ||  Math.abs(newH - reqH.value) > reqH.value * 0.05
-  reqW.value = newW
-  reqH.value = newH
-  return changed
-}
-
-function currentIsoString() {
-  return seekedTime.value !== null
-    ? seekedTime.value
-    : new Date(Date.now() - 5000).toISOString()
-}
-
-function loadFrame(isoString) {
-  const url = `/jpg?camera_id=${props.camera.id}&start_time=${encodeURIComponent(isoString)}&width=${reqW.value}&height=${reqH.value}`
-  const img = new Image()
-  img.onload  = () => { snapshotUrl.value = url; snapError.value = false }
-  img.onerror = () => { snapError.value = true }
-  img.src = url
-}
-
-function refresh() {
-  if (seekedTime.value !== null) return
-  loadFrame(currentIsoString())
-}
-
-function onSeek(isoString) {
-  seekedTime.value = isoString
-  loadFrame(isoString)
-}
-
-function onLive() {
-  seekedTime.value = null
-}
-
-let timer = null
-let resizeObs = null
-let resizeDebounce = null
-onMounted(() => {
-  recomputeRequestSize()
-  refresh()
-  timer = setInterval(refresh, 3000)
-  if (imageWrap.value && typeof ResizeObserver !== 'undefined') {
-    resizeObs = new ResizeObserver(() => {
-      clearTimeout(resizeDebounce)
-      resizeDebounce = setTimeout(() => {
-        if (recomputeRequestSize())
-          loadFrame(currentIsoString())
-      }, 200)
-    })
-    resizeObs.observe(imageWrap.value)
-  }
-})
-onUnmounted(() => {
-  clearInterval(timer)
-  clearTimeout(resizeDebounce)
-  if (resizeObs) resizeObs.disconnect()
-})
+function onSeek(isoString) { seekedTime.value = isoString }
+function onLive()          { seekedTime.value = null }
 </script>
 
 <style scoped>
@@ -161,29 +71,12 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-.image-wrap {
+.player-wrap {
   flex: 1;
   background: #000;
   position: relative;
   overflow: hidden;
   min-height: 0;
-}
-
-.snapshot {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  display: block;
-}
-
-.no-snapshot {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #555;
-  font-size: 0.95rem;
 }
 
 .timeline-bar {

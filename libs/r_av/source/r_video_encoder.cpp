@@ -32,6 +32,7 @@ r_video_encoder::r_video_encoder() :
     _sws_ctx(nullptr),
     _pts(0),
     _frame_sent(false),
+    _flushing(false),
     _buffer(),
     _pkt()
 {
@@ -60,6 +61,7 @@ r_video_encoder::r_video_encoder(
     _sws_ctx(nullptr),
     _pts(0),
     _frame_sent(false),
+    _flushing(false),
     _buffer(),
     _pkt()
 {
@@ -147,6 +149,8 @@ r_video_encoder::r_video_encoder(r_video_encoder&& obj) :
     _input_pix_fmt(std::move(obj._input_pix_fmt)),
     _sws_ctx(std::move(obj._sws_ctx)),
     _pts(std::move(obj._pts)),
+    _frame_sent(obj._frame_sent),
+    _flushing(obj._flushing),
     _buffer(std::move(obj._buffer)),
     _pkt(std::move(obj._pkt))
 {
@@ -182,6 +186,8 @@ r_video_encoder& r_video_encoder::operator=(r_video_encoder&& obj)
         _sws_ctx = std::move(obj._sws_ctx);
         obj._sws_ctx = nullptr;
         _pts = std::move(obj._pts);
+        _frame_sent = obj._frame_sent;
+        _flushing = obj._flushing;
         _buffer = std::move(obj._buffer);
         _pkt = std::move(obj._pkt);
     }
@@ -195,6 +201,7 @@ void r_video_encoder::attach_buffer(const uint8_t* data, size_t size, int64_t pt
     memcpy(_buffer.data(), data, size);
     _pts = pts;
     _frame_sent = false;
+    _flushing = false;
 }
 
 void r_video_encoder::set_bitrate(uint32_t bitrate)
@@ -297,23 +304,17 @@ r_codec_state r_video_encoder::encode()
 
 r_codec_state r_video_encoder::flush()
 {
-    int ret = avcodec_send_frame(_context, nullptr);
-    if(ret == AVERROR(EAGAIN))
+    // Send the drain (null) frame exactly once, then pull buffered packets across
+    // repeated calls. Re-sending null on each call returns AVERROR_EOF and aborts
+    // the drain early — which silently drops every frame a high-latency encoder
+    // (e.g. libx264's lookahead, ~40 frames) still holds.
+    if(!_flushing)
     {
-        _pkt = raii_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* p) { av_packet_free(&p); });
-        auto rp_ret = avcodec_receive_packet(_context, _pkt.get());
-
-        if(rp_ret == AVERROR(EAGAIN) || rp_ret == AVERROR_EOF)
-            return R_CODEC_STATE_EOF;
-        else if(rp_ret < 0)
-            R_THROW(("Failed to flush encoder: %s", _ff_rc_to_msg(rp_ret).c_str()));
-
-        return R_CODEC_STATE_HAS_OUTPUT;
+        int ret = avcodec_send_frame(_context, nullptr);
+        if(ret < 0 && ret != AVERROR_EOF && ret != AVERROR(EAGAIN))
+            R_THROW(("Failed to flush encoder: %s", _ff_rc_to_msg(ret).c_str()));
+        _flushing = true;
     }
-    else if(ret == AVERROR_EOF)
-        return R_CODEC_STATE_EOF;
-    else if(ret < 0)
-        R_THROW(("Failed to flush encoder: %s", _ff_rc_to_msg(ret).c_str()));
 
     _pkt = raii_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* p) { av_packet_free(&p); });
     auto rp_ret = avcodec_receive_packet(_context, _pkt.get());

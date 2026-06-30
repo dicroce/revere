@@ -163,6 +163,10 @@ private:
                                              r_utils::r_socket& conn,
                                              const r_http::r_server_request& request);
 
+    r_http::r_server_response _get_transcode_fmp4(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                  r_utils::r_socket& conn,
+                                                  const r_http::r_server_request& request);
+
     r_http::r_server_response _get_finalize_transcode_stream(const r_http::r_web_server<r_utils::r_socket>& ws,
                                                              r_utils::r_socket& conn,
                                                              const r_http::r_server_request& request);

@@ -84,6 +84,7 @@ private:
     SwsContext* _sws_ctx;
     int64_t _pts;
     bool _frame_sent;
+    bool _flushing;
     std::vector<uint8_t> _buffer;
     r_utils::r_std_utils::raii_ptr<AVPacket> _pkt;
 };

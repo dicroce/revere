@@ -135,6 +135,7 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
 
     _server.add_route(METHOD_GET, "/create_transcode_stream", std::bind(&r_ws::_get_create_transcode_stream, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/transcode", std::bind(&r_ws::_get_transcode, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/transcode_fmp4", std::bind(&r_ws::_get_transcode_fmp4, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/finalize_transcode_stream", std::bind(&r_ws::_get_finalize_transcode_stream, this, _1, _2, _3));
 
     _server.add_route(METHOD_GET, "/export", std::bind(&r_ws::_get_export, this, _1, _2, _3));
@@ -1554,6 +1555,187 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to transcode video."));
+}
+
+// Transcode a short window of recorded video into a fragmented MP4 the browser
+// can append directly via Media Source Extensions. Stateless and self-contained
+// (no transcode handle): each call decodes the stored GOP covering [start,end],
+// re-encodes the frames inside the window through a fresh encoder — so the output
+// always begins with a leading IDR and is independently decodable — and muxes the
+// result to an in-memory fragmented MP4.
+//
+// pts_base places the window on the client's MSE timeline: output frame PTS is
+// offset by the frame distance between pts_base and the window start, re-anchored
+// every call so intra-window framerate drift can't accumulate across the timeline.
+// With contiguous windows sharing one pts_base, the fragments tile seamlessly and
+// the client appends them back-to-back with no timestampOffset juggling.
+//
+// v1 is video-only; AAC audio (see the audio-transcode path in _get_transcode) is
+// a follow-up.
+r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r_utils::r_socket>&,
+                                                    r_utils::r_socket&,
+                                                    const r_http::r_server_request& request)
+{
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+
+        for(auto k : {"camera_id", "start_time", "end_time", "width", "height",
+                      "bitrate", "framerate_num", "framerate_den"})
+            if(args.find(k) == args.end())
+                R_THROW(("Missing %s.", k));
+
+        auto camera_id = args["camera_id"];
+        auto start_tp  = r_time_utils::iso_8601_to_tp(args["start_time"]);
+        auto end_tp    = r_time_utils::iso_8601_to_tp(args["end_time"]);
+        int64_t start_ms = chrono::duration_cast<chrono::milliseconds>(start_tp.time_since_epoch()).count();
+
+        uint16_t output_width  = r_string_utils::s_to_uint16(args["width"]);
+        uint16_t output_height = r_string_utils::s_to_uint16(args["height"]);
+        uint32_t bitrate       = r_string_utils::s_to_uint32(args["bitrate"]);
+        uint32_t framerate_num = r_string_utils::s_to_uint32(args["framerate_num"]);
+        uint32_t framerate_den = r_string_utils::s_to_uint32(args["framerate_den"]);
+
+        string output_codec = (args.find("codec") != args.end()) ? r_string_utils::to_lower(args["codec"]) : "h264";
+        if(output_codec != "h264" && output_codec != "h265" && output_codec != "hevc")
+            R_THROW(("Unsupported output codec: %s", output_codec.c_str()));
+
+        AVRational framerate{(int)framerate_num, (int)framerate_den};
+
+        // Each window is emitted 0-based (PTS starts at 0). The client positions it
+        // on the MSE timeline with SourceBuffer.timestampOffset, so we don't depend
+        // on how the muxer writes baseMediaDecodeTime for an independent fragment.
+        R_LOG_INFO("[FMP4] enter %s [%s -> %s] %ux%u",
+                   camera_id.c_str(), args["start_time"].c_str(), args["end_time"].c_str(),
+                   output_width, output_height);
+
+        auto qr_buffer = query_get_video(_top_dir, _devices, camera_id, start_tp, end_tp);
+
+        uint32_t version = 0;
+        auto bt = r_blob_tree::deserialize(qr_buffer.data(), qr_buffer.size(), version);
+
+        if(!bt.has_key("video_codec_name") || !bt.has_key("video_codec_parameters"))
+            R_THROW(("Blob tree missing video codec info."));
+
+        auto in_codec_name   = bt["video_codec_name"].get_string();
+        auto in_codec_params = bt["video_codec_parameters"].get_string();
+        auto in_codec_id     = r_av::encoding_to_av_codec_id(in_codec_name);
+        auto in_extradata    = r_pipeline::get_video_codec_extradata(in_codec_name, in_codec_params);
+
+        // Software decode/encode on purpose: this on-demand path spins up a fresh
+        // codec per short window, and churning hardware codec sessions (while the
+        // recorder is also using them) intermittently stalls. 720p software is
+        // plenty fast for playback windows.
+        r_video_decoder decoder(in_codec_id);
+        if(!in_extradata.empty())
+            decoder.set_extradata(in_extradata);
+
+        bool is_h265      = (output_codec == "h265" || output_codec == "hevc");
+        auto out_codec_id = r_av::encoding_to_av_codec_id(output_codec);
+        int profile       = is_h265 ? AV_PROFILE_HEVC_MAIN : AV_PROFILE_H264_MAIN;
+        int level         = is_h265 ? 120 : 41;
+
+        r_video_encoder encoder(
+            out_codec_id, bitrate, output_width, output_height, framerate,
+            AV_PIX_FMT_YUV420P, 0, (uint16_t)framerate_num, profile, level,
+            "", "", r_hw_accel::none
+        );
+        R_LOG_INFO("[FMP4] codecs ready (sw) in=%s", in_codec_name.c_str());
+
+        r_muxer muxer("", /*output_to_buffer=*/true, "mp4");
+        muxer.enable_fragmented_mp4();
+        muxer.add_video_stream(framerate, out_codec_id, output_width, output_height, profile, level);
+        muxer.set_video_extradata(encoder.get_extradata());
+        muxer.open();
+
+        int64_t frame_count = 0;   // count of frames actually emitted (for logging)
+        int64_t last_pts     = -1;  // last emitted output PTS (encoder timebase units)
+
+        if(bt.has_key("frames"))
+        {
+            size_t n_frames = bt["frames"].size();
+            for(size_t fi = 0; fi < n_frames; ++fi)
+            {
+                if(!bt["frames"].has_index(fi)) continue;
+
+                auto sid = bt["frames"][fi]["stream_id"].get_value<int>();
+                if(sid != R_STORAGE_MEDIA_TYPE_VIDEO) continue;  // v1: video only
+
+                auto ts         = bt["frames"][fi]["ts"].get_value<int64_t>();
+                auto frame_data = bt["frames"][fi]["data"].get_blob();
+
+                // Decode every frame (frames before start_ms are pre-roll that prime
+                // the decoder's reference state) but only encode/emit those inside the
+                // requested window.
+                decoder.attach_buffer(frame_data.data(), frame_data.size());
+                auto dec_state = decoder.decode();
+                if(dec_state != R_CODEC_STATE_HAS_OUTPUT && dec_state != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+                    continue;
+
+                auto decoded = decoder.get(AV_PIX_FMT_YUV420P, output_width, output_height, 1);
+
+                if(ts < start_ms)
+                    continue;
+
+                // Derive the output PTS from the real frame timestamp (0-based within
+                // the window, in the encoder's framerate timebase) rather than a frame
+                // counter. A frame counter assumes the source runs at exactly
+                // framerate_num/framerate_den; any other rate (e.g. a 15fps camera with
+                // a 30fps target) would play back at the wrong speed and make the window's
+                // duration not match its 3s slot, breaking the client's timestampOffset
+                // tiling. last_pts guards against a source faster than the target.
+                int64_t window_pts = ((ts - start_ms) * (int64_t)framerate_num + 500LL * (int64_t)framerate_den)
+                                     / (1000LL * (int64_t)framerate_den);
+                if(window_pts <= last_pts)
+                    continue;
+                last_pts = window_pts;
+                ++frame_count;
+
+                encoder.attach_buffer(decoded->data(), decoded->size(), window_pts);
+
+                while(true)
+                {
+                    auto enc_state = encoder.encode();
+                    if(enc_state != R_CODEC_STATE_HAS_OUTPUT) break;
+                    auto pi = encoder.get();
+                    // libx264 lookahead can make the first packet's DTS negative; clamp
+                    // so av_interleaved_write_frame doesn't reject it.
+                    int64_t out_dts = max((int64_t)0, pi.dts);
+                    muxer.write_video_frame(pi.data, pi.size, pi.pts, out_dts, pi.time_base, pi.key);
+                }
+            }
+        }
+
+        // Flush the encoder so the window's trailing frames land in this fragment.
+        auto flush_state = encoder.flush();
+        while(flush_state == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto pi = encoder.get();
+            int64_t out_dts = max((int64_t)0, pi.dts);
+            muxer.write_video_frame(pi.data, pi.size, pi.pts, out_dts, pi.time_base, pi.key);
+            flush_state = encoder.flush();
+        }
+
+        muxer.finalize();
+
+        // last_pts is in encoder timebase units (framerate_num/den); span_ms shows
+        // how much wall-clock the emitted frames actually cover (≈ window length if
+        // the source framerate matched our assumption).
+        int64_t span_ms = (last_pts < 0) ? 0
+            : (last_pts * 1000LL * (int64_t)framerate_den) / (int64_t)framerate_num;
+        R_LOG_INFO("[FMP4] done: %lld frames span %lldms -> %zu bytes",
+                   (long long)frame_count, (long long)span_ms, muxer.buffer_size());
+
+        r_server_response response;
+        response.set_content_type("video/mp4");
+        response.set_body(muxer.buffer_size(), muxer.buffer());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to transcode fmp4."));
 }
 
 r_http::r_server_response r_ws::_get_finalize_transcode_stream(const r_http::r_web_server<r_utils::r_socket>&,

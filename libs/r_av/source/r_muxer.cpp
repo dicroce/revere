@@ -34,6 +34,7 @@ r_muxer::r_muxer(const std::string& path, bool output_to_buffer, const std::stri
     _path(path),
     _output_to_buffer(output_to_buffer),
     _faststart(false),
+    _fragmented(false),
     _format_name(format_name),
     _output_options(),
     _buffer(),
@@ -192,7 +193,16 @@ void r_muxer::enable_faststart()
 {
     if(_output_to_buffer)
         R_THROW(("enable_faststart() requires file output, not buffer output."));
+    if(_fragmented)
+        R_THROW(("enable_faststart() is incompatible with fragmented mp4."));
     _faststart = true;
+}
+
+void r_muxer::enable_fragmented_mp4()
+{
+    if(_faststart)
+        R_THROW(("enable_fragmented_mp4() is incompatible with faststart."));
+    _fragmented = true;
 }
 
 void r_muxer::open()
@@ -223,6 +233,11 @@ void r_muxer::open()
     AVDictionary* fmt_opts = nullptr;
     if(_faststart)
         av_dict_set(&fmt_opts, "movflags", "+faststart", 0);
+    else if(_fragmented)
+        // empty_moov: the init segment (ftyp+moov) carries no samples.
+        // frag_keyframe: start a new fragment at each keyframe.
+        // default_base_moof: self-contained moof byte offsets, required by MSE.
+        av_dict_set(&fmt_opts, "movflags", "+frag_keyframe+empty_moov+default_base_moof", 0);
 
     int res = avformat_write_header(_fc.get(), fmt_opts ? &fmt_opts : nullptr);
     av_dict_free(&fmt_opts);
@@ -363,10 +378,14 @@ void r_muxer::finalize()
 
         if(_output_to_buffer)
         {
-            raii_ptr<uint8_t> fileBytes([](uint8_t* p){av_freep(p);});
+            // avio_close_dyn_buf hands back an av_malloc'd buffer; free it with
+            // av_free (NOT av_freep, which expects a uint8_t** and would treat the
+            // buffer's first bytes as a pointer to free).
+            raii_ptr<uint8_t> fileBytes([](uint8_t* p){av_free(p);});
             int fileSize = avio_close_dyn_buf(_fc.get()->pb, &fileBytes.raw());
             _buffer.resize(fileSize);
-            memcpy(&_buffer[0], fileBytes.get(), fileSize);
+            if(fileSize > 0)
+                memcpy(&_buffer[0], fileBytes.get(), fileSize);
         }
         else
         {

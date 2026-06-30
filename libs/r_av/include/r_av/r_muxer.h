@@ -60,6 +60,13 @@ public:
     // output_to_buffer). Call before open().
     R_API void enable_faststart();
 
+    // Emit fragmented MP4 (ftyp + empty moov init segment, then repeating
+    // moof+mdat fragments) instead of a single indexed moov. This is the form
+    // the browser Media Source Extensions API can append directly, and unlike
+    // faststart it works with buffer output. Mutually exclusive with faststart.
+    // Call before open().
+    R_API void enable_fragmented_mp4();
+
     R_API void open();
 
     R_API void write_video_frame(uint8_t* p, size_t size, int64_t input_pts, int64_t input_dts, AVRational input_time_base, bool key);
@@ -74,6 +81,7 @@ private:
     std::string _path;
     bool _output_to_buffer;
     bool _faststart;
+    bool _fragmented;
     std::string _format_name;
     std::map<std::string, std::string> _output_options;
     std::vector<uint8_t> _buffer;
