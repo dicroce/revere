@@ -260,6 +260,13 @@ private:
     std::map<std::string, r_transcode_session> _sessions;
     std::mutex _sessions_mutex;
 
+    // Concurrency ceiling for the on-demand fMP4 playback transcode. Each window
+    // spins up a software encoder; without a cap, several simultaneous viewers
+    // (or one plus the recorder) could starve the box. Over-limit requests get a
+    // 503 and the client retries.
+    static constexpr int MAX_FMP4_TRANSCODES = 4;
+    std::atomic<int> _fmp4_active {0};
+
     std::thread _export_th;
     std::atomic<bool> _export_running {false};
     r_utils::r_blocking_q<export_job> _export_q;

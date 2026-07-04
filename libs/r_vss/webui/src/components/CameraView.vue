@@ -14,6 +14,7 @@
         :camera-id="camera.id"
         :camera-name="camera.friendly_name || camera.camera_name"
         :playhead-iso="playheadIso"
+        :live="seekedTime === null"
         @seek="onSeek"
         @live="onLive"
       />

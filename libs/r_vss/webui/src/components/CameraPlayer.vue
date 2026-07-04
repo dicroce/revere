@@ -21,8 +21,8 @@
     <img :src="stillUrl" class="layer still" alt="" @error="stillError = true" />
 
     <!-- Layer 2: the video, pixel-aligned on top, revealed once it has a frame.
-         Not muted: playback is started by the ▶ click (a user gesture), so audio
-         is allowed; cameras without audio simply play silent. -->
+         Volume starts at 0 (muted) every load, so nothing blasts audio on entry
+         and live can autoplay; the user opts into sound with the slider below. -->
     <video ref="video" class="layer video" :class="{ revealed }" playsinline></video>
 
     <div v-if="stillError && !revealed" class="msg">No image available</div>
@@ -37,6 +37,15 @@
       <svg v-if="!playing" viewBox="0 0 24 24" width="34" height="34"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
       <svg v-else          viewBox="0 0 24 24" width="34" height="34"><path d="M6 5h4v14H6zM14 5h4v14h-4z" fill="currentColor"/></svg>
     </button>
+
+    <!-- Volume control (bottom-right), shown once video is on screen. -->
+    <div v-if="revealed" class="volume-ctrl">
+      <button class="vol-btn" :title="volume === 0 ? 'Unmute' : 'Mute'" @click="toggleMute">
+        <svg v-if="volume === 0" viewBox="0 0 24 24" width="22" height="22"><path d="M7 9v6h4l5 5V4l-5 5H7z" fill="currentColor"/><path d="M19 5 5 19" stroke="currentColor" stroke-width="2"/></svg>
+        <svg v-else viewBox="0 0 24 24" width="22" height="22"><path d="M7 9v6h4l5 5V4l-5 5H7z" fill="currentColor"/><path d="M17 7a6 6 0 0 1 0 10" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+      <input class="vol-slider" type="range" min="0" max="1" step="0.05" v-model.number="volume" />
+    </div>
   </div>
 </template>
 
@@ -64,6 +73,16 @@ const AHEAD_S      = 10     // keep this many seconds buffered ahead of playhead
 const BEHIND_S     = 30     // evict buffered media older than this behind playhead
 const MAX_W        = 1280   // cap transcode at 720p for v1 (within avc1 4.1, lighter)
 const MAX_H        = 720
+const MAX_RETRIES      = 3          // per-window fetch retries (503 / timeout / blip)
+const FETCH_TIMEOUT_MS = 15000      // abort a stuck window request and retry
+const RETRY_BASE_MS    = 400        // backoff step between retries
+const SEG_LOOKAHEAD_MS = 6 * 60 * 60 * 1000  // load recording segments this far ahead
+// Live: start this far behind the committed write-head (small buffer), poll for
+// new footage this often when caught up, and don't fetch a live window until at
+// least this much new data has accumulated (avoids churning sub-second windows).
+const LIVE_MARGIN_MS   = 3000
+const LIVE_POLL_MS     = 1000
+const MIN_LIVE_FETCH_MS = 2000
 // Fallback MSE codec string if the server doesn't send X-Revere-Codecs (h264
 // Main@4.1, video only). Normally the first window's header supplies the real one.
 const FALLBACK_CODECS = 'avc1.4d4029'
@@ -77,6 +96,20 @@ const revealed   = ref(false)   // the entire "swap": still shown until this fli
 const playing    = ref(false)
 const reqW       = ref(1280)
 const reqH       = ref(720)
+const volume     = ref(0)       // starts silent every load; user opts into sound
+let lastVolume   = 0.6          // level restored when un-muting via the speaker icon
+
+function applyVolume() {
+  const v = video.value
+  if (!v) return
+  v.volume = volume.value
+  v.muted  = volume.value === 0   // muted at 0 → true silence + autoplay allowed
+}
+function toggleMute() {
+  if (volume.value > 0) { lastVolume = volume.value; volume.value = 0 }
+  else volume.value = lastVolume || 0.6
+}
+watch(volume, applyVolume)
 
 // --- MSE driver state (plain locals; not reactive) -------------------------
 let mediaSource  = null
@@ -86,10 +119,19 @@ let feeding      = false        // still pulling windows from the server
 let fetching     = false        // a window request is in flight (single-flight)
 let firstSegment = true         // the first appended window carries the init segment
 let negotiatedCodecs = null     // exact MSE codec string from the first window's header
-let ptsBaseMs    = 0            // MSE timeline origin for this play session
+let ptsBaseMs    = 0            // wall-clock of the play-start seek point
 let windowStartMs = 0          // wall-clock start of the next window to fetch
 let vidW = 0, vidH = 0
 let abort        = null
+
+// Gap-skipping: recordings are full of holes (motion-only, offline). We play only
+// within recorded segments and compress gaps out of the MSE timeline, so
+// presentation time is contiguous even though wall-clock isn't.
+let segments      = []          // [{startMs,endMs}] recorded segments, sorted
+let presentationMs = 0          // next window's position on the (gap-free) MSE timeline
+let timeline      = []          // [{presMs,wallMs,durMs}] maps presentation → wall-clock
+let liveMode      = false       // chasing the live write-head (vs seeked playback)
+let waitingForData = false      // live: caught up to the head, polling for more
 
 // --- still (jpg) -----------------------------------------------------------
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
@@ -149,17 +191,30 @@ function computeVideoSize() {
 // --- MSE playback ----------------------------------------------------------
 const once = (t, ev) => new Promise(r => t.addEventListener(ev, r, { once: true }))
 
-async function startPlayback() {
-  if (props.isoTime === null) return
+async function startPlayback(live = false) {
+  if (!live && props.isoTime === null) return
   stopVideo()                              // clean slate
 
   const sz = computeVideoSize()
   vidW = sz.w; vidH = sz.h
-  ptsBaseMs       = Date.parse(props.isoTime)
-  windowStartMs   = ptsBaseMs
   firstSegment    = true
   negotiatedCodecs = null
+  presentationMs  = 0
+  segments        = []
+  timeline        = []
+  liveMode        = !!live
+  waitingForData  = false
   abort           = new AbortController()
+
+  // Seek to the requested instant, or (live) to just behind the committed head.
+  await loadSegments(live ? (Date.now() - 60000) : Date.parse(props.isoTime))
+  if (live) {
+    const head = liveHeadMs()
+    ptsBaseMs = (head > 0 ? head : Date.now()) - LIVE_MARGIN_MS
+  } else {
+    ptsBaseMs = Date.parse(props.isoTime)
+  }
+  windowStartMs = ptsBaseMs
 
   mediaSource = new MediaSource()
   video.value.src = URL.createObjectURL(mediaSource)
@@ -190,51 +245,171 @@ async function startPlayback() {
   video.value.addEventListener('canplay', onCanPlay, { once: true })
   video.value.addEventListener('timeupdate', onVideoTime)
 
+  applyVolume()                            // a fresh <video> defaults to full/un-muted
   pump()                                   // drain the queued first window
   video.value.play().catch(() => {})
 }
 
-function onCanPlay() { revealed.value = true }
+function onCanPlay() {
+  revealed.value = true
+  stopLiveRefresh()   // live video took over from the JPEG fallback
+}
 
 function onVideoTime() {
   if (video.value)
-    emit('timeupdate', new Date(ptsBaseMs + video.value.currentTime * 1000).toISOString())
+    emit('timeupdate', new Date(presentationToWallMs(video.value.currentTime)).toISOString())
   pump()
 }
 
+// Map a presentation-time position (video.currentTime, seconds) back to the real
+// wall-clock time it represents, using the per-window mapping. Needed because we
+// compress gaps out of the presentation timeline.
+function presentationToWallMs(presSec) {
+  const presMs = presSec * 1000
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    const t = timeline[i]
+    if (presMs >= t.presMs)
+      return t.wallMs + Math.min(presMs - t.presMs, t.durMs)
+  }
+  return ptsBaseMs + presMs
+}
+
+const delay = (ms) => new Promise(r => setTimeout(r, ms))
+
+// Load the recorded-segment list for [from, from+lookahead] so playback can skip
+// gaps. Replaces the current list (only future windows consult it).
+async function loadSegments(fromMs) {
+  const s = new Date(fromMs - 2000).toISOString()
+  const e = new Date(fromMs + SEG_LOOKAHEAD_MS).toISOString()
+  try {
+    const res = await fetch(`/contents?camera_id=${props.camera.id}`
+      + `&start_time=${encodeURIComponent(s)}&end_time=${encodeURIComponent(e)}`,
+      { signal: abort.signal })
+    if (!res.ok) return
+    const d = await res.json()
+    segments = (d.segments || [])
+      .map(x => ({ startMs: Date.parse(x.start_time), endMs: Date.parse(x.end_time) }))
+      .filter(x => x.endMs > fromMs)
+      .sort((a, b) => a.startMs - b.startMs)
+  } catch (_) { /* teardown or transient — leave list as-is */ }
+}
+
+// First segment whose data extends past ms (the one containing ms, or the next
+// one after a gap). null if none known.
+function segFor(ms) {
+  for (const s of segments) if (ms < s.endMs) return s
+  return null
+}
+
+// Wall-clock of the latest committed footage (max segment end), or 0 if none.
+function liveHeadMs() {
+  let h = 0
+  for (const s of segments) if (s.endMs > h) h = s.endMs
+  return h
+}
+
+// Live: caught up to the head. Wait, refresh the segment list, and try again.
+function scheduleLivePoll() {
+  waitingForData = true
+  setTimeout(async () => {
+    waitingForData = false
+    if (!feeding || !abort || abort.signal.aborted) return
+    await loadSegments(windowStartMs)
+    fetchNextWindow()
+  }, LIVE_POLL_MS)
+}
+
+// Fetch one window with a timeout and retries (503 = server at capacity, plus
+// transient timeouts/blips). Returns the Response, or null on teardown / exhausted
+// retries (in which case feeding is cleared).
+async function fetchWindow(winStart, winEnd) {
+  const s = new Date(winStart).toISOString()
+  const e = new Date(winEnd).toISOString()
+  const url = `/transcode_fmp4?camera_id=${props.camera.id}`
+    + `&start_time=${encodeURIComponent(s)}&end_time=${encodeURIComponent(e)}`
+    + `&width=${vidW}&height=${vidH}&bitrate=${BITRATE}`
+    + `&framerate_num=${FPS_NUM}&framerate_den=${FPS_DEN}&codec=h264`
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (!feeding || !abort || abort.signal.aborted) return null
+    const ctl = new AbortController()
+    const onAbort = () => ctl.abort()
+    abort.signal.addEventListener('abort', onAbort)
+    const to = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS)
+    try {
+      const res = await fetch(url, { signal: ctl.signal })
+      clearTimeout(to); abort.signal.removeEventListener('abort', onAbort)
+      if (res.status === 503) { await delay(RETRY_BASE_MS * (attempt + 1)); continue }
+      return res
+    } catch (_) {
+      clearTimeout(to); abort.signal.removeEventListener('abort', onAbort)
+      if (abort && abort.signal.aborted) return null   // real teardown, don't retry
+      await delay(RETRY_BASE_MS * (attempt + 1))        // timeout / network — retry
+    }
+  }
+  feeding = false                                       // retries exhausted
+  return null
+}
+
 async function fetchNextWindow() {
-  if (!feeding || fetching) return
+  if (!feeding || fetching || waitingForData) return
   fetching = true
   try {
-    const winStart = windowStartMs
-    const s = new Date(winStart).toISOString()
-    const e = new Date(winStart + WINDOW_MS).toISOString()
-    const url = `/transcode_fmp4?camera_id=${props.camera.id}`
-      + `&start_time=${encodeURIComponent(s)}&end_time=${encodeURIComponent(e)}`
-      + `&width=${vidW}&height=${vidH}&bitrate=${BITRATE}`
-      + `&framerate_num=${FPS_NUM}&framerate_den=${FPS_DEN}&codec=h264`
-    const res = await fetch(url, { signal: abort.signal })
+    // Find the segment to read from, snapping across any gap. Refresh the list
+    // in case more has been recorded since we last looked.
+    let seg = segFor(windowStartMs)
+    if (!seg) {
+      await loadSegments(windowStartMs)
+      seg = segFor(windowStartMs)
+      if (!seg) {
+        // No footage here. In live that means we've caught the write-head — poll
+        // for more; in seeked playback it's the genuine end of the recording.
+        if (liveMode) { scheduleLivePoll(); return }
+        feeding = false
+        return
+      }
+    }
+
+    const winStart = Math.max(windowStartMs, seg.startMs)  // snap into the segment
+    const winEnd   = Math.min(winStart + WINDOW_MS, seg.endMs)
+
+    // Live: if this window is only short because it's clamped at the write-head
+    // (not a real segment boundary), wait for more data rather than churning a
+    // tiny window.
+    if (liveMode && winEnd === seg.endMs && seg.endMs === liveHeadMs()
+        && (winEnd - winStart) < MIN_LIVE_FETCH_MS) {
+      scheduleLivePoll()
+      return
+    }
+    if (winEnd <= winStart) { windowStartMs = seg.endMs; return }
+
+    const res = await fetchWindow(winStart, winEnd)
+    if (!res) return                                   // teardown / retries exhausted
     if (!res.ok) { feeding = false; return }
+
     const codecs = res.headers.get('X-Revere-Codecs')
     if (codecs) negotiatedCodecs = codecs
     const buf = await res.arrayBuffer()
+
     if (buf && buf.byteLength) {
-      // Each window is a self-contained, 0-based fMP4 (ftyp+moov+fragments). MSE
-      // wants a single init segment then media-only appends, so keep the init on
-      // the first window and strip it (append from the first moof) on the rest.
-      // offsetSec positions this 0-based window on the global timeline.
+      // 0-based self-contained fMP4. Keep the init on the first window, strip it
+      // (append from first moof) on the rest. offsetSec places it on the gap-free
+      // presentation timeline; timeline records the wall-clock mapping.
       let bytes = new Uint8Array(buf)
       if (firstSegment) firstSegment = false
       else              bytes = stripToFirstMoof(bytes)
-      const offsetSec = (winStart - ptsBaseMs) / 1000
-      appendQueue.push({ bytes, offsetSec })
-      windowStartMs += WINDOW_MS
+      const durMs = winEnd - winStart
+      appendQueue.push({ bytes, offsetSec: presentationMs / 1000 })
+      timeline.push({ presMs: presentationMs, wallMs: winStart, durMs })
+      presentationMs += durMs
+      windowStartMs = winEnd
     } else {
-      feeding = false                      // ran off the end of the recording
+      // Segment list said there's data here but there isn't — treat as a gap and
+      // jump to the segment end so the next pass snaps to the following segment.
+      windowStartMs = seg.endMs
     }
   } catch (_) {
-    // aborted (seek/teardown) or network error — stop feeding quietly
-    feeding = false
+    if (!(abort && abort.signal.aborted)) feeding = false
   } finally {
     fetching = false
   }
@@ -272,6 +447,10 @@ function pump() {
   if (t > BEHIND_S + 10 && sourceBuffer.buffered.length
       && sourceBuffer.buffered.start(0) < t - BEHIND_S) {
     try { sourceBuffer.remove(0, t - BEHIND_S) } catch (_) {}
+    // Drop wall-clock mapping entries fully behind the evicted point.
+    const cutoffMs = (t - BEHIND_S) * 1000
+    while (timeline.length > 1 && (timeline[0].presMs + timeline[0].durMs) < cutoffMs)
+      timeline.shift()
     return                                  // updateend re-enters pump()
   }
 
@@ -293,6 +472,11 @@ function stopVideo() {
   fetching = false
   revealed.value = false
   appendQueue = []
+  segments = []
+  timeline = []
+  presentationMs = 0
+  liveMode = false
+  waitingForData = false
   if (abort) { try { abort.abort() } catch (_) {} abort = null }
 
   const v = video.value
@@ -327,12 +511,21 @@ function togglePlay() {
   }
 }
 
+// Live mode: chase the write-head as video. Show a JPEG immediately and keep it
+// refreshing as a fallback until the live video reveals (onCanPlay stops it), so
+// a camera with no recent footage still shows something.
+function enterLive() {
+  loadStill(liveIso())
+  startLiveRefresh()
+  startPlayback(true)
+}
+
 // --- react to seek / live --------------------------------------------------
 watch(() => props.isoTime, (iso) => {
   stopVideo()
   playing.value = false
-  if (iso === null) { startLiveRefresh(); loadStill(liveIso()) }
-  else              { stopLiveRefresh();  loadStill(iso) }
+  if (iso === null) enterLive()
+  else { stopLiveRefresh(); loadStill(iso) }
 })
 
 // --- lifecycle -------------------------------------------------------------
@@ -340,7 +533,7 @@ let resizeObs = null
 let resizeDebounce = null
 onMounted(() => {
   recomputeStillSize()
-  if (props.isoTime === null) { startLiveRefresh(); loadStill(liveIso()) }
+  if (props.isoTime === null) enterLive()
   else loadStill(props.isoTime)
 
   if (wrap.value && typeof ResizeObserver !== 'undefined') {
@@ -421,4 +614,37 @@ onUnmounted(() => {
   transition: opacity 120ms, background 120ms;
 }
 .play-overlay:hover { opacity: 1; background: rgba(0,0,0,0.65); }
+
+.volume-ctrl {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 20px;
+  background: rgba(0,0,0,0.45);
+  border: 1px solid rgba(255,255,255,0.2);
+  opacity: 0.85;
+  transition: opacity 120ms;
+}
+.volume-ctrl:hover { opacity: 1; }
+
+.vol-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+}
+
+.vol-slider {
+  width: 90px;
+  accent-color: #4caf50;
+  cursor: pointer;
+}
 </style>

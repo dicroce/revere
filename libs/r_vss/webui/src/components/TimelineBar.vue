@@ -45,7 +45,10 @@ const props = defineProps({
   cameraName: { type: String, default: '' },
   // Absolute ISO of the currently-playing frame (null when not playing). Drives
   // the playhead marker forward during playback.
-  playheadIso: { type: String, default: null }
+  playheadIso: { type: String, default: null },
+  // True when the parent is in live mode (vs seeked playback). While live, the
+  // timeline keeps following "now" and the live video drives the playhead.
+  live: { type: Boolean, default: false }
 })
 const emit  = defineEmits(['seek', 'live'])
 
@@ -149,14 +152,14 @@ async function loadData() {
 // --- range ---
 function setLiveRange() {
   const now = Date.now()
-  rangeEnd.value     = new Date(now)
-  rangeStart.value   = new Date(now - rangeMinutes.value * 60000)
-  playheadTime.value = new Date(now)
+  rangeEnd.value   = new Date(now)
+  rangeStart.value = new Date(now - rangeMinutes.value * 60000)
 }
 
 function goLive() {
   isLive.value = true
   setLiveRange()
+  playheadTime.value = new Date()   // initial; live video takes over via playheadIso
   loadData()
   emit('live')
 }
@@ -346,12 +349,27 @@ watch(() => props.playheadIso, (iso) => {
   if (!iso || dragging.value || exportMode.value) return
   const t = new Date(iso)
   playheadTime.value = t
-  isLive.value = false
-  if (t.getTime() > rangeEnd.value.getTime() || t.getTime() < rangeStart.value.getTime()) {
-    const half = rangeMinutes.value * 60000 / 2
-    rangeStart.value = new Date(t.getTime() - half)
-    rangeEnd.value   = new Date(t.getTime() + half)
-    loadData()
+  if (props.live) {
+    // Live video: stay in live mode (the range keeps following now via the timers).
+    // Extend the growing segment up to the playhead so the recorded bar tracks it
+    // between the periodic /contents refreshes. Cap the extension so a motion-gap
+    // skip can't paint a long false bar — the next /contents corrects it.
+    isLive.value = true
+    const segs = segments.value
+    if (segs.length) {
+      const last = segs[segs.length - 1]
+      const dt = t.getTime() - last.end
+      if (dt > 0 && dt < 40000) last.end = t.getTime()
+    }
+  } else {
+    // Seeked playback: take manual control; recenter if the playhead leaves view.
+    isLive.value = false
+    if (t.getTime() > rangeEnd.value.getTime() || t.getTime() < rangeStart.value.getTime()) {
+      const half = rangeMinutes.value * 60000 / 2
+      rangeStart.value = new Date(t.getTime() - half)
+      rangeEnd.value   = new Date(t.getTime() + half)
+      loadData()
+    }
   }
   draw()
 })
@@ -456,19 +474,21 @@ onMounted(() => {
   ro.observe(canvas.value)
   resize()
 
-  // Refresh data every 30s in live mode
+  // Periodically re-query /contents in live mode: the authoritative correction for
+  // the segment bar (the playhead watch extends it cheaply in between).
   liveTimer = setInterval(() => {
-    if (isLive.value) { setLiveRange(); loadData(); emit('live') }
+    if (isLive.value) { setLiveRange(); loadData() }
   }, 30000)
 
-  // Advance playhead every 2s in live mode
+  // Keep the range following "now" in live mode. The playhead itself is driven by
+  // the live video (props.live); only pin it to now for the legacy no-video case.
   drawTimer = setInterval(() => {
-    if (isLive.value) {
-      playheadTime.value = new Date()
-      rangeEnd.value     = new Date()
-      rangeStart.value   = new Date(Date.now() - rangeMinutes.value * 60000)
-      draw()
-    }
+    if (!isLive.value) return
+    const now = Date.now()
+    rangeEnd.value   = new Date(now)
+    rangeStart.value = new Date(now - rangeMinutes.value * 60000)
+    if (!props.live) playheadTime.value = new Date(now)
+    draw()
   }, 2000)
 })
 

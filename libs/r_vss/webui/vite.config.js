@@ -16,6 +16,12 @@ export default defineConfig({
       '/jpg':              'http://localhost:8088',
       '/video':            'http://localhost:8088',
       '/webp':             'http://localhost:8088',
+      // Video playback (fMP4/MSE)
+      '/transcode_fmp4':   'http://localhost:8088',
+      // Export flow
+      '/export':           'http://localhost:8088',
+      '/export_progress':  'http://localhost:8088',
+      '/export_download':  'http://localhost:8088',
       // Record flow + auth
       '/auth_status':      'http://localhost:8088',
       '/login':            'http://localhost:8088',
@@ -25,6 +31,10 @@ export default defineConfig({
       '/measure_progress': 'http://localhost:8088',
       '/measure_result':   'http://localhost:8088',
       '/configure_camera': 'http://localhost:8088',
+      '/remove_camera':    'http://localhost:8088',
+      '/update_camera_properties': 'http://localhost:8088',
+      '/forget_camera':    'http://localhost:8088',
+      '/add_rtsp_camera':  'http://localhost:8088',
     }
   },
 

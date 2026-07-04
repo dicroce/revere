@@ -1576,6 +1576,18 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
                                                     r_utils::r_socket&,
                                                     const r_http::r_server_request& request)
 {
+    // Concurrency ceiling: reserve a slot, or 503 so the client backs off and
+    // retries. The guard releases the slot on every exit path below.
+    if(_fmp4_active.fetch_add(1) >= MAX_FMP4_TRANSCODES)
+    {
+        _fmp4_active.fetch_sub(1);
+        r_server_response busy(r_http::response_service_unavailable, "text/plain");
+        busy.add_additional_header("Retry-After", "1");
+        busy.set_body(string("Too many concurrent transcodes."));
+        return busy;
+    }
+    struct slot_guard { std::atomic<int>& c; ~slot_guard() { c.fetch_sub(1); } } guard{_fmp4_active};
+
     try
     {
         auto args = request.get_uri().get_get_args();
@@ -1605,10 +1617,6 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
         // Each window is emitted 0-based (PTS starts at 0). The client positions it
         // on the MSE timeline with SourceBuffer.timestampOffset, so we don't depend
         // on how the muxer writes baseMediaDecodeTime for an independent fragment.
-        R_LOG_INFO("[FMP4] enter %s [%s -> %s] %ux%u",
-                   camera_id.c_str(), args["start_time"].c_str(), args["end_time"].c_str(),
-                   output_width, output_height);
-
         auto qr_buffer = query_get_video(_top_dir, _devices, camera_id, start_tp, end_tp);
 
         uint32_t version = 0;
@@ -1640,7 +1648,6 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
             AV_PIX_FMT_YUV420P, 0, (uint16_t)framerate_num, profile, level,
             "", "", r_hw_accel::none
         );
-        R_LOG_INFO("[FMP4] codecs ready (sw) in=%s", in_codec_name.c_str());
 
         r_muxer muxer("", /*output_to_buffer=*/true, "mp4");
         muxer.enable_fragmented_mp4();
@@ -1704,8 +1711,7 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
 
         muxer.open();
 
-        int64_t frame_count = 0;   // count of frames actually emitted (for logging)
-        int64_t last_pts     = -1;  // last emitted output PTS (encoder timebase units)
+        int64_t last_pts = -1;   // last emitted output PTS (encoder timebase units)
 
         if(bt.has_key("frames"))
         {
@@ -1745,7 +1751,6 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
                     if(window_pts <= last_pts)
                         continue;
                     last_pts = window_pts;
-                    ++frame_count;
 
                     encoder.attach_buffer(decoded->data(), decoded->size(), window_pts);
 
@@ -1830,15 +1835,6 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
         }
 
         muxer.finalize();
-
-        // last_pts is in encoder timebase units (framerate_num/den); span_ms shows
-        // how much wall-clock the emitted frames actually cover (≈ window length if
-        // the source framerate matched our assumption).
-        int64_t span_ms = (last_pts < 0) ? 0
-            : (last_pts * 1000LL * (int64_t)framerate_den) / (int64_t)framerate_num;
-        R_LOG_INFO("[FMP4] done: %lld frames span %lldms audio=%s -> %zu bytes",
-                   (long long)frame_count, (long long)span_ms,
-                   audio_initialized ? "yes" : "no", muxer.buffer_size());
 
         // Tell the client the exact MSE codec string so it can create a matching
         // SourceBuffer (it can't know audio presence up front). h264 Main@4.1 here.
