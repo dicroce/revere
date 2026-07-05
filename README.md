@@ -1,8 +1,28 @@
 # Revere
 
-## Overview
+[![License: BSD 3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
+[![Get it from the Snap Store](https://snapcraft.io/revere/badge.svg)](https://snapcraft.io/revere)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)
 
 Revere is an open source video surveillance system with ONVIF camera support, motion detection, recording, playback and object detection.
+
+![Revere desktop application recording multiple cameras](/assets/screenshots/revere.jpg "Revere")
+
+## Contents
+
+- [Key Features](#key-features)
+- [Screenshots](#screenshots)
+- [Quick Start](#quick-start)
+  - [Installation](#installation)
+  - [Run Headless Service](#run-headless-service)
+  - [Adding Your First Camera](#adding-your-first-camera)
+- [Documentation](#documentation)
+- [Building from Source](#building-from-source-quick-reference)
+- [Platform Support](#platform-support)
+- [System Requirements](#system-requirements)
+- [Camera Compatibility](#camera-compatibility)
+- [Technology Stack & Acknowledgements](#technology-stack--acknowledgements)
+- [License](#license)
 
 ## Key Features
 
@@ -23,24 +43,24 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 ### Revere
 - Runs in the system tray OR headless
 
-![Alt text](/assets/screenshots/tray.jpg "Tray icon")
-- Pre-allocated storage means it wont suprise you by using up more hard drive than you have allocated to it.
+![Revere system tray icon](/assets/screenshots/tray.jpg "Tray icon")
+- Pre-allocated storage means it won't surprise you by using up more hard drive than you have allocated to it.
   
-![Alt text](/assets/screenshots/revere.jpg "Revere")
+![Revere main window](/assets/screenshots/revere.jpg "Revere")
 
 ### Vision
 - Connects to revere
 - Supports 2x2, 4x4 and single view.
 
-![Alt text](/assets/screenshots/vision.jpg "Vision")
+![Vision multi-camera viewer](/assets/screenshots/vision.jpg "Vision")
 
 ### Web UI
 
-![Alt text](/assets/screenshots/webui_cameras.jpg "Web UI Cameras")
+![Web UI cameras tab](/assets/screenshots/webui_cameras.jpg "Web UI Cameras")
 
-![Alt text](/assets/screenshots/webui_live.jpg "Live")
+![Web UI live view](/assets/screenshots/webui_live.jpg "Live")
 
-![Alt text](/assets/screenshots/webui_single.jpg "Single Camera View")
+![Web UI single camera view](/assets/screenshots/webui_single.jpg "Single Camera View")
 
 ## Quick Start
 
@@ -52,9 +72,9 @@ On Linux the simplest way is to install the revere snap:
 
 ### Prerequisites
 
-1) Onvif cameras - Revere should support a wide variety of Onvif compatible cameras.
-2) Axis cameras are the most compatible with Reolink a close second. If you want me to get your camera working for you send me one and I'll take a crack at it.
-3) Either a Windows, Linux or MacOS computer.
+1) ONVIF cameras - Revere should support a wide variety of ONVIF-compatible cameras.
+2) Axis cameras are the most compatible, with Reolink a close second.
+3) A Windows, Linux or macOS computer.
 
 ### Installation
 
@@ -88,14 +108,7 @@ On Linux the simplest way is to install the revere snap:
 
 On Linux, Revere can run as a headless `systemd` service — recording, ONVIF discovery and the web UI (on http://localhost:8088/) with no desktop session. This is the recommended way to run Revere on a server, NAS or always-on mini-PC.
 
-Build from source and install (see [Building from Source](docs/BUILDING.md) for the full list of build prerequisites):
-
-```bash
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build .
-sudo cmake --install .            # installs to /usr/local/revere
-```
+First build from source and install to `/usr/local/revere` using the same steps as the Linux [Installation](#installation) section above (`cmake …` then `sudo cmake --install .`). See [Building from Source](docs/BUILDING.md) for the full list of build prerequisites.
 
 Then install and start the service. Run it as root — it creates a dedicated `revere` system user and the `/var/lib/revere` data directory, writes `/etc/systemd/system/revere.service`, and enables it to start on boot:
 
@@ -134,16 +147,13 @@ Run `revere --help` to see all command line options.
 
 ### Adding Your First Camera
 
-Onvif discoverable cameras on your LAN 
+ONVIF-discoverable cameras on your LAN 
 should appear in the Discovered list. Once it appears click Record and follow the instructions. Revere will attempt to stream a little from the camera to measure its bitrate and then allow you to pick a storage file size (with retention estimates) for that stream. During the camera provisioning process you will be asked if you want to enable motion detection for this camera. To get motion data in the timeline bar (in vision) you will need to say yes here. Additionally, yolov8 object detection is only run on frames containing motion.
 
 ## Documentation
 
 - [Building from Source](docs/BUILDING.md) - Detailed build instructions for all platforms
 - [Architecture](docs/ARCHITECTURE.md) - System design and component overview
-- [User Guide](docs/USER_GUIDE.md) - Complete usage documentation
-- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
-- [Contributing](CONTRIBUTING.md) - How to contribute to the project
 
 ## Building from Source (quick reference)
 
@@ -173,7 +183,7 @@ Multiple plugin repos can be separated by semicolons.
 ## System Requirements
 
 ### Minimum
-A resonably modern computer is required. I built it on the pi5 and found it was unusably slow.
+A reasonably modern computer is required. As a rough floor, a Raspberry Pi 5 was too slow to be usable in testing — plan on a modern desktop or laptop CPU for smooth multi-camera recording and playback.
 
 ### Storage
 Storage requirements vary based on number of cameras, resolution, bitrate, and retention period. Revere uses the camera's bitrate to estimate retention when configuring recording. Generally:
