@@ -58,9 +58,12 @@ private:
     // helpers for (de)serialisation (implemented in .cpp)
     static size_t _sizeof_treeb(const r_blob_tree& rt);
     static size_t _write_treeb(const r_blob_tree& rt, uint8_t* p, uint8_t* end);
-    static size_t _read_treeb(const uint8_t* p, const uint8_t* end, r_blob_tree& rt);
+    static size_t _read_treeb(const uint8_t* p, const uint8_t* end, r_blob_tree& rt, unsigned depth);
 
-    static inline size_t _bytes_left(const uint8_t* p, const uint8_t* end) { return static_cast<size_t>(end - p); }
+    // Bytes remaining between p and end. Guards against p having overshot end:
+    // an unsigned (end - p) would wrap to a huge value and silently defeat every
+    // downstream length check, so clamp to 0 when p is at/after end.
+    static inline size_t _bytes_left(const uint8_t* p, const uint8_t* end) { return p < end ? static_cast<size_t>(end - p) : 0; }
 
     // internal helpers
     void _clear_value();

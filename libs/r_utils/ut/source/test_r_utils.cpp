@@ -1269,6 +1269,132 @@ void test_r_utils::test_blob_tree_big()
 
 }
 
+// ---- malformed-input / security tests for r_blob_tree::deserialize ----
+//
+// deserialize() is the "other side of the wire": it must treat its input as
+// hostile and fail with a thrown r_invalid_argument_exception rather than
+// over-read, over-allocate, or blow the stack. Each test below crafts a
+// deliberately malformed frame and asserts a clean throw.
+
+namespace {
+
+// A valid 8-byte header: magic "RBT0" (big-endian 0x52425430) + version 42.
+static const uint8_t RBT_HEADER[8] = { 0x52, 0x42, 0x54, 0x30, 0x00, 0x00, 0x00, 0x2A };
+
+std::vector<uint8_t> rbt_frame(std::initializer_list<uint8_t> body)
+{
+    std::vector<uint8_t> v(RBT_HEADER, RBT_HEADER + 8);
+    v.insert(v.end(), body);
+    return v;
+}
+
+} // namespace
+
+void test_r_utils::test_blob_tree_reject_truncated_header()
+{
+    uint32_t version = 0;
+    // Fewer than 8 bytes: not even room for magic + version.
+    std::vector<uint8_t> buf = { 0x52, 0x42, 0x54 };
+    RTF_ASSERT_THROWS(r_blob_tree::deserialize(buf.data(), buf.size(), version),
+                      r_invalid_argument_exception);
+}
+
+void test_r_utils::test_blob_tree_reject_bad_magic()
+{
+    uint32_t version = 0;
+    std::vector<uint8_t> buf = { 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x01, 0x02 };
+    RTF_ASSERT_THROWS(r_blob_tree::deserialize(buf.data(), buf.size(), version),
+                      r_invalid_argument_exception);
+}
+
+void test_r_utils::test_blob_tree_reject_bad_node_type()
+{
+    uint32_t version = 0;
+    // Type byte 0x07 is outside {OBJECT,ARRAY,LEAF}.
+    auto buf = rbt_frame({ 0x07 });
+    RTF_ASSERT_THROWS(r_blob_tree::deserialize(buf.data(), buf.size(), version),
+                      r_invalid_argument_exception);
+}
+
+void test_r_utils::test_blob_tree_reject_truncated_field()
+{
+    uint32_t version = 0;
+    // LEAF whose 4-byte length is truncated to 2 bytes — the checked read must
+    // throw instead of over-reading past the buffer.
+    auto buf = rbt_frame({ 0x02 /*NT_LEAF*/, 0xFF, 0xFF });
+    RTF_ASSERT_THROWS(r_blob_tree::deserialize(buf.data(), buf.size(), version),
+                      r_invalid_argument_exception);
+}
+
+void test_r_utils::test_blob_tree_reject_giant_leaf_len()
+{
+    uint32_t version = 0;
+    // LEAF claiming a 4 GiB payload with no payload present. Must throw rather
+    // than assign(p, p + 0xFFFFFFFF) and walk off the heap.
+    auto buf = rbt_frame({ 0x02 /*NT_LEAF*/, 0xFF, 0xFF, 0xFF, 0xFF });
+    RTF_ASSERT_THROWS(r_blob_tree::deserialize(buf.data(), buf.size(), version),
+                      r_invalid_argument_exception);
+}
+
+void test_r_utils::test_blob_tree_reject_giant_array_count()
+{
+    uint32_t version = 0;
+    // ARRAY claiming ~4 billion elements in a 13-byte message. Must throw rather
+    // than resize() the vector to 4 billion nodes (allocation bomb).
+    auto buf = rbt_frame({ 0x01 /*NT_ARRAY*/, 0xFF, 0xFF, 0xFF, 0xFF });
+    RTF_ASSERT_THROWS(r_blob_tree::deserialize(buf.data(), buf.size(), version),
+                      r_invalid_argument_exception);
+}
+
+void test_r_utils::test_blob_tree_reject_giant_object_count()
+{
+    uint32_t version = 0;
+    auto buf = rbt_frame({ 0x00 /*NT_OBJECT*/, 0xFF, 0xFF, 0xFF, 0xFF });
+    RTF_ASSERT_THROWS(r_blob_tree::deserialize(buf.data(), buf.size(), version),
+                      r_invalid_argument_exception);
+}
+
+void test_r_utils::test_blob_tree_reject_deep_nesting()
+{
+    uint32_t version = 0;
+    // Nest arrays far deeper than the reader's depth cap: each level is
+    // [NT_ARRAY][count=1]. Must throw (max depth) rather than recurse until the
+    // stack overflows.
+    std::vector<uint8_t> buf(RBT_HEADER, RBT_HEADER + 8);
+    for(int i = 0; i < 200; ++i)
+    {
+        buf.push_back(0x01);                         // NT_ARRAY
+        buf.push_back(0x00); buf.push_back(0x00);
+        buf.push_back(0x00); buf.push_back(0x01);    // count = 1
+    }
+    buf.push_back(0x02);                             // innermost NT_LEAF
+    buf.push_back(0x00); buf.push_back(0x00);
+    buf.push_back(0x00); buf.push_back(0x00);        // len = 0
+    RTF_ASSERT_THROWS(r_blob_tree::deserialize(buf.data(), buf.size(), version),
+                      r_invalid_argument_exception);
+}
+
+void test_r_utils::test_blob_tree_valid_still_roundtrips()
+{
+    // Regression: after the hardening, well-formed data must still round-trip.
+    r_blob_tree in;
+    in["name"] = std::string("camera-1");
+    in["frames"][0] = std::string("frame-a");
+    in["frames"][1] = std::string("frame-b");
+
+    auto buf = r_blob_tree::serialize(in, 7);
+
+    uint32_t version = 0;
+    r_blob_tree out;
+    RTF_ASSERT_NO_THROW(out = r_blob_tree::deserialize(buf.data(), buf.size(), version));
+    RTF_ASSERT(version == 7);
+    RTF_ASSERT(out.has_key("name"));
+    RTF_ASSERT(out.at("name").get_string() == "camera-1");
+    RTF_ASSERT(out.at("frames").size() == 2);
+    RTF_ASSERT(out["frames"][0].get_string() == "frame-a");
+    RTF_ASSERT(out["frames"][1].get_string() == "frame-b");
+}
+
 void test_r_utils::test_work_q_basic()
 {
     r_work_q<int,int> wq;

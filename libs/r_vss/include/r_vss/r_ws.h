@@ -309,6 +309,12 @@ private:
     std::vector<uint8_t> _master_key;
     std::map<std::string, std::chrono::steady_clock::time_point> _tokens;  // token -> expiry
     std::mutex _auth_mutex;
+
+    // Brute-force throttle for _post_login. After too many consecutive failures
+    // logins are refused until a cooldown elapses, regardless of correctness.
+    // Guarded by _auth_mutex.
+    int _failed_logins {0};
+    std::chrono::steady_clock::time_point _login_lock_until {};
 };
 
 }

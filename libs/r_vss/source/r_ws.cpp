@@ -55,6 +55,33 @@ r_server_response mcp_err(const json& id, int code, const string& msg)
     return resp;
 }
 
+// Reject export file names that could escape the exports directory or be used to
+// inject into the Content-Disposition header on download. Accept a bare file
+// name only: non-empty, bounded, no path separators, no drive/ADS colon, no
+// NUL/control chars, and not a bare "." / "..".
+bool is_safe_export_filename(const std::string& name)
+{
+    if(name.empty() || name.size() > 255)
+        return false;
+    if(name == "." || name == "..")
+        return false;
+    for(unsigned char c : name)
+    {
+        if(c == '/' || c == '\\' || c == ':' || c < 0x20 || c == 0x7f)
+            return false;
+    }
+    return true;
+}
+
+// Cap on exports that are queued or running at once. Each export streams and
+// (optionally) re-encodes footage to a file on disk, so an unbounded number of
+// enqueued jobs is a CPU/disk exhaustion vector.
+constexpr size_t MAX_INFLIGHT_EXPORTS = 8;
+
+// _post_login brute-force throttle parameters.
+constexpr int MAX_FAILED_LOGINS = 5;
+constexpr int LOGIN_LOCKOUT_SECONDS = 30;
+
 // Returns the camera's source video resolution by parsing the SPS from the
 // codec params stored alongside the latest recorded key frame. We can't use
 // r_camera::video_codec_parameters directly — those come from the discovery-
@@ -121,7 +148,11 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     _devices(devices),
     _agent(agent),
     _stream_keeper(stream_keeper),
-    _server(WEB_SERVER_PORT)
+    // Bind to loopback only. All intended consumers are local — the cloud plugin
+    // (127.0.0.1:8088), the desktop web UI, and local MCP clients — and most
+    // endpoints (footage, export, MCP) are unauthenticated, so binding to
+    // 0.0.0.0 would expose all surveillance data to every host on the LAN.
+    _server(WEB_SERVER_PORT, "127.0.0.1")
 {
     _server.add_route(METHOD_GET, "/cameras", std::bind(&r_ws::_get_cameras, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/contents", std::bind(&r_ws::_get_contents, this, _1, _2, _3));
@@ -518,6 +549,12 @@ static float _compute_framerate(const r_blob_tree& bt)
         }
     }
 
+    // Need at least one inter-frame delta to average; otherwise the division
+    // below is a divide-by-zero (SIGFPE). Reachable when a chunk has 0 or 1 video
+    // frames, or non-increasing timestamps.
+    if(deltas.empty())
+        R_THROW(("Cannot compute framerate: no usable video frame deltas."));
+
     int64_t avg_delta = (std::accumulate(begin(deltas), end(deltas), (int64_t)0, [](int64_t a, int64_t b) {return a + b;}) / deltas.size());
 
     return (float)1000 / (float)avg_delta;
@@ -624,6 +661,8 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
             R_THROW(("Missing end_time."));
         if(args.find("file_name") == args.end())
             R_THROW(("Missing file name."));
+        if(!is_safe_export_filename(args["file_name"]))
+            R_THROW(("Invalid file_name."));
 
         export_job job;
         job.id = r_uuid::generate();
@@ -636,6 +675,13 @@ r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::
 
         {
             lock_guard<mutex> lock(_export_progress_mutex);
+
+            size_t inflight = 0;
+            for(const auto& kv : _export_progress)
+                if(kv.second.percent_complete < 100) ++inflight;
+            if(inflight >= MAX_INFLIGHT_EXPORTS)
+                R_THROW(("Too many exports in progress; try again later."));
+
             auto& p = _export_progress[job.id];
             p.percent_complete = 0;
             p.completed_at = {};
@@ -1905,6 +1951,8 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
             R_THROW(("Missing end_time."));
         if(args.find("file_name") == args.end())
             R_THROW(("Missing file_name."));
+        if(!is_safe_export_filename(args["file_name"]))
+            R_THROW(("Invalid file_name."));
         if(args.find("width") == args.end())
             R_THROW(("Missing width."));
         if(args.find("height") == args.end())
@@ -1933,6 +1981,13 @@ r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server
 
         {
             lock_guard<mutex> lock(_export_progress_mutex);
+
+            size_t inflight = 0;
+            for(const auto& kv : _export_progress)
+                if(kv.second.percent_complete < 100) ++inflight;
+            if(inflight >= MAX_INFLIGHT_EXPORTS)
+                R_THROW(("Too many exports in progress; try again later."));
+
             _export_progress[job.id] = {0, {}};
         }
 
@@ -2896,16 +2951,34 @@ r_http::r_server_response r_ws::_post_login(const r_http::r_web_server<r_utils::
         if(!req.contains("password"))
             R_THROW(("Missing password."));
 
+        // Refuse while locked out — bounds password-guessing to a few attempts
+        // per cooldown window regardless of the password's correctness.
+        {
+            lock_guard<mutex> lock(_auth_mutex);
+            if(steady_clock::now() < _login_lock_until)
+                R_STHROW(r_http_401_exception, ("Too many failed attempts; try again later."));
+        }
+
         auto stored = _load_system_password();
         if(stored.is_null())
             R_STHROW(r_http_401_exception, ("No system password set."));
 
         if(!_ct_equal(req["password"].get<string>(), stored.value()))
+        {
+            lock_guard<mutex> lock(_auth_mutex);
+            if(++_failed_logins >= MAX_FAILED_LOGINS)
+            {
+                _login_lock_until = steady_clock::now() + seconds(LOGIN_LOCKOUT_SECONDS);
+                _failed_logins = 0;
+            }
             R_STHROW(r_http_401_exception, ("Invalid password."));
+        }
 
         auto token = r_uuid::generate();
         {
             lock_guard<mutex> lock(_auth_mutex);
+            _failed_logins = 0;
+            _login_lock_until = {};
             _tokens[token] = steady_clock::now() + hours(24);
         }
 
