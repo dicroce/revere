@@ -293,8 +293,15 @@ if(NOT TARGET ffmpeg::ffmpeg)
         target_link_directories(ffmpeg::ffmpeg INTERFACE "${FFMPEG_ROOT}/lib")
 
         if(CMAKE_SYSTEM_NAME MATCHES "Windows")
+            # Link by absolute path: GStreamer's lib dir also contains an
+            # avutil.lib (from its bundled FFmpeg), and bare names let the
+            # linker resolve against whichever -libpath comes first.
             target_link_libraries(ffmpeg::ffmpeg INTERFACE
-                avcodec.lib avformat.lib avutil.lib swscale.lib swresample.lib
+                "${FFMPEG_ROOT}/lib/avcodec.lib"
+                "${FFMPEG_ROOT}/lib/avformat.lib"
+                "${FFMPEG_ROOT}/lib/avutil.lib"
+                "${FFMPEG_ROOT}/lib/swscale.lib"
+                "${FFMPEG_ROOT}/lib/swresample.lib"
             )
         else()
             # Linux/macOS with explicit path
