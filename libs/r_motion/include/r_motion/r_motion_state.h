@@ -6,6 +6,11 @@
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
 #include <opencv2/opencv.hpp>
+// OpenCV 5 moved contourArea/boundingRect to the geometry module, which the
+// umbrella header no longer includes.
+#if CV_VERSION_MAJOR >= 5
+#include <opencv2/geometry.hpp>
+#endif
 #include <functional>
 
 namespace r_motion
