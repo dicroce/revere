@@ -1009,7 +1009,7 @@ void configure_rtsp_source_camera_modal(
     }
 }
 
-template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB>
+template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB>
 void camera_properties_modal(
     ImGuiContext*,
     const std::string& name,
@@ -1019,7 +1019,8 @@ void camera_properties_modal(
     const std::string& record_file_path,
     OK_CB ok_cb,
     CANCEL_CB cancel_cb,
-    MOVE_STORAGE_CB move_storage_cb
+    MOVE_STORAGE_CB move_storage_cb,
+    CHANGE_RETENTION_CB change_retention_cb
 )
 {
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
@@ -1063,6 +1064,17 @@ void camera_properties_modal(
         ImGui::TextDisabled("(?)");
         if(ImGui::IsItemHovered())
             ImGui::SetTooltip("Move recording files to a new location.\nOptionally start fresh and discard old recordings.");
+
+        ImGui::SameLine();
+        if(ImGui::Button("Change Retention"))
+        {
+            ImGui::CloseCurrentPopup();
+            change_retention_cb();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if(ImGui::IsItemHovered())
+            ImGui::SetTooltip("Resize this camera's recording buffer to keep more or fewer days.\nApplying reallocates the ring and clears this camera's existing recordings.");
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -1212,6 +1224,130 @@ void about_revere_cloud_modal(
         }
 
         ImGui::Spacing();
+
+        ImGui::EndPopup();
+    }
+}
+
+// Resize an existing camera's recording ring buffer to a new retention target.
+// Reuses the same async op/phases as move_storage_modal. Sizing mirrors the
+// setup wizard's retention step: block_size/num_blocks are derived from the
+// live byte_rate and the requested days. Applying reallocates the ring, which
+// clears the camera's existing recordings (a fixed-size ring can't be resized
+// in place), so a confirm checkbox is required before Apply is enabled.
+template<typename START_CB, typename CLOSE_CB, typename CANCEL_OP_CB>
+void change_retention_modal(
+    ImGuiContext*,
+    const std::string& name,
+    const std::string& camera_name,
+    int64_t byte_rate,
+    double& retention_days,
+    bool& confirm_delete,
+    int64_t& out_num_blocks,
+    int64_t& out_block_size,
+    float progress,
+    bool running,
+    bool done,
+    bool error,
+    const std::string& status,
+    START_CB start_cb,
+    CLOSE_CB close_cb,
+    CANCEL_OP_CB cancel_op_cb
+)
+{
+    ImGui::SetNextWindowSize(ImVec2(540, 0), ImGuiCond_Always);
+    if(ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        if(!running && !done)
+        {
+            if(ImGui::IsWindowAppearing())
+                confirm_delete = false;
+
+            ImGui::Text("Camera: %s", camera_name.c_str());
+            if(byte_rate > 0)
+                ImGui::Text("Current bitrate: %lld kbps", (long long)((byte_rate * 8) / 1024));
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            const bool have_bitrate = (byte_rate > 0);
+            if(!have_bitrate)
+            {
+                ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
+                    "This camera has no current bitrate (not receiving video).");
+                ImGui::TextWrapped("Retention is sized from the live bitrate, so the camera must be recording before it can be resized.");
+                ImGui::Spacing();
+            }
+
+            ImGui::BeginDisabled(!have_bitrate);
+            ImGui::InputDouble("Retention Days", &retention_days, 0.0, 0.0, "%.2f");
+            if(retention_days < 0.0)
+                retention_days = 0.0;
+            ImGui::EndDisabled();
+
+            // Derive the ring geometry from days * bitrate (same as setup).
+            if(have_bitrate)
+            {
+                auto sz = r_storage::required_file_size_for_retention_hours((int64_t)(retention_days * 24.0), byte_rate);
+                out_num_blocks = sz.first;
+                out_block_size = sz.second;
+
+                auto human = r_storage::human_readable_file_size((double)(out_num_blocks * out_block_size));
+                ImGui::Spacing();
+                ImGui::Text("New storage size: %s", human.c_str());
+            }
+
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
+                "Applying reallocates the ring and permanently deletes this camera's existing recordings.");
+            ImGui::Checkbox("I understand the existing recordings will be deleted", &confirm_delete);
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            if(ImGui::Button("Cancel", ImVec2(120, 30)))
+            {
+                ImGui::CloseCurrentPopup();
+                close_cb();
+            }
+
+            ImGui::SameLine();
+
+            bool can_start = have_bitrate && retention_days > 0.0 && confirm_delete;
+            ImGui::BeginDisabled(!can_start);
+            if(ImGui::Button("Apply", ImVec2(120, 30)))
+                start_cb();
+            ImGui::EndDisabled();
+        }
+        else if(running)
+        {
+            ImGui::Text("Resizing recording buffer...");
+            ImGui::Spacing();
+            ImGui::ProgressBar(progress, ImVec2(-1, 0));
+            ImGui::Spacing();
+            ImGui::TextWrapped("%s", status.c_str());
+            ImGui::Spacing();
+            if(ImGui::Button("Cancel", ImVec2(120, 30)))
+                cancel_op_cb();
+        }
+        else if(done && !error)
+        {
+            ImGui::CloseCurrentPopup();
+            close_cb();
+        }
+        else if(error)
+        {
+            ImGui::TextColored(ImVec4(1.f, 0.3f, 0.3f, 1.f), "Error:");
+            ImGui::Spacing();
+            ImGui::TextWrapped("%s", status.c_str());
+            ImGui::Spacing();
+            if(ImGui::Button("Close", ImVec2(120, 30)))
+            {
+                ImGui::CloseCurrentPopup();
+                close_cb();
+            }
+        }
 
         ImGui::EndPopup();
     }
