@@ -21,6 +21,16 @@ set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "Disable shared mbedtls libraries"
 set(MBEDTLS_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls/mbedtls_config.h" CACHE STRING "Custom mbedtls config")
 set(MBEDTLS_USER_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls/user_config.h" CACHE STRING "Custom user config")
 
+# GCC 15+ no longer zero-fills the non-first members of a union initialized
+# with {0}, leaving mbedtls 3.6.x PSA operation structs with garbage in
+# ctx.hmac.hash.id — every TLS 1.3 handshake then fails at the Finished
+# message with MBEDTLS_ERR_SSL_INTERNAL_ERROR (PSA_ERROR_BAD_STATE).
+include(CheckCCompilerFlag)
+check_c_compiler_flag("-fzero-init-padding-bits=unions" C_HAS_ZERO_INIT_PADDING_BITS)
+if(C_HAS_ZERO_INIT_PADDING_BITS)
+    add_compile_options($<$<COMPILE_LANGUAGE:C>:-fzero-init-padding-bits=unions>)
+endif()
+
 FetchContent_MakeAvailable(mbedtls)
 
 file(GLOB R_UTILS_HEADERS
