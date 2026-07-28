@@ -3,6 +3,7 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_blob_tree.h"
 #include "r_utils/r_logger.h"
+#include "r_utils/r_file.h"
 #include "r_utils/3rdparty/json/json.h"
 #include <algorithm>
 #include <memory>
@@ -18,10 +19,27 @@ r_storage_file_reader::r_storage_file_reader(const string& file_name) :
     _file_name(file_name)
 {
     auto base_name = file_name.substr(0, (file_name.find_last_of('.')));
-    
+
     // Use .nts extension for nanots files
     auto nanots_file_name = base_name + ".nts";
-    
+
+    // Guard against a truncated / zero-length .nts before handing it to nanots.
+    // nanots mmaps the header block and memcmps the "NTS\0" magic at offset 0
+    // *before* it can validate the file is large enough, so a short file faults
+    // (SIGBUS: "cluster_pagein past EOF") inside that read instead of failing
+    // cleanly with NANOTS_EC_BAD_MAGIC. A partially-allocated file can be left
+    // behind when a ring reallocation is interrupted (e.g. a crash mid
+    // fallocate). Every valid nanots file is at least one FILE_HEADER_BLOCK_SIZE
+    // header block, so reject anything smaller with a normal exception — which
+    // callers already handle (and which can't SIGBUS the whole process).
+    if(!r_fs::file_exists(nanots_file_name))
+        R_THROW(("nanots file not found: %s", nanots_file_name.c_str()));
+
+    auto nts_size = r_fs::file_size(nanots_file_name);
+    if(nts_size < FILE_HEADER_BLOCK_SIZE)
+        R_THROW(("nanots file truncated (%llu bytes < %d-byte header block): %s",
+                 (unsigned long long)nts_size, (int)FILE_HEADER_BLOCK_SIZE, nanots_file_name.c_str()));
+
     _reader = make_unique<nanots_reader>(nanots_file_name);
 }
 
