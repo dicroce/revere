@@ -466,6 +466,12 @@ struct storage_op_state
     std::atomic<bool> cancel_requested{false};
     bool start_fresh{false};
     bool delete_confirmed{false};
+
+    // Change-retention op: target ring geometry derived from byte_rate + days.
+    double retention_days{0.0};
+    int64_t byte_rate{0};
+    int64_t new_num_blocks{0};
+    int64_t new_block_size{0};
 };
 
 static storage_op_state s_storage_op;
@@ -726,6 +732,71 @@ static void _do_reset_storage(
         devices.save_camera(camera);
 
         set_status("Reset complete. Recording will resume.");
+        op.progress = 1.f;
+        op.done = true;
+        op.running = false;
+        stream_keeper.resume(camera.id);
+    }
+    catch(const std::exception& e)
+    {
+        set_status(string("Error: ") + e.what());
+        op.error = true;
+        op.running = false;
+        stream_keeper.resume(camera.id);
+    }
+}
+
+// Reallocate a camera's recording ring at a new size (new retention). Mirrors
+// _do_reset_storage but swaps in a caller-computed block geometry and reuses the
+// existing file paths. A fixed-size ring can't be resized in place, so this
+// clears the camera's existing recordings — the UI confirms before calling.
+static void _do_change_retention(
+    r_vss::r_stream_keeper& stream_keeper,
+    r_disco::r_devices& devices,
+    r_disco::r_camera camera,
+    int64_t new_num_blocks,
+    int64_t new_block_size,
+    storage_op_state& op
+)
+{
+    auto set_status = [&](const string& s) {
+        std::lock_guard<std::mutex> g(op.mtx);
+        op.status = s;
+    };
+
+    try
+    {
+        if(new_num_blocks <= 0 || new_block_size <= 0)
+            R_THROW(("Invalid retention size."));
+
+        stream_keeper.suspend(camera.id);
+
+        set_status("Deleting old recordings...");
+        _delete_camera_files(camera);
+        op.progress = 0.3f;
+
+        string nts_path;
+        string mdb_path;
+        if(!camera.record_file_path.is_null())
+            nts_path = _get_storage_path(camera.record_file_path.value());
+        if(!camera.motion_detection_file_path.is_null())
+            mdb_path = _get_storage_path(camera.motion_detection_file_path.value());
+
+        set_status("Allocating new storage file...");
+        if(!nts_path.empty())
+            r_storage::r_storage_file::allocate(nts_path, new_block_size, new_num_blocks);
+        op.progress = 0.7f;
+
+        if(!mdb_path.empty())
+            _create_motion_files(mdb_path);
+        op.progress = 0.9f;
+
+        set_status("Updating database...");
+        camera.n_record_file_blocks.set_value(new_num_blocks);
+        camera.record_file_block_size.set_value(new_block_size);
+        devices.save_camera(camera);
+
+        set_status("Retention updated. Recording will resume.");
         op.progress = 1.f;
         op.done = true;
         op.running = false;
@@ -1590,6 +1661,48 @@ void configure_camera_setup_wizard(
                         }
                     }
                     camera_setup_wizard.next("move_storage_modal");
+                },
+                [&](){
+                    // Change Retention button
+                    auto cid = ui_state.selected_camera_id();
+                    if(!cid.is_null())
+                    {
+                        auto maybe_camera = devices.get_camera_by_id(cid.value());
+                        if(!maybe_camera.is_null())
+                        {
+                            auto& c = maybe_camera.value();
+
+                            // Live bitrate drives the new ring size (same source
+                            // the recording list uses to show retention).
+                            int64_t bps = 0;
+                            for(auto& st : stream_keeper.fetch_stream_status())
+                            {
+                                if(st.camera.id == c.id) { bps = st.bytes_per_second; break; }
+                            }
+
+                            int64_t nb = c.n_record_file_blocks.is_null() ? 0 : c.n_record_file_blocks.value();
+                            int64_t bs = c.record_file_block_size.is_null() ? 0 : c.record_file_block_size.value();
+                            double cap_days = (bps > 0 && nb > 0 && bs > 0)
+                                ? ((double)(nb * bs) / (double)bps / 86400.0) : 0.0;
+
+                            s_storage_op.camera_id = c.id;
+                            s_storage_op.camera_name = c.friendly_name.is_null() ? c.camera_name.value() : c.friendly_name.value();
+                            s_storage_op.byte_rate = bps;
+                            s_storage_op.retention_days = (cap_days > 0.0) ? cap_days : 1.0;
+                            s_storage_op.new_num_blocks = nb;
+                            s_storage_op.new_block_size = bs;
+                            s_storage_op.running = false;
+                            s_storage_op.done = false;
+                            s_storage_op.error = false;
+                            s_storage_op.progress = 0.f;
+                            s_storage_op.delete_confirmed = false;
+                            {
+                                std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                                s_storage_op.status.clear();
+                            }
+                        }
+                    }
+                    camera_setup_wizard.next("change_retention_modal");
                 }
             );
         }
@@ -1663,6 +1776,69 @@ void configure_camera_setup_wizard(
                 },
                 [&](){
                     // Cancel in-progress op: signal thread, then wait for done before closing
+                    s_storage_op.cancel_requested = true;
+                }
+            );
+        }
+    );
+
+    camera_setup_wizard.add_step(
+        "change_retention_modal",
+        [&camera_setup_wizard, &devices, &stream_keeper](){
+            ImGui::OpenPopup("Change Retention");
+
+            string status_copy;
+            {
+                std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                status_copy = s_storage_op.status;
+            }
+
+            revere::change_retention_modal(
+                GImGui,
+                "Change Retention",
+                s_storage_op.camera_name,
+                s_storage_op.byte_rate,
+                s_storage_op.retention_days,
+                s_storage_op.delete_confirmed,
+                s_storage_op.new_num_blocks,
+                s_storage_op.new_block_size,
+                s_storage_op.progress.load(),
+                s_storage_op.running.load(),
+                s_storage_op.done.load(),
+                s_storage_op.error.load(),
+                status_copy,
+                [&](){
+                    auto maybe_camera = devices.get_camera_by_id(s_storage_op.camera_id);
+                    if(maybe_camera.is_null()) return;
+                    s_storage_op.running = true;
+                    s_storage_op.done = false;
+                    s_storage_op.error = false;
+                    s_storage_op.progress = 0.f;
+                    s_storage_op.cancel_requested = false;
+                    {
+                        std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                        s_storage_op.status.clear();
+                    }
+                    auto camera = maybe_camera.value();
+                    int64_t nb = s_storage_op.new_num_blocks;
+                    int64_t bs = s_storage_op.new_block_size;
+                    std::thread([&stream_keeper, &devices, camera, nb, bs](){
+                        _do_change_retention(stream_keeper, devices, camera, nb, bs, s_storage_op);
+                    }).detach();
+                },
+                [&](){
+                    s_storage_op.running = false;
+                    s_storage_op.done = false;
+                    s_storage_op.error = false;
+                    s_storage_op.progress = 0.f;
+                    s_storage_op.delete_confirmed = false;
+                    {
+                        std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                        s_storage_op.status.clear();
+                    }
+                    camera_setup_wizard.cancel();
+                },
+                [&](){
                     s_storage_op.cancel_requested = true;
                 }
             );

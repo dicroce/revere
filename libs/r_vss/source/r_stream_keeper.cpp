@@ -670,6 +670,18 @@ void r_stream_keeper::_entry_point()
                     {
                         rc->stop();
                         _motionEngine.remove_work_context(cmd.first.id);
+                        // Fully destroy the recording context here — before we ack the
+                        // suspend — so its nanots write context flushes and finalizes
+                        // the current segment against the SQLite DB while that DB still
+                        // exists. _streams held the only owning ref (see
+                        // _add_recording_contexts), so this reset runs the destructor
+                        // now. Otherwise suspend() returns while ~r_recording_context is
+                        // still pending on this thread, and a caller that immediately
+                        // deletes the camera's storage files (Change Retention, or Move
+                        // Storage "start fresh") races the destructor's
+                        // "UPDATE segment_blocks" finalize, which aborts the process on a
+                        // now-missing table.
+                        rc.reset();
                     }
 
                     cmd.second.set_value(result);
