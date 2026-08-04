@@ -36,6 +36,7 @@
 
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_logger.h"
+#include "r_utils/r_crash_handler.h"
 #include "r_utils/r_uuid.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_process.h"
@@ -2533,6 +2534,13 @@ int main(int argc, char** argv)
     cfg_state.load();
 
     r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
+
+    // Install before any worker threads start, so nothing can crash unwatched.
+    // Dumps land beside the logs so "send me your logs directory" collects the
+    // crash evidence too.
+    r_crash_handler::install_crash_handler(
+        r_fs::platform_path(revere::sub_dir("crashdumps")), "revere_crash_"
+    );
 
     // UI state needs to be created before we can register the log callback
     // We'll register it after creating ui_state

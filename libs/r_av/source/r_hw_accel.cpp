@@ -2,7 +2,37 @@
 #include "r_av/r_hw_accel.h"
 #include "r_utils/r_logger.h"
 
+#include <map>
+#include <mutex>
+
 using namespace r_av;
+
+namespace
+{
+    // Both probe functions below answer a question about the MACHINE — which
+    // hardware backends exist and work — and they answer it by actually
+    // creating and then destroying a hardware device context per candidate.
+    // That is expensive, and repeating it is genuinely dangerous.
+    //
+    // A crash dump (2026-08-03) caught it: every /jpg and /webp request routes
+    // through _decode_single_frame, which called r_find_best_hw_accel() before
+    // constructing its decoder. With the cloud plugin's ~22 snapshot workers
+    // driving those endpoints, revere was creating and tearing down D3D11
+    // devices continuously from many threads at once. Intel's user-mode driver
+    // eventually fail-fasted inside the device destructor:
+    //
+    //   r_ws::_get_jpg -> query_get_jpg -> _decode_single_frame
+    //     -> r_find_best_hw_accel -> av_buffer_unref
+    //     -> d3d11!NDXGI::CDevice::~CDevice -> igd10umt64xe!... -> int 29h
+    //
+    // The answer cannot change while the process runs, so probe once per codec
+    // and remember it. The lock is deliberately held ACROSS the probe, not just
+    // around the cache: that way at most one hardware device probe is ever in
+    // flight, instead of one per concurrent request.
+    std::mutex g_probe_lok;
+    std::map<AVCodecID, r_hw_accel> g_decoder_cache;
+    std::map<AVCodecID, r_hw_accel> g_encoder_cache;
+}
 
 static const char* _accel_name(r_hw_accel accel)
 {
@@ -69,6 +99,13 @@ AVPixelFormat r_av::r_hw_accel_encoder_pix_fmt(r_hw_accel accel)
 
 r_hw_accel r_av::r_find_best_hw_accel_encoder(AVCodecID codec_id)
 {
+    // See the note on g_probe_lok: probe at most once per codec, and never
+    // concurrently.
+    std::lock_guard<std::mutex> probe_guard(g_probe_lok);
+
+    auto cached = g_encoder_cache.find(codec_id);
+    if(cached != g_encoder_cache.end())
+        return cached->second;
 
 #if defined(IS_WINDOWS)
     static const r_hw_accel candidates[] = {
@@ -118,17 +155,30 @@ r_hw_accel r_av::r_find_best_hw_accel_encoder(AVCodecID codec_id)
             av_buffer_unref(&hw_device_ctx);
         }
 
+        g_encoder_cache[codec_id] = accel;
+        R_LOG_INFO("r_av: hardware encoder for codec %d -> %s (probed once, cached)",
+                   (int)codec_id, _accel_name(accel));
         return accel;
     }
 
+    g_encoder_cache[codec_id] = r_hw_accel::none;
     return r_hw_accel::none;
 }
 
 r_hw_accel r_av::r_find_best_hw_accel(AVCodecID codec_id)
 {
+    // See the note on g_probe_lok: probe at most once per codec, and never
+    // concurrently. This is the path that was being hit per /jpg request.
+    std::lock_guard<std::mutex> probe_guard(g_probe_lok);
+
+    auto cached = g_decoder_cache.find(codec_id);
+    if(cached != g_decoder_cache.end())
+        return cached->second;
+
     const AVCodec* codec = avcodec_find_decoder(codec_id);
     if(!codec)
     {
+        g_decoder_cache[codec_id] = r_hw_accel::none;
         return r_hw_accel::none;
     }
 
@@ -175,8 +225,13 @@ r_hw_accel r_av::r_find_best_hw_accel(AVCodecID codec_id)
         }
 
         av_buffer_unref(&hw_device_ctx);
+
+        g_decoder_cache[codec_id] = accel;
+        R_LOG_INFO("r_av: hardware decoder for codec %d -> %s (probed once, cached)",
+                   (int)codec_id, _accel_name(accel));
         return accel;
     }
 
+    g_decoder_cache[codec_id] = r_hw_accel::none;
     return r_hw_accel::none;
 }

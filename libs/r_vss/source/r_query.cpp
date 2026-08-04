@@ -93,7 +93,29 @@ static shared_ptr<vector<uint8_t>> _decode_single_frame(
 {
     // Enable parsing to properly handle Annex B streams with multiple NAL units
     auto codec_id = r_av::encoding_to_av_codec_id(video_codec_name);
-    r_video_decoder decoder(codec_id, r_av::r_find_best_hw_accel(codec_id), true);
+
+    // Software decode, deliberately — do NOT use r_find_best_hw_accel() here.
+    //
+    // This helper decodes exactly ONE frame per call, and it is on the hottest
+    // path in the process: every /jpg and /webp request routes through it, and
+    // the cloud plugin drives those with ~22 snapshot workers.
+    //
+    // Hardware accel is a bad fit and was actively dangerous:
+    //   - r_video_decoder's ctor calls av_hwdevice_ctx_create(), so each request
+    //     created and destroyed a real D3D11 device. Doing that continuously
+    //     from many threads fail-fasted inside Intel's user-mode driver
+    //     (crash dump 2026-08-03: ~CDevice -> igd10umt64xe -> int 29h).
+    //   - The decoded frame then has to come back over the bus via
+    //     av_hwframe_transfer_data() before sws_scale/encode can touch it, so
+    //     the GPU round trip is mandatory rather than avoidable.
+    //   - The hw path also pins thread_count = 1, giving up the frame/slice
+    //     threading software decode gets for free.
+    //
+    // Setup plus readback dominate for a single frame, so this should also be
+    // faster. Correctness is the reason it's not negotiable: nothing here is
+    // worth creating and tearing down a graphics device thousands of times a day
+    // in a process meant to run unattended for months.
+    r_video_decoder decoder(codec_id, r_av::r_hw_accel::none, true);
 
     // Only set extradata if stream doesn't have inline SPS/PPS
     if(!_has_inline_sps(frame))

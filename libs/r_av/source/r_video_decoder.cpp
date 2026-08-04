@@ -415,6 +415,16 @@ shared_ptr<vector<uint8_t>> r_video_decoder::get(AVPixelFormat output_format, ui
     state.output_width = output_width;
     state.output_height = output_height;
 
+    // Reject bad output dimensions up front. Without this, output_width == 0
+    // reaches av_image_get_buffer_size(), which returns AVERROR(EINVAL) — a
+    // NEGATIVE int that then gets converted to vector's size_type below, asking
+    // for ~18 exabytes and throwing length_error from deep inside a decode. The
+    // dimensions are caller-supplied (ultimately HTTP query args), so this is
+    // reachable from outside; fail with something that names the problem.
+    if(output_width == 0 || output_height == 0)
+        R_THROW(("Invalid output dimensions for decode: %ux%u.",
+                 (unsigned)output_width, (unsigned)output_height));
+
     auto found = _scalers.find(state);
 
     if(found == end(_scalers))
@@ -433,9 +443,27 @@ shared_ptr<vector<uint8_t>> r_video_decoder::get(AVPixelFormat output_format, ui
         );
     }
 
+    // sws_getContext() returns NULL for any conversion swscale won't do
+    // (unsupported format pair, out-of-range dimensions). That NULL was being
+    // cached in _scalers and handed straight to sws_scale() below, which
+    // dereferences it — an access violation reported against r_av rather than
+    // an error naming the actual conversion that isn't supported.
+    if(!_scalers[state])
+    {
+        _scalers.erase(state);  // don't cache the failure
+        R_THROW(("Failed to create scaler: %dx%d fmt %d -> %ux%u fmt %d.",
+                 _frame->width, _frame->height, (int)_frame->format,
+                 (unsigned)output_width, (unsigned)output_height, (int)output_format));
+    }
+
     auto output_image_size = av_image_get_buffer_size(output_format, output_width, output_height, alignment);
 
-    auto result = make_shared<vector<uint8_t>>(output_image_size);
+    if(output_image_size < 0)
+        R_THROW(("Failed to compute image buffer size for %ux%u: %s",
+                 (unsigned)output_width, (unsigned)output_height,
+                 _ff_rc_to_msg(output_image_size).c_str()));
+
+    auto result = make_shared<vector<uint8_t>>((size_t)output_image_size);
 
     uint8_t* fields[AV_NUM_DATA_POINTERS];
     int linesizes[AV_NUM_DATA_POINTERS];

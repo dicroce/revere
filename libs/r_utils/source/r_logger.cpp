@@ -4,6 +4,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_time_utils.h"
+#include "r_utils/r_crash_handler.h"
 #include <exception>
 #include <deque>
 #include <algorithm>
@@ -212,15 +213,16 @@ void r_utils::r_logger::write(LOG_LEVEL level,
         {
             fprintf(_state->log_file, "%s %s\n", timestamp.c_str(), l.c_str());
         }
-        // Flush on errors and above, or if 10 seconds have passed since last flush
-        bool should_flush = (level <= LOG_LEVEL_ERROR);
-        if(!should_flush && (now - _state->last_flush_time) > std::chrono::seconds(10))
-            should_flush = true;
-        if(should_flush)
-        {
-            fflush(_state->log_file);
-            _state->last_flush_time = now;
-        }
+
+        // Flush every line. This used to batch non-error output on a 10 second
+        // timer, which meant that when the process was killed outright (heap
+        // corruption, abort, OS kill) the last few seconds of log — the only
+        // part describing what led to the death — never reached disk. For a
+        // service that is supposed to be recording unattended, being able to
+        // see the run-up to a crash is worth more than the saved syscalls; the
+        // steady-state log rate here is a handful of lines per minute.
+        fflush(_state->log_file);
+        _state->last_flush_time = now;
     }
 #endif
 
@@ -263,6 +265,12 @@ void r_utils_terminate()
 {
     R_LOG_CRITICAL("r_utils terminate handler called!");
     printf("r_utils terminate handler called!\n");
+
+    // Capture a dump before we log-and-abort. An unhandled C++ exception
+    // unwinds nothing useful by the time abort() runs, so without this the log
+    // gets a message with no stack behind it. No-op unless the crash handler
+    // was installed.
+    r_crash_handler::write_dump_now("std::terminate");
 
     std::exception_ptr p = std::current_exception();
 

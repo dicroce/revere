@@ -246,6 +246,27 @@ void r_ws::stop()
     _server.stop();
 }
 
+// Clamp a caller-supplied snapshot dimension into something the decode/encode
+// path can actually handle. s_to_uint16() yields 0 for a missing, non-numeric
+// or zero argument, and 0 propagates all the way into
+// av_image_get_buffer_size(), which answers with a negative error that then
+// gets read as an enormous unsigned allocation. These values arrive from HTTP
+// query args — including snapshot requests relayed from the cloud, whose width
+// and height come off the wire — so treat them as untrusted.
+static uint16_t _clamp_snapshot_dim(uint16_t v, uint16_t fallback)
+{
+    constexpr uint16_t MIN_DIM = 16;
+    constexpr uint16_t MAX_DIM = 8192;   // beyond any camera we support
+
+    if(v == 0)
+        return fallback;
+    if(v < MIN_DIM)
+        return MIN_DIM;
+    if(v > MAX_DIM)
+        return MAX_DIM;
+    return v;
+}
+
 r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_socket>&,
                                          r_utils::r_socket&,
                                          const r_http::r_server_request& request)
@@ -266,16 +287,16 @@ r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_s
         uint16_t w = 640, h = 480;
         if(args.find("long_edge") != end(args))
         {
-            uint16_t le = r_string_utils::s_to_uint16(args["long_edge"]);
+            uint16_t le = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["long_edge"]), 640);
             w = le;
             h = le;
         }
         else
         {
             if(args.find("width") != end(args))
-                w = r_string_utils::s_to_uint16(args["width"]);
+                w = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["width"]), 640);
             if(args.find("height") != end(args))
-                h = r_string_utils::s_to_uint16(args["height"]);
+                h = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["height"]), 480);
         }
 
         auto result = query_get_jpg(
@@ -320,16 +341,16 @@ r_http::r_server_response r_ws::_get_webp(const r_http::r_web_server<r_utils::r_
         uint16_t w = 640, h = 480;
         if(args.find("long_edge") != end(args))
         {
-            uint16_t le = r_string_utils::s_to_uint16(args["long_edge"]);
+            uint16_t le = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["long_edge"]), 640);
             w = le;
             h = le;
         }
         else
         {
             if(args.find("width") != end(args))
-                w = r_string_utils::s_to_uint16(args["width"]);
+                w = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["width"]), 640);
             if(args.find("height") != end(args))
-                h = r_string_utils::s_to_uint16(args["height"]);
+                h = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["height"]), 480);
         }
 
         auto result = query_get_webp(

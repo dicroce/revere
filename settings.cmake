@@ -151,9 +151,22 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
         $<$<CONFIG:Release>:/Oi>              # intrinsic functions
         $<$<CONFIG:Release>:/GL>              # whole program optimization
         $<$<CONFIG:Release>:/Gy>              # function-level linking
+        $<$<CONFIG:Release>:/Zi>              # PDBs — see below
     )
+    # Release ships with symbols. Without /Zi + /DEBUG a crash dump resolves to
+    # nothing but module+offset, which is how a run of heap-corruption crashes
+    # (0xc0000374) went undiagnosed: every WER report bucketed as
+    # "PCH_*_FROM_ntdll" with no frame we could attribute.
+    #
+    # /DEBUG implicitly turns OFF /OPT:REF and /OPT:ICF, so restore them
+    # explicitly — otherwise the binary we debug is not the binary we shipped.
+    # The PDBs land next to the binaries and are NOT installed (no install rule
+    # references them), so the packaged installer is unaffected.
     add_link_options(
         $<$<CONFIG:Release>:/LTCG>            # link-time code generation
         $<$<CONFIG:Release>:/INCREMENTAL:NO>  # deterministic builds
+        $<$<CONFIG:Release>:/DEBUG>           # emit PDB
+        $<$<CONFIG:Release>:/OPT:REF>         # restore what /DEBUG disabled
+        $<$<CONFIG:Release>:/OPT:ICF>         # restore what /DEBUG disabled
     )
 endif()

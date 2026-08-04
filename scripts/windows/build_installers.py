@@ -26,6 +26,7 @@ import sys
 import os
 import re
 import shutil
+import datetime
 from pathlib import Path
 import argparse
 
@@ -197,6 +198,42 @@ def install_binaries():
     """Install binaries to the staging directory (CMAKE_INSTALL_PREFIX)."""
     cmd = ["cmake", "--build", ".", "--target", "install", "--config", "Release"]
     run_command(cmd, cwd=BUILD_DIR, description=f"Installing binaries to {INSTALL_DIR}")
+
+
+def archive_symbols(version):
+    """Copy this build's PDBs somewhere they won't be clobbered by the next build.
+
+    A crash dump is matched to its PDB by GUID, so analysing a dump requires the
+    symbols from the exact build that produced it. The PDBs the linker writes to
+    build/bin/Release are overwritten on every rebuild, which means a crash that
+    shows up days later has no readable stack. Snapshot them per build instead.
+
+    Not fatal: a missing symbol archive should never block shipping.
+    """
+    print(f"\n{'='*60}")
+    print("  Archiving debug symbols")
+    print(f"{'='*60}")
+
+    pdb_src = BUILD_DIR / "bin" / "Release"
+    pdbs = sorted(pdb_src.glob("*.pdb")) if pdb_src.exists() else []
+    if not pdbs:
+        print(f"WARNING: no PDBs found in {pdb_src}.")
+        print("         Release builds need /Zi and /DEBUG (see settings.cmake);")
+        print("         without them a crash dump cannot be symbolised.")
+        return
+
+    # Timestamped so rebuilding the same commit never destroys the symbols for a
+    # build that may already have crashed in the field.
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = OUTPUT_DIR / "symbols" / f"{version}_{stamp}"
+    dest.mkdir(parents=True, exist_ok=True)
+
+    for pdb in pdbs:
+        shutil.copy2(pdb, dest / pdb.name)
+
+    print(f"Archived {len(pdbs)} PDB(s) to {dest}")
+    print("Point cdb at this directory when opening a dump from this build:")
+    print(f'  -y "srv*C:\\symbols*https://msdl.microsoft.com/download/symbols;{dest}"')
 
 
 def verify_dependencies():
@@ -391,6 +428,10 @@ def main():
         install_binaries()
     else:
         print("\nSkipping install step (--skip-install)")
+
+    # Snapshot this build's PDBs before the next build overwrites them.
+    if not args.skip_build:
+        archive_symbols(version)
 
     # Gate: every DLL the staged binaries import must be bundled or a system DLL.
     # Catches the class of bug where a dependency resolves on the dev machine

@@ -88,6 +88,44 @@ void r_websocket_client::start()
     _keepalive_thread = std::thread(&r_websocket_client::_keepalive_loop, this);
 }
 
+// Join one of our worker threads, refusing to join it from itself.
+//
+// A caller that destroys this client from inside the message callback is
+// running ON _receive_thread, so the join below would be a self-join:
+// std::thread::join() throws system_error(resource_deadlock_would_occur), that
+// escapes ~r_websocket_client(), and destructors are implicitly noexcept — so
+// the process dies via std::terminate with nothing explaining why.
+//
+// We deliberately do NOT detach() to dodge that. _receive_loop() returns from
+// the callback straight back into `while (_connected)` and `recv_frame(*_socket)`,
+// both members of the object being destroyed — detaching would trade a clean
+// abort for a use-after-free on a live socket, which is far harder to diagnose
+// and can corrupt the heap rather than just ending the process.
+//
+// There is no safe recovery here: by the time the destructor runs, the caller
+// has already committed to freeing this object. So we make it loud and let it
+// die. The fix belongs in the caller — never destroy the client from within its
+// own callback; flag it and let the owning thread reap it.
+static void _join_worker(std::thread& t, const char* which)
+{
+    if (!t.joinable())
+        return;
+
+    if (t.get_id() == std::this_thread::get_id())
+    {
+        R_LOG_CRITICAL(
+            "r_websocket_client: %s thread tried to join itself — the client is "
+            "being destroyed from inside its own callback. This is a caller bug: "
+            "mark the connection dead and reap it from the owning thread instead.",
+            which
+        );
+        // Fall through to the join, which throws and terminates. Failing fast
+        // beats detaching into a use-after-free; at least the log now says why.
+    }
+
+    t.join();
+}
+
 void r_websocket_client::stop()
 {
     _connected = false;
@@ -97,11 +135,8 @@ void r_websocket_client::stop()
         _socket->close();
 
     // Join threads (they will exit once they detect socket closed or _connected == false)
-    if (_receive_thread.joinable())
-        _receive_thread.join();
-
-    if (_keepalive_thread.joinable())
-        _keepalive_thread.join();
+    _join_worker(_receive_thread, "receive");
+    _join_worker(_keepalive_thread, "keepalive");
 }
 
 void r_websocket_client::_receive_loop()
