@@ -292,6 +292,45 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                 R_LOG_ERROR("Invalid timeline duration for analytics events: %lld ms", bar_duration_millis);
                 return;
             }
+
+            // Build contiguous visible recording intervals once. Analytics icons
+            // are clipped to the interval containing their timestamp so they do
+            // not visually extend before/after recorded video or across a gap.
+            std::vector<segment> content_runs;
+            content_runs.reserve(cbs.segments.size());
+            for(const auto& source_segment : cbs.segments)
+            {
+                if(source_segment.start >= source_segment.end ||
+                   source_segment.start >= cbs.tr.get_end() ||
+                   source_segment.end <= cbs.tr.get_start())
+                    continue;
+
+                segment visible_segment;
+                visible_segment.start = std::max(source_segment.start, cbs.tr.get_start());
+                visible_segment.end = std::min(source_segment.end, cbs.tr.get_end());
+                content_runs.push_back(visible_segment);
+            }
+
+            std::sort(content_runs.begin(), content_runs.end(),
+                      [](const segment& lhs, const segment& rhs) {
+                          return lhs.start < rhs.start;
+                      });
+
+            std::vector<segment> merged_content_runs;
+            merged_content_runs.reserve(content_runs.size());
+            for(const auto& content_run : content_runs)
+            {
+                if(merged_content_runs.empty() ||
+                   content_run.start > merged_content_runs.back().end)
+                {
+                    merged_content_runs.push_back(content_run);
+                }
+                else
+                {
+                    merged_content_runs.back().end =
+                        std::max(merged_content_runs.back().end, content_run.end);
+                }
+            }
             
             int rendered_count = 0;
             float last_x = -1000.0f; // Initialize to a value that won't cause skipping for the first icon
@@ -306,6 +345,18 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
 
                 // Skip events outside the visible timerange
                 if(event_millis < 0 || event_millis > bar_duration_millis)
+                    continue;
+
+                const auto event_time = event.detections[0].timestamp;
+                auto content_run_it = std::find_if(
+                    merged_content_runs.begin(), merged_content_runs.end(),
+                    [&event_time](const segment& content_run) {
+                        return event_time >= content_run.start && event_time <= content_run.end;
+                    });
+
+                // A recognition cannot be displayed where there is no recorded
+                // video content to which it could belong.
+                if(content_run_it == merged_content_runs.end())
                     continue;
 
                 // Calculate pixel position
@@ -337,6 +388,21 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                 float icon_x = x - icon_size / 2.0f;
                 float icon_y = center_y - icon_size / 2.0f;
 
+                const int64_t content_start_millis = duration_cast<milliseconds>(
+                    content_run_it->start - cbs.tr.get_start()).count();
+                const int64_t content_end_millis = duration_cast<milliseconds>(
+                    content_run_it->end - cbs.tr.get_start()).count();
+                const float content_left = calc.center_box_left +
+                    (calculate_position_ratio(content_start_millis, bar_duration_millis) * calc.center_box_width);
+                const float content_right = calc.center_box_left +
+                    (calculate_position_ratio(content_end_millis, bar_duration_millis) * calc.center_box_width);
+
+                draw_list->PushClipRect(
+                    ImVec2(content_left, calc.contents_top),
+                    ImVec2(content_right, calc.contents_bottom),
+                    true
+                );
+
                 ImU32 bg_color = IM_COL32(73, 106, 129, 255);
                 draw_list->AddRectFilled(
                     ImVec2(icon_x, icon_y),
@@ -352,6 +418,8 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                     ImVec2(1, 1),
                     IM_COL32_WHITE
                 );
+
+                draw_list->PopClipRect();
                 
                 // Update last_x position after successfully drawing
                 last_x = x;
