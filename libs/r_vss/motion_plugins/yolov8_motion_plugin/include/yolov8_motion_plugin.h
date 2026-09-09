@@ -39,6 +39,7 @@ public:
         uint16_t width;
         uint16_t height;
         r_vss::motion_region motion_bbox;
+        std::vector<r_vss::motion_region> motion_regions;
     };
 
     R_API yolov8_motion_plugin(r_vss::r_motion_event_plugin_host* host);
@@ -47,6 +48,7 @@ public:
     R_API void stop();
 
     R_API virtual void post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox) override;
+    R_API void post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions);
 
 private:
     r_vss::r_motion_event_plugin_host* _host;
@@ -67,7 +69,7 @@ private:
 
     void _entry_point();
     void _process_motion_event(const MotionEventMessage& msg);
-    std::vector<Detection> detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox);
+    std::vector<Detection> detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions, std::vector<Detection>* unfiltered_detections = nullptr);
     void _analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms);
     static const char* get_class_name(int class_id);
 };

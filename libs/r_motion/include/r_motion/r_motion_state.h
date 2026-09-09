@@ -2,7 +2,6 @@
 #define __r_motion_r_motion_state_h__
 
 #include "r_motion/utils.h"
-#include "r_utils/r_avg.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
 #include <opencv2/opencv.hpp>
@@ -19,20 +18,31 @@ namespace r_motion
 struct r_motion_info
 {
     r_image motion_pixels;            // reserved for future pixel mask use
-    uint64_t motion      {0};         // total moving‑pixel count this frame
+    uint64_t motion      {0};         // weighted motion score this frame
     uint64_t avg_motion  {0};         // exponential moving average
     uint64_t stddev      {0};         // std‑dev on the same EMA window
+
+    // Evidence breakdown. Shadow and persistent-region pixels are retained at
+    // reduced weight instead of being irreversibly discarded.
+    uint64_t strong_motion {0};
+    uint64_t weak_motion {0};
+    uint64_t illumination_motion {0};
+    uint64_t persistent_motion {0};
+    bool illumination_change {false};
+    bool significant {false};
     
     // motion masking information
     uint64_t motion_before_mask {0};  // motion count before applying static mask
-    uint64_t masked_pixels {0};       // number of pixels suppressed by static mask
-    bool masking_active {false};      // whether motion masking is active
+    uint64_t masked_pixels {0};       // pixels down-weighted by the persistent-region map
+    bool masking_active {false};      // whether persistent-region weighting is active
     
     // motion spatial information
     struct motion_region {
-        int x, y, width, height;      // bounding box of all motion areas
+        int x {0}, y {0}, width {0}, height {0}; // bounding box of a motion area
         bool has_motion {false};      // whether any significant motion was detected
     } motion_bbox;
+
+    std::vector<motion_region> motion_regions;
 };
 
 class r_motion_state
@@ -62,26 +72,35 @@ public:
      *                          Useful for catchup/in-event processing where we want motion detection
      *                          results but don't want to adapt the baseline statistics.
      */
-    R_API r_utils::r_nullable<r_motion_info> process(const r_image& input, bool skip_stats_update = false);
+    R_API r_utils::r_nullable<r_motion_info> process(const r_image& input,
+                                                      bool skip_stats_update = false,
+                                                      int64_t timestamp_ms = -1);
 
     /**
      * Feed a cv::Mat image directly and receive motion metrics for that frame.
      * This overload accepts ROI Mats (zero-copy subregions of larger images).
      * Returns empty nullable on the very first call (no background yet).
      *
-     * @param input The input image (BGR, RGB, or grayscale). Can be an ROI of a larger image.
+     * @param input The input image (RGB, BGRA, or grayscale). Can be an ROI of a larger image.
      * @param roi_offset_x Offset to add to motion bbox x coordinates (for letterbox correction)
      * @param roi_offset_y Offset to add to motion bbox y coordinates (for letterbox correction)
      * @param skip_stats_update If true, don't update the moving average or motion frequency map.
+     * @param timestamp_ms Capture timestamp. When supplied, learning and decay are normalized
+     *                     to elapsed time rather than the camera's key-frame interval.
      */
     R_API r_utils::r_nullable<r_motion_info> process(const cv::Mat& input,
                                                       int roi_offset_x = 0,
                                                       int roi_offset_y = 0,
-                                                      bool skip_stats_update = false);
+                                                      bool skip_stats_update = false,
+                                                      int64_t timestamp_ms = -1);
 
 private:
-    // statistics
-    r_utils::r_exp_avg<uint64_t> _avg_motion;
+    // Time-aware exponential statistics. The legacy sample-based behavior is
+    // retained when process() is called without a timestamp.
+    const size_t _statsMemory;
+    double _avgMotion {0.0};
+    double _secondMoment {0.0};
+    int64_t _lastStatsTimestampMs {-1};
 
     // MOG2 background subtractor
     cv::Ptr<cv::BackgroundSubtractorMOG2> _mog2;
@@ -105,13 +124,21 @@ private:
 
     // motion frequency tracking
     cv::Mat _motionFreqMap;                   // per-pixel motion frequency counter (CV_32F)
-    cv::Mat _staticMask;                      // binary mask for suppressing dynamic regions
+    cv::Mat _staticMask;                      // binary map: 0 = persistent nuisance, 255 = normal
     size_t _frameCount {0};                   // total frames processed
+    int64_t _firstObservationTimestampMs {-1};
+    int64_t _lastFrequencyTimestampMs {-1};
+    int64_t _lastInputTimestampMs {-1};
     
     // reusable buffers to avoid reallocs
     cv::Mat _currGray;
     cv::Mat _blurred;
+    cv::Mat _prevBlurred;
     cv::Mat _fgMask;
+    cv::Mat _strongMask;
+    cv::Mat _shadowMask;
+    cv::Mat _illuminationMask;
+    cv::Mat _combinedMask;
     cv::Mat _morphKernel;
 };
 

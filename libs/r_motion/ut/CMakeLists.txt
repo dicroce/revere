@@ -11,17 +11,10 @@ target_include_directories(
     r_motion_ut PUBLIC
     include
     ../include
-    ../../ut_data
 )
 
 target_link_libraries(
     r_motion_ut LINK_PUBLIC
     experimentum
     r_motion
-    r_av
-    r_utils
-    opencv::opencv
-    gstreamer::gstreamer
-    ffmpeg::ffmpeg
-    platform::platform
 )

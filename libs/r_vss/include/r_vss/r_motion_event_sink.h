@@ -18,6 +18,15 @@ public:
     virtual void post(r_motion_event evt, const std::string& camera_id, int64_t ts,
                       const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height,
                       const motion_region& motion_bbox) = 0;
+
+    virtual void post(r_motion_event evt, const std::string& camera_id, int64_t ts,
+                      const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height,
+                      const motion_region& motion_bbox,
+                      const std::vector<motion_region>& motion_regions)
+    {
+        (void)motion_regions;
+        post(evt, camera_id, ts, frame_data, width, height, motion_bbox);
+    }
 };
 
 }

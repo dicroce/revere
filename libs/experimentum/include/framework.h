@@ -47,13 +47,15 @@ class test_fixture;
 
 struct test_host {
   test_host()
-      : fixture(), test(nullptr), test_name(), exception_msg(), passed(false) {}
+      : fixture(), test(nullptr), test_name(), exception_msg(), passed(false),
+        ran(false) {}
 
   test_fixture* fixture;
   void (test_fixture::*test)();
   std::string test_name;
   std::string exception_msg;
   bool passed;
+  bool ran;
 };
 
 #define RTF_ASSERT(a)                                                   \
@@ -120,6 +122,7 @@ class test_fixture {
         continue;
       }
 
+      i->ran = true;
       setup();
 
       try {
@@ -148,7 +151,8 @@ class test_fixture {
   void print_failures() {
     std::vector<struct test_host>::iterator i = _tests.begin();
     for (; i != _tests.end(); i++) {
-      if (!(*i).passed) {
+      // A test that was filtered out never ran, so it is not a failure.
+      if ((*i).ran && !(*i).passed) {
         printf("\nRTF_FAIL: %s failed with exception: %s\n",
                (*i).test_name.c_str(), (*i).exception_msg.c_str());
       }

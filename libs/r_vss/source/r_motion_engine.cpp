@@ -90,6 +90,11 @@ void r_motion_engine::stop() noexcept
 
 void r_motion_engine::post_frame(r_pipeline::r_gst_buffer buffer, int64_t ts, const string& video_codec_name, const string& video_codec_parameters, const string& id, bool is_key_frame)
 {
+    // Motion detection intentionally operates on key frames only. Do not make
+    // every inter frame compete with useful work in the bounded queue.
+    if(!is_key_frame)
+        return;
+
     r_motion_work_item item;
     item.frame = buffer;
     item.video_codec_name = video_codec_name;
@@ -178,12 +183,13 @@ void r_motion_engine::_entry_point()
                             cv::Mat roi_mat = create_letterbox(*decoded, lp.scaled_w, lp.scaled_h, lp, letterbox_img);
 
                             // Process motion on ROI only (efficient), with offset correction
-                            auto maybe_motion_info = wc->motion_state().process(roi_mat, lp.pad_x, lp.pad_y, false);
+                            auto maybe_motion_info = wc->motion_state().process(
+                                roi_mat, lp.pad_x, lp.pad_y, false, work.ts);
 
                             if(!maybe_motion_info.is_null())
                             {
                                 auto motion_info = maybe_motion_info.value();
-                                bool is_significant = is_motion_significant(motion_info.motion, motion_info.avg_motion, motion_info.stddev);
+                                bool is_significant = motion_info.significant;
 
                                 // Convert motion region from r_motion to r_vss format
                                 // Coordinates are already in 640x640 letterbox space (corrected by motion_state)
@@ -193,6 +199,13 @@ void r_motion_engine::_entry_point()
                                 motion_bbox.width = motion_info.motion_bbox.width;
                                 motion_bbox.height = motion_info.motion_bbox.height;
                                 motion_bbox.has_motion = motion_info.motion_bbox.has_motion;
+
+                                std::vector<r_vss::motion_region> motion_regions;
+                                motion_regions.reserve(motion_info.motion_regions.size());
+                                for(const auto& region : motion_info.motion_regions)
+                                {
+                                    motion_regions.push_back({region.x, region.y, region.width, region.height, region.has_motion});
+                                }
 
                                 // Copy letterboxed image to vector
                                 std::vector<uint8_t> letterbox_data(letterbox_img.data,
@@ -206,26 +219,18 @@ void r_motion_engine::_entry_point()
                                 kf_entry.width = 640;
                                 kf_entry.height = 640;
                                 kf_entry.bbox = motion_bbox;
+                                kf_entry.regions = motion_regions;
                                 wc->keyframe_motion_buffer().push(kf_entry);
 
                                 // Event state machine (keyframe-only mode)
                                 if(!wc->get_in_event())
                                 {
-                                    // Check if we should start an event (N consecutive keyframes with motion AND sufficient displacement)
+                                    // N consecutive statistically significant keyframes are enough
+                                    // to start an event. Endpoint displacement used to be a hard
+                                    // veto, which missed approaching, returning, and growing objects.
                                     size_t n = wc->get_motion_confirm_frames();
-                                    double min_disp = wc->get_min_motion_displacement();
-
-                                    // Lambda to extract bbox center from keyframe entry
-                                    auto get_bbox_center = [](const r_keyframe_motion_entry& e) -> std::pair<int, int> {
-                                        return {e.bbox.x + e.bbox.width / 2, e.bbox.y + e.bbox.height / 2};
-                                    };
-
-                                    bool should_start = wc->keyframe_motion_buffer().last_n_match_with_displacement(
-                                        n,
-                                        min_disp,
-                                        [](const r_keyframe_motion_entry& e) { return e.has_motion; },
-                                        get_bbox_center
-                                    );
+                                    bool should_start = wc->keyframe_motion_buffer().last_n_match(
+                                        n, [](const r_keyframe_motion_entry& e) { return e.has_motion; });
 
                                     if(should_start)
                                     {
@@ -240,14 +245,14 @@ void r_motion_engine::_entry_point()
 
                                         // Post event start with the first triggering frame
                                         _meph.post(r_vss::motion_event_start, wc->get_camera_id(), trigger_entry.ts,
-                                                   trigger_entry.decoded_image, trigger_entry.width, trigger_entry.height, trigger_entry.bbox);
+                                                   trigger_entry.decoded_image, trigger_entry.width, trigger_entry.height, trigger_entry.bbox, trigger_entry.regions);
 
                                         // Post updates for subsequent frames (including current)
                                         for(size_t i = first_motion_idx + 1; i < wc->keyframe_motion_buffer().size(); ++i)
                                         {
                                             const auto& entry = wc->keyframe_motion_buffer().at(i);
                                             _meph.post(r_vss::motion_event_update, wc->get_camera_id(), entry.ts,
-                                                       entry.decoded_image, entry.width, entry.height, entry.bbox);
+                                                       entry.decoded_image, entry.width, entry.height, entry.bbox, entry.regions);
                                         }
                                     }
                                 }
@@ -259,15 +264,14 @@ void r_motion_engine::_entry_point()
                                         // Reset no-motion counter and send update
                                         wc->set_no_motion_count(0);
                                         _meph.post(r_vss::motion_event_update, wc->get_camera_id(), work.ts,
-                                                   letterbox_data, 640, 640, motion_bbox);
+                                                   letterbox_data, 640, 640, motion_bbox, motion_regions);
                                     }
                                     else
                                     {
                                         // No motion - count consecutive no-motion frames
                                         wc->set_no_motion_count(wc->get_no_motion_count() + 1);
 
-                                        // Require 2 consecutive keyframes without motion to end event
-                                        if(wc->get_no_motion_count() >= 2)
+                                        if(wc->get_no_motion_count() >= DEFAULT_MOTION_END_FRAMES)
                                         {
                                             // End event
                                             wc->set_in_event(false);
@@ -285,7 +289,7 @@ void r_motion_engine::_entry_point()
 
                                             wc->set_event_start_ts(-1);
                                             _meph.post(r_vss::motion_event_end, wc->get_camera_id(), work.ts,
-                                                       letterbox_data, 640, 640, motion_bbox);
+                                                       letterbox_data, 640, 640, motion_bbox, motion_regions);
                                         }
                                     }
                                 }

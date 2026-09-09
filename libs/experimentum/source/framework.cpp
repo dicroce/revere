@@ -19,6 +19,18 @@
 
 using namespace std;
 
+static bool rtf_stdin_is_interactive() {
+#ifdef _WIN32
+  // _isatty() is not enough here: it reports true for NUL, which is a character
+  // device, so a redirected run would still stop for a keypress. GetConsoleMode
+  // succeeds only for a real console handle.
+  DWORD mode = 0;
+  return GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode) != 0;
+#else
+  return isatty(fileno(stdin)) != 0;
+#endif
+}
+
 vector<shared_ptr<test_fixture>>& rtf_get_fixtures() {
   static vector<shared_ptr<test_fixture>> fixtures;
   return fixtures;
@@ -265,10 +277,19 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  if (something_failed)
+  // Only wait on a keypress when a human is watching; an unattended run (CI,
+  // redirected stdin) must never block here.
+  if (something_failed && rtf_stdin_is_interactive()) {
+#ifdef _WIN32
+    if (system("pause") < 0) {
+      printf("system() failure.\n");
+    }
+#else
     if (system("/bin/bash -c 'read -p \"Press Any Key\"'") < 0) {
       printf("system() failure.\n");
     }
+#endif
+  }
 
-  return 0;
+  return something_failed ? 1 : 0;
 }

@@ -50,6 +50,7 @@ struct r_keyframe_motion_entry
     uint16_t width;
     uint16_t height;
     motion_region bbox;
+    std::vector<motion_region> regions;
 };
 
 struct r_motion_work_item

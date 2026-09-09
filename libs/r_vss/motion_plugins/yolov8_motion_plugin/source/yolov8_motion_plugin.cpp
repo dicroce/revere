@@ -97,6 +97,11 @@ void yolov8_motion_plugin::stop()
 
 void yolov8_motion_plugin::post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox)
 {
+    post_motion_event(evt, camera_id, ts, frame_data, width, height, motion_bbox, {});
+}
+
+void yolov8_motion_plugin::post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions)
+{
     if (!_running)
         return;
 
@@ -108,6 +113,7 @@ void yolov8_motion_plugin::post_motion_event(r_vss::r_motion_event evt, const st
     msg.width = width;
     msg.height = height;
     msg.motion_bbox = motion_bbox;
+    msg.motion_regions = motion_regions;
 
     if (evt == r_vss::motion_event_update) {
         // UPDATE frames: buffer them, and queue periodic frames every 5 seconds for long events
@@ -193,9 +199,11 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             // Process START frame immediately
             size_t expected_size = msg.width * msg.height * 3;
             if (msg.frame_data.size() == expected_size) {
-                auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox);
-                _camera_start_frame_detections[msg.camera_id] = detections;
-                _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
+                std::vector<Detection> endpoint_detections;
+                auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox, msg.motion_regions, &endpoint_detections);
+                _camera_start_frame_detections[msg.camera_id] = std::move(endpoint_detections);
+                if(r_vss::has_valid_motion_evidence(msg.motion_bbox, msg.motion_regions))
+                    _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
                 _camera_last_processed_ts[msg.camera_id] = msg.ts;
             }
         }
@@ -204,7 +212,7 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
         if (msg.evt == r_vss::motion_event_update) {
             size_t expected_size = msg.width * msg.height * 3;
             if (msg.frame_data.size() == expected_size) {
-                auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox);
+                auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox, msg.motion_regions);
                 _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
                 _camera_last_processed_ts[msg.camera_id] = msg.ts;
             }
@@ -235,7 +243,7 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
                 if (should_process) {
                     size_t expected_size = buffered.width * buffered.height * 3;
                     if (buffered.frame_data.size() == expected_size) {
-                        auto detections = detect_persons(buffered.frame_data.data(), buffered.width, buffered.height, buffered.camera_id, buffered.ts, buffered.motion_bbox);
+                        auto detections = detect_persons(buffered.frame_data.data(), buffered.width, buffered.height, buffered.camera_id, buffered.ts, buffered.motion_bbox, buffered.motion_regions);
                         _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
                     }
                 }
@@ -244,9 +252,14 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             // Process END frame
             size_t expected_size = msg.width * msg.height * 3;
             if (msg.frame_data.size() == expected_size) {
-                auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox);
-                _camera_end_frame_detections[msg.camera_id] = detections;
-                _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
+                std::vector<Detection> endpoint_detections;
+                auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox, msg.motion_regions, &endpoint_detections);
+                _camera_end_frame_detections[msg.camera_id] = std::move(endpoint_detections);
+                // Endpoint inference is also used to identify static objects. Do not
+                // promote an unfiltered END-frame recognition when the frame itself
+                // contains no current motion evidence.
+                if(r_vss::has_valid_motion_evidence(msg.motion_bbox, msg.motion_regions))
+                    _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
             }
 
             // Analyze all detections for this motion sequence and log results
@@ -266,7 +279,7 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
     }
 }
 
-std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox)
+std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions, std::vector<Detection>* unfiltered_detections)
 {
     std::vector<Detection> detections;
 
@@ -428,29 +441,21 @@ std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_person
                 }
             }
 
-            // Filter: detection center must fall within motion bbox (with margin).
-            // Tighter than area-overlap: a large static object (e.g. parked car) whose
-            // bbox merely clips the motion region is rejected; only objects centered near
-            // the actual motion pass through.
-            const float center_margin = 32.0f; // pixels in 640x640 space (~5% of frame)
+            // A detection must be spatially explained by motion. Individual connected
+            // components prevent the empty space inside a large union box from admitting
+            // unrelated parked objects. The union box remains a compatibility fallback.
+            const float motion_margin = 32.0f; // pixels in 640x640 space (~5% of frame)
 
-            if (motion_bbox.has_motion && motion_bbox.width > 0 && motion_bbox.height > 0) {
-                float motion_x1 = (float)motion_bbox.x - center_margin;
-                float motion_y1 = (float)motion_bbox.y - center_margin;
-                float motion_x2 = (float)(motion_bbox.x + motion_bbox.width)  + center_margin;
-                float motion_y2 = (float)(motion_bbox.y + motion_bbox.height) + center_margin;
+            if(unfiltered_detections)
+                *unfiltered_detections = nms_detections;
 
-                for (const auto& det : nms_detections) {
-                    float cx = (det.x1 + det.x2) * 0.5f;
-                    float cy = (det.y1 + det.y2) * 0.5f;
-
-                    if (cx >= motion_x1 && cx <= motion_x2 && cy >= motion_y1 && cy <= motion_y2) {
-                        detections.push_back(det);
-                    }
+            for(const auto& det : nms_detections) {
+                const float center_x = (det.x1 + det.x2) * 0.5f;
+                const float center_y = (det.y1 + det.y2) * 0.5f;
+                if(r_vss::motion_evidence_contains_point(
+                       motion_bbox, motion_regions, center_x, center_y, motion_margin)) {
+                    detections.push_back(det);
                 }
-            } else {
-                // No valid motion region, keep all detections
-                detections = std::move(nms_detections);
             }
         }
         
@@ -492,10 +497,9 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
         disproven = disproven_it->second;
     }
 
-    // Suppress static objects: if the same class appears in the same position in both the
-    // start and end frames (IoU >= 0.85), the object didn't move — it wasn't what caused
-    // the motion (e.g. parked car detected during a lighting-change event).
-    std::set<int> static_classes;
+    // Suppress individual static objects, not their entire class. Class-wide
+    // suppression loses a moving car whenever a different parked car is present.
+    std::vector<Detection> static_anchors;
     {
         const float static_iou_threshold = 0.85f;
         auto sf_it = _camera_start_frame_detections.find(camera_id);
@@ -512,7 +516,7 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
                         float a2 = (ed.x2 - ed.x1) * (ed.y2 - ed.y1);
                         float uni = a1 + a2 - inter;
                         if (uni > 0 && (inter / uni) >= static_iou_threshold) {
-                            static_classes.insert(sd.class_id);
+                            static_anchors.push_back(sd);
                         }
                     }
                 }
@@ -520,13 +524,33 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
         }
     }
 
+    const auto is_static_detection = [&static_anchors](const Detection& detection) {
+        const float static_iou_threshold = 0.85f;
+        for(const auto& anchor : static_anchors) {
+            if(anchor.class_id != detection.class_id) continue;
+            const float ix1 = std::max(anchor.x1, detection.x1);
+            const float iy1 = std::max(anchor.y1, detection.y1);
+            const float ix2 = std::min(anchor.x2, detection.x2);
+            const float iy2 = std::min(anchor.y2, detection.y2);
+            if(ix1 >= ix2 || iy1 >= iy2) continue;
+            const float inter = (ix2 - ix1) * (iy2 - iy1);
+            const float anchor_area = (anchor.x2 - anchor.x1) * (anchor.y2 - anchor.y1);
+            const float detection_area = (detection.x2 - detection.x1) *
+                                         (detection.y2 - detection.y1);
+            const float union_area = anchor_area + detection_area - inter;
+            if(union_area > 0.0f && inter / union_area >= static_iou_threshold)
+                return true;
+        }
+        return false;
+    };
+
     // Count detections by class for logging (excluding disproven and static classes)
     std::map<int, int> class_counts;
     std::map<int, float> max_confidence;
 
     for (const auto& detection : it->second) {
         if (disproven.find(detection.class_id) != disproven.end()) continue;
-        if (static_classes.find(detection.class_id) != static_classes.end()) continue;
+        if (is_static_detection(detection)) continue;
         class_counts[detection.class_id]++;
         if (max_confidence.find(detection.class_id) == max_confidence.end()) {
             max_confidence[detection.class_id] = detection.score;
@@ -560,7 +584,7 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
     int64_t first_detection_ts = start_time_ms;
     for (const auto& detection : it->second) {
         if (disproven.find(detection.class_id) != disproven.end()) continue;
-        if (static_classes.find(detection.class_id) != static_classes.end()) continue;
+        if (is_static_detection(detection)) continue;
 
         if (!first) {
             json_metadata += ", ";
@@ -601,7 +625,7 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
 
         for (const auto& detection : it->second) {
             if (disproven.find(detection.class_id) != disproven.end()) continue;
-            if (static_classes.find(detection.class_id) != static_classes.end()) continue;
+            if (is_static_detection(detection)) continue;
 
             r_vss::r_detection det;
             det.camera_id  = camera_id;
@@ -696,6 +720,49 @@ R_API void post_motion_event(
 
     // Call the C++ method
     plugin_ptr->post_motion_event(evt_enum, camera_id_str, ts, frame_data_vec, width, height, motion_bbox);
+}
+
+R_API void post_motion_event_regions(
+    r_motion_plugin_handle plugin,
+    int evt,
+    const char* camera_id,
+    int64_t ts,
+    const uint8_t* frame_data,
+    size_t frame_data_size,
+    uint16_t width,
+    uint16_t height,
+    int motion_x,
+    int motion_y,
+    int motion_width,
+    int motion_height,
+    bool has_motion,
+    const int* motion_regions_xywh,
+    size_t motion_region_count)
+{
+    yolov8_motion_plugin* plugin_ptr = reinterpret_cast<yolov8_motion_plugin*>(plugin);
+
+    std::vector<r_vss::motion_region> motion_regions;
+    if(motion_regions_xywh)
+    {
+        motion_regions.reserve(motion_region_count);
+        for(size_t i = 0; i < motion_region_count; ++i)
+        {
+            const size_t offset = i * 4;
+            motion_regions.push_back({motion_regions_xywh[offset],
+                                      motion_regions_xywh[offset + 1],
+                                      motion_regions_xywh[offset + 2],
+                                      motion_regions_xywh[offset + 3],
+                                      true});
+        }
+    }
+
+    std::string camera_id_str(camera_id);
+    std::vector<uint8_t> frame_data_vec(frame_data, frame_data + frame_data_size);
+    r_vss::motion_region motion_bbox = {motion_x, motion_y, motion_width, motion_height, has_motion};
+    r_vss::r_motion_event evt_enum = static_cast<r_vss::r_motion_event>(evt);
+
+    plugin_ptr->post_motion_event(evt_enum, camera_id_str, ts, frame_data_vec, width, height,
+                                  motion_bbox, motion_regions);
 }
 
 }

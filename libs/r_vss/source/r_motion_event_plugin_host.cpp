@@ -15,6 +15,7 @@ typedef r_motion_plugin_handle (*load_plugin_func)(r_motion_event_plugin_host_ha
 typedef void (*stop_plugin_func)(r_motion_plugin_handle);
 typedef void (*destroy_plugin_func)(r_motion_plugin_handle);
 typedef void (*post_motion_event_func)(r_motion_plugin_handle, int, const char*, int64_t, const uint8_t*, size_t, uint16_t, uint16_t, int, int, int, int, bool);
+typedef void (*post_motion_event_regions_func)(r_motion_plugin_handle, int, const char*, int64_t, const uint8_t*, size_t, uint16_t, uint16_t, int, int, int, int, bool, const int*, size_t);
 
 r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devices, const std::string& top_dir, r_stream_keeper& stream_keeper)
     : _devices(devices),
@@ -64,6 +65,17 @@ r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devic
                         void* destroy_symbol = lib->resolve_symbol("destroy_plugin");
                         void* post_symbol = lib->resolve_symbol("post_motion_event");
 
+                        // This symbol is deliberately optional so existing plugin
+                        // binaries remain loadable.
+                        void* post_regions_symbol = nullptr;
+                        try
+                        {
+                            post_regions_symbol = lib->resolve_symbol("post_motion_event_regions");
+                        }
+                        catch(const std::exception&)
+                        {
+                        }
+
                         if (load_symbol && destroy_symbol && post_symbol)
                         {
                             // Cast to function pointers
@@ -71,13 +83,14 @@ r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devic
                             stop_plugin_func stop_func = stop_symbol ? reinterpret_cast<stop_plugin_func>(stop_symbol) : nullptr;
                             destroy_plugin_func destroy_func = reinterpret_cast<destroy_plugin_func>(destroy_symbol);
                             post_motion_event_func post_func = reinterpret_cast<post_motion_event_func>(post_symbol);
+                            post_motion_event_regions_func post_regions_func = post_regions_symbol ? reinterpret_cast<post_motion_event_regions_func>(post_regions_symbol) : nullptr;
 
                             // Call load_plugin with host handle (this pointer cast to opaque handle)
                             r_motion_plugin_handle plugin_handle = load_func(reinterpret_cast<r_motion_event_plugin_host_handle>(this));
 
                             if (plugin_handle)
                             {
-                                _plugins.push_back({std::move(lib), plugin_handle, stop_func, destroy_func, post_func});
+                                _plugins.push_back({std::move(lib), plugin_handle, stop_func, destroy_func, post_func, post_regions_func});
                                 R_LOG_INFO("Loaded motion plugin: %s", filename.c_str());
                             }
                             else
@@ -166,9 +179,44 @@ void r_motion_event_plugin_host::register_detection_consumer(r_detection_callbac
 
 void r_motion_event_plugin_host::post(r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const motion_region& motion_bbox)
 {
+    post(evt, camera_id, ts, frame_data, width, height, motion_bbox, {});
+}
+
+void r_motion_event_plugin_host::post(r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const motion_region& motion_bbox, const std::vector<motion_region>& motion_regions)
+{
+    std::vector<int> packed_regions;
+    packed_regions.reserve(motion_regions.size() * 4);
+    for(const auto& region : motion_regions)
+    {
+        packed_regions.push_back(region.x);
+        packed_regions.push_back(region.y);
+        packed_regions.push_back(region.width);
+        packed_regions.push_back(region.height);
+    }
+
     for(auto& p : _plugins)
     {
-        if (p.plugin_handle && p.post_func)
+        if(p.plugin_handle && p.post_regions_func)
+        {
+            p.post_regions_func(
+                p.plugin_handle,
+                static_cast<int>(evt),
+                camera_id.c_str(),
+                ts,
+                frame_data.data(),
+                frame_data.size(),
+                width,
+                height,
+                motion_bbox.x,
+                motion_bbox.y,
+                motion_bbox.width,
+                motion_bbox.height,
+                motion_bbox.has_motion,
+                packed_regions.data(),
+                motion_regions.size()
+            );
+        }
+        else if(p.plugin_handle && p.post_func)
         {
             // Call the C API post_motion_event function
             p.post_func(

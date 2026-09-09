@@ -1,187 +1,133 @@
 
 #include "test_r_motion.h"
-#include "r_motion/utils.h"
 #include "r_motion/r_motion_state.h"
-#include "r_utils/r_file.h"
-#include "r_utils/r_string_utils.h"
-#include "r_utils/r_avg.h"
-#include "r_av/r_demuxer.h"
-#include "r_av/r_video_decoder.h"
-#include <deque>
-#include <numeric>
-#include <cinttypes>
-
-#include "serv.h"
+#include <algorithm>
 
 using namespace std;
-using namespace r_utils;
-using namespace r_av;
 using namespace r_motion;
 
 REGISTER_TEST_FIXTURE(test_r_motion);
 
-std::string get_env(const string& name)
-{
-    std::string output;
-#ifdef IS_WINDOWS
-    char* s = nullptr;
-    size_t len = 0;
-    _dupenv_s(&s, &len, name.c_str());
-    if(s)
-    {
-        output = string(s, len);
-        free(s);
-    }
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    char* env = getenv(name.c_str());
-    if(env)
-        output = string(env);
-#endif
-    return output;
-}
-
 void test_r_motion::setup()
 {
-    r_fs::write_file(serv_mp4, serv_mp4_len, "serv.mp4");
 }
 
 void test_r_motion::teardown()
 {
-    r_fs::remove_file("serv.mp4");
 }
-
-// NOTE: _write_gray8() helper function was removed as it used deprecated image processing functions
-
-// NOTE: test_basic_utils() was removed as it tested deprecated image processing functions
-// that have been replaced by OpenCV-based implementations in r_motion_state
 
 void test_r_motion::test_motion_state()
 {
-    r_demuxer demuxer("serv.mp4", true);
-    auto video_stream_index = demuxer.get_video_stream_index();
-    auto vsi = demuxer.get_stream_info(video_stream_index);
+    const int width = 640, height = 360;
+    cv::Mat background(height, width, CV_8UC3, cv::Scalar(200, 200, 200));
+    r_motion_state ms(60, 0.95, 0.70, 100, false, 0.003);
+    for(int i = 0; i < 10; ++i)
+        ms.process(background, 0, 0, false, i * 1000);
 
-    auto ed = demuxer.get_extradata(video_stream_index);
+    cv::Mat small = background.clone();
+    cv::rectangle(small, cv::Rect(100, 100, 15, 30), cv::Scalar(255, 255, 255), cv::FILLED);
+    auto small_result = ms.process(small, 0, 0, false, 10000);
+    RTF_ASSERT(!small_result.is_null());
+    RTF_ASSERT(small_result.value().motion > 0);
+    RTF_ASSERT(small_result.value().motion_bbox.has_motion);
 
-    r_video_decoder decoder(vsi.codec_id);
-    if(!ed.empty())
-        decoder.set_extradata(ed);
-
-    r_motion_state ms;
-
-    bool done_demuxing = false;
-
-    bool nonZeroMotion = false;
-
-    while(!done_demuxing)
-    {
-        done_demuxing = !demuxer.read_frame();
-        auto fi = demuxer.get_frame_info();
-
-AGAIN:
-        if(fi.index == video_stream_index && fi.key)
-        {
-            r_codec_state cs = R_CODEC_STATE_INITIALIZED;
-
-            decoder.attach_buffer(fi.data, fi.size);
-            cs = decoder.decode();
-
-            if(cs == R_CODEC_STATE_AGAIN || cs == R_CODEC_STATE_HUNGRY)
-                goto AGAIN;
-
-            if(cs == R_CODEC_STATE_HAS_OUTPUT || cs == R_CODEC_STATE_AGAIN_HAS_OUTPUT)
-            {
-                auto frame = decoder.get(AV_PIX_FMT_ARGB, vsi.resolution.first, vsi.resolution.second, 1);
-
-                r_image img;
-                img.type = R_MOTION_IMAGE_TYPE_ARGB;
-                img.width = vsi.resolution.first;
-                img.height = vsi.resolution.second;
-                img.data = *frame;
-
-                auto maybe_mi = ms.process(img);
-
-                if(!maybe_mi.is_null())
-                {
-                    auto mi = maybe_mi.value();
-                    if(mi.motion > 0)
-                        nonZeroMotion = true;
-                }
-                
-                if(cs == R_CODEC_STATE_AGAIN_HAS_OUTPUT)
-                    goto AGAIN;
-            }
-        }
-    }
-
-    RTF_ASSERT(nonZeroMotion);
+    r_motion_state fragmented_ms(60, 0.95, 0.70, 100, false, 0.003);
+    for(int i = 0; i < 10; ++i)
+        fragmented_ms.process(background, 0, 0, false, i * 1000);
+    cv::Mat fragmented = background.clone();
+    cv::rectangle(fragmented, cv::Rect(100, 100, 20, 25), cv::Scalar(255, 255, 255), cv::FILLED);
+    cv::rectangle(fragmented, cv::Rect(180, 100, 20, 25), cv::Scalar(255, 255, 255), cv::FILLED);
+    auto fragmented_result = fragmented_ms.process(fragmented, 0, 0, false, 10000);
+    RTF_ASSERT(!fragmented_result.is_null());
+    RTF_ASSERT(fragmented_result.value().motion_regions.size() == 2);
+    RTF_ASSERT(fragmented_result.value().motion > 0);
 }
 
 void test_r_motion::test_adaptive_masking()
 {
-    // Test with aggressive masking parameters for quick validation
-    r_motion_state ms(100, 0.3, 0.8, 10);  // low threshold, fast decay, short observation period
-    
-    // Create a test image with consistent motion in one area
-    r_image test_img;
-    test_img.type = R_MOTION_IMAGE_TYPE_ARGB;
-    test_img.width = 320;
-    test_img.height = 240;
-    test_img.data.resize(320 * 240 * 4, 0);
-    
-    // Fill with a pattern that simulates continuous motion in a specific region
-    for(int frame = 0; frame < 20; frame++)
+    cv::Mat frame(240, 320, CV_8UC3, cv::Scalar(100, 100, 100));
+    r_motion_state ms(60, 0.30, 0.80, 5, true, 0.003);
+    r_utils::r_nullable<r_motion_info> last;
+    for(int i = 0; i < 15; ++i)
     {
-        // Add consistent motion in upper-left quadrant (simulating swaying tree)
-        for(int y = 0; y < 120; y++)
-        {
-            for(int x = 0; x < 160; x++)
-            {
-                int idx = (y * 320 + x) * 4;
-                // Create oscillating pattern
-                uint8_t intensity = (frame % 2 == 0) ? 100 : 150;
-                test_img.data[idx + 0] = intensity;     // B
-                test_img.data[idx + 1] = intensity;     // G
-                test_img.data[idx + 2] = intensity;     // R
-                test_img.data[idx + 3] = 255;           // A
-            }
-        }
-        
-        // Add occasional motion in lower-right quadrant (simulating person)
-        if(frame > 10 && frame < 15)
-        {
-            for(int y = 120; y < 240; y++)
-            {
-                for(int x = 160; x < 320; x++)
-                {
-                    int idx = (y * 320 + x) * 4;
-                    test_img.data[idx + 0] = 200;  // B
-                    test_img.data[idx + 1] = 200;  // G
-                    test_img.data[idx + 2] = 200;  // R
-                    test_img.data[idx + 3] = 255;  // A
-                }
-            }
-        }
-        
-        auto maybe_mi = ms.process(test_img);
-        
-        if(!maybe_mi.is_null())
-        {
-            auto mi = maybe_mi.value();
-            
-            // After observation period, masking should become active
-            if(frame >= 10)
-            {
-                RTF_ASSERT(mi.masking_active);
-                
-                // Should have some masked pixels (from continuous motion)
-                if(mi.masked_pixels > 0)
-                {
-                    printf("Frame %d: Motion before mask: %" PRIu64 ", after mask: %" PRIu64 ", masked: %" PRIu64 "\n", 
-                           frame, mi.motion_before_mask, mi.motion, mi.masked_pixels);
-                }
-            }
-        }
+        frame.setTo(cv::Scalar(i % 2 ? 180 : 100, i % 2 ? 180 : 100, i % 2 ? 180 : 100));
+        last = ms.process(frame, 0, 0, false, i * 1000);
     }
+    RTF_ASSERT(!last.is_null());
+    RTF_ASSERT(last.value().masking_active);
+}
+
+void test_r_motion::test_shadow_evidence()
+{
+    cv::Mat background(360, 640, CV_8UC3, cv::Scalar(200, 200, 200));
+    r_motion_state ms(60, 0.95, 0.70, 100, false, 0.003);
+    for(int i = 0; i < 10; ++i)
+        ms.process(background, 0, 0, false, i * 1000);
+
+    cv::Mat darker = background.clone();
+    cv::rectangle(darker, cv::Rect(100, 80, 100, 100), cv::Scalar(120, 120, 120), cv::FILLED);
+    auto result = ms.process(darker, 0, 0, false, 10000);
+    RTF_ASSERT(!result.is_null());
+    RTF_ASSERT(result.value().weak_motion > 0);
+    RTF_ASSERT(result.value().motion > 0);
+}
+
+void test_r_motion::test_illumination_and_large_object()
+{
+    cv::Mat background(360, 640, CV_8UC3, cv::Scalar(200, 200, 200));
+
+    r_motion_state object_ms(60, 0.95, 0.70, 100, false, 0.003);
+    for(int i = 0; i < 10; ++i)
+        object_ms.process(background, 0, 0, false, i * 1000);
+    cv::Mat large_object = background.clone();
+    cv::rectangle(large_object, cv::Rect(0, 0, 640, 100), cv::Scalar(0, 0, 0), cv::FILLED);
+    auto object_result = object_ms.process(large_object, 0, 0, false, 10000);
+    RTF_ASSERT(!object_result.is_null());
+    RTF_ASSERT(object_result.value().motion > 0);
+    RTF_ASSERT(!object_result.value().illumination_change);
+
+    r_motion_state light_ms(60, 0.95, 0.70, 100, false, 0.003);
+    for(int i = 0; i < 10; ++i)
+        light_ms.process(background, 0, 0, false, i * 1000);
+    cv::Mat brighter(360, 640, CV_8UC3, cv::Scalar(230, 230, 230));
+    auto light_result = light_ms.process(brighter, 0, 0, false, 10000);
+    RTF_ASSERT(!light_result.is_null());
+    RTF_ASSERT(light_result.value().illumination_change);
+    RTF_ASSERT(light_result.value().illumination_motion > 0);
+    RTF_ASSERT(light_result.value().motion > 0);
+}
+
+void test_r_motion::test_image_formats()
+{
+    const int width = 320, height = 240;
+    r_image argb;
+    argb.type = R_MOTION_IMAGE_TYPE_ARGB;
+    argb.width = width;
+    argb.height = height;
+    argb.data.resize(width * height * 4, 0);
+    for(int i = 0; i < width * height; ++i)
+        argb.data[i * 4] = 255;
+
+    r_motion_state argb_ms(60, 0.95, 0.70, 100, false, 0.003);
+    for(int i = 0; i < 10; ++i)
+        argb_ms.process(argb, false, i * 1000);
+    for(int y = 50; y < 150; ++y)
+        for(int x = 50; x < 150; ++x)
+            argb.data[(y * width + x) * 4 + 3] = 255; // blue in A,R,G,B
+    auto argb_result = argb_ms.process(argb, false, 10000);
+    RTF_ASSERT(!argb_result.is_null());
+    RTF_ASSERT(argb_result.value().motion > 0);
+
+    r_image gray;
+    gray.type = R_MOTION_IMAGE_TYPE_GRAY8;
+    gray.width = width;
+    gray.height = height;
+    gray.data.assign(width * height, 100);
+    r_motion_state gray_ms(60, 0.95, 0.70, 100, false, 0.003);
+    for(int i = 0; i < 10; ++i)
+        gray_ms.process(gray, false, i * 1000);
+    std::fill(gray.data.begin() + 50 * width + 50,
+              gray.data.begin() + 50 * width + 150, 200);
+    auto gray_result = gray_ms.process(gray, false, 10000);
+    RTF_ASSERT(!gray_result.is_null());
 }

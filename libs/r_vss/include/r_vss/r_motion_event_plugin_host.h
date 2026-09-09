@@ -43,6 +43,7 @@ public:
     R_API void stop();
 
     R_API void post(r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const motion_region& motion_bbox) override;
+    R_API void post(r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const motion_region& motion_bbox, const std::vector<motion_region>& motion_regions) override;
 
     R_API void emit_detection(const r_detection& det);
     R_API void register_detection_consumer(r_detection_callback callback, void* userdata);
@@ -59,6 +60,7 @@ private:
         void (*stop_func)(r_motion_plugin_handle);  // Function pointer to stop_plugin
         void (*destroy_func)(r_motion_plugin_handle);  // Function pointer to destroy_plugin
         void (*post_func)(r_motion_plugin_handle, int, const char*, int64_t, const uint8_t*, size_t, uint16_t, uint16_t, int, int, int, int, bool);  // Function pointer to post_motion_event
+        void (*post_regions_func)(r_motion_plugin_handle, int, const char*, int64_t, const uint8_t*, size_t, uint16_t, uint16_t, int, int, int, int, bool, const int*, size_t); // Optional v2 entry point
     };
 
     r_disco::r_devices& _devices;

@@ -1,9 +1,109 @@
 #include "r_motion/r_motion_state.h"
-#include "r_utils/r_logger.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
 
 using namespace r_motion;
 using namespace r_utils;
 using cv::Size;
+
+namespace
+{
+
+constexpr double SHADOW_WEIGHT = 0.35;
+constexpr double ILLUMINATION_WEIGHT = 0.05;
+constexpr double PERSISTENT_STRONG_WEIGHT = 0.25;
+constexpr double PERSISTENT_SHADOW_WEIGHT = 0.10;
+constexpr double PERSISTENT_ILLUMINATION_WEIGHT = 0.02;
+constexpr int ILLUMINATION_MIN_SHIFT = 8;
+constexpr int ILLUMINATION_TOLERANCE = 12;
+constexpr double ILLUMINATION_EXPLAINED_FRACTION = 0.65;
+
+struct illumination_result
+{
+    bool global_change {false};
+    int median_delta {0};
+};
+
+illumination_result analyze_illumination(const cv::Mat& previous, const cv::Mat& current)
+{
+    illumination_result result;
+    if(previous.empty() || previous.size() != current.size() ||
+       previous.type() != CV_8UC1 || current.type() != CV_8UC1)
+        return result;
+
+    std::array<uint64_t, 511> histogram{};
+    const uint64_t total = static_cast<uint64_t>(current.total());
+
+    for(int y = 0; y < current.rows; ++y)
+    {
+        const auto* p = previous.ptr<uint8_t>(y);
+        const auto* c = current.ptr<uint8_t>(y);
+        for(int x = 0; x < current.cols; ++x)
+            ++histogram[static_cast<size_t>(static_cast<int>(c[x]) - static_cast<int>(p[x]) + 255)];
+    }
+
+    uint64_t cumulative = 0;
+    const uint64_t midpoint = total / 2;
+    for(size_t i = 0; i < histogram.size(); ++i)
+    {
+        cumulative += histogram[i];
+        if(cumulative >= midpoint)
+        {
+            result.median_delta = static_cast<int>(i) - 255;
+            break;
+        }
+    }
+
+    uint64_t explained = 0;
+    const int lo = std::max(-255, result.median_delta - ILLUMINATION_TOLERANCE);
+    const int hi = std::min(255, result.median_delta + ILLUMINATION_TOLERANCE);
+    for(int delta = lo; delta <= hi; ++delta)
+        explained += histogram[static_cast<size_t>(delta + 255)];
+
+    result.global_change =
+        std::abs(result.median_delta) >= ILLUMINATION_MIN_SHIFT &&
+        explained >= static_cast<uint64_t>(ILLUMINATION_EXPLAINED_FRACTION * total);
+    return result;
+}
+
+void retain_illumination_residual(cv::Mat& mask,
+                                  const cv::Mat& previous,
+                                  const cv::Mat& current,
+                                  int median_delta)
+{
+    for(int y = 0; y < mask.rows; ++y)
+    {
+        auto* m = mask.ptr<uint8_t>(y);
+        const auto* p = previous.ptr<uint8_t>(y);
+        const auto* c = current.ptr<uint8_t>(y);
+        for(int x = 0; x < mask.cols; ++x)
+        {
+            const int delta = static_cast<int>(c[x]) - static_cast<int>(p[x]);
+            if(std::abs(delta - median_delta) <= ILLUMINATION_TOLERANCE)
+                m[x] = 0;
+        }
+    }
+}
+
+double elapsed_scale(int64_t previous_ms, int64_t current_ms)
+{
+    if(previous_ms < 0 || current_ms < 0 || current_ms <= previous_ms)
+        return 1.0;
+
+    // Avoid snapping a model to a single frame after a long camera outage.
+    return std::clamp((current_ms - previous_ms) / 1000.0, 0.001, 10.0);
+}
+
+uint64_t rounded_nonnegative(double value)
+{
+    if(value <= 0.0)
+        return 0;
+    return static_cast<uint64_t>(std::llround(value));
+}
+
+}
 
 r_motion_state::r_motion_state(size_t memory,
                                double motionFreqThresh,
@@ -11,7 +111,7 @@ r_motion_state::r_motion_state(size_t memory,
                                size_t minObservationFrames,
                                bool enableMasking,
                                double minAreaFraction)
-: _avg_motion(0, memory)
+: _statsMemory(std::max<size_t>(memory, 1))
 , _mog2(cv::createBackgroundSubtractorMOG2(500, 16, true))
 , _minAreaFraction(minAreaFraction)
 , _motionFreqThresh(motionFreqThresh)
@@ -24,221 +124,319 @@ r_motion_state::r_motion_state(size_t memory,
 
 r_motion_state::~r_motion_state() noexcept = default;
 
-r_nullable<r_motion_info> r_motion_state::process(const r_image& input, bool skip_stats_update)
+r_nullable<r_motion_info> r_motion_state::process(const r_image& input,
+                                                   bool skip_stats_update,
+                                                   int64_t timestamp_ms)
 {
+    r_nullable<r_motion_info> result;
     if(input.width == 0 || input.height == 0)
-        return r_nullable<r_motion_info>();  // empty frame guard
+        return result;
 
-    cv::Mat src;
+    size_t channels = 0;
+    switch(input.type)
+    {
+        case R_MOTION_IMAGE_TYPE_ARGB: channels = 4; break;
+        case R_MOTION_IMAGE_TYPE_BGR:
+        case R_MOTION_IMAGE_TYPE_RGB: channels = 3; break;
+        case R_MOTION_IMAGE_TYPE_GRAY8: channels = 1; break;
+        default: return result;
+    }
 
-    // Handle different input formats - wrap incoming buffer (no copy)
+    const size_t expected = static_cast<size_t>(input.width) * input.height * channels;
+    if(input.data.size() < expected)
+        return result;
+
+    cv::Mat gray;
     if(input.type == R_MOTION_IMAGE_TYPE_ARGB)
     {
-        src = cv::Mat(input.height, input.width, CV_8UC4,
-                      const_cast<unsigned char*>(input.data.data()));
+        cv::Mat argb(input.height, input.width, CV_8UC4,
+                     const_cast<unsigned char*>(input.data.data()));
+        cv::Mat rgba(input.height, input.width, CV_8UC4);
+        const int from_to[] = {1, 0, 2, 1, 3, 2, 0, 3};
+        cv::mixChannels(&argb, 1, &rgba, 1, from_to, 4);
+        cv::cvtColor(rgba, gray, cv::COLOR_RGBA2GRAY);
     }
     else if(input.type == R_MOTION_IMAGE_TYPE_BGR)
     {
-        src = cv::Mat(input.height, input.width, CV_8UC3,
-                      const_cast<unsigned char*>(input.data.data()));
+        cv::Mat bgr(input.height, input.width, CV_8UC3,
+                    const_cast<unsigned char*>(input.data.data()));
+        cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
     }
     else if(input.type == R_MOTION_IMAGE_TYPE_RGB)
     {
-        src = cv::Mat(input.height, input.width, CV_8UC3,
-                      const_cast<unsigned char*>(input.data.data()));
+        cv::Mat rgb(input.height, input.width, CV_8UC3,
+                    const_cast<unsigned char*>(input.data.data()));
+        cv::cvtColor(rgb, gray, cv::COLOR_RGB2GRAY);
     }
     else
     {
-        return r_nullable<r_motion_info>(); // Unsupported format
+        gray = cv::Mat(input.height, input.width, CV_8UC1,
+                       const_cast<unsigned char*>(input.data.data()));
     }
 
-    // Delegate to cv::Mat overload with no offset
-    return process(src, 0, 0, skip_stats_update);
+    return process(gray, 0, 0, skip_stats_update, timestamp_ms);
 }
 
-r_nullable<r_motion_info> r_motion_state::process(const cv::Mat& input, int roi_offset_x, int roi_offset_y, bool skip_stats_update)
+r_nullable<r_motion_info> r_motion_state::process(const cv::Mat& input,
+                                                   int roi_offset_x,
+                                                   int roi_offset_y,
+                                                   bool skip_stats_update,
+                                                   int64_t timestamp_ms)
 {
     r_nullable<r_motion_info> result;
-
     if(input.empty())
         return result;
 
-    // --- GRAYSCALE + BLUR -----------------------------------------------------------
-    // Detect input format and convert to grayscale
     if(input.channels() == 4)
-    {
         cv::cvtColor(input, _currGray, cv::COLOR_BGRA2GRAY);
-    }
     else if(input.channels() == 3)
-    {
-        // Assume RGB (caller from motion engine sends RGB)
         cv::cvtColor(input, _currGray, cv::COLOR_RGB2GRAY);
-    }
     else if(input.channels() == 1)
-    {
-        _currGray = input; // Already grayscale (may be ROI, no copy)
-    }
+        _currGray = input;
     else
-    {
-        return result; // Unsupported format
-    }
+        return result;
+
     cv::GaussianBlur(_currGray, _blurred, Size(5,5), 0);
 
-    // --- MOG2 BACKGROUND SUBTRACTION -----------------------------------------------
-    // apply() automatically updates the background model
-    // learningRate of -1 means "auto" (usually 1/history)
-    // Always let MOG2 update so it tracks the visual scene properly
-    _mog2->apply(_blurred, _fgMask, -1);
+    double mog_learning_rate = -1.0;
+    if(timestamp_ms >= 0 && _lastInputTimestampMs >= 0 && _warmupFrames >= _warmupThreshold)
+    {
+        const double scale = elapsed_scale(_lastInputTimestampMs, timestamp_ms);
+        mog_learning_rate = 1.0 - std::pow(1.0 - (1.0 / 500.0), scale);
+    }
+    _mog2->apply(_blurred, _fgMask, mog_learning_rate);
+    _lastInputTimestampMs = timestamp_ms;
 
-    // --- WARMUP PERIOD -------------------------------------------------------------
-    // Skip the first few frames while MOG2 builds its background model.
-    // Without a background, MOG2 reports everything as "motion" on the first frame,
-    // which would pollute our stddev and make real motion detection impossible.
-    _warmupFrames++;
+    ++_warmupFrames;
     if(_warmupFrames <= _warmupThreshold)
     {
-        return result;  // return empty until background model is stable
+        _blurred.copyTo(_prevBlurred);
+        return result;
     }
 
-    // --- SHADOW REMOVAL -----------------------------------------------------------
-    // MOG2 marks shadows as 127 (gray). We only want actual motion (255).
-    // Threshold at 250 to keep only white pixels.
-    cv::threshold(_fgMask, _fgMask, 250, 255, cv::THRESH_BINARY);
+    cv::compare(_fgMask, 255, _strongMask, cv::CMP_EQ);
+    cv::compare(_fgMask, 127, _shadowMask, cv::CMP_EQ);
+    cv::bitwise_or(_strongMask, _shadowMask, _combinedMask);
+    if(!_illuminationMask.empty() && _illuminationMask.size() != _combinedMask.size())
+        _illuminationMask.release();
 
-    // --- ILLUMINATION CHANGE VETO ---------------------------------------------------
-    // If a huge portion of the screen changed, it's likely a light switch or camera gain adjustment.
-    // We veto this frame to avoid a massive false positive event.
-    const double changeRatio = cv::countNonZero(_fgMask) / static_cast<double>(_fgMask.total());
-    if(changeRatio > _illumChangeThresh)
+    const double change_ratio = cv::countNonZero(_combinedMask) /
+                                static_cast<double>(_combinedMask.total());
+    const auto illumination = analyze_illumination(_prevBlurred, _blurred);
+    const bool illumination_change =
+        change_ratio > _illumChangeThresh && illumination.global_change;
+
+    if(illumination_change)
     {
-        return result;  // nothing emitted
+        _combinedMask.copyTo(_illuminationMask);
+        retain_illumination_residual(_strongMask, _prevBlurred, _blurred,
+                                     illumination.median_delta);
+        retain_illumination_residual(_shadowMask, _prevBlurred, _blurred,
+                                     illumination.median_delta);
     }
+    else if(_illuminationMask.empty() || change_ratio <= _illumChangeThresh)
+        _illuminationMask = cv::Mat::zeros(_combinedMask.size(), CV_8U);
+    _blurred.copyTo(_prevBlurred);
 
-    // --- MORPHOLOGICAL CLEANUP (closing) -------------------------------------------
-    cv::dilate(_fgMask, _fgMask, _morphKernel, cv::Point(-1,-1), 1);
-    cv::erode (_fgMask, _fgMask, _morphKernel, cv::Point(-1,-1), 1);
+    cv::morphologyEx(_strongMask, _strongMask, cv::MORPH_CLOSE, _morphKernel);
+    cv::morphologyEx(_shadowMask, _shadowMask, cv::MORPH_CLOSE, _morphKernel);
+    cv::bitwise_or(_strongMask, _shadowMask, _combinedMask);
+    if(illumination_change)
+    {
+        // Keep globally explained pixels as very weak evidence. One light
+        // switch frame cannot satisfy event confirmation, while a large object
+        // is no longer irreversibly erased at this layer.
+        cv::Mat residual_inverse;
+        cv::bitwise_not(_combinedMask, residual_inverse);
+        cv::bitwise_and(_illuminationMask, residual_inverse, _illuminationMask);
+    }
+    if(!_illuminationMask.empty())
+        cv::bitwise_or(_combinedMask, _illuminationMask, _combinedMask);
 
-    // --- MOTION FREQUENCY MAP UPDATE -----------------------------------------------
-    // Only update frame count and frequency map if not in skip_stats_update mode
     if(!skip_stats_update)
-        _frameCount++;
-
-    // Track motion before masking for statistics
-    uint64_t motion_before_mask = cv::countNonZero(_fgMask);
-
-    // Initialize frequency map if needed (always do this even in skip_update mode)
-    if(_motionFreqMap.empty() || _motionFreqMap.size() != _fgMask.size())
     {
-        _motionFreqMap = cv::Mat::zeros(_fgMask.size(), CV_32F);
-        _staticMask = cv::Mat::ones(_fgMask.size(), CV_8U);
+        ++_frameCount;
+        if(timestamp_ms >= 0 && _firstObservationTimestampMs < 0)
+            _firstObservationTimestampMs = timestamp_ms;
     }
 
-    // Update motion frequency map using exponential moving average to keep values in range (0-1)
-    // Only update if not in skip_stats_update mode
+    const uint64_t motion_before_mask = cv::countNonZero(_combinedMask);
+
+    if(_motionFreqMap.empty() || _motionFreqMap.size() != _combinedMask.size())
+    {
+        _motionFreqMap = cv::Mat::zeros(_combinedMask.size(), CV_32F);
+        _staticMask = cv::Mat(_combinedMask.size(), CV_8U, cv::Scalar(255));
+        _lastFrequencyTimestampMs = -1;
+        _firstObservationTimestampMs = timestamp_ms;
+    }
+
     if(!skip_stats_update)
     {
-        cv::Mat motionNormalized;
-        _fgMask.convertTo(motionNormalized, CV_32F, 1.0/255.0);
-
-        // Exponential moving average: freq = freq * decay + motion * (1 - decay)
-        _motionFreqMap = _motionFreqMap * _freqDecayRate + motionNormalized * (1.0 - _freqDecayRate);
+        cv::Mat motion_normalized;
+        _combinedMask.convertTo(motion_normalized, CV_32F, 1.0 / 255.0);
+        const double scale = elapsed_scale(_lastFrequencyTimestampMs, timestamp_ms);
+        const double decay = timestamp_ms >= 0
+            ? std::pow(_freqDecayRate, scale)
+            : _freqDecayRate;
+        cv::addWeighted(_motionFreqMap, decay,
+                        motion_normalized, 1.0 - decay, 0.0, _motionFreqMap);
+        _lastFrequencyTimestampMs = timestamp_ms;
     }
-    
-    // Generate static mask if we have enough observations and masking is enabled
-    bool masking_active = (_enableMasking && _frameCount >= _minObservationFrames);
-    uint64_t masked_pixels = 0;
-    
+
+    bool masking_active = false;
+    if(_enableMasking)
+    {
+        if(timestamp_ms >= 0 && _firstObservationTimestampMs >= 0)
+            masking_active = (timestamp_ms - _firstObservationTimestampMs) >=
+                             static_cast<int64_t>(_minObservationFrames) * 1000;
+        else
+            masking_active = _frameCount >= _minObservationFrames;
+    }
+
+    uint64_t persistent_pixels = 0;
     if(masking_active)
     {
-        cv::threshold(_motionFreqMap, _staticMask, _motionFreqThresh, 255, cv::THRESH_BINARY_INV);
+        cv::threshold(_motionFreqMap, _staticMask, _motionFreqThresh,
+                      255, cv::THRESH_BINARY_INV);
         _staticMask.convertTo(_staticMask, CV_8U);
-        
-        // Calculate how many pixels will be masked
-        cv::Mat maskedMotion;
-        cv::bitwise_and(_fgMask, _staticMask, maskedMotion);
-        masked_pixels = motion_before_mask - cv::countNonZero(maskedMotion);
-        
-        // Apply static mask to suppress motion in continuously moving areas
-        _fgMask = maskedMotion;
+        cv::Mat persistent_mask;
+        cv::bitwise_not(_staticMask, persistent_mask);
+        cv::bitwise_and(_combinedMask, persistent_mask, persistent_mask);
+        persistent_pixels = cv::countNonZero(persistent_mask);
     }
 
-    // --- CONTOUR FILTERING ----------------------------------------------------------
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(_fgMask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    cv::Mat labels;
+    cv::Mat stats;
+    cv::Mat centroids;
+    const int label_count = cv::connectedComponentsWithStats(
+        _combinedMask, labels, stats, centroids, 8, CV_32S);
 
-    const double minAreaPx = _minAreaFraction * _fgMask.total();
-    uint64_t motion_pixels = 0;
-    
-    // Calculate motion bounding box
-    std::vector<cv::Rect> motion_rects;
-    for(const auto& c : contours)
+    const double configured_min_area = _minAreaFraction * _combinedMask.total();
+    const double direct_component_area = std::max(9.0, configured_min_area * 0.50);
+    const double fragment_component_area = std::max(4.0, configured_min_area * 0.15);
+
+    uint64_t fragment_area_total = 0;
+    for(int label = 1; label < label_count; ++label)
     {
-        double area = cv::contourArea(c);
-        if(area >= minAreaPx) {
-            motion_pixels += static_cast<uint64_t>(area);
-            motion_rects.push_back(cv::boundingRect(c));
+        const int area = stats.at<int>(label, cv::CC_STAT_AREA);
+        if(area >= fragment_component_area)
+            fragment_area_total += static_cast<uint64_t>(area);
+    }
+    const bool accept_fragment_group = fragment_area_total >= configured_min_area;
+
+    std::vector<uint8_t> accepted(static_cast<size_t>(label_count), 0);
+    r_motion_info mi;
+    cv::Rect combined_bbox;
+    bool have_bbox = false;
+
+    for(int label = 1; label < label_count; ++label)
+    {
+        const int area = stats.at<int>(label, cv::CC_STAT_AREA);
+        if(area < direct_component_area &&
+           !(accept_fragment_group && area >= fragment_component_area))
+            continue;
+
+        accepted[static_cast<size_t>(label)] = 1;
+        cv::Rect rect(stats.at<int>(label, cv::CC_STAT_LEFT),
+                      stats.at<int>(label, cv::CC_STAT_TOP),
+                      stats.at<int>(label, cv::CC_STAT_WIDTH),
+                      stats.at<int>(label, cv::CC_STAT_HEIGHT));
+        combined_bbox = have_bbox ? (combined_bbox | rect) : rect;
+        have_bbox = true;
+
+        r_motion_info::motion_region region;
+        region.x = rect.x + roi_offset_x;
+        region.y = rect.y + roi_offset_y;
+        region.width = rect.width;
+        region.height = rect.height;
+        region.has_motion = true;
+        mi.motion_regions.push_back(region);
+    }
+
+    double weighted_motion = 0.0;
+    for(int y = 0; y < labels.rows; ++y)
+    {
+        const auto* label_row = labels.ptr<int>(y);
+        const auto* strong_row = _strongMask.ptr<uint8_t>(y);
+        const auto* shadow_row = _shadowMask.ptr<uint8_t>(y);
+        const auto* illumination_row = _illuminationMask.ptr<uint8_t>(y);
+        const auto* static_row = _staticMask.ptr<uint8_t>(y);
+        for(int x = 0; x < labels.cols; ++x)
+        {
+            const int label = label_row[x];
+            if(label <= 0 || !accepted[static_cast<size_t>(label)])
+                continue;
+
+            const bool persistent = masking_active && static_row[x] == 0;
+            if(illumination_row[x] != 0)
+            {
+                ++mi.weak_motion;
+                ++mi.illumination_motion;
+                weighted_motion += persistent
+                    ? PERSISTENT_ILLUMINATION_WEIGHT
+                    : ILLUMINATION_WEIGHT;
+            }
+            else if(strong_row[x] != 0)
+            {
+                ++mi.strong_motion;
+                weighted_motion += persistent ? PERSISTENT_STRONG_WEIGHT : 1.0;
+            }
+            else if(shadow_row[x] != 0)
+            {
+                ++mi.weak_motion;
+                weighted_motion += persistent ? PERSISTENT_SHADOW_WEIGHT : SHADOW_WEIGHT;
+            }
+            if(persistent)
+                ++mi.persistent_motion;
         }
     }
 
-    // --- METRICS OUTPUT -------------------------------------------------------------
-    r_motion_info mi;
-    mi.motion               = motion_pixels;
+    mi.motion = rounded_nonnegative(weighted_motion);
+    mi.motion_before_mask = motion_before_mask;
+    mi.masked_pixels = persistent_pixels;
+    mi.masking_active = masking_active;
+    mi.illumination_change = illumination_change;
 
-    // Get current baseline values first (before any potential update)
-    mi.avg_motion           = _avg_motion.value();
-    mi.stddev               = _avg_motion.standard_deviation();
+    const double variance = std::max(0.0, _secondMoment - (_avgMotion * _avgMotion));
+    mi.avg_motion = rounded_nonnegative(_avgMotion);
+    mi.stddev = rounded_nonnegative(std::sqrt(variance));
+    mi.significant = is_motion_significant(mi.motion, mi.avg_motion, mi.stddev);
 
-    // Baseline learning: During the first N frames after warmup, we need to establish
-    // a baseline. Without this, avg=0 and stddev=0, so ANY motion > 0 is considered
-    // significant, and the baseline never gets updated (chicken-and-egg problem).
-    // During learning, we use a simple threshold to decide if motion is "low enough"
-    // to be considered baseline noise. We only learn from low-motion frames to avoid
-    // polluting the baseline if someone walks in front during startup.
-    bool in_learning_phase = (_frameCount < _baselineLearningFrames);
-
-    // Only update the moving average if:
-    // 1. Not in skip_stats_update mode (catchup processing)
-    // 2. Either (in learning phase AND motion is low) OR motion is NOT significant
-    // This prevents motion events from inflating the stddev and making subsequent
-    // frames of the same event not register as significant (after learning).
     if(!skip_stats_update)
     {
-        bool is_significant = is_motion_significant(mi.motion, mi.avg_motion, mi.stddev);
+        const bool in_learning_phase = timestamp_ms >= 0 && _firstObservationTimestampMs >= 0
+            ? (timestamp_ms - _firstObservationTimestampMs) <
+              static_cast<int64_t>(_baselineLearningFrames) * 1000
+            : _frameCount < _baselineLearningFrames;
+        const double learning_ceiling = std::max(32.0, configured_min_area * 0.25);
+        const bool low_learning_motion = mi.motion < learning_ceiling;
 
-        // During learning, use a fixed threshold to filter out high-motion frames
-        // 1000 pixels is a reasonable threshold for "baseline noise" vs "real motion"
-        bool is_low_motion_for_learning = (mi.motion < 1000);
-
-        if((in_learning_phase && is_low_motion_for_learning) || !is_significant)
+        if((in_learning_phase && low_learning_motion) || !mi.significant)
         {
-            _avg_motion.update(mi.motion);
-            // Update returned values to reflect the new baseline
-            mi.avg_motion   = _avg_motion.value();
-            mi.stddev       = _avg_motion.standard_deviation();
+            const double base_alpha = 2.0 / (static_cast<double>(_statsMemory) + 1.0);
+            const double scale = elapsed_scale(_lastStatsTimestampMs, timestamp_ms);
+            const double alpha = timestamp_ms >= 0
+                ? 1.0 - std::pow(1.0 - base_alpha, scale)
+                : base_alpha;
+            const double sample = static_cast<double>(mi.motion);
+            _avgMotion = alpha * sample + (1.0 - alpha) * _avgMotion;
+            _secondMoment = alpha * sample * sample + (1.0 - alpha) * _secondMoment;
+
+            const double updated_variance =
+                std::max(0.0, _secondMoment - (_avgMotion * _avgMotion));
+            mi.avg_motion = rounded_nonnegative(_avgMotion);
+            mi.stddev = rounded_nonnegative(std::sqrt(updated_variance));
         }
+        _lastStatsTimestampMs = timestamp_ms;
     }
-    mi.motion_before_mask   = motion_before_mask;
-    mi.masked_pixels        = masked_pixels;
-    mi.masking_active       = masking_active;
-    
-    // Calculate overall motion bounding box
-    if (!motion_rects.empty()) {
-        cv::Rect combined_bbox = motion_rects[0];
-        for (size_t i = 1; i < motion_rects.size(); i++) {
-            combined_bbox |= motion_rects[i];  // Union of rectangles
-        }
-        // Apply ROI offset to transform from ROI-local coords to full image coords
+
+    if(have_bbox)
+    {
         mi.motion_bbox.x = combined_bbox.x + roi_offset_x;
         mi.motion_bbox.y = combined_bbox.y + roi_offset_y;
         mi.motion_bbox.width = combined_bbox.width;
         mi.motion_bbox.height = combined_bbox.height;
         mi.motion_bbox.has_motion = true;
-    } else {
-        mi.motion_bbox.x = 0;
-        mi.motion_bbox.y = 0;
-        mi.motion_bbox.width = 0;
-        mi.motion_bbox.height = 0;
-        mi.motion_bbox.has_motion = false;
     }
 
     result.set_value(mi);

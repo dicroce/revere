@@ -31,6 +31,7 @@ struct captured_event
     int64_t ts;
     uint16_t width;
     uint16_t height;
+    std::vector<motion_region> motion_regions;
 };
 
 class capturing_event_sink : public r_motion_event_sink
@@ -41,7 +42,16 @@ public:
               const motion_region& /*bbox*/) override
     {
         std::lock_guard<std::mutex> lk(_mtx);
-        _events.push_back({evt, camera_id, ts, width, height});
+        _events.push_back({evt, camera_id, ts, width, height, {}});
+    }
+
+    void post(r_motion_event evt, const std::string& camera_id, int64_t ts,
+              const std::vector<uint8_t>& /*frame_data*/, uint16_t width, uint16_t height,
+              const motion_region& /*bbox*/,
+              const std::vector<motion_region>& motion_regions) override
+    {
+        std::lock_guard<std::mutex> lk(_mtx);
+        _events.push_back({evt, camera_id, ts, width, height, motion_regions});
     }
 
     std::vector<captured_event> events()
@@ -89,6 +99,42 @@ void test_r_motion_engine::test_event_sink_interface()
 
     RTF_ASSERT_EQUAL(events[2].evt, motion_event_end);
     RTF_ASSERT_EQUAL(events[2].ts,  (int64_t)3000);
+}
+
+void test_r_motion_engine::test_motion_component_filtering()
+{
+    const motion_region union_bbox{10, 10, 100, 20, true};
+    const std::vector<motion_region> components{
+        {10, 10, 10, 20, true},
+        {100, 10, 10, 20, true}
+    };
+
+    // Both real components admit a recognition center.
+    RTF_ASSERT(motion_evidence_contains_point(union_bbox, components, 15.0f, 20.0f));
+    RTF_ASSERT(motion_evidence_contains_point(union_bbox, components, 105.0f, 20.0f));
+
+    // The gap is inside the legacy union bbox but not on top of actual motion.
+    RTF_ASSERT(!motion_evidence_contains_point(union_bbox, components, 60.0f, 20.0f));
+
+    // Old motion producers still use their union box, and endpoint frames with
+    // no current spatial evidence retain the legacy accept-all behavior.
+    RTF_ASSERT(motion_evidence_contains_point(union_bbox, {}, 60.0f, 20.0f));
+    RTF_ASSERT(motion_evidence_contains_point({0, 0, 0, 0, false}, {}, 600.0f, 600.0f));
+    RTF_ASSERT(has_valid_motion_evidence(union_bbox, components));
+    RTF_ASSERT(!has_valid_motion_evidence({0, 0, 0, 0, false}, {}));
+
+    // Margin is applied to each component independently, not to the union gap.
+    RTF_ASSERT(motion_evidence_contains_point(union_bbox, components, 25.0f, 20.0f, 5.0f));
+    RTF_ASSERT(!motion_evidence_contains_point(union_bbox, components, 60.0f, 20.0f, 5.0f));
+
+    capturing_event_sink sink;
+    std::vector<uint8_t> frame(640 * 640 * 3, 0);
+    r_motion_event_sink& sink_interface = sink;
+    sink_interface.post(motion_event_start, "cam1", 1000, frame, 640, 640,
+                        union_bbox, components);
+    const auto events = sink.events();
+    RTF_ASSERT_EQUAL(events.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(events[0].motion_regions.size(), (size_t)2);
 }
 
 void test_r_motion_engine::test_null_storage_sink_interface()
@@ -148,9 +194,8 @@ void test_r_motion_engine::test_factory_receives_work_item()
     r_motion_engine engine(factory, event_sink);
     engine.start();
 
-    // Post a non-key frame — the factory is invoked to create the work context,
-    // but no decode is attempted (only key frames are decoded), so this is
-    // safe without real video data.
+    // Non-key frames are intentionally rejected before entering the bounded
+    // motion queue; they must not create work contexts or consume capacity.
     engine.post_frame(
         r_pipeline::r_gst_buffer{},
         1000,
@@ -165,9 +210,10 @@ void test_r_motion_engine::test_factory_receives_work_item()
 
     engine.stop();
 
-    RTF_ASSERT(factory_called);
-    RTF_ASSERT_EQUAL(observed_camera_id, std::string("test_camera"));
-    RTF_ASSERT_EQUAL(observed_codec,     std::string("h264"));
+    RTF_ASSERT(!factory_called);
+    RTF_ASSERT_EQUAL(engine.get_queue_size(), (size_t)0);
+    RTF_ASSERT(observed_camera_id.empty());
+    RTF_ASSERT(observed_codec.empty());
 }
 
 void test_r_motion_engine::test_real_frames_trigger_motion()
