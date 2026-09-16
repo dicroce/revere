@@ -5,6 +5,8 @@
 #include "r_utils/r_nullable.h"
 #include <string>
 #include <map>
+#include <deque>
+#include <vector>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -22,6 +24,101 @@
 
 namespace vision
 {
+
+// Presentation pacing (see pipeline_host::load_video_textures)
+constexpr size_t PRESENTATION_MAX_QUEUE = 12;           // decoded frames buffered per stream; must
+                                                        // hold PRESENTATION_MAX_DESIRED_BUFFER_MS of
+                                                        // content at typical frame rates (12 ≈ 480ms
+                                                        // at 25fps)
+constexpr int64_t PRESENTATION_CUSHION_MS = 50;         // initial buffer target for a new stream
+constexpr int64_t PRESENTATION_DISCONTINUITY_MS = 1000; // pts jump that forces a re-anchor
+constexpr int64_t PRESENTATION_LATE_MS = 20;            // presented this far past due counts as late
+constexpr int64_t PRESENTATION_RETARD_STEP_MS = 15;     // max latency added per late present
+constexpr double PRESENTATION_MAX_DESIRED_BUFFER_MS = 400.0; // ceiling for the learned buffer target
+constexpr double PRESENTATION_DESIRED_DECAY_MS = 0.02;  // buffer-target decay per on-time present
+                                                        // (~0.5 ms/s at 25fps — slowly reclaims
+                                                        // latency when delivery behaves)
+constexpr double PRESENTATION_DRAIN_GAIN = 0.05;        // proportional drain of buffer above target
+constexpr double PRESENTATION_DRAIN_MAX_MS = 2.0;       // max drain per present
+constexpr int64_t STATS_WINDOW_SECONDS = 10;            // smoothness stats logging interval
+
+// Log-only smoothness instrumentation, accumulated per stream and emitted as
+// one log line per stats window. Interpretation:
+//   pts_d   — delta between consecutive frame timestamps. Uneven values mean
+//             the camera itself stamps jittery timestamps (e.g. at send time
+//             rather than capture time).
+//   arr_jit — |arrival interval − pts interval|: network + encoder delivery
+//             jitter. Sustained spikes larger than PRESENTATION_CUSHION_MS
+//             mean the cushion is too small to absorb them.
+//   late    — frames presented more than PRESENTATION_LATE_MS past their due
+//             time (they arrived too late to pace; jitter passed through).
+struct stream_stats final
+{
+    // arrival side (post_video_frame)
+    std::chrono::steady_clock::time_point last_arrival_wall;
+    int64_t last_arrival_pts {0};
+    bool have_last_arrival {false};
+    uint32_t arrivals {0};
+    double pts_delta_sum {0.0};
+    int64_t pts_delta_min {0};
+    int64_t pts_delta_max {0};
+    double jitter_sum {0.0};
+    int64_t jitter_max {0};
+    uint32_t nonmono {0}; // frames whose pts delta was <= 0 (duplicates/backwards)
+    uint32_t overflow_drops {0};
+
+    // presentation side (load_video_textures)
+    uint32_t presents {0};
+    uint32_t late_presents {0};
+    double lateness_sum {0.0};
+    int64_t lateness_max {0};
+    uint32_t skips {0};
+    uint32_t reanchors {0};
+    uint32_t drain_slews {0};
+    uint32_t retard_slews {0};
+    size_t q_depth_max {0};
+
+    std::chrono::steady_clock::time_point window_start;
+    bool window_started {false};
+
+    void reset(const std::chrono::steady_clock::time_point& now)
+    {
+        arrivals = 0;
+        pts_delta_sum = 0.0;
+        pts_delta_min = 0;
+        pts_delta_max = 0;
+        jitter_sum = 0.0;
+        jitter_max = 0;
+        nonmono = 0;
+        overflow_drops = 0;
+        presents = 0;
+        late_presents = 0;
+        lateness_sum = 0.0;
+        lateness_max = 0;
+        skips = 0;
+        reanchors = 0;
+        drain_slews = 0;
+        retard_slews = 0;
+        q_depth_max = 0;
+        window_start = now;
+    }
+};
+
+// Per-stream jitter buffer plus the clock anchor that maps frame pts onto the
+// local steady clock. Frames are presented when their pts comes due against
+// the anchor rather than on arrival, which smooths network/decode jitter.
+struct stream_presentation final
+{
+    std::deque<frame> q;
+    bool anchored {false};
+    int64_t anchor_media_pts {0};
+    std::chrono::steady_clock::time_point anchor_wall;
+    // Learned latency target (ms of content to hold): raised by late presents,
+    // decayed slowly when on time. Survives seeks (_reset_presentation) since
+    // the stream's delivery jitter doesn't change with the playhead.
+    double desired_buffer_ms {(double)PRESENTATION_CUSHION_MS};
+    stream_stats stats;
+};
 
 class pipeline_state;
 
@@ -52,8 +149,6 @@ public:
 
     r_utils::r_nullable<std::shared_ptr<render_context>> lookup_render_context(const std::string& name, uint16_t w, uint16_t h);
 
-    void update_render_context_timestamp(const std::string& name, int64_t pts);
-
     void control_bar_cb(const std::string& name, const std::chrono::system_clock::time_point& pos);
     void sync_control_bar_cb(const std::chrono::system_clock::time_point& pos);
     void sync_play_cb(const std::chrono::system_clock::time_point& range_end);
@@ -65,106 +160,16 @@ public:
 
     void destroy_video_textures()
     {
+        std::lock_guard<std::mutex> pipes_lock(_internals_lok);
         for(auto& rc : _render_contexts)
         {
             rc.second->tex.reset();
         }
     }
 
-    void load_video_textures()
-    {
-        std::lock_guard<std::mutex> pipes_lock(_internals_lok);
-
-        static int load_log_count = 0;
-        if (!_video_frames.empty() && load_log_count++ < 5)
-        {
-            R_LOG_INFO("load_video_textures: processing %zu video frames", _video_frames.size());
-        }
-
-        for(auto& frame_p : _video_frames)
-        {
-            auto found_rc = _render_contexts.find(frame_p.first);
-            if(found_rc == end(_render_contexts))
-            {
-                static int create_log_count = 0;
-                if (create_log_count++ < 5)
-                {
-                    R_LOG_INFO("Creating new render context for stream: %s (%dx%d)",
-                        frame_p.first.c_str(), frame_p.second.w, frame_p.second.h);
-                }
-
-                // Create streaming texture for video (optimized for frequent updates)
-                auto rc = std::make_shared<render_context>();
-                rc->tex = r_ui_utils::texture::create_streaming(
-                    _renderer,
-                    frame_p.second.w,
-                    frame_p.second.h,
-                    false  // RGB, not RGBA
-                );
-                if (rc->tex)
-                {
-                    rc->tex->update_rgb(
-                        frame_p.second.buffer->data(),
-                        frame_p.second.w,
-                        frame_p.second.h
-                    );
-                }
-                else
-                {
-                    R_LOG_ERROR("Failed to create streaming texture for stream: %s", frame_p.first.c_str());
-                }
-                rc->w = frame_p.second.w;
-                rc->h = frame_p.second.h;
-                _render_contexts.insert(make_pair(frame_p.first, rc));
-            }
-            else
-            {
-                if(found_rc->second->w != frame_p.second.w || found_rc->second->h != frame_p.second.h)
-                {
-                    // Recreate streaming texture with new dimensions
-                    auto rc = std::make_shared<render_context>();
-                    rc->tex = r_ui_utils::texture::create_streaming(
-                        _renderer,
-                        frame_p.second.w,
-                        frame_p.second.h,
-                        false  // RGB, not RGBA
-                    );
-                    if (rc->tex)
-                    {
-                        rc->tex->update_rgb(
-                            frame_p.second.buffer->data(),
-                            frame_p.second.w,
-                            frame_p.second.h
-                        );
-                    }
-                    rc->w = frame_p.second.w;
-                    rc->h = frame_p.second.h;
-                    _render_contexts[found_rc->first] = rc;
-                }
-                else
-                {
-                    // Update existing streaming texture
-                    if (found_rc->second->tex)
-                    {
-                        found_rc->second->tex->update_rgb(
-                            frame_p.second.buffer->data(),
-                            frame_p.second.w,
-                            frame_p.second.h
-                        );
-                    }
-                }
-            }
-        }
-
-        _video_frames.clear();
-
-        for(auto iter = begin(_render_contexts); iter != end(_render_contexts);)
-        {
-            if(iter->second->done)
-                iter = _render_contexts.erase(iter);
-            else ++iter;
-        }
-    }
+    // Called once per UI frame: picks the due frame (if any) for each stream
+    // from its presentation queue and uploads it to that stream's texture.
+    void load_video_textures();
 
     bool playing(const std::string& stream_name) const;
     std::chrono::system_clock::time_point last_control_bar_pos(const std::string& stream_name) const;
@@ -178,6 +183,18 @@ public:
 private:
     void _entry_point();
 
+    // Drop queued frames and force a re-anchor; call on seek/play/live
+    // transitions so stale frames can't present. Caller must hold _internals_lok.
+    void _reset_presentation(const std::string& name)
+    {
+        auto it = _presentations.find(name);
+        if(it != _presentations.end())
+        {
+            it->second.q.clear();
+            it->second.anchored = false;
+        }
+    }
+
     mutable std::mutex _internals_lok;
 
     configure_state& _cfg;
@@ -186,7 +203,7 @@ private:
     std::map<std::string, std::shared_ptr<pipeline_state>> _pipes;
 
     std::map<std::string, std::shared_ptr<render_context>> _render_contexts;
-    std::map<std::string, frame> _video_frames;
+    std::map<std::string, stream_presentation> _presentations;
     std::map<std::string, std::string> _name_remap; // pipeline's internal name → current layout name
 
     // Playback tracking for relative timestamp calculation

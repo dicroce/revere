@@ -26,7 +26,7 @@ pipeline_host::pipeline_host(configure_state& cfg, SDL_Renderer* renderer) :
     _stream_infos(),
     _pipes(),
     _render_contexts(),
-    _video_frames(),
+    _presentations(),
     _playback_start_positions(),
     _playback_start_pts(),
     _th(),
@@ -89,7 +89,7 @@ void pipeline_host::change_layout(int window, layout l)
         _name_remap.clear();
         std::map<std::string, std::shared_ptr<pipeline_state>> new_pipes;
         std::map<std::string, std::shared_ptr<render_context>> new_rc;
-        std::map<std::string, frame> new_vf;
+        std::map<std::string, stream_presentation> new_pres;
         std::set<std::string> reused_posting_names;
 
         for(auto& si : sis)
@@ -113,9 +113,9 @@ void pipeline_host::change_layout(int window, layout l)
                         if(rc_it != end(_render_contexts))
                             new_rc[si.name] = rc_it->second;
 
-                        auto vf_it = _video_frames.find(map_name);
-                        if(vf_it != end(_video_frames))
-                            new_vf[si.name] = vf_it->second;
+                        auto pres_it = _presentations.find(map_name);
+                        if(pres_it != end(_presentations))
+                            new_pres[si.name] = std::move(pres_it->second);
                         break;
                     }
                 }
@@ -136,7 +136,7 @@ void pipeline_host::change_layout(int window, layout l)
 
         _pipes = std::move(new_pipes);
         _render_contexts = std::move(new_rc);
-        _video_frames = std::move(new_vf);
+        _presentations = std::move(new_pres);
 
         _retry_window = window;
         _retry_layout = l;
@@ -167,6 +167,7 @@ void pipeline_host::update_stream(int window, stream_info si)
         }
 
         _render_contexts.erase(si.name);
+        _presentations.erase(si.name);
         _stream_infos[si.name] = si;
     }  // Lock is released here
 
@@ -198,6 +199,7 @@ void pipeline_host::disconnect_stream(int window, const string& name)
             _render_contexts.erase(rc_it);
         }
 
+        _presentations.erase(name);
         _stream_infos.erase(name);
     }  // Lock is released here
 
@@ -317,23 +319,68 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
     // Signal that new frames are available
     _has_new_frames.store(true);
 
-    // If something goes into our frame buffer, then wakeup the main loop... but since
-    // this queue is drained each time through the loop we only need to do it once...
-    if(_video_frames.empty())
+    auto& pres = _presentations[effective_name];
+
+    // Arrival-side smoothness stats: pts_d measures the camera's timestamp
+    // cadence; arr_jit measures how far delivery (network + encoder) deviates
+    // from that cadence. Deltas outside (0, 5000) ms are discontinuities
+    // (stills, seeks) and are excluded.
+    {
+        auto arrival_now = steady_clock::now();
+        auto& st = pres.stats;
+        if(!st.window_started)
+        {
+            st.window_started = true;
+            st.window_start = arrival_now;
+        }
+        f.arrival = arrival_now;
+        if(st.have_last_arrival)
+        {
+            int64_t pts_d = display_pts - st.last_arrival_pts;
+            if(pts_d <= 0 && pts_d > -5000)
+                st.nonmono++;
+            if(pts_d > 0 && pts_d < 5000)
+            {
+                int64_t arr_d = duration_cast<milliseconds>(arrival_now - st.last_arrival_wall).count();
+                int64_t jit = arr_d - pts_d;
+                if(jit < 0)
+                    jit = -jit;
+
+                if(st.arrivals == 0 || pts_d < st.pts_delta_min)
+                    st.pts_delta_min = pts_d;
+                if(pts_d > st.pts_delta_max)
+                    st.pts_delta_max = pts_d;
+                st.pts_delta_sum += (double)pts_d;
+
+                st.jitter_sum += (double)jit;
+                if(jit > st.jitter_max)
+                    st.jitter_max = jit;
+
+                st.arrivals++;
+            }
+        }
+        st.have_last_arrival = true;
+        st.last_arrival_wall = arrival_now;
+        st.last_arrival_pts = display_pts;
+    }
+
+    // If something goes into an empty queue, wake up the main loop.
+    if(pres.q.empty())
     {
         SDL_Event event;
         event.type = SDL_USEREVENT;
         SDL_PushEvent(&event);
     }
 
-    _video_frames.insert(make_pair(effective_name, f));
-
-    // Update render context timestamp if it exists
-    auto found_rc = _render_contexts.find(effective_name);
-    if(found_rc != end(_render_contexts))
+    // Bounded jitter buffer: drop the oldest frame if arrival outruns
+    // presentation. Note: rc->pts is set at presentation time (in
+    // load_video_textures) so it always matches the displayed frame.
+    if(pres.q.size() >= PRESENTATION_MAX_QUEUE)
     {
-        found_rc->second->pts = display_pts;
+        pres.q.pop_front();
+        pres.stats.overflow_drops++;
     }
+    pres.q.push_back(std::move(f));
 }
 
 r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(const std::string& name, uint16_t w, uint16_t h)
@@ -436,15 +483,232 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
     return rc;
 }
 
-void pipeline_host::update_render_context_timestamp(const std::string& name, int64_t pts)
+void pipeline_host::load_video_textures()
 {
-    lock_guard<mutex> g(_internals_lok);
-    
-    auto found_rc = _render_contexts.find(name);
-    if(found_rc != end(_render_contexts))
+    // Phase 1 (locked): for each stream, decide which queued frame (if any) is
+    // due for presentation and snapshot the render context pointer. All texture
+    // work happens after the lock is released so decode threads posting frames
+    // aren't stalled behind pixel uploads.
+    struct upload_item
     {
-        found_rc->second->pts = pts;
+        std::string name;
+        frame f;
+        std::shared_ptr<render_context> rc; // null → needs a new render context
+    };
+    std::vector<upload_item> uploads;
+    std::vector<std::shared_ptr<render_context>> retired;
+    std::vector<std::string> stats_lines; // built under the lock, logged after
+
+    auto now = steady_clock::now();
+
+    {
+        lock_guard<mutex> g(_internals_lok);
+
+        for(auto& [name, pres] : _presentations)
+        {
+            // Emit and reset the smoothness stats window, even for streams
+            // with nothing currently queued.
+            auto& st = pres.stats;
+            if(st.window_started && now - st.window_start >= seconds(STATS_WINDOW_SECONDS))
+            {
+                if(st.arrivals > 0 || st.presents > 0)
+                {
+                    auto elapsed_s = duration_cast<seconds>(now - st.window_start).count();
+                    stats_lines.push_back(r_string_utils::format(
+                        "vision_stats[%s] %llds: arr=%u nmono=%u pts_d(ms) avg=%.1f min=%lld max=%lld | arr_jit(ms) avg=%.1f max=%lld | pres=%u late=%u lat(ms) avg=%.1f max=%lld | skip=%u drop=%u reanch=%u slew=%u rslew=%u qmax=%zu dbuf=%.0f",
+                        name.c_str(),
+                        (long long)elapsed_s,
+                        st.arrivals,
+                        st.nonmono,
+                        st.pts_delta_sum / (double)((st.arrivals > 0) ? st.arrivals : 1),
+                        (long long)st.pts_delta_min,
+                        (long long)st.pts_delta_max,
+                        st.jitter_sum / (double)((st.arrivals > 0) ? st.arrivals : 1),
+                        (long long)st.jitter_max,
+                        st.presents,
+                        st.late_presents,
+                        st.lateness_sum / (double)((st.presents > 0) ? st.presents : 1),
+                        (long long)st.lateness_max,
+                        st.skips,
+                        st.overflow_drops,
+                        st.reanchors,
+                        st.drain_slews,
+                        st.retard_slews,
+                        st.q_depth_max,
+                        pres.desired_buffer_ms));
+                }
+                st.reset(now);
+            }
+
+            if(pres.q.empty())
+                continue;
+
+            if(pres.q.size() > st.q_depth_max)
+                st.q_depth_max = pres.q.size();
+
+            int64_t target = 0;
+            if(pres.anchored)
+                target = pres.anchor_media_pts + duration_cast<milliseconds>(now - pres.anchor_wall).count();
+
+            // First frame, seek, live↔playback switch, or still: re-anchor the
+            // presentation clock. The front frame presents immediately and later
+            // frames get the learned buffer target as cushion so arrival jitter
+            // doesn't make them late.
+            int64_t front_gap = pres.q.front().pts - target;
+            if(!pres.anchored || front_gap > PRESENTATION_DISCONTINUITY_MS || front_gap < -PRESENTATION_DISCONTINUITY_MS)
+            {
+                if(pres.anchored)
+                    st.reanchors++;
+                pres.anchored = true;
+                pres.anchor_media_pts = pres.q.front().pts;
+                pres.anchor_wall = now + milliseconds((int64_t)pres.desired_buffer_ms);
+                target = pres.q.front().pts;
+            }
+
+            // Present the newest due frame; older due frames are skipped.
+            int due_idx = -1;
+            for(size_t i = 0; i < pres.q.size(); ++i)
+            {
+                if(pres.q[i].pts <= target)
+                    due_idx = (int)i;
+                else
+                    break;
+            }
+
+            if(due_idx < 0)
+            {
+                // Nothing due yet. If the queue has filled anyway, arrival is
+                // outpacing our clock — pull the anchor back so we drain.
+                if(pres.q.size() >= PRESENTATION_MAX_QUEUE)
+                {
+                    pres.anchor_wall -= milliseconds(5);
+                    st.drain_slews++;
+                }
+                continue;
+            }
+
+            upload_item u;
+            u.name = name;
+            u.f = pres.q[due_idx];
+            pres.q.erase(pres.q.begin(), pres.q.begin() + due_idx + 1);
+
+            st.presents++;
+            st.skips += (uint32_t)due_idx;
+            int64_t lateness = target - u.f.pts;
+            st.lateness_sum += (double)lateness;
+            if(lateness > st.lateness_max)
+                st.lateness_max = lateness;
+            if(lateness > PRESENTATION_LATE_MS)
+            {
+                st.late_presents++;
+
+                // Grow the buffer target only when the frame truly ARRIVED after
+                // its due time — genuine under-buffering that more latency can
+                // fix. Pathological timestamps (near-duplicate pts pairs,
+                // reordering) also produce "late" presents, but no amount of
+                // buffer fixes those, and growing on them ratcheted the target
+                // to its cap. (An earlier version also drained on queue depth
+                // >= 3, which contradicted any raised cushion — the two slews
+                // fought in a limit cycle, skipping frames at every trough.)
+                auto due_wall = pres.anchor_wall + milliseconds(u.f.pts - pres.anchor_media_pts);
+                if(u.f.arrival > due_wall)
+                {
+                    auto bump = std::min(lateness, PRESENTATION_RETARD_STEP_MS);
+                    pres.anchor_wall += milliseconds(bump);
+                    pres.desired_buffer_ms = std::min(pres.desired_buffer_ms + (double)bump, PRESENTATION_MAX_DESIRED_BUFFER_MS);
+                    st.retard_slews++;
+                }
+            }
+            else
+            {
+                // On-time present: slowly reclaim latency in case the target
+                // overshot or delivery has improved.
+                pres.desired_buffer_ms = std::max((double)PRESENTATION_CUSHION_MS, pres.desired_buffer_ms - PRESENTATION_DESIRED_DECAY_MS);
+            }
+
+            // Proportional drain, only of buffer above the learned target
+            // (also absorbs clock drift between the stream and the local clock).
+            if(!pres.q.empty())
+            {
+                double buffered_ms = (double)(pres.q.back().pts - target);
+                double excess = buffered_ms - pres.desired_buffer_ms;
+                if(excess > 0.0)
+                {
+                    auto drain_us = (int64_t)(std::min(excess * PRESENTATION_DRAIN_GAIN, PRESENTATION_DRAIN_MAX_MS) * 1000.0);
+                    pres.anchor_wall -= microseconds(drain_us);
+                    st.drain_slews++;
+                }
+            }
+
+            auto found_rc = _render_contexts.find(name);
+            if(found_rc != end(_render_contexts))
+                u.rc = found_rc->second;
+
+            uploads.push_back(std::move(u));
+        }
+
+        for(auto iter = begin(_render_contexts); iter != end(_render_contexts);)
+        {
+            if(iter->second->done)
+            {
+                retired.push_back(iter->second);
+                iter = _render_contexts.erase(iter);
+            }
+            else ++iter;
+        }
     }
+
+    for(const auto& line : stats_lines)
+        R_LOG_INFO("%s", line.c_str());
+
+    // Phase 2 (unlocked): create/update textures. Only this (UI) thread ever
+    // touches texture objects, so no lock is needed for the pixel uploads.
+    std::vector<std::pair<std::string, std::shared_ptr<render_context>>> new_rcs;
+    for(auto& u : uploads)
+    {
+        if(!u.rc || u.rc->w != u.f.w || u.rc->h != u.f.h)
+        {
+            static int create_log_count = 0;
+            if (create_log_count++ < 5)
+            {
+                R_LOG_INFO("Creating render context for stream: %s (%dx%d)",
+                    u.name.c_str(), u.f.w, u.f.h);
+            }
+
+            // Create streaming texture for video (optimized for frequent updates)
+            auto rc = std::make_shared<render_context>();
+            rc->tex = r_ui_utils::texture::create_streaming(
+                _renderer,
+                u.f.w,
+                u.f.h,
+                false  // RGB, not RGBA
+            );
+            if (rc->tex)
+                rc->tex->update_rgb(u.f.buffer->data(), u.f.w, u.f.h);
+            else
+                R_LOG_ERROR("Failed to create streaming texture for stream: %s", u.name.c_str());
+
+            rc->w = u.f.w;
+            rc->h = u.f.h;
+            rc->pts = u.f.pts;
+            new_rcs.emplace_back(u.name, rc);
+        }
+        else if(u.rc->tex)
+        {
+            u.rc->tex->update_rgb(u.f.buffer->data(), u.f.w, u.f.h);
+            u.rc->pts = u.f.pts;
+        }
+    }
+
+    // Phase 3 (locked): publish any new render contexts.
+    if(!new_rcs.empty())
+    {
+        lock_guard<mutex> g(_internals_lok);
+        for(auto& p : new_rcs)
+            _render_contexts[p.first] = p.second;
+    }
+
+    // retired render contexts (and their textures) destroy here, outside the lock
 }
 
 void pipeline_host::control_bar_cb(const string& name, const std::chrono::system_clock::time_point& pos)
@@ -461,6 +725,7 @@ void pipeline_host::control_bar_cb(const string& name, const std::chrono::system
         // Clear playback tracking when user drags slider
         _playback_start_positions.erase(name);
         _playback_start_pts.erase(name);
+        _reset_presentation(name);
 
         pipe->control_bar(pos);
     }
@@ -475,6 +740,7 @@ void pipeline_host::sync_control_bar_cb(const std::chrono::system_clock::time_po
             pipe->stop();
         _playback_start_positions.erase(name);
         _playback_start_pts.erase(name);
+        _reset_presentation(name);
         pipe->control_bar(pos);
     }
 }
@@ -489,6 +755,7 @@ void pipeline_host::sync_play_cb(const std::chrono::system_clock::time_point& ra
             pipe->update_range(pipe->get_last_control_bar_pos(), range_end);
             _playback_start_positions[name] = pipe->get_last_control_bar_pos();
             _playback_start_pts[name] = 0;
+            _reset_presentation(name);
             pipe->play();
         }
     }
@@ -503,6 +770,7 @@ void pipeline_host::sync_live_cb()
             pipe->stop();
         _playback_start_positions.erase(name);
         _playback_start_pts.erase(name);
+        _reset_presentation(name);
         pipe->play_live();
     }
 }
@@ -522,6 +790,7 @@ void pipeline_host::control_bar_button_cb(const string& name, control_bar_button
                 // Clear playback tracking when going live
                 _playback_start_positions.erase(name);
                 _playback_start_pts.erase(name);
+                _reset_presentation(name);
                 pipe->play_live();
             }
         }
@@ -532,6 +801,7 @@ void pipeline_host::control_bar_button_cb(const string& name, control_bar_button
                 // Record the playback start position and reset PTS tracking
                 _playback_start_positions[name] = pipe->get_last_control_bar_pos();
                 _playback_start_pts[name] = 0; // Will be set when first frame arrives
+                _reset_presentation(name);
                 pipe->play();
             }
         }

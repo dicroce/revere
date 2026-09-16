@@ -42,6 +42,7 @@ private:
     std::string _file_name;
     std::unique_ptr<nanots_writer> _writer;
     std::map<std::string, std::unique_ptr<write_context>> _write_contexts;
+    std::map<std::string, int64_t> _last_ts; // per-stream monotonicity clamp
 };
 
 }

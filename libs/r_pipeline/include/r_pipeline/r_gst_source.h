@@ -244,6 +244,9 @@ private:
 
     /// optional arguments
     r_utils::r_nullable<std::string> _protocols;
+    r_utils::r_nullable<std::string> _buffer_mode; // rtspsrc buffer-mode enum value
+                                                   // (0=none,1=slave,2=buffer,3=auto,4=synced);
+                                                   // overrides the protocols-implied default
 
     GstElement* _pipeline;
     guint _bus_watch_id;
@@ -272,6 +275,9 @@ private:
 
     bool _last_valid_v_sample_pts_set;
     uint64_t _last_valid_v_sample_pts;
+    uint64_t _v_pts_interval_est; // ns between consecutive picture pts; used to
+                                  // interpolate a pts for pictures that arrive
+                                  // without one
 
     bool _last_valid_a_sample_pts_set;
     uint64_t _last_valid_a_sample_pts;

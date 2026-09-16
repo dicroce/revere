@@ -126,6 +126,32 @@ private:
     std::chrono::system_clock::time_point _range_start;
     std::chrono::system_clock::time_point _range_end;
     std::chrono::steady_clock::time_point _last_play_time;
+
+    // Pre-decode arrival instrumentation (vision_net log line): measured in the
+    // GStreamer video sample callback, before decode and before any vision
+    // queueing, so upstream (camera/server/network) delivery jitter can be told
+    // apart from jitter added inside vision. Compare against vision_stats
+    // arr_jit, which is measured post-decode. Touched only on the callback thread.
+    std::chrono::steady_clock::time_point _net_last_arrival;
+    int64_t _net_last_pts {0};
+    bool _net_have_last {false};
+    uint32_t _net_n {0};
+    uint32_t _net_nonmono {0};
+    double _net_pts_d_sum {0.0};
+    int64_t _net_pts_d_min {0};
+    int64_t _net_pts_d_max {0};
+    double _net_jit_sum {0.0};
+    int64_t _net_jit_max {0};
+    std::chrono::steady_clock::time_point _net_window_start;
+    bool _net_window_started {false};
+
+    // TEMP DIAGNOSTIC (vision_pair log line): identify what the buffers in
+    // <=2ms pts pairs actually are (SEI-only AU? duplicate picture? slice?).
+    // Remove once the upstream timestamp pathology is fixed.
+    uint32_t _diag_pair_logs {0};
+    size_t _last_buf_size {0};
+    std::string _last_nal_types;
+    bool _last_buf_key {false};
 };
 
 }

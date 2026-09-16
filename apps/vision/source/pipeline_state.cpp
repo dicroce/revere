@@ -19,6 +19,34 @@ using namespace r_http;
 using namespace std;
 using namespace std::chrono;
 
+// List the NAL header bytes in an Annex-B buffer (byte after each start code),
+// comma-separated hex, up to 8. H264: type = byte & 0x1F (09=AUD, 06=SEI,
+// 67=SPS, 68=PPS, 65=IDR slice, 41/61=non-IDR slice). H265: type = (byte >> 1)
+// & 0x3F.
+static std::string _nal_type_list(const uint8_t* p, size_t n)
+{
+    std::string out;
+    int found = 0;
+    for(size_t i = 0; i + 3 < n && found < 8; ++i)
+    {
+        size_t hdr = 0;
+        if(p[i] == 0 && p[i+1] == 0)
+        {
+            if(p[i+2] == 1)
+                hdr = i + 3;
+            else if(p[i+2] == 0 && i + 4 < n && p[i+3] == 1)
+                hdr = i + 4;
+        }
+        if(hdr != 0 && hdr < n)
+        {
+            out += r_string_utils::format("%s%02x", out.empty() ? "" : ",", p[hdr]);
+            ++found;
+            i = hdr;
+        }
+    }
+    return out.empty() ? std::string("none") : out;
+}
+
 static void aspect_correct_video_dimensions(
     uint16_t streamWidth,
     uint16_t streamHeight,
@@ -235,8 +263,92 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
         s.buffer = move(buffer);
         s.media_type = VIDEO_MEDIA;
         // Calculate absolute timestamp: stream start + pts
-        this->_last_v_pts = sc.stream_start_ts() + pts;
+        s.pts = sc.stream_start_ts() + pts;
+        this->_last_v_pts = s.pts;
         this->_received_first_frame = true;
+
+        // Pre-decode arrival stats (vision_net): jitter measured here comes from
+        // upstream of vision (camera, revere restreamer, network); jitter that
+        // only shows up in vision_stats arr_jit was added by vision itself.
+        {
+            auto arrival_now = steady_clock::now();
+            if(!_net_window_started)
+            {
+                _net_window_started = true;
+                _net_window_start = arrival_now;
+            }
+            auto bm = s.buffer.map(r_gst_buffer::MT_READ);
+            std::string nal_types;
+            if(_diag_pair_logs < 60)
+                nal_types = _nal_type_list(bm.data(), bm.size());
+
+            if(_net_have_last)
+            {
+                int64_t pts_d = s.pts - _net_last_pts;
+                if(pts_d <= 0 && pts_d > -5000)
+                    _net_nonmono++;
+
+                // TEMP DIAGNOSTIC: characterize both halves of a <=2ms pts pair.
+                if(pts_d <= 2 && pts_d > -5000 && _diag_pair_logs < 60)
+                {
+                    _diag_pair_logs++;
+                    R_LOG_INFO("vision_pair[%s] pts_d=%lld prev(sz=%zu nals=[%s] key=%d) cur(sz=%zu nals=[%s] key=%d pts=%lld)",
+                        _si.name.c_str(),
+                        (long long)pts_d,
+                        _last_buf_size, _last_nal_types.c_str(), (int)_last_buf_key,
+                        bm.size(), nal_types.c_str(), (int)key,
+                        (long long)s.pts);
+                }
+                if(pts_d > 0 && pts_d < 5000)
+                {
+                    int64_t arr_d = duration_cast<milliseconds>(arrival_now - _net_last_arrival).count();
+                    int64_t jit = arr_d - pts_d;
+                    if(jit < 0)
+                        jit = -jit;
+                    if(_net_n == 0 || pts_d < _net_pts_d_min)
+                        _net_pts_d_min = pts_d;
+                    if(pts_d > _net_pts_d_max)
+                        _net_pts_d_max = pts_d;
+                    _net_pts_d_sum += (double)pts_d;
+                    _net_jit_sum += (double)jit;
+                    if(jit > _net_jit_max)
+                        _net_jit_max = jit;
+                    _net_n++;
+                }
+            }
+            _net_have_last = true;
+            _net_last_arrival = arrival_now;
+            _net_last_pts = s.pts;
+            _last_buf_size = bm.size();
+            _last_nal_types = nal_types;
+            _last_buf_key = key;
+
+            if(arrival_now - _net_window_start >= seconds(10))
+            {
+                if(_net_n > 0)
+                {
+                    R_LOG_INFO("vision_net[%s] %llds: n=%u nmono=%u pts_d(ms) avg=%.1f min=%lld max=%lld | arr_jit(ms) avg=%.1f max=%lld",
+                        _si.name.c_str(),
+                        (long long)duration_cast<seconds>(arrival_now - _net_window_start).count(),
+                        _net_n,
+                        _net_nonmono,
+                        _net_pts_d_sum / (double)_net_n,
+                        (long long)_net_pts_d_min,
+                        (long long)_net_pts_d_max,
+                        _net_jit_sum / (double)_net_n,
+                        (long long)_net_jit_max);
+                }
+                _net_n = 0;
+                _net_nonmono = 0;
+                _net_pts_d_sum = 0.0;
+                _net_pts_d_min = 0;
+                _net_pts_d_max = 0;
+                _net_jit_sum = 0.0;
+                _net_jit_max = 0;
+                _net_window_start = arrival_now;
+            }
+        }
+
         this->_process_q.post(s);
     });
 
@@ -261,9 +373,14 @@ void pipeline_state::resize(uint16_t w, uint16_t h)
     _w = w;
     _h = h;
 
-    // Send our last video sample to the pipeline again, to resize it.
+    // Send our last video sample to the pipeline again, to resize it. Mark it
+    // still so the staleness drop and presentation pacing don't suppress it.
     if(!_last_video_sample.is_null())
-        _process_q.post(_last_video_sample.value());
+    {
+        auto s = _last_video_sample.value();
+        s.still = true;
+        _process_q.post(s);
+    }
 }
 
 void pipeline_state::play_live()
@@ -272,6 +389,12 @@ void pipeline_state::play_live()
 
     vector<r_arg> arguments;
     add_argument(arguments, "url", _si.rtsp_url);
+    // buffer-mode none: pass the camera's RTP timestamps through unmodified.
+    // The default ("auto") picks a jitterbuffer mode per connection, and its
+    // "slave" mode restamps pts from smoothed arrival times — imprinting
+    // delivery jitter onto the timestamps our presentation pacer paces by
+    // (observed as run-to-run flips between clean and paired pts).
+    add_argument(arguments, "buffer-mode", string("0"));
     _source.set_args(arguments);
 
     _source.play();
@@ -364,11 +487,18 @@ void pipeline_state::control_bar(const system_clock::time_point& pos)
 
 void pipeline_state::_entry_point()
 {
+    // Only skip displaying a decoded frame when it is meaningfully behind the
+    // newest sample the source has delivered. The old policy (skip whenever the
+    // queue depth was >= 2) discarded frames on any transient burst — RTSP
+    // packets arriving in clumps, playback fetch bursts — even though the
+    // pipeline wasn't actually behind. Sized above the presentation buffer's
+    // capacity (PRESENTATION_MAX_QUEUE frames) so this never discards a frame
+    // the pacer could still present on time.
+    static const int64_t MAX_DISPLAY_LAG_MS = 500;
+
     _running = true;
     while(this->_running)
     {
-        auto process_q_depth = this->_process_q.size();
-
         auto maybe_sample = this->_process_q.poll(std::chrono::milliseconds(100));
         if(!maybe_sample.is_null())
         {
@@ -392,9 +522,11 @@ void pipeline_state::_entry_point()
                     {
                         tries = 0;
 
-                        // If we are behind, drop the frame here
+                        // If we are behind, drop the frame here (stills always display)
+                        const auto& s = maybe_sample.raw().first;
+                        int64_t display_lag_ms = _last_v_pts - s.pts;
 
-                        if(process_q_depth < 2)
+                        if(s.still || display_lag_ms <= MAX_DISPLAY_LAG_MS)
                         {
                             uint16_t input_width = _video_decoder.raw().input_width();
                             uint16_t input_height = _video_decoder.raw().input_height();
@@ -415,7 +547,7 @@ void pipeline_state::_entry_point()
                             if (decode_log_count++ < 5)
                             {
                                 R_LOG_INFO("Decoding video frame: stream=%s, input=%dx%d, dest=%dx%d, pts=%lld",
-                                    _si.name.c_str(), input_width, input_height, dest_width, dest_height, _last_v_pts);
+                                    _si.name.c_str(), input_width, input_height, dest_width, dest_height, s.pts);
                             }
 
                             // Use BGRA format which matches SDL_PIXELFORMAT_ARGB8888 on little-endian (x86)
@@ -437,7 +569,7 @@ void pipeline_state::_entry_point()
                                 dest_height,
                                 input_width,
                                 input_height,
-                                _last_v_pts
+                                s.pts
                             );
                         }
                     }

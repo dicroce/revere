@@ -128,6 +128,12 @@ struct playback_restreaming_state
     std::string audio_codec_parameters;
     r_pipeline::r_encoding video_encoding;
     r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding;
+    // Each 5s fetch starts at the keyframe BEFORE its query start, so
+    // consecutive chunks overlap; these track the newest posted ts per stream
+    // so the overlap isn't re-posted (re-posting rewound the client's timeline
+    // by up to a GOP at every chunk boundary).
+    int64_t last_posted_v_ts {-1}; // stored ts are epoch ms, always positive
+    int64_t last_posted_a_ts {-1};
     // Bounded queues - drop oldest frames when full to prevent memory exhaustion
     r_utils::r_blocking_q<struct _frame_context> video_samples;
     r_utils::r_blocking_q<struct _frame_context> audio_samples;

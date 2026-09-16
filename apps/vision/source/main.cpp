@@ -423,8 +423,13 @@ int main(int, char**)
     // - Linux: Use software renderer - for AppImage/Snap compatibility (avoids OpenGL)
     SDL_Renderer* renderer = nullptr;
 #ifdef IS_WINDOWS
-    // Windows: Use hardware acceleration (Direct3D, not OpenGL)
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
+    // Windows: Use hardware acceleration (Direct3D, not OpenGL) with vsync.
+    // Vsync gives the main loop a steady display-aligned cadence, which matters
+    // for smooth video presentation (the sleep-based limiter below quantizes to
+    // the Windows timer interval and produces an irregular ~45-60fps). If vsync
+    // causes problems on some machines, remove SDL_RENDERER_PRESENTVSYNC here —
+    // the loop detects its absence and falls back to the sleep limiter.
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_PRESENTVSYNC);
     if (renderer == nullptr)
     {
         R_LOG_ERROR("Hardware renderer failed: %s, falling back to software", SDL_GetError());
@@ -448,11 +453,14 @@ int main(int, char**)
         return 1;
     }
 
-    // Log renderer info for debugging
+    // Log renderer info for debugging, and detect whether vsync is actually
+    // active (the flag is a request — the driver may not honor it).
+    bool vsync_active = false;
     SDL_RendererInfo renderer_info;
     if (SDL_GetRendererInfo(renderer, &renderer_info) == 0)
     {
-        R_LOG_INFO("Using SDL renderer: %s", renderer_info.name);
+        vsync_active = (renderer_info.flags & SDL_RENDERER_PRESENTVSYNC) != 0;
+        R_LOG_INFO("Using SDL renderer: %s (vsync %s)", renderer_info.name, vsync_active ? "on" : "off");
         R_LOG_INFO("Max texture size: %dx%d", renderer_info.max_texture_width, renderer_info.max_texture_height);
         R_LOG_INFO("Supported texture formats: %d", renderer_info.num_texture_formats);
         for (Uint32 i = 0; i < renderer_info.num_texture_formats && i < 16; i++)
@@ -1037,12 +1045,18 @@ int main(int, char**)
             if(cfg_state.need_save())
                 cfg_state.save();
 
-            // Frame rate limiter - cap at ~60fps to reduce CPU usage
-            auto frame_end = chrono::steady_clock::now();
-            auto frame_time = frame_end - frame_start;
-            if (frame_time < frame_duration)
+            // Frame rate limiter - cap at ~60fps to reduce CPU usage. Only
+            // needed when vsync isn't pacing us via SDL_RenderPresent (with
+            // vsync, sleeping here would just add jitter on top of the
+            // display-aligned cadence).
+            if (!vsync_active)
             {
-                std::this_thread::sleep_for(frame_duration - frame_time);
+                auto frame_end = chrono::steady_clock::now();
+                auto frame_time = frame_end - frame_start;
+                if (frame_time < frame_duration)
+                {
+                    std::this_thread::sleep_for(frame_duration - frame_time);
+                }
             }
         }
 

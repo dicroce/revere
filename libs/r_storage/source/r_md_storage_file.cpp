@@ -29,10 +29,19 @@ void r_md_storage_file::write_metadata(const string& stream_tag, const string& j
         R_THROW(("JSON data cannot be empty"));
     
     auto& ctx = _get_or_create_context(stream_tag);
-    
+
+    // nanots requires strictly increasing ts per stream. Motion events can
+    // legitimately repeat a timestamp (same-second events), which made writes
+    // throw ("not strictly greater...") and drop the metadata; clamp this
+    // frame only, same policy as r_storage_file::write_frame.
+    auto& last = _last_ts[stream_tag];
+    if(last != 0 && timestamp_ms <= last)
+        timestamp_ms = last + 1;
+    last = timestamp_ms;
+
     // Write the JSON data as a blob with the timestamp
     // Note: nanots expects data as uint8_t*, so we cast the string data
-    _writer->write(ctx, 
+    _writer->write(ctx,
                    reinterpret_cast<const uint8_t*>(json_data.data()), 
                    json_data.size(), 
                    0, // nanots flags, set to 0 for metadata

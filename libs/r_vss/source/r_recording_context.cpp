@@ -89,6 +89,11 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
     vector<r_arg> arguments;
     add_argument(arguments, "url", _camera.rtsp_url.value());
+    // Pass camera RTP timestamps through unmodified. The rtspsrc default
+    // ("auto") can pick the jitterbuffer's "slave" mode, which restamps pts
+    // from smoothed arrival times — that wobble is what storage's
+    // monotonicity clamp then turns into +1ms pairs baked into recordings.
+    add_argument(arguments, "buffer-mode", string("0"));
 
     if(!_camera.rtsp_username.is_null())
         add_argument(arguments, "username", _camera.rtsp_username.value());
@@ -290,29 +295,12 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             }
 
             auto ts = (sc.stream_start_ts() + pts);
-            this->_storage_file.write_frame(
-                this->_maybe_video_storage_write_context.value(),
-                R_STORAGE_MEDIA_TYPE_VIDEO,
-                mi.data(),
-                mi.size(),
-                key,
-                ts,
-                pts
-            );
 
-            bool do_motion = (!this->_camera.do_motion_detection.is_null())?this->_camera.do_motion_detection.value():false;
-
-            if(do_motion)
-            {
-                this->_sk->post_frame_to_motion_engine(
-                    buffer,
-                    ts,
-                    this->_maybe_video_storage_write_context.value().codec_name,
-                    this->_maybe_video_storage_write_context.value().codec_parameters,
-                    this->_camera.id,
-                    key
-                );
-            }
+            // NOTE: live restream forwarding (GOP cache + queue posts) happens
+            // BEFORE the storage write and motion post. write_frame is
+            // synchronous disk I/O whose occasional stalls otherwise delay
+            // forwarding — measured client-side as frames arriving in pairs —
+            // and the restream path needs nothing from the write.
 
             // Maintain the per-camera GOP cache so a freshly-connected viewer can
             // get frames immediately rather than waiting for the next IDR. Clear
@@ -397,6 +385,30 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                     lrs.video_samples.post(fc);
                 }
             });
+
+            this->_storage_file.write_frame(
+                this->_maybe_video_storage_write_context.value(),
+                R_STORAGE_MEDIA_TYPE_VIDEO,
+                mi.data(),
+                mi.size(),
+                key,
+                ts,
+                pts
+            );
+
+            bool do_motion = (!this->_camera.do_motion_detection.is_null())?this->_camera.do_motion_detection.value():false;
+
+            if(do_motion)
+            {
+                this->_sk->post_frame_to_motion_engine(
+                    buffer,
+                    ts,
+                    this->_maybe_video_storage_write_context.value().codec_name,
+                    this->_maybe_video_storage_write_context.value().codec_parameters,
+                    this->_camera.id,
+                    key
+                );
+            }
         }
         catch(exception& e)
         {
@@ -892,6 +904,14 @@ static void _playback_entry_point(shared_ptr<playback_restreaming_state> prs)
                             break;
                         }
 
+                        // Skip the chunk-overlap region: this fetch began at the
+                        // keyframe before query_start, and everything up to the
+                        // previous chunk's last frame was already posted.
+                        if(sid == R_STORAGE_MEDIA_TYPE_VIDEO && ts <= prs->last_posted_v_ts)
+                            continue;
+                        if(sid == R_STORAGE_MEDIA_TYPE_AUDIO && ts <= prs->last_posted_a_ts)
+                            continue;
+
                         r_gst_buffer buffer(frame.data(), frame.size());
 
                         _frame_context fc;
@@ -901,9 +921,15 @@ static void _playback_entry_point(shared_ptr<playback_restreaming_state> prs)
                         fc.buffer = buffer;
 
                         if(sid == R_STORAGE_MEDIA_TYPE_VIDEO)
+                        {
                             prs->video_samples.post(fc);
+                            prs->last_posted_v_ts = ts;
+                        }
                         else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO)
+                        {
                             prs->audio_samples.post(fc);
+                            prs->last_posted_a_ts = ts;
+                        }
                     }
                 }
             }

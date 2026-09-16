@@ -4,6 +4,7 @@
 #include "r_utils/r_logger.h"
 #include "r_utils/3rdparty/json/json.h"
 #include <memory>
+#include <chrono>
 
 using namespace r_utils;
 using namespace r_storage;
@@ -53,30 +54,33 @@ void r_storage_file::write_frame(const r_storage_write_context& ctx, r_storage_m
     if(media_type >= R_STORAGE_MEDIA_TYPE_ALL)
         R_THROW(("Invalid storage media type."));
 
+    // nanots requires strictly increasing ts, so clamp a non-increasing ts to
+    // last + 1 — for THIS frame only. (This was previously a cumulative
+    // correction applied to every subsequent frame, so a single backwards
+    // wobble in the source timestamps permanently shifted the rest of the
+    // recording and stamped a +1 ms pair into it at every wobble.)
     if(media_type == R_STORAGE_MEDIA_TYPE_VIDEO) {
-        if(_last_video_ts != -1) {
-            if(ts <= _last_video_ts) {
-                _video_ts_correction += (_last_video_ts - ts) + 1;
-            }
-        }
-
+        if(_last_video_ts != -1 && ts <= _last_video_ts)
+            ts = _last_video_ts + 1;
         _last_video_ts = ts;
-        ts += _video_ts_correction;
     }
     else {
-        if(_last_audio_ts != -1) {
-            if(ts <= _last_audio_ts) {
-                _audio_ts_correction += (_last_audio_ts - ts) + 1;
-            }
-        }
-
+        if(_last_audio_ts != -1 && ts <= _last_audio_ts)
+            ts = _last_audio_ts + 1;
         _last_audio_ts = ts;
-        ts += _audio_ts_correction;
     }
     
     uint8_t flags = key ? 1 : 0;
 
+    // Instrumentation: a write is normally a memcpy into a mapped block
+    // (microseconds). A slow write is almost certainly a block transition
+    // stalled in acquisition (e.g. waiting on readers to unpin reclaim
+    // victims) — the mechanism behind storage falling behind realtime.
+    auto write_start = std::chrono::steady_clock::now();
     _writer->write(*ctx.wc, p, size, flags, ts);
+    auto write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - write_start).count();
+    if(write_ms > 50)
+        R_LOG_WARNING("slow nanots write: %lld ms (media_type=%d, ts=%lld) — likely block acquisition waiting on readers", (long long)write_ms, (int)media_type, (long long)ts);
 }
 
 size_t r_storage_file::remove_blocks(const std::string& file_name, int64_t start_ts, int64_t end_ts)

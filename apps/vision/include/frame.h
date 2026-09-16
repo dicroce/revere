@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 #include <cstdint>
+#include <chrono>
 
 namespace vision
 {
@@ -17,6 +18,7 @@ struct frame
     uint16_t original_w;
     uint16_t original_h;
     int64_t pts;  // Presentation timestamp
+    std::chrono::steady_clock::time_point arrival; // when it reached post_video_frame
 };
 
 }

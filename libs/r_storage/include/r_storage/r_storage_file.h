@@ -56,9 +56,7 @@ private:
     std::string _file_name;
     std::unique_ptr<nanots_writer> _writer;
     int64_t _last_video_ts {-1};
-    int64_t _video_ts_correction {0};
     int64_t _last_audio_ts {-1};
-    int64_t _audio_ts_correction {0};
 };
 
 R_API std::pair<int64_t, int64_t> required_file_size_for_retention_hours(int64_t retention_hours, int64_t byte_rate);

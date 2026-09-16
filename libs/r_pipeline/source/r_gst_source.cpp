@@ -246,6 +246,7 @@ r_gst_source::r_gst_source(const string& name_prefix) :
     _username(),
     _password(),
     _protocols(),
+    _buffer_mode(),
     _pipeline(nullptr),
     _bus_watch_id(0),
     _bus(nullptr),
@@ -265,6 +266,7 @@ r_gst_source::r_gst_source(const string& name_prefix) :
     _buffered_ts_value(0),
     _last_valid_v_sample_pts_set(false),
     _last_valid_v_sample_pts(0),
+    _v_pts_interval_est(33000000), // 33ms until measured
     _last_valid_a_sample_pts_set(false),
     _last_valid_a_sample_pts(0),
     _sim_mttf_seconds(0),
@@ -290,6 +292,9 @@ void r_gst_source::set_args(const vector<r_arg>& args)
 
     if(_args.count("protocols") > 0)
         _protocols = _args["protocols"];
+
+    if(_args.count("buffer-mode") > 0)
+        _buffer_mode = _args["buffer-mode"];
 
     _username = _args["username"];
     _password = _args["password"];
@@ -326,7 +331,15 @@ void r_gst_source::play()
         g_object_set(G_OBJECT(rtspsrc), "protocols", protocol_flags, NULL);
         if(!_protocols.is_null())
             g_object_set(G_OBJECT(rtspsrc), "buffer-mode", 1, NULL);
-        R_LOG_INFO("RTSP protocols set to %s (0x%08x)", protocols_str.c_str(), protocol_flags);
+        // Explicit buffer-mode overrides the protocols-implied default. The
+        // rtspsrc default ("auto") picks a jitterbuffer mode per connection;
+        // "slave" RESTAMPS buffer pts from smoothed arrival times, which
+        // imprints delivery jitter onto the timestamps. Callers that pace by
+        // pts themselves (vision live view) pass 0 (none) so the camera's own
+        // RTP timestamps pass through unmodified and deterministically.
+        if(!_buffer_mode.is_null())
+            g_object_set(G_OBJECT(rtspsrc), "buffer-mode", r_string_utils::s_to_int(_buffer_mode.value()), NULL);
+        R_LOG_INFO("RTSP protocols set to %s (0x%08x), buffer-mode %s", protocols_str.c_str(), protocol_flags, _buffer_mode.is_null() ? "default" : _buffer_mode.value().c_str());
     }
 
     g_object_set(G_OBJECT(rtspsrc), "do-rtsp-keep-alive", true, NULL);
@@ -1040,9 +1053,19 @@ GstFlowReturn r_gst_source::_new_video_sample(GstElement* elt, r_gst_source* src
         // the IDR, but gstreamer is not doing that.
         src->_sei_ts_hack(buffer.get(), has_pts, is_picture, sample_pts);
 
+        // NOTE: every buffer is forwarded, picture or not. An earlier attempt
+        // to drop non-picture AUs here caused macroblocking: is_picture comes
+        // from a NAL walk that can misdetect (notably on large multi-slice
+        // frames), and a misdetection became silent loss of reference frames
+        // in storage AND restream. is_picture is safe for the cosmetic `key`
+        // flag, but never as a drop gate.
+
         if(!has_pts && src->_last_valid_v_sample_pts_set)
         {
-            sample_pts = src->_last_valid_v_sample_pts + 1;
+            // A buffer with no pts: interpolate one frame interval past the
+            // last valid pts. (This was previously +1 ns, which collapses to
+            // the same millisecond downstream and reads as a doubled frame.)
+            sample_pts = src->_last_valid_v_sample_pts + src->_v_pts_interval_est;
             has_pts = true;
         }
 
@@ -1081,6 +1104,18 @@ GstFlowReturn r_gst_source::_new_video_sample(GstElement* elt, r_gst_source* src
 
         if(has_pts)
         {
+            // Track the observed frame interval so pts-less buffers can be
+            // interpolated at the stream's real cadence. EMA over plausible
+            // deltas only (8-200 ms ≈ 5-125 fps): the raw delta stream also
+            // contains pathological 0/1 ms pairs and the post-pair holes, and
+            // learning from those makes interpolated stamps overshoot real
+            // frames (observed as ~40 ms backwards pts).
+            if(src->_last_valid_v_sample_pts_set && sample_pts > src->_last_valid_v_sample_pts)
+            {
+                uint64_t d = sample_pts - src->_last_valid_v_sample_pts;
+                if(d >= 8 * GST_MSECOND && d <= 200 * GST_MSECOND)
+                    src->_v_pts_interval_est = ((src->_v_pts_interval_est * 7) + d) / 8;
+            }
             src->_last_valid_v_sample_pts = sample_pts;
             src->_last_valid_v_sample_pts_set = true;
         }
