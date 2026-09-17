@@ -96,6 +96,44 @@ using namespace std;
 using namespace r_utils;
 using namespace revere;
 
+// Fire-and-forget process launch for the per-camera "View" overlay windows. NOT
+// r_process (whose Windows destructor WaitForSingleObject(INFINITE)s on the
+// child — detached is ignored there — so a local one would freeze the UI until
+// the overlay closes). Windows uses CreateProcess + immediate CloseHandle;
+// Linux/macOS use r_process's detached path (which clears its pid on start(),
+// making its destructor a no-op).
+static void _launch_detached(const std::string& cmd)
+{
+#ifdef IS_WINDOWS
+    STARTUPINFOA si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof(pi));
+
+    std::vector<char> buf(cmd.begin(), cmd.end());
+    buf.push_back('\0');
+
+    if(CreateProcessA(NULL, buf.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+    {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+    else
+        R_LOG_ERROR("launch failed: CreateProcess (%lu): %s", (unsigned long)GetLastError(), cmd.c_str());
+#else
+    try
+    {
+        r_utils::r_process p(cmd, true);
+        p.start();
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("launch failed: %s (%s)", e.what(), cmd.c_str());
+    }
+#endif
+}
+
 // Strip the [0] [1] [2]... backtrace lines that r_utils exceptions append to
 // what() so the user-facing error modal shows only the human-readable cause.
 static string _user_friendly_error(const std::exception& e)
@@ -3177,6 +3215,8 @@ int main(int argc, char** argv)
                             },
                             false, // Dont include the properites button
                             [](int){},
+                            false, // no view button on discovered (not recording yet)
+                            [](int){},
                             ui_state.discovered_largest_label,
                             FONT_KEY_24,
                             FONT_KEY_22
@@ -3232,6 +3272,18 @@ int main(int argc, char** argv)
                                 ui_state.do_motion_pruning = camera.do_motion_pruning.value();
                                 ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());
                                 camera_setup_wizard.next("camera_properties_modal");
+                            },
+                            true, // include the "View" (pop-out overlay) button
+                            [&](int i){
+                                auto cid = ui_state.recording_items[i].camera_id;
+                                if(cid.empty())
+                                    return;
+                                string args = " --camera " + cid + " --overlay --revere-ip 127.0.0.1";
+#ifdef IS_MACOS
+                                _launch_detached(vision_cmd + " --args" + args);
+#else
+                                _launch_detached(vision_cmd + args);
+#endif
                             },
                             ui_state.recording_largest_label,
                             FONT_KEY_24,

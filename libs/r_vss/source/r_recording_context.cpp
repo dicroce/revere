@@ -63,6 +63,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     _maybe_audio_storage_write_context(),
     _last_v_time(system_clock::now()),
     _last_a_time(system_clock::now()),
+    _last_v_write_time(system_clock::now()),
     _has_audio(false),
     _stream_start_ts(),
     _stream_start_ts_set(false),
@@ -396,6 +397,10 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 pts
             );
 
+            // Only reached if write_frame did not throw — records that this
+            // frame actually reached storage (see storage_write_lag_ms()).
+            _last_v_write_time = system_clock::now();
+
             bool do_motion = (!this->_camera.do_motion_detection.is_null())?this->_camera.do_motion_detection.value():false;
 
             if(do_motion)
@@ -451,6 +456,16 @@ r_recording_context::~r_recording_context() noexcept
 bool r_recording_context::receiving_video() const
 {
     return _got_first_video_sample;
+}
+
+int64_t r_recording_context::storage_write_lag_ms() const
+{
+    if(!_got_first_video_sample)
+        return 0;
+    auto lag = _last_v_time - _last_v_write_time;
+    if(lag < system_clock::duration::zero())
+        return 0;
+    return duration_cast<milliseconds>(lag).count();
 }
 
 bool r_recording_context::dead() const
@@ -576,6 +591,10 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
     auto element = gst_rtsp_media_get_element(media);
     if(!element)
         R_THROW(("Failed to get element from media in restream media configure."));
+    // gst_rtsp_media_get_element returns a new (transfer-full) ref; release it
+    // on every exit path. The media/pipeline keeps its own ref, so the bin
+    // stays alive for the session.
+    std::shared_ptr<GstElement> element_guard(element, [](GstElement* e){ if(e) gst_object_unref(e); });
 
     // pay0 is the video payloader
     // pay1 is the audio payloader which might now actually be present
@@ -723,6 +742,11 @@ tuple<string, system_clock::time_point, system_clock::time_point> r_recording_co
 
 void r_recording_context::_live_restream_cleanup_cbs(live_restreaming_state* lrs)
 {
+    // Release the appsrc refs taken via gst_bin_get_by_name_recurse_up in
+    // live_restream_media_configure (one per restream session, previously
+    // leaked).
+    if(lrs->v_appsrc) { gst_object_unref(lrs->v_appsrc); lrs->v_appsrc = nullptr; }
+    if(lrs->a_appsrc) { gst_object_unref(lrs->a_appsrc); lrs->a_appsrc = nullptr; }
     lrs->sk->remove_live_restreaming_state(lrs->media);
 }
 
@@ -964,6 +988,9 @@ void r_recording_context::_playback_restream_media_configure(GstRTSPMediaFactory
     auto element = gst_rtsp_media_get_element(media);
     if(!element)
         R_THROW(("Failed to get element from media in restream media configure."));
+    // gst_rtsp_media_get_element returns a new (transfer-full) ref; release it
+    // on every exit path.
+    std::shared_ptr<GstElement> element_guard(element, [](GstElement* e){ if(e) gst_object_unref(e); });
 
     // attach media cleanup callback to unset _live_restreaming flag
     g_object_set_data_full(G_OBJECT(media), "rtsp-extra-data", prs.get(), (GDestroyNotify)_playback_restream_cleanup_cbs);
@@ -1027,6 +1054,11 @@ void r_recording_context::_playback_restream_cleanup_cbs(playback_restreaming_st
     // Join thread without holding any locks to prevent deadlock
     // The playback thread may need to acquire locks during its shutdown
     prs->playback_thread.join();
+
+    // Release the appsrc refs taken via gst_bin_get_by_name_recurse_up in
+    // _playback_restream_media_configure (previously leaked, one per session).
+    if(prs->v_appsrc) { gst_object_unref(prs->v_appsrc); prs->v_appsrc = nullptr; }
+    if(prs->a_appsrc) { gst_object_unref(prs->a_appsrc); prs->a_appsrc = nullptr; }
 
     // Now safely remove from map with lock held
     {

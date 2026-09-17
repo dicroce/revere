@@ -12,6 +12,7 @@
 #include <functional>
 #include <list>
 #include <future>
+#include <atomic>
 
 namespace r_utils
 {
@@ -45,13 +46,25 @@ public:
     R_API virtual ~r_server_threaded() noexcept
     {
         stop();
+        join_all();
+    }
 
+    // Wait for every in-flight request-handler thread to finish, then forget
+    // them. Closes each connection first to unblock a handler parked on socket
+    // I/O; a handler busy in compute (e.g. a transcode decode) is allowed to
+    // run to completion. MUST be called only after the accept loop (start())
+    // has exited — otherwise it races the accept thread's mutation of
+    // _connectedContexts. r_web_server::stop() enforces that ordering. Idempotent.
+    R_API void join_all() noexcept
+    {
         for( const auto& c : _connectedContexts )
         {
             c->done = true;
-            c->connected.close();
-            c->th.join();
+            try { c->connected.close(); } catch(...) {}
+            if( c->th.joinable() )
+                c->th.join();
         }
+        _connectedContexts.clear();
     }
 
     R_API r_server_threaded& operator=(const r_server_threaded&) = delete;
@@ -129,6 +142,13 @@ public:
 
     R_API bool started() const { return _running; }
 
+    // True once stop() has begun (or the server never started). A request
+    // handler that loops for a while can poll this each iteration and bail
+    // early instead of making shutdown wait for it in join_all(). This is a
+    // cooperative latency optimization, not a correctness mechanism — join_all()
+    // still drains any handler that does not poll.
+    R_API bool stopping() const { return !_running.load(std::memory_order_acquire); }
+
     R_API SOK_T& get_socket() { return _serverSocket; }
 
 private:
@@ -166,7 +186,7 @@ private:
     std::function<void(SOK_T& conn)> _connCB;
     std::string _sockAddr;
     std::list<std::shared_ptr<struct conn_context>> _connectedContexts;
-    bool _running;
+    std::atomic<bool> _running;
 };
 
 }

@@ -491,11 +491,13 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
 
             bool receiving_video = false;
             bool stream_failed = false;
+            int64_t storage_write_lag_ms = 0;
             auto sit = status_by_id.find(c.id);
             if(sit != status_by_id.end())
             {
                 receiving_video = sit->second.receiving_video;
                 stream_failed = sit->second.failed;
+                storage_write_lag_ms = sit->second.storage_write_lag_ms;
             }
 
             j["cameras"].push_back(
@@ -513,6 +515,7 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                     {"min_continuous_recording_hours", (c.min_continuous_recording_hours.is_null())?24:c.min_continuous_recording_hours.value()},
                     {"record_file_path", (c.record_file_path.is_null())?"":c.record_file_path.value()},
                     {"receiving_video", receiving_video},
+                    {"storage_write_lag_ms", storage_write_lag_ms},
                     {"stream_failed", stream_failed},
                     {"manual", (c.xaddrs.is_null() && !c.rtsp_url.is_null())},
                     {"width", res.is_null() ? 0 : res.value().first},
@@ -1216,7 +1219,7 @@ static vector<uint8_t> _extract_annexb_nalu(const uint8_t* data, size_t size, ui
     return {};
 }
 
-r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_utils::r_socket>&,
+r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_utils::r_socket>& ws,
                                                r_utils::r_socket&,
                                                const r_http::r_server_request& request)
 {
@@ -1398,6 +1401,12 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
 
         for(size_t fi = 0; fi < n_frames; ++fi)
         {
+            // Cooperative shutdown: abandon a long decode/encode rather than
+            // making teardown wait for the whole clip. The connection is being
+            // torn down, so the unwound 500 never has to reach the client.
+            if(ws.stopping())
+                R_THROW(("Transcode aborted: server shutting down."));
+
             if(!in_bt["frames"].has_index(fi)) continue;
 
             auto sid = in_bt["frames"][fi]["stream_id"].get_value<int>();
@@ -1639,7 +1648,7 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
 //
 // v1 is video-only; AAC audio (see the audio-transcode path in _get_transcode) is
 // a follow-up.
-r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r_utils::r_socket>&,
+r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r_utils::r_socket>& ws,
                                                     r_utils::r_socket&,
                                                     const r_http::r_server_request& request)
 {
@@ -1785,6 +1794,11 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
             size_t n_frames = bt["frames"].size();
             for(size_t fi = 0; fi < n_frames; ++fi)
             {
+                // Cooperative shutdown: don't make teardown wait for the whole
+                // window to transcode.
+                if(ws.stopping())
+                    R_THROW(("fMP4 transcode aborted: server shutting down."));
+
                 if(!bt["frames"].has_index(fi)) continue;
 
                 auto sid        = bt["frames"][fi]["stream_id"].get_value<int>();
@@ -2177,6 +2191,12 @@ void r_ws::_transcode_export(export_job& job)
             size_t n_frames = bt["frames"].size();
             for(size_t fi = 0; fi < n_frames; ++fi)
             {
+                // Cooperative shutdown: this runs on the background export
+                // thread (joined separately in stop()), so it polls the export
+                // running flag rather than the web server.
+                if(!_export_running.load(std::memory_order_acquire))
+                    R_THROW(("Transcode export aborted: server shutting down."));
+
                 if(!bt["frames"].has_index(fi)) continue;
 
                 auto sid        = bt["frames"][fi]["stream_id"].get_value<int>();

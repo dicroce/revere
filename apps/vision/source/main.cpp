@@ -1,9 +1,11 @@
 
 #include "r_utils/r_file.h"
 #include "r_utils/r_socket.h"
+#include "r_utils/r_process.h"
 
 #ifdef IS_WINDOWS
 #include <windows.h>
+#include <shellapi.h>
 #endif
 #include <SDL.h>
 
@@ -361,11 +363,79 @@ void _set_working_dir()
     r_fs::change_working_directory(wd);
 }
 
+// Single-camera "overlay" mode: a borderless, optionally always-on-top window
+// showing one camera, launched with `--camera <id> [--overlay] [--revere-ip <ip>]
+// [--on-top]`. Absence of --camera leaves the normal multi-camera app behavior
+// completely unchanged.
+struct overlay_opts
+{
+    bool overlay {false};
+    std::string camera_id;
+    std::string revere_ip {"127.0.0.1"};
+    bool on_top {false};
+};
+
+static overlay_opts _parse_overlay_opts(const std::vector<std::string>& args)
+{
+    overlay_opts o;
+    for(size_t i = 0; i < args.size(); ++i)
+    {
+        if(args[i] == "--camera" && i + 1 < args.size())      { o.overlay = true; o.camera_id = args[++i]; }
+        else if(args[i] == "--overlay")                        { o.overlay = true; }
+        else if(args[i] == "--revere-ip" && i + 1 < args.size()) { o.revere_ip = args[++i]; }
+        else if(args[i] == "--on-top")                         { o.on_top = true; }
+    }
+    // --camera is what actually selects overlay mode; --overlay alone is ignored.
+    if(o.camera_id.empty())
+        o.overlay = false;
+    return o;
+}
+
+int run_overlay(const overlay_opts& opts);
+
+// Fire-and-forget process launch for the per-camera overlay windows. NOT
+// r_process: its Windows destructor WaitForSingleObject(INFINITE)s on the child
+// (detached is ignored there), so a local r_process would freeze this app until
+// the overlay closes. Windows uses CreateProcess + immediate CloseHandle (truly
+// independent child); Linux/macOS use r_process's detached path, which clears
+// its pid on start() so its destructor is a no-op.
+static void _launch_detached(const std::string& cmd)
+{
+#ifdef IS_WINDOWS
+    STARTUPINFOA si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof(pi));
+
+    std::vector<char> buf(cmd.begin(), cmd.end());
+    buf.push_back('\0');  // CreateProcessA needs a writable command line
+
+    if(CreateProcessA(NULL, buf.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+    {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+    else
+        R_LOG_ERROR("launch failed: CreateProcess (%lu): %s", (unsigned long)GetLastError(), cmd.c_str());
+#else
+    try
+    {
+        r_utils::r_process p(cmd, true);
+        p.start();
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("launch failed: %s (%s)", e.what(), cmd.c_str());
+    }
+#endif
+}
+
 #ifdef IS_WINDOWS
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow)
 #endif
 #if defined(IS_LINUX) || defined(IS_MACOS)
-int main(int, char**)
+int main(int argc, char** argv)
 #endif
 {
     // Some notes for understanding vision.
@@ -392,6 +462,37 @@ int main(int, char**)
     _set_working_dir();
 
     r_pipeline::gstreamer_init();
+
+    // Gather command-line args (platform-specific source) and, if we were
+    // launched to view a single camera, hand off to the overlay path. The
+    // normal multi-camera app runs only when no --camera was given.
+    {
+        std::vector<std::string> args;
+#ifdef IS_WINDOWS
+        int wargc = 0;
+        LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+        if(wargv)
+        {
+            for(int i = 1; i < wargc; ++i)
+            {
+                int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, nullptr, 0, nullptr, nullptr);
+                if(n > 0)
+                {
+                    std::string s(n - 1, '\0');
+                    WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, &s[0], n, nullptr, nullptr);
+                    args.push_back(std::move(s));
+                }
+            }
+            LocalFree(wargv);
+        }
+#else
+        for(int i = 1; i < argc; ++i)
+            args.push_back(argv[i]);
+#endif
+        auto opts = _parse_overlay_opts(args);
+        if(opts.overlay)
+            return run_overlay(opts);
+    }
 
     auto top_dir = vision::top_dir();
 
@@ -876,6 +977,18 @@ int main(int, char**)
                                     cfg_state.unset_stream_info(name);
                                     ph.disconnect_stream(0, name);
                                 }
+                                if(ImGui::Selectable("Pop out"))
+                                {
+                                    auto sinfo = cfg_state.get_stream_info(name);
+                                    if(!sinfo.is_null() && !sinfo.value().camera_id.empty())
+                                    {
+                                        auto rip = cfg_state.get_revere_ipv4();
+                                        string ip_s = rip.is_null() ? string("127.0.0.1") : rip.value();
+                                        string exe = r_fs::current_exe_path();
+                                        _launch_detached("\"" + exe + "\" --camera " + sinfo.value().camera_id +
+                                                         " --overlay --revere-ip " + ip_s);
+                                    }
+                                }
                                 ImGui::EndPopup();
                             }
 
@@ -1078,5 +1191,389 @@ int main(int, char**)
 
     r_utils::r_raw_socket::socket_cleanup();
 
+    return 0;
+}
+
+// Shared with the hit-test callback: the borderless window is draggable over
+// the video and resizable at its edges, EXCEPT over the control bar's interactive
+// rect while it is visible (there the OS must not steal the click, so ImGui can
+// handle the buttons). The control bar (step 3) publishes its rect here each frame.
+struct overlay_hit_ctx
+{
+    int edge {14};     // resize grab thickness along an edge
+    int corner {32};   // larger grab square at each corner (easy diagonal resize)
+    SDL_Rect interactive {0, 0, 0, 0};
+    bool interactive_visible {false};
+};
+
+static SDL_HitTestResult SDLCALL _overlay_hit_test(SDL_Window* win, const SDL_Point* pt, void* data)
+{
+    auto* ctx = static_cast<overlay_hit_ctx*>(data);
+
+    int w = 0, h = 0;
+    SDL_GetWindowSize(win, &w, &h);
+    const int e = ctx->edge;
+    const int c = ctx->corner;
+
+    // The control bar covers the entire bottom block, so the bottom edge and
+    // bottom corners are given priority over the bar's interactive rect —
+    // otherwise the window couldn't be resized from the bottom at all. Only the
+    // bottom resize strip is claimed; the rest of the bar (sides, buttons,
+    // timeline above the strip) stays clickable.
+    if(pt->y >= h - e)
+    {
+        if(pt->x < c)      return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+        if(pt->x >= w - c) return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+        return SDL_HITTEST_RESIZE_BOTTOM;
+    }
+
+    // Over the visible control bar (above the bottom strip): let ImGui process
+    // the click (buttons, scrub).
+    if(ctx->interactive_visible &&
+       pt->x >= ctx->interactive.x && pt->x < ctx->interactive.x + ctx->interactive.w &&
+       pt->y >= ctx->interactive.y && pt->y < ctx->interactive.y + ctx->interactive.h)
+        return SDL_HITTEST_NORMAL;
+
+    // Top corners are generous squares; top/side edges use the edge thickness.
+    bool cl = pt->x < c, cr = pt->x >= w - c, ct = pt->y < c;
+    if(ct && cl) return SDL_HITTEST_RESIZE_TOPLEFT;
+    if(ct && cr) return SDL_HITTEST_RESIZE_TOPRIGHT;
+
+    if(pt->y < e)      return SDL_HITTEST_RESIZE_TOP;
+    if(pt->x < e)      return SDL_HITTEST_RESIZE_LEFT;
+    if(pt->x >= w - e) return SDL_HITTEST_RESIZE_RIGHT;
+    return SDL_HITTEST_DRAGGABLE;  // click-drag over the video moves the window
+}
+
+// Single-camera overlay mode. Reuses the same pipeline_host / decode / texture
+// path as the normal app, but with a borderless window showing exactly one
+// camera and no menu/sidebar/layout. Config is loaded read-only (camera comes
+// from the CLI) and never saved, so multiple overlays and the main window don't
+// fight over the config JSON. (Step 1: video; step 2: drag/resize + always-on-top;
+// the slim auto-hide control bar comes next.)
+int run_overlay(const overlay_opts& opts)
+{
+    R_LOG_INFO("Vision overlay mode: camera=%s revere_ip=%s on_top=%d",
+        opts.camera_id.c_str(), opts.revere_ip.c_str(), (int)opts.on_top);
+
+    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) != 0)
+    {
+        R_LOG_ERROR("SDL_Init error: %s", SDL_GetError());
+        return 1;
+    }
+    SDL_EnableScreenSaver();
+
+    Uint32 win_flags = SDL_WINDOW_BORDERLESS | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_SHOWN;
+    if(opts.on_top)
+        win_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
+
+    SDL_Window* window = SDL_CreateWindow("Vision", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 800, 520, win_flags);
+    if(!window)
+    {
+        R_LOG_ERROR("SDL_CreateWindow error: %s", SDL_GetError());
+        SDL_Quit();
+        return 1;
+    }
+
+    // Make the borderless window movable (drag over the video) and resizable
+    // (drag its edges). The control bar will publish its clickable rect into
+    // hit_ctx each frame so its buttons remain interactive.
+    overlay_hit_ctx hit_ctx;
+    if(SDL_SetWindowHitTest(window, _overlay_hit_test, &hit_ctx) != 0)
+        R_LOG_WARNING("overlay: SDL_SetWindowHitTest unsupported: %s", SDL_GetError());
+    // Re-assert the resizable style: SDL_WINDOW_BORDERLESS at creation can drop
+    // the resize frame that the hit-test RESIZE_* results need.
+    SDL_SetWindowResizable(window, SDL_TRUE);
+
+    bool on_top = opts.on_top;
+
+    SDL_Renderer* renderer = nullptr;
+#ifdef IS_WINDOWS
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_PRESENTVSYNC);
+    if(!renderer)
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE);
+#else
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE);
+    if(!renderer)
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
+#endif
+    if(!renderer)
+    {
+        R_LOG_ERROR("SDL_CreateRenderer error: %s", SDL_GetError());
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    bool vsync_active = false;
+    {
+        SDL_RendererInfo ri;
+        if(SDL_GetRendererInfo(renderer, &ri) == 0)
+            vsync_active = (ri.flags & SDL_RENDERER_PRESENTVSYNC) != 0;
+    }
+
+    g_renderer = renderer;
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+    ImGui::StyleColorsDark();
+    ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
+    ImGui_ImplSDLRenderer_Init(renderer);
+
+    // Scope so the pipeline_host (and its GStreamer pipelines) is destroyed
+    // BEFORE gstreamer_deinit() below — otherwise teardown runs against an
+    // already-deinitialized GStreamer and the process wedges after the window
+    // is gone.
+    {
+    // Resolve camera_id -> friendly label -> restream URL, the same way the
+    // normal app builds a camera's RTSP URL. revere_ip is held in cfg only in
+    // memory (never saved) so the pipeline's playback path can reach revere.
+    configure_state cfg_state;
+    cfg_state.load();
+    cfg_state.set_revere_ipv4(opts.revere_ip);
+
+    string label;
+    bool cam_motion = false;
+    try
+    {
+        auto cams = query_cameras(opts.revere_ip);
+        for(auto& c : cams)
+        {
+            if(c.camera_id == opts.camera_id)
+            {
+                label = c.label;
+                cam_motion = c.do_motion_detection;
+                break;
+            }
+        }
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("overlay: query_cameras(%s) failed: %s", opts.revere_ip.c_str(), e.what());
+    }
+
+    if(label.empty())
+        R_LOG_ERROR("overlay: camera %s not found on revere at %s (window will be blank)",
+            opts.camera_id.c_str(), opts.revere_ip.c_str());
+
+    auto url_label = label;
+    replace(begin(url_label), end(url_label), ' ', '_');
+
+    stream_info si;
+    si.name = "overlay_0";
+    si.rtsp_url = r_string_utils::format("rtsp://%s:8554/%s", opts.revere_ip.c_str(), url_label.c_str());
+    si.camera_id = opts.camera_id;
+    si.do_motion_detection = cam_motion;  // display flag: show motion markers on the timeline
+
+    pipeline_host ph(cfg_state, renderer);
+    ph.start();
+    ph.set_cameras_validated();
+    ph.update_stream(0, si);
+
+    // Reused control-bar state (timeline, scrub, play/live, export, volume).
+    main_client_state mcs;
+    mcs.selected_stream_name = si.name;
+    mcs.obos.cbs.volume_gain = 1.0f;
+
+    bool close_requested = false;
+    const auto frame_duration = chrono::microseconds(16667);
+
+    // Auto-hiding control bar: fades in on mouse activity, out after idle.
+    // We poll the GLOBAL mouse position each frame rather than trusting
+    // SDL_MOUSEMOTION: over a hit-test DRAGGABLE region the OS reports the area
+    // as non-client (HTCAPTION), so no motion events are delivered there and the
+    // bar would never re-appear once the cursor was over the video.
+    auto last_mouse_activity = chrono::steady_clock::now();
+    int last_mouse_x = 0, last_mouse_y = 0;
+    SDL_GetGlobalMouseState(&last_mouse_x, &last_mouse_y);
+    float bar_alpha = 1.0f;   // visible at launch so the controls are discoverable
+    bool muted = true;        // overlay starts muted
+
+    while(!close_requested)
+    {
+        auto frame_start = chrono::steady_clock::now();
+
+        int gmx = 0, gmy = 0;
+        SDL_GetGlobalMouseState(&gmx, &gmy);
+        bool mouse_moved = (gmx != last_mouse_x || gmy != last_mouse_y);
+        last_mouse_x = gmx;
+        last_mouse_y = gmy;
+        if(mouse_moved)
+        {
+            // Only reveal the bar when the movement is over THIS window. Global
+            // position is polled (motion events are suppressed over the draggable
+            // region), so gate it on the window's screen rect — otherwise moving
+            // the mouse anywhere on the desktop would wake the bar.
+            int wx = 0, wy = 0, ww = 0, wh = 0;
+            SDL_GetWindowPosition(window, &wx, &wy);
+            SDL_GetWindowSize(window, &ww, &wh);
+            if(gmx >= wx && gmx < wx + ww && gmy >= wy && gmy < wy + wh)
+                last_mouse_activity = chrono::steady_clock::now();
+        }
+
+        SDL_Event event;
+        while(SDL_PollEvent(&event))
+        {
+            ImGui_ImplSDL2_ProcessEvent(&event);
+            if(event.type == SDL_MOUSEBUTTONDOWN)
+                last_mouse_activity = chrono::steady_clock::now();
+            if(event.type == SDL_QUIT)
+                close_requested = true;
+            if(event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE &&
+               event.window.windowID == SDL_GetWindowID(window))
+                close_requested = true;
+            if(event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE)
+                close_requested = true;
+            // Temporary key toggle for always-on-top; becomes the pin button in
+            // the control bar (step 3).
+            if(event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_t)
+            {
+                on_top = !on_top;
+                SDL_SetWindowAlwaysOnTop(window, on_top ? SDL_TRUE : SDL_FALSE);
+            }
+        }
+        if(close_requested)
+            continue;
+
+        ImGui_ImplSDLRenderer_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
+        ImGui::NewFrame();
+
+        int win_w = 0, win_h = 0;
+        SDL_GetWindowSize(window, &win_w, &win_h);
+
+        auto maybe_rc = ph.lookup_render_context(si.name, (uint16_t)win_w, (uint16_t)win_h);
+
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(ImVec2((float)win_w, (float)win_h));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::Begin("##overlay_video", nullptr,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus);
+
+        if(!maybe_rc.is_null())
+        {
+            auto rc = maybe_rc.value();
+            if(rc->tex && rc->w > 0 && rc->h > 0)
+            {
+                float scale = std::min((float)win_w / (float)rc->w, (float)win_h / (float)rc->h);
+                float sw = (float)rc->w * scale;
+                float sh = (float)rc->h * scale;
+                ImGui::SetCursorPos(ImVec2(((float)win_w - sw) * 0.5f, ((float)win_h - sh) * 0.5f));
+                ImGui::Image(rc->tex->imgui_id(), ImVec2(sw, sh), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+            }
+        }
+
+        ImGui::End();
+        ImGui::PopStyleVar();
+
+        // Suppress the control bar's volume slider: its layout assumes the
+        // full-width main-app bar (it positions the slider at right_edge-560px)
+        // and collides with the timerange text in the narrow overlay. The
+        // overlay's own Mute button handles audio on/off instead.
+        mcs.obos.cbs.has_audio = false;
+        ph.set_stream_volume(si.name, muted ? 0.0f : 1.0f);
+
+        // Auto-hiding controls: a Pin/Mute/Close row stacked above the full
+        // control bar, both anchored at the bottom and fading together.
+        bool bar_visible = (chrono::steady_clock::now() - last_mouse_activity) < chrono::milliseconds(1500);
+        float target_alpha = bar_visible ? 1.0f : 0.0f;
+        bar_alpha += (target_alpha - bar_alpha) * 0.20f;
+        if(bar_alpha < 0.02f)
+            bar_alpha = 0.0f;
+
+        hit_ctx.interactive_visible = false;
+        if(bar_alpha > 0.05f)
+        {
+            const float row_h = 34.0f;
+            uint16_t cb_h = (uint16_t)(6.0f * ImGui::GetTextLineHeightWithSpacing());
+            float block_top = (float)win_h - row_h - (float)cb_h;
+
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, bar_alpha);
+
+            // Overlay-specific controls the timeline bar doesn't have.
+            ImGui::SetNextWindowPos(ImVec2(0.0f, block_top));
+            ImGui::SetNextWindowSize(ImVec2((float)win_w, row_h));
+            ImGui::SetNextWindowBgAlpha(0.55f * bar_alpha);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 4.0f));
+            ImGui::Begin("##overlay_bar", nullptr,
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav);
+
+            if(ImGui::Button(on_top ? "Unpin" : "Pin"))
+            {
+                on_top = !on_top;
+                SDL_SetWindowAlwaysOnTop(window, on_top ? SDL_TRUE : SDL_FALSE);
+            }
+            ImGui::SameLine();
+            if(ImGui::Button(muted ? "Unmute" : "Mute"))
+            {
+                muted = !muted;
+                ph.set_active_audio_stream(muted ? std::string() : si.name);
+            }
+
+            const float close_w = 60.0f;
+            ImGui::SameLine();
+            ImGui::SetCursorPosX((float)win_w - close_w - 8.0f);
+            if(ImGui::Button("Close", ImVec2(close_w, 0.0f)))
+                close_requested = true;
+
+            ImGui::End();
+            ImGui::PopStyleVar();  // window padding
+
+            // The full, existing control bar: timeline scrub, play/live, export,
+            // volume, motion markers. It draws its own ##control_bar window; the
+            // pushed Alpha style makes it fade with the rest.
+            control_bar(
+                (uint16_t)0, (uint16_t)(block_top + row_h), (uint16_t)win_w, cb_h,
+                600, (uint16_t)0, si.do_motion_detection,
+                mcs.obos.cbs, si.name,
+                [&](const string& n, const std::chrono::system_clock::time_point& pos){ ph.control_bar_cb(n, pos); },
+                [&](const string& n, control_bar_button_type t){ ph.control_bar_button_cb(n, t); },
+                [&](const string& n, control_bar_state& cbs){ ph.control_bar_update_data_cb(n, cbs); },
+                [&](const string& n, const std::chrono::system_clock::time_point& s,
+                    const std::chrono::system_clock::time_point& e, control_bar_state& cbs){ ph.control_bar_export_cb(n, s, e, cbs); },
+                ph.playing(si.name),
+                false,
+                mcs.sync_scrub
+            );
+
+            ImGui::PopStyleVar();  // alpha
+
+            // One contiguous interactive rect covering the whole bottom block.
+            hit_ctx.interactive = SDL_Rect{ 0, (int)block_top, win_w, win_h - (int)block_top };
+            hit_ctx.interactive_visible = true;
+        }
+
+        ph.load_video_textures();
+
+        ImGui::Render();
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+        ImGui_ImplSDLRenderer_RenderDrawData(ImGui::GetDrawData());
+        SDL_RenderPresent(renderer);
+
+        if(!vsync_active)
+        {
+            auto frame_time = chrono::steady_clock::now() - frame_start;
+            if(frame_time < frame_duration)
+                std::this_thread::sleep_for(frame_duration - frame_time);
+        }
+    }
+
+    ph.stop();
+    }  // pipeline_host destructs here, before gstreamer_deinit()
+
+    ImGui_ImplSDLRenderer_Shutdown();
+    ImGui_ImplSDL2_Shutdown();
+    ImGui::DestroyContext();
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+
+    r_pipeline::gstreamer_deinit();
+    r_utils::r_raw_socket::socket_cleanup();
     return 0;
 }

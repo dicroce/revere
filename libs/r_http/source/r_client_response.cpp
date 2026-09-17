@@ -231,7 +231,13 @@ string r_client_response::_read_headers(r_socket_base& socket, uint64_t timeout_
         if(!socket.valid())
             R_STHROW(r_http_exception_generic, ("Socket invalid."));
 
-        if(received < 0)
+        // recv() == 0 is an orderly peer close (EOF). We only get here after
+        // select() reported the socket readable, so a 0 here means the
+        // connection was closed, not "try again". Treating it as non-fatal made
+        // this loop spin forever (select keeps reporting the closed socket
+        // readable), which wedged shutdown when the peer server was torn down
+        // mid-request. <= 0 covers both close (0) and error (<0).
+        if(received <= 0)
             R_STHROW(r_http_exception_generic, ("Connection closed while reading headers. received = %d", received));
 
         buffer.append(chunk, received);

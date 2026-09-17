@@ -401,7 +401,7 @@ struct sidebar_list_ui_item
     stream_health health {stream_health::unknown};
 };
 
-template<typename BUTTON_CLICK_CB, typename ITEM_CLICK_CB, typename FORGET_BUTTON_CLICK_CB, typename PROPERTIES_CLICK_CB>
+template<typename BUTTON_CLICK_CB, typename ITEM_CLICK_CB, typename FORGET_BUTTON_CLICK_CB, typename PROPERTIES_CLICK_CB, typename VIEW_CLICK_CB>
 void sidebar_list(
     ImGuiContext*,
     revere::assignment_state&,
@@ -415,6 +415,8 @@ void sidebar_list(
     FORGET_BUTTON_CLICK_CB forget_button_click_cb,
     bool show_properties_button,
     PROPERTIES_CLICK_CB properties_click_cb,
+    bool show_view_button,
+    VIEW_CLICK_CB view_click_cb,
     float& cached_largest_label,
     const std::string& font_key_24 = "24.00",
     const std::string& font_key_22 = "22.00"
@@ -483,8 +485,13 @@ void sidebar_list(
 
         // Note: Though the button is actually inside the selectable it has to come first because otherwise
         // the Selectable will steal the click event.
-        const int button_width = 100;
-        const int button_height = 35;
+        // Smaller font + tighter buttons so a full row (e.g. Remove/Properties/
+        // View) fits within the card width.
+        ImFont* btn_font = r_ui_utils::fonts["18.00"].roboto_regular;
+        if(btn_font)
+            ImGui::PushFont(btn_font);
+        const int button_width = 72;
+        const int button_height = 28;
         ImGui::SetCursorPos(ImVec2(pos.x+10, pos.y + buttons_y));
         if(ImGui::Button(button_label.c_str(), ImVec2(button_width, button_height)))
         {
@@ -505,6 +512,16 @@ void sidebar_list(
             if(ImGui::Button("Properties", ImVec2(button_width, button_height)))
                 properties_click_cb(i);
         }
+
+        if(show_view_button)
+        {
+            ImGui::SameLine();
+            if(ImGui::Button("View", ImVec2(button_width, button_height)))
+                view_click_cb(i);
+        }
+
+        if(btn_font)
+            ImGui::PopFont();
 
         ImGui::SetCursorPos(ImVec2(pos.x, pos.y));
         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(20, 52, 77, 200));                     // modify a style color. always use this if you modify the style after NewFrame().

@@ -68,8 +68,20 @@ public:
         {
             _server.stop();
             _serverThread.join();
+            // The accept loop has now exited, so nothing else touches the
+            // connected-context list: drain the in-flight request handlers
+            // before returning. Without this, stop() left worker threads
+            // running, and a caller that destroys state those handlers use
+            // (e.g. r_ws's transcode _sessions) raced them into a
+            // use-after-free on shutdown.
+            _server.join_all();
         }
     }
+
+    // True once the server has begun shutting down. A route handler that loops
+    // for a while (e.g. a transcode decode over a clip) can poll this each
+    // iteration and return early, so it doesn't make shutdown wait for it.
+    bool stopping() const { return _server.stopping(); }
 
     void add_route( int method, const std::string& path, http_cb cb )
     {

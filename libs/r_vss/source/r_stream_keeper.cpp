@@ -153,7 +153,17 @@ void r_stream_keeper::stop()
     _prune.stop();
     R_LOG_INFO("Prune stopped");
 
-    // Stop web server first to prevent new HTTP requests during shutdown
+    // Stop system plugins BEFORE the web server. The cloud plugin's export
+    // thread makes loopback HTTP requests to the web server (e.g. /transcode);
+    // if the web server is torn down first, an in-flight request has nothing to
+    // answer it and blocks for the full media read timeout (120s), wedging
+    // shutdown. Stopping the plugins first lets that export drain (or bail on
+    // its _running flag) while the server is still up.
+    R_LOG_INFO("Stopping system plugins...");
+    _system_plugin_host.stop_all();
+    R_LOG_INFO("System plugins stopped");
+
+    // Now stop the web server so no new HTTP requests are handled.
     R_LOG_INFO("Stopping web server...");
     _ws.stop();
     R_LOG_INFO("Web server stopped");
@@ -843,6 +853,7 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.camera = c.second->camera();
             s.bytes_per_second = c.second->bytes_per_second();
             s.receiving_video = c.second->receiving_video();
+            s.storage_write_lag_ms = c.second->storage_write_lag_ms();
             return s;
         }
     );
