@@ -371,7 +371,7 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                 }
 
                 // Skip drawing if this icon would overlap with the previous one
-                const float icon_width = 48.0f;
+                const float icon_width = 48.0f * layout.icon_scale;
                 if (x - last_x < icon_width)
                 {
                     continue; // Skip this icon to prevent overlap
@@ -384,7 +384,7 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                     continue;
 
                 float center_y = (calc.contents_top + calc.contents_bottom) / 2.0f;
-                float icon_size = 48.0f;
+                float icon_size = 48.0f * layout.icon_scale;
                 float icon_x = x - icon_size / 2.0f;
                 float icon_y = center_y - icon_size / 2.0f;
 

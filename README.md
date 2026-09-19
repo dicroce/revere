@@ -30,37 +30,45 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 - Video codecs supported: H.264, H.265
 - Audio codecs supported: AAC, MuLaw, ALaw
 - Motion detection with AI plugin support
-- Continuous recording with non motion pruning
-- RTSP streaming
+- Continuous recording with optional pruning of non-motion video
+- RTSP restreaming of live and recorded video
 - Cross-platform (Linux/Windows/Mac)
 - Full featured API
-- YOLOv8 object detection of people and cars
+- YOLOv8 object detection (people, cars, bikes, animals and other common objects), run only on frames containing motion
+- Multi-camera viewer (Vision) with motion timeline, playback, export and a floating single-camera overlay mode
 - Storage management: move recording files to a new drive or reset storage in-place via the camera Properties dialog
 - Headless mode & WebUI
 
 ## Screenshots
 
 ### Revere
-- Runs in the system tray OR headless
+- The recording server. Runs quietly in the system tray (or headless) and handles discovery, recording, motion detection and restreaming.
 
 ![Revere system tray icon](/assets/screenshots/tray.jpg "Tray icon")
 - Pre-allocated storage means it won't surprise you by using up more hard drive than you have allocated to it.
-  
+
 ![Revere main window](/assets/screenshots/revere.jpg "Revere")
 
 ### Vision
-- Connects to revere
-- Supports 2x2, 4x4 and single view.
+- Connects to Revere and streams live or recorded video.
+- Single, 2x2 and 4x4 layouts with drag-and-drop camera assignment.
+- Timeline bar shows motion events (people, cars, bikes) and lets you jump to any point in the recording. Export clips straight from the timeline.
 
 ![Vision multi-camera viewer](/assets/screenshots/vision.jpg "Vision")
 
+- Overlay mode: pop any camera out into a small borderless window that floats on your desktop — with an auto-hiding control bar (pin on top, volume, close) and its own motion timeline. Launch it from Vision or directly with `vision --camera <id>`.
+
+![Vision overlay mode](/assets/screenshots/vision_overlay.jpg "Vision overlay mode")
+
 ### Web UI
 
-![Web UI cameras tab](/assets/screenshots/webui_cameras.jpg "Web UI Cameras")
+Revere serves a web UI on http://localhost:8088/ (protected by a system password) — manage cameras, watch live views and play back recordings from a browser. It's the primary interface when running headless.
+
+![Web UI config tab](/assets/screenshots/webui_cameras.jpg "Web UI Config")
 
 ![Web UI live view](/assets/screenshots/webui_live.jpg "Live")
 
-![Web UI single camera view](/assets/screenshots/webui_single.jpg "Single Camera View")
+![Web UI single camera view with motion timeline](/assets/screenshots/webui_single.jpg "Single Camera View")
 
 ## Quick Start
 
@@ -72,9 +80,8 @@ On Linux the simplest way is to install the revere snap:
 
 ### Prerequisites
 
-1) ONVIF cameras - Revere should support a wide variety of ONVIF-compatible cameras.
-2) Axis cameras are the most compatible, with Reolink a close second.
-3) A Windows, Linux or macOS computer.
+1) One or more IP cameras - Revere supports a wide variety of ONVIF-compatible cameras (Axis cameras are the most compatible, with Reolink a close second), and non-ONVIF cameras can be added by RTSP URL.
+2) A Windows, Linux or macOS computer.
 
 ### Installation
 
@@ -147,8 +154,9 @@ Run `revere --help` to see all command line options.
 
 ### Adding Your First Camera
 
-ONVIF-discoverable cameras on your LAN 
-should appear in the Discovered list. Once it appears click Record and follow the instructions. Revere will attempt to stream a little from the camera to measure its bitrate and then allow you to pick a storage file size (with retention estimates) for that stream. During the camera provisioning process you will be asked if you want to enable motion detection for this camera. To get motion data in the timeline bar (in vision) you will need to say yes here. Additionally, yolov8 object detection is only run on frames containing motion.
+ONVIF-discoverable cameras on your LAN appear in the Discovered list. Click Record next to a camera and follow the instructions: Revere streams briefly from the camera to measure its bitrate, then lets you pick a storage file size (with retention estimates) for that stream. During setup you'll be asked whether to enable motion detection for the camera — say yes if you want motion events in the timeline bar (in Vision and the web UI). YOLOv8 object detection only runs on frames containing motion, so it requires motion detection too.
+
+Cameras that don't support ONVIF discovery can still be added manually by entering their RTSP URL (Cameras menu in the desktop app, or "Add RTSP Camera" in the web UI Config tab).
 
 ## Documentation
 

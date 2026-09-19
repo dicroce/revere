@@ -1322,6 +1322,29 @@ int run_overlay(const overlay_opts& opts)
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer_Init(renderer);
 
+    // Load the Roboto fonts, same as the normal app. Without this the fonts map
+    // is empty, so the control bar's internal PushFont() and the overlay bar
+    // both fall back to ImGui's built-in fixed-width font. Sizes must match the
+    // normal app (font_keys.h maps these to the "NN.00" keys used everywhere).
+#ifdef IS_MACOS
+    const float FONT_SIZE_24 = 18.0f, FONT_SIZE_22 = 16.0f, FONT_SIZE_20 = 15.0f;
+    const float FONT_SIZE_18 = 14.0f, FONT_SIZE_16 = 13.0f, FONT_SIZE_14 = 12.0f;
+#else
+    const float FONT_SIZE_24 = 24.0f, FONT_SIZE_22 = 22.0f, FONT_SIZE_20 = 20.0f;
+    const float FONT_SIZE_18 = 18.0f, FONT_SIZE_16 = 16.0f, FONT_SIZE_14 = 14.0f;
+#endif
+    r_ui_utils::load_fonts(io, FONT_SIZE_24, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_22, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_20, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_18, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_16, r_ui_utils::fonts);
+    r_ui_utils::load_fonts(io, FONT_SIZE_14, r_ui_utils::fonts);
+
+    // Load the analytics detection-icon textures (person, car, ...); the control
+    // bar renders detection markers by looking these up via get_icon_texture_id.
+    // Without this the timeline shows segments/motion but no detection icons.
+    init_icon_textures();
+
     // Scope so the pipeline_host (and its GStreamer pipelines) is destroyed
     // BEFORE gstreamer_deinit() below — otherwise teardown runs against an
     // already-deinitialized GStreamer and the process wedges after the window
@@ -1375,7 +1398,7 @@ int run_overlay(const overlay_opts& opts)
     // Reused control-bar state (timeline, scrub, play/live, export, volume).
     main_client_state mcs;
     mcs.selected_stream_name = si.name;
-    mcs.obos.cbs.volume_gain = 1.0f;
+    mcs.obos.cbs.volume_gain = 0.0f;   // start silent; the Vol slider raises it
 
     bool close_requested = false;
     const auto frame_duration = chrono::microseconds(16667);
@@ -1389,7 +1412,7 @@ int run_overlay(const overlay_opts& opts)
     int last_mouse_x = 0, last_mouse_y = 0;
     SDL_GetGlobalMouseState(&last_mouse_x, &last_mouse_y);
     float bar_alpha = 1.0f;   // visible at launch so the controls are discoverable
-    bool muted = true;        // overlay starts muted
+    bool audio_activated = false;  // one-shot: make this stream's audio active
 
     while(!close_requested)
     {
@@ -1469,16 +1492,23 @@ int run_overlay(const overlay_opts& opts)
         ImGui::End();
         ImGui::PopStyleVar();
 
-        // Suppress the control bar's volume slider: its layout assumes the
-        // full-width main-app bar (it positions the slider at right_edge-560px)
-        // and collides with the timerange text in the narrow overlay. The
-        // overlay's own Mute button handles audio on/off instead.
+        // Audio: this stream's audio stays active; a Vol slider in the overlay
+        // control row scales it (starts at 0 gain = silent). We render our OWN
+        // slider rather than the control bar's built-in one, whose layout assumes
+        // the full-width main-app bar (positioned at right_edge-560px) and would
+        // collide with the timerange text in the narrow overlay — so keep the
+        // built-in slider suppressed via has_audio=false.
+        if(!audio_activated)
+        {
+            ph.set_active_audio_stream(si.name);
+            audio_activated = true;
+        }
         mcs.obos.cbs.has_audio = false;
-        ph.set_stream_volume(si.name, muted ? 0.0f : 1.0f);
+        ph.set_stream_volume(si.name, mcs.obos.cbs.volume_gain);
 
         // Auto-hiding controls: a Pin/Mute/Close row stacked above the full
         // control bar, both anchored at the bottom and fading together.
-        bool bar_visible = (chrono::steady_clock::now() - last_mouse_activity) < chrono::milliseconds(1500);
+        bool bar_visible = (chrono::steady_clock::now() - last_mouse_activity) < chrono::milliseconds(3000);
         float target_alpha = bar_visible ? 1.0f : 0.0f;
         bar_alpha += (target_alpha - bar_alpha) * 0.20f;
         if(bar_alpha < 0.02f)
@@ -1487,6 +1517,13 @@ int run_overlay(const overlay_opts& opts)
         hit_ctx.interactive_visible = false;
         if(bar_alpha > 0.05f)
         {
+            // Render the whole control block under a compact font. The app's
+            // default font is 24pt (the first size loaded), which makes the
+            // control bar — sized as 6x the line height — about twice as tall as
+            // it should be for this small overlay window. 14pt keeps it slim.
+            ImFont* block_font = r_ui_utils::fonts[get_font_key_14()].roboto_regular;
+            if(block_font) ImGui::PushFont(block_font);
+
             const float row_h = 34.0f;
             uint16_t cb_h = (uint16_t)(6.0f * ImGui::GetTextLineHeightWithSpacing());
             float block_top = (float)win_h - row_h - (float)cb_h;
@@ -1507,12 +1544,15 @@ int run_overlay(const overlay_opts& opts)
                 on_top = !on_top;
                 SDL_SetWindowAlwaysOnTop(window, on_top ? SDL_TRUE : SDL_FALSE);
             }
+            // Volume slider (defaults to 0 = silent), mirroring the main app's
+            // Vol control. Rendered here in the overlay row instead of the
+            // control bar to avoid the built-in slider's full-width positioning.
             ImGui::SameLine();
-            if(ImGui::Button(muted ? "Unmute" : "Mute"))
-            {
-                muted = !muted;
-                ph.set_active_audio_stream(muted ? std::string() : si.name);
-            }
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("Vol");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(120.0f);
+            ImGui::SliderFloat("##overlay_vol", &mcs.obos.cbs.volume_gain, 0.0f, 4.0f, "");
 
             const float close_w = 60.0f;
             ImGui::SameLine();
@@ -1526,6 +1566,12 @@ int run_overlay(const overlay_opts& opts)
             // The full, existing control bar: timeline scrub, play/live, export,
             // volume, motion markers. It draws its own ##control_bar window; the
             // pushed Alpha style makes it fade with the rest.
+            //
+            // Zero window padding so the </> nav buttons — which sit ~1px from
+            // the bar's edges at the overlay's narrow width — aren't clipped by
+            // the default 8px content-region inset. The bar's content is
+            // absolutely positioned, so padding only affects the clip rect.
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
             control_bar(
                 (uint16_t)0, (uint16_t)(block_top + row_h), (uint16_t)win_w, cb_h,
                 600, (uint16_t)0, si.do_motion_detection,
@@ -1537,10 +1583,15 @@ int run_overlay(const overlay_opts& opts)
                     const std::chrono::system_clock::time_point& e, control_bar_state& cbs){ ph.control_bar_export_cb(n, s, e, cbs); },
                 ph.playing(si.name),
                 false,
-                mcs.sync_scrub
+                mcs.sync_scrub,
+                false,   // no Export button in the overlay
+                0.6f     // smaller detection icons for the compact timeline
             );
+            ImGui::PopStyleVar();  // control_bar window padding
 
             ImGui::PopStyleVar();  // alpha
+
+            if(block_font) ImGui::PopFont();
 
             // One contiguous interactive rect covering the whole bottom block.
             hit_ctx.interactive = SDL_Rect{ 0, (int)block_top, win_w, win_h - (int)block_top };

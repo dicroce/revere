@@ -279,7 +279,9 @@ void control_bar(
     EXPORT_CB export_cb,
     bool playing,
     bool is_multiview,
-    bool& sync_scrub
+    bool& sync_scrub,
+    bool show_export = true,   // overlay hides the Export button
+    float icon_scale = 1.0f    // overlay shrinks the detection icons
 )
 {
     if(!cbs.entered)
@@ -343,7 +345,8 @@ void control_bar(
     render_layout.height = height;
     render_layout.window = window;
     render_layout.duration_seconds = duration_seconds;
-    
+    render_layout.icon_scale = icon_scale;
+
     // Use renderer for all UI components
     auto calc = renderer.calculate_layout(render_layout);
     
@@ -368,8 +371,9 @@ void control_bar(
     }
 
     // Render export controls
-    renderer.render_export_controls(render_layout, cbs, calc, stream_name, export_cb);
-    
+    if(show_export)
+        renderer.render_export_controls(render_layout, cbs, calc, stream_name, export_cb);
+
     // Render play/live button
     renderer.render_play_live_button(render_layout, cbs, calc, stream_name, control_bar_button_cb, update_data_cb, playing);
 

@@ -28,6 +28,7 @@ struct control_bar_layout
     uint16_t height;
     uint16_t window;
     uint32_t duration_seconds;
+    float icon_scale {1.0f};  // scales the analytics detection icons (overlay uses < 1)
 };
 
 // Layout calculations result structure
@@ -273,6 +274,11 @@ void control_bar_renderer::render_navigation_buttons(const control_bar_layout& l
     // Backward button
     ImGui::PushID("backward");
     auto backward_button_x = ((layout.left + left_box_width) - rs_backward_forward_button_dim) - (calc.text_line_height / 2);
+    // Clamp to the bar's left edge so the button stays visible on narrow bars
+    // (e.g. the overlay), where the left box is too small to hold it. No-op on
+    // the wide main-app bar, where it already sits inside the left box.
+    if(backward_button_x < (double)layout.left)
+        backward_button_x = (double)layout.left;
     auto backward_button_y = center_line_y - (rs_backward_forward_button_dim / 2);
     ImGui::SetCursorScreenPos(ImVec2((float)backward_button_x, (float)backward_button_y));
     if(ImGui::Button("<", ImVec2((float)rs_backward_forward_button_dim, (float)rs_backward_forward_button_dim)))
@@ -285,6 +291,10 @@ void control_bar_renderer::render_navigation_buttons(const control_bar_layout& l
     // Forward button
     ImGui::PushID("forward");
     auto forward_button_x = right_box_left + (calc.text_line_height / 2);
+    // Clamp to the bar's right edge so the button stays visible on narrow bars.
+    double forward_max_x = (double)layout.left + (double)layout.width - rs_backward_forward_button_dim;
+    if(forward_button_x > forward_max_x)
+        forward_button_x = forward_max_x;
     auto forward_button_y = center_line_y - (rs_backward_forward_button_dim / 2);
     ImGui::SetCursorScreenPos(ImVec2((float)forward_button_x, (float)forward_button_y));
     if(ImGui::Button(">", ImVec2((float)rs_backward_forward_button_dim, (float)rs_backward_forward_button_dim)))
