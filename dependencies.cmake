@@ -122,8 +122,10 @@ if(NOT TARGET opencv::opencv)
         endif()
 
     elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|Darwin")
-        # Fallback to system packages via pkg-config
-        pkg_search_module(OPENCV opencv4)
+        # Fallback to system packages via pkg-config. OpenCV 5 renamed the
+        # pkg-config module (opencv4.pc -> opencv5.pc), so search both:
+        # Homebrew's `opencv` is now 5.x, as is Arch's system package.
+        pkg_search_module(OPENCV opencv4 opencv5)
 
         if(OPENCV_FOUND)
             add_library(opencv::opencv INTERFACE IMPORTED GLOBAL)
