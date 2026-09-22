@@ -190,13 +190,23 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                     if(!lrs.first_restream_a_times_set)
                     {
                         lrs.first_restream_a_times_set = true;
-                        lrs.first_restream_a_pts = pts * 1000000;
-                        lrs.first_restream_a_dts = pts * 1000000;
+                        // Fold any skew that accumulated before the first audio
+                        // frame into the base, so the first outgoing audio pts
+                        // is 0 (not 0 - skew, which would wrap unsigned).
+                        auto skew_at_set = lrs.catchup_skew_ns.load(std::memory_order_relaxed);
+                        lrs.first_restream_a_pts = pts * 1000000 - skew_at_set;
+                        lrs.first_restream_a_dts = pts * 1000000 - skew_at_set;
                     }
 
+                    // Apply the video-driven catch-up skew (see the video post
+                    // path) to audio too, so the session's A/V timelines shift
+                    // together. Worst case the skew grows by ~rate * one video
+                    // frame interval between two audio frames — well under an
+                    // audio frame interval, so audio pts stay monotonic.
+                    auto skew = lrs.catchup_skew_ns.load(std::memory_order_relaxed);
                     _frame_context fc;
-                    fc.gst_pts = (pts * 1000000) - lrs.first_restream_a_pts;
-                    fc.gst_dts = (pts * 1000000) - lrs.first_restream_a_dts;
+                    fc.gst_pts = (pts * 1000000) - lrs.first_restream_a_pts - skew;
+                    fc.gst_dts = (pts * 1000000) - lrs.first_restream_a_dts - skew;
 
                     fc.key = key;
                     fc.buffer = buffer;
@@ -378,9 +388,40 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                         lrs.first_restream_v_dts = pts * 1000000;
                     }
 
+                    // Live-edge catch-up: while this viewer's standing queue is
+                    // deep, grow the skew by CATCHUP_RATE of each source frame
+                    // interval. Outgoing deltas shrink to (1 - rate) of the
+                    // source's, so the sink transmits — and the client plays —
+                    // slightly fast until the backlog drains. Timestamps stay
+                    // monotonic because the skew grows by strictly less than
+                    // each source delta.
+                    auto src_pts_ns = (uint64_t)pts * 1000000ULL;
+                    auto depth = lrs.video_samples.size();
+                    if(!lrs.catching_up && depth >= LIVE_RESTREAM_CATCHUP_HIGH_WATER_FRAMES)
+                    {
+                        lrs.catching_up = true;
+                        R_LOG_INFO("live restream[%s]: catch-up slew engaged (viewer queue depth %zu)", lrs.camera_id.c_str(), depth);
+                    }
+                    else if(lrs.catching_up && depth <= LIVE_RESTREAM_CATCHUP_LOW_WATER_FRAMES)
+                    {
+                        lrs.catching_up = false;
+                        R_LOG_INFO("live restream[%s]: catch-up slew done (viewer queue depth %zu, total skew %llums)",
+                            lrs.camera_id.c_str(), depth,
+                            (unsigned long long)(lrs.catchup_skew_ns.load(std::memory_order_relaxed) / 1000000ULL));
+                    }
+                    if(lrs.catching_up && lrs.last_catchup_v_pts_set && src_pts_ns > lrs.last_catchup_v_pts_ns)
+                    {
+                        auto delta_ns = src_pts_ns - lrs.last_catchup_v_pts_ns;
+                        if(delta_ns < 1000000000ULL) // ignore pts discontinuities
+                            lrs.catchup_skew_ns.fetch_add((uint64_t)(delta_ns * LIVE_RESTREAM_CATCHUP_RATE), std::memory_order_relaxed);
+                    }
+                    lrs.last_catchup_v_pts_set = true;
+                    lrs.last_catchup_v_pts_ns = src_pts_ns;
+
+                    auto skew = lrs.catchup_skew_ns.load(std::memory_order_relaxed);
                     _frame_context fc;
-                    fc.gst_pts = (pts*1000000) - lrs.first_restream_v_pts;
-                    fc.gst_dts = (pts*1000000) - lrs.first_restream_v_dts;
+                    fc.gst_pts = (pts*1000000) - lrs.first_restream_v_pts - skew;
+                    fc.gst_dts = (pts*1000000) - lrs.first_restream_v_dts - skew;
                     fc.key = key;
                     fc.buffer = buffer;
                     lrs.video_samples.post(fc);

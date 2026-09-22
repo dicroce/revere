@@ -13,6 +13,7 @@
 #include "r_storage/r_md_storage_file.h"
 #include "r_utils/r_blocking_q.h"
 #include "r_utils/r_macro.h"
+#include <atomic>
 #include <mutex>
 #include <chrono>
 #include <deque>
@@ -49,6 +50,20 @@ constexpr size_t PLAYBACK_RESTREAM_MAX_QUEUE_SIZE = 300;
 // live RTSP viewers. The cache is normally cleared on every keyframe, so it
 // only grows beyond a typical GOP if a source stops producing keyframes.
 constexpr size_t GOP_CACHE_MAX_FRAMES = 300;
+
+// Live-edge catch-up. Transmission to a live viewer is paced at 1x by the
+// outgoing timestamps, so any backlog that builds in that viewer's queue (a
+// client stall, transient load, a storage-write hiccup upstream) would
+// otherwise persist forever as a standing extra latency — and viewers that
+// stalled differently end up seconds apart on the same camera. While a
+// viewer's video queue depth is above the high water mark we compress its
+// outgoing timestamps by CATCHUP_RATE (the client plays that much faster
+// than real time, so the queue drains smoothly — no visible jump); the slew
+// disengages at the low water mark. The same accumulated skew is applied to
+// the session's audio timestamps so A/V stay in sync.
+constexpr size_t LIVE_RESTREAM_CATCHUP_HIGH_WATER_FRAMES = 30;
+constexpr size_t LIVE_RESTREAM_CATCHUP_LOW_WATER_FRAMES = 8;
+constexpr double LIVE_RESTREAM_CATCHUP_RATE = 0.10;
 
 class r_recording_context;
 
@@ -91,6 +106,16 @@ struct live_restreaming_state
     bool first_restream_a_times_set {false};
     uint64_t first_restream_a_pts {0};
     uint64_t first_restream_a_dts {0};
+    // Live-edge catch-up state (see LIVE_RESTREAM_CATCHUP_* above). The bool
+    // and last-pts fields are touched only by the video source thread;
+    // catchup_skew_ns is also read by the audio thread, hence atomic. The skew
+    // is subtracted from every outgoing pts/dts and only ever grows — it is a
+    // permanent shift of the session's timeline, which is fine because only
+    // deltas pace transmission.
+    bool catching_up {false};
+    bool last_catchup_v_pts_set {false};
+    uint64_t last_catchup_v_pts_ns {0};
+    std::atomic<uint64_t> catchup_skew_ns {0};
     // Bounded queues - drop oldest frames when full to prevent memory exhaustion
     r_utils::r_blocking_q<struct _frame_context> video_samples{LIVE_RESTREAM_MAX_QUEUE_SIZE};
     r_utils::r_blocking_q<struct _frame_context> audio_samples{LIVE_RESTREAM_MAX_QUEUE_SIZE};
