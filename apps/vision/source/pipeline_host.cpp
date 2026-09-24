@@ -55,6 +55,8 @@ pipeline_host::~pipeline_host()
 void pipeline_host::start()
 {
     _th = thread(&pipeline_host::_entry_point, this);
+    _timeline_running = true;
+    _timeline_th = thread(&pipeline_host::_timeline_entry_point, this);
 }
 
 void pipeline_host::stop()
@@ -63,6 +65,15 @@ void pipeline_host::stop()
     {
         _running = false;
         _th.join();
+    }
+    if(_timeline_running)
+    {
+        {
+            lock_guard<mutex> g(_timeline_lok);
+            _timeline_running = false;
+        }
+        _timeline_cv.notify_all();
+        _timeline_th.join();
     }
 }
 
@@ -810,37 +821,92 @@ void pipeline_host::control_bar_button_cb(const string& name, control_bar_button
 
 void pipeline_host::control_bar_update_data_cb(const std::string& stream_name, control_bar_state& cbs)
 {
-    lock_guard<mutex> pipes_lock(_internals_lok);
-    auto found_pipe = _pipes.find(stream_name);
-
-    auto found_si = _stream_infos.find(stream_name);
-    if(found_si != end(_stream_infos) && found_pipe != end(_pipes))
+    // Runs on the render/UI thread and MUST NOT block. Resolve the stream and
+    // push the new range into the pipe under the lock, then hand the timeline
+    // queries to the background fetcher (_timeline_entry_point) and apply
+    // whatever result is already available. The three HTTP round-trips used to
+    // run inline here; a slow or exited revere then blocked the render loop for
+    // up to their full timeout, freezing the window (fatally so for the
+    // single-window overlay).
+    auto range = cbs.get_range();
+    std::string camera_id;
     {
+        lock_guard<mutex> pipes_lock(_internals_lok);
+        auto found_pipe = _pipes.find(stream_name);
+        auto found_si = _stream_infos.find(stream_name);
+        if(found_si == end(_stream_infos) || found_pipe == end(_pipes))
+        {
+            R_LOG_ERROR("Stream info or pipe not found for %s", stream_name.c_str());
+            return;
+        }
+        found_pipe->second->update_range(range.first, range.second);
+        camera_id = found_si->second.camera_id;
+    }
+
+    // Apply any completed fetch into cbs (cbs is owned by this UI thread), and
+    // (re)post the latest wanted range for the worker to fetch. Both are quick,
+    // in-memory operations under _timeline_lok — never any network here.
+    {
+        lock_guard<mutex> g(_timeline_lok);
+
+        auto rit = _timeline_results.find(stream_name);
+        if(rit != end(_timeline_results) && rit->second.ready)
+        {
+            cbs.set_contents(rit->second.segments);
+            if(!rit->second.first_ts.is_null())
+                cbs.scrollback_limit.set_value(rit->second.first_ts.value());
+            cbs.set_motion_events(rit->second.motion_events);
+            cbs.set_analytics_events(rit->second.analytics_events);
+            rit->second.ready = false;
+        }
+
+        // Coalesced request: only the latest range per stream is kept, so a
+        // slow fetch can't cause a backlog.
+        _timeline_pending[stream_name] = timeline_request{camera_id, range.first, range.second};
+    }
+    _timeline_cv.notify_one();
+}
+
+void pipeline_host::_timeline_entry_point()
+{
+    for(;;)
+    {
+        std::string stream_name;
+        timeline_request req;
+        {
+            unique_lock<mutex> g(_timeline_lok);
+            _timeline_cv.wait(g, [&]{ return !_timeline_running || !_timeline_pending.empty(); });
+            if(!_timeline_running)
+                return;
+
+            // Take one pending request (any stream).
+            auto it = begin(_timeline_pending);
+            stream_name = it->first;
+            req = it->second;
+            _timeline_pending.erase(it);
+        }
+
+        // The blocking part — off the UI thread. A failure (revere down) just
+        // leaves the last-known result in place; the timeline keeps showing
+        // whatever it last had instead of freezing.
         try
         {
-            auto range = cbs.get_range();
-            found_pipe->second->update_range(range.first, range.second);
-            auto cr = query_segments(_cfg, found_si->second.camera_id, range.first, range.second);
-            cbs.set_contents(cr.segments);
-            if(!cr.first_ts.is_null())
-                cbs.scrollback_limit.set_value(cr.first_ts.value());
+            auto cr = query_segments(_cfg, req.camera_id, req.start, req.end);
+            auto motion_events = query_motion_events(_cfg, req.camera_id, req.start, req.end);
+            auto analytics_events = query_analytics(_cfg, req.camera_id, req.start, req.end);
 
-            // Query motion events
-            auto motion_events = query_motion_events(_cfg, found_si->second.camera_id, range.first, range.second);
-            cbs.set_motion_events(motion_events);
-
-            // Query analytics events
-            auto analytics_events = query_analytics(_cfg, found_si->second.camera_id, range.first, range.second);
-            cbs.set_analytics_events(analytics_events);
+            lock_guard<mutex> g(_timeline_lok);
+            auto& res = _timeline_results[stream_name];
+            res.segments = std::move(cr.segments);
+            res.first_ts = cr.first_ts;
+            res.motion_events = std::move(motion_events);
+            res.analytics_events = std::move(analytics_events);
+            res.ready = true;
         }
         catch(const std::exception& e)
         {
             R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
         }
-    }
-    else
-    {
-        R_LOG_ERROR("Stream info or pipe not found for %s", stream_name.c_str());
     }
 }
 
@@ -957,48 +1023,66 @@ void pipeline_host::_entry_point()
         {
             _last_dead_check = now;
 
-            lock_guard<mutex> pipes_lock(_internals_lok);
-
-            // If collect_stream_info() returned nothing at change_layout() time
-            // (local server not ready), retry now so the layout eventually connects.
-            if(_stream_infos.empty() && _retry_window != -1)
+            // DEADLOCK/STALL FIX: same pattern as disconnect_stream(). Collect
+            // dead pipes under the lock but stop and destroy them only after
+            // releasing it. pipeline_state teardown blocks (gst state change up
+            // to 5s, then a join of the decode thread, which itself needs
+            // _internals_lok inside post_video_frame) — doing that while
+            // holding the lock froze the UI thread for the duration, and could
+            // deadlock outright if the decode thread was mid-post. With revere
+            // gone every pane dies at once, so this path used to stall the app
+            // hard enough that it had to be killed.
+            std::vector<std::shared_ptr<pipeline_state>> dead_pipes;
             {
-                auto sis = _cfg.collect_stream_info(_retry_window, _retry_layout);
-                if(!sis.empty())
-                {
-                    R_LOG_INFO("pipeline_host: stream info now available, populating %zu streams", sis.size());
-                    for(auto& si : sis)
-                        _stream_infos.insert(make_pair(si.name, si));
-                }
-            }
-            auto curr = begin(_pipes);
-            while(curr != end(_pipes))
-            {
-                bool found_dead = false;
+                lock_guard<mutex> pipes_lock(_internals_lok);
 
-                // Skip dead check for recently-started pipelines (playback needs time to start)
-                if(curr->second->ready_for_dead_check())
+                // If collect_stream_info() returned nothing at change_layout() time
+                // (local server not ready), retry now so the layout eventually connects.
+                if(_stream_infos.empty() && _retry_window != -1)
                 {
-                    if(curr->second->running() && curr->second->last_v_pts() == curr->second->v_pts_at_check())
-                        found_dead = true;
+                    auto sis = _cfg.collect_stream_info(_retry_window, _retry_layout);
+                    if(!sis.empty())
+                    {
+                        R_LOG_INFO("pipeline_host: stream info now available, populating %zu streams", sis.size());
+                        for(auto& si : sis)
+                            _stream_infos.insert(make_pair(si.name, si));
+                    }
+                }
+                auto curr = begin(_pipes);
+                while(curr != end(_pipes))
+                {
+                    bool found_dead = false;
 
-                    if(curr->second->running() && curr->second->has_audio() && curr->second->last_a_pts() == curr->second->a_pts_at_check())
-                        found_dead = true;
-                }
+                    // Skip dead check for recently-started pipelines (playback needs time to start)
+                    if(curr->second->ready_for_dead_check())
+                    {
+                        if(curr->second->running() && curr->second->last_v_pts() == curr->second->v_pts_at_check())
+                            found_dead = true;
 
-                if(found_dead)
-                {
-                    R_LOG_ERROR("Dead stream detected");
-                    curr->second->stop();
-                    curr = _pipes.erase(curr);
+                        if(curr->second->running() && curr->second->has_audio() && curr->second->last_a_pts() == curr->second->a_pts_at_check())
+                            found_dead = true;
+                    }
+
+                    if(found_dead)
+                    {
+                        R_LOG_ERROR("Dead stream detected");
+                        dead_pipes.push_back(curr->second);
+                        curr = _pipes.erase(curr);
+                    }
+                    else
+                    {
+                        curr->second->set_v_pts_at_check(curr->second->last_v_pts());
+                        curr->second->set_a_pts_at_check(curr->second->last_a_pts());
+                        ++curr;
+                    }
                 }
-                else
-                {
-                    curr->second->set_v_pts_at_check(curr->second->last_v_pts());
-                    curr->second->set_a_pts_at_check(curr->second->last_a_pts());
-                    ++curr;
-                }
-            }
+            }  // _internals_lok released here
+
+            // Stop and destroy outside the critical section, on this worker
+            // thread — the UI keeps rendering while teardown blocks.
+            for(auto& p : dead_pipes)
+                p->stop();
+            dead_pipes.clear();
         }
     }
 }

@@ -159,6 +159,10 @@ struct revere_update
 {
     vector<vision::sidebar_list_ui_item> cameras;
     r_nullable<string> status_text;
+    // True only when `cameras` came from a successful query. A comms failure
+    // also posts an update (for the status text) with an EMPTY camera list,
+    // which must never be mistaken for "all cameras were deleted".
+    bool connected {false};
 };
 
 struct vision_ui_state
@@ -302,6 +306,7 @@ std::thread system_info_thread(
                     {
                         ru.cameras = result;
                         ru.status_text = "Connected to Revere.";
+                        ru.connected = true;
                         update_q.post(ru);
                         update_ui = false;
                     }
@@ -726,8 +731,14 @@ int main(int argc, char** argv)
                 ui_state.current_revere_update = update.value();
 
                 // Validate configured streams against the camera list from revere.
-                // Remove any streams whose camera_id no longer exists.
-                auto configured_streams = cfg_state.collect_stream_info(0, cfg_state.get_current_layout());
+                // Remove any streams whose camera_id no longer exists. Only when
+                // the query actually SUCCEEDED — a failure update also carries an
+                // empty camera list, and pruning on it wiped the whole layout
+                // (and tore down every pipe on the UI thread) any time revere
+                // was closed or unreachable while vision was running.
+                auto configured_streams = update.value().connected
+                    ? cfg_state.collect_stream_info(0, cfg_state.get_current_layout())
+                    : vector<stream_info>();
                 bool config_changed = false;
                 for (const auto& si : configured_streams)
                 {
@@ -1289,6 +1300,18 @@ int run_overlay(const overlay_opts& opts)
 
     SDL_Renderer* renderer = nullptr;
 #ifdef IS_WINDOWS
+    // Prefer the D3D11 (DXGI flip-model) backend over SDL's default D3D9 one.
+    // With plain D3D9 + vsync, presenting to a window DWM isn't composing
+    // (occluded by another window, cloaked, monitor changes) blocks inside
+    // DwmpDxGetWindowSharedSurface for up to ~1s PER PRESENT — the overlay's
+    // loop drops to ~1fps and feels completely unresponsive, while pumping
+    // just often enough that Windows never flags it as hung. DXGI flip-model
+    // presents return immediately (with an occluded status) instead of
+    // blocking, so an overlay parked under another window stays interactive.
+    // (Observed live: main thread parked in dwmapi!DwmpDxGetWindowSharedSurface
+    // under SDL2!D3D_RenderPresent while two overlays sat behind a browser
+    // window.) If d3d11 isn't available SDL falls back to another driver.
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d11");
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_PRESENTVSYNC);
     if(!renderer)
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE);
@@ -1309,7 +1332,10 @@ int run_overlay(const overlay_opts& opts)
     {
         SDL_RendererInfo ri;
         if(SDL_GetRendererInfo(renderer, &ri) == 0)
+        {
             vsync_active = (ri.flags & SDL_RENDERER_PRESENTVSYNC) != 0;
+            R_LOG_INFO("overlay: render driver=%s vsync=%d", ri.name ? ri.name : "?", (int)vsync_active);
+        }
     }
 
     g_renderer = renderer;

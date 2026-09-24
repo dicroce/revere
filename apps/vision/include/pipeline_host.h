@@ -9,6 +9,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
 #include <thread>
 #include <chrono>
 #include <atomic>
@@ -182,6 +183,38 @@ public:
 
 private:
     void _entry_point();
+
+    // Background timeline fetcher. The timeline queries (segments, motion,
+    // analytics) are three sequential blocking HTTP round-trips; running them
+    // inline in control_bar_update_data_cb — which is called from the render
+    // loop — froze the whole window whenever revere was slow or, worse, exited
+    // mid-request (the socket recv blocks until timeout). A dead revere thus
+    // made vision (and especially the single-window overlay) totally
+    // unresponsive. This one worker thread does the fetching off the UI thread;
+    // control_bar_update_data_cb only ever posts a request and applies whatever
+    // result is ready, so it never blocks.
+    void _timeline_entry_point();
+
+    struct timeline_request
+    {
+        std::string camera_id;
+        std::chrono::system_clock::time_point start;
+        std::chrono::system_clock::time_point end;
+    };
+    struct timeline_result
+    {
+        std::vector<segment> segments;
+        r_utils::r_nullable<std::chrono::system_clock::time_point> first_ts;
+        std::vector<motion_event> motion_events;
+        std::vector<analytics_event> analytics_events;
+        bool ready {false};
+    };
+    std::mutex _timeline_lok;
+    std::condition_variable _timeline_cv;
+    std::map<std::string, timeline_request> _timeline_pending; // coalesced: latest wanted per stream
+    std::map<std::string, timeline_result> _timeline_results;  // latest completed per stream
+    std::thread _timeline_th;
+    bool _timeline_running {false};
 
     // Drop queued frames and force a re-anchor; call on seek/play/live
     // transitions so stale frames can't present. Caller must hold _internals_lok.
