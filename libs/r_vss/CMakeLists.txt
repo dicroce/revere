@@ -73,6 +73,13 @@ add_custom_command(
 
 add_custom_target(r_vss_webui ALL DEPENDS ${WEBUI_BUNDLE})
 
+# Also stage ui.rbt next to revere.exe so running from the build tree serves
+# the web UI without an install step (r_ws loads it from the CWD).
+add_custom_command(TARGET r_vss_webui POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${WEBUI_BUNDLE} "$<TARGET_FILE_DIR:r_vss>/"
+    COMMENT "Staging web UI bundle alongside revere.exe"
+)
+
 install(FILES ${WEBUI_BUNDLE}
     DESTINATION ${REVERE_INSTALL_BINDIR}
 )
