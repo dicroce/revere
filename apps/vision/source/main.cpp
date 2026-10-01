@@ -49,6 +49,7 @@ void* get_icon_texture_id(const std::string& class_name)
 }
 
 #include "configure_state.h"
+#include "overlay_state.h"
 #include "gl_utils.h"
 #include "imgui_ui.h"
 #include "utils.h"
@@ -1256,12 +1257,32 @@ static SDL_HitTestResult SDLCALL _overlay_hit_test(SDL_Window* win, const SDL_Po
     return SDL_HITTEST_DRAGGABLE;  // click-drag over the video moves the window
 }
 
+// True when the rect still intersects some connected display — a placement
+// remembered from a since-unplugged monitor falls back to centered instead of
+// restoring an invisible window.
+static bool _rect_on_any_display(int x, int y, int w, int h)
+{
+    int n = SDL_GetNumVideoDisplays();
+    for(int i = 0; i < n; ++i)
+    {
+        SDL_Rect db;
+        if(SDL_GetDisplayBounds(i, &db) != 0)
+            continue;
+        SDL_Rect r {x, y, w, h};
+        SDL_Rect out;
+        if(SDL_IntersectRect(&r, &db, &out) == SDL_TRUE)
+            return true;
+    }
+    return false;
+}
+
 // Single-camera overlay mode. Reuses the same pipeline_host / decode / texture
 // path as the normal app, but with a borderless window showing exactly one
 // camera and no menu/sidebar/layout. Config is loaded read-only (camera comes
 // from the CLI) and never saved, so multiple overlays and the main window don't
-// fight over the config JSON. (Step 1: video; step 2: drag/resize + always-on-top;
-// the slim auto-hide control bar comes next.)
+// fight over the config JSON. Placement + pin state persist per camera in
+// their own config/overlay_<camera_id>.json (each overlay process is that
+// file's only writer), so a re-opened overlay comes back where it was.
 int run_overlay(const overlay_opts& opts)
 {
     R_LOG_INFO("Vision overlay mode: camera=%s revere_ip=%s on_top=%d",
@@ -1274,11 +1295,30 @@ int run_overlay(const overlay_opts& opts)
     }
     SDL_EnableScreenSaver();
 
+    // Restore this camera's saved placement/pin. A missing or corrupt file, or
+    // a position no longer on any display, just means the defaults below.
+    auto maybe_saved = load_overlay_state(opts.camera_id);
+    bool on_top = opts.on_top || (!maybe_saved.is_null() && maybe_saved.value().pinned);
+
+    int start_x = SDL_WINDOWPOS_CENTERED, start_y = SDL_WINDOWPOS_CENTERED;
+    int start_w = 800, start_h = 520;
+    if(!maybe_saved.is_null())
+    {
+        auto& sv = maybe_saved.value();
+        start_w = sv.w;
+        start_h = sv.h;
+        if(_rect_on_any_display(sv.x, sv.y, sv.w, sv.h))
+        {
+            start_x = sv.x;
+            start_y = sv.y;
+        }
+    }
+
     Uint32 win_flags = SDL_WINDOW_BORDERLESS | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_SHOWN;
-    if(opts.on_top)
+    if(on_top)
         win_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
 
-    SDL_Window* window = SDL_CreateWindow("Vision", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 800, 520, win_flags);
+    SDL_Window* window = SDL_CreateWindow("Vision", start_x, start_y, start_w, start_h, win_flags);
     if(!window)
     {
         R_LOG_ERROR("SDL_CreateWindow error: %s", SDL_GetError());
@@ -1295,8 +1335,6 @@ int run_overlay(const overlay_opts& opts)
     // Re-assert the resizable style: SDL_WINDOW_BORDERLESS at creation can drop
     // the resize frame that the hit-test RESIZE_* results need.
     SDL_SetWindowResizable(window, SDL_TRUE);
-
-    bool on_top = opts.on_top;
 
     SDL_Renderer* renderer = nullptr;
 #ifdef IS_WINDOWS
@@ -1440,6 +1478,17 @@ int run_overlay(const overlay_opts& opts)
     float bar_alpha = 1.0f;   // visible at launch so the controls are discoverable
     bool audio_activated = false;  // one-shot: make this stream's audio active
 
+    // Placement/pin persistence: `persisted` mirrors what's on disk (seeded
+    // with the launch state so an untouched overlay writes nothing), and a
+    // change is saved once the geometry has been stable for a second — plus a
+    // final save at exit so a move immediately followed by close isn't lost.
+    overlay_state persisted;
+    SDL_GetWindowPosition(window, &persisted.x, &persisted.y);
+    SDL_GetWindowSize(window, &persisted.w, &persisted.h);
+    persisted.pinned = on_top;
+    overlay_state last_observed = persisted;
+    auto last_geom_change = chrono::steady_clock::now();
+
     while(!close_requested)
     {
         auto frame_start = chrono::steady_clock::now();
@@ -1486,6 +1535,27 @@ int run_overlay(const overlay_opts& opts)
         if(close_requested)
             continue;
 
+        // Persist placement/pin changes once they've been stable for a second.
+        // Skip while minimized: Windows parks minimized windows at (-32000,
+        // -32000), which is not a placement worth remembering.
+        if(!(SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED))
+        {
+            overlay_state cur;
+            SDL_GetWindowPosition(window, &cur.x, &cur.y);
+            SDL_GetWindowSize(window, &cur.w, &cur.h);
+            cur.pinned = on_top;
+            if(!(cur == last_observed))
+            {
+                last_observed = cur;
+                last_geom_change = chrono::steady_clock::now();
+            }
+            else if(!(cur == persisted) && (chrono::steady_clock::now() - last_geom_change) > chrono::seconds(1))
+            {
+                save_overlay_state(opts.camera_id, cur);
+                persisted = cur;
+            }
+        }
+
         ImGui_ImplSDLRenderer_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
@@ -1505,6 +1575,27 @@ int run_overlay(const overlay_opts& opts)
         if(!maybe_rc.is_null())
         {
             auto rc = maybe_rc.value();
+
+            // Advance the playhead from the frame being shown, mirroring the
+            // normal app's render path: pts is an absolute ms-since-epoch
+            // timestamp; don't fight an in-progress drag, and keep the playhead
+            // pinned to the right edge while in live mode.
+            if(ph.playing(si.name) && rc->pts > 0)
+            {
+                auto frame_time = std::chrono::system_clock::time_point(std::chrono::milliseconds(rc->pts));
+                if(mcs.obos.cbs.tr.time_is_in_range(frame_time))
+                {
+                    int new_playhead_pos = mcs.obos.cbs.tr.time_to_range(frame_time, 0, 1000);
+                    if(!mcs.obos.cbs.dragging && state_validate::is_valid_playhead_position(new_playhead_pos))
+                    {
+                        if(mcs.obos.cbs.playhead_pos >= timeline_constants::PLAYHEAD_MAX_POSITION)
+                            mcs.obos.cbs.playhead_pos = timeline_constants::PLAYHEAD_MAX_POSITION;
+                        else
+                            mcs.obos.cbs.playhead_pos = new_playhead_pos;
+                    }
+                }
+            }
+
             if(rc->tex && rc->w > 0 && rc->h > 0)
             {
                 float scale = std::min((float)win_w / (float)rc->w, (float)win_h / (float)rc->h);
@@ -1638,6 +1729,17 @@ int run_overlay(const overlay_opts& opts)
             if(frame_time < frame_duration)
                 std::this_thread::sleep_for(frame_duration - frame_time);
         }
+    }
+
+    // Final save: catch a move/pin made within the debounce window of closing.
+    if(!(SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED))
+    {
+        overlay_state cur;
+        SDL_GetWindowPosition(window, &cur.x, &cur.y);
+        SDL_GetWindowSize(window, &cur.w, &cur.h);
+        cur.pinned = on_top;
+        if(!(cur == persisted))
+            save_overlay_state(opts.camera_id, cur);
     }
 
     ph.stop();

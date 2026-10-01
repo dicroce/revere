@@ -294,7 +294,7 @@ void control_bar_renderer::render_navigation_buttons(const control_bar_layout& l
     // Clamp to the bar's right edge so the button stays visible on narrow bars.
     double forward_max_x = (double)layout.left + (double)layout.width - rs_backward_forward_button_dim;
     if(forward_button_x > forward_max_x)
-        forward_button_x = forward_max_x;
+        forward_button_x = (float)forward_max_x;
     auto forward_button_y = center_line_y - (rs_backward_forward_button_dim / 2);
     ImGui::SetCursorScreenPos(ImVec2((float)forward_button_x, (float)forward_button_y));
     if(ImGui::Button(">", ImVec2((float)rs_backward_forward_button_dim, (float)rs_backward_forward_button_dim)))
