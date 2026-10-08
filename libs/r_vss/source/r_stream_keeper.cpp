@@ -705,6 +705,11 @@ void r_stream_keeper::_entry_point()
                         _suspended_cameras.erase(cmd.first.id);
                     }
 
+                    // A resume follows a storage repair (move / reset / re-create),
+                    // so drop any failure backoff: retry on the next poll instead
+                    // of waiting out up to 300s from the previous failed attempt.
+                    _failed_cameras.erase(cmd.first.id);
+
                     cmd.second.set_value(result);
                 }
                 else if(cmd.first.cmd == R_SK_CREATE_PLAYBACK_MOUNT)

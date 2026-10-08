@@ -399,9 +399,12 @@ struct sidebar_list_ui_item
     std::string kbps;
     std::string retention;
     stream_health health {stream_health::unknown};
+    // Optional per-card action button (e.g. "Repair" when the camera's
+    // recording file is missing). Empty = no button.
+    std::string action_label;
 };
 
-template<typename BUTTON_CLICK_CB, typename ITEM_CLICK_CB, typename FORGET_BUTTON_CLICK_CB, typename PROPERTIES_CLICK_CB, typename VIEW_CLICK_CB>
+template<typename BUTTON_CLICK_CB, typename ITEM_CLICK_CB, typename FORGET_BUTTON_CLICK_CB, typename PROPERTIES_CLICK_CB, typename VIEW_CLICK_CB, typename ACTION_CLICK_CB>
 void sidebar_list(
     ImGuiContext*,
     revere::assignment_state&,
@@ -417,6 +420,7 @@ void sidebar_list(
     PROPERTIES_CLICK_CB properties_click_cb,
     bool show_view_button,
     VIEW_CLICK_CB view_click_cb,
+    ACTION_CLICK_CB action_click_cb,   // fired for cards whose action_label is set
     float& cached_largest_label,
     const std::string& font_key_24 = "24.00",
     const std::string& font_key_22 = "22.00"
@@ -518,6 +522,13 @@ void sidebar_list(
             ImGui::SameLine();
             if(ImGui::Button("View", ImVec2(button_width, button_height)))
                 view_click_cb(i);
+        }
+
+        if(!labels[i].action_label.empty())
+        {
+            ImGui::SameLine();
+            if(ImGui::Button(labels[i].action_label.c_str(), ImVec2(button_width, button_height)))
+                action_click_cb(i);
         }
 
         if(btn_font)
@@ -1457,6 +1468,128 @@ void move_storage_modal(
             ImGui::Spacing();
             if(ImGui::Button("Cancel", ImVec2(120, 30)))
                 cancel_op_cb();
+        }
+        else if(done && !error)
+        {
+            ImGui::CloseCurrentPopup();
+            close_cb();
+        }
+        else if(error)
+        {
+            ImGui::TextColored(ImVec4(1.f, 0.3f, 0.3f, 1.f), "Error:");
+            ImGui::Spacing();
+            ImGui::TextWrapped("%s", status.c_str());
+            ImGui::Spacing();
+            if(ImGui::Button("Close", ImVec2(120, 30)))
+            {
+                ImGui::CloseCurrentPopup();
+                close_cb();
+            }
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+// Shown from a recording card's "Repair" button when the camera's recording
+// file is missing on disk. Two ways out:
+//   mode 0  Re-create: allocate fresh, empty files from the geometry stored on
+//           the camera row (same worker as Move Storage's "start fresh").
+//   mode 1  Locate: point the camera at an existing .nts (e.g. one that was
+//           moved by hand or lives on another disk); it is validated, its
+//           geometry is read from the file header, and the sibling .mdb is
+//           picked up or created.
+// Either way the stream keeper restarts the camera afterwards.
+template<typename START_CB, typename CLOSE_CB>
+void repair_storage_modal(
+    ImGuiContext*,
+    const std::string& name,
+    const std::string& camera_name,
+    const std::string& missing_path,
+    int& mode,
+    std::string& locate_path,
+    float progress,
+    bool running,
+    bool done,
+    bool error,
+    const std::string& status,
+    START_CB start_cb,
+    CLOSE_CB close_cb
+)
+{
+    ImGui::SetNextWindowSize(ImVec2(600, 0), ImGuiCond_Always);
+    if(ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        if(!running && !done && !error)
+        {
+            if(ImGui::IsWindowAppearing())
+            {
+                mode = 0;
+                locate_path.clear();
+            }
+
+            ImGui::Text("Camera: %s", camera_name.c_str());
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::TextWrapped("This camera's recording file is missing, so it can't record:");
+            ImGui::TextWrapped("%s", missing_path.c_str());
+            ImGui::Spacing();
+
+            ImGui::RadioButton("Re-create empty recording files", &mode, 0);
+            ImGui::Indent();
+            ImGui::TextWrapped("Allocates new files using the camera's existing retention settings. Any leftover files for this camera are deleted first.");
+            ImGui::Unindent();
+            ImGui::Spacing();
+
+            ImGui::RadioButton("Use an existing recording file", &mode, 1);
+            ImGui::Indent();
+            ImGui::TextWrapped("Pick the camera's .nts file if it was moved. Its recordings are kept; a motion file next to it is reused if present.");
+            ImGui::BeginDisabled(mode != 1);
+            ImGui::SetNextItemWidth(380);
+            ImGui::InputText("##repair_locate_path", const_cast<char*>(locate_path.c_str()), locate_path.size() + 1, ImGuiInputTextFlags_ReadOnly);
+            ImGui::SameLine();
+            if(ImGui::Button("Browse..."))
+            {
+                std::string start_dir = ".";
+                auto slash = missing_path.find_last_of("/\\");
+                if(slash != std::string::npos)
+                    start_dir = missing_path.substr(0, slash);
+                ImGuiFileDialog::Instance()->OpenDialog("RepairLocateFileDlg", "Choose Recording File", ".nts", start_dir);
+            }
+            ImGui::EndDisabled();
+            ImGui::Unindent();
+
+            if(ImGuiFileDialog::Instance()->Display("RepairLocateFileDlg", ImGuiWindowFlags_None, ImVec2(800, 400)))
+            {
+                if(ImGuiFileDialog::Instance()->IsOk())
+                    locate_path = ImGuiFileDialog::Instance()->GetFilePathName();
+                ImGuiFileDialog::Instance()->Close();
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            if(ImGui::Button("Cancel", ImVec2(120, 30)))
+            {
+                ImGui::CloseCurrentPopup();
+                close_cb();
+            }
+            ImGui::SameLine();
+            bool can_start = (mode == 0) || !locate_path.empty();
+            ImGui::BeginDisabled(!can_start);
+            if(ImGui::Button("Repair", ImVec2(120, 30)))
+                start_cb();
+            ImGui::EndDisabled();
+        }
+        else if(running)
+        {
+            ImGui::Text(mode == 1 ? "Checking recording file..." : "Re-creating recording files...");
+            ImGui::Spacing();
+            ImGui::ProgressBar(progress, ImVec2(-1, 0));
+            ImGui::Spacing();
+            ImGui::TextWrapped("%s", status.c_str());
         }
         else if(done && !error)
         {
