@@ -3,6 +3,8 @@
 #include "bad_guy.h"
 #include "r_av/r_video_decoder.h"
 #include "r_av/r_video_encoder.h"
+#include <algorithm>
+#include <vector>
 #include "r_av/r_demuxer.h"
 #include "r_av/r_muxer.h"
 #include "r_utils/r_file.h"
@@ -163,4 +165,48 @@ void test_r_codec::test_basic_video_transcode()
     RTF_ASSERT(vsi.resolution.first == 320);
     RTF_ASSERT(vsi.resolution.second == 240);
 
+}
+
+
+// A JPEG snapshot must be encoded at a usable quality. Encode a synthetic
+// frame and read the luma quantization table (DQT) out of the JPEG: the DC
+// entry of the standard IJG table is 16 at quality 50 and scales inversely
+// with quality. The old rate-controlled path pinned the quantizer and
+// produced DC entries around 35 (quality ~20); qscale 3 gives ~6.
+void test_r_codec::test_mjpeg_snapshot_quality()
+{
+    const uint16_t w = 320, h = 240;
+    std::vector<uint8_t> yuv(w * h * 3 / 2);
+    for(int y = 0; y < h; ++y)
+        for(int x = 0; x < w; ++x)
+            yuv[y * w + x] = (uint8_t)((x * 255) / w);          // horizontal luma ramp
+    std::fill(yuv.begin() + w * h, yuv.end(), 128);             // neutral chroma
+
+    r_video_encoder encoder(AV_CODEC_ID_MJPEG, 0, w, h, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
+    encoder.attach_buffer(yuv.data(), yuv.size(), 0);
+    RTF_ASSERT(encoder.encode() == R_CODEC_STATE_HAS_OUTPUT);
+    auto pi = encoder.get();
+    RTF_ASSERT(pi.size > 4);
+    RTF_ASSERT(pi.data[0] == 0xFF && pi.data[1] == 0xD8); // SOI
+
+    // Walk markers to the first DQT (0xFFDB); table 0 is luma.
+    const uint8_t* p = pi.data + 2;
+    const uint8_t* end = pi.data + pi.size;
+    int dc_quant = -1;
+    while(p + 4 <= end && p[0] == 0xFF)
+    {
+        uint8_t marker = p[1];
+        uint16_t len = (uint16_t)((p[2] << 8) | p[3]);
+        if(marker == 0xDB)
+        {
+            uint8_t pq_tq = p[4];
+            RTF_ASSERT((pq_tq & 0x0F) == 0); // first table is luma
+            dc_quant = (pq_tq >> 4) ? ((p[5] << 8) | p[6]) : p[5];
+            break;
+        }
+        if(marker == 0xDA) break; // start of scan, no DQT found
+        p += 2 + len;
+    }
+    RTF_ASSERT(dc_quant > 0);
+    RTF_ASSERT(dc_quant <= 8);   // ~quality 85+; the regression produced ~35
 }
