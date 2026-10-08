@@ -313,6 +313,10 @@ r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_s
         response.set_body(result.size(), result.data());
         return response;
     }
+    catch(const r_utils::r_not_found_exception&)
+    {
+        throw; // no recording for this camera (yet): 404, not a logged 500
+    }
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -367,6 +371,10 @@ r_http::r_server_response r_ws::_get_webp(const r_http::r_web_server<r_utils::r_
         response.set_body(result.size(), result.data());
         return response;
     }
+    catch(const r_utils::r_not_found_exception&)
+    {
+        throw; // no recording for this camera (yet): 404, not a logged 500
+    }
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -400,6 +408,10 @@ r_http::r_server_response r_ws::_get_key_frame(const r_http::r_web_server<r_util
         response.set_content_type("application/octet-stream");
         response.set_body(result.size(), result.data());
         return response;
+    }
+    catch(const r_utils::r_not_found_exception&)
+    {
+        throw; // no recording for this camera (yet): 404, not a logged 500
     }
     catch(const std::exception& ex)
     {
@@ -449,6 +461,10 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
         response.set_content_type("text/json");
         response.set_body(j.dump());
         return response;
+    }
+    catch(const r_utils::r_not_found_exception&)
+    {
+        throw; // no recording for this camera (yet): 404, not a logged 500
     }
     catch(const std::exception& ex)
     {
@@ -1088,6 +1104,10 @@ r_http::r_server_response r_ws::_get_video(const r_http::r_web_server<r_utils::r
         response.set_content_type("application/vnd.revere.blobtree.v1");
         response.set_body(qr_buffer.size(), qr_buffer.data());
         return response;
+    }
+    catch(const r_utils::r_not_found_exception&)
+    {
+        throw; // no recording for this camera (yet): 404, not a logged 500
     }
     catch(const std::exception& ex)
     {

@@ -11,6 +11,8 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/r_macro.h"
 #include "r_utils/r_blob_tree.h"
+#include "r_utils/r_string_utils.h"
+#include "r_utils/r_logger.h"
 #include <functional>
 #include <thread>
 #include <map>
@@ -21,6 +23,22 @@
     catch(type& ex) \
     { \
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__); \
+        if(conn.valid()) \
+        { \
+            r_server_response response; \
+            response.set_status_code(code); \
+            response.write_response(conn); \
+        } \
+    }
+
+// Client-error variant: logs the exception message only (first line of
+// what()), without the captured backtrace. 4xx responses are routine
+// (unknown route, missing recording, bad token) and a stack per request
+// just buries real errors in the log.
+#define WS_CATCH_QUIET(type, code) \
+    catch(type& ex) \
+    { \
+        R_LOG_WARNING("%s:%d %s", __FILE__, __LINE__, r_utils::r_string_utils::split(std::string(ex.what()), '\n').front().c_str()); \
         if(conn.valid()) \
         { \
             r_server_response response; \
@@ -190,15 +208,15 @@ private:
             if(!response.written() && conn.valid())
                 response.write_response(conn);
         }
-        WS_CATCH(r_http_400_exception, response_bad_request)
-        WS_CATCH(r_http_401_exception, response_unauthorized)
-        WS_CATCH(r_http_403_exception, response_forbidden)
-        WS_CATCH(r_http_404_exception, response_not_found)
+        WS_CATCH_QUIET(r_http_400_exception, response_bad_request)
+        WS_CATCH_QUIET(r_http_401_exception, response_unauthorized)
+        WS_CATCH_QUIET(r_http_403_exception, response_forbidden)
+        WS_CATCH_QUIET(r_http_404_exception, response_not_found)
         WS_CATCH(r_http_500_exception, response_internal_server_error)
         WS_CATCH(r_http_501_exception, response_not_implemented)
-        WS_CATCH(r_utils::r_not_found_exception, response_not_found)
-        WS_CATCH(r_utils::r_invalid_argument_exception, response_bad_request)
-        WS_CATCH(r_utils::r_unauthorized_exception, response_forbidden)
+        WS_CATCH_QUIET(r_utils::r_not_found_exception, response_not_found)
+        WS_CATCH_QUIET(r_utils::r_invalid_argument_exception, response_bad_request)
+        WS_CATCH_QUIET(r_utils::r_unauthorized_exception, response_forbidden)
         WS_CATCH(r_utils::r_not_implemented_exception, response_not_implemented)
         WS_CATCH(r_utils::r_timeout_exception, response_internal_server_error)
         WS_CATCH(r_utils::r_io_exception, response_internal_server_error)
