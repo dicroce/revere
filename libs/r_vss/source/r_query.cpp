@@ -187,7 +187,7 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
 
     if(decoded)
     {
-        r_video_encoder encoder(AV_CODEC_ID_MJPEG, 100000, w, h, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
+        r_video_encoder encoder(AV_CODEC_ID_MJPEG, 0 /* MJPEG is constant-quality; bitrate unused */, w, h, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
         encoder.attach_buffer(decoded->data(), decoded->size(), 0);
         auto es = encoder.encode();
         if(es == R_CODEC_STATE_HAS_OUTPUT)
@@ -297,7 +297,7 @@ measured_camera r_vss::query_measure_camera(const string& top_dir, r_devices& de
         auto decoded = _decode_single_frame(video_codec, video_codec_params, cp.video_key_frame, AV_PIX_FMT_YUVJ420P, w, h);
         if(decoded)
         {
-            r_video_encoder encoder(AV_CODEC_ID_MJPEG, 100000, w, h, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
+            r_video_encoder encoder(AV_CODEC_ID_MJPEG, 0 /* MJPEG is constant-quality; bitrate unused */, w, h, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
             encoder.attach_buffer(decoded->data(), decoded->size(), 0);
             auto es = encoder.encode();
             if(es == R_CODEC_STATE_HAS_OUTPUT)

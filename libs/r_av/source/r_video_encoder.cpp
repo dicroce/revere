@@ -11,6 +11,11 @@ extern "C"
 }
 
 using namespace r_av;
+
+// Fixed quantizer for MJPEG snapshots. ffmpeg's qscale runs 1 (best) .. 31;
+// 3 is roughly libjpeg quality 85-90: visibly clean for thumbnails, hero
+// frames and vision-model input, at a sane size.
+static const int MJPEG_QSCALE = 3;
 using namespace r_utils;
 using namespace r_utils::r_std_utils;
 using namespace std;
@@ -94,6 +99,23 @@ r_video_encoder::r_video_encoder(
     _context->bit_rate = bit_rate;
     _context->rc_max_rate = bit_rate;
     _context->rc_buffer_size = bit_rate; // 1-second buffer
+
+    if(_codec->id == AV_CODEC_ID_MJPEG)
+    {
+        // Still images are constant-quality, not rate-controlled. With a
+        // bitrate (callers used to pass 100 kbit/s for a 2560x1920 frame)
+        // ffmpeg's MJPEG rate control can't meet the constraint, logs
+        // "impossible bitrate constraints" / "rc buffer underflow" on every
+        // frame, and pins the quantizer to its floor — snapshots came out at
+        // roughly JPEG quality 20. Drive the quantizer directly instead.
+        _context->bit_rate = 0;
+        _context->rc_max_rate = 0;
+        _context->rc_buffer_size = 0;
+        _context->flags |= AV_CODEC_FLAG_QSCALE;
+        _context->global_quality = MJPEG_QSCALE * FF_QP2LAMBDA;
+        _context->color_range = AVCOL_RANGE_JPEG;
+    }
+
     _context->width = w;
     _context->height = h;
     _context->time_base.num = framerate.den;
@@ -209,6 +231,10 @@ void r_video_encoder::set_bitrate(uint32_t bitrate)
     if(!_context)
         R_THROW(("Context is not initialized"));
 
+    // MJPEG is constant-quality (see constructor); never re-enable rate control.
+    if(_codec_id == AV_CODEC_ID_MJPEG)
+        return;
+
     _context->bit_rate = bitrate;
     _context->rc_max_rate = bitrate;
     _context->rc_buffer_size = bitrate;
@@ -267,6 +293,10 @@ r_codec_state r_video_encoder::encode()
 
     if(!_frame_sent)
     {
+        // AV_CODEC_FLAG_QSCALE encoders take the quantizer from the frame.
+        if(_codec_id == AV_CODEC_ID_MJPEG)
+            frame->quality = _context->global_quality;
+
         int sf_ret = avcodec_send_frame(_context, frame);
 
         if(sf_ret == AVERROR(EAGAIN))
