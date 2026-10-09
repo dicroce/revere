@@ -541,3 +541,74 @@ void test_r_websocket::test_websocket_client_wrapper() {
 
     server_thread.join();
 }
+
+// Extra handshake headers (e.g. Authorization) reach the server
+void test_r_websocket::test_handshake_extra_headers() {
+    int port = RTF_NEXT_PORT();
+
+    std::thread server_thread([port]() {
+        r_socket server_sock;
+        server_sock.bind(port, "0.0.0.0");
+        server_sock.listen();
+        r_socket client_conn = server_sock.accept();
+
+        r_server_request request;
+        request.read_request(client_conn);
+
+        auto auth_header = request.get_header("Authorization");
+        RTF_ASSERT(!auth_header.is_null());
+        RTF_ASSERT(auth_header.value() == "Bearer abc_DEF-123");
+
+        auto ws_key = request.get_header("Sec-WebSocket-Key").value();
+        r_server_response response(response_switching_protocols);
+        response.add_additional_header("Upgrade", "websocket");
+        response.add_additional_header("Connection", "Upgrade");
+        response.add_additional_header("Sec-WebSocket-Accept", r_websocket::compute_accept_key(ws_key));
+        response.write_response(client_conn);
+
+        auto close_frame = r_websocket::recv_frame(client_conn);
+        RTF_ASSERT(close_frame.opcode == ws_opcode::close);
+        r_websocket::send_close(client_conn, ws_close_code::normal, "", false);
+    });
+
+    rtf_usleep(100000);  // Give server time to start
+
+    auto socket = std::make_unique<r_socket>();
+    socket->connect("127.0.0.1", port);
+
+    r_websocket_client client(std::move(socket));
+    client.handshake("localhost", "/ws", {{"Authorization", "Bearer abc_DEF-123"}});
+    client.start();
+    client.close();
+
+    server_thread.join();
+}
+
+// A CR or LF in an extra header is refused before anything is sent
+void test_r_websocket::test_handshake_rejects_header_injection() {
+    int port = RTF_NEXT_PORT();
+
+    std::thread server_thread([port]() {
+        r_socket server_sock;
+        server_sock.bind(port, "0.0.0.0");
+        server_sock.listen();
+        r_socket client_conn = server_sock.accept();
+    });
+
+    rtf_usleep(100000);  // Give server time to start
+
+    r_socket client_sock;
+    client_sock.connect("127.0.0.1", port);
+
+    RTF_ASSERT_THROWS(
+        r_websocket::perform_client_handshake(client_sock, "localhost", "/ws",
+                                              {{"Authorization", "Bearer x\r\nX-Evil: 1"}}),
+        r_exception);
+    RTF_ASSERT_THROWS(
+        r_websocket::perform_client_handshake(client_sock, "localhost", "/ws",
+                                              {{"X-Bad\r\nName", "v"}}),
+        r_exception);
+
+    client_sock.close();
+    server_thread.join();
+}
