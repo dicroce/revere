@@ -4,6 +4,7 @@
 #include "r_utils/r_macro.h"
 #include "r_http/r_websocket.h"
 #include "r_utils/interfaces/r_socket_base.h"
+#include <map>
 #include <memory>
 #include <thread>
 #include <mutex>
@@ -30,6 +31,10 @@ public:
 
     // Perform WebSocket handshake
     R_API void handshake(const std::string& host, const std::string& path = "/");
+
+    // Perform WebSocket handshake with extra request headers (e.g. Authorization)
+    R_API void handshake(const std::string& host, const std::string& path,
+                         const std::map<std::string, std::string>& extra_headers);
 
     // Set callback for received messages
     R_API void set_message_callback(message_callback callback);

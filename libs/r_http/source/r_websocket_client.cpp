@@ -31,6 +31,15 @@ void r_websocket_client::handshake(const std::string& host, const std::string& p
     r_websocket::perform_client_handshake(*_socket, host, path);
 }
 
+void r_websocket_client::handshake(const std::string& host, const std::string& path,
+                                   const std::map<std::string, std::string>& extra_headers)
+{
+    if (!_socket || !_socket->valid())
+        R_THROW(("Socket not connected"));
+
+    r_websocket::perform_client_handshake(*_socket, host, path, extra_headers);
+}
+
 void r_websocket_client::set_message_callback(message_callback callback)
 {
     _on_message = callback;
