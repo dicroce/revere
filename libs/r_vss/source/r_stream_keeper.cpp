@@ -859,6 +859,7 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.bytes_per_second = c.second->bytes_per_second();
             s.receiving_video = c.second->receiving_video();
             s.storage_write_lag_ms = c.second->storage_write_lag_ms();
+            s.storage_timeline_lag_ms = c.second->storage_timeline_lag_ms();
             return s;
         }
     );

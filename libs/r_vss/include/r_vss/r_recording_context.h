@@ -195,6 +195,14 @@ public:
     // and dead() cannot see because the frames still arrive from the camera.
     R_API int64_t storage_write_lag_ms() const;
 
+    // How far the written video timeline trails the wall clock, in ms: now
+    // minus the newest video timestamp actually written to storage. ~0 when
+    // healthy. Grows when the recorded timeline detaches from real time (e.g.
+    // a source timestamp discontinuity), a state in which writes succeed —
+    // storage_write_lag_ms() stays 0 — but time-based queries find no recent
+    // video.
+    R_API int64_t storage_timeline_lag_ms() const;
+
     R_API r_storage::r_md_storage_file& metadata_storage();
 
     R_API void write_metadata(const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);

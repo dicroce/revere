@@ -48,6 +48,13 @@ public:
 
     R_API void write_frame(const r_storage_write_context& ctx, r_storage_media_type media_type, const uint8_t* p, size_t size, bool key, int64_t ts, int64_t pts);
 
+    // Newest timestamp actually written to each stream (post correction/clamp),
+    // -1 before the first write. This is the readable edge of the recording:
+    // comparing it against the wall clock detects a timeline that has detached
+    // from real time even while writes themselves are succeeding.
+    R_API int64_t last_video_ts() const { return _last_video_ts; }
+    R_API int64_t last_audio_ts() const { return _last_audio_ts; }
+
     R_API static size_t remove_blocks(const std::string& file_name, int64_t start_ts, int64_t end_ts);
 
     R_API static void allocate(const std::string& file_name, size_t block_size, size_t num_blocks);
@@ -57,6 +64,9 @@ private:
     std::unique_ptr<nanots_writer> _writer;
     int64_t _last_video_ts {-1};
     int64_t _last_audio_ts {-1};
+    int64_t _video_ts_correction {0};
+    int64_t _audio_ts_correction {0};
+    int64_t _last_drift_alarm_ms {0};
 };
 
 R_API std::pair<int64_t, int64_t> required_file_size_for_retention_hours(int64_t retention_hours, int64_t byte_rate);
