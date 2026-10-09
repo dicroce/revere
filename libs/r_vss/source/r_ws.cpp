@@ -492,12 +492,14 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
             bool receiving_video = false;
             bool stream_failed = false;
             int64_t storage_write_lag_ms = 0;
+            int64_t storage_timeline_lag_ms = 0;
             auto sit = status_by_id.find(c.id);
             if(sit != status_by_id.end())
             {
                 receiving_video = sit->second.receiving_video;
                 stream_failed = sit->second.failed;
                 storage_write_lag_ms = sit->second.storage_write_lag_ms;
+                storage_timeline_lag_ms = sit->second.storage_timeline_lag_ms;
             }
 
             j["cameras"].push_back(
@@ -516,6 +518,7 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                     {"record_file_path", (c.record_file_path.is_null())?"":c.record_file_path.value()},
                     {"receiving_video", receiving_video},
                     {"storage_write_lag_ms", storage_write_lag_ms},
+                    {"storage_timeline_lag_ms", storage_timeline_lag_ms},
                     {"stream_failed", stream_failed},
                     {"manual", (c.xaddrs.is_null() && !c.rtsp_url.is_null())},
                     {"width", res.is_null() ? 0 : res.value().first},
