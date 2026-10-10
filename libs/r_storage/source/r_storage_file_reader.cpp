@@ -32,8 +32,10 @@ r_storage_file_reader::r_storage_file_reader(const string& file_name) :
     // fallocate). Every valid nanots file is at least one FILE_HEADER_BLOCK_SIZE
     // header block, so reject anything smaller with a normal exception — which
     // callers already handle (and which can't SIGBUS the whole process).
+    // Typed as not-found so callers can treat "no recording (yet)" as an
+    // expected state — the web server maps it to a 404 instead of a logged 500.
     if(!r_fs::file_exists(nanots_file_name))
-        R_THROW(("nanots file not found: %s", nanots_file_name.c_str()));
+        R_STHROW(r_utils::r_not_found_exception, ("nanots file not found: %s", nanots_file_name.c_str()));
 
     auto nts_size = r_fs::file_size(nanots_file_name);
     if(nts_size < FILE_HEADER_BLOCK_SIZE)

@@ -248,6 +248,27 @@ static string generate_stack()
 
 #endif
 
+// Should frames be resolved to file:line with an external symbolizer
+// (atos on macOS, addr2line on Linux)? Default OFF: that path spawns one
+// subprocess per frame (~30 per exception) and costs seconds per throw,
+// and r_exception captures a trace on every construction — including the
+// routine 404 / file-not-found / timeout throws the server uses as control
+// flow. Function names still come from dladdr() in-process; the raw
+// address + image load base is printed so file:line can be recovered
+// offline:   atos -o <image> -l <base> <addr>   /   addr2line -e <image> <offset>
+// Opt back in for local debugging with REVERE_SYMBOLIZE_TRACES=1.
+bool r_utils::r_stack_trace::symbolize_enabled()
+{
+    static const bool enabled = [](){
+        const char* v = getenv("REVERE_SYMBOLIZE_TRACES");
+        if(!v || !*v) return false;
+        // Never shell out in sandboxed environments (Flatpak/Snap): binutils isn't available.
+        if(getenv("FLATPAK_ID") != nullptr || getenv("SNAP") != nullptr) return false;
+        return !(v[0] == '0' && v[1] == '\0');
+    }();
+    return enabled;
+}
+
 string r_utils::r_stack_trace::get_stack(char sep)
 {
 #ifdef IS_WINDOWS
@@ -256,6 +277,8 @@ string r_utils::r_stack_trace::get_stack(char sep)
     void* trace[256];
     int trace_size = backtrace(trace, 256);
     std::ostringstream out;
+
+    const bool symbolize = symbolize_enabled();
 
     for (int i = 1; i < trace_size; ++i)
     {
@@ -280,32 +303,41 @@ string r_utils::r_stack_trace::get_stack(char sep)
         uintptr_t base = reinterpret_cast<uintptr_t>(info.dli_fbase);
         uintptr_t offset = addr - base;
 
-        std::string location = "?? ??:0";
+        const char* image = info.dli_fname ? info.dli_fname : "?";
+        const char* image_base = strrchr(image, '/');
+        image_base = image_base ? image_base + 1 : image;
 
-        // Skip addr2line/atos in sandboxed environments (Flatpak/Snap) since binutils isn't available
-        static bool is_sandboxed = (getenv("FLATPAK_ID") != nullptr || getenv("SNAP") != nullptr);
-        if (!is_sandboxed)
+        std::string location;
+
+        if (symbolize)
         {
             char cmd[512];
 #ifdef IS_MACOS
-            snprintf(cmd, sizeof(cmd), "atos -o %s -l 0x%lx 0x%lx", info.dli_fname, base, addr);
+            snprintf(cmd, sizeof(cmd), "atos -o %s -l 0x%lx 0x%lx", image, (unsigned long)base, (unsigned long)addr);
 #else
-            snprintf(cmd, sizeof(cmd), "addr2line -f -p -e %s 0x%lx", info.dli_fname, offset);
+            snprintf(cmd, sizeof(cmd), "addr2line -f -p -e %s 0x%lx", image, (unsigned long)offset);
 #endif
             FILE* fp = popen(cmd, "r");
-
             if (fp)
             {
                 char buf[512];
                 if (fgets(buf, sizeof(buf), fp))
                 {
                     location = buf;
-                    // Remove trailing newline
                     if (!location.empty() && location.back() == '\n')
                         location.pop_back();
                 }
                 pclose(fp);
             }
+        }
+
+        if (location.empty())
+        {
+            // In-process fallback: image + offset is enough to symbolize offline.
+            char buf[256];
+            snprintf(buf, sizeof(buf), "(in %s) +0x%lx [base 0x%lx addr 0x%lx]",
+                     image_base, (unsigned long)offset, (unsigned long)base, (unsigned long)addr);
+            location = buf;
         }
 
         out << "[#" << (trace_size - i) << "] " << func << " @ " << location << sep;

@@ -212,6 +212,27 @@ void test_r_utils::test_stack_trace()
     RTF_ASSERT(!s.empty());
 }
 
+// get_stack() runs inside every r_exception constructor, so it has to be
+// cheap: no per-frame subprocess (atos/addr2line) unless explicitly enabled.
+// 200 captures well under a second is the budget; the old popen path took
+// seconds for ONE capture.
+void test_r_utils::test_stack_trace_is_cheap()
+{
+    RTF_ASSERT(!r_stack_trace::symbolize_enabled());
+
+    auto start = std::chrono::steady_clock::now();
+    std::string s;
+    for(int i = 0; i < 200; ++i)
+        s = r_stack_trace::get_stack();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    RTF_ASSERT(ms < 1000);
+
+    // Still useful: frames carry the function name plus image/offset so they
+    // can be symbolized offline.
+    RTF_ASSERT(s.find("test_stack_trace_is_cheap") != std::string::npos);
+    RTF_ASSERT(s.find("[base 0x") != std::string::npos);
+}
+
 void test_1()
 {
     R_THROW(("Hey, some shiz went wrong!"));
