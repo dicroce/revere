@@ -51,6 +51,7 @@
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_file.h"
 #include "r_storage/r_md_storage_file.h"
+#include "r_storage/r_storage_file_reader.h"
 #include "r_pipeline/r_stream_info.h"
 #include "r_pipeline/r_gst_source.h"
 #include "r_av/r_video_decoder.h"
@@ -243,6 +244,8 @@ static SDL_Renderer* g_renderer = nullptr;
 
 extern ImGuiContext *GImGui;
 
+static std::string _get_storage_path(const std::string& record_file_path);
+
 void _assign_camera(revere::assignment_state& as, r_disco::r_devices& devices)
 {
     auto c = as.camera.value();
@@ -304,6 +307,17 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
                 item.kbps = "failed to start";
                 item.retention = status.failure_message;
                 item.health = revere::stream_health::error;
+
+                // The most common cause is the recording file having gone missing
+                // (moved aside by hand, or a failed/interrupted allocation). The
+                // stream keeper can't recover from that on its own, so offer a
+                // one-click re-create instead of making the user remove + re-add.
+                const auto& cam = c.second;
+                if(!cam.record_file_path.is_null() && !r_fs::file_exists(_get_storage_path(cam.record_file_path.value())))
+                {
+                    item.retention = "recording file missing";
+                    item.action_label = "Repair";
+                }
             }
             else
             {
@@ -511,6 +525,12 @@ struct storage_op_state
     int64_t byte_rate{0};
     int64_t new_num_blocks{0};
     int64_t new_block_size{0};
+
+    // Repair op (missing recording file): 0 = re-create fresh files,
+    // 1 = adopt an existing .nts at locate_path.
+    int repair_mode{0};
+    std::string locate_path;
+    std::string missing_path;
 };
 
 static storage_op_state s_storage_op;
@@ -771,6 +791,85 @@ static void _do_reset_storage(
         devices.save_camera(camera);
 
         set_status("Reset complete. Recording will resume.");
+        op.progress = 1.f;
+        op.done = true;
+        op.running = false;
+        stream_keeper.resume(camera.id);
+    }
+    catch(const std::exception& e)
+    {
+        set_status(string("Error: ") + e.what());
+        op.error = true;
+        op.running = false;
+        stream_keeper.resume(camera.id);
+    }
+}
+
+// Repair (locate): adopt an existing .nts the user pointed us at. Validates it
+// the same way the recorder would (missing / truncated / bad magic all throw),
+// takes block geometry from the file header so retention math and any later
+// reset use the real ring size, reuses a sibling .mdb if one exists (creates
+// one otherwise when motion detection is on), then repoints the camera row.
+static void _do_locate_storage(
+    r_vss::r_stream_keeper& stream_keeper,
+    r_disco::r_devices& devices,
+    r_disco::r_camera camera,
+    const string& nts_path,
+    storage_op_state& op
+)
+{
+    auto set_status = [&](const string& s) {
+        std::lock_guard<std::mutex> g(op.mtx);
+        op.status = s;
+    };
+
+    try
+    {
+        stream_keeper.suspend(camera.id);
+
+        set_status("Checking recording file...");
+        {
+            // Throws r_not_found / generic on missing, truncated or non-nanots files.
+            r_storage::r_storage_file_reader reader(nts_path);
+            (void)reader.last_ts();
+        }
+        op.progress = 0.4f;
+
+        // Geometry straight from the nanots header (see nanots.h):
+        //   8: block_size (u32)   12: n_blocks (u32)
+        uint32_t block_size = 0, n_blocks = 0;
+        {
+            std::ifstream in(nts_path, std::ios::binary);
+            char hdr[16] = {0};
+            if(!in.read(hdr, sizeof(hdr)))
+                R_THROW(("Unable to read header of %s", nts_path.c_str()));
+            memcpy(&block_size, hdr + 8, 4);
+            memcpy(&n_blocks, hdr + 12, 4);
+        }
+        if(block_size == 0)
+            R_THROW(("%s does not look like a nanots recording file.", nts_path.c_str()));
+        op.progress = 0.6f;
+
+        auto dot = nts_path.find_last_of('.');
+        auto mdb_path = (dot == string::npos) ? nts_path + ".mdb" : nts_path.substr(0, dot) + ".mdb";
+        bool do_motion = !camera.do_motion_detection.is_null() && camera.do_motion_detection.value();
+        if(do_motion && !r_fs::file_exists(mdb_path))
+        {
+            set_status("Creating motion files...");
+            _create_motion_files(mdb_path);
+        }
+        op.progress = 0.8f;
+
+        set_status("Updating database...");
+        camera.record_file_path.set_value(nts_path);
+        camera.record_file_block_size.set_value(block_size);
+        if(n_blocks > 0)
+            camera.n_record_file_blocks.set_value(n_blocks);
+        if(do_motion)
+            camera.motion_detection_file_path.set_value(mdb_path);
+        devices.save_camera(camera);
+
+        set_status("Recording file attached. Recording will resume.");
         op.progress = 1.f;
         op.done = true;
         op.running = false;
@@ -1816,6 +1915,75 @@ void configure_camera_setup_wizard(
                 [&](){
                     // Cancel in-progress op: signal thread, then wait for done before closing
                     s_storage_op.cancel_requested = true;
+                }
+            );
+        }
+    );
+
+    camera_setup_wizard.add_step(
+        "repair_storage_modal",
+        [&camera_setup_wizard, &devices, &stream_keeper](){
+            ImGui::OpenPopup("Repair Recording Storage");
+
+            string status_copy;
+            {
+                std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                status_copy = s_storage_op.status;
+            }
+
+            revere::repair_storage_modal(
+                GImGui,
+                "Repair Recording Storage",
+                s_storage_op.camera_name,
+                s_storage_op.missing_path,
+                s_storage_op.repair_mode,
+                s_storage_op.locate_path,
+                s_storage_op.progress.load(),
+                s_storage_op.running.load(),
+                s_storage_op.done.load(),
+                s_storage_op.error.load(),
+                status_copy,
+                [&](){
+                    auto maybe_camera = devices.get_camera_by_id(s_storage_op.camera_id);
+                    if(maybe_camera.is_null()) return;
+                    s_storage_op.running = true;
+                    s_storage_op.done = false;
+                    s_storage_op.error = false;
+                    s_storage_op.progress = 0.f;
+                    s_storage_op.cancel_requested = false;
+                    {
+                        std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                        s_storage_op.status.clear();
+                    }
+                    auto camera = maybe_camera.value();
+                    if(s_storage_op.repair_mode == 1)
+                    {
+                        auto path = s_storage_op.locate_path;
+                        std::thread([&stream_keeper, &devices, camera, path](){
+                            _do_locate_storage(stream_keeper, devices, camera, path, s_storage_op);
+                        }).detach();
+                    }
+                    else
+                    {
+                        // Empty new_dir = re-create in place, using the stored block geometry.
+                        std::thread([&stream_keeper, &devices, camera](){
+                            _do_reset_storage(stream_keeper, devices, camera, "", s_storage_op);
+                        }).detach();
+                    }
+                },
+                [&](){
+                    s_storage_op.running = false;
+                    s_storage_op.done = false;
+                    s_storage_op.error = false;
+                    s_storage_op.progress = 0.f;
+                    s_storage_op.start_fresh = false;
+                    s_storage_op.repair_mode = 0;
+                    s_storage_op.locate_path.clear();
+                    {
+                        std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                        s_storage_op.status.clear();
+                    }
+                    camera_setup_wizard.cancel();
                 }
             );
         }
@@ -3217,6 +3385,7 @@ int main(int argc, char** argv)
                             [](int){},
                             false, // no view button on discovered (not recording yet)
                             [](int){},
+                            [](int){}, // no per-card action on discovered
                             ui_state.discovered_largest_label,
                             FONT_KEY_24,
                             FONT_KEY_22
@@ -3284,6 +3453,33 @@ int main(int argc, char** argv)
 #else
                                 _launch_detached(vision_cmd + args);
 #endif
+                            },
+                            [&](int i){
+                                // "Repair" on a card whose recording file is missing.
+                                ui_state.recording_selected_item = i;
+                                ui_state.discovered_selected_item = -1;
+                                force_ui_update = true;
+
+                                auto maybe_c = devices.get_camera_by_id(ui_state.recording_items[i].camera_id);
+                                if(maybe_c.is_null())
+                                    return;
+                                auto c = maybe_c.value();
+                                s_storage_op.camera_id = c.id;
+                                s_storage_op.camera_name = c.friendly_name.is_null() ? c.camera_name.value() : c.friendly_name.value();
+                                s_storage_op.new_dir.clear();
+                                s_storage_op.start_fresh = true;
+                                s_storage_op.repair_mode = 0;
+                                s_storage_op.locate_path.clear();
+                                s_storage_op.missing_path = c.record_file_path.is_null() ? std::string() : _get_storage_path(c.record_file_path.value());
+                                s_storage_op.running = false;
+                                s_storage_op.done = false;
+                                s_storage_op.error = false;
+                                s_storage_op.progress = 0.f;
+                                {
+                                    std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                                    s_storage_op.status.clear();
+                                }
+                                camera_setup_wizard.next("repair_storage_modal");
                             },
                             ui_state.recording_largest_label,
                             FONT_KEY_24,
