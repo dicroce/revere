@@ -21,6 +21,8 @@ public:
       TEST(test_r_websocket::test_client_server_close_handshake);
       TEST(test_r_websocket::test_full_http_upgrade_handshake);
       TEST(test_r_websocket::test_websocket_client_wrapper);
+      TEST(test_r_websocket::test_handshake_extra_headers);
+      TEST(test_r_websocket::test_handshake_rejects_header_injection);
     RTF_FIXTURE_END();
 
     virtual ~test_r_websocket() throw() {}
@@ -44,4 +46,6 @@ public:
     void test_client_server_close_handshake();
     void test_full_http_upgrade_handshake();
     void test_websocket_client_wrapper();
+    void test_handshake_extra_headers();
+    void test_handshake_rejects_header_injection();
 };

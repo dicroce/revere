@@ -222,6 +222,15 @@ void r_websocket::perform_client_handshake(
     const std::string& host,
     const std::string& path)
 {
+    perform_client_handshake(sock, host, path, {});
+}
+
+void r_websocket::perform_client_handshake(
+    r_utils::r_socket_base& sock,
+    const std::string& host,
+    const std::string& path,
+    const std::map<std::string, std::string>& extra_headers)
+{
     // Generate WebSocket key
     std::string ws_key = generate_websocket_key();
 
@@ -232,8 +241,17 @@ void r_websocket::perform_client_handshake(
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Key: " + ws_key + "\r\n"
-        "Sec-WebSocket-Version: 13\r\n"
-        "\r\n";
+        "Sec-WebSocket-Version: 13\r\n";
+
+    for (const auto& [name, value] : extra_headers)
+    {
+        if (name.empty() || name.find_first_of("\r\n:") != std::string::npos ||
+            value.find_first_of("\r\n") != std::string::npos)
+            R_THROW(("Invalid WebSocket handshake header"));
+        request += name + ": " + value + "\r\n";
+    }
+
+    request += "\r\n";
 
     // Send request using r_networking::r_send for proper retry handling
     int sent = r_networking::r_send(sock, request.c_str(), request.length());

@@ -4,6 +4,7 @@
 #include "r_utils/r_macro.h"
 #include "r_http/r_websocket_frame.h"
 #include "r_utils/interfaces/r_socket_base.h"
+#include <map>
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -75,6 +76,15 @@ public:
         r_utils::r_socket_base& sock,
         const std::string& host,
         const std::string& path = "/"
+    );
+
+    // Same, with extra request headers (e.g. Authorization). Throws if a name
+    // or value contains CR or LF, which would inject headers.
+    R_API static void perform_client_handshake(
+        r_utils::r_socket_base& sock,
+        const std::string& host,
+        const std::string& path,
+        const std::map<std::string, std::string>& extra_headers
     );
 
 private:
