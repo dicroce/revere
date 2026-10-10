@@ -57,6 +57,10 @@ static void _whack_files()
     if(r_fs::file_exists("nanots_test_4mb.nts"))
         r_fs::remove_file("nanots_test_4mb.nts");
 
+    for(auto& f : {"ts_test.nts", "ts_test.db", "ts_test.db-wal", "ts_test.db-shm"})
+        if(r_fs::file_exists(f))
+            r_fs::remove_file(f);
+
 //    if(r_fs::file_exists("test_file.rvd"))
 //        r_fs::remove_file("test_file.rvd");
 //    if(r_fs::file_exists("ten_mb_file.rvd"))
@@ -84,6 +88,86 @@ void test_r_storage::setup()
 void test_r_storage::teardown()
 {
     _whack_files();
+}
+
+static int64_t _wall_now_ms()
+{
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+// A small backward wobble in source timestamps (jitter/reordering) is clamped
+// to last + 1 for that frame only; subsequent in-order frames keep their own
+// timestamps.
+void test_r_storage::test_r_storage_file_ts_wobble_clamp()
+{
+    r_storage_file::allocate("ts_test.nts", 65536, 10);
+    r_storage_file sf("ts_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    vector<uint8_t> frame(256, 0xAA);
+
+    int64_t base = _wall_now_ms() - 10000;
+
+    sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), true, base, 0);
+    sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), false, base + 33, 33);
+    RTF_ASSERT(sf.last_video_ts() == base + 33);
+
+    // 50ms backward wobble: clamped to last + 1
+    sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), false, base - 17, 66);
+    RTF_ASSERT(sf.last_video_ts() == base + 34);
+
+    // in-order frame resumes its own timestamp
+    sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), false, base + 99, 99);
+    RTF_ASSERT(sf.last_video_ts() == base + 99);
+}
+
+// A large backward jump (camera reboot / NTP step / RTP base reset) must not
+// be clamped frame-by-frame — that wedges the readable timeline into a +1ms
+// flatline advancing at ~frame-rate ms per real second. It re-anchors at the
+// wall clock and carries the offset forward, so the timeline keeps advancing
+// at the source's cadence and time-based queries keep finding recent video.
+void test_r_storage::test_r_storage_file_ts_discontinuity_reanchor()
+{
+    r_storage_file::allocate("ts_test.nts", 65536, 10);
+    r_storage_file sf("ts_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    vector<uint8_t> frame(256, 0xAA);
+
+    int64_t base = _wall_now_ms() - 10000;
+
+    for(int i = 0; i < 10; ++i)
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), (i % 5) == 0, base + i * 33, i * 33);
+
+    // source jumps back 24 hours mid-stream
+    int64_t jumped_base = base - (24LL * 60 * 60 * 1000);
+    int64_t before_jump = sf.last_video_ts();
+
+    sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), true, jumped_base, 330);
+
+    // re-anchored at the wall clock: monotonic and within seconds of now
+    auto anchored = sf.last_video_ts();
+    RTF_ASSERT(anchored > before_jump);
+    RTF_ASSERT((_wall_now_ms() - anchored) < 10000);
+
+    // subsequent frames advance at the source's cadence from the anchor,
+    // NOT at +1ms per frame
+    for(int i = 1; i <= 10; ++i)
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), (i % 5) == 0, jumped_base + i * 33, 330 + i * 33);
+
+    RTF_ASSERT(sf.last_video_ts() == anchored + 330);
+
+    // the symptom that motivated this: a key-frame query near "now" (the
+    // thumbnail path) must find a frame after the discontinuity
+    r_storage_file_reader sfr("ts_test.nts");
+    RTF_ASSERT(!sfr.last_ts().is_null());
+    RTF_ASSERT((_wall_now_ms() - sfr.last_ts().value()) < 10000);
 }
 
 #if 0

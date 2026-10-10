@@ -509,6 +509,18 @@ int64_t r_recording_context::storage_write_lag_ms() const
     return duration_cast<milliseconds>(lag).count();
 }
 
+int64_t r_recording_context::storage_timeline_lag_ms() const
+{
+    if(!_got_first_video_sample)
+        return 0;
+    auto last_written = _storage_file.last_video_ts();
+    if(last_written < 0)
+        return 0;
+    auto now_ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    auto lag = now_ms - last_written;
+    return (lag > 0) ? lag : 0;
+}
+
 bool r_recording_context::dead() const
 {
     auto now = system_clock::now();
