@@ -144,6 +144,11 @@ R_API std::vector<uint8_t> get_video_codec_extradata(const std::string& video_co
 //   H265: "sprop-vps=<b64>,sprop-sps=<b64>,sprop-pps=<b64>,sc_framerate=<fr>"
 R_API std::string build_video_codec_params(const std::string& codec_name, const std::vector<uint8_t>& extradata, float framerate);
 
+// The framerate a video_codec_parameters string carries as "sc_framerate=<fr>"
+// (written by build_video_codec_params and the recording context). Null when
+// the attribute is missing, not a number, or not positive.
+R_API r_utils::r_nullable<float> get_video_codec_framerate(const std::string& video_codec_parameters);
+
 // Build an audio_codec_parameters string encoding rate, channels, and (optionally)
 // the AudioSpecificConfig (ASC) as sc_asc=<base64>, e.g.:
 //   "sc_audio_rate=48000, sc_audio_channels=2, sc_asc=<b64>"
