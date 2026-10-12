@@ -21,6 +21,7 @@
 #include "r_utils/r_avg.h"
 #include "r_utils/r_algorithms.h"
 #include "r_utils/r_ring_buffer.h"
+#include "r_utils/r_qr_code.h"
 #include <chrono>
 #include <thread>
 #include <climits>
@@ -1933,6 +1934,47 @@ void test_r_utils::test_ipv4_subnet_hosts()
         RTF_ASSERT(r_networking::r_ipv4_subnet_hosts("not-an-ip", "255.255.255.0", 4096).empty());
         RTF_ASSERT(r_networking::r_ipv4_subnet_hosts("10.0.0.1", "", 4096).empty());
     }
+}
+
+void test_r_utils::test_qr_code_encode()
+{
+    // A cloud activation link, the kind of text the status panel shows.
+    auto qr = r_qr_code::encode("https://app.revere.video/activate?user_code=ABCD-EFGH");
+    RTF_ASSERT(qr.size >= 21 && (qr.size - 17) % 4 == 0);
+    RTF_ASSERT(qr.modules.size() == (size_t)qr.size * qr.size);
+
+    // Finder patterns (7x7: dark ring, light ring, dark 3x3 core) in three
+    // corners, with a light separator; none in the bottom-right.
+    auto finder_at = [&](int ox, int oy) {
+        for(int y = 0; y < 7; ++y)
+        {
+            for(int x = 0; x < 7; ++x)
+            {
+                bool ring = x == 0 || y == 0 || x == 6 || y == 6;
+                bool core = x >= 2 && x <= 4 && y >= 2 && y <= 4;
+                if(qr.dark(ox + x, oy + y) != (ring || core))
+                    return false;
+            }
+        }
+        return true;
+    };
+    RTF_ASSERT(finder_at(0, 0));
+    RTF_ASSERT(finder_at(qr.size - 7, 0));
+    RTF_ASSERT(finder_at(0, qr.size - 7));
+    RTF_ASSERT(!finder_at(qr.size - 7, qr.size - 7));
+    for(int i = 0; i < 8; ++i)
+        RTF_ASSERT(!qr.dark(7, i) && !qr.dark(i, 7));
+
+    // Same text, same code.
+    auto again = r_qr_code::encode("https://app.revere.video/activate?user_code=ABCD-EFGH");
+    RTF_ASSERT(again.size == qr.size && again.modules == qr.modules);
+
+    // Longer text needs a bigger code.
+    RTF_ASSERT(r_qr_code::encode(string(200, 'a')).size > qr.size);
+
+    // Too long for any QR version: empty, not a throw.
+    auto too_long = r_qr_code::encode(string(5000, 'a'));
+    RTF_ASSERT(too_long.size == 0 && too_long.modules.empty());
 }
 
 #ifdef WIN32
