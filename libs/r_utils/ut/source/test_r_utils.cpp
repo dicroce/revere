@@ -24,6 +24,8 @@
 #include "r_utils/r_qr_code.h"
 #include <chrono>
 #include <thread>
+#include <atomic>
+#include <vector>
 #include <climits>
 #include <numeric>
 #include <cstdint>
@@ -232,6 +234,32 @@ void test_r_utils::test_stack_trace_is_cheap()
     // can be symbolized offline.
     RTF_ASSERT(s.find("test_stack_trace_is_cheap") != std::string::npos);
     RTF_ASSERT(s.find("[base 0x") != std::string::npos);
+}
+
+// Exceptions are thrown on many threads at once. On Windows the trace goes
+// through DbgHelp, which is single-threaded; unserialized SymInitialize /
+// SymCleanup pairs corrupted the heap (0xc0000374) in production.
+void test_r_utils::test_stack_trace_concurrent()
+{
+    std::atomic<int> named{0};
+    std::vector<std::thread> threads;
+    for(int t = 0; t < 8; ++t)
+    {
+        threads.emplace_back([&](){
+            for(int i = 0; i < 100; ++i)
+            {
+                try { R_THROW(("concurrent")); }
+                catch(const r_exception& ex)
+                {
+                    if(std::string(ex.what()).find("test_stack_trace_concurrent") != std::string::npos)
+                        ++named;
+                }
+            }
+        });
+    }
+    for(auto& th : threads)
+        th.join();
+    RTF_ASSERT(named == 800);
 }
 
 void test_1()
