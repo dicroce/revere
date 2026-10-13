@@ -14,12 +14,7 @@
 #endif
 #ifdef IS_WINDOWS
 #include <windows.h>
-#include <string>
-#include <sstream>
-#include <vector>
-#include <Psapi.h>
-#include <algorithm>
-#include <iterator>
+#include <mutex>
 #endif
 
 using namespace r_utils;
@@ -27,9 +22,6 @@ using namespace std;
 
 #ifdef IS_WINDOWS
 
-static char stack_buffer[32768];
-
-#pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "dbghelp.lib")
 
 // Some versions of imagehlp.dll lack the proper packing directives themselves
@@ -38,212 +30,100 @@ static char stack_buffer[32768];
 #include <imagehlp.h>
 #pragma pack( pop, before_imagehlp )
 
-struct module_data {
-    std::string image_name;
-    std::string module_name;
-    void *base_address;
-    DWORD load_size;
-};
-
-DWORD generate_stack_trace(char* buffer, EXCEPTION_POINTERS *ep );
-
-class symbol 
+// DbgHelp is single-threaded: every Sym* call in the process must be
+// serialized. This used to SymInitialize / SymFromAddr / SymCleanup on every
+// call, unlocked, from whatever thread constructed an r_exception — and revere
+// throws as control flow on many threads at once. Racing Init/Cleanup pairs
+// double-free DbgHelp's internal module state (0xc0000374; caught in a dump
+// 2026-10-13 inside SymInitialize under r_websocket::send_binary). So: one
+// lock, one SymInitialize for the life of the process, never SymCleanup, and
+// no symbol server (that made every throw a potential HTTP fetch).
+static std::mutex& _dbghelp_lock()
 {
-    typedef IMAGEHLP_SYMBOL64 sym_type;
-    sym_type *sym;
-    static const int max_name_len = 1024;
+    // Leaked on purpose: exceptions can be thrown during static destruction.
+    static std::mutex* m = new std::mutex;
+    return *m;
+}
 
-public:
-    symbol(HANDLE process, DWORD64 address) : 
-        sym((sym_type *)::operator new(sizeof(*sym) + max_name_len))
+// Caller must hold _dbghelp_lock().
+static void _dbghelp_init_once(HANDLE process)
+{
+    static bool initialized = false;
+    if(initialized)
+        return;
+    initialized = true;
+
+    DWORD opts = SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_FAIL_CRITICAL_ERRORS | SYMOPT_NO_PROMPTS;
+    if(r_stack_trace::symbolize_enabled())
+        opts |= SYMOPT_LOAD_LINES;
+    ::SymSetOptions(opts);
+    ::SymInitialize(process, NULL, TRUE);
+}
+
+static string generate_stack(char sep)
+{
+    PVOID addrs[64] = { 0 };
+    // Skip generate_stack itself.
+    USHORT frames = CaptureStackBackTrace(1, 64, addrs, NULL);
+
+    const bool symbolize = r_stack_trace::symbolize_enabled();
+    HANDLE process = ::GetCurrentProcess();
+    std::ostringstream out;
+
+    std::lock_guard<std::mutex> g(_dbghelp_lock());
+    _dbghelp_init_once(process);
+
+    bool refreshed = false;
+    for(USHORT i = 0; i < frames; ++i)
     {
-        memset(sym, '\0', sizeof(*sym) + max_name_len);
-        sym->SizeOfStruct = sizeof(*sym);
-        sym->MaxNameLength = max_name_len;
-        DWORD64 displacement;
+        DWORD64 addr = (DWORD64)addrs[i];
 
-        SymGetSymFromAddr64(process, address, &displacement, sym);
-    }
+        // Image + load base come straight from the loader, not DbgHelp.
+        HMODULE mod = NULL;
+        char image[MAX_PATH] = "?";
+        if(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)addrs[i], &mod))
+            GetModuleFileNameA(mod, image, sizeof(image));
+        const char* image_base = strrchr(image, '\\');
+        image_base = image_base ? image_base + 1 : image;
+        DWORD64 base = (DWORD64)mod;
 
-    std::string name() { return std::string(sym->Name); }
-    std::string undecorated_name()
-    { 
-        if (*sym->Name == '\0')
-            return "<couldn't map PC to fn name>";
-        std::vector<char> und_name(max_name_len);
-        UnDecorateSymbolName(sym->Name, &und_name[0], max_name_len, UNDNAME_COMPLETE);
-        return std::string(&und_name[0], strlen(&und_name[0]));
-    }
-};
-
-class get_mod_info
-{
-    HANDLE process;
-    static const int buffer_length = 4096;
-public:
-    get_mod_info(HANDLE h) : process(h) {}
-
-    module_data operator()(HMODULE module)
-    { 
-        module_data ret;
-        char temp[buffer_length];
-        MODULEINFO mi;
-
-        GetModuleInformation(process, module, &mi, sizeof(mi));
-        ret.base_address = mi.lpBaseOfDll;
-        ret.load_size = mi.SizeOfImage;
-
-        GetModuleFileNameEx(process, module, temp, sizeof(temp));
-        ret.image_name = temp;
-        GetModuleBaseName(process, module, temp, sizeof(temp));
-        ret.module_name = temp;
-        std::vector<char> img(ret.image_name.begin(), ret.image_name.end());
-        std::vector<char> mod(ret.module_name.begin(), ret.module_name.end());
-        SymLoadModule64(process, 0, &img[0], &mod[0], (DWORD64)ret.base_address, ret.load_size);
-        return ret;
-    }
-};
-
-#if 0
-
-// if you use C++ exception handling: install a translator function
-// with set_se_translator(). In the context of that function (but *not*
-// afterwards), you can either do your stack dump, or save the CONTEXT
-// record as a local copy. Note that you must do the stack dump at the
-// earliest opportunity, to avoid the interesting stack-frames being gone
-// by the time you do the dump.
-DWORD generate_stack_trace(char* buffer, EXCEPTION_POINTERS *ep) 
-{
-    HANDLE process = GetCurrentProcess();
-    HANDLE hThread = GetCurrentThread();
-    int frame_number=0;
-    DWORD offset_from_symbol=0;
-    IMAGEHLP_LINE64 line = {0};
-    std::vector<module_data> modules;
-    DWORD cbNeeded;
-    std::vector<HMODULE> module_handles(1);
-
-    // Load the symbols:
-    // WARNING: You'll need to replace <pdb-search-path> with either NULL
-    // or some folder where your clients will be able to find the .pdb file.
-    if (!SymInitialize(process, NULL, false)) 
-        throw(std::logic_error("Unable to initialize symbol handler"));
-    DWORD symOptions = SymGetOptions();
-    symOptions |= SYMOPT_LOAD_LINES | SYMOPT_UNDNAME;
-    SymSetOptions(symOptions);
-    EnumProcessModules(process, &module_handles[0], ((DWORD)module_handles.size() * sizeof(HMODULE)), (LPDWORD)&cbNeeded);
-    module_handles.resize(cbNeeded/sizeof(HMODULE));
-    EnumProcessModules(process, &module_handles[0], ((DWORD)module_handles.size() * sizeof(HMODULE)), (LPDWORD)&cbNeeded);
-    std::transform(module_handles.begin(), module_handles.end(), std::back_inserter(modules), get_mod_info(process));
-    void *base = modules[0].base_address;
-
-    // Setup stuff:
-    CONTEXT* context = ep->ContextRecord;
-#ifdef _M_X64
-    STACKFRAME64 frame;
-    frame.AddrPC.Offset = context->Rip;
-    frame.AddrPC.Mode = AddrModeFlat;
-    frame.AddrStack.Offset = context->Rsp;
-    frame.AddrStack.Mode = AddrModeFlat;    
-    frame.AddrFrame.Offset = context->Rbp;
-    frame.AddrFrame.Mode = AddrModeFlat;
-#else
-    STACKFRAME64 frame;
-    frame.AddrPC.Offset = context->Eip;
-    frame.AddrPC.Mode = AddrModeFlat;
-    frame.AddrStack.Offset = context->Esp;
-    frame.AddrStack.Mode = AddrModeFlat;    
-    frame.AddrFrame.Offset = context->Ebp;
-    frame.AddrFrame.Mode = AddrModeFlat;
-#endif
-    line.SizeOfStruct = sizeof line;
-    IMAGE_NT_HEADERS *h = ImageNtHeader(base);
-    DWORD image_type = h->FileHeader.Machine;
-    int n = 0;
-
-    // Build the string:
-    std::ostringstream builder;
-    do {
-        if ( frame.AddrPC.Offset != 0 ) {
-            std::string fnName = symbol(process, frame.AddrPC.Offset).undecorated_name();
-            builder << "[" << n << "] ";
-            builder << fnName;
-            if (SymGetLineFromAddr64( process, frame.AddrPC.Offset, &offset_from_symbol, &line)) 
-                builder << "  " << line.FileName << "(" << line.LineNumber << ")\n";
-            else builder << "\n";
-            if (fnName == "main")
-                break;
-            if (fnName == "RaiseException") {
-                return EXCEPTION_EXECUTE_HANDLER;
-            }
+        // Plugins load after SymInitialize; pick them up the first time a
+        // frame lands in a module DbgHelp doesn't know about.
+        if(!refreshed && mod && ::SymGetModuleBase64(process, addr) == 0)
+        {
+            ::SymRefreshModuleList(process);
+            refreshed = true;
         }
-        else
-            builder << "(No Symbols: PC == 0)";
-        if (!StackWalk64(image_type, process, hThread, &frame, context, NULL, 
-                            SymFunctionTableAccess64, SymGetModuleBase64, NULL))
-            break;
-        if (++n > 20)
-            break;
-    } while (frame.AddrReturn.Offset != 0);
-    //return EXCEPTION_EXECUTE_HANDLER;
-    SymCleanup(process);
 
-    auto s = builder.str();
-    auto s_size = (s.length() < 32767)?s.length():32767;
-    buffer[s_size] = 0;
-    memcpy(buffer, s.c_str(), s_size);
-
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-
-static void _stack_bootstrap()
-{
-    __try {
-        RaiseException(EXCEPTION_BREAKPOINT, 0, 0, NULL);
-    }
-    __except(generate_stack_trace(stack_buffer, GetExceptionInformation())) {
-    }
-}
-#endif
-
-static string generate_stack()
-{
-    string out;
-    // Set up the symbol options so that we can gather information from the current
-    // executable's PDB files, as well as the Microsoft symbol servers.  We also want
-    // to undecorate the symbol names we're returned.  If you want, you can add other
-    // symbol servers or paths via a semi-colon separated list in SymInitialized.
-    ::SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_INCLUDE_32BIT_MODULES | SYMOPT_UNDNAME);
-    if(!::SymInitialize(::GetCurrentProcess(), "http://msdl.microsoft.com/download/symbols", TRUE))
-        return string();
- 
-    // Capture up to 25 stack frames from the current call stack.  We're going to
-    // skip the first stack frame returned because that's the GetStackWalk function
-    // itself, which we don't care about.
-    PVOID addrs[ 25 ] = { 0 };
-    USHORT frames = CaptureStackBackTrace( 1, 25, addrs, NULL );
- 
-    for (USHORT i = 0; i < frames; i++) {
-        // Allocate a buffer large enough to hold the symbol information on the stack and get 
-        // a pointer to the buffer.  We also have to set the size of the symbol structure itself
-        // and the number of bytes reserved for the name.
-        ULONG64 buffer[ (sizeof( SYMBOL_INFO ) + 1024 + sizeof( ULONG64 ) - 1) / sizeof( ULONG64 ) ] = { 0 };
-        SYMBOL_INFO *info = (SYMBOL_INFO *)buffer;
-        info->SizeOfStruct = sizeof( SYMBOL_INFO );
+        ULONG64 buffer[(sizeof(SYMBOL_INFO) + 1024 + sizeof(ULONG64) - 1) / sizeof(ULONG64)] = { 0 };
+        SYMBOL_INFO* info = (SYMBOL_INFO*)buffer;
+        info->SizeOfStruct = sizeof(SYMBOL_INFO);
         info->MaxNameLen = 1024;
- 
-        // Attempt to get information about the symbol and add it to our output parameter.
         DWORD64 displacement = 0;
-        if (::SymFromAddr( ::GetCurrentProcess(), (DWORD64)addrs[ i ], &displacement, info )) {
-            out.append( "[" + std::to_string( i ) + "] ");
-            out.append( info->Name, info->NameLen );
-            out.append( "\n" );
-        }
-    }
- 
-    ::SymCleanup(::GetCurrentProcess());
+        string func = (::SymFromAddr(process, addr, &displacement, info)) ? string(info->Name, info->NameLen) : string("???");
 
-    return out; 
+        string location;
+        if(symbolize)
+        {
+            IMAGEHLP_LINE64 line = { 0 };
+            line.SizeOfStruct = sizeof(line);
+            DWORD line_disp = 0;
+            if(::SymGetLineFromAddr64(process, addr, &line_disp, &line))
+                location = string(line.FileName) + "(" + to_string(line.LineNumber) + ")";
+        }
+
+        if(location.empty())
+        {
+            char buf[512];
+            snprintf(buf, sizeof(buf), "(in %s) +0x%llx [base 0x%llx addr 0x%llx]",
+                     image_base, (unsigned long long)(addr - base), (unsigned long long)base, (unsigned long long)addr);
+            location = buf;
+        }
+
+        out << "[#" << (frames - i) << "] " << func << " @ " << location << sep;
+    }
+
+    return out.str();
 }
 
 #endif
@@ -272,7 +152,7 @@ bool r_utils::r_stack_trace::symbolize_enabled()
 string r_utils::r_stack_trace::get_stack(char sep)
 {
 #ifdef IS_WINDOWS
-    return generate_stack();
+    return generate_stack(sep);
 #else
     void* trace[256];
     int trace_size = backtrace(trace, 256);
