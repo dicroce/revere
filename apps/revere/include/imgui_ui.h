@@ -1208,6 +1208,48 @@ void download_revere_cloud_modal(
     }
 }
 
+// Revere Cloud's Terms of Use and Privacy Policy. Connecting a gateway to
+// Revere Cloud is where this open-source software meets the hosted service,
+// so the notice sits at that step.
+inline constexpr const char* REVERE_CLOUD_TERMS_URL = "https://revere.video/terms";
+inline constexpr const char* REVERE_CLOUD_PRIVACY_URL = "https://revere.video/privacy";
+
+// Text that acts like a link: hand cursor, underline and the URL as a tooltip
+// on hover, open_cb(url) on click.
+template<typename OPEN_CB>
+void link_text(const char* label, const char* url, const ImVec4& color, OPEN_CB open_cb)
+{
+    ImGui::TextColored(color, "%s", label);
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        auto min = ImGui::GetItemRectMin();
+        auto max = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x, max.y), max, ImGui::GetColorU32(color));
+        ImGui::SetTooltip("%s", url);
+    }
+    if (ImGui::IsItemClicked())
+        open_cb(std::string(url));
+}
+
+// "By connecting to Revere Cloud you agree to the Terms of Use and Privacy
+// Policy", with both linked. Two lines so it fits the plugins panel.
+template<typename OPEN_CB>
+void revere_cloud_terms_notice(OPEN_CB open_cb)
+{
+    const ImVec4 text_color(0.5f, 0.5f, 0.5f, 1.0f);
+    const ImVec4 link_color(0.45f, 0.65f, 1.0f, 1.0f);
+
+    ImGui::TextColored(text_color, "By connecting to Revere Cloud you agree to the");
+    link_text("Terms of Use", REVERE_CLOUD_TERMS_URL, link_color, open_cb);
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::TextColored(text_color, " and ");
+    ImGui::SameLine(0.0f, 0.0f);
+    link_text("Privacy Policy", REVERE_CLOUD_PRIVACY_URL, link_color, open_cb);
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::TextColored(text_color, ".");
+}
+
 template<typename DOWNLOAD_CB, typename CLOSE_CB>
 void about_revere_cloud_modal(
     ImGuiContext*,
