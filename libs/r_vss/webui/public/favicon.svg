@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="6 6 52 52" width="64" height="64" fill="none" role="img" aria-label="Revere">
+  <!-- The Revere mark (tools/icons/revere-mark-compact.svg), no tile: dark grey on light tabs, white on dark. -->
+  <style>:root{color:#18181b}@media (prefers-color-scheme:dark){:root{color:#ffffff}}</style>
+  <rect x="12" y="12" width="40" height="40" stroke="currentColor" stroke-width="3.5"/>
+  <rect x="27" y="27" width="10" height="10" fill="currentColor"/>
+</svg>

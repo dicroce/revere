@@ -150,14 +150,14 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         MACOSX_BUNDLE_INFO_STRING "Revere Surveillance System"
     )
 
-    # TODO: Add icon file when available
-    # set_target_properties(revere PROPERTIES
-    #     MACOSX_BUNDLE_ICON_FILE "revere.icns"
-    # )
-    # set(APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/revere.icns")
-    # set_source_files_properties(${APP_ICON} PROPERTIES
-    #     MACOSX_PACKAGE_LOCATION "Resources")
-    # target_sources(revere PRIVATE ${APP_ICON})
+    # App icon, generated with tools/icons/build-icons.sh
+    set_target_properties(revere PROPERTIES
+        MACOSX_BUNDLE_ICON_FILE "revere.icns"
+    )
+    set(APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/revere.icns")
+    set_source_files_properties(${APP_ICON} PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources")
+    target_sources(revere PRIVATE ${APP_ICON})
 
     # Copy shared libraries into the app bundle so it can find them at runtime
     set(REVERE_LIBS r_utils r_ui_utils r_av r_pipeline r_storage r_motion r_onvif r_http r_db r_fakey r_disco r_vss)
