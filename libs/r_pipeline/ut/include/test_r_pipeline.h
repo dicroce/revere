@@ -6,6 +6,7 @@ class test_r_pipeline : public test_fixture
 public:
     RTF_FIXTURE(test_r_pipeline);
       TEST(test_r_pipeline::test_gst_source_h264_aac);
+      TEST(test_r_pipeline::test_stream_info_get_video_codec_framerate);
 #if 0
       TEST(test_r_pipeline::test_gst_source_h265_aac);
       TEST(test_r_pipeline::test_gst_source_h264_mulaw);
@@ -27,6 +28,7 @@ public:
     virtual void teardown();
 
     void test_gst_source_h264_aac();
+    void test_stream_info_get_video_codec_framerate();
 #if 0
     void test_gst_source_h265_aac();
     void test_gst_source_h264_mulaw();

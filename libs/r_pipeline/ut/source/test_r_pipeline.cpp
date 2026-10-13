@@ -43,6 +43,26 @@ void test_r_pipeline::teardown()
 {
 }
 
+void test_r_pipeline::test_stream_info_get_video_codec_framerate()
+{
+    // As build_video_codec_params writes it.
+    auto fr = get_video_codec_framerate("sprop-parameter-sets=Z2QACqzZRifmwFqAgICgAAB9IAAXcAHiRLLA,aOvjyyLA,sc_framerate=15.000000");
+    RTF_ASSERT(!fr.is_null());
+    RTF_ASSERT(fr.value() == 15.0f);
+
+    // As the recording context writes it (", " separators, other attributes around it).
+    fr = get_video_codec_framerate("packetization-mode=1, encoded_video_sample_caps=dmlkZW8=, sc_framerate=29.97, sprop-parameter-sets=Z2QACqzZ,aOvjyyLA");
+    RTF_ASSERT(!fr.is_null());
+    RTF_ASSERT(fr.value() > 29.96f && fr.value() < 29.98f);
+
+    // Missing, empty, non-numeric or non-positive: null.
+    RTF_ASSERT(get_video_codec_framerate("sprop-parameter-sets=Z2QACqzZ,aOvjyyLA").is_null());
+    RTF_ASSERT(get_video_codec_framerate("").is_null());
+    RTF_ASSERT(get_video_codec_framerate("sc_framerate=abc").is_null());
+    RTF_ASSERT(get_video_codec_framerate("sc_framerate=0").is_null());
+    RTF_ASSERT(get_video_codec_framerate("sc_framerate=").is_null());
+}
+
 void test_r_pipeline::test_gst_source_h264_aac()
 {
     GMainLoop *loop = g_main_loop_new(nullptr, FALSE);

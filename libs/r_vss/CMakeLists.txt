@@ -15,6 +15,10 @@ add_library(
     ${R_VSS_SOURCES}
 )
 
+# The build version from the root CMakeLists (git tag, else revision), reported
+# by the local API (/cameras "version", MCP serverInfo).
+target_compile_definitions(r_vss PRIVATE REVERE_VERSION_STRING="${REVERE_VERSION_STRING}")
+
 target_include_directories(
     r_vss PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

@@ -24,6 +24,11 @@
 #include <array>
 #include <fstream>
 
+// Set by libs/r_vss/CMakeLists.txt from the root project's git tag / revision.
+#ifndef REVERE_VERSION_STRING
+#define REVERE_VERSION_STRING "unknown"
+#endif
+
 using namespace r_utils;
 using namespace r_http;
 using namespace r_disco;
@@ -91,9 +96,19 @@ constexpr int LOGIN_LOCKOUT_SECONDS = 30;
 // running stream, so they're always present for any camera that's recorded
 // at least one key frame. Null on any failure (codec unknown, no recording,
 // SPS missing) — resolution is best-effort metadata.
-r_utils::r_nullable<std::pair<uint16_t, uint16_t>> _camera_source_resolution(const std::string& top_dir, const r_disco::r_camera& c)
+// What the camera's last recorded key frame says about its stream: the
+// coded resolution (from the SPS) and the framerate the recording context
+// stamped into the codec parameters. Best-effort metadata: null when the
+// camera hasn't recorded yet or the frame can't be read.
+struct camera_source_info
 {
-    r_utils::r_nullable<std::pair<uint16_t, uint16_t>> out;
+    r_utils::r_nullable<std::pair<uint16_t, uint16_t>> resolution;
+    r_utils::r_nullable<float> framerate;
+};
+
+camera_source_info _camera_source_info(const std::string& top_dir, const r_disco::r_camera& c)
+{
+    camera_source_info out;
     if(c.record_file_path.is_null())
         return out;
     try
@@ -118,13 +133,15 @@ r_utils::r_nullable<std::pair<uint16_t, uint16_t>> _camera_source_resolution(con
         auto codec = bt["video_codec_name"].get_string();
         auto params = bt["video_codec_parameters"].get_string();
 
+        out.framerate = r_pipeline::get_video_codec_framerate(params);
+
         if(codec == "h264")
         {
             auto sps = r_pipeline::get_h264_sps(params);
             if(!sps.is_null())
             {
                 auto info = r_pipeline::parse_h264_sps(sps.value());
-                out.set_value({info.width, info.height});
+                out.resolution.set_value({info.width, info.height});
             }
         }
         else if(codec == "h265")
@@ -133,11 +150,11 @@ r_utils::r_nullable<std::pair<uint16_t, uint16_t>> _camera_source_resolution(con
             if(!sps.is_null())
             {
                 auto info = r_pipeline::parse_h265_sps(sps.value());
-                out.set_value({info.width, info.height});
+                out.resolution.set_value({info.width, info.height});
             }
         }
     }
-    catch(...) { /* swallow — resolution is best-effort metadata */ }
+    catch(...) { /* swallow — stream info is best-effort metadata */ }
     return out;
 }
 
@@ -503,7 +520,8 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
         for(auto c : cameras)
         {
             bool do_motion_detection = (c.do_motion_detection.is_null())?false:c.do_motion_detection.value();
-            auto res = _camera_source_resolution(_top_dir, c);
+            auto src = _camera_source_info(_top_dir, c);
+            const auto& res = src.resolution;
 
             bool receiving_video = false;
             bool stream_failed = false;
@@ -538,10 +556,17 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                     {"stream_failed", stream_failed},
                     {"manual", (c.xaddrs.is_null() && !c.rtsp_url.is_null())},
                     {"width", res.is_null() ? 0 : res.value().first},
-                    {"height", res.is_null() ? 0 : res.value().second}
+                    {"height", res.is_null() ? 0 : res.value().second},
+                    // 0 / "" when unknown, like width/height.
+                    {"fps", src.framerate.is_null() ? 0.0 : (double)src.framerate.value()},
+                    {"onvif_profile", (c.onvif_profile_token.is_null())?"":c.onvif_profile_token.value()}
                 }
             );
         }
+
+        // This build's version (the git tag, or the revision between tags),
+        // so clients such as the cloud plugin can report it.
+        j["version"] = REVERE_VERSION_STRING;
 
         r_server_response response;
         response.set_content_type("text/json");
@@ -827,18 +852,7 @@ void r_ws::_export(export_job& job)
                     audio_codec_parameters = bt["audio_codec_parameters"].get_string();
                 }
 
-                r_nullable<float> fr;
-
-                auto parts = r_string_utils::split(video_codec_parameters, ",");
-                for(auto part : parts)
-                {
-                    auto inner_parts = r_string_utils::split(part, "=");
-                    if(inner_parts.size() == 2)
-                    {
-                        if(r_string_utils::strip(inner_parts[0]) == "sc_framerate")
-                            fr.set_value(r_string_utils::s_to_float(inner_parts[1]));
-                    }
-                }
+                auto fr = r_pipeline::get_video_codec_framerate(video_codec_parameters);
 
                 if(fr.is_null())
                     fr.set_value(_compute_framerate(bt));
@@ -3139,7 +3153,7 @@ r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
             return mcp_ok(id, {
                 {"protocolVersion", "2024-11-05"},
                 {"capabilities", {{"tools", json::object()}}},
-                {"serverInfo", {{"name", "revere"}, {"version", "1.0.0"}}}
+                {"serverInfo", {{"name", "revere"}, {"version", REVERE_VERSION_STRING}}}
             });
         }
 

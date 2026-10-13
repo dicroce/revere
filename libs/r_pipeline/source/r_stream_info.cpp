@@ -481,6 +481,27 @@ static map<uint8_t, vector<uint8_t>> _scan_annexb_nalus(const vector<uint8_t>& d
     return out;
 }
 
+r_nullable<float> r_pipeline::get_video_codec_framerate(const string& video_codec_parameters)
+{
+    // Attributes are separated by "," or ", " depending on who built the string.
+    r_nullable<float> out;
+    for(auto part : r_string_utils::split(video_codec_parameters, ","))
+    {
+        auto nvp = r_string_utils::strip(part);
+        auto eq = nvp.find("=");
+        if(eq == string::npos || r_string_utils::strip(nvp.substr(0, eq)) != "sc_framerate")
+            continue;
+        try
+        {
+            auto fr = r_string_utils::s_to_float(r_string_utils::strip(nvp.substr(eq + 1)));
+            if(fr > 0.f)
+                out.set_value(fr);
+        }
+        catch(...) { /* not a number: leave it null */ }
+    }
+    return out;
+}
+
 // Build "sprop-parameter-sets=<sps_b64>,<pps_b64>,sc_framerate=<fr>" from H264 extradata.
 // Handles both Annex-B (encoder output) and AVCC (AVCDecoderConfigurationRecord) formats.
 static string _build_h264_codec_params(const vector<uint8_t>& extradata, float framerate)
