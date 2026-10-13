@@ -3590,6 +3590,18 @@ int main(int argc, char** argv)
                                     }
                                     catch (...) {}
                                 }
+
+                                // Connecting to Revere Cloud: the cloud Terms and Privacy
+                                // Policy, under its checkbox and activation code/link.
+                                if (plugin_name.rfind("revere_cloud", 0) == 0)
+                                {
+                                    ImGui::Indent(28.0f);
+                                    revere::revere_cloud_terms_notice([](const std::string& url) {
+                                        try { revere::open_url_in_browser(url); }
+                                        catch (const std::exception& e) { R_LOG_ERROR("Could not open %s: %s", url.c_str(), e.what()); }
+                                    });
+                                    ImGui::Unindent(28.0f);
+                                }
                             }
                         }
 
