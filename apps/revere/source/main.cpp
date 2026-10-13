@@ -33,6 +33,8 @@
 #include <thread>
 #include <chrono>
 #include <fstream>
+#include <cmath>
+#include <algorithm>
 
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_logger.h"
@@ -67,6 +69,7 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 #include "utils.h"
 #include "r_utils/r_secure_store.h"
 #include "r_utils/r_platform.h"
+#include "r_utils/r_qr_code.h"
 #include <cstdio>
 #include "gl_utils.h"
 
@@ -3538,6 +3541,48 @@ int main(int argc, char** argv)
                                             {
                                                 for (const auto& line : j["lines"])
                                                 {
+                                                    // {"qr": text}: draw text as a QR code (e.g. the cloud
+                                                    // activation link, to approve from a phone).
+                                                    if (line.contains("qr") && line["qr"].is_string())
+                                                    {
+                                                        auto qr_text = line["qr"].get<std::string>();
+                                                        static std::string qr_cached_text;
+                                                        static r_qr_code::qr_code qr_cached;
+                                                        if (qr_text != qr_cached_text)
+                                                        {
+                                                            qr_cached = r_qr_code::encode(qr_text);
+                                                            qr_cached_text = qr_text;
+                                                        }
+                                                        if (qr_cached.size > 0)
+                                                        {
+                                                            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Or scan with your phone:");
+
+                                                            // Whole pixels per module so it stays sharp; 4-module quiet zone.
+                                                            const int quiet = 4;
+                                                            const int span = qr_cached.size + quiet * 2;
+                                                            float module = std::floor(ImGui::GetContentRegionAvail().x / span);
+                                                            module = std::max(2.0f, std::min(module, 4.0f));
+                                                            auto pos = ImGui::GetCursorScreenPos();
+                                                            ImVec2 origin(std::floor(pos.x), std::floor(pos.y));
+                                                            float side = span * module;
+
+                                                            auto* dl = ImGui::GetWindowDrawList();
+                                                            dl->AddRectFilled(origin, ImVec2(origin.x + side, origin.y + side), IM_COL32(255, 255, 255, 255));
+                                                            for (int y = 0; y < qr_cached.size; ++y)
+                                                            {
+                                                                for (int x = 0; x < qr_cached.size; ++x)
+                                                                {
+                                                                    if (!qr_cached.dark(x, y))
+                                                                        continue;
+                                                                    ImVec2 a(origin.x + (quiet + x) * module, origin.y + (quiet + y) * module);
+                                                                    dl->AddRectFilled(a, ImVec2(a.x + module, a.y + module), IM_COL32(0, 0, 0, 255));
+                                                                }
+                                                            }
+                                                            ImGui::Dummy(ImVec2(side, side));
+                                                        }
+                                                        continue;
+                                                    }
+
                                                     auto text = line.value("text", std::string());
                                                     if (text.empty())
                                                         continue;
