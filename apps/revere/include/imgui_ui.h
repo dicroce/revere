@@ -1224,7 +1224,7 @@ void about_revere_cloud_modal(
 
         ImGui::SetCursorPosX(16.0f);
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 608.0f);
-        ImGui::TextWrapped("Revere Cloud is an optional plugin for Revere that connects your system to the Revere Cloud infrastructure and enables the Lantern mobile app to access your cameras remotely. Some Revere Cloud features require paying for service (and some do not).");
+        ImGui::TextWrapped("Revere Cloud is an optional plugin for Revere that connects your system to the Revere Cloud infrastructure and enables the Revere Video mobile app to access your cameras remotely. Some Revere Cloud features require paying for service (and some do not).");
         ImGui::PopTextWrapPos();
 
         ImGui::Spacing();
