@@ -45,7 +45,14 @@ void r_agent::stop()
     if(_running)
     {
         _running = false;
+        // Discovery checks _running between sends and receives, so this
+        // returns within a few seconds. Log a slow one, so a stop that drags
+        // shows up in the log.
+        auto started = std::chrono::steady_clock::now();
         _th.join();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+        if(ms > 5000)
+            R_LOG_WARNING("r_agent::stop() took %lld ms waiting for the discovery thread", (long long)ms);
     }
 }
 
