@@ -343,12 +343,15 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
 
 // Build the list of unicast sweep targets: every usable host on each local
 // IPv4 subnet, minus our own adapter addresses. Subnets larger than the cap are
-// skipped (and logged) so we never blast an enormous range.
+// skipped (and logged) so we never blast an enormous range. Host-only virtual
+// adapters (WSL is a /20) are skipped, and subnets shared by two adapters (wired
+// + Wi-Fi on the same LAN) are swept once.
 static std::vector<std::string> _subnet_sweep_targets()
 {
     static const size_t MAX_SWEEP_HOSTS = 4096;  // ~/20; covers typical /24../22 LANs
     std::vector<std::string> targets;
     std::set<std::string> own;
+    std::set<std::string> queued;
 
     auto adapters = r_utils::r_networking::r_get_adapters();
     for(auto& a : adapters)
@@ -360,6 +363,8 @@ static std::vector<std::string> _subnet_sweep_targets()
             continue;
         if(a.ipv4_addr.rfind("169.254.", 0) == 0)  // skip link-local
             continue;
+        if(a.is_virtual)
+            continue;
 
         auto hosts = r_utils::r_networking::r_ipv4_subnet_hosts(a.ipv4_addr, a.ipv4_netmask, MAX_SWEEP_HOSTS);
         if(hosts.empty())
@@ -369,7 +374,7 @@ static std::vector<std::string> _subnet_sweep_targets()
             continue;
         }
         for(auto& h : hosts)
-            if(own.find(h) == own.end())
+            if(own.find(h) == own.end() && queued.insert(h).second)
                 targets.push_back(h);
     }
     return targets;
