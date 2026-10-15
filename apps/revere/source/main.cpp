@@ -2127,10 +2127,9 @@ string _get_icon_path()
 #endif
 
 #ifdef IS_MACOS
-    // On macOS, system tray icons are treated as templates by default (monochrome)
-    // For now, just use the R.png from the working directory
-    // TODO: Create a proper monochrome template icon for better macOS integration
-    return r_fs::path_join(r_fs::working_directory(), "R.png");
+    // The bare mark as a template image (tools/icons/build-icons.sh), so it
+    // fills the menu bar slot and takes the menu bar's colour.
+    return r_fs::path_join(r_fs::working_directory(), "R-menubar.png");
 #endif
 
 #ifdef IS_LINUX

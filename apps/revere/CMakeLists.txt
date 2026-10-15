@@ -33,10 +33,11 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(traypp)
 
-# On macOS, patch traypp: use color icon and show app in Cmd-Tab / Dock
+# On macOS, patch traypp: show app in Cmd-Tab / Dock. The menu bar icon
+# (R-menubar.png) stays a template image, so it follows the menu bar's colour.
 if(APPLE)
     file(READ ${traypp_SOURCE_DIR}/tray/src/core/macos/tray.mm TRAY_MM_CONTENT)
-    string(REPLACE "[nsIcon setTemplate:YES]" "[nsIcon setTemplate:NO]" TRAY_MM_CONTENT "${TRAY_MM_CONTENT}")
+    string(REPLACE "[nsIcon setTemplate:NO]" "[nsIcon setTemplate:YES]" TRAY_MM_CONTENT "${TRAY_MM_CONTENT}")
     string(REPLACE "NSApplicationActivationPolicyAccessory" "NSApplicationActivationPolicyRegular" TRAY_MM_CONTENT "${TRAY_MM_CONTENT}")
     file(WRITE ${traypp_SOURCE_DIR}/tray/src/core/macos/tray.mm "${TRAY_MM_CONTENT}")
 endif()
@@ -177,6 +178,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     # Copy tray icon into the app bundle
     add_custom_command(TARGET revere POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/R.png $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/R.png
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/R-menubar.png $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/R-menubar.png
     )
 
     # Copy web UI bundle next to the binary (r_ws.cpp looks for ui.rbt in CWD,
