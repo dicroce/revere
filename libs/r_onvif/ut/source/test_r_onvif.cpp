@@ -130,3 +130,22 @@ void test_r_onvif::test_r_onvif_session_basic()
     RTF_ASSERT(foundSomething);
 #endif
 }
+
+// A stop request ends a probe before it sends anything, so a shutdown never
+// waits on a send or a receive timeout (r_agent::stop() joins this thread).
+void test_r_onvif::test_r_onvif_probes_stop_at_once()
+{
+    auto stopped = []{ return false; };
+
+    auto started = std::chrono::steady_clock::now();
+    auto unicast = r_onvif::discover_unicast(r_uuid::generate(), {"127.0.0.1", "127.0.0.2", "127.0.0.3"}, stopped);
+    auto unicast_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+    RTF_ASSERT(unicast.empty());
+    RTF_ASSERT(unicast_ms < 500);
+
+    started = std::chrono::steady_clock::now();
+    auto multicast = r_onvif::discover(r_uuid::generate(), stopped);
+    auto multicast_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+    RTF_ASSERT(multicast.empty());
+    RTF_ASSERT(multicast_ms < 500);
+}

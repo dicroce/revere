@@ -453,6 +453,31 @@ static bool _is_link_local_address(const string& host)
     return host.find("169.254.") == 0;
 }
 
+// A WS-Discovery probe is one small datagram, so a send that doesn't go out at
+// once is not worth waiting for. Without a limit, a sendto held by something
+// outside revere (a network filter such as Little Snitch, a stalled interface)
+// blocks the discovery thread forever, and r_agent::stop() joins it forever.
+// POSIX sends use MSG_DONTWAIT as well; Windows has no per-call flag, so it
+// relies on SO_SNDTIMEO alone.
+static const int PROBE_SEND_TIMEOUT_MS = 1000;
+#ifdef IS_WINDOWS
+static void _set_probe_send_timeout(SOCKET sock)
+{
+    DWORD sendTimeout = PROBE_SEND_TIMEOUT_MS;
+    ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&sendTimeout, sizeof(sendTimeout));
+}
+#define PROBE_SEND_FLAGS 0
+#else
+static void _set_probe_send_timeout(int sock)
+{
+    struct timeval sendTimeout;
+    sendTimeout.tv_sec = PROBE_SEND_TIMEOUT_MS / 1000;
+    sendTimeout.tv_usec = (PROBE_SEND_TIMEOUT_MS % 1000) * 1000;
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, sizeof(sendTimeout));
+}
+#define PROBE_SEND_FLAGS MSG_DONTWAIT
+#endif
+
 // Helper function to discover ONVIF devices on a specific interface
 static vector<string> _discover_on_interface(const string& interface_ip, const string& broadcast_message, const std::function<bool()>& should_continue)
 {
@@ -471,6 +496,7 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
     // milliseconds, so 2s of silence is a reliable "everyone has replied" signal.
     DWORD recvTimeout = 2000; // 2 seconds
     ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recvTimeout, sizeof(recvTimeout));
+    _set_probe_send_timeout(sock);
 
     // Convert interface IP string to IN_ADDR
     IN_ADDR iface_addr;
@@ -512,9 +538,11 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
     bool any_sent = false;
     for (int probe = 0; probe < 3; ++probe)
     {
+        if (should_continue && !should_continue())
+            break;
         if (probe > 0)
             this_thread::sleep_for(chrono::milliseconds(150));
-        int bytesSent = ::sendto(sock, broadcast_message.c_str(), (int)broadcast_message.length(), 0,
+        int bytesSent = ::sendto(sock, broadcast_message.c_str(), (int)broadcast_message.length(), PROBE_SEND_FLAGS,
                                 (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
         if (bytesSent > 0)
             any_sent = true;
@@ -566,6 +594,7 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
     recvTimeout.tv_sec = 2;
     recvTimeout.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout));
+    _set_probe_send_timeout(sock);
 
     // Convert interface IP string to in_addr
     struct in_addr iface_addr;
@@ -607,9 +636,11 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
     bool any_sent = false;
     for (int probe = 0; probe < 3; ++probe)
     {
+        if (should_continue && !should_continue())
+            break;
         if (probe > 0)
             this_thread::sleep_for(chrono::milliseconds(150));
-        int bytesSent = sendto(sock, broadcast_message.c_str(), broadcast_message.length(), 0,
+        int bytesSent = sendto(sock, broadcast_message.c_str(), broadcast_message.length(), PROBE_SEND_FLAGS,
                               (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
         if (bytesSent > 0)
             any_sent = true;
@@ -941,6 +972,7 @@ static vector<string> _probe_unicast(const vector<string>& targets, const string
 
     DWORD recvTimeout = 1000; // 1 second
     ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recvTimeout, sizeof(recvTimeout));
+    _set_probe_send_timeout(sock);
 
     struct sockaddr_in localAddr;
     memset(&localAddr, 0, sizeof(localAddr));
@@ -954,13 +986,15 @@ static vector<string> _probe_unicast(const vector<string>& targets, const string
 
     for (const auto& tip : targets)
     {
+        if (should_continue && !should_continue())
+            break;
         struct sockaddr_in dst;
         memset(&dst, 0, sizeof(dst));
         dst.sin_family = AF_INET;
         dst.sin_port = htons(3702);
         if (inet_pton(AF_INET, tip.c_str(), &dst.sin_addr) != 1)
             continue;
-        ::sendto(sock, broadcast_message.c_str(), (int)broadcast_message.length(), 0,
+        ::sendto(sock, broadcast_message.c_str(), (int)broadcast_message.length(), PROBE_SEND_FLAGS,
                  (struct sockaddr*)&dst, sizeof(dst));
     }
 
@@ -999,6 +1033,7 @@ static vector<string> _probe_unicast(const vector<string>& targets, const string
     recvTimeout.tv_sec = 1;
     recvTimeout.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout));
+    _set_probe_send_timeout(sock);
 
     struct sockaddr_in localAddr;
     memset(&localAddr, 0, sizeof(localAddr));
@@ -1012,13 +1047,15 @@ static vector<string> _probe_unicast(const vector<string>& targets, const string
 
     for (const auto& tip : targets)
     {
+        if (should_continue && !should_continue())
+            break;
         struct sockaddr_in dst;
         memset(&dst, 0, sizeof(dst));
         dst.sin_family = AF_INET;
         dst.sin_port = htons(3702);
         if (inet_pton(AF_INET, tip.c_str(), &dst.sin_addr) != 1)
             continue;
-        sendto(sock, broadcast_message.c_str(), broadcast_message.length(), 0,
+        sendto(sock, broadcast_message.c_str(), broadcast_message.length(), PROBE_SEND_FLAGS,
                (struct sockaddr*)&dst, sizeof(dst));
     }
 
