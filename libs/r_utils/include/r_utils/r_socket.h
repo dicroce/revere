@@ -223,6 +223,7 @@ struct r_adapter_info
     std::string name;          // interface name (e.g., "eth0", "Ethernet")
     std::string ipv4_addr;     // IPv4 address as string
     std::string ipv4_netmask;  // IPv4 netmask as string, e.g. "255.255.255.0" (empty if unknown)
+    bool is_virtual = false;   // host-only virtual adapter (WSL, Hyper-V internal, VMware/VirtualBox host-only, docker)
 };
 
 // Returns network adapters that are: UP, not loopback, multicast capable, and have an IPv4 address

@@ -2867,7 +2867,9 @@ int main(int argc, char** argv)
 
         R_LOG_INFO("Stopping...");
         streamKeeper.stop();
+        R_LOG_INFO("Stopping discovery agent...");
         agent.stop();
+        R_LOG_INFO("Discovery agent stopped");
         // devices.stop() runs from its destructor after streamKeeper is gone.
 
         r_pipeline::gstreamer_deinit();
@@ -3697,7 +3699,9 @@ int main(int argc, char** argv)
     // Cleanup — order matters:
     // 1. Stop background workers first so they stop touching SDL textures
     streamKeeper.stop();
+    R_LOG_INFO("Stopping discovery agent...");
     agent.stop();
+    R_LOG_INFO("Discovery agent stopped");
     // Note: devices.stop() is called by its destructor AFTER streamKeeper is destroyed
     // This order is important because plugins may use devices during their shutdown
 
@@ -3714,6 +3718,7 @@ int main(int argc, char** argv)
 
     r_raw_socket::socket_cleanup();
 
+    R_LOG_INFO("Shutdown complete");
     r_logger::uninstall_logger();
 
     // Release the process lock last — this unblocks any waiting --quit process,

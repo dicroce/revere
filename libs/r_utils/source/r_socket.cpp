@@ -637,8 +637,8 @@ vector<r_networking::r_adapter_info> r_utils::r_networking::r_get_adapters()
 
     PIP_ADAPTER_ADDRESSES pAddresses = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(&buffer[0]);
 
-    // GAA_FLAG_INCLUDE_PREFIX is needed for proper address info
-    ULONG flags = GAA_FLAG_INCLUDE_PREFIX;
+    // GAA_FLAG_INCLUDE_PREFIX is needed for proper address info; gateways feed is_virtual.
+    ULONG flags = GAA_FLAG_INCLUDE_PREFIX | GAA_FLAG_INCLUDE_GATEWAYS;
     DWORD result = GetAdaptersAddresses(AF_INET, flags, nullptr, pAddresses, &bufferSize);
 
     if (result == ERROR_BUFFER_OVERFLOW)
@@ -665,6 +665,18 @@ vector<r_networking::r_adapter_info> r_utils::r_networking::r_get_adapters()
         if (pAdapter->Flags & IP_ADAPTER_NO_MULTICAST)
             continue;
 
+        // A hypervisor adapter with no default gateway is a host-only / NAT network
+        // (WSL, Default Switch, VMware VMnet, VirtualBox host-only). A Hyper-V external
+        // switch carries the real LAN and has a gateway, so it is not virtual here.
+        bool is_virtual = false;
+        if (pAdapter->FirstGatewayAddress == nullptr && pAdapter->Description != nullptr)
+        {
+            std::wstring desc = pAdapter->Description;
+            is_virtual = desc.find(L"Hyper-V Virtual") != std::wstring::npos ||
+                         desc.find(L"VMware Virtual") != std::wstring::npos ||
+                         desc.find(L"VirtualBox") != std::wstring::npos;
+        }
+
         // Look for IPv4 unicast addresses
         for (PIP_ADAPTER_UNICAST_ADDRESS pUnicast = pAdapter->FirstUnicastAddress;
              pUnicast != nullptr;
@@ -686,6 +698,7 @@ vector<r_networking::r_adapter_info> r_utils::r_networking::r_get_adapters()
                     info.name = &nameBuf[0];
                 }
                 info.ipv4_addr = ipStr;
+                info.is_virtual = is_virtual;
                 // OnLinkPrefixLength is populated because we pass GAA_FLAG_INCLUDE_PREFIX.
                 {
                     ULONG prefix = pUnicast->OnLinkPrefixLength;
@@ -738,6 +751,13 @@ vector<r_networking::r_adapter_info> r_utils::r_networking::r_get_adapters()
         r_adapter_info info;
         info.name = ifa->ifa_name;
         info.ipv4_addr = ipStr;
+        {
+            // Host-only bridges and links created by container runtimes and hypervisors.
+            static const char* virtual_prefixes[] = {"docker", "br-", "veth", "virbr", "vmnet", "vboxnet"};
+            for (auto p : virtual_prefixes)
+                if (info.name.rfind(p, 0) == 0)
+                    info.is_virtual = true;
+        }
         if (ifa->ifa_netmask != nullptr && ifa->ifa_netmask->sa_family == AF_INET)
         {
             sockaddr_in* nm_in = reinterpret_cast<sockaddr_in*>(ifa->ifa_netmask);
