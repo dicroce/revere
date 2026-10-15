@@ -2062,11 +2062,11 @@ void configure_camera_setup_wizard(
 
     camera_setup_wizard.add_step(
         "remove_camera_modal",
-        [&ui_state, &camera_setup_wizard, &devices](){
-            ImGui::OpenPopup("Remove Camera");
+        [&ui_state, &camera_setup_wizard, &devices, &stream_keeper](){
+            ImGui::OpenPopup("Remove camera");
             revere::remove_camera_modal(
                 GImGui,
-                "Remove Camera",
+                "Remove camera",
                 ui_state.camera_to_remove_name,
                 ui_state.delete_camera_files,
                 [&](){
@@ -2083,13 +2083,26 @@ void configure_camera_setup_wizard(
                             // to stop recording and close all file handles
                             devices.unassign_camera(camera);
 
-                            // Wait a bit to ensure all file handles are closed
-                            // The stream_keeper's main loop polls every 2 seconds, so we need to wait
-                            // for at least one iteration to process the unassignment
-                            std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+                            // Wait until the stream keeper has actually torn down the
+                            // recording context: is_recording() is answered on its thread
+                            // after it reconciles assignments, so false means the writers
+                            // are destroyed. Deleting files (notably the .mdnts.db) under a
+                            // live writer crashes its destructor.
+                            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                            bool stopped = false;
+                            while(std::chrono::steady_clock::now() < deadline)
+                            {
+                                if(!stream_keeper.is_recording(camera.id))
+                                {
+                                    stopped = true;
+                                    break;
+                                }
+                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            }
 
-                            // Now it's safe to delete the files
-                            _delete_camera_files(camera);
+                            if(stopped)
+                                _delete_camera_files(camera);
+                            else R_LOG_ERROR("Camera %s still recording after 30s; not deleting its files", camera.id.c_str());
                         }
                     }
                     ui_state.reset_selection();
