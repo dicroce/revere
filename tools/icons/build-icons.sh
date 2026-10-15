@@ -5,7 +5,8 @@
 # on an ink (#18181b) tile with square corners.
 #
 #   apps/revere/R.ico          Windows exe and tray icon: 16, 32, 48, 256
-#   apps/revere/R.png          256: tray icon (macOS, Linux) and the Linux install icon
+#   apps/revere/R.png          256: tray icon (Linux) and the Linux install icon
+#   apps/revere/R-menubar.png  36: macOS menu bar icon, the bare mark as a template image
 #   apps/revere/revere.icns    macOS app bundle icon
 #   snap/gui/revere.png        256: snap desktop icon
 #   libs/r_vss/webui/public/favicon.svg, favicon-32.png   web UI favicon
@@ -26,16 +27,18 @@ trap 'rm -rf "$WORK"' EXIT
 
 # A tile SVG on a 1024 canvas. $1 = the tile's size inside the canvas (1024 is
 # full bleed; macOS icons sit on an 824 square with room around it), $2 = the
-# share of the tile the mark's outer edge spans.
+# share of the tile the mark's outer edge spans, $3 = the corner radius (0 for
+# square corners). macOS 26 puts any icon that isn't Apple's rounded square on
+# a grey tile of its own, so the macOS tile has the grid's corners (185 on 824).
 tile_svg() {
-  local tile=$1 share=$2
-  awk -v tile="$tile" -v share="$share" -v ink="$INK" -v paper="$PAPER" 'BEGIN {
+  local tile=$1 share=$2 radius=${3:-0}
+  awk -v tile="$tile" -v share="$share" -v radius="$radius" -v ink="$INK" -v paper="$PAPER" 'BEGIN {
     inset = (1024 - tile) / 2
     # The outline'"'"'s outer edge runs 10.25 to 53.75 on the 64 grid: 43.5 units.
     s = share * tile / 43.5
     t = 512 - 32 * s
     printf "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\" width=\"1024\" height=\"1024\">\n"
-    printf "  <rect x=\"%g\" y=\"%g\" width=\"%g\" height=\"%g\" fill=\"%s\"/>\n", inset, inset, tile, tile, ink
+    printf "  <rect x=\"%g\" y=\"%g\" width=\"%g\" height=\"%g\" rx=\"%g\" fill=\"%s\"/>\n", inset, inset, tile, tile, radius, ink
     printf "  <g transform=\"translate(%g %g) scale(%g)\" fill=\"none\">\n", t, t, s
     printf "    <rect x=\"12\" y=\"12\" width=\"40\" height=\"40\" stroke=\"%s\" stroke-width=\"3.5\"/>\n", paper
     printf "    <rect x=\"27\" y=\"27\" width=\"10\" height=\"10\" fill=\"%s\"/>\n", paper
@@ -68,9 +71,17 @@ magick "$WORK/tile-16.png" "$WORK/tile-32.png" "$WORK/tile-48.png" "$WORK/tile-2
 cp "$WORK/tile-256.png" "$ROOT/apps/revere/R.png"
 cp "$WORK/tile-256.png" "$ROOT/snap/gui/revere.png"
 
+# macOS menu bar: the bare mark, black on transparent, nearly filling the 18 pt
+# (36 px) image traypp shows. macOS draws it as a template, so it takes the
+# menu bar's own colour in light and dark mode. Pixel-grid: outline 2..33 with
+# a 3 px stroke, stamp 14..21.
+magick -size 36x36 xc:none +antialias -fill black -draw "rectangle 2,2 33,33" \
+  \( -size 26x26 xc:black \) -geometry +5+5 -compose DstOut -composite -compose Over \
+  -fill black -draw "rectangle 14,14 21,21" "PNG32:$ROOT/apps/revere/R-menubar.png"
+
 # macOS: the 824 tile of Apple's icon grid, transparent around it.
 if command -v iconutil >/dev/null; then
-  tile_svg 824 0.5 > "$WORK/mac.svg"
+  tile_svg 824 0.5 185 > "$WORK/mac.svg"
   set_dir="$WORK/revere.iconset"
   mkdir "$set_dir"
   for n in 16 32 128 256 512; do

@@ -159,7 +159,7 @@ endif()
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     # Install resources into app bundles on macOS
     install(
-        FILES revere/R.png
+        FILES revere/R.png revere/R-menubar.png
         DESTINATION Revere.app/Contents/Resources
     )
     install(
