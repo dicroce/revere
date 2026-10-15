@@ -15,3 +15,9 @@
 #define MBEDTLS_PK_C
 #define MBEDTLS_RSA_C
 #define MBEDTLS_BIGNUM_C
+
+// DTLS-SRTP (RFC 5764): how WebRTC keys its media. The cloud plugin publishes
+// live view over WebRTC (WHIP) with this Mbed TLS. It changes the layout of
+// mbedtls_ssl_config/mbedtls_ssl_context, so it lives here, where everything
+// built against these headers sees it.
+#define MBEDTLS_SSL_DTLS_SRTP
