@@ -1186,6 +1186,12 @@ void configure_camera_setup_wizard(
                     as.selected_profile_idx = 0;
                     as.profiles_were_filtered = false;
 
+                    // Switch to please_wait BEFORE starting the worker: if it finishes
+                    // (or fails) instantly, its next() must not be overwritten by ours.
+                    as.interrogation_phase.store(1);  // ONVIF profiles
+                    as.interrogation_start = std::chrono::steady_clock::now();
+                    camera_setup_wizard.next("please_wait");
+
                     std::thread th([&, camera](){
                         try
                         {
@@ -1235,8 +1241,6 @@ void configure_camera_setup_wizard(
                         }
                     });
                     th.detach();
-
-                    camera_setup_wizard.next("please_wait");
                 },
                 [&](){camera_setup_wizard.cancel();}
             );
@@ -1292,6 +1296,7 @@ void configure_camera_setup_wizard(
             auto camera = as.camera.value();
             as.interrogation_phase.store(0);
             as.interrogation_start = std::chrono::steady_clock::now();
+            camera_setup_wizard.next("please_wait");
             std::thread th([&, camera](){
                 try
                 {
@@ -1346,7 +1351,6 @@ void configure_camera_setup_wizard(
                 }
             });
             th.detach();
-            camera_setup_wizard.next("please_wait");
         }
     );
     camera_setup_wizard.add_step(
@@ -1355,6 +1359,7 @@ void configure_camera_setup_wizard(
             auto camera = as.camera.value();
             as.interrogation_phase.store(0);
             as.interrogation_start = std::chrono::steady_clock::now();
+            camera_setup_wizard.next("please_wait");
             std::thread th([&, camera]() mutable {
                 try
                 {
@@ -1418,7 +1423,6 @@ void configure_camera_setup_wizard(
                 }
             });
             th.detach();
-            camera_setup_wizard.next("please_wait");
         }
     );
     camera_setup_wizard.add_step(
