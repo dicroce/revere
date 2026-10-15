@@ -10,6 +10,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_string_utils.h"
 #include "r_ui_utils/font_catalog.h"
+#include "r_ui_utils/theme.h"
 #include "r_ui_utils/utils.h"
 #include <map>
 #include <functional>
@@ -217,7 +218,7 @@ void main_layout(
 
     open = true;
     uint16_t line_height = (uint16_t)ImGui::GetTextLineHeightWithSpacing();
-    ImGui::PushFont(r_ui_utils::fonts[get_font_key_18()].roboto_regular);
+    ImGui::PushFont(r_ui_utils::fonts[get_font_key_18()].inter_tight_regular);
     ImGui::SetNextWindowPos(ImVec2(0, (float)(window_height - line_height)));
     ImGui::SetNextWindowSize(ImVec2(window_width, line_height));
     ImGui::Begin("##status", &open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
@@ -359,7 +360,7 @@ void control_bar(
     {
         auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
         auto right_edge = calc.center_box_left + calc.center_box_width;
-        ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_14()].roboto_regular);
+        ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_14()].inter_tight_regular);
         ImGui::SetCursorScreenPos(ImVec2(right_edge - 560.0f, top_line_top + 7.0f));
         ImGui::Text("Vol");
         ImGui::SameLine();
@@ -508,7 +509,7 @@ void two_by_two(
                 draw_list->AddRect(
                     window_pos,
                     ImVec2(window_pos.x + window_size.x, window_pos.y + window_size.y),
-                    IM_COL32(0, 150, 255, 255),  // Blue selection border
+                    ImGui::GetColorU32(r_ui_utils::theme::accent),  // Selection: accent
                     0.0f,  // No rounding
                     0,     // All corners
                     4.0f   // 4px thickness
@@ -588,7 +589,7 @@ void four_by_four(
                 draw_list->AddRect(
                     window_pos,
                     ImVec2(window_pos.x + window_size.x, window_pos.y + window_size.y),
-                    IM_COL32(0, 150, 255, 255),  // Blue selection border
+                    ImGui::GetColorU32(r_ui_utils::theme::accent),  // Selection: accent
                     0.0f,  // No rounding
                     0,     // All corners
                     4.0f   // 4px thickness
@@ -792,16 +793,9 @@ void sidebar_list(
         auto name = r_utils::r_string_utils::format("##Object %d", i);
 
         ImGui::SetCursorPos(ImVec2(pos.x, pos.y));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(20, 52, 77, 200)); // modify a style color. always use this if you modify the style after NewFrame().
-        ImGui::PushStyleColor(ImGuiCol_NavHighlight, IM_COL32(255, 0, 0, 200));
-        ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(25, 47, 63, 200));
-        ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(49, 55, 62, 200));
+        // Selection, hover and focus colors come from the theme (accent tint when selected).
         if(ImGui::Selectable(name.c_str(), i == selected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2((float)width, 50)))
             item_click_cb(i, ImGui::IsMouseDoubleClicked(0));
-        ImGui::PopStyleColor();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleColor();
 
         if(ImGui::IsItemHovered())
         {
@@ -826,14 +820,14 @@ void sidebar_list(
         std::string label = labels[i].label;
         std::string sub_label = labels[i].sub_label;
 
-        ImGui::PushFont(r_ui_utils::fonts[get_font_key_24()].roboto_bold);
+        ImGui::PushFont(r_ui_utils::fonts[get_font_key_24()].inter_tight_semibold);
         ImGui::SetCursorPos(ImVec2(pos.x+15, pos.y+10));
         ImGui::Text("%s", label.c_str());
         ImGui::PopFont();
 
         auto cursor_pos = ImGui::GetCursorScreenPos();
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddLine(ImVec2(cursor_pos.x, cursor_pos.y+15), ImVec2(cursor_pos.x + width, cursor_pos.y+15), IM_COL32(40, 40, 40, 200));
+        draw_list->AddLine(ImVec2(cursor_pos.x, cursor_pos.y+15), ImVec2(cursor_pos.x + width, cursor_pos.y+15), ImGui::GetColorU32(r_ui_utils::theme::border_subtle));
 
         pos.y += 55;
 

@@ -117,9 +117,13 @@ void control_bar_renderer::render_export_controls(const control_bar_layout& layo
         // From right with 10px spacing: Go Live(80) @ -90, Play(80) @ -180, Cancel(90) @ -280, Finish Export(120) @ -410
         auto finish_export_x = right_edge - 410;
         ImGui::SetCursorScreenPos(ImVec2((float)finish_export_x, (float)top_line_top));
-        ImGui::PushStyleColor(ImGuiCol_Button, timeline_constants::colors::EXPORT_BUTTON_ACTIVE);
-        finish_export_clicked = ImGui::Button("Finish Export", ImVec2(120, 0));
-        ImGui::PopStyleColor();
+        // The primary action: paper fill with ink text on dark.
+        ImGui::PushStyleColor(ImGuiCol_Button, r_ui_utils::theme::action_primary);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, r_ui_utils::theme::action_primary_hover);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, r_ui_utils::theme::action_primary_active);
+        ImGui::PushStyleColor(ImGuiCol_Text, r_ui_utils::theme::text_on_primary);
+        finish_export_clicked = ImGui::Button("Finish export", ImVec2(120, 0));
+        ImGui::PopStyleColor(4);
     }
     else
     {
@@ -150,12 +154,10 @@ void control_bar_renderer::render_export_controls(const control_bar_layout& layo
     {
         auto export_cancel_button_x = right_edge - 280;
         ImGui::SetCursorScreenPos(ImVec2((float)export_cancel_button_x, (float)top_line_top));
-        ImGui::PushStyleColor(ImGuiCol_Button, timeline_constants::colors::CANCEL_BUTTON);
         if(ImGui::Button("Cancel", ImVec2(90, 0)))
         {
             cbs.exp_state = EXPORT_STATE_NONE;
         }
-        ImGui::PopStyleColor();
     }
 }
 
@@ -196,7 +198,7 @@ void control_bar_renderer::render_play_live_button(const control_bar_layout& lay
         }
 
         ImGui::SetCursorScreenPos(ImVec2(live_button_x, (float)top_line_top));
-        if(ImGui::Button("Go Live", ImVec2(80, 0)))
+        if(ImGui::Button("Go live", ImVec2(80, 0)))
         {
             cbs.live();
             control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_LIVE);
@@ -209,7 +211,7 @@ void control_bar_renderer::render_play_live_button(const control_bar_layout& lay
         live_button_x = right_edge - 90;
 
         ImGui::SetCursorScreenPos(ImVec2(live_button_x, (float)top_line_top));
-        if(ImGui::Button("Go Live", ImVec2(80, 0)))
+        if(ImGui::Button("Go live", ImVec2(80, 0)))
         {
             cbs.live();
             control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_LIVE);
@@ -267,7 +269,7 @@ void control_bar_renderer::render_navigation_buttons(const control_bar_layout& l
     auto right_box_left = layout.left + left_box_width + calc.center_box_width;
 
 
-    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_14()].roboto_regular);
+    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_14()].inter_tight_regular);
 
     auto jump_minutes = std::chrono::minutes((std::max)(1u, (unsigned)cbs.get_timerange_minutes() / 5));
 

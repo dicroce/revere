@@ -29,6 +29,7 @@
 #include "r_pipeline/r_gst_source.h"
 #include "r_av/r_video_decoder.h"
 #include "r_ui_utils/font_catalog.h"
+#include "r_ui_utils/theme.h"
 #include "r_ui_utils/wizard.h"
 #include "r_ui_utils/texture_loader.h"
 
@@ -87,14 +88,15 @@ static std::shared_ptr<r_ui_utils::texture> create_png_texture(const unsigned ch
     if (!pixels)
         return nullptr;
 
-    // stb_image returns RGBA, but SDL ARGB8888 on little-endian expects BGRA
-    // Swap R and B channels in-place
+    // The icons are dark line art on transparent. Make every pixel white and keep its
+    // alpha, so the glyph can be tinted to its detection-class color when drawn (an
+    // ImGui tint multiplies, so a black glyph could never take a color). All-white RGB
+    // also makes the RGBA vs BGRA channel order irrelevant.
     for (int i = 0; i < width * height * 4; i += 4)
     {
-        unsigned char temp = pixels[i];     // Save R
-        pixels[i] = pixels[i + 2];          // B -> R position
-        pixels[i + 2] = temp;               // R -> B position
-        // G and A stay in place
+        pixels[i] = 255;
+        pixels[i + 1] = 255;
+        pixels[i + 2] = 255;
     }
 
     auto tex = r_ui_utils::texture::create_from_rgba(g_renderer, pixels, (uint16_t)width, (uint16_t)height);
@@ -615,7 +617,7 @@ int main(int argc, char** argv)
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 
     // Setup Dear ImGui style
-    ImGui::StyleColorsDark();
+    r_ui_utils::apply_revere_style(ImGui::GetStyle());
 
     // Setup Platform/Renderer backends
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
@@ -647,6 +649,7 @@ int main(int argc, char** argv)
     r_ui_utils::load_fonts(io, FONT_SIZE_18, r_ui_utils::fonts);
     r_ui_utils::load_fonts(io, FONT_SIZE_16, r_ui_utils::fonts);
     r_ui_utils::load_fonts(io, FONT_SIZE_14, r_ui_utils::fonts);
+    io.FontDefault = r_ui_utils::fonts[r_string_utils::float_to_s(FONT_SIZE_24, 2)].inter_tight_regular;
 
     // Generate font key strings for the loaded sizes
     auto FONT_KEY_24 = r_string_utils::float_to_s(FONT_SIZE_24, 2);
@@ -789,7 +792,7 @@ int main(int argc, char** argv)
             ImGui_ImplSDL2_NewFrame();
             ImGui::NewFrame();
 
-            ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_24].roboto_regular);
+            ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_24].inter_tight_regular);
 
             auto client_top = vision::main_menu(
                 [&close_requested](){
@@ -1048,7 +1051,7 @@ int main(int argc, char** argv)
                             if(maybe_rc.is_null())
                             {
                                 auto label_size = ImGui::CalcTextSize("Drag camera here...");
-                                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(128, 128, 128, 128));
+                                ImGui::PushStyleColor(ImGuiCol_Text, timeline_constants::colors::PLACEHOLDER_TEXT);
                                 ImGui::SetCursorPos(ImVec2((w/2)-(label_size.x/2), (h/2) - (label_size.y/2)));
                                 ImGui::Text("Drag camera here...");
                                 ImGui::PopStyleColor();
@@ -1162,7 +1165,7 @@ int main(int argc, char** argv)
 
             // Rendering
             ImGui::Render();
-            SDL_SetRenderDrawColor(renderer, 45, 45, 45, 255);
+            SDL_SetRenderDrawColor(renderer, 9, 9, 11, 255); // surface-page
             SDL_RenderClear(renderer);
             ImGui_ImplSDLRenderer_RenderDrawData(ImGui::GetDrawData());
             SDL_RenderPresent(renderer);
@@ -1382,11 +1385,11 @@ int run_overlay(const overlay_opts& opts)
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-    ImGui::StyleColorsDark();
+    r_ui_utils::apply_revere_style(ImGui::GetStyle());
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer_Init(renderer);
 
-    // Load the Roboto fonts, same as the normal app. Without this the fonts map
+    // Load the fonts, same as the normal app. Without this the fonts map
     // is empty, so the control bar's internal PushFont() and the overlay bar
     // both fall back to ImGui's built-in fixed-width font. Sizes must match the
     // normal app (font_keys.h maps these to the "NN.00" keys used everywhere).
@@ -1403,6 +1406,7 @@ int run_overlay(const overlay_opts& opts)
     r_ui_utils::load_fonts(io, FONT_SIZE_18, r_ui_utils::fonts);
     r_ui_utils::load_fonts(io, FONT_SIZE_16, r_ui_utils::fonts);
     r_ui_utils::load_fonts(io, FONT_SIZE_14, r_ui_utils::fonts);
+    io.FontDefault = r_ui_utils::fonts[r_string_utils::float_to_s(FONT_SIZE_24, 2)].inter_tight_regular;
 
     // Load the analytics detection-icon textures (person, car, ...); the control
     // bar renders detection markers by looking these up via get_icon_texture_id.
@@ -1638,7 +1642,7 @@ int run_overlay(const overlay_opts& opts)
             // default font is 24pt (the first size loaded), which makes the
             // control bar — sized as 6x the line height — about twice as tall as
             // it should be for this small overlay window. 14pt keeps it slim.
-            ImFont* block_font = r_ui_utils::fonts[get_font_key_14()].roboto_regular;
+            ImFont* block_font = r_ui_utils::fonts[get_font_key_14()].inter_tight_regular;
             if(block_font) ImGui::PushFont(block_font);
 
             const float row_h = 34.0f;

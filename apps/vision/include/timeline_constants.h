@@ -2,6 +2,7 @@
 #define __vision_timeline_constants_h
 
 #include "imgui/imgui.h"
+#include "r_ui_utils/theme.h"
 #include <chrono>
 
 namespace vision
@@ -42,37 +43,24 @@ namespace timeline_constants
     constexpr float EXPORT_CANCEL_BUTTON_OFFSET = 200.0f;
     constexpr float NAVIGATION_BUTTON_SIZE_RATIO = 1.25f;
     
-    // Colors
+    // Colors (Revere Design System tokens, r_ui_utils/theme.h)
     namespace colors
     {
-        // Timeline background (dark gray)
-        constexpr ImVec4 TIMELINE_BACKGROUND{0.2f, 0.2f, 0.2f, 1.0f};
-        
-        // Recording segments (blue)
-        constexpr ImVec4 RECORDING_SEGMENTS{0.286f, 0.415f, 0.505f, 1.0f}; // #496a81
-        
-        // Motion events (lighter blue)
-        constexpr ImVec4 MOTION_EVENTS{0.400f, 0.600f, 0.607f, 1.0f}; // #66999b
-        
-        // Playhead (green)
-        constexpr ImVec4 PLAYHEAD{0.0f, 1.0f, 0.0f, 1.0f};
-        
-        // Export marker (bright green)
-        constexpr ImVec4 EXPORT_MARKER{0.0f, 1.0f, 0.0f, 1.0f};
-        
-        // UI elements
-        constexpr ImVec4 EXPORT_BUTTON_ACTIVE{0.3671f, 0.7695f, 0.5078f, 1.0f}; // HSV converted
-        constexpr ImVec4 CANCEL_BUTTON{0.0f, 0.6f, 0.6f, 1.0f};
-        
-        // Sidebar colors
-        constexpr ImU32 SIDEBAR_HEADER_HOVERED = IM_COL32(20, 52, 77, 200);
-        constexpr ImU32 SIDEBAR_NAV_HIGHLIGHT = IM_COL32(255, 0, 0, 200);
-        constexpr ImU32 SIDEBAR_HEADER_ACTIVE = IM_COL32(25, 47, 63, 200);
-        constexpr ImU32 SIDEBAR_HEADER = IM_COL32(49, 55, 62, 200);
-        constexpr ImU32 SIDEBAR_DIVIDER = IM_COL32(40, 40, 40, 200);
-        
-        // Text colors
-        constexpr ImU32 PLACEHOLDER_TEXT = IM_COL32(128, 128, 128, 128);
+        // Timeline track
+        constexpr ImVec4 TIMELINE_BACKGROUND = r_ui_utils::theme::neutral_800;
+
+        // Recorded footage: neutral, so motion and detection colors stand out on it
+        constexpr ImVec4 RECORDING_SEGMENTS = r_ui_utils::theme::neutral_600;
+
+        // Motion with no class: the motion token at 60%
+        constexpr ImVec4 MOTION_EVENTS = r_ui_utils::theme::motion;
+
+        // Playhead and export start marker: accent
+        constexpr ImVec4 PLAYHEAD = r_ui_utils::theme::accent;
+        constexpr ImVec4 EXPORT_MARKER = r_ui_utils::theme::accent;
+
+        // "Drag camera here..." hint
+        constexpr ImVec4 PLACEHOLDER_TEXT = r_ui_utils::theme::text_tertiary;
     }
     
     // Font sizes (matching existing font catalog)
