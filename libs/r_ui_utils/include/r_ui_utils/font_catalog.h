@@ -12,18 +12,9 @@ namespace r_ui_utils
 
 struct font_catalog
 {
-    ImFont* roboto_black;
-    ImFont* roboto_black_italic;
-    ImFont* roboto_bold;
-    ImFont* roboto_bold_italic;
-    ImFont* roboto_italic;
-    ImFont* roboto_light;
-    ImFont* roboto_light_italic;
-    ImFont* roboto_medium;
-    ImFont* roboto_medium_italic;
-    ImFont* roboto_regular;
-    ImFont* roboto_thin;
-    ImFont* roboto_thin_italic;
+    ImFont* inter_tight_regular;
+    ImFont* inter_tight_semibold;
+    ImFont* inter_tight_bold;
 };
 
 extern std::unordered_map<std::string, font_catalog> fonts;

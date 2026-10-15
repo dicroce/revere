@@ -403,12 +403,8 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                     true
                 );
 
-                ImU32 bg_color = IM_COL32(73, 106, 129, 255);
-                draw_list->AddRectFilled(
-                    ImVec2(icon_x, icon_y),
-                    ImVec2(icon_x + icon_size, icon_y + icon_size),
-                    bg_color
-                );
+                // No tile: just the glyph, always black. (Deliberately not the design
+                // system's class colors, which read poorly as line art on the timeline.)
 
                 draw_list->AddImage(
                     (ImTextureID)texture_id,
@@ -416,7 +412,7 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                     ImVec2(icon_x + icon_size, icon_y + icon_size),
                     ImVec2(0, 0),
                     ImVec2(1, 1),
-                    IM_COL32_WHITE
+                    IM_COL32_BLACK
                 );
 
                 draw_list->PopClipRect();
@@ -478,7 +474,7 @@ bool control_bar_renderer::render_playhead(ImDrawList* draw_list, const control_
             );
             
             // Draw playhead text
-            ImGui::PushFont(r_ui_utils::fonts[timeline_constants::fonts::CONTROLS].roboto_regular);
+            ImGui::PushFont(r_ui_utils::fonts[timeline_constants::fonts::CONTROLS].inter_tight_regular);
             auto playhead_pos_s = cbs.playhead_pos_s();
             auto text_size = ImGui::CalcTextSize(playhead_pos_s.c_str());
             auto playhead_text_x = playhead_x - (text_size.x / 2);
@@ -584,7 +580,7 @@ void control_bar_renderer::render_timerange_text(const control_bar_layout& layou
 {
     auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
 
-    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].roboto_regular);
+    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].inter_tight_regular);
     ImGui::SetCursorScreenPos(ImVec2(calc.center_box_left, (float)top_line_top));
     auto timerange_s = r_utils::r_string_utils::format("%u minute time range", cbs.get_timerange_minutes());
     ImGui::Text("%s", timerange_s.c_str());
@@ -595,7 +591,7 @@ void control_bar_renderer::render_zoom_buttons(const control_bar_layout& layout,
 {
     auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
 
-    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].roboto_regular);
+    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].inter_tight_regular);
 
     auto timerange_s = r_utils::r_string_utils::format("%u minute time range", cbs.get_timerange_minutes());
     auto text_size = ImGui::CalcTextSize(timerange_s.c_str());

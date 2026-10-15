@@ -19,6 +19,7 @@
 #include "rtsp_source_camera_config.h"
 #include "gl_utils.h"
 #include "r_ui_utils/font_catalog.h"
+#include "r_ui_utils/theme.h"
 #include "r_ui_utils/utils.h"
 
 namespace revere
@@ -64,7 +65,7 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
     {
         if (ImGui::MenuItem("Launch Vision"))
             launch_vision_cb();
-        if (ImGui::MenuItem("Open Web UI"))
+        if (ImGui::MenuItem("Open web UI"))
             open_web_ui_cb();
         if (ImGui::MenuItem("Minimize to system tray"))
             minimize_cb();
@@ -77,7 +78,7 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
         if (ImGui::MenuItem("Start Revere with system", nullptr, &startup_enabled))
             set_startup_state_cb(startup_enabled);
 
-        if (ImGui::MenuItem("Set System Password..."))
+        if (ImGui::MenuItem("Set system password..."))
             set_system_password_cb();
 
         ImGui::EndMenu();
@@ -114,8 +115,8 @@ void main_layout(
 
     bool open = true;
     uint16_t line_height = (uint16_t)ImGui::GetTextLineHeightWithSpacing();
-    ImVec4 status_bar_bg = ImVec4(0.08f, 0.08f, 0.10f, 1.0f);  // Darkest for status bar
-    ImGui::PushFont(r_ui_utils::fonts[font_key_18].roboto_regular);
+    ImVec4 status_bar_bg = r_ui_utils::theme::surface_page;
+    ImGui::PushFont(r_ui_utils::fonts[font_key_18].inter_tight_regular);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, status_bar_bg);
     ImGui::SetNextWindowPos(ImVec2(0, (float)(window_height - line_height)));
     ImGui::SetNextWindowSize(ImVec2(window_width, line_height));
@@ -144,9 +145,9 @@ void thirds(
     THIRD_CB third_cb
 )
 {
-    // Side panels: dark gray, Middle panel: slightly lighter/different shade
-    ImVec4 side_panel_bg = ImVec4(0.12f, 0.12f, 0.14f, 1.0f);    // Dark gray with slight blue tint
-    ImVec4 middle_panel_bg = ImVec4(0.15f, 0.16f, 0.18f, 1.0f);  // Slightly lighter, more visible
+    // Side panels are cards; the middle panel is the page. border-subtle separates them.
+    ImVec4 side_panel_bg = r_ui_utils::theme::surface_card;
+    ImVec4 middle_panel_bg = r_ui_utils::theme::surface_page;
 
     uint16_t panel_width = window_width / 3;
     ImGui::PushStyleColor(ImGuiCol_WindowBg, side_panel_bg);
@@ -201,9 +202,9 @@ void thirds_with_log(
     float top_height = window_height - log_height;
 
     // Top section: three columns
-    // Side panels: dark gray, Middle panel: slightly lighter/different shade
-    ImVec4 side_panel_bg = ImVec4(0.12f, 0.12f, 0.14f, 1.0f);    // Dark gray with slight blue tint
-    ImVec4 middle_panel_bg = ImVec4(0.15f, 0.16f, 0.18f, 1.0f);  // Slightly lighter, more visible
+    // Side panels are cards; the middle panel is the page. border-subtle separates them.
+    ImVec4 side_panel_bg = r_ui_utils::theme::surface_card;
+    ImVec4 middle_panel_bg = r_ui_utils::theme::surface_page;
 
     uint16_t panel_width = window_width / 3;
     ImGui::PushStyleColor(ImGuiCol_WindowBg, side_panel_bg);
@@ -231,7 +232,7 @@ void thirds_with_log(
     ImGui::PopStyleColor();
 
     // Bottom section: full width log (resizable from top)
-    ImVec4 log_panel_bg = ImVec4(0.10f, 0.10f, 0.12f, 1.0f);  // Slightly darker for log
+    ImVec4 log_panel_bg = r_ui_utils::theme::surface_sunken;
     ImGui::PushStyleColor(ImGuiCol_WindowBg, log_panel_bg);
     ImGui::SetNextWindowPos(ImVec2(x, y + top_height));
     ImGui::SetNextWindowSize(ImVec2(window_width, log_height));
@@ -333,9 +334,9 @@ void system_password_modal(
         bool mismatch = (std::string(password) != std::string(confirm));
 
         if(empty)
-            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Password must not be empty.");
+            ImGui::TextColored(r_ui_utils::theme::status_danger_text, "Password must not be empty.");
         else if(mismatch)
-            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Passwords do not match.");
+            ImGui::TextColored(r_ui_utils::theme::status_danger_text, "Passwords do not match.");
 
         if(ImGui::Button("Cancel"))
         {
@@ -367,17 +368,18 @@ void system_password_modal(
             ImGui::Separator();
             ImGui::Spacing();
 
-            ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(180, 50, 50, 255));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(200, 60, 60, 255));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(160, 40, 40, 255));
-            if(ImGui::Button("Delete System Password"))
+            ImGui::PushStyleColor(ImGuiCol_Button, r_ui_utils::theme::action_destructive);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, r_ui_utils::theme::action_destructive_hover);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, r_ui_utils::theme::action_destructive_hover);
+            ImGui::PushStyleColor(ImGuiCol_Text, r_ui_utils::theme::text_on_destructive);
+            if(ImGui::Button("Delete system password"))
             {
                 password[0] = '\0';
                 confirm[0] = '\0';
                 ImGui::CloseCurrentPopup();
                 delete_cb();
             }
-            ImGui::PopStyleColor(3);
+            ImGui::PopStyleColor(4);
         }
 
         ImGui::EndPopup();
@@ -386,9 +388,10 @@ void system_password_modal(
 
 enum class stream_health
 {
-    unknown,    // no status data available
-    healthy,    // receiving video frames
-    error       // not receiving video frames
+    unknown,        // no status data available
+    healthy,        // receiving video frames
+    not_receiving,  // stream up but no video frames (status: warning)
+    failed          // recording context failed to start (status: danger)
 };
 
 struct sidebar_list_ui_item
@@ -423,7 +426,8 @@ void sidebar_list(
     ACTION_CLICK_CB action_click_cb,   // fired for cards whose action_label is set
     float& cached_largest_label,
     const std::string& font_key_24 = "24.00",
-    const std::string& font_key_22 = "22.00"
+    const std::string& font_key_22 = "22.00",
+    const std::string& font_key_18 = "18.00"
 )
 {
     auto pos = ImGui::GetCursorPos();
@@ -491,13 +495,17 @@ void sidebar_list(
         // the Selectable will steal the click event.
         // Smaller font + tighter buttons so a full row (e.g. Remove/Properties/
         // View) fits within the card width.
-        ImFont* btn_font = r_ui_utils::fonts["18.00"].roboto_regular;
+        ImFont* btn_font = r_ui_utils::fonts[font_key_18].inter_tight_semibold;
         if(btn_font)
             ImGui::PushFont(btn_font);
         const int button_width = 72;
         const int button_height = 28;
+        // 72px minimum; labels that don't fit (e.g. "Properties") grow to fit with 10px each side.
+        auto btn_size = [&](const char* label) {
+            return ImVec2(std::max((float)button_width, ImGui::CalcTextSize(label).x + 20.0f), (float)button_height);
+        };
         ImGui::SetCursorPos(ImVec2(pos.x+10, pos.y + buttons_y));
-        if(ImGui::Button(button_label.c_str(), ImVec2(button_width, button_height)))
+        if(ImGui::Button(button_label.c_str(), btn_size(button_label.c_str())))
         {
             item_click_cb(i);
             button_click_cb(i);
@@ -506,28 +514,28 @@ void sidebar_list(
         if(show_forget_button)
         {
             ImGui::SameLine();
-            if(ImGui::Button("Forget", ImVec2(button_width, button_height)))
+            if(ImGui::Button("Forget", btn_size("Forget")))
                 forget_button_click_cb(i);
         }
 
         if(show_properties_button)
         {
             ImGui::SameLine();
-            if(ImGui::Button("Properties", ImVec2(button_width, button_height)))
+            if(ImGui::Button("Properties", btn_size("Properties")))
                 properties_click_cb(i);
         }
 
         if(show_view_button)
         {
             ImGui::SameLine();
-            if(ImGui::Button("View", ImVec2(button_width, button_height)))
+            if(ImGui::Button("View", btn_size("View")))
                 view_click_cb(i);
         }
 
         if(!labels[i].action_label.empty())
         {
             ImGui::SameLine();
-            if(ImGui::Button(labels[i].action_label.c_str(), ImVec2(button_width, button_height)))
+            if(ImGui::Button(labels[i].action_label.c_str(), btn_size(labels[i].action_label.c_str())))
                 action_click_cb(i);
         }
 
@@ -535,24 +543,16 @@ void sidebar_list(
             ImGui::PopFont();
 
         ImGui::SetCursorPos(ImVec2(pos.x, pos.y));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(20, 52, 77, 200));                     // modify a style color. always use this if you modify the style after NewFrame().
-        ImGui::PushStyleColor(ImGuiCol_NavHighlight, IM_COL32(255, 0, 0, 200));
-        ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(25, 47, 63, 200));
-        ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(49, 55, 62, 200));
+        // Selection, hover and focus colors come from the theme (accent tint when selected).
         if (ImGui::Selectable(name.c_str(), i == selected, 0, ImVec2((float)width, (float)card_height))) {
             item_click_cb(i);
         }
-
-        ImGui::PopStyleColor();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleColor();
 
         // GetCursorScreenPos() here allows the IMDrawList to scroll when the containing
         // window scrolls.
         auto cursor_pos = ImGui::GetCursorScreenPos();
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddLine(ImVec2(cursor_pos.x, cursor_pos.y), ImVec2(cursor_pos.x + width, cursor_pos.y), IM_COL32(40, 40, 40, 200));
+        draw_list->AddLine(ImVec2(cursor_pos.x, cursor_pos.y), ImVec2(cursor_pos.x + width, cursor_pos.y), ImGui::GetColorU32(r_ui_utils::theme::border_subtle));
 
         // Store text for batched rendering
         text_to_render.push_back({ImVec2(pos.x+10, pos.y + label_y), labels[i].label, true});
@@ -564,7 +564,7 @@ void sidebar_list(
     }
 
     // Second pass: batch render all text with same font together
-    ImGui::PushFont(r_ui_utils::fonts[font_key_24].roboto_bold);
+    ImGui::PushFont(r_ui_utils::fonts[font_key_24].inter_tight_semibold);
     for(const auto& text_info : text_to_render)
     {
         if(text_info.is_bold)
@@ -575,7 +575,7 @@ void sidebar_list(
     }
     ImGui::PopFont();
 
-    ImGui::PushFont(r_ui_utils::fonts[font_key_22].roboto_regular);
+    ImGui::PushFont(r_ui_utils::fonts[font_key_22].inter_tight_regular);
     for(const auto& text_info : text_to_render)
     {
         if(!text_info.is_bold)
@@ -592,7 +592,7 @@ void sidebar_list(
     //
     // The rows are left-aligned below the IP address so they don't collide with
     // the camera name when the sidebar is narrow.
-    ImGui::PushFont(r_ui_utils::fonts["18.00"].roboto_regular);
+    ImGui::PushFont(r_ui_utils::fonts[font_key_18].inter_tight_regular);
     for(size_t i = 0; i < labels.size(); ++i)
     {
         const auto& lbl = labels[i];
@@ -600,20 +600,38 @@ void sidebar_list(
             continue;
 
         float item_y = start_y + (float)i * (float)card_pitch;
-        bool is_error = (lbl.health == stream_health::error);
-        ImVec4 color = is_error
-            ? ImVec4(0.86f, 0.31f, 0.31f, 1.0f)   // red (matches previous dot)
-            : ImVec4(0.70f, 0.70f, 0.70f, 1.0f);  // muted gray
 
-        if(!lbl.kbps.empty())
+        // Status is never colour alone: a problem gets a dot plus a word on the first row.
+        const bool failed = (lbl.health == stream_health::failed);
+        const bool not_receiving = (lbl.health == stream_health::not_receiving);
+        const ImVec4 secondary = r_ui_utils::theme::text_secondary;
+
+        auto status_row = [&](const ImVec4& dot, const ImVec4& text, const std::string& line) {
+            ImGui::SetCursorPos(ImVec2(start_x + 10.0f, item_y + (float)bitrate_y));
+            auto p = ImGui::GetCursorScreenPos();
+            float r = 4.0f;  // 8px status dot
+            ImGui::GetWindowDrawList()->AddCircleFilled(
+                ImVec2(p.x + r, p.y + ImGui::GetTextLineHeight() * 0.5f), r, ImGui::GetColorU32(dot));
+            ImGui::SetCursorPos(ImVec2(start_x + 10.0f + 2.0f * r + 6.0f, item_y + (float)bitrate_y));
+            ImGui::TextColored(text, "%s", line.c_str());
+        };
+
+        if(failed)
+            status_row(r_ui_utils::theme::status_danger_dot, r_ui_utils::theme::status_danger_text, "Failed to start");
+        else if(not_receiving)
+            status_row(r_ui_utils::theme::status_warning_dot, r_ui_utils::theme::status_warning_text, "No video Â· bitrate: " + lbl.kbps);
+        else if(!lbl.kbps.empty())
         {
             ImGui::SetCursorPos(ImVec2(start_x + 10.0f, item_y + (float)bitrate_y));
-            ImGui::TextColored(color, "bitrate: %s", lbl.kbps.c_str());
+            ImGui::TextColored(secondary, "bitrate: %s", lbl.kbps.c_str());
         }
+
         if(!lbl.retention.empty())
         {
             ImGui::SetCursorPos(ImVec2(start_x + 10.0f, item_y + (float)retention_y));
-            ImGui::TextColored(color, "retention: %s", lbl.retention.c_str());
+            if(failed)
+                ImGui::TextColored(r_ui_utils::theme::status_danger_text, "%s", lbl.retention.c_str());
+            else ImGui::TextColored(secondary, "retention: %s", lbl.retention.c_str());
         }
     }
     ImGui::PopFont();
@@ -641,7 +659,7 @@ void friendly_name_modal(
             friendly_name[0] = '\0';
         else
             r_ui_utils::copy_s(friendly_name, 64, fn);
-        if(ImGui::InputText("Camera Friendly Name", friendly_name, 64))
+        if(ImGui::InputText("Camera friendly name", friendly_name, 64))
             fn = std::string(friendly_name);
 
         if(ImGui::Button("Cancel", ImVec2(80, 30)))
@@ -683,7 +701,7 @@ void please_wait_modal(
         {
             auto status_width = ImGui::CalcTextSize(status_line.c_str());
             ImGui::SetCursorPos(ImVec2(300-(status_width.x/2), 90-15));
-            ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.70f, 1.0f), "%s", status_line.c_str());
+            ImGui::TextColored(r_ui_utils::theme::text_secondary, "%s", status_line.c_str());
         }
 
         ImGui::SetCursorPos(ImVec2(300-35, 150-15));
@@ -750,7 +768,7 @@ void new_or_existing_modal(
 
         ImGui::SameLine();
 
-        if(ImGui::Button("New Storage File"))
+        if(ImGui::Button("New storage file"))
         {
             ImGui::CloseCurrentPopup();
             new_cb();
@@ -758,7 +776,7 @@ void new_or_existing_modal(
 
         ImGui::SameLine();
 
-        if(ImGui::Button("Existing Storage File"))
+        if(ImGui::Button("Existing storage file"))
         {
             ImGui::CloseCurrentPopup();
             existing_cb();
@@ -795,7 +813,7 @@ void storage_location_modal(
 
         ImGui::SameLine();
 
-        if(ImGui::Button("Use Default"))
+        if(ImGui::Button("Use default"))
         {
             ImGui::CloseCurrentPopup();
             default_cb();
@@ -803,7 +821,7 @@ void storage_location_modal(
 
         ImGui::SameLine();
 
-        if(ImGui::Button("Choose Location..."))
+        if(ImGui::Button("Choose location..."))
         {
             ImGui::CloseCurrentPopup();
             custom_cb();
@@ -834,7 +852,7 @@ void new_file_name_modal(
             last_file_name = file_name;
         }
 
-        if(ImGui::InputText("New File Name", new_file_name, 64))
+        if(ImGui::InputText("New file name", new_file_name, 64))
             file_name = std::string(new_file_name);
 
         if(ImGui::Button("Cancel"))
@@ -877,7 +895,7 @@ void retention_modal(
         ImGui::Separator();
         ImGui::Spacing();
 
-        ImGui::InputDouble("Retention Days", &as.continuous_retention_days, 0.0, 0.0, "%.2f");
+        ImGui::InputDouble("Retention days", &as.continuous_retention_days, 0.0, 0.0, "%.2f");
         if(as.continuous_retention_days < 0.0)
             as.continuous_retention_days = 0.0;
 
@@ -992,7 +1010,7 @@ void configure_rtsp_source_camera_modal(
         static char camera_model_buffer[64] = {0};
         r_ui_utils::copy_s(camera_model_buffer, 64, rscc.camera_name);
 
-        if(ImGui::InputText("Camera Model", camera_model_buffer, 64))
+        if(ImGui::InputText("Camera model", camera_model_buffer, 64))
             rscc.camera_name = std::string(camera_model_buffer);
 
         static char ipv4_buffer[64] = {0};
@@ -1056,7 +1074,7 @@ void camera_properties_modal(
         // Display recording file location (read-only)
         if(!record_file_path.empty())
         {
-            ImGui::Text("Recording Location:");
+            ImGui::Text("Recording location:");
             ImGui::SameLine();
             ImGui::TextWrapped("%s", record_file_path.c_str());
             ImGui::Spacing();
@@ -1064,12 +1082,12 @@ void camera_properties_modal(
             ImGui::Spacing();
         }
 
-        ImGui::Checkbox("Motion Detection", &do_motion_detection);
+        ImGui::Checkbox("Motion detection", &do_motion_detection);
 
         if(!do_motion_detection)
             do_motion_pruning = false;
         ImGui::BeginDisabled(!do_motion_detection);
-        ImGui::Checkbox("Prune Still Video", &do_motion_pruning);
+        ImGui::Checkbox("Prune still video", &do_motion_pruning);
         ImGui::EndDisabled();
 
         static char retention_hours[64] = {0};
@@ -1080,10 +1098,10 @@ void camera_properties_modal(
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
-        ImGui::Text("Storage Management:");
+        ImGui::Text("Storage management:");
         ImGui::Spacing();
 
-        if(ImGui::Button("Move Storage"))
+        if(ImGui::Button("Move storage"))
         {
             ImGui::CloseCurrentPopup();
             move_storage_cb();
@@ -1094,7 +1112,7 @@ void camera_properties_modal(
             ImGui::SetTooltip("Move recording files to a new location.\nOptionally start fresh and discard old recordings.");
 
         ImGui::SameLine();
-        if(ImGui::Button("Change Retention"))
+        if(ImGui::Button("Change retention"))
         {
             ImGui::CloseCurrentPopup();
             change_retention_cb();
@@ -1161,19 +1179,20 @@ void remove_camera_modal(
 
         if(delete_files)
         {
-            ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(180, 50, 50, 255));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(200, 60, 60, 255));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(160, 40, 40, 255));
-            if(ImGui::Button("Remove & Delete Files", ImVec2(200, 30)))
+            ImGui::PushStyleColor(ImGuiCol_Button, r_ui_utils::theme::action_destructive);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, r_ui_utils::theme::action_destructive_hover);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, r_ui_utils::theme::action_destructive_hover);
+            ImGui::PushStyleColor(ImGuiCol_Text, r_ui_utils::theme::text_on_destructive);
+            if(ImGui::Button("Remove and delete files", ImVec2(200, 30)))
             {
                 ImGui::CloseCurrentPopup();
                 delete_files_cb();
             }
-            ImGui::PopStyleColor(3);
+            ImGui::PopStyleColor(4);
         }
         else
         {
-            if(ImGui::Button("Remove (Keep Files)", ImVec2(200, 30)))
+            if(ImGui::Button("Remove (keep files)", ImVec2(200, 30)))
             {
                 ImGui::CloseCurrentPopup();
                 keep_files_cb();
@@ -1233,21 +1252,52 @@ void link_text(const char* label, const char* url, const ImVec4& color, OPEN_CB 
 }
 
 // "By connecting to Revere Cloud you agree to the Terms of Use and Privacy
-// Policy", with both linked. Two lines so it fits the plugins panel.
+// Policy", with both linked. Flowed word by word so it wraps to whatever width
+// the plugins panel has; each link stays one unbroken, clickable piece.
 template<typename OPEN_CB>
 void revere_cloud_terms_notice(OPEN_CB open_cb)
 {
-    const ImVec4 text_color(0.5f, 0.5f, 0.5f, 1.0f);
-    const ImVec4 link_color(0.45f, 0.65f, 1.0f, 1.0f);
+    const ImVec4 text_color = r_ui_utils::theme::text_tertiary;
+    const ImVec4 link_color = r_ui_utils::theme::text_link;
 
-    ImGui::TextColored(text_color, "By connecting to Revere Cloud you agree to the");
-    link_text("Terms of Use", REVERE_CLOUD_TERMS_URL, link_color, open_cb);
-    ImGui::SameLine(0.0f, 0.0f);
-    ImGui::TextColored(text_color, " and ");
-    ImGui::SameLine(0.0f, 0.0f);
-    link_text("Privacy Policy", REVERE_CLOUD_PRIVACY_URL, link_color, open_cb);
-    ImGui::SameLine(0.0f, 0.0f);
-    ImGui::TextColored(text_color, ".");
+    struct piece { std::string text; const char* url; };
+    std::vector<piece> pieces;
+    auto add_words = [&](const std::string& text) {
+        size_t i = 0;
+        while(i < text.size())
+        {
+            size_t j = text.find(' ', i);
+            size_t end = (j == std::string::npos) ? text.size() : j + 1;  // keep the trailing space
+            pieces.push_back({text.substr(i, end - i), nullptr});
+            i = end;
+        }
+    };
+    add_words("By connecting to Revere Cloud you agree to the ");
+    pieces.push_back({"Terms of Use", REVERE_CLOUD_TERMS_URL});
+    add_words(" and ");
+    pieces.push_back({"Privacy Policy", REVERE_CLOUD_PRIVACY_URL});
+    add_words(".");
+
+    const float right = ImGui::GetContentRegionMax().x;
+    bool first = true;
+    for(const auto& p : pieces)
+    {
+        if(!first)
+        {
+            ImGui::SameLine(0.0f, 0.0f);
+            // Measure without a trailing space: a line may end just past the edge with one.
+            std::string fit = p.text;
+            while(!fit.empty() && fit.back() == ' ')
+                fit.pop_back();
+            if(ImGui::GetCursorPosX() + ImGui::CalcTextSize(fit.c_str()).x > right)
+                ImGui::NewLine();
+        }
+        first = false;
+
+        if(p.url)
+            link_text(p.text.c_str(), p.url, link_color, open_cb);
+        else ImGui::TextColored(text_color, "%s", p.text.c_str());
+    }
 }
 
 template<typename DOWNLOAD_CB, typename CLOSE_CB>
@@ -1343,14 +1393,14 @@ void change_retention_modal(
             const bool have_bitrate = (byte_rate > 0);
             if(!have_bitrate)
             {
-                ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
+                ImGui::TextColored(r_ui_utils::theme::status_danger_text,
                     "This camera has no current bitrate (not receiving video).");
                 ImGui::TextWrapped("Retention is sized from the live bitrate, so the camera must be recording before it can be resized.");
                 ImGui::Spacing();
             }
 
             ImGui::BeginDisabled(!have_bitrate);
-            ImGui::InputDouble("Retention Days", &retention_days, 0.0, 0.0, "%.2f");
+            ImGui::InputDouble("Retention days", &retention_days, 0.0, 0.0, "%.2f");
             if(retention_days < 0.0)
                 retention_days = 0.0;
             ImGui::EndDisabled();
@@ -1368,7 +1418,7 @@ void change_retention_modal(
             }
 
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
+            ImGui::TextColored(r_ui_utils::theme::status_danger_text,
                 "Applying reallocates the ring and permanently deletes this camera's existing recordings.");
             ImGui::Checkbox("I understand the existing recordings will be deleted", &confirm_delete);
 
@@ -1408,7 +1458,7 @@ void change_retention_modal(
         }
         else if(error)
         {
-            ImGui::TextColored(ImVec4(1.f, 0.3f, 0.3f, 1.f), "Error:");
+            ImGui::TextColored(r_ui_utils::theme::status_danger_text, "Error:");
             ImGui::Spacing();
             ImGui::TextWrapped("%s", status.c_str());
             ImGui::Spacing();
@@ -1463,7 +1513,7 @@ void move_storage_modal(
             ImGui::InputText("##move_dir", const_cast<char*>(new_dir.c_str()), new_dir.size() + 1, ImGuiInputTextFlags_ReadOnly);
             ImGui::SameLine();
             if(ImGui::Button("Browse..."))
-                ImGuiFileDialog::Instance()->OpenDialog("MoveStorageDirDlg", "Choose Destination", nullptr, new_dir.empty() ? "." : new_dir, "", 1, nullptr, 0);
+                ImGuiFileDialog::Instance()->OpenDialog("MoveStorageDirDlg", "Choose destination", nullptr, new_dir.empty() ? "." : new_dir, "", 1, nullptr, 0);
 
             if(ImGuiFileDialog::Instance()->Display("MoveStorageDirDlg", ImGuiWindowFlags_None, ImVec2(800, 400)))
             {
@@ -1478,7 +1528,7 @@ void move_storage_modal(
             if(start_fresh)
             {
                 ImGui::Spacing();
-                ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "All existing recordings will be permanently deleted.");
+                ImGui::TextColored(r_ui_utils::theme::status_danger_text, "All existing recordings will be permanently deleted.");
                 ImGui::Checkbox("I understand the recordings will be deleted", &delete_confirmed);
             }
 
@@ -1518,7 +1568,7 @@ void move_storage_modal(
         }
         else if(error)
         {
-            ImGui::TextColored(ImVec4(1.f, 0.3f, 0.3f, 1.f), "Error:");
+            ImGui::TextColored(r_ui_utils::theme::status_danger_text, "Error:");
             ImGui::Spacing();
             ImGui::TextWrapped("%s", status.c_str());
             ImGui::Spacing();
@@ -1597,7 +1647,7 @@ void repair_storage_modal(
                 auto slash = missing_path.find_last_of("/\\");
                 if(slash != std::string::npos)
                     start_dir = missing_path.substr(0, slash);
-                ImGuiFileDialog::Instance()->OpenDialog("RepairLocateFileDlg", "Choose Recording File", ".nts", start_dir);
+                ImGuiFileDialog::Instance()->OpenDialog("RepairLocateFileDlg", "Choose recording file", ".nts", start_dir);
             }
             ImGui::EndDisabled();
             ImGui::Unindent();
@@ -1640,7 +1690,7 @@ void repair_storage_modal(
         }
         else if(error)
         {
-            ImGui::TextColored(ImVec4(1.f, 0.3f, 0.3f, 1.f), "Error:");
+            ImGui::TextColored(r_ui_utils::theme::status_danger_text, "Error:");
             ImGui::Spacing();
             ImGui::TextWrapped("%s", status.c_str());
             ImGui::Spacing();

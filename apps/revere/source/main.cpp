@@ -59,6 +59,7 @@
 #include "r_av/r_video_decoder.h"
 #include "r_ui_utils/stb_image.h"
 #include "r_ui_utils/font_catalog.h"
+#include "r_ui_utils/theme.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_ui_utils/texture_loader.h"
 #include "r_ui_utils/wizard.h"
@@ -309,7 +310,7 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
                 // what's wrong without digging through logs.
                 item.kbps = "failed to start";
                 item.retention = status.failure_message;
-                item.health = revere::stream_health::error;
+                item.health = revere::stream_health::failed;
 
                 // The most common cause is the recording file having gone missing
                 // (moved aside by hand, or a failed/interrupted allocation). The
@@ -327,7 +328,7 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
                 item.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
                 auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
                 item.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
-                item.health = status.receiving_video ? revere::stream_health::healthy : revere::stream_health::error;
+                item.health = status.receiving_video ? revere::stream_health::healthy : revere::stream_health::not_receiving;
             }
         }
         else
@@ -1132,10 +1133,10 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "set_system_password",
         [&as, &camera_setup_wizard, &stream_keeper](){
-            ImGui::OpenPopup("Set System Password");
+            ImGui::OpenPopup("Set system password");
             revere::system_password_modal(
                 GImGui,
-                "Set System Password",
+                "Set system password",
                 stream_keeper.system_password_set(),
                 [&](const std::string& pw){
                     try
@@ -1169,7 +1170,7 @@ void configure_camera_setup_wizard(
         "camera_credentials",
         [&](){
             as.wizard_step = 1;
-            auto title = as.step_title("Camera Credentials");
+            auto title = as.step_title("Camera credentials");
             ImGui::OpenPopup(title.c_str());
             revere::rtsp_credentials_modal(
                 GImGui,
@@ -1225,7 +1226,7 @@ void configure_camera_setup_wizard(
                         }
                         catch(const r_utils::r_unauthorized_exception&)
                         {
-                            as.error_message = "Invalid Credentials";
+                            as.error_message = "Invalid credentials";
                             camera_setup_wizard.next("error_modal");
                         }
                         catch(const std::exception& e)
@@ -1246,7 +1247,7 @@ void configure_camera_setup_wizard(
         "profile_selection",
         [&as, &camera_setup_wizard, &agent, &devices](){
             as.wizard_step = 3;
-            auto title = as.step_title("Select Stream Profile");
+            auto title = as.step_title("Select stream profile");
             ImGui::OpenPopup(title.c_str());
             ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Always);
             if(ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
@@ -1255,7 +1256,7 @@ void configure_camera_setup_wizard(
                 if(as.profiles_were_filtered)
                 {
                     ImGui::Spacing();
-                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.0f, 1.0f), "Some profiles were removed because their codecs are not supported.");
+                    ImGui::TextColored(r_ui_utils::theme::status_warning_text, "Some profiles were removed because their codecs are not supported.");
                 }
                 ImGui::Spacing();
 
@@ -1336,7 +1337,7 @@ void configure_camera_setup_wizard(
                 }
                 catch(const r_utils::r_unauthorized_exception&)
                 {
-                    as.error_message = "Invalid Credentials";
+                    as.error_message = "Invalid credentials";
                     camera_setup_wizard.next("error_modal");
                 }
                 catch(const std::exception& e)
@@ -1408,7 +1409,7 @@ void configure_camera_setup_wizard(
                 }
                 catch(const r_utils::r_unauthorized_exception&)
                 {
-                    as.error_message = "Invalid Credentials";
+                    as.error_message = "Invalid credentials";
                     camera_setup_wizard.next("error_modal");
                 }
                 catch(const std::exception& e)
@@ -1425,7 +1426,7 @@ void configure_camera_setup_wizard(
         "friendly_name",
         [&as, &camera_setup_wizard](){
             as.wizard_step = 4;
-            auto title = as.step_title("Camera Friendly Name");
+            auto title = as.step_title("Camera friendly name");
             ImGui::OpenPopup(title.c_str());
             revere::friendly_name_modal(
                 GImGui,
@@ -1443,7 +1444,7 @@ void configure_camera_setup_wizard(
         "please_wait",
         [&as, &camera_setup_wizard](){
             as.wizard_step = 2;
-            auto title = as.step_title("Please Wait");
+            auto title = as.step_title("Please wait");
             ImGui::OpenPopup(title.c_str());
 
             // Build a per-phase status line so the user can see what the
@@ -1473,7 +1474,7 @@ void configure_camera_setup_wizard(
         "motion_detection",
         [&as, &camera_setup_wizard](){
             as.wizard_step = 5;
-            auto title = as.step_title("Motion Detection");
+            auto title = as.step_title("Motion detection");
             ImGui::OpenPopup(title.c_str());
             revere::motion_detection_modal(
                 GImGui,
@@ -1521,7 +1522,7 @@ void configure_camera_setup_wizard(
         [&as, &camera_setup_wizard](){
             as.wizard_step = 7;
             auto default_path = revere::sub_dir("video");
-            auto title = as.step_title("Storage Location");
+            auto title = as.step_title("Storage location");
             ImGui::OpenPopup(title.c_str());
             revere::storage_location_modal(
                 GImGui,
@@ -1549,7 +1550,7 @@ void configure_camera_setup_wizard(
 
             // Only open if not already open to avoid resetting state while user edits path
             if(!ImGuiFileDialog::Instance()->IsOpened("ChooseDirDlgKey"))
-                ImGuiFileDialog::Instance()->OpenDialog("ChooseDirDlgKey", "Choose Storage Location", nullptr, as.storage_dir, "", 1, nullptr, 0);
+                ImGuiFileDialog::Instance()->OpenDialog("ChooseDirDlgKey", "Choose storage location", nullptr, as.storage_dir, "", 1, nullptr, 0);
             if(ImGuiFileDialog::Instance()->Display("ChooseDirDlgKey", ImGuiWindowFlags_None, ImVec2(800, 350)))
             {
                 if(ImGuiFileDialog::Instance()->IsOk())
@@ -1570,7 +1571,7 @@ void configure_camera_setup_wizard(
         [&as, &camera_setup_wizard, &devices, &ui_state, &stream_keeper](){
             // Only open if not already open to avoid resetting state while user edits path
             if(!ImGuiFileDialog::Instance()->IsOpened("ChooseFileDlgKey"))
-                ImGuiFileDialog::Instance()->OpenDialog("ChooseFileDlgKey", "Choose File", ".nts", revere::sub_dir("video"));
+                ImGuiFileDialog::Instance()->OpenDialog("ChooseFileDlgKey", "Choose file", ".nts", revere::sub_dir("video"));
             if(ImGuiFileDialog::Instance()->Display("ChooseFileDlgKey", ImGuiWindowFlags_None, ImVec2(800, 350)))
             {
                 if(ImGuiFileDialog::Instance()->IsOk())
@@ -1605,7 +1606,7 @@ void configure_camera_setup_wizard(
         "retention",
         [&as, &camera_setup_wizard](){
             as.wizard_step = as.wizard_total_steps - 1;
-            auto title = as.step_title("Configure Retention");
+            auto title = as.step_title("Configure retention");
             ImGui::OpenPopup(title.c_str());
             revere::retention_modal(
                 GImGui,
@@ -1621,7 +1622,7 @@ void configure_camera_setup_wizard(
         [&as, &camera_setup_wizard, &devices, &ui_state, &stream_keeper](){
             as.wizard_step = as.wizard_total_steps;
             as.file_name = _make_file_name(as.camera_friendly_name);
-            auto title = as.step_title("New File Name");
+            auto title = as.step_title("New file name");
             ImGui::OpenPopup(title.c_str());
             revere::new_file_name_modal(
                 GImGui,
@@ -1648,10 +1649,10 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "startup_enabled_notification",
         [&camera_setup_wizard](){
-            ImGui::OpenPopup("Startup Enabled");
+            ImGui::OpenPopup("Startup enabled");
             revere::startup_enabled_modal(
                 GImGui,
-                "Startup Enabled",
+                "Startup enabled",
                 [&](){camera_setup_wizard.cancel();}
             );
         }
@@ -1728,10 +1729,10 @@ void configure_camera_setup_wizard(
                     record_path = _get_storage_path(camera_opt.value().record_file_path.value());
             }
 
-            ImGui::OpenPopup("Camera Properties");
+            ImGui::OpenPopup("Camera properties");
             revere::camera_properties_modal(
                 GImGui,
-                "Camera Properties",
+                "Camera properties",
                 ui_state.do_motion_detection,
                 ui_state.do_motion_pruning,
                 ui_state.min_continuous_recording_hours,
@@ -1852,7 +1853,7 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "move_storage_modal",
         [&camera_setup_wizard, &devices, &stream_keeper](){
-            ImGui::OpenPopup("Move Storage");
+            ImGui::OpenPopup("Move storage");
 
             string status_copy;
             {
@@ -1862,7 +1863,7 @@ void configure_camera_setup_wizard(
 
             revere::move_storage_modal(
                 GImGui,
-                "Move Storage",
+                "Move storage",
                 s_storage_op.camera_name,
                 s_storage_op.new_dir,
                 s_storage_op.start_fresh,
@@ -1926,7 +1927,7 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "repair_storage_modal",
         [&camera_setup_wizard, &devices, &stream_keeper](){
-            ImGui::OpenPopup("Repair Recording Storage");
+            ImGui::OpenPopup("Repair recording storage");
 
             string status_copy;
             {
@@ -1936,7 +1937,7 @@ void configure_camera_setup_wizard(
 
             revere::repair_storage_modal(
                 GImGui,
-                "Repair Recording Storage",
+                "Repair recording storage",
                 s_storage_op.camera_name,
                 s_storage_op.missing_path,
                 s_storage_op.repair_mode,
@@ -1995,7 +1996,7 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "change_retention_modal",
         [&camera_setup_wizard, &devices, &stream_keeper](){
-            ImGui::OpenPopup("Change Retention");
+            ImGui::OpenPopup("Change retention");
 
             string status_copy;
             {
@@ -2005,7 +2006,7 @@ void configure_camera_setup_wizard(
 
             revere::change_retention_modal(
                 GImGui,
-                "Change Retention",
+                "Change retention",
                 s_storage_op.camera_name,
                 s_storage_op.byte_rate,
                 s_storage_op.retention_days,
@@ -3003,6 +3004,7 @@ int main(int argc, char** argv)
     R_LOG_INFO("icon_path=%s\n",icon_path.c_str());
 
     Tray::Tray tray("Revere", icon_path);
+    tray.setTooltip("Revere video surveillance");
     tray.addEntry(Tray::Button("Show", [&]{
         SDL_ShowWindow(window);
         SDL_RaiseWindow(window);
@@ -3014,7 +3016,7 @@ int main(int argc, char** argv)
         if(!vision_process.running())
             vision_process.start();
     }));
-    tray.addEntry(Tray::Button("Open Web UI", [&]{
+    tray.addEntry(Tray::Button("Open web UI", [&]{
         revere::open_url_in_browser("http://localhost:8088");
     }));
     tray.addEntry(Tray::Separator());
@@ -3028,7 +3030,7 @@ int main(int argc, char** argv)
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 
     // Setup Dear ImGui style
-    ImGui::StyleColorsDark();
+    r_ui_utils::apply_revere_style(ImGui::GetStyle());
 
     // Setup Platform/Renderer backends for SDL2
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
@@ -3054,6 +3056,7 @@ int main(int argc, char** argv)
     r_ui_utils::load_fonts(io, FONT_SIZE_20, r_ui_utils::fonts);
     r_ui_utils::load_fonts(io, FONT_SIZE_18, r_ui_utils::fonts);
     r_ui_utils::load_fonts(io, FONT_SIZE_14, r_ui_utils::fonts);
+    io.FontDefault = r_ui_utils::fonts[r_string_utils::float_to_s(FONT_SIZE_24, 2)].inter_tight_regular;
 
     // Generate font key strings for the loaded sizes
     auto FONT_KEY_24 = r_string_utils::float_to_s(FONT_SIZE_24, 2);
@@ -3062,7 +3065,7 @@ int main(int argc, char** argv)
     auto FONT_KEY_18 = r_string_utils::float_to_s(FONT_SIZE_18, 2);
     auto FONT_KEY_14 = r_string_utils::float_to_s(FONT_SIZE_14, 2);
 
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+    ImVec4 clear_color = r_ui_utils::theme::surface_page;
 
     revere_ui_state ui_state;
 
@@ -3261,7 +3264,7 @@ int main(int argc, char** argv)
         auto window_width = (uint16_t)window_size.x;
         auto window_height = (uint16_t)window_size.y;
 
-        ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_24].roboto_regular);
+        ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_24].inter_tight_regular);
 
         auto client_top = revere::main_menu(
             [&](){
@@ -3319,7 +3322,7 @@ int main(int argc, char** argv)
         }
         else
         {
-            main_status.set_value(string("Revere Running"));
+            main_status.set_value(string("Revere running"));
         }
 
         main_layout(
@@ -3390,7 +3393,8 @@ int main(int argc, char** argv)
                             [](int){}, // no per-card action on discovered
                             ui_state.discovered_largest_label,
                             FONT_KEY_24,
-                            FONT_KEY_22
+                            FONT_KEY_22,
+                            FONT_KEY_18
                         );
                     },
                     "Recording",
@@ -3485,12 +3489,13 @@ int main(int argc, char** argv)
                             },
                             ui_state.recording_largest_label,
                             FONT_KEY_24,
-                            FONT_KEY_22
+                            FONT_KEY_22,
+                            FONT_KEY_18
                         );
                     },
-                    "Loaded System Plugins",
+                    "Loaded system plugins",
                     [&](uint16_t){
-                        ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_18].roboto_regular);
+                        ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_18].inter_tight_regular);
 
                         // Use cached plugins list instead of calling get_loaded_system_plugins() every frame
                         if (ui_state.loaded_system_plugins.empty())
@@ -3527,7 +3532,7 @@ int main(int argc, char** argv)
                                     ImVec2 dot_center(cursor.x + dot_radius, cursor.y + ImGui::GetTextLineHeight() * 0.5f);
                                     ImGui::GetWindowDrawList()->AddCircleFilled(dot_center, dot_radius, dot_color);
                                     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dot_radius * 2.0f + 6.0f);
-                                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", label.c_str());
+                                    ImGui::TextColored(r_ui_utils::theme::text_secondary, "%s", label.c_str());
 
                                     // Show status message details (parsed from JSON)
                                     auto status_message = streamKeeper.get_system_plugin_status_message(plugin_name);
@@ -3592,7 +3597,7 @@ int main(int argc, char** argv)
                                                     if (has_url)
                                                     {
                                                         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
-                                                        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", text.c_str());
+                                                        ImGui::TextColored(r_ui_utils::theme::text_tertiary, "%s", text.c_str());
                                                         ImGui::PopTextWrapPos();
 
                                                         auto url_val = line["url"].get<std::string>();
@@ -3614,7 +3619,7 @@ int main(int argc, char** argv)
                                                     }
                                                     else
                                                     {
-                                                        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.6f, 1.0f), "%s", text.c_str());
+                                                        ImGui::TextColored(r_ui_utils::theme::text_primary, "%s", text.c_str());
 
                                                         if (has_copy)
                                                         {
