@@ -50,6 +50,7 @@
 #include "r_disco/r_camera.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_disk_benchmark.h"
+#include "r_vss/r_build_info.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_file.h"
 #include "r_storage/r_md_storage_file.h"
@@ -84,11 +85,13 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 
 #include "revere_version.h"
 
-// Version info (generated at build time from git):
+// Version info (generated from git when CMake configures):
 //   #include "revere_version.h"
-//   REVERE_VERSION      - project version, e.g. "0.0.1"
+//   REVERE_VERSION      - project version, e.g. "0.0.1" on a tag, "0.0.1-5-ga1b2c3d" after it
 //   REVERE_GIT_REVISION - short git hash, e.g. "a1b2c3d"
 //   REVERE_GIT_DESCRIBE - git describe output, e.g. "v1.0.0-5-ga1b2c3d"
+//   REVERE_BUILD_NUMBER - commits up to HEAD, e.g. 273
+// The build time and "-dirty" are stamped on every build: r_vss/r_build_info.h.
 //
 // https://github.com/dicroce/revere/releases/download/v0.0.1/revere-v0.0.1-x86_64-windows-setup.exe
 //                                                            revere-v0.0.1-x86_64-linux.flatpak
@@ -1657,6 +1660,36 @@ void configure_camera_setup_wizard(
             revere::startup_enabled_modal(
                 GImGui,
                 "Startup enabled",
+                [&](){camera_setup_wizard.cancel();}
+            );
+        }
+    );
+
+    camera_setup_wizard.add_step(
+        "about_revere",
+        [&camera_setup_wizard, &stream_keeper](){
+            // Which build this is and each loaded plugin's version, for support.
+            std::vector<std::string> lines = {
+                "Revere " + r_vss::revere_version() + " (build " + std::to_string(r_vss::revere_build_number()) + ")",
+                "Built " + r_vss::revere_build_time(),
+                "Revision " + r_vss::revere_git_revision()
+            };
+            std::string copy_text = r_vss::revere_build_summary();
+            for(const auto& name : stream_keeper.get_loaded_system_plugins())
+            {
+                auto v = stream_keeper.get_system_plugin_version(name);
+                std::string label = (name.find("revere_cloud") != std::string::npos) ? "Revere Cloud plugin" : name;
+                std::string line = label + " " + (v.empty() ? "(version unknown)" : v);
+                lines.push_back(line);
+                copy_text += " \xC2\xB7 " + line;
+            }
+
+            ImGui::OpenPopup("About Revere");
+            revere::about_revere_modal(
+                GImGui,
+                "About Revere",
+                lines,
+                copy_text,
                 [&](){camera_setup_wizard.cancel();}
             );
         }
@@ -3322,6 +3355,9 @@ int main(int argc, char** argv)
             },
             [&](){
                 camera_setup_wizard.next("set_system_password");
+            },
+            [&](){
+                camera_setup_wizard.next("about_revere");
             }
         );
 

@@ -1,49 +1,88 @@
 cmake_minimum_required(VERSION 3.14)
 
-# Get version from git tags, fall back to hash if no tags
+# Version and build number from git, fixed when CMake configures:
+#   REVERE_VERSION_STRING  git describe without the leading v: "0.0.31" on a
+#                          release tag, "0.0.31-4-gabc1234" four commits after
+#                          it, the short hash when there are no tags
+#   REVERE_BUILD_NUMBER    commits up to HEAD (git rev-list --count)
+#   REVERE_GIT_REVISION    short hash
+# The build time and whether the tree has uncommitted changes ("-dirty") are
+# stamped on every build instead (libs/r_vss/build_info.cmake), so rebuilding
+# the same source still shows a different build.
 find_package(Git QUIET)
+set(REVERE_GIT_REVISION "unknown")
+set(REVERE_GIT_DESCRIBE "unknown")
+set(REVERE_VERSION_STRING "unknown")
+set(REVERE_BUILD_NUMBER 0)
 if(GIT_FOUND)
     execute_process(
         COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        OUTPUT_VARIABLE REVERE_GIT_REVISION
+        OUTPUT_VARIABLE _git_revision
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET
+        RESULT_VARIABLE _git_result
     )
+    if(_git_result EQUAL 0 AND _git_revision)
+        set(REVERE_GIT_REVISION "${_git_revision}")
 
-    execute_process(
-        COMMAND ${GIT_EXECUTABLE} describe --tags --always
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        OUTPUT_VARIABLE REVERE_GIT_DESCRIBE
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-    )
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} describe --tags --match "v[0-9]*" --always
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            OUTPUT_VARIABLE REVERE_GIT_DESCRIBE
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        string(REGEX REPLACE "^v([0-9])" "\\1" REVERE_VERSION_STRING "${REVERE_GIT_DESCRIBE}")
 
-    # Check if HEAD is exactly on a version tag (no commits after the tag)
-    # git describe --tags --exact-match only succeeds if HEAD is directly on a tag
-    execute_process(
-        COMMAND ${GIT_EXECUTABLE} describe --tags --exact-match --match "v[0-9]*"
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        OUTPUT_VARIABLE GIT_EXACT_TAG
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-        RESULT_VARIABLE GIT_EXACT_TAG_RESULT
-    )
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} rev-list --count HEAD
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            OUTPUT_VARIABLE _git_count
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(_git_count MATCHES "^[0-9]+$")
+            set(REVERE_BUILD_NUMBER ${_git_count})
+        endif()
 
-    if(GIT_EXACT_TAG_RESULT EQUAL 0 AND GIT_EXACT_TAG MATCHES "^v([0-9]+\\.[0-9]+\\.[0-9]+)")
-        # HEAD is exactly on a version tag - use the tag version
-        string(REGEX REPLACE "^v" "" REVERE_VERSION_STRING "${GIT_EXACT_TAG}")
-    else()
-        # HEAD is not on a tag - use git hash as version
-        set(REVERE_VERSION_STRING "${REVERE_GIT_REVISION}")
+        # Configure again when HEAD moves (a commit, checkout or new tag), so
+        # the values above never describe an older commit than the one built.
+        foreach(_git_path HEAD packed-refs refs/tags)
+            execute_process(
+                COMMAND ${GIT_EXECUTABLE} rev-parse --path-format=absolute --git-path ${_git_path}
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                OUTPUT_VARIABLE _git_file
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+            )
+            if(_git_file AND EXISTS "${_git_file}")
+                set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_git_file}")
+            endif()
+        endforeach()
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} symbolic-ref -q HEAD
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            OUTPUT_VARIABLE _git_branch_ref
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(_git_branch_ref)
+            execute_process(
+                COMMAND ${GIT_EXECUTABLE} rev-parse --path-format=absolute --git-path ${_git_branch_ref}
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                OUTPUT_VARIABLE _git_file
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+            )
+            if(_git_file AND EXISTS "${_git_file}")
+                set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_git_file}")
+            endif()
+        endif()
     endif()
-else()
-    set(REVERE_GIT_REVISION "unknown")
-    set(REVERE_GIT_DESCRIBE "unknown")
-    set(REVERE_VERSION_STRING "unknown")
 endif()
 
-message(STATUS "Revere version: ${REVERE_VERSION_STRING}")
+message(STATUS "Revere version: ${REVERE_VERSION_STRING} (build ${REVERE_BUILD_NUMBER})")
 message(STATUS "Revere git revision: ${REVERE_GIT_REVISION}")
 message(STATUS "Revere git describe: ${REVERE_GIT_DESCRIBE}")
 

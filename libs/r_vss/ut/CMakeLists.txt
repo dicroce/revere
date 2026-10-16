@@ -5,6 +5,15 @@ add_executable(
     r_vss_ut
     include/test_r_motion_engine.h
     source/test_r_motion_engine.cpp
+    include/test_r_build_info.h
+    source/test_r_build_info.cpp
+)
+
+# What r_vss/r_build_info.h should report, from the root CMakeLists.
+target_compile_definitions(r_vss_ut PRIVATE
+    EXPECTED_VERSION="${REVERE_VERSION_STRING}"
+    EXPECTED_BUILD_NUMBER=${REVERE_BUILD_NUMBER}
+    EXPECTED_GIT_REVISION="${REVERE_GIT_REVISION}"
 )
 
 target_include_directories(

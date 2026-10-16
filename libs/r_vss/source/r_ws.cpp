@@ -4,6 +4,7 @@
 #include "r_vss/r_query.h"
 #include "r_vss/r_vss_utils.h"
 #include "r_vss/r_motion_engine.h"
+#include "r_vss/r_build_info.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_string_utils.h"
@@ -23,11 +24,6 @@
 #include <functional>
 #include <array>
 #include <fstream>
-
-// Set by libs/r_vss/CMakeLists.txt from the root project's git tag / revision.
-#ifndef REVERE_VERSION_STRING
-#define REVERE_VERSION_STRING "unknown"
-#endif
 
 using namespace r_utils;
 using namespace r_http;
@@ -171,6 +167,7 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     // 0.0.0.0 would expose all surveillance data to every host on the LAN.
     _server(WEB_SERVER_PORT, "127.0.0.1")
 {
+    _server.add_route(METHOD_GET, "/version", std::bind(&r_ws::_get_version, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/cameras", std::bind(&r_ws::_get_cameras, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/contents", std::bind(&r_ws::_get_contents, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/motion_events", std::bind(&r_ws::_get_motion_events, this, _1, _2, _3));
@@ -491,6 +488,45 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
     R_STHROW(r_http_500_exception, ("Failed to get contents."));
 }
 
+// Which build this is, for the web UI, the cloud plugin and support:
+//   {"version": "0.0.31-dirty", "build_number": 273, "build_time": "2026-10-15T20:01:02Z",
+//    "git_revision": "abc1234", "plugins": [{"name": "...", "version": "0.9.2"}]}
+// A plugin that doesn't report its version has "version": null. No secrets,
+// so no auth, like /auth_status.
+r_http::r_server_response r_ws::_get_version(const r_http::r_web_server<r_utils::r_socket>&,
+                                           r_utils::r_socket&,
+                                           const r_http::r_server_request&)
+{
+    try
+    {
+        json plugins = json::array();
+        for(const auto& name : _stream_keeper.get_loaded_system_plugins())
+        {
+            auto v = _stream_keeper.get_system_plugin_version(name);
+            plugins.push_back({{"name", name}, {"version", v.empty() ? json(nullptr) : json(v)}});
+        }
+
+        json j = {
+            {"version", revere_version()},
+            {"build_number", revere_build_number()},
+            {"build_time", revere_build_time()},
+            {"git_revision", revere_git_revision()},
+            {"plugins", plugins}
+        };
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+
+    R_STHROW(r_http_500_exception, ("Failed to get version."));
+}
+
 r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils::r_socket>&,
                                            r_utils::r_socket&,
                                            const r_http::r_server_request& request)
@@ -564,9 +600,9 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
             );
         }
 
-        // This build's version (the git tag, or the revision between tags),
-        // so clients such as the cloud plugin can report it.
-        j["version"] = REVERE_VERSION_STRING;
+        // This build's version (git describe), so clients such as the cloud
+        // plugin can report it. /version has the build number and time too.
+        j["version"] = revere_version();
 
         r_server_response response;
         response.set_content_type("text/json");
@@ -3153,7 +3189,7 @@ r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
             return mcp_ok(id, {
                 {"protocolVersion", "2024-11-05"},
                 {"capabilities", {{"tools", json::object()}}},
-                {"serverInfo", {{"name", "revere"}, {"version", REVERE_VERSION_STRING}}}
+                {"serverInfo", {{"name", "revere"}, {"version", revere_version()}}}
             });
         }
 

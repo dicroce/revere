@@ -44,12 +44,14 @@
         </div>
       </template>
     </main>
+
+    <footer v-if="versionLabel" class="footer" :title="versionDetails">{{ versionLabel }}</footer>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { isAuthed, getAuthStatus, getCameras, logout } from './api.js'
+import { isAuthed, getAuthStatus, getCameras, getVersion, logout } from './api.js'
 import CameraCard from './components/CameraCard.vue'
 import CameraView from './components/CameraView.vue'
 import ManageTab from './components/ManageTab.vue'
@@ -65,6 +67,18 @@ const error = ref(null)
 const selectedCamera = ref(null)
 
 let pollId = null
+
+// Which build this is, for support: "Revere 0.0.31 (build 273)", with the
+// build time and plugin versions on hover.
+const version = ref(null)
+const versionLabel = computed(() =>
+  version.value ? `Revere ${version.value.version} (build ${version.value.build_number})` : '')
+const versionDetails = computed(() => {
+  const v = version.value
+  if (!v) return ''
+  const plugins = (v.plugins ?? []).map((p) => `${p.name} ${p.version ?? '(version unknown)'}`)
+  return [`Built ${v.build_time}`, `Revision ${v.git_revision}`, ...plugins].join('\n')
+})
 
 async function loadLive() {
   if (!authed.value) return
@@ -101,6 +115,7 @@ onMounted(async () => {
     try { await getCameras() } catch { /* invalid token cleared by api.js */ }
   }
   authChecked.value = true
+  getVersion().then((v) => { version.value = v }).catch(() => { /* older Revere: no footer */ })
 
   if (authed.value) loadLive()
   pollId = setInterval(loadLive, 5000)
@@ -164,6 +179,13 @@ onUnmounted(() => clearInterval(pollId))
 .content {
   flex: 1;
   padding: 1.5rem;
+}
+
+.footer {
+  padding: 0.5rem 1.5rem;
+  color: #666;
+  font-size: 0.75rem;
+  border-top: 1px solid #262626;
 }
 
 .camera-grid {

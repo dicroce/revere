@@ -14,6 +14,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <vector>
 #include <cstdint>
 #include "assignment_state.h"
 #include "rtsp_source_camera_config.h"
@@ -47,8 +48,8 @@ void error_modal(
     }
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb)
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB, typename ABOUT_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb, ABOUT_CB about_cb)
 {
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("Cameras"))
@@ -87,6 +88,13 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
     {
         if (ImGui::MenuItem("About Revere Cloud"))
             download_revere_cloud_cb();
+
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Help"))
+    {
+        if (ImGui::MenuItem("About Revere"))
+            about_cb();
 
         ImGui::EndMenu();
     }
@@ -1297,6 +1305,59 @@ void revere_cloud_terms_notice(OPEN_CB open_cb)
         if(p.url)
             link_text(p.text.c_str(), p.url, link_color, open_cb);
         else ImGui::TextColored(text_color, "%s", p.text.c_str());
+    }
+}
+
+// Help > About Revere: which build this is, one fact per line, and a Copy
+// button that puts all of it on the clipboard as one line for a support email.
+template<typename CLOSE_CB>
+void about_revere_modal(
+    ImGuiContext*,
+    const std::string& name,
+    const std::vector<std::string>& lines,
+    const std::string& copy_text,
+    CLOSE_CB close_cb
+)
+{
+    static bool copied = false;
+    ImGui::SetNextWindowSize(ImVec2(480, 0));
+    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Spacing();
+        for(size_t i = 0; i < lines.size(); ++i)
+        {
+            ImGui::SetCursorPosX(16.0f);
+            ImGui::TextUnformatted(lines[i].c_str());
+            if(i == 0)
+                ImGui::Spacing();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        float button_width = 200.0f;
+        float total_buttons = button_width * 2 + ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SetCursorPosX((480.0f - total_buttons) * 0.5f);
+
+        if(ImGui::Button(copied ? "Copied" : "Copy", ImVec2(button_width, 0)))
+        {
+            ImGui::SetClipboardText(copy_text.c_str());
+            copied = true;
+        }
+
+        ImGui::SameLine();
+
+        if(ImGui::Button("Close", ImVec2(button_width, 0)))
+        {
+            copied = false;
+            close_cb();
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::Spacing();
+
+        ImGui::EndPopup();
     }
 }
 

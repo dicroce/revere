@@ -53,6 +53,12 @@ R_API void system_plugin_set_enabled(r_system_plugin_handle plugin, bool enabled
 // Plugins that don't implement this export will have no status displayed
 R_API const char* system_plugin_get_status(r_system_plugin_handle plugin);
 
+// Optional: Get the plugin's own version (e.g. "0.9.2" or "0.9.2-4-gabc1234"),
+// shown in Revere's About box and reported by its local API (/version).
+// Called once after loading. The returned string must remain valid for the
+// lifetime of the loaded library. Plugins without this export have no version.
+R_API const char* get_system_plugin_version();
+
 // Optional: Get additional status detail (e.g., user code, URL during auth)
 // Returns: A detail string, empty if no details available
 R_API const char* system_plugin_get_status_message(r_system_plugin_handle plugin);
