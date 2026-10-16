@@ -405,6 +405,10 @@ struct sidebar_list_ui_item
     // Optional per-card action button (e.g. "Repair" when the camera's
     // recording file is missing). Empty = no button.
     std::string action_label;
+
+    // Shown in the main window's detail pane when known.
+    std::string codec;
+    r_utils::r_nullable<bool> motion_detection;
 };
 
 template<typename BUTTON_CLICK_CB, typename ITEM_CLICK_CB, typename FORGET_BUTTON_CLICK_CB, typename PROPERTIES_CLICK_CB, typename VIEW_CLICK_CB, typename ACTION_CLICK_CB>
