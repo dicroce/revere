@@ -442,10 +442,63 @@ inline void detail_title(const std::string& title, const std::string& subtitle, 
 
 } // namespace main_window_detail
 
+// Text that acts like a link: link color, hand cursor, underline and the URL
+// as a tooltip on hover, open_cb(url) on click. It wraps at the pane's edge
+// like other text, and every line of it is part of the link.
+template<typename OPEN_CB>
+void link_text(const std::string& label, const std::string& url, OPEN_CB open_cb)
+{
+    const ImVec4 color = r_ui_utils::theme::text_link;
+    ImFont* f = ImGui::GetFont();
+    const float scale = ImGui::GetFontSize() / f->FontSize;
+    const float wrap = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+
+    std::vector<std::pair<const char*, const char*>> lines;
+    const char* s = label.c_str();
+    const char* end = s + label.size();
+    while(s < end)
+    {
+        const char* e = f->CalcWordWrapPositionA(scale, s, end, wrap);
+        if(e <= s)
+            e = s + 1;
+        lines.push_back({s, e});
+        s = e;
+        while(s < end && *s == ' ')
+            ++s;
+    }
+
+    // No item spacing between the lines, so they sit as close as wrapped text does.
+    ImGui::BeginGroup();
+    ImGui::PushStyleColor(ImGuiCol_Text, color);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
+    for(const auto& l : lines)
+        ImGui::TextUnformatted(l.first, l.second);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    ImGui::EndGroup();
+
+    if(ImGui::IsItemHovered())
+    {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        auto origin = ImGui::GetItemRectMin();
+        const float line_h = ImGui::GetTextLineHeight();
+        auto* dl = ImGui::GetWindowDrawList();
+        for(size_t i = 0; i < lines.size(); ++i)
+        {
+            float w = ImGui::CalcTextSize(lines[i].first, lines[i].second).x;
+            float y = origin.y + (float)i * line_h + ImGui::GetTextLineHeight();
+            dl->AddLine(ImVec2(origin.x, y), ImVec2(origin.x + w, y), ImGui::GetColorU32(color));
+        }
+        ImGui::SetTooltip("%s", url.c_str());
+    }
+    if(ImGui::IsItemClicked())
+        open_cb(url);
+}
+
 // The lines a system plugin returns from system_plugin_get_status_message,
 // {"lines": [...]}: each {"text"} with an optional "copy" (adds Copy) or "url"
-// (adds Open and Copy URL), or {"qr": text} drawn as a QR code. Text wraps and
-// the buttons wrap onto the next line when they don't fit.
+// (the text links to it, plus Copy URL), or {"qr": text} drawn as a QR code.
+// Text wraps and the buttons wrap onto the next line when they don't fit.
 template<typename OPEN_URL_CB>
 void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url)
 {
@@ -519,10 +572,8 @@ void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url
             auto url = line["url"].get<std::string>();
             flow_row row;
             row.next(ImGui::CalcTextSize(text.c_str()).x);
-            wrapped_text(r_ui_utils::theme::text_tertiary, text);
+            link_text(text, url, open_url);
             row.after_text();
-            if(flow_button(row, "Open", button_kind::normal, true))
-                open_url(url);
             if(flow_button(row, "Copy URL", button_kind::normal, true))
                 ImGui::SetClipboardText(url.c_str());
         }
