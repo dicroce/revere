@@ -86,6 +86,11 @@ private:
 struct main_window_state
 {
     float list_width {260.0f};
+    // Which list sections are open. In memory for now; to be saved with the
+    // window placement, like list_width.
+    bool recording_open {true};
+    bool discovered_open {true};
+    bool plugins_open {true};
     bool show_log {false};
     float log_height {180.0f};
     std::string selected_plugin;    // empty unless a plugin row is selected
@@ -268,12 +273,31 @@ inline const char* camera_state(stream_health h)
     }
 }
 
-inline void section_header(const std::string& title, size_t count, const main_window_fonts& fonts)
+// A section header that opens and closes its section: arrow, title and count.
+// The count shows either way, so a closed section still says what's in it.
+inline void section_header(const std::string& id, const std::string& title, size_t count, bool& open, const main_window_fonts& fonts)
 {
+    using namespace r_ui_utils::theme;
     ImGui::PushFont(font(fonts.key_18));
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 10.0f);
-    ImGui::TextColored(r_ui_utils::theme::text_tertiary, "%s \xC2\xB7 %zu", upper(title).c_str(), count);
+    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    const float h = ImGui::GetFontSize() + 10.0f;
+    const float width = ImGui::GetContentRegionAvail().x;
+    if(ImGui::InvisibleButton(id.c_str(), ImVec2(width, h)))
+        open = !open;
+    const bool hovered = ImGui::IsItemHovered();
+    auto min = ImGui::GetItemRectMin();
+    auto max = ImGui::GetItemRectMax();
+    auto* dl = ImGui::GetWindowDrawList();
+    if(hovered)
+        dl->AddRectFilled(min, max, ImGui::GetColorU32(surface_raised));
+
+    const ImU32 color = ImGui::GetColorU32(hovered ? text_secondary : text_tertiary);
+    const float fs = ImGui::GetFontSize();
+    const float arrow_scale = 0.7f;
+    const float ty = min.y + (h - fs) * 0.5f;
+    ImGui::RenderArrow(dl, ImVec2(min.x + 10.0f, ty + fs * (1.0f - arrow_scale) * 0.5f), color, open ? ImGuiDir_Down : ImGuiDir_Right, arrow_scale);
+    std::string label = upper(title) + " \xC2\xB7 " + std::to_string(count);
+    dl->AddText(ImVec2(min.x + 10.0f + fs * arrow_scale + 6.0f, ty), color, label.c_str());
     ImGui::PopFont();
 }
 
@@ -616,10 +640,10 @@ inline void main_window(
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 2.0f));
     ImGui::BeginChild("##list", ImVec2(state.list_width, top_h), false, ImGuiWindowFlags_AlwaysUseWindowPadding);
     {
-        section_header("Recording", recording.size(), fonts);
-        if(recording.empty())
+        section_header("##recording_section", "Recording", recording.size(), state.recording_open, fonts);
+        if(state.recording_open && recording.empty())
             empty_state("No cameras recording", fonts);
-        for(int i = 0; i < (int)recording.size(); ++i)
+        for(int i = 0; state.recording_open && i < (int)recording.size(); ++i)
         {
             const auto& item = recording[i];
             if(list_row("##rec" + std::to_string(i), sel == kind::recording && sel_index == i, camera_dot(item.health), item.label, item.sub_label, fonts))
@@ -630,10 +654,10 @@ inline void main_window(
         }
 
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
-        section_header("Discovered", discovered.size(), fonts);
-        if(discovered.empty())
+        section_header("##discovered_section", "Discovered", discovered.size(), state.discovered_open, fonts);
+        if(state.discovered_open && discovered.empty())
             empty_state("Nothing discovered yet", fonts);
-        for(int i = 0; i < (int)discovered.size(); ++i)
+        for(int i = 0; state.discovered_open && i < (int)discovered.size(); ++i)
         {
             const auto& item = discovered[i];
             if(list_row("##disc" + std::to_string(i), sel == kind::discovered && sel_index == i, status_neutral_dot, item.label, item.sub_label, fonts))
@@ -644,10 +668,10 @@ inline void main_window(
         }
 
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
-        section_header("Plugins", plugins.size(), fonts);
-        if(plugins.empty())
+        section_header("##plugins_section", "Plugins", plugins.size(), state.plugins_open, fonts);
+        if(state.plugins_open && plugins.empty())
             empty_state("No system plugins loaded", fonts);
-        for(int i = 0; i < (int)plugins.size(); ++i)
+        for(int i = 0; state.plugins_open && i < (int)plugins.size(); ++i)
         {
             const auto& p = plugins[i];
             ImVec4 dot = p.has_status ? p.status_color : status_neutral_dot;
