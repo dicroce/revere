@@ -13,6 +13,7 @@ using json = nlohmann::json;
 configure_state::configure_state(const string& top_dir) :
     _top_dir(top_dir),
     _camera_answers(),
+    _window_placement(),
     _need_save(false),
     _mutex()
 {
@@ -41,6 +42,21 @@ void configure_state::load()
                 answers[stoi(num_str)] = answer.get<string>();
         }
     }
+
+    // Older files have no "window"; a malformed one is ignored (the window is centered).
+    _window_placement.reset();
+    if(j.contains("window") && j["window"].is_object())
+    {
+        const auto& w = j["window"];
+        auto is_int = [&](const char* k){ return w.contains(k) && w[k].is_number_integer(); };
+        if(is_int("x") && is_int("y") && is_int("w") && is_int("h"))
+        {
+            window_placement wp;
+            wp.rect = { w["x"].get<int>(), w["y"].get<int>(), w["w"].get<int>(), w["h"].get<int>() };
+            wp.maximized = w.contains("maximized") && w["maximized"].is_boolean() && w["maximized"].get<bool>();
+            _window_placement = wp;
+        }
+    }
 }
 
 bool configure_state::need_save() const
@@ -64,6 +80,11 @@ void configure_state::save()
 
     json j;
     j["camera_answers"] = ca_j;
+    if(_window_placement)
+    {
+        const auto& wp = *_window_placement;
+        j["window"] = { {"x", wp.rect.x}, {"y", wp.rect.y}, {"w", wp.rect.w}, {"h", wp.rect.h}, {"maximized", wp.maximized} };
+    }
 
     auto cfg_txt = j.dump();
     auto cfg_dir = _top_dir + PATH_SLASH + "config";
@@ -72,6 +93,21 @@ void configure_state::save()
     r_fs::write_file((uint8_t*)cfg_txt.c_str(), cfg_txt.size(), cfg_path);
 
     _need_save = false;
+}
+
+optional<window_placement> configure_state::get_window_placement() const
+{
+    lock_guard<mutex> lock(_mutex);
+    return _window_placement;
+}
+
+void configure_state::set_window_placement(const window_placement& placement)
+{
+    lock_guard<mutex> lock(_mutex);
+    if(_window_placement && *_window_placement == placement)
+        return;
+    _window_placement = placement;
+    _need_save = true;
 }
 
 bool configure_state::has_camera_answers(const string& camera_id) const

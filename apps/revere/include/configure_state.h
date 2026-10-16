@@ -6,6 +6,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include "r_ui_utils/window_placement.h"
 
 namespace revere
 {
@@ -68,6 +69,16 @@ namespace revere
 // Motion Hints
 // 34. What is the typical apparent size of the subjects of interest in this scene ("Close" (subject fills > 35% of frame), "Medium" (subject fills 10-35% of frame), "Distant" (subject fills < 10% of frame), "mixed" (objects are expected to change size significantly as they move across the frame))?
 
+// Where the main window was, to open it there next time: its normal (not
+// maximized) size and position in logical points, and whether it was maximized.
+struct window_placement
+{
+    r_ui_utils::window_rect rect;
+    bool maximized {false};
+
+    bool operator==(const window_placement& o) const { return rect == o.rect && maximized == o.maximized; }
+};
+
 struct configure_state final
 {
     configure_state(const std::string& top_dir);
@@ -82,9 +93,13 @@ struct configure_state final
     void set_camera_answer(const std::string& camera_id, int question_num, const std::string& answer);
     void set_camera_answers(const std::string& camera_id, const std::map<int, std::string>& answers);
 
+    std::optional<window_placement> get_window_placement() const;
+    void set_window_placement(const window_placement& placement);
+
 private:
     std::string _top_dir;
     std::map<std::string, std::map<int, std::string>> _camera_answers;
+    std::optional<window_placement> _window_placement;
     mutable bool _need_save {false};
     mutable std::mutex _mutex;
 };
