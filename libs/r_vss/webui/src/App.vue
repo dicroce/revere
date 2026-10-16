@@ -10,7 +10,7 @@
   <CameraView
     v-else-if="selectedCamera"
     :camera="selectedCamera"
-    @close="selectedCamera = null"
+    @close="closeCamera"
   />
 
   <div v-else class="app">
@@ -64,6 +64,31 @@ const liveCameras = ref([])
 const error = ref(null)
 const selectedCamera = ref(null)
 
+// ?camera=<id> opens that camera once the camera list has loaded (the desktop
+// app's "Open in web UI"). Closing the camera view drops the parameter, so a
+// reload goes back to the grid.
+let pendingCameraId = new URLSearchParams(window.location.search).get('camera')
+
+function clearCameraParam() {
+  const url = new URL(window.location.href)
+  if (!url.searchParams.has('camera')) return
+  url.searchParams.delete('camera')
+  window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
+}
+
+function openPendingCamera() {
+  if (!pendingCameraId) return
+  const camera = liveCameras.value.find((c) => c.id === pendingCameraId)
+  pendingCameraId = null
+  if (camera) selectedCamera.value = camera
+  else clearCameraParam() // not a recording camera: stay on the grid
+}
+
+function closeCamera() {
+  selectedCamera.value = null
+  clearCameraParam()
+}
+
 let pollId = null
 
 async function loadLive() {
@@ -72,6 +97,7 @@ async function loadLive() {
     const cams = await getCameras() // apiFetch attaches the token; clears it on 401
     liveCameras.value = cams.filter((c) => c.state === 'assigned')
     error.value = null
+    openPendingCamera()
   } catch (e) {
     // A 401 clears the token (api.js) -> the gate flips back to the login screen.
     error.value = `Could not reach Revere: ${e.message}`
@@ -86,6 +112,7 @@ function onAuthenticated() {
 function signOut() {
   logout()
   selectedCamera.value = null
+  clearCameraParam()
   liveCameras.value = []
   tab.value = 'manage'
 }
