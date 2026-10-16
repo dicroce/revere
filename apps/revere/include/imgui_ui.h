@@ -1231,40 +1231,14 @@ void download_revere_cloud_modal(
     }
 }
 
-// Revere Cloud's web app. The menus and the plugins panel link to it only when
-// the revere_cloud plugin is loaded.
+// Revere Cloud's web app. The View menu and the tray link to it only when the
+// revere_cloud plugin is loaded. The plugins panel gets its link from the
+// plugin's own status lines.
 inline constexpr const char* REVERE_CLOUD_WEB_URL = "https://app.revere.video";
 
 inline bool is_revere_cloud_plugin(const std::string& plugin_name)
 {
     return plugin_name.rfind("revere_cloud", 0) == 0;
-}
-
-// Text that acts like a link: hand cursor, underline and the URL as a tooltip
-// on hover, open_cb(url) on click.
-template<typename OPEN_CB>
-void link_text(const char* label, const char* url, const ImVec4& color, OPEN_CB open_cb)
-{
-    ImGui::TextColored(color, "%s", label);
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        auto min = ImGui::GetItemRectMin();
-        auto max = ImGui::GetItemRectMax();
-        ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x, max.y), max, ImGui::GetColorU32(color));
-        ImGui::SetTooltip("%s", url);
-    }
-    if (ImGui::IsItemClicked())
-        open_cb(std::string(url));
-}
-
-// The Revere Cloud web address, linked.
-template<typename OPEN_CB>
-void revere_cloud_web_link(OPEN_CB open_cb)
-{
-    const ImVec4 link_color = r_ui_utils::theme::text_link;
-
-    link_text(REVERE_CLOUD_WEB_URL, REVERE_CLOUD_WEB_URL, link_color, open_cb);
 }
 
 template<typename DOWNLOAD_CB, typename CLOSE_CB>

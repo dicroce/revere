@@ -3672,17 +3672,6 @@ int main(int argc, char** argv)
                                     }
                                     catch (...) {}
                                 }
-
-                                // Revere Cloud's web app, under its checkbox and activation code/link.
-                                if (revere::is_revere_cloud_plugin(plugin_name))
-                                {
-                                    ImGui::Indent(28.0f);
-                                    revere::revere_cloud_web_link([](const std::string& url) {
-                                        try { revere::open_url_in_browser(url); }
-                                        catch (const std::exception& e) { R_LOG_ERROR("Could not open %s: %s", url.c_str(), e.what()); }
-                                    });
-                                    ImGui::Unindent(28.0f);
-                                }
                             }
                         }
 
