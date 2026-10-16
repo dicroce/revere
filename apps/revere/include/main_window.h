@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -248,6 +249,24 @@ inline void ellipsis_text(ImDrawList* dl, ImVec2 pos, float max_width, const ImV
     ImVec2 max(pos.x + max_width, pos.y + t.y);
     ImGui::RenderTextEllipsis(dl, min, max, max.x, max.x, text.c_str(), nullptr, &t);
     ImGui::PopStyleColor();
+}
+
+// The local web UI opened on one camera (its ?camera= deep link).
+inline std::string local_web_ui_camera_url(const std::string& camera_id)
+{
+    std::string encoded;
+    for(unsigned char c : camera_id)
+    {
+        if(std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
+            encoded += (char)c;
+        else
+        {
+            char buf[4];
+            std::snprintf(buf, sizeof(buf), "%%%02X", c);
+            encoded += buf;
+        }
+    }
+    return "http://localhost:8088/?camera=" + encoded;
 }
 
 inline ImVec4 camera_dot(stream_health h)
@@ -714,6 +733,8 @@ inline void main_window(
                     actions.view(sel_index);
                 if(flow_button(row, "Properties"))
                     actions.properties(sel_index);
+                if(flow_button(row, "Open in web UI"))
+                    actions.open_url(local_web_ui_camera_url(item.camera_id));
                 if(!item.action_label.empty() && flow_button(row, item.action_label.c_str()))
                     actions.repair(sel_index);
                 if(flow_button(row, "Remove", button_kind::ghost_destructive))
