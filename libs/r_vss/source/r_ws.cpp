@@ -3,6 +3,7 @@
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_query.h"
 #include "r_vss/r_vss_utils.h"
+#include "r_vss/r_camera_source_info.h"
 #include "r_vss/r_motion_engine.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_utils/r_time_utils.h"
@@ -87,75 +88,19 @@ constexpr size_t MAX_INFLIGHT_EXPORTS = 8;
 constexpr int MAX_FAILED_LOGINS = 5;
 constexpr int LOGIN_LOCKOUT_SECONDS = 30;
 
-// Returns the camera's source video resolution by parsing the SPS from the
-// codec params stored alongside the latest recorded key frame. We can't use
-// r_camera::video_codec_parameters directly — those come from the discovery-
-// time SDP and frequently lack sprop-parameter-sets for cameras that only
-// emit SPS/PPS inline in the bitstream. The stored params, by contrast, are
-// populated by r_recording_context with the actual sprop bytes from the
-// running stream, so they're always present for any camera that's recorded
-// at least one key frame. Null on any failure (codec unknown, no recording,
-// SPS missing) — resolution is best-effort metadata.
-// What the camera's last recorded key frame says about its stream: the
-// coded resolution (from the SPS) and the framerate the recording context
-// stamped into the codec parameters. Best-effort metadata: null when the
-// camera hasn't recorded yet or the frame can't be read.
-struct camera_source_info
-{
-    r_utils::r_nullable<std::pair<uint16_t, uint16_t>> resolution;
-    r_utils::r_nullable<float> framerate;
-};
-
+// The camera's resolution and framerate from its last recorded key frame
+// (r_vss/r_camera_source_info.h). Empty for a camera that has no recording.
 camera_source_info _camera_source_info(const std::string& top_dir, const r_disco::r_camera& c)
 {
-    camera_source_info out;
     if(c.record_file_path.is_null())
-        return out;
-    try
-    {
-        // Path resolution mirrors _get_storage_path() in r_query.cpp.
-        const auto& rfp = c.record_file_path.value();
-        std::string path = (rfp.find('/') != std::string::npos || rfp.find('\\') != std::string::npos)
-            ? rfp
-            : (top_dir + PATH_SLASH + "video" + PATH_SLASH + rfp);
+        return camera_source_info();
 
-        r_storage::r_storage_file_reader sf(path);
-        auto last_ts = sf.last_ts();
-        if(last_ts.is_null())
-            return out;
-
-        auto key_bt_buf = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, last_ts.value());
-        uint32_t version = 0;
-        auto bt = r_utils::r_blob_tree::deserialize(key_bt_buf.data(), key_bt_buf.size(), version);
-
-        if(!bt.has_key("video_codec_name") || !bt.has_key("video_codec_parameters"))
-            return out;
-        auto codec = bt["video_codec_name"].get_string();
-        auto params = bt["video_codec_parameters"].get_string();
-
-        out.framerate = r_pipeline::get_video_codec_framerate(params);
-
-        if(codec == "h264")
-        {
-            auto sps = r_pipeline::get_h264_sps(params);
-            if(!sps.is_null())
-            {
-                auto info = r_pipeline::parse_h264_sps(sps.value());
-                out.resolution.set_value({info.width, info.height});
-            }
-        }
-        else if(codec == "h265")
-        {
-            auto sps = r_pipeline::get_h265_sps(params);
-            if(!sps.is_null())
-            {
-                auto info = r_pipeline::parse_h265_sps(sps.value());
-                out.resolution.set_value({info.width, info.height});
-            }
-        }
-    }
-    catch(...) { /* swallow — stream info is best-effort metadata */ }
-    return out;
+    // Path resolution mirrors _get_storage_path() in r_query.cpp.
+    const auto& rfp = c.record_file_path.value();
+    std::string path = (rfp.find('/') != std::string::npos || rfp.find('\\') != std::string::npos)
+        ? rfp
+        : (top_dir + PATH_SLASH + "video" + PATH_SLASH + rfp);
+    return read_camera_source_info(path);
 }
 
 } // namespace

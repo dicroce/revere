@@ -798,6 +798,8 @@ inline void main_window(
                 if(!item.kbps.empty()) stats.push_back({"Bitrate", item.kbps});
                 if(!item.retention.empty()) stats.push_back({"Retention", item.retention});
             }
+            if(!item.resolution.empty()) stats.push_back({"Resolution", item.resolution});
+            if(!item.frame_rate.empty()) stats.push_back({"Frame rate", item.frame_rate});
             if(!item.codec.empty()) stats.push_back({"Codec", upper(item.codec)});
             stat_cards(stats, fonts);
 

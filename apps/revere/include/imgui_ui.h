@@ -408,6 +408,8 @@ struct sidebar_list_ui_item
 
     // Shown in the main window's detail pane when known.
     std::string codec;
+    std::string resolution;     // "2560 × 1920"
+    std::string frame_rate;     // "15 fps"
     r_utils::r_nullable<bool> motion_detection;
 };
 

@@ -76,6 +76,7 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 
 #include "imgui_ui.h"
 #include "main_window.h"
+#include "r_vss/r_camera_source_info.h"
 #include "assignment_state.h"
 #include "configure_state.h"
 #include "rtsp_source_camera_config.h"
@@ -277,6 +278,24 @@ static string _make_file_name(string name)
     return name + ".nts";
 }
 
+// Resolution and framerate from a camera's recording file (the same reading
+// /cameras reports), re-read at most once a minute per camera since it means
+// opening the file.
+static r_vss::camera_source_info _cached_source_info(const r_disco::r_camera& cam)
+{
+    static map<string, pair<chrono::steady_clock::time_point, r_vss::camera_source_info>> cache;
+    auto now = chrono::steady_clock::now();
+    auto it = cache.find(cam.id);
+    if(it != cache.end() && (now - it->second.first) < chrono::seconds(60))
+        return it->second.second;
+
+    r_vss::camera_source_info info;
+    if(!cam.record_file_path.is_null())
+        info = r_vss::read_camera_source_info(_get_storage_path(cam.record_file_path.value()));
+    cache[cam.id] = {now, info};
+    return info;
+}
+
 void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_vss::r_stream_keeper& streamKeeper)
 {
     // Use cached versions to avoid blocking the UI thread
@@ -300,6 +319,11 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
         item.sub_label = c.second.ipv4.value();
         item.camera_id = c.first;
         item.codec = c.second.video_codec.is_null() ? string() : c.second.video_codec.value();
+        auto source = _cached_source_info(c.second);
+        if(!source.resolution.is_null())
+            item.resolution = r_string_utils::format("%u \xC3\x97 %u", (unsigned)source.resolution.value().first, (unsigned)source.resolution.value().second);
+        if(!source.framerate.is_null() && source.framerate.value() > 0.0f)
+            item.frame_rate = r_string_utils::format("%g fps", (double)source.framerate.value());
         item.motion_detection = c.second.do_motion_detection;
 
         // Populate kbps, retention, and health if stream status is available
