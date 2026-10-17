@@ -7,6 +7,8 @@ add_executable(
     source/test_r_motion_engine.cpp
     include/test_r_snapshot_cache.h
     source/test_r_snapshot_cache.cpp
+    include/test_r_restream_track.h
+    source/test_r_restream_track.cpp
 )
 
 target_include_directories(

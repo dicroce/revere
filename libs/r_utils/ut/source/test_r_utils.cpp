@@ -6,6 +6,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_file_lock.h"
+#include "r_utils/r_instance_lock.h"
 #include "r_utils/r_md5.h"
 #include "r_utils/r_sha1.h"
 #include "r_utils/r_socket.h"
@@ -33,6 +34,11 @@
 #include <numeric>
 #include <cstdint>
 #include <algorithm>
+#ifdef IS_WINDOWS
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace std;
 using namespace std::chrono;
@@ -2125,4 +2131,75 @@ void test_r_utils::test_server_threaded_bounded_pool()
     th.join();
     server.join_all();
     RTF_ASSERT( handled == 4 );
+}
+
+static void _remove_instance_files(const string& path)
+{
+    for(const auto& p : {path, path + ".notify"})
+        if(r_fs::file_exists(p))
+            r_fs::remove_file(p);
+}
+
+void test_r_utils::test_instance_lock_one_holder()
+{
+    const string path = "instance_lock_test.lock";
+    _remove_instance_files(path);
+    {
+        r_instance_lock first(path);
+        RTF_ASSERT(first.held());
+
+        // A second claim while the first is alive fails, and learns the
+        // holder's pid (ours here: same process, separate lock).
+        r_instance_lock second(path);
+        RTF_ASSERT(!second.held());
+#ifdef IS_WINDOWS
+        RTF_ASSERT_EQUAL(second.holder_pid(), (int64_t)GetCurrentProcessId());
+#else
+        RTF_ASSERT_EQUAL(second.holder_pid(), (int64_t)getpid());
+#endif
+    }
+    // Released with the holder.
+    r_instance_lock third(path);
+    RTF_ASSERT(third.held());
+    _remove_instance_files(path);
+}
+
+void test_r_utils::test_instance_lock_stale_file()
+{
+    // A lock file left by a crashed holder (or naming some other process) is
+    // not a running instance: nothing holds the OS lock.
+    const string path = "instance_lock_stale.lock";
+    _remove_instance_files(path);
+    string stale = "999999";
+    r_fs::write_file((const uint8_t*)stale.c_str(), stale.size(), path);
+    r_instance_lock l(path);
+    RTF_ASSERT(l.held());
+    _remove_instance_files(path);
+}
+
+void test_r_utils::test_instance_lock_notify()
+{
+    const string path = "instance_lock_notify.lock";
+    _remove_instance_files(path);
+
+    // A request from before the holder started isn't for it.
+    r_instance_lock::notify(path);
+    r_instance_lock holder(path);
+    RTF_ASSERT(holder.held());
+    RTF_ASSERT(!holder.notified());
+
+    // Each request is seen once.
+    r_instance_lock::notify(path);
+    RTF_ASSERT(holder.notified());
+    RTF_ASSERT(!holder.notified());
+    r_instance_lock::notify(path);
+    r_instance_lock::notify(path);
+    RTF_ASSERT(holder.notified());
+    RTF_ASSERT(!holder.notified());
+
+    // Only the holder hears them.
+    r_instance_lock other(path);
+    r_instance_lock::notify(path);
+    RTF_ASSERT(!other.notified());
+    _remove_instance_files(path);
 }

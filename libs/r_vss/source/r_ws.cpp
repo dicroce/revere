@@ -284,6 +284,9 @@ static uint16_t _clamp_snapshot_dim(uint16_t v, uint16_t fallback)
     return v;
 }
 
+// /jpg calls at least this slow are logged with their time.
+static constexpr long long SLOW_JPG_MS = 2000;
+
 r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_socket>&,
                                          r_utils::r_socket&,
                                          const r_http::r_server_request& request)
@@ -316,6 +319,7 @@ r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_s
                 h = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["height"]), 480);
         }
 
+        auto t_start = steady_clock::now();
         auto result = query_get_jpg(
             _top_dir,
             _devices,
@@ -324,6 +328,11 @@ r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_s
             w,
             h
         );
+
+        // Only the slow ones: /jpg is called for every event frame and snapshot.
+        auto elapsed_ms = (long long)duration_cast<milliseconds>(steady_clock::now() - t_start).count();
+        if(elapsed_ms >= SLOW_JPG_MS)
+            R_LOG_INFO("[JPG] %s at %s (%ux%u): %lld ms", args["camera_id"].c_str(), args["start_time"].c_str(), w, h, elapsed_ms);
 
         r_server_response response;
         response.set_content_type("image/jpeg");
@@ -1141,7 +1150,7 @@ void r_ws::_evict_oldest_transcode_session()
     auto oldest = _sessions.begin();
     for(auto it = next(_sessions.begin()); it != _sessions.end(); ++it)
     {
-        if(it->second.last_used < oldest->second.last_used)
+        if(it->second->last_used < oldest->second->last_used)
             oldest = it;
     }
     _sessions.erase(oldest);
@@ -1174,20 +1183,20 @@ r_http::r_server_response r_ws::_get_create_transcode_stream(const r_http::r_web
         if(output_codec != "h264" && output_codec != "h265" && output_codec != "hevc")
             R_THROW(("Unsupported output codec: %s", output_codec.c_str()));
 
-        r_transcode_session session;
-        session.output_width      = r_string_utils::s_to_uint16(args["width"]);
-        session.output_height     = r_string_utils::s_to_uint16(args["height"]);
-        session.bitrate           = r_string_utils::s_to_uint32(args["bitrate"]);
-        session.framerate_num     = r_string_utils::s_to_uint32(args["framerate_num"]);
-        session.framerate_den     = r_string_utils::s_to_uint32(args["framerate_den"]);
-        session.output_codec_name = output_codec;
-        session.codec_initialized = false;
-        session.last_used         = steady_clock::now();
+        auto session = make_shared<r_transcode_session>();
+        session->output_width      = r_string_utils::s_to_uint16(args["width"]);
+        session->output_height     = r_string_utils::s_to_uint16(args["height"]);
+        session->bitrate           = r_string_utils::s_to_uint32(args["bitrate"]);
+        session->framerate_num     = r_string_utils::s_to_uint32(args["framerate_num"]);
+        session->framerate_den     = r_string_utils::s_to_uint32(args["framerate_den"]);
+        session->output_codec_name = output_codec;
+        session->codec_initialized = false;
+        session->last_used         = steady_clock::now();
 
         if(args.find("audio_sample_rate") != args.end())
-            session.target_audio_sample_rate = r_string_utils::s_to_int(args["audio_sample_rate"]);
+            session->target_audio_sample_rate = r_string_utils::s_to_int(args["audio_sample_rate"]);
         if(args.find("audio_channels") != args.end())
-            session.target_audio_channels = r_string_utils::s_to_int(args["audio_channels"]);
+            session->target_audio_channels = r_string_utils::s_to_int(args["audio_channels"]);
 
         auto handle = r_utils::r_uuid::generate();
 
@@ -1282,17 +1291,27 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
         // still image at the start of the clip.
         auto start_ms  = (int64_t)chrono::duration_cast<chrono::milliseconds>(start_tp.time_since_epoch()).count();
 
-        lock_guard<mutex> lock(_sessions_mutex);
+        auto t_start = steady_clock::now();
 
-        auto it = _sessions.find(handle);
-        if(it == _sessions.end())
-            R_THROW(("Unknown transcode handle: %s", handle.c_str()));
-
-        auto& session = it->second;
-        session.last_used = steady_clock::now();
+        // The map lock only to find the session; then the session's own lock for the
+        // whole window, so a long transcode never holds up another session's
+        // create, transcode or finalize.
+        shared_ptr<r_transcode_session> session_ptr;
+        {
+            lock_guard<mutex> map_lock(_sessions_mutex);
+            auto it = _sessions.find(handle);
+            if(it == _sessions.end())
+                R_THROW(("Unknown transcode handle: %s", handle.c_str()));
+            session_ptr = it->second;
+            session_ptr->last_used = steady_clock::now();
+        }
+        lock_guard<mutex> lock(session_ptr->mtx);
+        auto& session = *session_ptr;
+        auto t_locked = steady_clock::now();
 
         // Fetch the raw video blobtree for the requested range.
         auto qr_buffer = query_get_video(_top_dir, _devices, args["camera_id"], start_tp, end_tp);
+        auto t_read = steady_clock::now();
 
         uint32_t version = 0;
         auto in_bt = r_blob_tree::deserialize(qr_buffer.data(), qr_buffer.size(), version);
@@ -1660,6 +1679,12 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
         }
 
         auto serialized = r_blob_tree::serialize(out_bt, 0);
+
+        auto t_done = steady_clock::now();
+        auto ms = [](steady_clock::duration d) { return (long long)duration_cast<milliseconds>(d).count(); };
+        R_LOG_INFO("[TRANSCODE] %s %s to %s: %lld ms (waited %lld ms for the session, read %zu bytes of video in %lld ms, decoded and encoded in %lld ms)",
+                   args["camera_id"].c_str(), args["start_time"].c_str(), args["end_time"].c_str(),
+                   ms(t_done - t_start), ms(t_locked - t_start), qr_buffer.size(), ms(t_read - t_locked), ms(t_done - t_read));
 
         r_server_response response;
         response.set_content_type("application/vnd.revere.blobtree.v1");

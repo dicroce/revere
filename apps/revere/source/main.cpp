@@ -22,6 +22,7 @@
 #pragma comment(lib, "dwmapi.lib")
 #endif
 
+#include "macos_activation.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
 #include "imgui/imgui_impl_sdl2.h"
@@ -121,6 +122,9 @@ static void _launch_detached(const std::string& cmd)
 
     if(CreateProcessA(NULL, buf.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
     {
+        // Let it take the foreground (its window comes to the front rather
+        // than flashing in the taskbar behind ours).
+        AllowSetForegroundWindow(pi.dwProcessId);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
@@ -1107,6 +1111,49 @@ static r_nullable<shared_ptr<vector<uint8_t>>> _decode_frame(const r_pipeline::s
     return output;
 }
 
+// Where "Download" in About Revere Cloud sends the browser. A build made on a
+// release tag has a plain "x.y.z" version and its installer is a release asset,
+// so it links straight to that file. Any other build (a commit hash,
+// "0.0.30-4-gabc1234", "unknown") has no release of its own, so it opens the
+// latest release instead of a 404.
+static std::string _revere_cloud_download_url(const std::string& version)
+{
+    auto is_plain_version = [](const std::string& v) {
+        int parts = 0;
+        size_t i = 0;
+        while(i < v.size())
+        {
+            size_t start = i;
+            while(i < v.size() && std::isdigit((unsigned char)v[i]))
+                ++i;
+            if(i == start)
+                return false;
+            ++parts;
+            if(i == v.size())
+                break;
+            if(v[i] != '.' || parts == 3)
+                return false;
+            ++i;
+            if(i == v.size())
+                return false;
+        }
+        return parts == 3;
+    };
+    if(!is_plain_version(version))
+        return "https://github.com/dicroce/revere/releases/latest";
+
+    std::string base_url = "https://github.com/dicroce/revere/releases/download/v" + version + "/";
+#if defined(IS_WINDOWS)
+    return base_url + "revere-v" + version + "-windows-cloud-setup.exe";
+#elif defined(IS_LINUX)
+    return base_url + "revere-v" + version + "-linux-cloud.run";
+#elif defined(IS_MACOS)
+    return base_url + "revere-v" + version + "-macos-cloud.command";
+#else
+    #error "Unsupported platform"
+#endif
+}
+
 void configure_camera_setup_wizard(
     revere::assignment_state& as,
     revere::rtsp_source_camera_config& rscc,
@@ -1670,19 +1717,7 @@ void configure_camera_setup_wizard(
                 GImGui,
                 "About Revere Cloud",
                 [&](){
-                    std::string version = REVERE_VERSION;
-                    std::string base_url = "https://github.com/dicroce/revere/releases/download/v" + version + "/";
-                    std::string filename;
-#if defined(IS_WINDOWS)
-                    filename = "revere-v" + version + "-windows-cloud-setup.exe";
-#elif defined(IS_LINUX)
-                    filename = "revere-v" + version + "-linux-cloud.run";
-#elif defined(IS_MACOS)
-                    filename = "revere-v" + version + "-macos-cloud.command";
-#else
-                    #error "Unsupported platform"
-#endif
-                    revere::open_url_in_browser(base_url + filename);
+                    revere::open_url_in_browser(_revere_cloud_download_url(REVERE_VERSION));
                     camera_setup_wizard.cancel();
                 },
                 [&](){camera_setup_wizard.cancel();}
@@ -2238,6 +2273,66 @@ void _set_adaptive_window_size(SDL_Window* window)
     int window_x = monitor_x + (monitor_width - target_width) / 2;
     int window_y = monitor_y + (monitor_height - target_height) / 2;
     SDL_SetWindowPosition(window, window_x, window_y);
+}
+
+// Puts the main window where it was when Revere last ran, if enough of that
+// spot is on a display connected now (moved fully on screen, shrunk if it no
+// longer fits); otherwise the adaptive size, centered. SDL window coordinates
+// are logical points, so a HiDPI display needs no conversion. Returns whether
+// it was maximized, to maximize it again once it's shown.
+static bool _place_window(SDL_Window* window, const revere::configure_state& cfg)
+{
+    auto saved = cfg.get_window_placement();
+    if(saved)
+    {
+        std::vector<r_ui_utils::window_rect> displays;
+        for(int i = 0; i < SDL_GetNumVideoDisplays(); ++i)
+        {
+            SDL_Rect b;
+            if(SDL_GetDisplayUsableBounds(i, &b) == 0)
+                displays.push_back({b.x, b.y, b.w, b.h});
+        }
+
+        // Room for the title bar above the client area (0 where SDL can't tell).
+        int top = 0;
+        SDL_GetWindowBordersSize(window, &top, nullptr, nullptr, nullptr);
+
+        auto r = r_ui_utils::restore_window_rect(saved->rect, displays, top);
+        if(r)
+        {
+            R_LOG_INFO("Restoring window: %dx%d at (%d, %d)%s", r->w, r->h, r->x, r->y, saved->maximized ? ", maximized" : "");
+            SDL_SetWindowSize(window, r->w, r->h);
+            SDL_SetWindowPosition(window, r->x, r->y);
+            return saved->maximized;
+        }
+        R_LOG_INFO("Saved window position %dx%d at (%d, %d) is off every display; centering",
+                   saved->rect.w, saved->rect.h, saved->rect.x, saved->rect.y);
+    }
+
+    _set_adaptive_window_size(window);
+    return false;
+}
+
+// Remembers where the window is now. Hidden (in the tray) or minimized, the
+// last record stands; maximized, it keeps the normal size and position to come
+// back to.
+static void _record_window_placement(SDL_Window* window, revere::configure_state& cfg)
+{
+    auto flags = SDL_GetWindowFlags(window);
+    if(flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED))
+        return;
+
+    revere::window_placement wp;
+    wp.maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+    auto prev = cfg.get_window_placement();
+    if(wp.maximized && prev)
+        wp.rect = prev->rect;
+    else
+    {
+        SDL_GetWindowPosition(window, &wp.rect.x, &wp.rect.y);
+        SDL_GetWindowSize(window, &wp.rect.w, &wp.rect.h);
+    }
+    cfg.set_window_placement(wp);
 }
 
 void _set_window_icon(SDL_Window* window)
@@ -2988,8 +3083,13 @@ int main(int argc, char** argv)
     R_LOG_INFO("Set SDL logical size to %dx%d for Retina display support", window_w, window_h);
 #endif
 
-    // Set adaptive window size based on monitor resolution
-    _set_adaptive_window_size(window);
+    // Where it was last time, else the adaptive size based on monitor resolution
+    bool maximize_when_shown = _place_window(window, cfg_state);
+    if(maximize_when_shown && !maybe_start_minimized)
+    {
+        SDL_MaximizeWindow(window);
+        maximize_when_shown = false;
+    }
 
     string vision_cmd = "vision";
 #ifdef IS_WINDOWS
@@ -3128,6 +3228,11 @@ int main(int argc, char** argv)
     bool window_visible = !maybe_start_minimized;  // Start hidden if minimized flag is set
     bool need_render = true;  // Render at least once on startup
 
+    // Moves and resizes are remembered a second after they stop, not on every event of a drag.
+    const auto placement_debounce = chrono::seconds(1);
+    bool placement_changed = false;
+    auto placement_changed_at = chrono::steady_clock::now();
+
     // Main loop
     while(!close_requested)
     {
@@ -3167,7 +3272,22 @@ int main(int argc, char** argv)
                         camera_setup_wizard.next("minimize_to_tray");
                     }
                     if (event.window.event == SDL_WINDOWEVENT_SHOWN)
+                    {
                         window_visible = true;
+                        if (maximize_when_shown)
+                        {
+                            maximize_when_shown = false;
+                            SDL_MaximizeWindow(window);
+                        }
+                    }
+                    if (event.window.event == SDL_WINDOWEVENT_MOVED ||
+                        event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                        event.window.event == SDL_WINDOWEVENT_MAXIMIZED ||
+                        event.window.event == SDL_WINDOWEVENT_RESTORED)
+                    {
+                        placement_changed = true;
+                        placement_changed_at = chrono::steady_clock::now();
+                    }
                     if (event.window.event == SDL_WINDOWEVENT_HIDDEN)
                         window_visible = false;
                     if (event.window.event == SDL_WINDOWEVENT_MINIMIZED)
@@ -3220,6 +3340,12 @@ int main(int argc, char** argv)
             maybe_start_minimized = false;
             SDL_HideWindow(window);
             window_visible = false;
+        }
+
+        if(placement_changed && chrono::steady_clock::now() - placement_changed_at >= placement_debounce)
+        {
+            placement_changed = false;
+            _record_window_placement(window, cfg_state);
         }
 
         if(cfg_state.need_save())
@@ -3474,6 +3600,9 @@ int main(int argc, char** argv)
                                     return;
                                 string args = " --camera " + cid + " --overlay --revere-ip 127.0.0.1";
 #ifdef IS_MACOS
+                                // The overlay comes to the front; without this,
+                                // macOS 14+ keeps it behind our window.
+                                yield_activation_to("com.revere.vision");
                                 _launch_detached(vision_cmd + " --args" + args);
 #else
                                 _launch_detached(vision_cmd + args);
@@ -3710,6 +3839,11 @@ int main(int argc, char** argv)
 
         SDL_RenderPresent(renderer);
     }
+
+    // Where the window is as Revere exits (unless it's in the tray: then where it was last shown).
+    _record_window_placement(window, cfg_state);
+    if(cfg_state.need_save())
+        cfg_state.save();
 
     tray.exit();
 

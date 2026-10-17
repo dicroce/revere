@@ -73,7 +73,9 @@ elseif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         revere MACOSX_BUNDLE
         ${REVERE_HEADERS}
         ${REVERE_SOURCES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/macos_activation.mm
     )
+    target_link_libraries(revere "-framework AppKit")
 else()
     add_executable(
         revere
