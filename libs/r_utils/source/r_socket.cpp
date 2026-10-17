@@ -106,8 +106,19 @@ void r_raw_socket::create( int af )
         R_STHROW( r_socket_exception, ("Unable to create socket.") );
 
     int on = 1;
+#ifdef IS_WINDOWS
+    // On Windows, SO_REUSEADDR lets a second socket bind a port another one is
+    // already listening on, so a server could silently share a port that's taken,
+    // and r_server_threaded::stop()'s wake-up connect could land on the other
+    // listener and never return. SO_EXCLUSIVEADDRUSE refuses the bind instead.
+    // (Windows rebinds a port in TIME_WAIT without any option, which is all
+    // SO_REUSEADDR is for on POSIX.)
+    if( ::setsockopt( (sock_t)_sok, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&on, sizeof(int) ) < 0 )
+        R_STHROW( r_socket_exception, ("Unable to configure socket.") );
+#else
     if( ::setsockopt( (sock_t)_sok, SOL_SOCKET, SO_REUSEADDR, (const char*)&on, sizeof(int) ) < 0 )
         R_STHROW( r_socket_exception, ("Unable to configure socket.") );
+#endif
 }
 
 void r_raw_socket::connect( const string& host, int port )
