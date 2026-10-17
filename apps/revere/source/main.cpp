@@ -333,9 +333,8 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
         }
         else
         {
-            item.kbps = "N/A";
-            item.retention = "N/A";
             item.health = revere::stream_health::unknown;
+            item.starting = true;
         }
 
         ui_state.recording_items.push_back(item);
@@ -3124,6 +3123,13 @@ int main(int argc, char** argv)
     auto last_ui_update_ts = chrono::steady_clock::now();
     bool force_ui_update = false;
 
+    // The camera lists come from r_devices' caches, which its thread fills
+    // just after start(), so the first _update_list_ui() above usually sees
+    // them empty. Redraw the moment the first fill lands, and refresh every
+    // 500 ms for a while after launch so stream status appears quickly too.
+    const auto launch_ts = chrono::steady_clock::now();
+    bool cameras_loaded = devices.cache_generation() > 0;
+
 
     bool window_visible = !maybe_start_minimized;  // Start hidden if minimized flag is set
     bool need_render = true;  // Render at least once on startup
@@ -3234,7 +3240,13 @@ int main(int argc, char** argv)
         auto now = chrono::steady_clock::now();
 
         // Check if periodic data update is needed
-        bool need_data_update = ((now - last_ui_update_ts) > chrono::seconds(5)) || force_ui_update;
+        if(!cameras_loaded && devices.cache_generation() > 0)
+        {
+            cameras_loaded = true;
+            force_ui_update = true;
+        }
+        const auto refresh_interval = (now - launch_ts) < chrono::seconds(10) ? chrono::milliseconds(500) : chrono::milliseconds(5000);
+        bool need_data_update = ((now - last_ui_update_ts) > refresh_interval) || force_ui_update;
 
         if(need_data_update)
         {
@@ -3356,6 +3368,8 @@ int main(int argc, char** argv)
                     h,
                     "Discovered",
                     [&](uint16_t pw){
+                        if(!cameras_loaded)
+                            ImGui::TextColored(r_ui_utils::theme::text_tertiary, "Loading cameras...");
                         revere::sidebar_list(
                             GImGui,
                             as,
@@ -3418,6 +3432,8 @@ int main(int argc, char** argv)
                     },
                     "Recording",
                     [&](uint16_t pw){
+                        if(!cameras_loaded)
+                            ImGui::TextColored(r_ui_utils::theme::text_tertiary, "Loading cameras...");
                         revere::sidebar_list(
                             GImGui,
                             as,
