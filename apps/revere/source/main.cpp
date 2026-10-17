@@ -1107,6 +1107,49 @@ static r_nullable<shared_ptr<vector<uint8_t>>> _decode_frame(const r_pipeline::s
     return output;
 }
 
+// Where "Download" in About Revere Cloud sends the browser. A build made on a
+// release tag has a plain "x.y.z" version and its installer is a release asset,
+// so it links straight to that file. Any other build (a commit hash,
+// "0.0.30-4-gabc1234", "unknown") has no release of its own, so it opens the
+// latest release instead of a 404.
+static std::string _revere_cloud_download_url(const std::string& version)
+{
+    auto is_plain_version = [](const std::string& v) {
+        int parts = 0;
+        size_t i = 0;
+        while(i < v.size())
+        {
+            size_t start = i;
+            while(i < v.size() && std::isdigit((unsigned char)v[i]))
+                ++i;
+            if(i == start)
+                return false;
+            ++parts;
+            if(i == v.size())
+                break;
+            if(v[i] != '.' || parts == 3)
+                return false;
+            ++i;
+            if(i == v.size())
+                return false;
+        }
+        return parts == 3;
+    };
+    if(!is_plain_version(version))
+        return "https://github.com/dicroce/revere/releases/latest";
+
+    std::string base_url = "https://github.com/dicroce/revere/releases/download/v" + version + "/";
+#if defined(IS_WINDOWS)
+    return base_url + "revere-v" + version + "-windows-cloud-setup.exe";
+#elif defined(IS_LINUX)
+    return base_url + "revere-v" + version + "-linux-cloud.run";
+#elif defined(IS_MACOS)
+    return base_url + "revere-v" + version + "-macos-cloud.command";
+#else
+    #error "Unsupported platform"
+#endif
+}
+
 void configure_camera_setup_wizard(
     revere::assignment_state& as,
     revere::rtsp_source_camera_config& rscc,
@@ -1670,19 +1713,7 @@ void configure_camera_setup_wizard(
                 GImGui,
                 "About Revere Cloud",
                 [&](){
-                    std::string version = REVERE_VERSION;
-                    std::string base_url = "https://github.com/dicroce/revere/releases/download/v" + version + "/";
-                    std::string filename;
-#if defined(IS_WINDOWS)
-                    filename = "revere-v" + version + "-windows-cloud-setup.exe";
-#elif defined(IS_LINUX)
-                    filename = "revere-v" + version + "-linux-cloud.run";
-#elif defined(IS_MACOS)
-                    filename = "revere-v" + version + "-macos-cloud.command";
-#else
-                    #error "Unsupported platform"
-#endif
-                    revere::open_url_in_browser(base_url + filename);
+                    revere::open_url_in_browser(_revere_cloud_download_url(REVERE_VERSION));
                     camera_setup_wizard.cancel();
                 },
                 [&](){camera_setup_wizard.cancel();}
