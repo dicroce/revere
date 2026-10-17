@@ -723,3 +723,88 @@ void test_r_http::test_web_server_busy_503()
     RTF_ASSERT(ok.get_status() == 200);
     RTF_ASSERT(server.counted == 1);
 }
+
+// Started and stopped (or destroyed) straight away, over and over, including
+// before the accept loop is listening: no hang, no std::terminate.
+void test_r_http::test_web_server_immediate_start_stop()
+{
+    int port = RTF_NEXT_PORT();
+    for(int i = 0; i < 20; ++i)
+    {
+        r_web_server<r_socket> ws(port, "127.0.0.1");
+        ws.start();
+        if(i % 2)
+            ws.stop();
+    }
+    {
+        r_web_server<r_socket> never_started(port, "127.0.0.1");
+    }
+
+    // And it still serves afterwards.
+    r_web_server<r_socket> ws(port, "127.0.0.1");
+    std::atomic<int> counted {0};
+    ws.add_route(METHOD_GET, "/count", [&](const r_web_server<r_socket>&, r_socket&, const r_server_request&){
+        ++counted;
+        return r_server_response();
+    });
+    ws.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    r_socket sok;
+    _send_get(sok, port, "/count");
+    r_client_response response;
+    response.read_response(sok);
+    RTF_ASSERT(response.get_status() == 200);
+    RTF_ASSERT(counted == 1);
+}
+
+// The port is already taken, so the server never comes up. Destroying it must
+// still join its thread: a joinable std::thread member aborted revere on quit.
+void test_r_http::test_web_server_port_taken()
+{
+    int port = RTF_NEXT_PORT();
+    r_socket holder;
+    holder.bind(port, "127.0.0.1");
+    holder.listen();
+
+    {
+        r_web_server<r_socket> ws(port, "127.0.0.1");
+        ws.start();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    {
+        r_web_server<r_socket> ws(port, "127.0.0.1");
+        ws.start();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        ws.stop();
+        ws.stop();
+    }
+}
+
+// Destroyed while a handler is still working: the destructor waits for it
+// (so the handler never outlives the server's state) and doesn't throw.
+void test_r_http::test_web_server_destroyed_with_request_in_flight()
+{
+    int port = RTF_NEXT_PORT();
+    std::atomic<int> entered {0}, finished {0};
+    r_socket a, b;
+    {
+        r_web_server<r_socket> ws(port, "127.0.0.1", 1, 4);
+        ws.add_route(METHOD_GET, "/slow", [&](const r_web_server<r_socket>&, r_socket&, const r_server_request&){
+            ++entered;
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            ++finished;
+            return r_server_response();
+        });
+        ws.start();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        _send_get(a, port, "/slow");                 // running
+        RTF_ASSERT(_wait_for([&](){ return entered == 1; }));
+        _send_get(b, port, "/slow");                 // queued behind it
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    // The running one finished before the destructor returned; the queued
+    // one was dropped unanswered.
+    RTF_ASSERT(finished == 1);
+    RTF_ASSERT(entered == 1);
+}

@@ -92,20 +92,21 @@ public:
         _serverThread = std::thread(&r_utils::r_server_threaded<SOK_T>::start, &_server);
     }
 
-    void stop()
+    // Safe whether or not start() was called, whether or not the server came
+    // up (its port may have been taken), and more than once. Never throws: the
+    // destructor calls it.
+    void stop() noexcept
     {
-        if( _server.started() )
-        {
-            _server.stop();
+        _server.stop();
+        // Join whatever start() launched, even if the server never got going
+        // (a bind failure returns from the accept loop at once): destroying a
+        // joinable std::thread calls std::terminate.
+        if( _serverThread.joinable() )
             _serverThread.join();
-            // The accept loop has now exited, so nothing else touches the
-            // connected-context list: drain the in-flight request handlers
-            // before returning. Without this, stop() left worker threads
-            // running, and a caller that destroys state those handlers use
-            // (e.g. r_ws's transcode _sessions) raced them into a
-            // use-after-free on shutdown.
-            _server.join_all();
-        }
+        // The accept loop has now exited: drain the in-flight request handlers
+        // before returning, so a caller can then destroy state they use (e.g.
+        // r_ws's transcode _sessions).
+        _server.join_all();
     }
 
     // True once the server has begun shutting down. A route handler that loops

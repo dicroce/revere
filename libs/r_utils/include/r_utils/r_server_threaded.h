@@ -103,16 +103,23 @@ public:
         _workers.clear();
     }
 
-    R_API void stop()
+    // Ends the accept loop: start() returns soon after. Safe to call before
+    // start(), while it's starting, and more than once; never throws.
+    R_API void stop() noexcept
     {
-        if( _running )
+        _stopRequested = true;
+        _running = false;
+
+        // Wake an accept() that's waiting. Only once the socket is listening:
+        // before that, start() sees _stopRequested itself and doesn't wait.
+        if( _listening )
         {
-            _running = false;
-
-            FULL_MEM_BARRIER();
-
-            SOK_T sok;
-            sok.connect( (_sockAddr.empty() || _sockAddr == r_utils::ip4_addr_any) ? "127.0.0.1" : _sockAddr, _port );
+            try
+            {
+                SOK_T sok;
+                sok.connect( (_sockAddr.empty() || _sockAddr == r_utils::ip4_addr_any) ? "127.0.0.1" : _sockAddr, _port );
+            }
+            catch(...) {}
         }
     }
 
@@ -133,6 +140,13 @@ public:
             return;
         }
 
+        _listening = true;
+
+        // stop() may have run before the socket was listening, in which case
+        // it couldn't wake accept(): check now that it would.
+        if( _stopRequested )
+            return;
+
         {
             std::lock_guard<std::mutex> g(_lock);
             _shutdown = false;
@@ -142,13 +156,13 @@ public:
 
         _running = true;
 
-        while( _running )
+        while( !_stopRequested )
         {
             try
             {
                 auto conn = _serverSocket.accept();
 
-                if( !_running )
+                if( _stopRequested )
                     continue;
 
                 bool queued = false;
@@ -183,7 +197,7 @@ public:
     // early instead of making shutdown wait for it in join_all(). This is a
     // cooperative latency optimization, not a correctness mechanism — join_all()
     // still drains any handler that does not poll.
-    R_API bool stopping() const { return !_running.load(std::memory_order_acquire); }
+    R_API bool stopping() const { return _stopRequested.load() || !_running.load(); }
 
     R_API SOK_T& get_socket() { return _serverSocket; }
 
@@ -266,6 +280,8 @@ private:
     size_t _refused {0};
     std::chrono::steady_clock::time_point _lastRefusedLog;
     std::atomic<bool> _running;
+    std::atomic<bool> _stopRequested {false};
+    std::atomic<bool> _listening {false};
 };
 
 }
