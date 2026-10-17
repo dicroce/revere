@@ -101,8 +101,10 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
     {
         if (ImGui::MenuItem("Launch Vision"))
             launch_vision_cb();
-        if (ImGui::MenuItem("Open web UI"))
+        if (ImGui::MenuItem("Open local web UI"))
             open_web_ui_cb();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Opens this recorder's web interface in your browser (localhost:8088).");
         if (ImGui::MenuItem("Minimize to system tray"))
             minimize_cb();
 
@@ -576,79 +578,6 @@ void download_revere_cloud_modal(
     }
 }
 
-// Revere Cloud's Terms of Use and Privacy Policy. Connecting a gateway to
-// Revere Cloud is where this open-source software meets the hosted service,
-// so the notice sits at that step.
-inline constexpr const char* REVERE_CLOUD_TERMS_URL = "https://revere.video/terms";
-inline constexpr const char* REVERE_CLOUD_PRIVACY_URL = "https://revere.video/privacy";
-
-// Text that acts like a link: hand cursor, underline and the URL as a tooltip
-// on hover, open_cb(url) on click.
-template<typename OPEN_CB>
-void link_text(const char* label, const char* url, const ImVec4& color, OPEN_CB open_cb)
-{
-    ImGui::TextColored(color, "%s", label);
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        auto min = ImGui::GetItemRectMin();
-        auto max = ImGui::GetItemRectMax();
-        ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x, max.y), max, ImGui::GetColorU32(color));
-        ImGui::SetTooltip("%s", url);
-    }
-    if (ImGui::IsItemClicked())
-        open_cb(std::string(url));
-}
-
-// "By connecting to Revere Cloud you agree to the Terms of Use and Privacy
-// Policy", with both linked. Flowed word by word so it wraps to whatever width
-// the plugins panel has; each link stays one unbroken, clickable piece.
-template<typename OPEN_CB>
-void revere_cloud_terms_notice(OPEN_CB open_cb)
-{
-    const ImVec4 text_color = r_ui_utils::theme::text_tertiary;
-    const ImVec4 link_color = r_ui_utils::theme::text_link;
-
-    struct piece { std::string text; const char* url; };
-    std::vector<piece> pieces;
-    auto add_words = [&](const std::string& text) {
-        size_t i = 0;
-        while(i < text.size())
-        {
-            size_t j = text.find(' ', i);
-            size_t end = (j == std::string::npos) ? text.size() : j + 1;  // keep the trailing space
-            pieces.push_back({text.substr(i, end - i), nullptr});
-            i = end;
-        }
-    };
-    add_words("By connecting to Revere Cloud you agree to the ");
-    pieces.push_back({"Terms of Use", REVERE_CLOUD_TERMS_URL});
-    add_words(" and ");
-    pieces.push_back({"Privacy Policy", REVERE_CLOUD_PRIVACY_URL});
-    add_words(".");
-
-    const float right = ImGui::GetContentRegionMax().x;
-    bool first = true;
-    for(const auto& p : pieces)
-    {
-        if(!first)
-        {
-            ImGui::SameLine(0.0f, 0.0f);
-            // Measure without a trailing space: a line may end just past the edge with one.
-            std::string fit = p.text;
-            while(!fit.empty() && fit.back() == ' ')
-                fit.pop_back();
-            if(ImGui::GetCursorPosX() + ImGui::CalcTextSize(fit.c_str()).x > right)
-                ImGui::NewLine();
-        }
-        first = false;
-
-        if(p.url)
-            link_text(p.text.c_str(), p.url, link_color, open_cb);
-        else ImGui::TextColored(text_color, "%s", p.text.c_str());
-    }
-}
-
 template<typename DOWNLOAD_CB, typename CLOSE_CB>
 void about_revere_cloud_modal(
     ImGuiContext*,
@@ -665,7 +594,7 @@ void about_revere_cloud_modal(
 
         ImGui::SetCursorPosX(16.0f);
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 608.0f);
-        ImGui::TextWrapped("Revere Cloud is an optional plugin for Revere that connects your system to the Revere Cloud infrastructure and enables the Lantern mobile app to access your cameras remotely. Some Revere Cloud features require paying for service (and some do not).");
+        ImGui::TextWrapped("Revere Cloud is an optional plugin for Revere that connects your system to the Revere Cloud infrastructure and enables the Revere mobile app to access your cameras remotely. Some Revere Cloud features require paying for service (and some do not).");
         ImGui::PopTextWrapPos();
 
         ImGui::Spacing();

@@ -3091,7 +3091,7 @@ int main(int argc, char** argv)
         if(!vision_process.running())
             vision_process.start();
     }));
-    tray.addEntry(Tray::Button("Open web UI", [&]{
+    tray.addEntry(Tray::Button("Open local web UI", [&]{
         revere::open_url_in_browser("http://localhost:8088");
     }));
     tray.addEntry(Tray::Separator());
