@@ -1349,7 +1349,8 @@ static string _build_soap_envelope(
     const function<void(pugi::xml_node&)>& build_body,
     const r_nullable<string>& username,
     const r_nullable<string>& password,
-    int time_offset_seconds
+    int time_offset_seconds,
+    const function<void(pugi::xml_node&)>& build_header = {}
 )
 {
     pugi::xml_document doc;
@@ -1371,6 +1372,10 @@ static string _build_soap_envelope(
     envelope.append_attribute("xmlns:tds") = "http://www.onvif.org/ver10/device/wsdl";
     envelope.append_attribute("xmlns:trt") = "http://www.onvif.org/ver10/media/wsdl";
     envelope.append_attribute("xmlns:tt") = "http://www.onvif.org/ver10/schema";
+    // Events: WS-Addressing, WS-BaseNotification and the ONVIF events service.
+    envelope.append_attribute("xmlns:wsa") = "http://www.w3.org/2005/08/addressing";
+    envelope.append_attribute("xmlns:wsnt") = "http://docs.oasis-open.org/wsn/b-2";
+    envelope.append_attribute("xmlns:tev") = "http://www.onvif.org/ver10/events/wsdl";
 
     // Add authentication header if credentials are provided
     if (username && password)
@@ -1379,6 +1384,16 @@ static string _build_soap_envelope(
             _add_username_text_header(&doc, envelope, username.value(), password.value(), time_offset_seconds);
         else
             _add_username_digest_header(&doc, envelope, username.value(), password.value(), time_offset_seconds);
+    }
+
+    // Further headers (WS-Addressing, echoed ReferenceParameters) go in the same
+    // Header the security token is in, or a new one when there are no credentials.
+    if (build_header)
+    {
+        pugi::xml_node header = envelope.child("SOAP-ENV:Header");
+        if (!header)
+            header = envelope.prepend_child("SOAP-ENV:Header");
+        build_header(header);
     }
 
     // Create body and let caller populate it
@@ -1418,7 +1433,8 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
     const string& soap_action,
     const function<void(pugi::xml_node&)>& build_body,
     r_nullable<string> username,
-    r_nullable<string> password
+    r_nullable<string> password,
+    const function<void(pugi::xml_node&)>& build_header
 )
 {
     // Determine which SOAP version(s) to try
@@ -1445,7 +1461,7 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
         // Try each auth mode for this SOAP version
         for (auto auth : auth_modes_to_try)
         {
-            string body = _build_soap_envelope(ver, auth, build_body, username, password, _time_offset_seconds);
+            string body = _build_soap_envelope(ver, auth, build_body, username, password, _time_offset_seconds, build_header);
 
             // Pass SOAP version and action to set appropriate headers
             result = _http_interact(host, port, "POST", uri, body, ver, soap_action);
@@ -1831,4 +1847,317 @@ r_nullable<r_onvif::onvif_endpoint> r_onvif::find_device_service(
     R_LOG_WARNING("onvif: no device service found for %s (tried %s, unicast discovery, 80, 8000, 8080, 443)",
                   host.c_str(), hint_port.is_null() ? "no stored port" : ("stored port " + to_string(hint_port.value())).c_str());
     return r_nullable<onvif_endpoint>();
+}
+
+// ---------------------------------------------------------------------------
+// Events: pull point subscriptions (ONVIF Core, Event service).
+
+// The camera's own explanation from a SOAP fault, so a failed events call says
+// why (e.g. "ter:InvalidArgVal", "Action not supported").
+static string _fault_reason(const string& body)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(body.c_str()))
+        return body.substr(0, 300);
+    string out;
+    for (auto name : {"Value", "Text", "faultcode", "faultstring"})
+    {
+        string xp = "//" + _xpath_local(name);
+        for (auto& n : doc.select_nodes(xp.c_str()))
+        {
+            string v = n.node().child_value();
+            if (!v.empty())
+                out += (out.empty() ? "" : " | ") + v;
+        }
+    }
+    return out.empty() ? body.substr(0, 300) : out;
+}
+
+static runtime_error _events_error(const string& what, const pair<int, string>& result)
+{
+    return runtime_error(what + ": HTTP " + to_string(result.first) + " " + _fault_reason(result.second));
+}
+
+// The namespace a prefix means at node, from the nearest xmlns declaration.
+static string _resolve_prefix(pugi::xml_node node, const string& prefix)
+{
+    string attr = prefix.empty() ? string("xmlns") : "xmlns:" + prefix;
+    for (auto n = node; n; n = n.parent())
+    {
+        auto a = n.attribute(attr.c_str());
+        if (a)
+            return a.value();
+    }
+    return string();
+}
+
+// An element copied out of its document loses the xmlns declarations it
+// inherited. Serialize it with every prefix it (or a descendant) uses declared.
+static string _serialize_standalone(pugi::xml_node element)
+{
+    map<string, string> decls;
+    auto note = [&](pugi::xml_node src, const string& qname) {
+        auto colon = qname.find(':');
+        string prefix = colon == string::npos ? string() : qname.substr(0, colon);
+        if (prefix == "xmlns" || prefix == "xml" || decls.count(prefix))
+            return;
+        auto ns = _resolve_prefix(src, prefix);
+        if (!ns.empty())
+            decls[prefix] = ns;
+    };
+    function<void(pugi::xml_node)> visit = [&](pugi::xml_node n) {
+        if (n.type() != pugi::node_element)
+            return;
+        note(n, n.name());
+        for (auto a : n.attributes())
+            if (string(a.name()).find(':') != string::npos)
+                note(n, a.name());
+        for (auto c : n.children())
+            visit(c);
+    };
+    visit(element);
+
+    pugi::xml_document doc;
+    auto copy = doc.append_copy(element);
+    for (auto& d : decls)
+    {
+        string attr = d.first.empty() ? string("xmlns") : "xmlns:" + d.first;
+        if (!copy.attribute(attr.c_str()))
+            copy.append_attribute(attr.c_str()) = d.second.c_str();
+    }
+
+    ostringstream oss;
+    doc.save(oss, "", pugi::format_raw | pugi::format_no_declaration);
+    return oss.str();
+}
+
+r_nullable<string> r_onvif::r_onvif_cam::get_events_service(const onvif_capabilities& capabilities) const
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(capabilities.c_str()))
+        throw std::runtime_error("Failed to parse capabilities XML");
+    string xp = "//" + _xpath_local("Events") + "/" + _xpath_local("XAddr");
+    auto node = doc.select_node(xp.c_str());
+    if (!node || string(node.node().child_value()).empty())
+        return r_nullable<string>();
+    return string(node.node().child_value());
+}
+
+// WS-Addressing Action and To: required by many cameras on events requests.
+static function<void(pugi::xml_node&)> _addressing_headers(const string& action, const string& to)
+{
+    return [action, to](pugi::xml_node& header) {
+        header.append_child("wsa:Action").text().set(action.c_str());
+        header.append_child("wsa:MessageID").text().set(("urn:uuid:" + r_uuid::generate()).c_str());
+        header.append_child("wsa:To").text().set(to.c_str());
+    };
+}
+
+string r_onvif::r_onvif_cam::get_event_properties(const string& events_service)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(events_service, host, port, protocol, uri);
+
+    const string action = "http://www.onvif.org/ver10/events/wsdl/EventPortType/GetEventPropertiesRequest";
+    auto result = _soap_request(
+        host, port, uri, action,
+        [](pugi::xml_node& body) { body.append_child("tev:GetEventProperties"); },
+        _username, _password,
+        _addressing_headers(action, events_service)
+    );
+    if (result.first != 200)
+        throw _events_error("GetEventProperties failed", result);
+    return result.second;
+}
+
+r_onvif::onvif_pull_point r_onvif::r_onvif_cam::create_pull_point_subscription(const string& events_service, int termination_seconds)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(events_service, host, port, protocol, uri);
+
+    const string action = "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest";
+    auto result = _soap_request(
+        host, port, uri, action,
+        [termination_seconds](pugi::xml_node& body) {
+            auto req = body.append_child("tev:CreatePullPointSubscription");
+            req.append_child("tev:InitialTerminationTime").text().set(("PT" + to_string(termination_seconds) + "S").c_str());
+        },
+        _username, _password,
+        _addressing_headers(action, events_service)
+    );
+    if (result.first != 200)
+        throw _events_error("CreatePullPointSubscription failed", result);
+
+    return parse_create_pull_point_response(result.second);
+}
+
+r_onvif::onvif_pull_point r_onvif::parse_create_pull_point_response(const string& xml)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw runtime_error("CreatePullPointSubscription: unparseable response");
+
+    onvif_pull_point pp;
+    string xp = "//" + _xpath_local("SubscriptionReference") + "/" + _xpath_local("Address");
+    auto addr = doc.select_node(xp.c_str());
+    if (!addr)
+        throw runtime_error("CreatePullPointSubscription: no SubscriptionReference/Address");
+    pp.address = r_string_utils::strip(addr.node().child_value());
+
+    xp = "//" + _xpath_local("SubscriptionReference") + "/" + _xpath_local("ReferenceParameters");
+    auto refs = doc.select_node(xp.c_str());
+    if (refs)
+        for (auto child : refs.node().children())
+            if (child.type() == pugi::node_element)
+                pp.reference_parameters.push_back(_serialize_standalone(child));
+
+    xp = "//" + _xpath_local("TerminationTime");
+    auto term = doc.select_node(xp.c_str());
+    if (term)
+        pp.termination_time = term.node().child_value();
+
+    return pp;
+}
+
+pair<int, string> r_onvif::r_onvif_cam::_pull_point_request(
+    const onvif_pull_point& pull_point,
+    const string& soap_action,
+    const function<void(pugi::xml_node&)>& build_body
+)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(pull_point.address, host, port, protocol, uri);
+
+    auto addressing = _addressing_headers(soap_action, pull_point.address);
+    auto refs = pull_point.reference_parameters;
+    return _soap_request(
+        host, port, uri, soap_action, build_body, _username, _password,
+        [addressing, refs](pugi::xml_node& header) {
+            addressing(header);
+            for (auto& r : refs)
+            {
+                pugi::xml_document tmp;
+                if (!tmp.load_string(r.c_str()))
+                    continue;
+                auto copy = header.append_copy(tmp.document_element());
+                copy.append_attribute("wsa:IsReferenceParameter") = "true";
+            }
+        }
+    );
+}
+
+vector<r_onvif::onvif_event> r_onvif::r_onvif_cam::pull_messages(const onvif_pull_point& pull_point, int timeout_seconds, int message_limit)
+{
+    auto result = _pull_point_request(
+        pull_point,
+        "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest",
+        [timeout_seconds, message_limit](pugi::xml_node& body) {
+            auto req = body.append_child("tev:PullMessages");
+            req.append_child("tev:Timeout").text().set(("PT" + to_string(timeout_seconds) + "S").c_str());
+            req.append_child("tev:MessageLimit").text().set(message_limit);
+        }
+    );
+    if (result.first != 200)
+        throw _events_error("PullMessages failed", result);
+
+    return parse_pull_messages_response(result.second);
+}
+
+vector<r_onvif::onvif_event> r_onvif::parse_pull_messages_response(const string& xml)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw runtime_error("PullMessages: unparseable response");
+
+    vector<onvif_event> events;
+    string xp = "//" + _xpath_local("NotificationMessage");
+    for (auto& nm : doc.select_nodes(xp.c_str()))
+    {
+        onvif_event ev;
+        auto topic = nm.node().select_node(("./" + _xpath_local("Topic")).c_str());
+        if (topic)
+            ev.topic = r_string_utils::strip(topic.node().child_value());
+
+        // wsnt:Message wraps the tt:Message that carries the data.
+        auto msg = nm.node().select_node(("./" + _xpath_local("Message") + "/" + _xpath_local("Message")).c_str());
+        if (msg)
+        {
+            auto m = msg.node();
+            ev.utc_time = m.attribute("UtcTime").value();
+            ev.property_operation = m.attribute("PropertyOperation").value();
+            auto items = [&](const char* section, vector<pair<string, string>>& out) {
+                string sx = "./" + _xpath_local(section) + "/" + _xpath_local("SimpleItem");
+                for (auto& si : m.select_nodes(sx.c_str()))
+                    out.emplace_back(si.node().attribute("Name").value(), si.node().attribute("Value").value());
+            };
+            items("Source", ev.source);
+            items("Data", ev.data);
+        }
+        events.push_back(ev);
+    }
+    return events;
+}
+
+static string _local_name(const char* qname)
+{
+    string s = qname;
+    auto c = s.find(':');
+    return c == string::npos ? s : s.substr(c + 1);
+}
+
+static void _collect_topics(pugi::xml_node n, const string& path, vector<string>& out)
+{
+    for (auto c : n.children())
+    {
+        if (c.type() != pugi::node_element)
+            continue;
+        string name = _local_name(c.name());
+        if (name == "MessageDescription" || name == "Documentation")
+            continue;
+        string p = path.empty() ? name : path + "/" + name;
+        for (auto a : c.attributes())
+            if (_local_name(a.name()) == "topic" && string(a.value()) == "true")
+                out.push_back(p);
+        _collect_topics(c, p, out);
+    }
+}
+
+vector<string> r_onvif::parse_event_topics(const string& xml)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw runtime_error("GetEventProperties: unparseable response");
+    vector<string> topics;
+    string xp = "//" + _xpath_local("TopicSet");
+    auto ts = doc.select_node(xp.c_str());
+    if (ts)
+        _collect_topics(ts.node(), "", topics);
+    return topics;
+}
+
+void r_onvif::r_onvif_cam::renew(const onvif_pull_point& pull_point, int termination_seconds)
+{
+    auto result = _pull_point_request(
+        pull_point,
+        "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest",
+        [termination_seconds](pugi::xml_node& body) {
+            body.append_child("wsnt:Renew").append_child("wsnt:TerminationTime").text().set(("PT" + to_string(termination_seconds) + "S").c_str());
+        }
+    );
+    if (result.first != 200)
+        throw _events_error("Renew failed", result);
+}
+
+void r_onvif::r_onvif_cam::unsubscribe(const onvif_pull_point& pull_point)
+{
+    auto result = _pull_point_request(
+        pull_point,
+        "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest",
+        [](pugi::xml_node& body) { body.append_child("wsnt:Unsubscribe"); }
+    );
+    if (result.first != 200)
+        throw _events_error("Unsubscribe failed", result);
 }

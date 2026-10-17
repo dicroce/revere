@@ -70,6 +70,44 @@ struct onvif_profile_info
     uint16_t height;
 };
 
+// ONVIF events (Event service, WS-BaseNotification pull point).
+//
+// A pull point is created on the events service and then polled at its own
+// address. Many cameras hand back ReferenceParameters with the subscription
+// (an id the camera needs to find it) that must be echoed as SOAP headers on
+// every request to that address, alongside the WS-Addressing Action and To.
+struct onvif_pull_point
+{
+    std::string address;                            // wsa:Address of the SubscriptionReference
+    std::vector<std::string> reference_parameters;  // serialized elements to echo as SOAP headers
+    std::string termination_time;                   // as the camera reported it (may be empty)
+};
+
+struct onvif_event
+{
+    std::string topic;              // e.g. "tns1:RuleEngine/CellMotionDetector/Motion"
+    std::string utc_time;           // tt:Message/@UtcTime
+    std::string property_operation; // Initialized, Changed or Deleted (may be empty)
+    std::vector<std::pair<std::string, std::string>> source; // tt:Source SimpleItems (Name, Value)
+    std::vector<std::pair<std::string, std::string>> data;   // tt:Data SimpleItems (Name, Value)
+};
+
+// The parsing behind the events calls, separate so it can be tested without a
+// camera. Each throws std::runtime_error on a response it can't use.
+//
+// CreatePullPointSubscriptionResponse: the subscription's address, its
+// ReferenceParameters (each serialized with the xmlns declarations it uses,
+// ready to echo as a SOAP header) and the termination time.
+R_API onvif_pull_point parse_create_pull_point_response(const std::string& xml);
+
+// PullMessagesResponse: one onvif_event per NotificationMessage.
+R_API std::vector<onvif_event> parse_pull_messages_response(const std::string& xml);
+
+// GetEventPropertiesResponse: every topic in its TopicSet marked
+// wstop:topic="true", as a path of local names without prefixes
+// ("RuleEngine/CellMotionDetector/Motion").
+R_API std::vector<std::string> parse_event_topics(const std::string& xml);
+
 enum class soap_version
 {
     soap_1_2,   // SOAP 1.2 (default, modern)
@@ -105,6 +143,23 @@ public:
 
     R_API std::string get_stream_uri(onvif_media_service media_service, onvif_profile_token profile_token);
 
+    // The events service's XAddr from GetCapabilities. Null if the camera has none.
+    R_API r_utils::r_nullable<std::string> get_events_service(const onvif_capabilities& capabilities) const;
+
+    // GetEventProperties: the raw response, whose TopicSet lists the topics the camera can raise.
+    R_API std::string get_event_properties(const std::string& events_service);
+
+    // CreatePullPointSubscription with an InitialTerminationTime of termination_seconds.
+    R_API onvif_pull_point create_pull_point_subscription(const std::string& events_service, int termination_seconds);
+
+    // PullMessages: waits up to timeout_seconds on the camera for up to message_limit events.
+    R_API std::vector<onvif_event> pull_messages(const onvif_pull_point& pull_point, int timeout_seconds, int message_limit);
+
+    // Renew the subscription for another termination_seconds.
+    R_API void renew(const onvif_pull_point& pull_point, int termination_seconds);
+
+    R_API void unsubscribe(const onvif_pull_point& pull_point);
+
     soap_version get_soap_version() const { return _soap_ver; }
     auth_mode get_auth_mode() const { return _auth_mode; }
 
@@ -116,7 +171,16 @@ private:
         const std::string& soap_action,
         const std::function<void(pugi::xml_node&)>& build_body,
         r_utils::r_nullable<std::string> username,
-        r_utils::r_nullable<std::string> password
+        r_utils::r_nullable<std::string> password,
+        const std::function<void(pugi::xml_node&)>& build_header = {}
+    );
+
+    // A request to a pull point's own address: WS-Addressing Action and To, and
+    // its ReferenceParameters, as headers.
+    std::pair<int, std::string> _pull_point_request(
+        const onvif_pull_point& pull_point,
+        const std::string& soap_action,
+        const std::function<void(pugi::xml_node&)>& build_body
     );
 
     std::vector<std::string> _xaddrs_services;
