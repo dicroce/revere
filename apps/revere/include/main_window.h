@@ -512,7 +512,7 @@ inline bool list_row(const std::string& id, bool selected, const ImVec4& dot, co
 // One tile of a stat_cards grid: a small uppercase label over a value, with an
 // optional detail line under the value and an optional hover tooltip. A card
 // can also carry a 24-hour strip under the value, or a bar per detection class
-// in place of it (the camera pane's stats, project-planning#105).
+// in place of it (the camera pane's stats).
 struct stat_card
 {
     std::string label;

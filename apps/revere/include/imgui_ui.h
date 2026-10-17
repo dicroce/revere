@@ -322,7 +322,7 @@ struct sidebar_list_ui_item
     std::string frame_rate;     // "15 fps"
     r_utils::r_nullable<bool> motion_detection;
 
-    // The camera pane's stats tiles (project-planning#105): the last read of
+    // The camera pane's stats tiles: the last read of
     // the camera's storage (null until one lands), and stream reconnects in
     // the last 24 h, counted in memory since reconnects_counted_since.
     std::shared_ptr<const r_vss::camera_stats> stats;

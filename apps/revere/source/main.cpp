@@ -3206,7 +3206,7 @@ int main(int argc, char** argv)
     configure_camera_setup_wizard(as, rscc, camera_setup_wizard, tl, agent, devices, streamKeeper, ui_state);
 
     // The camera pane's stats tiles: read for the selected camera off the UI
-    // thread, at most every 5 s (project-planning#105). Declared after devices
+    // thread, at most every 5 s. Declared after devices
     // and the stream keeper, so it's destroyed (waiting for a read in
     // progress) before them.
     r_vss::camera_stats_cache camera_stats([&devices, top_dir](const r_disco::r_camera& camera) {
