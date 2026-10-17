@@ -709,12 +709,27 @@ void test_r_http::test_web_server_busy_503()
     _send_get(queued, port, "/count");
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
+    // Refused with nothing sent yet...
     r_socket refused;
     refused.connect("127.0.0.1", port);
     r_client_response busy;
     busy.read_response(refused);
     RTF_ASSERT(busy.get_status() == 503);
     RTF_ASSERT(busy.get_header("Retry-After") == "1");
+
+    // ...and after sending a request (the usual case): the server reads it
+    // before answering, so the client gets the 503 rather than a reset.
+    r_socket refused2;
+    _send_get(refused2, port, "/count");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    r_client_response busy2;
+    busy2.read_response(refused2);
+    RTF_ASSERT(busy2.get_status() == 503);
+    // The server closed in order (FIN, read returns 0), not with a reset.
+    char c;
+    uint64_t wait_ms = 2000;
+    RTF_ASSERT(refused2.wait_till_recv_wont_block(wait_ms));
+    RTF_ASSERT(refused2.recv(&c, 1) == 0);
 
     server.unblock();
 

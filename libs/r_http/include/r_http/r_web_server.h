@@ -72,6 +72,21 @@ public:
         // Every worker busy and the queue full: say so, so the client can
         // back off and retry, rather than leave it waiting.
         _server.set_overload_cb([](SOK_T& conn){
+            // Read what the client has sent first (briefly, without waiting
+            // for a whole request): closing a socket with unread data makes
+            // some stacks (Linux) reset the connection, and the client would
+            // see a reset instead of the 503 and its Retry-After.
+            char discard[4096];
+            uint64_t budget_ms = 50;
+            size_t drained = 0;
+            while(drained < 65536 && conn.wait_till_recv_wont_block(budget_ms))
+            {
+                int n = conn.recv(discard, sizeof(discard));
+                if(n <= 0)
+                    break;
+                drained += (size_t)n;
+            }
+
             r_server_response response(response_service_unavailable);
             response.add_additional_header("Retry-After", "1");
             response.write_response(conn, 250);
