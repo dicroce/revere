@@ -1678,7 +1678,27 @@ void configure_camera_setup_wizard(
             for(const auto& name : stream_keeper.get_loaded_system_plugins())
             {
                 auto v = stream_keeper.get_system_plugin_version(name);
-                std::string label = (name.find("revere_cloud") != std::string::npos) ? "Revere Cloud plugin" : name;
+                // The plugin's own name for itself (system_plugin_get_status's
+                // optional "name"), else its name without "_system_plugin".
+                std::string label;
+                try
+                {
+                    auto status_json = stream_keeper.get_system_plugin_status(name);
+                    if(!status_json.empty())
+                    {
+                        auto sj = nlohmann::json::parse(status_json);
+                        if(sj.contains("name") && sj["name"].is_string())
+                            label = sj["name"].get<std::string>();
+                    }
+                }
+                catch(...) {}
+                if(label.empty())
+                {
+                    const std::string suffix = "_system_plugin";
+                    label = name;
+                    if(label.size() > suffix.size() && label.compare(label.size() - suffix.size(), suffix.size(), suffix) == 0)
+                        label.resize(label.size() - suffix.size());
+                }
                 std::string line = label + " " + (v.empty() ? "(version unknown)" : v);
                 lines.push_back(line);
                 copy_text += " \xC2\xB7 " + line;
