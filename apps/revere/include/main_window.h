@@ -1361,8 +1361,10 @@ inline void main_window(
 
             {
                 action_row a;
-                if(flow_button(a.row, "View live", button_kind::primary))
+                if(flow_button(a.row, "View", button_kind::primary))
                     actions.view(sel_index);
+                if(ImGui::IsItemHovered())
+                    ImGui::SetTooltip("View live video, or scrub back through recordings");
                 if(flow_button(a.row, "Properties"))
                     actions.properties(sel_index);
                 if(flow_button(a.row, "Open in web UI"))
