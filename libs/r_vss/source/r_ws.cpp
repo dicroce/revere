@@ -2873,7 +2873,7 @@ r_utils::r_nullable<std::string> r_ws::_load_system_password()
 void r_ws::_store_system_password(const std::string& password)
 {
     if(_master_key.empty())
-        R_THROW(("Secure storage unavailable; cannot set system password."));
+        R_THROW(("Secure storage unavailable; cannot set the local web password."));
     auto enc = r_credential_crypto::encrypt_credential(password, _master_key);
     // Write to a temp file then atomically rename, so a crash mid-write can't
     // leave a truncated (undecryptable) password file.
@@ -2885,7 +2885,7 @@ void r_ws::_store_system_password(const std::string& password)
 void r_ws::set_system_password(const std::string& password)
 {
     if(password.empty())
-        R_THROW(("System password must not be empty."));
+        R_THROW(("The local web password must not be empty."));
     _store_system_password(password);
     // Existing web sessions must re-authenticate against the new password.
     lock_guard<mutex> lock(_auth_mutex);
@@ -2984,7 +2984,7 @@ r_http::r_server_response r_ws::_post_login(const r_http::r_web_server<r_utils::
 
         auto stored = _load_system_password();
         if(stored.is_null())
-            R_STHROW(r_http_401_exception, ("No system password set."));
+            R_STHROW(r_http_401_exception, ("No local web password is set."));
 
         if(!_ct_equal(req["password"].get<string>(), stored.value()))
         {
@@ -3045,7 +3045,7 @@ r_http::r_server_response r_ws::_post_set_password(const r_http::r_web_server<r_
                 authorized = !stored.is_null() && _ct_equal(req["current_password"].get<string>(), stored.value());
             }
             if(!authorized)
-                R_STHROW(r_http_401_exception, ("Provide a valid token or current_password to change the system password."));
+                R_STHROW(r_http_401_exception, ("Provide a valid token or current_password to change the local web password."));
         }
 
         _store_system_password(new_password);
@@ -3069,7 +3069,7 @@ r_http::r_server_response r_ws::_post_set_password(const r_http::r_web_server<r_
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
-    R_STHROW(r_http_500_exception, ("Failed to set system password."));
+    R_STHROW(r_http_500_exception, ("Failed to set the local web password."));
 }
 
 r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
