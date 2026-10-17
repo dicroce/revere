@@ -22,6 +22,7 @@
 #pragma comment(lib, "dwmapi.lib")
 #endif
 
+#include "macos_activation.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
 #include "imgui/imgui_impl_sdl2.h"
@@ -121,6 +122,9 @@ static void _launch_detached(const std::string& cmd)
 
     if(CreateProcessA(NULL, buf.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
     {
+        // Let it take the foreground (its window comes to the front rather
+        // than flashing in the taskbar behind ours).
+        AllowSetForegroundWindow(pi.dwProcessId);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
@@ -3505,6 +3509,9 @@ int main(int argc, char** argv)
                                     return;
                                 string args = " --camera " + cid + " --overlay --revere-ip 127.0.0.1";
 #ifdef IS_MACOS
+                                // The overlay comes to the front; without this,
+                                // macOS 14+ keeps it behind our window.
+                                yield_activation_to("com.revere.vision");
                                 _launch_detached(vision_cmd + " --args" + args);
 #else
                                 _launch_detached(vision_cmd + args);

@@ -34,6 +34,10 @@ r_utils::r_nullable<overlay_state> load_overlay_state(const std::string& camera_
 // keeps running; next launch just uses defaults).
 void save_overlay_state(const std::string& camera_id, const overlay_state& os);
 
+// The lock that keeps one overlay per camera (see r_utils::r_instance_lock),
+// beside the camera's state file.
+std::string overlay_lock_path(const std::string& camera_id);
+
 }
 
 #endif
