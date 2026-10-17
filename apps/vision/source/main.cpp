@@ -531,6 +531,7 @@ int main(int argc, char** argv)
 
     // Platform-specific renderer selection:
     // - Windows: Use hardware-accelerated (Direct3D) - no packaging concerns
+    // - macOS: Metal (ships with the OS)
     // - Linux: Use software renderer - for AppImage/Snap compatibility (avoids OpenGL)
     SDL_Renderer* renderer = nullptr;
 #ifdef IS_WINDOWS
@@ -546,8 +547,19 @@ int main(int argc, char** argv)
         R_LOG_ERROR("Hardware renderer failed: %s, falling back to software", SDL_GetError());
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE);
     }
+#elif defined(IS_MACOS)
+    // macOS: Metal, with vsync. The software renderer composites every frame
+    // on the CPU, which costs about a core per window at 120 Hz. Metal ships
+    // with the OS, so there's no packaging concern; software stays the fallback.
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "metal");
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_PRESENTVSYNC);
+    if (renderer == nullptr)
+    {
+        R_LOG_ERROR("Hardware renderer failed: %s, falling back to software", SDL_GetError());
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE);
+    }
 #else
-    // Linux/macOS: Use software renderer to avoid OpenGL packaging issues
+    // Linux: Use software renderer to avoid OpenGL packaging issues
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE);
     if (renderer == nullptr)
     {
@@ -1386,6 +1398,13 @@ int run_overlay(const overlay_opts& opts)
     // under SDL2!D3D_RenderPresent while two overlays sat behind a browser
     // window.) If d3d11 isn't available SDL falls back to another driver.
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d11");
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_PRESENTVSYNC);
+    if(!renderer)
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE);
+#elif defined(IS_MACOS)
+    // Metal, as in the main window: the software renderer cost about a core
+    // per overlay.
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "metal");
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_PRESENTVSYNC);
     if(!renderer)
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE);
