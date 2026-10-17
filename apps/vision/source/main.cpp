@@ -1558,6 +1558,15 @@ int run_overlay(const overlay_opts& opts)
     overlay_state last_observed = persisted;
     auto last_geom_change = chrono::steady_clock::now();
 
+    // Draw only when something changed: a new video frame, input, the
+    // controls fading, or every 250 ms for the time bar's clock and live
+    // scroll. Between draws the loop just waits for input, a few ms at a time,
+    // so frames are still picked up on time. Drawing every vsync instead (120
+    // Hz on ProMotion displays) costs a lot of CPU for nothing new on screen.
+    bool need_draw = true;
+    auto last_draw = chrono::steady_clock::now();
+    const auto idle_redraw = chrono::milliseconds(250);
+
     while(!close_requested)
     {
         auto frame_start = chrono::steady_clock::now();
@@ -1577,7 +1586,10 @@ int run_overlay(const overlay_opts& opts)
             SDL_GetWindowPosition(window, &wx, &wy);
             SDL_GetWindowSize(window, &ww, &wh);
             if(gmx >= wx && gmx < wx + ww && gmy >= wy && gmy < wy + wh)
+            {
                 last_mouse_activity = chrono::steady_clock::now();
+                need_draw = true;
+            }
         }
 
         // View clicked again for this camera (another overlay process asked):
@@ -1596,6 +1608,7 @@ int run_overlay(const overlay_opts& opts)
         SDL_Event event;
         while(SDL_PollEvent(&event))
         {
+            need_draw = true;
             ImGui_ImplSDL2_ProcessEvent(&event);
             if(event.type == SDL_MOUSEBUTTONDOWN)
                 last_mouse_activity = chrono::steady_clock::now();
@@ -1645,6 +1658,24 @@ int run_overlay(const overlay_opts& opts)
                 persisted = cur;
             }
         }
+
+        if(ph.load_video_textures())
+            need_draw = true;
+
+        // Auto-hiding controls: shown on mouse activity, faded out after 3 s
+        // idle. While fading, every frame is drawn.
+        bool bar_visible = (chrono::steady_clock::now() - last_mouse_activity) < chrono::milliseconds(3000);
+        float target_alpha = bar_visible ? 1.0f : 0.0f;
+        if(bar_alpha != target_alpha)
+            need_draw = true;
+
+        if(!need_draw && chrono::steady_clock::now() - last_draw < idle_redraw)
+        {
+            SDL_WaitEventTimeout(nullptr, 4);
+            continue;
+        }
+        need_draw = false;
+        last_draw = chrono::steady_clock::now();
 
         ImGui_ImplSDLRenderer_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -1713,13 +1744,13 @@ int run_overlay(const overlay_opts& opts)
         mcs.obos.cbs.has_audio = false;
         ph.set_stream_volume(si.name, mcs.obos.cbs.volume_gain);
 
-        // Auto-hiding controls: a Pin/Mute/Close row stacked above the full
-        // control bar, both anchored at the bottom and fading together.
-        bool bar_visible = (chrono::steady_clock::now() - last_mouse_activity) < chrono::milliseconds(3000);
-        float target_alpha = bar_visible ? 1.0f : 0.0f;
+        // A Pin/Mute/Close row stacked above the full control bar, both
+        // anchored at the bottom and fading together.
         bar_alpha += (target_alpha - bar_alpha) * 0.20f;
         if(bar_alpha < 0.02f)
             bar_alpha = 0.0f;
+        if(bar_alpha > 0.98f)
+            bar_alpha = 1.0f;
 
         hit_ctx.interactive_visible = false;
         if(bar_alpha > 0.05f)
@@ -1804,8 +1835,6 @@ int run_overlay(const overlay_opts& opts)
             hit_ctx.interactive = SDL_Rect{ 0, (int)block_top, win_w, win_h - (int)block_top };
             hit_ctx.interactive_visible = true;
         }
-
-        ph.load_video_textures();
 
         ImGui::Render();
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);

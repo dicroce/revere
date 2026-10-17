@@ -494,7 +494,7 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
     return rc;
 }
 
-void pipeline_host::load_video_textures()
+bool pipeline_host::load_video_textures()
 {
     // Phase 1 (locked): for each stream, decide which queued frame (if any) is
     // due for presentation and snapshot the render context pointer. All texture
@@ -720,6 +720,7 @@ void pipeline_host::load_video_textures()
     }
 
     // retired render contexts (and their textures) destroy here, outside the lock
+    return !uploads.empty();
 }
 
 void pipeline_host::control_bar_cb(const string& name, const std::chrono::system_clock::time_point& pos)

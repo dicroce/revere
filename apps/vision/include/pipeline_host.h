@@ -170,7 +170,9 @@ public:
 
     // Called once per UI frame: picks the due frame (if any) for each stream
     // from its presentation queue and uploads it to that stream's texture.
-    void load_video_textures();
+    // True when it uploaded at least one frame, so the caller has something
+    // new to draw.
+    bool load_video_textures();
 
     bool playing(const std::string& stream_name) const;
     std::chrono::system_clock::time_point last_control_bar_pos(const std::string& stream_name) const;
