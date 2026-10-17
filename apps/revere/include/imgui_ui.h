@@ -47,8 +47,8 @@ void error_modal(
     }
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB, typename OPEN_REVERE_CLOUD_CB, typename SET_SYSTEM_PASSWORD_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb, bool revere_cloud_loaded, OPEN_REVERE_CLOUD_CB open_revere_cloud_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb)
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb)
 {
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("Cameras"))
@@ -69,8 +69,6 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
             open_web_ui_cb();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Opens this recorder's web interface in your browser (localhost:8088).");
-        if (revere_cloud_loaded && ImGui::MenuItem("Open Revere Cloud"))
-            open_revere_cloud_cb();
         if (ImGui::MenuItem("Minimize to system tray"))
             minimize_cb();
 
@@ -1229,16 +1227,6 @@ void download_revere_cloud_modal(
 
         ImGui::EndPopup();
     }
-}
-
-// Revere Cloud's web app. The View menu and the tray link to it only when the
-// revere_cloud plugin is loaded. The plugins panel gets its link from the
-// plugin's own status lines.
-inline constexpr const char* REVERE_CLOUD_WEB_URL = "https://app.revere.video";
-
-inline bool is_revere_cloud_plugin(const std::string& plugin_name)
-{
-    return plugin_name.rfind("revere_cloud", 0) == 0;
 }
 
 template<typename DOWNLOAD_CB, typename CLOSE_CB>

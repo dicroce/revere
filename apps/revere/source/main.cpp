@@ -3022,10 +3022,6 @@ int main(int argc, char** argv)
 
     R_LOG_INFO("icon_path=%s\n",icon_path.c_str());
 
-    // Plugins load when streamKeeper is constructed, so the list is known here.
-    const auto loaded_plugins = streamKeeper.get_loaded_system_plugins();
-    const bool revere_cloud_loaded = std::any_of(loaded_plugins.begin(), loaded_plugins.end(), revere::is_revere_cloud_plugin);
-
     Tray::Tray tray("Revere", icon_path);
     tray.setTooltip("Revere video surveillance");
     tray.addEntry(Tray::Button("Show", [&]{
@@ -3042,12 +3038,6 @@ int main(int argc, char** argv)
     tray.addEntry(Tray::Button("Open local web UI", [&]{
         revere::open_url_in_browser("http://localhost:8088");
     }));
-    if (revere_cloud_loaded)
-    {
-        tray.addEntry(Tray::Button("Open Revere Cloud", [&]{
-            revere::open_url_in_browser(revere::REVERE_CLOUD_WEB_URL);
-        }));
-    }
     tray.addEntry(Tray::Separator());
     tray.addEntry(Tray::Button("Exit", [&]{
         close_requested = true;
@@ -3329,10 +3319,6 @@ int main(int argc, char** argv)
             },
             [&](){
                 revere::open_url_in_browser("http://localhost:8088");
-            },
-            revere_cloud_loaded,
-            [&](){
-                revere::open_url_in_browser(revere::REVERE_CLOUD_WEB_URL);
             },
             [&](){
                 camera_setup_wizard.next("set_system_password");
