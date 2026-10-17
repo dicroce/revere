@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.14)
-project(vision)
+
+if(APPLE)
+    project(vision LANGUAGES CXX OBJCXX)
+else()
+    project(vision)
+endif()
 
 # Set RPATH - skip for packaged builds (Flatpak/Snap use standard library paths)
 if(NOT PACKAGED_BUILD)
@@ -31,7 +36,9 @@ elseif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         vision MACOSX_BUNDLE
         ${VISION_HEADERS}
         ${VISION_SOURCES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/macos_activation.mm
     )
+    target_link_libraries(vision "-framework AppKit")
 else()
     add_executable(
         vision

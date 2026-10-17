@@ -15,7 +15,7 @@ using json = nlohmann::json;
 
 // Camera ids are uuids today; sanitize anyway so an unexpected id can't
 // produce an invalid filename.
-static string _state_path(const string& camera_id)
+static string _safe_id(const string& camera_id)
 {
     string safe = camera_id;
     for(auto& c : safe)
@@ -23,7 +23,17 @@ static string _state_path(const string& camera_id)
         if(!isalnum((unsigned char)c) && c != '-' && c != '_')
             c = '_';
     }
-    return sub_dir("config") + "overlay_" + safe + ".json";
+    return safe;
+}
+
+static string _state_path(const string& camera_id)
+{
+    return sub_dir("config") + "overlay_" + _safe_id(camera_id) + ".json";
+}
+
+string vision::overlay_lock_path(const string& camera_id)
+{
+    return sub_dir("config") + "overlay_" + _safe_id(camera_id) + ".lock";
 }
 
 r_nullable<overlay_state> vision::load_overlay_state(const string& camera_id)

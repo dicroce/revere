@@ -64,12 +64,17 @@ class r_ws final
         int target_audio_sample_rate = 0;
         int target_audio_channels = 0;
 
+        // Guarded by _sessions_mutex (eviction reads it), not by mtx.
         std::chrono::steady_clock::time_point last_used;
 
         // Framerate resampling state (persists across chunked transcode calls)
         int64_t next_pts = -1;        // current position in encoder timebase units
         int64_t first_ts = -1;        // ms timestamp of first video frame (for relative PTS)
         std::shared_ptr<std::vector<uint8_t>> last_decoded_frame; // last YUV frame for duplication
+
+        // Held for a whole /transcode of this session, so its decoder and encoder
+        // see one window at a time. Other sessions don't wait on it.
+        std::mutex mtx;
     };
 
     static constexpr size_t MAX_TRANSCODE_SESSIONS = 5;
@@ -261,7 +266,10 @@ private:
     r_disco::r_agent& _agent;
     r_stream_keeper& _stream_keeper;
     r_http::r_web_server<r_utils::r_socket> _server;
-    std::map<std::string, r_transcode_session> _sessions;
+    // Sessions are shared so a /transcode keeps its own alive while finalize or
+    // eviction drops it from the map. _sessions_mutex guards only the map (and
+    // last_used); it is never held across a transcode.
+    std::map<std::string, std::shared_ptr<r_transcode_session>> _sessions;
     std::mutex _sessions_mutex;
 
     // Concurrency ceiling for the on-demand fMP4 playback transcode. Each window

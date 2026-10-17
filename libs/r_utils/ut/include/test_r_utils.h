@@ -76,6 +76,9 @@ public:
       TEST(test_r_utils::test_ring_buffer_last_n_match);
       TEST(test_r_utils::test_ipv4_subnet_hosts);
       TEST(test_r_utils::test_qr_code_encode);
+      TEST(test_r_utils::test_instance_lock_one_holder);
+      TEST(test_r_utils::test_instance_lock_stale_file);
+      TEST(test_r_utils::test_instance_lock_notify);
     RTF_FIXTURE_END();
 
     virtual ~test_r_utils() throw() {}
@@ -154,4 +157,7 @@ public:
     void test_ring_buffer_last_n_match();
     void test_ipv4_subnet_hosts();
     void test_qr_code_encode();
+    void test_instance_lock_one_holder();
+    void test_instance_lock_stale_file();
+    void test_instance_lock_notify();
 };

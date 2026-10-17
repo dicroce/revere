@@ -2,6 +2,7 @@
 #ifndef __r_vss_r_stream_keeper_h
 #define __r_vss_r_stream_keeper_h
 
+#include "r_vss/r_restream_track.h"
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_motion_event_plugin_host.h"
 #include "r_vss/r_system_plugin_host.h"
@@ -268,6 +269,9 @@ private:
     std::chrono::steady_clock::time_point _last_overflow_time;
     size_t _total_motion_dropped {0};
     size_t _total_restream_dropped {0};
+    // Live restream drops per session since the last overflow warning.
+    std::map<uint64_t, restream_overflow> _restream_overflow_since_log;
+    std::chrono::steady_clock::time_point _restream_overflow_window_start {std::chrono::steady_clock::now()};
     r_overflow_type _current_overflow_flags {r_overflow_type::none};
 };
 
