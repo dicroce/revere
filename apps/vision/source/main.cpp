@@ -53,6 +53,7 @@ void* get_icon_texture_id(const std::string& class_name)
 #include "configure_state.h"
 #include "overlay_state.h"
 #include "macos_activation.h"
+#include "overlay_controls.h"
 #include "gl_utils.h"
 #include "imgui_ui.h"
 #include "utils.h"
@@ -1233,6 +1234,8 @@ struct overlay_hit_ctx
     int corner {32};   // larger grab square at each corner (easy diagonal resize)
     SDL_Rect interactive {0, 0, 0, 0};
     bool interactive_visible {false};
+    // The corner strip (volume, keep on top, close) at the top right.
+    SDL_Rect corner_strip {0, 0, 0, 0};
 };
 
 static SDL_HitTestResult SDLCALL _overlay_hit_test(SDL_Window* win, const SDL_Point* pt, void* data)
@@ -1261,6 +1264,13 @@ static SDL_HitTestResult SDLCALL _overlay_hit_test(SDL_Window* win, const SDL_Po
     if(ctx->interactive_visible &&
        pt->x >= ctx->interactive.x && pt->x < ctx->interactive.x + ctx->interactive.w &&
        pt->y >= ctx->interactive.y && pt->y < ctx->interactive.y + ctx->interactive.h)
+        return SDL_HITTEST_NORMAL;
+
+    // Over the corner strip, while the controls show: its buttons get the
+    // click. It's inset from the edges, so the corner still resizes outside it.
+    if(ctx->interactive_visible &&
+       pt->x >= ctx->corner_strip.x && pt->x < ctx->corner_strip.x + ctx->corner_strip.w &&
+       pt->y >= ctx->corner_strip.y && pt->y < ctx->corner_strip.y + ctx->corner_strip.h)
         return SDL_HITTEST_NORMAL;
 
     // Top corners are generous squares; top/side edges use the edge thickness.
@@ -1565,6 +1575,22 @@ int run_overlay(const overlay_opts& opts)
     // Hz on ProMotion displays) costs a lot of CPU for nothing new on screen.
     bool need_draw = true;
     auto last_draw = chrono::steady_clock::now();
+
+    auto toggle_on_top = [&]() {
+        on_top = !on_top;
+        SDL_SetWindowAlwaysOnTop(window, on_top ? SDL_TRUE : SDL_FALSE);
+    };
+    // Mute remembers the level it replaced, so unmute goes back to it.
+    float unmuted_volume = 1.0f;
+    auto toggle_mute = [&]() {
+        if(mcs.obos.cbs.volume_gain > 0.0f)
+        {
+            unmuted_volume = mcs.obos.cbs.volume_gain;
+            mcs.obos.cbs.volume_gain = 0.0f;
+        }
+        else
+            mcs.obos.cbs.volume_gain = unmuted_volume;
+    };
     const auto idle_redraw = chrono::milliseconds(250);
 
     while(!close_requested)
@@ -1627,13 +1653,11 @@ int run_overlay(const overlay_opts& opts)
 #endif
             if(event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE)
                 close_requested = true;
-            // Temporary key toggle for always-on-top; becomes the pin button in
-            // the control bar (step 3).
+            // T and M do what the corner strip's keep on top and mute buttons do.
             if(event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_t)
-            {
-                on_top = !on_top;
-                SDL_SetWindowAlwaysOnTop(window, on_top ? SDL_TRUE : SDL_FALSE);
-            }
+                toggle_on_top();
+            if(event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_m)
+                toggle_mute();
         }
         if(close_requested)
             continue;
@@ -1730,8 +1754,8 @@ int run_overlay(const overlay_opts& opts)
         ImGui::End();
         ImGui::PopStyleVar();
 
-        // Audio: this stream's audio stays active; a Vol slider in the overlay
-        // control row scales it (starts at 0 gain = silent). We render our OWN
+        // Audio: this stream's audio stays active; the corner strip's volume
+        // slider scales it (starts at 0 gain = silent). We render our OWN
         // slider rather than the control bar's built-in one, whose layout assumes
         // the full-width main-app bar (positioned at right_edge-560px) and would
         // collide with the timerange text in the narrow overlay — so keep the
@@ -1744,8 +1768,8 @@ int run_overlay(const overlay_opts& opts)
         mcs.obos.cbs.has_audio = false;
         ph.set_stream_volume(si.name, mcs.obos.cbs.volume_gain);
 
-        // A Pin/Mute/Close row stacked above the full control bar, both
-        // anchored at the bottom and fading together.
+        // The time bar at the bottom and the corner strip at the top right,
+        // fading together.
         bar_alpha += (target_alpha - bar_alpha) * 0.20f;
         if(bar_alpha < 0.02f)
             bar_alpha = 0.0f;
@@ -1762,44 +1786,10 @@ int run_overlay(const overlay_opts& opts)
             ImFont* block_font = r_ui_utils::fonts[get_font_key_14()].inter_tight_regular;
             if(block_font) ImGui::PushFont(block_font);
 
-            const float row_h = 34.0f;
             uint16_t cb_h = (uint16_t)(6.0f * ImGui::GetTextLineHeightWithSpacing());
-            float block_top = (float)win_h - row_h - (float)cb_h;
+            float block_top = (float)win_h - (float)cb_h;
 
             ImGui::PushStyleVar(ImGuiStyleVar_Alpha, bar_alpha);
-
-            // Overlay-specific controls the timeline bar doesn't have.
-            ImGui::SetNextWindowPos(ImVec2(0.0f, block_top));
-            ImGui::SetNextWindowSize(ImVec2((float)win_w, row_h));
-            ImGui::SetNextWindowBgAlpha(0.55f * bar_alpha);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 4.0f));
-            ImGui::Begin("##overlay_bar", nullptr,
-                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav);
-
-            if(ImGui::Button(on_top ? "Unpin" : "Pin"))
-            {
-                on_top = !on_top;
-                SDL_SetWindowAlwaysOnTop(window, on_top ? SDL_TRUE : SDL_FALSE);
-            }
-            // Volume slider (defaults to 0 = silent), mirroring the main app's
-            // Vol control. Rendered here in the overlay row instead of the
-            // control bar to avoid the built-in slider's full-width positioning.
-            ImGui::SameLine();
-            ImGui::AlignTextToFramePadding();
-            ImGui::Text("Vol");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(120.0f);
-            ImGui::SliderFloat("##overlay_vol", &mcs.obos.cbs.volume_gain, 0.0f, 4.0f, "");
-
-            const float close_w = 60.0f;
-            ImGui::SameLine();
-            ImGui::SetCursorPosX((float)win_w - close_w - 8.0f);
-            if(ImGui::Button("Close", ImVec2(close_w, 0.0f)))
-                close_requested = true;
-
-            ImGui::End();
-            ImGui::PopStyleVar();  // window padding
 
             // The full, existing control bar: timeline scrub, play/live, export,
             // volume, motion markers. It draws its own ##control_bar window; the
@@ -1811,7 +1801,7 @@ int run_overlay(const overlay_opts& opts)
             // absolutely positioned, so padding only affects the clip rect.
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
             control_bar(
-                (uint16_t)0, (uint16_t)(block_top + row_h), (uint16_t)win_w, cb_h,
+                (uint16_t)0, (uint16_t)block_top, (uint16_t)win_w, cb_h,
                 600, (uint16_t)0, si.do_motion_detection,
                 mcs.obos.cbs, si.name,
                 [&](const string& n, const std::chrono::system_clock::time_point& pos){ ph.control_bar_cb(n, pos); },
@@ -1829,10 +1819,20 @@ int run_overlay(const overlay_opts& opts)
 
             ImGui::PopStyleVar();  // alpha
 
+            // Volume, keep on top and close (it fades by the alpha it's given).
+            auto corner = overlay_corner_controls((float)win_w, bar_alpha, on_top, mcs.obos.cbs.volume_gain);
+            if(corner.close)
+                close_requested = true;
+            if(corner.toggle_pin)
+                toggle_on_top();
+            if(corner.toggle_mute)
+                toggle_mute();
+
             if(block_font) ImGui::PopFont();
 
-            // One contiguous interactive rect covering the whole bottom block.
+            // The bottom block, and the corner strip, take clicks.
             hit_ctx.interactive = SDL_Rect{ 0, (int)block_top, win_w, win_h - (int)block_top };
+            hit_ctx.corner_strip = SDL_Rect{ (int)corner.x, (int)corner.y, (int)std::ceil(corner.w), (int)std::ceil(corner.h) };
             hit_ctx.interactive_visible = true;
         }
 
