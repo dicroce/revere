@@ -802,9 +802,12 @@ void test_r_http::test_web_server_destroyed_with_request_in_flight()
         RTF_ASSERT(_wait_for([&](){ return entered == 1; }));
         _send_get(b, port, "/slow");                 // queued behind it
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        // stop() returns only once the running handler is done (r_ws relies on
+        // this to tear down state its handlers use); the queued one is dropped.
+        ws.stop();
+        RTF_ASSERT(finished == 1);
     }
-    // The running one finished before the destructor returned; the queued
-    // one was dropped unanswered.
     RTF_ASSERT(finished == 1);
     RTF_ASSERT(entered == 1);
 }
