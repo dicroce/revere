@@ -5,9 +5,14 @@
 #include "r_http/r_server_request.h"
 #include "r_http/r_client_response.h"
 #include "r_http/r_server_response.h"
+#include "r_http/r_web_server.h"
 
 #include <chrono>
 #include <thread>
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
 #include <climits>
 #include <numeric>
 
@@ -596,4 +601,125 @@ void test_r_http::test_server_request_chunked_callback()
 
     if(serverException)
         std::rethrow_exception(serverException);
+}
+
+static bool _wait_for(std::function<bool()> pred, int millis = 3000)
+{
+    auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(millis);
+    while(!pred())
+    {
+        if(std::chrono::steady_clock::now() > until)
+            return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
+}
+
+// A one-worker server whose /block route waits until released, and whose
+// /count route counts the requests it runs.
+struct blocking_server
+{
+    std::mutex m;
+    std::condition_variable cv;
+    bool release {false};
+    std::atomic<int> blocked {0}, counted {0};
+    r_web_server<r_socket> ws;
+
+    blocking_server(int port, size_t max_pending) : ws(port, "127.0.0.1", 1, max_pending)
+    {
+        ws.add_route(METHOD_GET, "/block", [this](const r_web_server<r_socket>&, r_socket&, const r_server_request&){
+            ++blocked;
+            std::unique_lock<std::mutex> g(m);
+            cv.wait(g, [this](){ return release; });
+            return r_server_response();
+        });
+        ws.add_route(METHOD_GET, "/count", [this](const r_web_server<r_socket>&, r_socket&, const r_server_request&){
+            ++counted;
+            return r_server_response();
+        });
+        ws.start();
+    }
+    ~blocking_server()
+    {
+        unblock();
+        ws.stop();
+    }
+    void unblock()
+    {
+        {
+            std::lock_guard<std::mutex> g(m);
+            release = true;
+        }
+        cv.notify_all();
+    }
+};
+
+static void _send_get(r_socket& sok, int port, const std::string& path)
+{
+    sok.connect("127.0.0.1", port);
+    r_client_request request("127.0.0.1", port);
+    request.set_uri(path);
+    request.write_request(sok);
+}
+
+// A request that waited in the queue while its client gave up is not run:
+// nobody would read the response.
+void test_r_http::test_web_server_skips_abandoned_request()
+{
+    int port = RTF_NEXT_PORT();
+    blocking_server server(port, 4);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    r_socket a;
+    _send_get(a, port, "/block");
+    RTF_ASSERT(_wait_for([&](){ return server.blocked == 1; }));
+
+    // Queued behind /block, then abandoned.
+    {
+        r_socket gone;
+        _send_get(gone, port, "/count");
+        gone.close();
+    }
+
+    // Queued behind /block, and still waiting for its answer.
+    r_socket waiting;
+    _send_get(waiting, port, "/count");
+
+    server.unblock();
+
+    r_client_response response;
+    response.read_response(waiting);
+    RTF_ASSERT(response.get_status() == 200);
+    RTF_ASSERT(server.counted == 1);
+}
+
+// With the worker busy and the queue full, a new connection is answered with
+// 503 and Retry-After instead of waiting.
+void test_r_http::test_web_server_busy_503()
+{
+    int port = RTF_NEXT_PORT();
+    blocking_server server(port, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    r_socket a;
+    _send_get(a, port, "/block");
+    RTF_ASSERT(_wait_for([&](){ return server.blocked == 1; }));
+
+    r_socket queued;
+    _send_get(queued, port, "/count");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    r_socket refused;
+    refused.connect("127.0.0.1", port);
+    r_client_response busy;
+    busy.read_response(refused);
+    RTF_ASSERT(busy.get_status() == 503);
+    RTF_ASSERT(busy.get_header("Retry-After") == "1");
+
+    server.unblock();
+
+    r_client_response ok;
+    ok.read_response(queued);
+    RTF_ASSERT(ok.get_status() == 200);
+    RTF_ASSERT(server.counted == 1);
 }

@@ -250,6 +250,24 @@ bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
     return (fds_with_data > 0) ? true : false;
 }
 
+bool r_raw_socket::peer_closed() const
+{
+    sock_t sok = _sok;
+    if(sok == kInvalidSock)
+        return true;
+
+    // Readable with nothing to read means the peer sent FIN (or the connection
+    // failed). Readable with data (say, a pipelined request) means it's still
+    // there; MSG_PEEK leaves that data in place.
+    uint64_t millis = 0;
+    if(!wait_till_recv_wont_block(millis))
+        return false;
+
+    char b;
+    auto n = ::recv(sok, &b, 1, MSG_PEEK);
+    return n <= 0;
+}
+
 bool r_raw_socket::wait_till_send_wont_block( uint64_t& millis ) const
 {
     // Get socket ID under lock, then release before blocking on select()

@@ -59,11 +59,23 @@ class r_web_server final
 public:
     typedef std::function<r_server_response(const r_web_server<SOK_T>& ws, SOK_T& conn, const r_server_request& request)> http_cb;
 
-    r_web_server(int port, const std::string& sockAddr = std::string()) :
+    r_web_server(
+        int port,
+        const std::string& sockAddr = std::string(),
+        size_t workers = r_utils::r_server_threaded<SOK_T>::DEFAULT_WORKERS,
+        size_t maxPending = r_utils::r_server_threaded<SOK_T>::DEFAULT_MAX_PENDING
+    ) :
         _cbs(),
-        _server(port, std::bind(&r_web_server<SOK_T>::_server_conn_cb, this, std::placeholders::_1), sockAddr),
+        _server(port, std::bind(&r_web_server<SOK_T>::_server_conn_cb, this, std::placeholders::_1), sockAddr, workers, maxPending),
         _serverThread()
     {
+        // Every worker busy and the queue full: say so, so the client can
+        // back off and retry, rather than leave it waiting.
+        _server.set_overload_cb([](SOK_T& conn){
+            r_server_response response(response_service_unavailable);
+            response.add_additional_header("Retry-After", "1");
+            response.write_response(conn, 250);
+        });
     }
 
     r_web_server(const r_web_server<SOK_T>&) = delete;
@@ -180,6 +192,12 @@ private:
     {
         r_server_request request;
         request.read_request(conn);
+
+        // The request may have waited in the queue for a free worker. If the
+        // client has given up in the meantime (its own timeout), nobody will
+        // read the response: don't do the work.
+        if( conn.peer_closed() )
+            return;
 
         r_uri ruri = request.get_uri();
 
