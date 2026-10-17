@@ -7,6 +7,7 @@
 #include "r_vss/r_system_plugin_host.h"
 #include "r_vss/r_ws.h"
 #include "r_vss/r_prune.h"
+#include "r_vss/r_camera_stats.h"
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
 #include "r_utils/r_nullable.h"
@@ -151,6 +152,10 @@ public:
 
     R_API void bounce(const std::string& camera_id);
 
+    // Streams lost and restarted (dead contexts replaced), in memory since
+    // revere started; see reconnect_log.
+    R_API const reconnect_log& reconnects() const { return _reconnects; }
+
     R_API void suspend(const std::string& camera_id);
     R_API void resume(const std::string& camera_id);
 
@@ -228,6 +233,7 @@ private:
         std::string last_error;
     };
     std::map<std::string, _failed_camera_state> _failed_cameras;
+    reconnect_log _reconnects;
     r_utils::r_work_q<r_stream_keeper_cmd, r_stream_keeper_result> _cmd_q;
 
     // Cached stream status for non-blocking reads from GUI thread

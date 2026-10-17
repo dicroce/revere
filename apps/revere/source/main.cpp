@@ -78,6 +78,7 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 #include "main_window.h"
 #include "dialogs.h"
 #include "r_vss/r_camera_source_info.h"
+#include "r_vss/r_camera_stats.h"
 #include "assignment_state.h"
 #include "configure_state.h"
 #include "rtsp_source_camera_config.h"
@@ -217,6 +218,24 @@ struct revere_ui_state
 
     // Cached system plugins list (updated periodically, not per-frame)
     vector<string> loaded_system_plugins;
+
+    // The recording cameras as of the last list update, and the camera pane's
+    // stats (read in the background; set once the cache exists in main()).
+    map<string, r_disco::r_camera> assigned_cameras;
+    r_vss::camera_stats_cache* camera_stats {nullptr};
+
+    // The selected recording camera, for the stats cache to read.
+    r_nullable<r_disco::r_camera> selected_recording_camera() const
+    {
+        r_nullable<r_disco::r_camera> out;
+        if(recording_selected_item >= 0 && recording_selected_item < (int)recording_items.size())
+        {
+            auto it = assigned_cameras.find(recording_items[recording_selected_item].camera_id);
+            if(it != assigned_cameras.end())
+                out.set_value(it->second);
+        }
+        return out;
+    }
     void reset_selection()
     {
         recording_selected_item = -1;
@@ -312,6 +331,9 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
     for(auto& status : stream_status)
         status_by_id[status.camera.id] = status;
 
+    ui_state.assigned_cameras = assigned;
+    auto now_wall = chrono::system_clock::now();
+
     ui_state.recording_items.clear();
     for(auto& c : assigned)
     {
@@ -326,6 +348,10 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
         if(!source.framerate.is_null() && source.framerate.value() > 0.0f)
             item.frame_rate = r_string_utils::format("%g fps", (double)source.framerate.value());
         item.motion_detection = c.second.do_motion_detection;
+        if(ui_state.camera_stats)
+            item.stats = ui_state.camera_stats->get(c.first);
+        item.reconnects_24h = streamKeeper.reconnects().count_since(c.first, now_wall - chrono::hours(24));
+        item.reconnects_counted_since = streamKeeper.reconnects().started_at();
 
         // Populate kbps, retention, and health if stream status is available
         if(status_by_id.find(c.first) != status_by_id.end())
@@ -3143,6 +3169,16 @@ int main(int argc, char** argv)
     r_ui_utils::wizard camera_setup_wizard;
     configure_camera_setup_wizard(as, rscc, camera_setup_wizard, tl, agent, devices, streamKeeper, ui_state);
 
+    // The camera pane's stats tiles: read for the selected camera off the UI
+    // thread, at most every 5 s (project-planning#105). Declared after devices
+    // and the stream keeper, so it's destroyed (waiting for a read in
+    // progress) before them.
+    r_vss::camera_stats_cache camera_stats([&devices, top_dir](const r_disco::r_camera& camera) {
+        auto now = chrono::system_clock::now();
+        return r_vss::gather_camera_stats(top_dir, devices, camera, now, r_vss::local_day_start(now));
+    });
+    ui_state.camera_stats = &camera_stats;
+
     _update_list_ui(ui_state, devices, streamKeeper);
 
     // Initialize cached system plugins list
@@ -3418,6 +3454,10 @@ int main(int argc, char** argv)
         }
 
         auto now = chrono::steady_clock::now();
+
+        // Never blocks: starts a stats read when one is due, and redraws when one lands.
+        if(camera_stats.poll(ui_state.selected_recording_camera(), now))
+            force_ui_update = true;
 
         // Check if periodic data update is needed
         bool need_data_update = ((now - last_ui_update_ts) > chrono::seconds(5)) || force_ui_update;

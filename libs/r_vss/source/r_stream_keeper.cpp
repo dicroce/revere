@@ -596,10 +596,12 @@ void r_stream_keeper::_entry_point()
                 // This ensures that when a stream dies and needs to be recreated, the old
                 // r_recording_context (and its nanots_writer) is fully destroyed before
                 // we attempt to create a new one with the same file path and stream tags.
-                r_funky::erase_if(_streams, [](const auto& c){
+                r_funky::erase_if(_streams, [this](const auto& c){
                     if(c.second->dead())
                     {
                         R_LOG_WARNING("Dead stream detected, removing: %s", c.first.c_str());
+                        // The next pass starts it again: a reconnect.
+                        _reconnects.record(c.first);
                         return true;
                     }
                     return false;

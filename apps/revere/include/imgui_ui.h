@@ -10,7 +10,10 @@
 #include "r_utils/r_exception.h"
 #include "r_storage/r_storage_file.h"
 #include "r_disco/r_camera.h"
+#include "r_vss/r_camera_stats.h"
 #include <map>
+#include <memory>
+#include <chrono>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -305,6 +308,13 @@ struct sidebar_list_ui_item
     std::string resolution;     // "2560 × 1920"
     std::string frame_rate;     // "15 fps"
     r_utils::r_nullable<bool> motion_detection;
+
+    // The camera pane's stats tiles (project-planning#105): the last read of
+    // the camera's storage (null until one lands), and stream reconnects in
+    // the last 24 h, counted in memory since reconnects_counted_since.
+    std::shared_ptr<const r_vss::camera_stats> stats;
+    size_t reconnects_24h {0};
+    std::chrono::system_clock::time_point reconnects_counted_since;
 };
 
 template<typename BUTTON_CLICK_CB, typename ITEM_CLICK_CB, typename FORGET_BUTTON_CLICK_CB, typename PROPERTIES_CLICK_CB, typename VIEW_CLICK_CB, typename ACTION_CLICK_CB>

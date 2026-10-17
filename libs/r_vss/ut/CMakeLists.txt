@@ -5,6 +5,8 @@ add_executable(
     r_vss_ut
     include/test_r_motion_engine.h
     source/test_r_motion_engine.cpp
+    include/test_r_camera_stats.h
+    source/test_r_camera_stats.cpp
 )
 
 target_include_directories(
