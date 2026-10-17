@@ -8,6 +8,7 @@
 #include "r_http/r_status_codes.h"
 #include "r_http/r_http_exception.h"
 #include "r_utils/r_server_threaded.h"
+#include <chrono>
 #include "r_utils/r_socket.h"
 #include "r_utils/r_macro.h"
 #include "r_utils/r_blob_tree.h"
@@ -59,11 +60,47 @@ class r_web_server final
 public:
     typedef std::function<r_server_response(const r_web_server<SOK_T>& ws, SOK_T& conn, const r_server_request& request)> http_cb;
 
-    r_web_server(int port, const std::string& sockAddr = std::string()) :
+    r_web_server(
+        int port,
+        const std::string& sockAddr = std::string(),
+        size_t workers = r_utils::r_server_threaded<SOK_T>::DEFAULT_WORKERS,
+        size_t maxPending = r_utils::r_server_threaded<SOK_T>::DEFAULT_MAX_PENDING
+    ) :
         _cbs(),
-        _server(port, std::bind(&r_web_server<SOK_T>::_server_conn_cb, this, std::placeholders::_1), sockAddr),
+        _server(port, std::bind(&r_web_server<SOK_T>::_server_conn_cb, this, std::placeholders::_1), sockAddr, workers, maxPending),
         _serverThread()
     {
+        // Every worker busy and the queue full: say so, so the client can
+        // back off and retry, rather than leave it waiting.
+        _server.set_overload_cb([](SOK_T& conn){
+            // Read what the client has sent first (briefly, without waiting
+            // for a whole request): closing a socket with unread data makes
+            // some stacks (Linux) reset the connection, and the client would
+            // see a reset instead of the 503 and its Retry-After.
+            // This runs on the accept thread, so it's bounded by a deadline
+            // (not a budget decremented per wait, which a client trickling a
+            // byte every fraction of a millisecond would never use up).
+            char discard[4096];
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+            size_t drained = 0;
+            while(drained < 65536)
+            {
+                auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+                if(left <= 0)
+                    break;
+                uint64_t wait_ms = (uint64_t)left;
+                if(!conn.wait_till_recv_wont_block(wait_ms))
+                    break;
+                int n = conn.recv(discard, sizeof(discard));
+                if(n <= 0)
+                    break;
+                drained += (size_t)n;
+            }
+
+            r_server_response response(response_service_unavailable);
+            response.add_additional_header("Retry-After", "1");
+            response.write_response(conn, 250);
+        });
     }
 
     r_web_server(const r_web_server<SOK_T>&) = delete;
@@ -80,20 +117,21 @@ public:
         _serverThread = std::thread(&r_utils::r_server_threaded<SOK_T>::start, &_server);
     }
 
-    void stop()
+    // Safe whether or not start() was called, whether or not the server came
+    // up (its port may have been taken), and more than once. Never throws: the
+    // destructor calls it.
+    void stop() noexcept
     {
-        if( _server.started() )
-        {
-            _server.stop();
+        _server.stop();
+        // Join whatever start() launched, even if the server never got going
+        // (a bind failure returns from the accept loop at once): destroying a
+        // joinable std::thread calls std::terminate.
+        if( _serverThread.joinable() )
             _serverThread.join();
-            // The accept loop has now exited, so nothing else touches the
-            // connected-context list: drain the in-flight request handlers
-            // before returning. Without this, stop() left worker threads
-            // running, and a caller that destroys state those handlers use
-            // (e.g. r_ws's transcode _sessions) raced them into a
-            // use-after-free on shutdown.
-            _server.join_all();
-        }
+        // The accept loop has now exited: drain the in-flight request handlers
+        // before returning, so a caller can then destroy state they use (e.g.
+        // r_ws's transcode _sessions).
+        _server.join_all();
     }
 
     // True once the server has begun shutting down. A route handler that loops
@@ -180,6 +218,14 @@ private:
     {
         r_server_request request;
         request.read_request(conn);
+
+        // The request may have waited in the queue for a free worker. If the
+        // client has given up in the meantime (its own timeout), nobody will
+        // read the response: don't do the work. (A client that half-closes its
+        // side after sending the request, like `nc -N`, looks gone too; none
+        // of revere's clients do that.)
+        if( conn.peer_closed() )
+            return;
 
         r_uri ruri = request.get_uri();
 

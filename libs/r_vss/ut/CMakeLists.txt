@@ -9,6 +9,8 @@ add_executable(
     source/test_r_camera_stats.cpp
     include/test_r_build_info.h
     source/test_r_build_info.cpp
+    include/test_r_snapshot_cache.h
+    source/test_r_snapshot_cache.cpp
     include/test_r_restream_track.h
     source/test_r_restream_track.cpp
 )

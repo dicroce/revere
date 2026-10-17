@@ -10,6 +10,7 @@
 #include "r_utils/r_md5.h"
 #include "r_utils/r_sha1.h"
 #include "r_utils/r_socket.h"
+#include "r_utils/r_server_threaded.h"
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_udp_receiver.h"
 #include "r_utils/r_udp_sender.h"
@@ -26,6 +27,8 @@
 #include <chrono>
 #include <thread>
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <vector>
 #include <climits>
 #include <numeric>
@@ -2014,6 +2017,121 @@ void test_r_utils::test_qr_code_encode()
 #ifdef WIN32
 #pragma warning(pop)
 #endif
+
+static bool _wait_until(std::function<bool()> pred, int millis = 3000)
+{
+    auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(millis);
+    while(!pred())
+    {
+        if(std::chrono::steady_clock::now() > until)
+            return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
+}
+
+void test_r_utils::test_socket_peer_closed()
+{
+    int port = RTF_NEXT_PORT();
+
+    r_socket server_sok;
+    server_sok.bind( port, "127.0.0.1" );
+    server_sok.listen();
+
+    r_socket client;
+    client.connect( "127.0.0.1", port );
+    auto conn = server_sok.accept();
+
+    // Connected and quiet: not closed.
+    RTF_ASSERT( !conn.peer_closed() );
+
+    // Unread data waiting: still not closed, and the data is left in place.
+    uint32_t val = 41;
+    client.send( &val, 4 );
+    RTF_ASSERT( _wait_until([&](){ uint64_t ms = 0; return conn.wait_till_recv_wont_block(ms); }) );
+    RTF_ASSERT( !conn.peer_closed() );
+    uint32_t got = 0;
+    RTF_ASSERT( conn.recv( &got, 4 ) == 4 );
+    RTF_ASSERT( got == 41 );
+
+    // The client hangs up: closed.
+    client.close();
+    RTF_ASSERT( _wait_until([&](){ return conn.peer_closed(); }) );
+
+    // A socket we've closed ourselves counts as closed too.
+    conn.close();
+    RTF_ASSERT( conn.peer_closed() );
+}
+
+// At most `workers` handlers run at once, up to `maxPending` connections wait
+// for a worker, and the rest go to the overload callback and are closed. The
+// queued ones are served once workers free up.
+void test_r_utils::test_server_threaded_bounded_pool()
+{
+    int port = RTF_NEXT_PORT();
+
+    std::mutex m;
+    std::condition_variable cv;
+    bool release = false;
+    std::atomic<int> running {0}, max_running {0}, handled {0}, overloaded {0};
+
+    r_server_threaded<r_socket> server( port, [&](r_socket& conn){
+        int now = ++running;
+        int prev = max_running.load();
+        while(now > prev && !max_running.compare_exchange_weak(prev, now)) {}
+        {
+            std::unique_lock<std::mutex> g(m);
+            cv.wait(g, [&](){ return release; });
+        }
+        uint8_t ok = 1;
+        conn.send( &ok, 1 );
+        --running;
+        ++handled;
+    }, "127.0.0.1", 2, 2 );
+    server.set_overload_cb( [&](r_socket&){ ++overloaded; } );
+
+    thread th( &r_server_threaded<r_socket>::start, &server );
+    RTF_ASSERT( _wait_until([&](){ return server.started(); }) );
+
+    std::vector<r_socket> clients(6);
+
+    // Two connections occupy both workers.
+    clients[0].connect( "127.0.0.1", port );
+    clients[1].connect( "127.0.0.1", port );
+    RTF_ASSERT( _wait_until([&](){ return running == 2; }) );
+
+    // Two more wait in the queue: nothing refused, nothing extra running.
+    clients[2].connect( "127.0.0.1", port );
+    clients[3].connect( "127.0.0.1", port );
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    RTF_ASSERT( overloaded == 0 );
+    RTF_ASSERT( running == 2 );
+
+    // The queue is full: the next two are refused and closed.
+    clients[4].connect( "127.0.0.1", port );
+    clients[5].connect( "127.0.0.1", port );
+    RTF_ASSERT( _wait_until([&](){ return overloaded == 2; }) );
+    RTF_ASSERT( _wait_until([&](){ uint64_t ms = 0; return clients[4].wait_till_recv_wont_block(ms) && clients[4].peer_closed(); }) );
+
+    // Release the workers: the queued two are served after them.
+    {
+        std::lock_guard<std::mutex> g(m);
+        release = true;
+    }
+    cv.notify_all();
+    RTF_ASSERT( _wait_until([&](){ return handled == 4; }) );
+    RTF_ASSERT( max_running == 2 );
+    for(int i = 0; i < 4; ++i)
+    {
+        uint8_t ok = 0;
+        RTF_ASSERT( clients[i].recv( &ok, 1 ) == 1 && ok == 1 );
+    }
+
+    server.stop();
+    th.join();
+    server.join_all();
+    RTF_ASSERT( handled == 4 );
+}
 
 static void _remove_instance_files(const string& path)
 {

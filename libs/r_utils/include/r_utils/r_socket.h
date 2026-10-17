@@ -106,6 +106,11 @@ public:
     R_API virtual bool wait_till_recv_wont_block( uint64_t& millis ) const;
     R_API virtual bool wait_till_send_wont_block( uint64_t& millis ) const;
 
+    /// True once the peer has closed the connection (or it has failed), without
+    /// blocking and without consuming any data: a request handler can call it
+    /// to stop working for a client that has given up.
+    R_API bool peer_closed() const;
+
     R_API std::string get_peer_ip() const;
     R_API std::string get_local_ip() const;
 
@@ -170,6 +175,7 @@ public:
 
     R_API inline virtual bool wait_till_recv_wont_block( uint64_t& millis ) const { return _sok.wait_till_recv_wont_block(millis); }
     R_API inline virtual bool wait_till_send_wont_block( uint64_t& millis ) const { return _sok.wait_till_send_wont_block(millis); }
+    R_API inline bool peer_closed() const { return _sok.peer_closed(); }
 
     R_API inline std::string get_peer_ip() const { return _sok.get_peer_ip(); }
     R_API inline std::string get_local_ip() const { return _sok.get_local_ip(); }

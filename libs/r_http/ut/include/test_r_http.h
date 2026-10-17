@@ -18,6 +18,12 @@ public:
       TEST(test_r_http::test_client_request_chunked_multiple);
       TEST(test_r_http::test_server_request_chunked_accumulate);
       TEST(test_r_http::test_server_request_chunked_callback);
+      TEST(test_r_http::test_web_server_skips_abandoned_request);
+      TEST(test_r_http::test_web_server_busy_503);
+      TEST(test_r_http::test_web_server_busy_503_trickling_client);
+      TEST(test_r_http::test_web_server_immediate_start_stop);
+      TEST(test_r_http::test_web_server_port_taken);
+      TEST(test_r_http::test_web_server_destroyed_with_request_in_flight);
     RTF_FIXTURE_END();
 
     virtual ~test_r_http() throw() {}
@@ -38,4 +44,10 @@ public:
     void test_client_request_chunked_multiple();
     void test_server_request_chunked_accumulate();
     void test_server_request_chunked_callback();
+    void test_web_server_skips_abandoned_request();
+    void test_web_server_busy_503();
+    void test_web_server_busy_503_trickling_client();
+    void test_web_server_immediate_start_stop();
+    void test_web_server_port_taken();
+    void test_web_server_destroyed_with_request_in_flight();
 };

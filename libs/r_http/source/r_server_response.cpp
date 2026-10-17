@@ -313,6 +313,9 @@ string r_server_response::_get_status_message(status_code sc) const
     case response_not_implemented:
         return string("Not Implemented");
 
+    case response_service_unavailable:
+        return string("Service Unavailable");
+
     default:
         break;
     };

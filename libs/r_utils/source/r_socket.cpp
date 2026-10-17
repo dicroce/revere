@@ -106,8 +106,19 @@ void r_raw_socket::create( int af )
         R_STHROW( r_socket_exception, ("Unable to create socket.") );
 
     int on = 1;
+#ifdef IS_WINDOWS
+    // On Windows, SO_REUSEADDR lets a second socket bind a port another one is
+    // already listening on, so a server could silently share a port that's taken,
+    // and r_server_threaded::stop()'s wake-up connect could land on the other
+    // listener and never return. SO_EXCLUSIVEADDRUSE refuses the bind instead.
+    // (Windows rebinds a port in TIME_WAIT without any option, which is all
+    // SO_REUSEADDR is for on POSIX.)
+    if( ::setsockopt( (sock_t)_sok, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&on, sizeof(int) ) < 0 )
+        R_STHROW( r_socket_exception, ("Unable to configure socket.") );
+#else
     if( ::setsockopt( (sock_t)_sok, SOL_SOCKET, SO_REUSEADDR, (const char*)&on, sizeof(int) ) < 0 )
         R_STHROW( r_socket_exception, ("Unable to configure socket.") );
+#endif
 }
 
 void r_raw_socket::connect( const string& host, int port )
@@ -248,6 +259,24 @@ bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
     millis -= (elapsed_millis >= millis) ? millis : elapsed_millis;
 
     return (fds_with_data > 0) ? true : false;
+}
+
+bool r_raw_socket::peer_closed() const
+{
+    sock_t sok = _sok;
+    if(sok == kInvalidSock)
+        return true;
+
+    // Readable with nothing to read means the peer sent FIN (or the connection
+    // failed). Readable with data (say, a pipelined request) means it's still
+    // there; MSG_PEEK leaves that data in place.
+    uint64_t millis = 0;
+    if(!wait_till_recv_wont_block(millis))
+        return false;
+
+    char b;
+    auto n = ::recv(sok, &b, 1, MSG_PEEK);
+    return n <= 0;
 }
 
 bool r_raw_socket::wait_till_send_wont_block( uint64_t& millis ) const

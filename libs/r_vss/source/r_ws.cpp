@@ -1247,7 +1247,7 @@ static vector<uint8_t> _extract_annexb_nalu(const uint8_t* data, size_t size, ui
 }
 
 r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_utils::r_socket>& ws,
-                                               r_utils::r_socket&,
+                                               r_utils::r_socket& conn,
                                                const r_http::r_server_request& request)
 {
     try
@@ -1443,6 +1443,9 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
             // torn down, so the unwound 500 never has to reach the client.
             if(ws.stopping())
                 R_THROW(("Transcode aborted: server shutting down."));
+            // Likewise once the client has gone (timed out): nobody will read it.
+            if(conn.peer_closed())
+                R_THROW(("Transcode aborted: client disconnected."));
 
             if(!in_bt["frames"].has_index(fi)) continue;
 
@@ -1692,7 +1695,7 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
 // v1 is video-only; AAC audio (see the audio-transcode path in _get_transcode) is
 // a follow-up.
 r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r_utils::r_socket>& ws,
-                                                    r_utils::r_socket&,
+                                                    r_utils::r_socket& conn,
                                                     const r_http::r_server_request& request)
 {
     // Concurrency ceiling: reserve a slot, or 503 so the client backs off and
@@ -1841,6 +1844,8 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
                 // window to transcode.
                 if(ws.stopping())
                     R_THROW(("fMP4 transcode aborted: server shutting down."));
+                if(conn.peer_closed())
+                    R_THROW(("fMP4 transcode aborted: client disconnected."));
 
                 if(!bt["frames"].has_index(fi)) continue;
 

@@ -1,5 +1,6 @@
 #include "r_vss/r_query.h"
 #include "r_vss/r_motion_engine.h"
+#include "r_vss/r_snapshot_cache.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_blob_tree.h"
@@ -151,7 +152,19 @@ static shared_ptr<vector<uint8_t>> _decode_single_frame(
     return nullptr;
 }
 
-vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h)
+namespace
+{
+
+struct key_frame
+{
+    int64_t ts {0};
+    string codec_name;
+    string codec_parameters;
+    vector<uint8_t> data;
+};
+
+// The key frame query_key picks for ts (the one at or before it).
+key_frame _find_key_frame(const string& top_dir, r_devices& devices, const string& camera_id, system_clock::time_point ts)
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
 
@@ -163,15 +176,10 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
 
     r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
-    auto epoch_millis = r_time_utils::tp_to_epoch_millis(ts);
-
-    auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, epoch_millis);
+    auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, r_time_utils::tp_to_epoch_millis(ts));
 
     uint32_t version = 0;
     auto bt = r_blob_tree::deserialize(&key_bt[0], key_bt.size(), version);
-
-    auto video_codec_name = bt["video_codec_name"].get_string();
-    auto video_codec_parameters = bt["video_codec_parameters"].get_string();
 
     if(bt["frames"].size() != 1)
         R_THROW(("Expected exactly one frame in blob tree."));
@@ -179,28 +187,58 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
     if(!bt["frames"][0].has_key("data"))
         R_THROW(("Expected frame to have data."));
 
-    auto frame = bt["frames"][0]["data"].get_blob();
+    key_frame kf;
+    kf.ts = r_string_utils::s_to_int64(bt["frames"][0]["ts"].get_string());
+    kf.codec_name = bt["video_codec_name"].get_string();
+    kf.codec_parameters = bt["video_codec_parameters"].get_string();
+    kf.data = bt["frames"][0]["data"].get_blob();
+    return kf;
+}
 
-    // Treat w/h as a bounding box; _decode_single_frame rewrites them with the
-    // aspect-preserved output dimensions, which the encoder must then match.
-    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_YUVJ420P, w, h, true);
+// Snapshots are built from a key frame, so requests for the same camera, key
+// frame and size get the same image: concurrent ones (several clients polling
+// "now", or a client retrying an event frame) share one decode and encode, and
+// a built one is reused for a few seconds.
+r_snapshot_cache& _snapshots()
+{
+    static r_snapshot_cache cache(seconds(5));
+    return cache;
+}
 
-    if(decoded)
-    {
-        r_video_encoder encoder(AV_CODEC_ID_MJPEG, 0 /* MJPEG is constant-quality; bitrate unused */, w, h, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
-        encoder.attach_buffer(decoded->data(), decoded->size(), 0);
-        auto es = encoder.encode();
-        if(es == R_CODEC_STATE_HAS_OUTPUT)
+string _snapshot_key(const char* format, const string& camera_id, int64_t key_ts, uint16_t w, uint16_t h)
+{
+    return r_string_utils::format("%s|%s|%lld|%u|%u", format, camera_id.c_str(), (long long)key_ts, (unsigned)w, (unsigned)h);
+}
+
+}
+
+vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h)
+{
+    auto kf = _find_key_frame(top_dir, devices, camera_id, ts);
+
+    return _snapshots().get(_snapshot_key("jpg", camera_id, kf.ts, w, h), [&]() {
+        // Treat w/h as a bounding box; _decode_single_frame rewrites them with the
+        // aspect-preserved output dimensions, which the encoder must then match.
+        uint16_t ow = w, oh = h;
+        auto decoded = _decode_single_frame(kf.codec_name, kf.codec_parameters, kf.data, AV_PIX_FMT_YUVJ420P, ow, oh, true);
+
+        if(decoded)
         {
-            auto pi = encoder.get();
+            r_video_encoder encoder(AV_CODEC_ID_MJPEG, 0 /* MJPEG is constant-quality; bitrate unused */, ow, oh, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
+            encoder.attach_buffer(decoded->data(), decoded->size(), 0);
+            auto es = encoder.encode();
+            if(es == R_CODEC_STATE_HAS_OUTPUT)
+            {
+                auto pi = encoder.get();
 
-            vector<uint8_t> result(pi.size);
-            memcpy(result.data(), pi.data, pi.size);
-            return result;
+                vector<uint8_t> result(pi.size);
+                memcpy(result.data(), pi.data, pi.size);
+                return result;
+            }
         }
-    }
 
-    R_THROW(("Unable to JPG fail."));
+        R_THROW(("Unable to JPG fail."));
+    });
 }
 
 // Reduce a friendly name to a filesystem-safe stem (no extension). Mirrors what
@@ -478,57 +516,34 @@ void r_vss::query_update_camera_properties(const string& top_dir, r_devices& dev
 
 vector<uint8_t> r_vss::query_get_webp(const string& top_dir, r_devices& devices, const string& camera_id, chrono::system_clock::time_point ts, uint16_t w, uint16_t h)
 {
-    auto maybe_camera = devices.get_camera_by_id(camera_id);
+    auto kf = _find_key_frame(top_dir, devices, camera_id, ts);
 
-    if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+    return _snapshots().get(_snapshot_key("webp", camera_id, kf.ts, w, h), [&]() {
+        // Treat w/h as a bounding box; _decode_single_frame rewrites them with the
+        // aspect-preserved output dimensions, which the encoder must then match.
+        uint16_t ow = w, oh = h;
+        auto decoded = _decode_single_frame(kf.codec_name, kf.codec_parameters, kf.data, AV_PIX_FMT_YUV420P, ow, oh, true);
 
-    if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
-
-    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
-
-    auto epoch_millis = r_time_utils::tp_to_epoch_millis(ts);
-
-    auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, epoch_millis);
-
-    uint32_t version = 0;
-    auto bt = r_blob_tree::deserialize(&key_bt[0], key_bt.size(), version);
-
-    auto video_codec_name = bt["video_codec_name"].get_string();
-    auto video_codec_parameters = bt["video_codec_parameters"].get_string();
-
-    if(bt["frames"].size() != 1)
-        R_THROW(("Expected exactly one frame in blob tree."));
-
-    if(!bt["frames"][0].has_key("data"))
-        R_THROW(("Expected frame to have data."));
-
-    auto frame = bt["frames"][0]["data"].get_blob();
-
-    // Treat w/h as a bounding box; _decode_single_frame rewrites them with the
-    // aspect-preserved output dimensions, which the encoder must then match.
-    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_YUV420P, w, h, true);
-
-    if(decoded)
-    {
-        r_video_encoder encoder(AV_CODEC_ID_WEBP, 100000, w, h, {1,1}, AV_PIX_FMT_YUV420P, 0, 1, 0, 0);
-        encoder.attach_buffer(decoded->data(), decoded->size(), 0);
-        auto es = encoder.encode();
-        if(es != R_CODEC_STATE_HAS_OUTPUT)
-            es = encoder.flush();
-
-        if(es == R_CODEC_STATE_HAS_OUTPUT)
+        if(decoded)
         {
-            auto pi = encoder.get();
+            r_video_encoder encoder(AV_CODEC_ID_WEBP, 100000, ow, oh, {1,1}, AV_PIX_FMT_YUV420P, 0, 1, 0, 0);
+            encoder.attach_buffer(decoded->data(), decoded->size(), 0);
+            auto es = encoder.encode();
+            if(es != R_CODEC_STATE_HAS_OUTPUT)
+                es = encoder.flush();
 
-            vector<uint8_t> result(pi.size);
-            memcpy(result.data(), pi.data, pi.size);
-            return result;
+            if(es == R_CODEC_STATE_HAS_OUTPUT)
+            {
+                auto pi = encoder.get();
+
+                vector<uint8_t> result(pi.size);
+                memcpy(result.data(), pi.data, pi.size);
+                return result;
+            }
         }
-    }
 
-    R_THROW(("Unable to webp fail."));
+        R_THROW(("Unable to webp fail."));
+    });
 }
 
 chrono::hours r_vss::query_get_retention_hours(const std::string& top_dir, r_devices& devices, const std::string& camera_id)

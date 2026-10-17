@@ -5,9 +5,19 @@
 #include "r_http/r_server_request.h"
 #include "r_http/r_client_response.h"
 #include "r_http/r_server_response.h"
+#include "r_http/r_web_server.h"
 
 #include <chrono>
 #include <thread>
+#ifndef IS_WINDOWS
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#endif
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
 #include <climits>
 #include <numeric>
 
@@ -596,4 +606,278 @@ void test_r_http::test_server_request_chunked_callback()
 
     if(serverException)
         std::rethrow_exception(serverException);
+}
+
+static bool _wait_for(std::function<bool()> pred, int millis = 3000)
+{
+    auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(millis);
+    while(!pred())
+    {
+        if(std::chrono::steady_clock::now() > until)
+            return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
+}
+
+// A one-worker server whose /block route waits until released, and whose
+// /count route counts the requests it runs.
+struct blocking_server
+{
+    std::mutex m;
+    std::condition_variable cv;
+    bool release {false};
+    std::atomic<int> blocked {0}, counted {0};
+    r_web_server<r_socket> ws;
+
+    blocking_server(int port, size_t max_pending) : ws(port, "127.0.0.1", 1, max_pending)
+    {
+        ws.add_route(METHOD_GET, "/block", [this](const r_web_server<r_socket>&, r_socket&, const r_server_request&){
+            ++blocked;
+            std::unique_lock<std::mutex> g(m);
+            cv.wait(g, [this](){ return release; });
+            return r_server_response();
+        });
+        ws.add_route(METHOD_GET, "/count", [this](const r_web_server<r_socket>&, r_socket&, const r_server_request&){
+            ++counted;
+            return r_server_response();
+        });
+        ws.start();
+    }
+    ~blocking_server()
+    {
+        unblock();
+        ws.stop();
+    }
+    void unblock()
+    {
+        {
+            std::lock_guard<std::mutex> g(m);
+            release = true;
+        }
+        cv.notify_all();
+    }
+};
+
+static void _send_get(r_socket& sok, int port, const std::string& path)
+{
+    sok.connect("127.0.0.1", port);
+    r_client_request request("127.0.0.1", port);
+    request.set_uri(path);
+    request.write_request(sok);
+}
+
+// A request that waited in the queue while its client gave up is not run:
+// nobody would read the response.
+void test_r_http::test_web_server_skips_abandoned_request()
+{
+    int port = RTF_NEXT_PORT();
+    blocking_server server(port, 4);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    r_socket a;
+    _send_get(a, port, "/block");
+    RTF_ASSERT(_wait_for([&](){ return server.blocked == 1; }));
+
+    // Queued behind /block, then abandoned.
+    {
+        r_socket gone;
+        _send_get(gone, port, "/count");
+        gone.close();
+    }
+
+    // Queued behind /block, and still waiting for its answer.
+    r_socket waiting;
+    _send_get(waiting, port, "/count");
+
+    server.unblock();
+
+    r_client_response response;
+    response.read_response(waiting);
+    RTF_ASSERT(response.get_status() == 200);
+    RTF_ASSERT(server.counted == 1);
+}
+
+// With the worker busy and the queue full, a new connection is answered with
+// 503 and Retry-After instead of waiting.
+void test_r_http::test_web_server_busy_503()
+{
+    int port = RTF_NEXT_PORT();
+    blocking_server server(port, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    r_socket a;
+    _send_get(a, port, "/block");
+    RTF_ASSERT(_wait_for([&](){ return server.blocked == 1; }));
+
+    r_socket queued;
+    _send_get(queued, port, "/count");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Refused with nothing sent yet...
+    r_socket refused;
+    refused.connect("127.0.0.1", port);
+    r_client_response busy;
+    busy.read_response(refused);
+    RTF_ASSERT(busy.get_status() == 503);
+    RTF_ASSERT(busy.get_header("Retry-After") == "1");
+
+    // ...and after sending a request (the usual case): the server reads it
+    // before answering, so the client gets the 503 rather than a reset.
+    r_socket refused2;
+    _send_get(refused2, port, "/count");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    r_client_response busy2;
+    busy2.read_response(refused2);
+    RTF_ASSERT(busy2.get_status() == 503);
+    // The server closed in order (FIN, read returns 0), not with a reset.
+    char c;
+    uint64_t wait_ms = 2000;
+    RTF_ASSERT(refused2.wait_till_recv_wont_block(wait_ms));
+    RTF_ASSERT(refused2.recv(&c, 1) == 0);
+
+    server.unblock();
+
+    r_client_response ok;
+    ok.read_response(queued);
+    RTF_ASSERT(ok.get_status() == 200);
+    RTF_ASSERT(server.counted == 1);
+}
+
+// Started and stopped (or destroyed) straight away, over and over, including
+// before the accept loop is listening: no hang, no std::terminate.
+void test_r_http::test_web_server_immediate_start_stop()
+{
+    int port = RTF_NEXT_PORT();
+    for(int i = 0; i < 20; ++i)
+    {
+        r_web_server<r_socket> ws(port, "127.0.0.1");
+        ws.start();
+        if(i % 2)
+            ws.stop();
+    }
+    {
+        r_web_server<r_socket> never_started(port, "127.0.0.1");
+    }
+
+    // And it still serves afterwards.
+    r_web_server<r_socket> ws(port, "127.0.0.1");
+    std::atomic<int> counted {0};
+    ws.add_route(METHOD_GET, "/count", [&](const r_web_server<r_socket>&, r_socket&, const r_server_request&){
+        ++counted;
+        return r_server_response();
+    });
+    ws.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    r_socket sok;
+    _send_get(sok, port, "/count");
+    r_client_response response;
+    response.read_response(sok);
+    RTF_ASSERT(response.get_status() == 200);
+    RTF_ASSERT(counted == 1);
+}
+
+// The port is already taken, so the server never comes up. Destroying it must
+// still join its thread: a joinable std::thread member aborted revere on quit.
+void test_r_http::test_web_server_port_taken()
+{
+    int port = RTF_NEXT_PORT();
+    r_socket holder;
+    holder.bind(port, "127.0.0.1");
+    holder.listen();
+
+    {
+        r_web_server<r_socket> ws(port, "127.0.0.1");
+        ws.start();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    {
+        r_web_server<r_socket> ws(port, "127.0.0.1");
+        ws.start();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        ws.stop();
+        ws.stop();
+    }
+}
+
+// Destroyed while a handler is still working: the destructor waits for it
+// (so the handler never outlives the server's state) and doesn't throw.
+void test_r_http::test_web_server_destroyed_with_request_in_flight()
+{
+    int port = RTF_NEXT_PORT();
+    std::atomic<int> entered {0}, finished {0};
+    r_socket a, b;
+    {
+        r_web_server<r_socket> ws(port, "127.0.0.1", 1, 4);
+        ws.add_route(METHOD_GET, "/slow", [&](const r_web_server<r_socket>&, r_socket&, const r_server_request&){
+            ++entered;
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            ++finished;
+            return r_server_response();
+        });
+        ws.start();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        _send_get(a, port, "/slow");                 // running
+        RTF_ASSERT(_wait_for([&](){ return entered == 1; }));
+        _send_get(b, port, "/slow");                 // queued behind it
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        // stop() returns only once the running handler is done (r_ws relies on
+        // this to tear down state its handlers use); the queued one is dropped.
+        ws.stop();
+        RTF_ASSERT(finished == 1);
+    }
+    RTF_ASSERT(finished == 1);
+    RTF_ASSERT(entered == 1);
+}
+
+// The busy answer reads what a refused client has sent, on the accept thread,
+// for at most 50 ms. A client trickling a byte every half millisecond mustn't
+// stretch that: the next refused client still gets its 503 straight away.
+void test_r_http::test_web_server_busy_503_trickling_client()
+{
+    int port = RTF_NEXT_PORT();
+    blocking_server server(port, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    r_socket a;
+    _send_get(a, port, "/block");
+    RTF_ASSERT(_wait_for([&](){ return server.blocked == 1; }));
+    r_socket queued;
+    _send_get(queued, port, "/count");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Refused, and sends one byte every 0.5 ms for 3 s.
+    std::atomic<bool> trickling {true};
+    std::thread slow([&](){
+        r_socket s;
+        s.connect("127.0.0.1", port);
+#ifndef IS_WINDOWS
+        int one = 1;
+        setsockopt(s.get_sok_id(), IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#endif
+        auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        char b = 'x';
+        while(trickling && std::chrono::steady_clock::now() < until)
+        {
+            if(s.send(&b, 1) <= 0)
+                break;
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
+        }
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+    // A normal client refused right after it.
+    auto t0 = std::chrono::steady_clock::now();
+    r_socket refused;
+    _send_get(refused, port, "/count");
+    r_client_response busy;
+    busy.read_response(refused);
+    auto took = std::chrono::steady_clock::now() - t0;
+    trickling = false;
+    slow.join();
+
+    RTF_ASSERT(busy.get_status() == 503);
+    RTF_ASSERT(took < std::chrono::milliseconds(500));
 }
