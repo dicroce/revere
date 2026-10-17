@@ -299,6 +299,9 @@ struct sidebar_list_ui_item
     std::string kbps;
     std::string retention;
     stream_health health {stream_health::unknown};
+    // A recording camera the stream keeper hasn't reported on yet (just after
+    // launch, or just added): shown as "Starting..." rather than a status.
+    bool starting {false};
     // Optional per-card action button (e.g. "Repair" when the camera's
     // recording file is missing). Empty = no button.
     std::string action_label;
@@ -506,7 +509,7 @@ void sidebar_list(
     for(size_t i = 0; i < labels.size(); ++i)
     {
         const auto& lbl = labels[i];
-        if(lbl.kbps.empty() && lbl.retention.empty())
+        if(lbl.kbps.empty() && lbl.retention.empty() && !lbl.starting)
             continue;
 
         float item_y = start_y + (float)i * (float)card_pitch;
@@ -526,7 +529,9 @@ void sidebar_list(
             ImGui::TextColored(text, "%s", line.c_str());
         };
 
-        if(failed)
+        if(lbl.starting)
+            status_row(r_ui_utils::theme::status_neutral_dot, secondary, "Starting...");
+        else if(failed)
             status_row(r_ui_utils::theme::status_danger_dot, r_ui_utils::theme::status_danger_text, "Failed to start");
         else if(not_receiving)
             status_row(r_ui_utils::theme::status_warning_dot, r_ui_utils::theme::status_warning_text, "No video Â· bitrate: " + lbl.kbps);

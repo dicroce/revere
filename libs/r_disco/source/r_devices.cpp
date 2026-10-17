@@ -286,6 +286,7 @@ void r_devices::_update_caches()
             _all_cameras_cache = std::move(all_result.cameras);
             _assigned_cameras_cache = std::move(assigned_result.cameras);
         }
+        ++_cache_generation;
     }
     catch(const std::exception& e)
     {
@@ -293,9 +294,28 @@ void r_devices::_update_caches()
     }
 }
 
+uint64_t r_devices::cache_generation() const
+{
+    return _cache_generation.load();
+}
+
 void r_devices::_entry_point()
 {
-    _create_db(_top_dir);
+    // A failure here is logged, not fatal: it's retried with each cache
+    // refresh below, and the UI shows its loading state meanwhile.
+    bool db_created = false;
+    auto create_db = [&]() {
+        try
+        {
+            _create_db(_top_dir);
+            db_created = true;
+        }
+        catch(const std::exception& e)
+        {
+            R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+        }
+    };
+    create_db();
 
     // Initialize caches immediately on startup
     _update_caches();
@@ -383,6 +403,8 @@ void r_devices::_entry_point()
         }
 
         // Update caches periodically (every 2 seconds when poll times out, or after processing commands)
+        if(!db_created)
+            create_db();
         _update_caches();
     }
 }

@@ -7,6 +7,8 @@
 #include "r_db/r_sqlite_conn.h"
 #include "r_utils/r_work_q.h"
 #include "r_utils/r_macro.h"
+#include <atomic>
+#include <cstdint>
 #include <vector>
 #include <thread>
 #include <string>
@@ -60,6 +62,10 @@ public:
     // Non-blocking cached versions for UI thread (updated asynchronously)
     R_API std::vector<r_camera> get_all_cameras_cached() const;
     R_API std::vector<r_camera> get_assigned_cameras_cached() const;
+    // Counts successful refreshes of the cached lists above; 0 until the first
+    // one after start(). Lets the UI redraw as soon as the cameras are known,
+    // without waiting for its next periodic refresh.
+    R_API uint64_t cache_generation() const;
     R_API void save_camera(const r_camera& camera);
     R_API void remove_camera(const r_camera& camera);
     R_API void assign_camera(r_camera& camera);
@@ -123,6 +129,7 @@ private:
     mutable std::mutex _cache_mutex;
     std::vector<r_camera> _all_cameras_cache;
     std::vector<r_camera> _assigned_cameras_cache;
+    std::atomic<uint64_t> _cache_generation {0};
     void _update_caches();
 
     // In-memory per-camera alert messages — see set_camera_alert() above.

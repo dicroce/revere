@@ -145,6 +145,9 @@ struct main_window_state
     bool show_log {false};
     float log_height {180.0f};
     std::string selected_plugin;    // empty unless a plugin row is selected
+    // False until r_devices' first cache fill; the camera sections say
+    // "Loading cameras..." rather than that they're empty.
+    bool cameras_loaded {true};
 
     // A note at the bottom right of the window that fades out by itself (see
     // show_toast). toast_id non-empty offers "Don't show again".
@@ -1285,7 +1288,7 @@ inline void main_window(
     {
         section_header("##recording_section", "Recording", recording.size(), state.recording_open, fonts);
         if(state.recording_open && recording.empty())
-            empty_state("No cameras recording", fonts);
+            empty_state(state.cameras_loaded ? "No cameras recording" : "Loading cameras...", fonts);
         for(int i = 0; state.recording_open && i < (int)recording.size(); ++i)
         {
             const auto& item = recording[i];
@@ -1299,7 +1302,7 @@ inline void main_window(
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
         section_header("##discovered_section", "Discovered", discovered.size(), state.discovered_open, fonts);
         if(state.discovered_open && discovered.empty())
-            empty_state("Nothing discovered yet", fonts);
+            empty_state(state.cameras_loaded ? "Nothing discovered yet" : "Loading cameras...", fonts);
         for(int i = 0; state.discovered_open && i < (int)discovered.size(); ++i)
         {
             const auto& item = discovered[i];
@@ -1430,6 +1433,11 @@ inline void main_window(
             ImGui::PushFont(font(fonts.key_22));
             plugin_status_lines(p.status_message, actions.open_url, fonts);
             ImGui::PopFont();
+        }
+        else if(!state.cameras_loaded)
+        {
+            // Until the camera list has loaded, rather than "No cameras yet".
+            detail_title("Loading cameras...", std::string(), fonts);
         }
         else
         {
