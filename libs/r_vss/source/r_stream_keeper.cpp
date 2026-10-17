@@ -233,10 +233,21 @@ void r_stream_keeper::_update_status_cache()
         for(auto& lrs_pair : _live_restreaming_states)
         {
             auto& lrs = lrs_pair.second;
-            restream_dropped += lrs->video_samples.dropped_count();
-            restream_dropped += lrs->audio_samples.dropped_count();
+            auto v = lrs->video_samples.dropped_count();
+            auto a = lrs->audio_samples.dropped_count();
             lrs->video_samples.reset_dropped_count();
             lrs->audio_samples.reset_dropped_count();
+            restream_dropped += v + a;
+            if(v > 0 || a > 0)
+            {
+                if(_restream_overflow_since_log.empty())
+                    _restream_overflow_window_start = chrono::steady_clock::now();
+                auto& o = _restream_overflow_since_log[lrs->session_id];
+                o.camera = lrs->camera_name;
+                o.session = lrs->session_id;
+                o.video_dropped += v;
+                o.audio_dropped += a;
+            }
         }
     }
     if(restream_dropped > 0)
@@ -273,10 +284,17 @@ void r_stream_keeper::_update_status_cache()
             R_LOG_WARNING("Motion detection queue overflow: %zu frames dropped (queue size: %zu/%d). System may be under heavy load.",
                          _total_motion_dropped, _motionEngine.get_queue_size(), MOTION_ENGINE_MAX_QUEUE_SIZE);
         }
-        if(has_overflow(_current_overflow_flags, r_overflow_type::live_restream))
+        if(!_restream_overflow_since_log.empty())
         {
-            R_LOG_WARNING("Live restreaming queue overflow: %zu frames dropped. RTSP clients may not be consuming data fast enough.",
-                         _total_restream_dropped);
+            // Per session and track, so the log says which viewer of which
+            // camera fell behind (or isn't reading a track) and by how much.
+            vector<restream_overflow> sessions;
+            for(const auto& o : _restream_overflow_since_log)
+                sessions.push_back(o.second);
+            auto line = format_restream_overflow(sessions, (int)chrono::duration_cast<chrono::seconds>(now - _restream_overflow_window_start).count());
+            if(!line.empty())
+                R_LOG_WARNING("%s", line.c_str());
+            _restream_overflow_since_log.clear();
         }
     }
 

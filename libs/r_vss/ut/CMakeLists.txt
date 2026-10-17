@@ -5,6 +5,8 @@ add_executable(
     r_vss_ut
     include/test_r_motion_engine.h
     source/test_r_motion_engine.cpp
+    include/test_r_restream_track.h
+    source/test_r_restream_track.cpp
 )
 
 target_include_directories(
