@@ -76,6 +76,7 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 
 #include "imgui_ui.h"
 #include "main_window.h"
+#include "dialogs.h"
 #include "r_vss/r_camera_source_info.h"
 #include "assignment_state.h"
 #include "configure_state.h"
@@ -1212,10 +1213,9 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "set_system_password",
         [&as, &camera_setup_wizard, &stream_keeper](){
-            ImGui::OpenPopup("Set system password");
-            revere::system_password_modal(
-                GImGui,
-                "Set system password",
+            ImGui::OpenPopup(revere::web_password_text::name);
+            revere::web_password_modal(
+                revere::web_password_text::name,
                 stream_keeper.system_password_set(),
                 [&](const std::string& pw){
                     try
@@ -1332,42 +1332,12 @@ void configure_camera_setup_wizard(
             as.wizard_step = 3;
             auto title = as.step_title("Select stream profile");
             ImGui::OpenPopup(title.c_str());
-            ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Always);
-            if(ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-            {
-                ImGui::TextUnformatted("Choose the stream profile to record:");
-                if(as.profiles_were_filtered)
-                {
-                    ImGui::Spacing();
-                    ImGui::TextColored(r_ui_utils::theme::status_warning_text, "Some profiles were removed because their codecs are not supported.");
-                }
-                ImGui::Spacing();
-
-                for(int i = 0; i < (int)as.available_profiles.size(); ++i)
-                {
-                    auto& p = as.available_profiles[i];
-                    auto label = p.encoding + "  " + std::to_string(p.width) + "x" + std::to_string(p.height);
-                    ImGui::RadioButton(label.c_str(), &as.selected_profile_idx, i);
-                }
-
-                ImGui::Spacing();
-                ImGui::Separator();
-                ImGui::Spacing();
-
-                if(ImGui::Button("Next", ImVec2(120, 0)))
-                {
-                    as.selected_profile_token = as.available_profiles[as.selected_profile_idx].token;
-                    ImGui::CloseCurrentPopup();
-                    camera_setup_wizard.next("complete_interrogation");
-                }
-                ImGui::SameLine();
-                if(ImGui::Button("Cancel", ImVec2(120, 0)))
-                {
-                    ImGui::CloseCurrentPopup();
-                    camera_setup_wizard.cancel();
-                }
-                ImGui::EndPopup();
-            }
+            revere::profile_selection_modal(
+                title,
+                as,
+                [&](){ camera_setup_wizard.next("complete_interrogation"); },
+                [&](){ camera_setup_wizard.cancel(); }
+            );
         }
     );
     camera_setup_wizard.add_step(
@@ -1509,7 +1479,7 @@ void configure_camera_setup_wizard(
         "friendly_name",
         [&as, &camera_setup_wizard](){
             as.wizard_step = 4;
-            auto title = as.step_title("Camera friendly name");
+            auto title = as.step_title("Camera name");
             ImGui::OpenPopup(title.c_str());
             revere::friendly_name_modal(
                 GImGui,
@@ -1527,7 +1497,7 @@ void configure_camera_setup_wizard(
         "please_wait",
         [&as, &camera_setup_wizard](){
             as.wizard_step = 2;
-            auto title = as.step_title("Please wait");
+            auto title = as.step_title("Connecting");
             ImGui::OpenPopup(title.c_str());
 
             // Build a per-phase status line so the user can see what the
@@ -1747,10 +1717,10 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "configure_rtsp_source_camera",
         [&ui_state, &camera_setup_wizard, &rscc, &devices](){
-            ImGui::OpenPopup("Configure RTSP Source Camera");
+            ImGui::OpenPopup("Add RTSP camera");
             revere::configure_rtsp_source_camera_modal(
                 GImGui,
-                "Configure RTSP Source Camera",
+                "Add RTSP camera",
                 rscc,
                 [&](){
                     r_disco::r_camera c;
@@ -1780,17 +1750,23 @@ void configure_camera_setup_wizard(
             // Get camera info to display record file path
             auto camera_id = ui_state.selected_camera_id();
             string record_path;
+            string camera_name;
             if(!camera_id.is_null())
             {
                 auto camera_opt = devices.get_camera_by_id(camera_id.value());
                 if(!camera_opt.is_null() && !camera_opt.value().record_file_path.is_null())
                     record_path = _get_storage_path(camera_opt.value().record_file_path.value());
+                if(!camera_opt.is_null())
+                {
+                    const auto& c = camera_opt.value();
+                    camera_name = !c.friendly_name.is_null() ? c.friendly_name.value() : (!c.camera_name.is_null() ? c.camera_name.value() : string());
+                }
             }
 
             ImGui::OpenPopup("Camera properties");
             revere::camera_properties_modal(
-                GImGui,
                 "Camera properties",
+                camera_name,
                 ui_state.do_motion_detection,
                 ui_state.do_motion_pruning,
                 ui_state.min_continuous_recording_hours,
@@ -3190,6 +3166,7 @@ int main(int argc, char** argv)
     revere::main_window_state main_window_state;
     revere::main_window_fonts main_window_fonts {FONT_KEY_24, FONT_KEY_22, FONT_KEY_18};
     bool tray_notice_pending = false;
+    revere::g_dialog_fonts = main_window_fonts;
     revere::main_window_actions main_window_actions;
     main_window_actions.select_recording = [&](int i){
         ui_state.recording_selected_item = i;

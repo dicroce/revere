@@ -24,7 +24,10 @@ struct assignment_state
     int wizard_total_steps {9};
     std::string step_title(const std::string& base) const
     {
-        return "Step " + std::to_string(wizard_step) + "/" + std::to_string(wizard_total_steps) + " - " + base;
+        // The title bar says where in the wizard this is; the part after "##"
+        // is the step's heading (drawn in the dialog), which also keeps each
+        // step's popup id unique.
+        return "Add camera \xC2\xB7 step " + std::to_string(wizard_step) + " of " + std::to_string(wizard_total_steps) + "##" + base;
     }
     std::string camera_id;
     std::string ipv4;
