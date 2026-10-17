@@ -47,13 +47,37 @@ void error_modal(
     }
 }
 
+// The menu bar's spacing: taller than a frame elsewhere, wider gaps between
+// menus, no box around the bar (a hairline under it instead, drawn by
+// main_menu), and menus with the same roomier items. Every BeginMainMenuBar()
+// needs the same push, or the bar's height changes within a frame.
+inline void push_menu_bar_style()
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 7.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(16.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
+}
+
+inline void pop_menu_bar_style()
+{
+    ImGui::PopStyleVar(4);
+}
+
 template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB>
 uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb)
 {
+    push_menu_bar_style();
     ImGui::BeginMainMenuBar();
+    {
+        auto* dl = ImGui::GetForegroundDrawList();
+        auto p = ImGui::GetWindowPos();
+        auto sz = ImGui::GetWindowSize();
+        dl->AddLine(ImVec2(p.x, p.y + sz.y - 1.0f), ImVec2(p.x + sz.x, p.y + sz.y - 1.0f), ImGui::GetColorU32(r_ui_utils::theme::border_subtle));
+    }
     if (ImGui::BeginMenu("Cameras"))
     {
-        if (ImGui::MenuItem("Add RTSP Source Camera"))
+        if (ImGui::MenuItem("Add RTSP camera..."))
             add_rtsp_source_camera_cb();
         ImGui::Separator();
         if (ImGui::MenuItem("Exit"))
@@ -75,7 +99,7 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
     if (ImGui::BeginMenu("Settings"))
     {
         bool startup_enabled = get_startup_state_cb();
-        if (ImGui::MenuItem("Start Revere with system", nullptr, &startup_enabled))
+        if (ImGui::MenuItem("Start Revere at login", nullptr, &startup_enabled))
             set_startup_state_cb(startup_enabled);
 
         if (ImGui::MenuItem("Set system password..."))
@@ -92,6 +116,7 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
     }
     uint16_t h = (uint16_t)ImGui::GetWindowHeight();
     ImGui::EndMainMenuBar();
+    pop_menu_bar_style();
     return h;
 }
 

@@ -142,6 +142,19 @@ struct main_window_state
     bool show_log {false};
     float log_height {180.0f};
     std::string selected_plugin;    // empty unless a plugin row is selected
+
+    // A note at the bottom right of the window that fades out by itself (see
+    // show_toast). toast_id non-empty offers "Don't show again".
+    std::string toast_text;
+    std::string toast_id;
+    double toast_until {0.0};
+
+    void show_toast(const std::string& text, const std::string& id = std::string(), double seconds = 8.0)
+    {
+        toast_text = text;
+        toast_id = id;
+        toast_until = ImGui::GetTime() + seconds;
+    }
 };
 
 struct main_window_actions
@@ -157,6 +170,8 @@ struct main_window_actions
     std::function<void(int)> forget;
     std::function<void(const std::string&, bool)> set_plugin_enabled;
     std::function<void(const std::string&)> open_url;
+    std::function<void()> add_rtsp_camera;
+    std::function<void(const std::string&)> dismiss_notice;  // "Don't show again" on a toast
 };
 
 struct main_window_fonts
@@ -937,6 +952,7 @@ void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url
 // menu submitted again in the same frame, so main_menu() needn't know about it.
 inline void main_window_view_menu(main_window_state& state)
 {
+    push_menu_bar_style();
     if(ImGui::BeginMainMenuBar())
     {
         if(ImGui::BeginMenu("View"))
@@ -947,6 +963,7 @@ inline void main_window_view_menu(main_window_state& state)
         }
         ImGui::EndMainMenuBar();
     }
+    pop_menu_bar_style();
 }
 
 inline void main_window(
@@ -991,11 +1008,13 @@ inline void main_window(
         sel = kind::discovered;
         sel_index = discovered_selected;
     }
-    if(sel == kind::none)
+    // With no camera recording yet, nothing is picked for the user, so the
+    // detail pane can say how to get started.
+    if(sel == kind::none && !recording.empty())
     {
-        if(!recording.empty()) { actions.select_recording(0); sel = kind::recording; sel_index = 0; }
-        else if(!discovered.empty()) { actions.select_discovered(0); sel = kind::discovered; sel_index = 0; }
-        else if(!plugins.empty()) { state.selected_plugin = plugins[0].name; sel = kind::plugin; sel_index = 0; }
+        actions.select_recording(0);
+        sel = kind::recording;
+        sel_index = 0;
     }
 
     auto select_plugin = [&](const std::string& name) {
@@ -1003,8 +1022,9 @@ inline void main_window(
         actions.select_plugin();
     };
 
-    // Status bar height: one 18-key line plus padding.
-    const float status_h = std::floor(font(fonts.key_18)->FontSize + 12.0f);
+    // Status bar height: one 18-key line plus padding, the same height as the
+    // menu bar (push_menu_bar_style), so the two bars read as a pair.
+    const float status_h = std::floor(font(fonts.key_18)->FontSize + 18.0f);
     const float area_h = std::max(0.0f, (float)window_height - (float)client_top - status_h);
     const float w = (float)window_width;
 
@@ -1197,9 +1217,21 @@ inline void main_window(
         }
         else
         {
-            ImGui::PushFont(font(fonts.key_18));
-            wrapped_text(text_tertiary, "Cameras found on your network, cameras you record and system plugins appear on the left.");
+            detail_title(recording.empty() ? "No cameras yet" : "Nothing selected", std::string(), fonts);
+            ImGui::PushFont(font(fonts.key_22));
+            if(recording.empty())
+            {
+                wrapped_text(text_secondary, "Cameras Revere finds on your network appear under Discovered on the left. Select one and choose Record to start recording it.");
+                wrapped_text(text_secondary, "A camera that isn't found can be added by its RTSP address.");
+            }
+            else wrapped_text(text_secondary, "Select a camera or plugin on the left.");
             ImGui::PopFont();
+            if(recording.empty() && actions.add_rtsp_camera)
+            {
+                action_row a;
+                if(flow_button(a.row, "Add RTSP camera..."))
+                    actions.add_rtsp_camera();
+            }
         }
     }
     ImGui::EndChild();
@@ -1252,7 +1284,7 @@ inline void main_window(
     ImGui::SetNextWindowSize(ImVec2(w, status_h));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, surface_page);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::GetStyle().Colors[ImGuiCol_MenuBarBg]);
     ImGui::Begin("##status_bar", nullptr,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoSavedSettings);
@@ -1264,8 +1296,9 @@ inline void main_window(
 
         const float line_h = ImGui::GetFontSize();
         const float cy = wp.y + status_h * 0.5f;
-        const float left = wp.x + 10.0f;
-        const float right = wp.x + w - 10.0f;
+        // The menu bar's first title starts about 18px in; match it.
+        const float left = wp.x + 18.0f;
+        const float right = wp.x + w - 18.0f;
         const float gap = 12.0f;
 
         // Version on the right, when there's room for it next to the status text.
@@ -1326,12 +1359,15 @@ inline void main_window(
             bool hovered = ImGui::IsItemHovered();
             ImGui::PopID();
             ImVec2 b(a.x + cw, a.y + ch);
+            // No box at rest; on hover, a background and a hand cursor say it
+            // opens the plugin's pane.
             if(hovered)
             {
                 dl->AddRectFilled(a, b, ImGui::GetColorU32(surface_raised));
-                ImGui::SetTooltip("%s", chips[i].full.c_str());
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                if(mode != 0)
+                    ImGui::SetTooltip("%s", chips[i].full.c_str());
             }
-            dl->AddRect(a, b, ImGui::GetColorU32(border_default));
             dl->AddCircleFilled(ImVec2(a.x + chip_pad + r, cy), r, ImGui::GetColorU32(p.has_status ? p.status_color : status_neutral_dot));
             if(!t.empty())
                 dl->AddText(ImVec2(a.x + chip_pad + r * 2.0f + 6.0f, cy - line_h * 0.5f), ImGui::GetColorU32(text_secondary), t.c_str());
@@ -1347,6 +1383,48 @@ inline void main_window(
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);
+
+    // ---- Toast ----
+    const double now = ImGui::GetTime();
+    if(!state.toast_text.empty() && now < state.toast_until)
+    {
+        const float toast_w = std::min(360.0f, w - 40.0f);
+        const float fade = (float)std::clamp((state.toast_until - now) / 0.6, 0.0, 1.0);
+        ImGui::SetNextWindowPos(ImVec2(w - 20.0f, (float)window_height - status_h - 16.0f), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+        ImGui::SetNextWindowSize(ImVec2(toast_w, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 12.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 8.0f));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, surface_raised);
+        ImGui::PushStyleColor(ImGuiCol_Border, border_default);
+        ImGui::Begin("##toast", nullptr,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+        ImGui::PushFont(font(fonts.key_22));
+        ImGui::PushTextWrapPos(toast_w - 28.0f);
+        ImGui::TextColored(text_primary, "%s", state.toast_text.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::PopFont();
+        {
+            flow_row row;
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
+            if(!state.toast_id.empty() && flow_button(row, "Don't show again", button_kind::ghost))
+            {
+                if(actions.dismiss_notice)
+                    actions.dismiss_notice(state.toast_id);
+                state.toast_until = 0.0;
+            }
+            if(flow_button(row, "OK", button_kind::ghost))
+                state.toast_until = 0.0;
+            ImGui::PopStyleVar();
+        }
+        // Hovering keeps it up, so it doesn't fade out under the pointer.
+        if(ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
+            state.toast_until = std::max(state.toast_until, now + 1.5);
+        ImGui::End();
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar(3);
+    }
 }
 
 }

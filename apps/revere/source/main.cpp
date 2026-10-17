@@ -403,6 +403,55 @@ void _create_motion_files(const string& motion_path)
     r_storage::r_md_storage_file::allocate(motion_path, 524288, 30);
 }
 
+// Notices the user said not to show again (a toast's "Don't show again"),
+// one id per line in config/dismissed_notices.txt.
+static std::string _dismissed_notices_path()
+{
+    return revere::sub_dir("config") + PATH_SLASH + "dismissed_notices.txt";
+}
+
+static bool _notice_dismissed(const std::string& id)
+{
+    try
+    {
+        auto path = _dismissed_notices_path();
+        if(!r_fs::file_exists(path))
+            return false;
+        auto bytes = r_fs::read_file(path);
+        std::string text(bytes.begin(), bytes.end());
+        for(const auto& line : r_string_utils::split(text, '\n'))
+            if(r_string_utils::strip(line) == id)
+                return true;
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("Could not read dismissed notices: %s", e.what());
+    }
+    return false;
+}
+
+static void _dismiss_notice(const std::string& id)
+{
+    if(_notice_dismissed(id))
+        return;
+    try
+    {
+        auto path = _dismissed_notices_path();
+        std::string text;
+        if(r_fs::file_exists(path))
+        {
+            auto bytes = r_fs::read_file(path);
+            text.assign(bytes.begin(), bytes.end());
+        }
+        text += id + "\n";
+        r_fs::write_file((const uint8_t*)text.data(), text.size(), path);
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("Could not save dismissed notice %s: %s", id.c_str(), e.what());
+    }
+}
+
 // Helper to get storage file path - handles both legacy (filename only) and new (full path) formats
 static std::string _get_storage_path(const std::string& record_file_path)
 {
@@ -1667,31 +1716,6 @@ void configure_camera_setup_wizard(
             );
         }
     );
-    camera_setup_wizard.add_step(
-        "minimize_to_tray",
-        [&ui_state, &camera_setup_wizard](){
-            ImGui::OpenPopup("Minimize to Tray");
-            revere::minimize_to_tray_modal(
-                GImGui,
-                "Minimize to Tray",
-                [&](){camera_setup_wizard.cancel(); ui_state.minimize_requested = true;},
-                [&](){camera_setup_wizard.cancel();}
-            );
-        }
-    );
-
-    camera_setup_wizard.add_step(
-        "startup_enabled_notification",
-        [&camera_setup_wizard](){
-            ImGui::OpenPopup("Startup enabled");
-            revere::startup_enabled_modal(
-                GImGui,
-                "Startup enabled",
-                [&](){camera_setup_wizard.cancel();}
-            );
-        }
-    );
-
     camera_setup_wizard.add_step(
         "about_revere_cloud",
         [&camera_setup_wizard](){
@@ -3077,7 +3101,9 @@ int main(int argc, char** argv)
     // Configure Dear ImGui (context already created earlier)
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+    // ImGui sets the OS cursor (hand on links and switches, resize arrows on
+    // the splitters). This app used to set ImGuiConfigFlags_NoMouseCursorChange,
+    // with no recorded reason; the vision app still does.
 
     // Setup Dear ImGui style
     r_ui_utils::apply_revere_style(ImGui::GetStyle());
@@ -3163,6 +3189,7 @@ int main(int argc, char** argv)
     // matching button on the old camera cards did.
     revere::main_window_state main_window_state;
     revere::main_window_fonts main_window_fonts {FONT_KEY_24, FONT_KEY_22, FONT_KEY_18};
+    bool tray_notice_pending = false;
     revere::main_window_actions main_window_actions;
     main_window_actions.select_recording = [&](int i){
         ui_state.recording_selected_item = i;
@@ -3291,6 +3318,12 @@ int main(int argc, char** argv)
     main_window_actions.set_plugin_enabled = [&](const std::string& name, bool enabled){
         streamKeeper.set_system_plugin_enabled(name, enabled);
     };
+    main_window_actions.add_rtsp_camera = [&](){
+        camera_setup_wizard.next("configure_rtsp_source_camera");
+    };
+    main_window_actions.dismiss_notice = [](const std::string& id){
+        _dismiss_notice(id);
+    };
     main_window_actions.open_url = [](const std::string& url){
         try { revere::open_url_in_browser(url); }
         catch (const std::exception& e) { R_LOG_ERROR("Could not open %s: %s", url.c_str(), e.what()); }
@@ -3332,10 +3365,18 @@ int main(int argc, char** argv)
                         event.window.windowID == SDL_GetWindowID(window))
                     {
                         user_close_handled = true;
-                        camera_setup_wizard.next("minimize_to_tray");
+                        ui_state.minimize_requested = true;
                     }
                     if (event.window.event == SDL_WINDOWEVENT_SHOWN)
+                    {
                         window_visible = true;
+                        // Back from the tray: say where it was, until told not to.
+                        if(tray_notice_pending)
+                        {
+                            tray_notice_pending = false;
+                            main_window_state.show_toast("Revere kept recording while its window was closed. It runs in the system tray; to quit, use the tray icon's menu or Cameras > Exit.", "minimized_to_tray", 12.0);
+                        }
+                    }
                     if (event.window.event == SDL_WINDOWEVENT_HIDDEN)
                         window_visible = false;
                     if (event.window.event == SDL_WINDOWEVENT_MINIMIZED)
@@ -3458,7 +3499,7 @@ int main(int argc, char** argv)
                 close_requested = true;
             },
             [&](){
-                camera_setup_wizard.next("minimize_to_tray");
+                ui_state.minimize_requested = true;
             },
             [&](){
                 camera_setup_wizard.next("configure_rtsp_source_camera");
@@ -3479,11 +3520,9 @@ int main(int argc, char** argv)
                 auto exe_path = r_fs::current_exe_path();
                 bool success = r_startup::set_autostart(enabled, "Revere", exe_path, "--start_minimized");
 
-                // Show confirmation dialog only when enabling and operation succeeded
+                // Say what that means, only when enabling worked.
                 if (enabled && success)
-                {
-                    camera_setup_wizard.next("startup_enabled_notification");
-                }
+                    main_window_state.show_toast("Revere will start when you log in, minimized to the system tray.");
             },
             [&](){
                 revere::open_url_in_browser("http://localhost:8088");
@@ -3551,6 +3590,7 @@ int main(int argc, char** argv)
         if(ui_state.minimize_requested)
         {
             ui_state.minimize_requested = false;
+            tray_notice_pending = !_notice_dismissed("minimized_to_tray");
             SDL_HideWindow(window);
             window_visible = false;
         }
