@@ -23,6 +23,7 @@ pipeline_host::pipeline_host(configure_state& cfg, SDL_Renderer* renderer) :
     _internals_lok(),
     _cfg(cfg),
     _renderer(renderer),
+    _nv12_textures(false),
     _stream_infos(),
     _pipes(),
     _render_contexts(),
@@ -33,6 +34,18 @@ pipeline_host::pipeline_host(configure_state& cfg, SDL_Renderer* renderer) :
     _running(false),
     _last_dead_check(steady_clock::now())
 {
+    // The software renderer takes NV12 too, but converts it on the CPU itself,
+    // so keep BGRA there (Linux).
+    SDL_RendererInfo ri;
+    if(renderer && SDL_GetRendererInfo(renderer, &ri) == 0 && (ri.flags & SDL_RENDERER_ACCELERATED))
+    {
+        for(Uint32 i = 0; i < ri.num_texture_formats; ++i)
+        {
+            if(ri.texture_formats[i] == SDL_PIXELFORMAT_NV12)
+                _nv12_textures = true;
+        }
+    }
+    R_LOG_INFO("video textures: %s", _nv12_textures ? "NV12" : "BGRA");
 }
 
 pipeline_host::~pipeline_host()
@@ -242,7 +255,7 @@ bool pipeline_host::has_audio(const string& name) const
     return it != end(_pipes) && it->second->has_audio();
 }
 
-void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8_t>> buffer, uint16_t w, uint16_t h, uint16_t original_w, uint16_t original_h, int64_t pts)
+void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8_t>> buffer, bool nv12, uint16_t w, uint16_t h, uint16_t original_w, uint16_t original_h, int64_t pts)
 {
     lock_guard<mutex> g(_internals_lok);
 
@@ -272,8 +285,12 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
         return;
     }
     
-    // Validate buffer size (assuming BGRA format = 4 bytes per pixel)
-    if (!state_validate::is_valid_buffer_size(buffer->size(), w, h, 4))
+    // Validate buffer size: BGRA is 4 bytes per pixel; NV12 is a full size Y
+    // plane plus a half height UV plane, on even dimensions.
+    bool size_ok = nv12 ?
+        ((w % 2) == 0 && (h % 2) == 0 && buffer->size() == (size_t)w * h * 3 / 2) :
+        state_validate::is_valid_buffer_size(buffer->size(), w, h, 4);
+    if (!size_ok)
     {
         R_LOG_ERROR("Invalid buffer size in post_video_frame for stream %s: %zu bytes for %dx%d", name.c_str(), buffer->size(), w, h);
         return;
@@ -321,6 +338,7 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
 
     frame f;
     f.buffer = buffer;
+    f.nv12 = nv12;
     f.w = w;
     f.h = h;
     f.original_w = original_w;
@@ -677,7 +695,7 @@ bool pipeline_host::load_video_textures()
     std::vector<std::pair<std::string, std::shared_ptr<render_context>>> new_rcs;
     for(auto& u : uploads)
     {
-        if(!u.rc || u.rc->w != u.f.w || u.rc->h != u.f.h)
+        if(!u.rc || u.rc->w != u.f.w || u.rc->h != u.f.h || u.rc->nv12 != u.f.nv12)
         {
             static int create_log_count = 0;
             if (create_log_count++ < 5)
@@ -688,25 +706,39 @@ bool pipeline_host::load_video_textures()
 
             // Create streaming texture for video (optimized for frequent updates)
             auto rc = std::make_shared<render_context>();
-            rc->tex = r_ui_utils::texture::create_streaming(
-                _renderer,
-                u.f.w,
-                u.f.h,
-                false  // RGB, not RGBA
-            );
+            if(u.f.nv12)
+                rc->tex = r_ui_utils::texture::create_streaming_nv12(_renderer, u.f.w, u.f.h);
+            else
+            {
+                rc->tex = r_ui_utils::texture::create_streaming(
+                    _renderer,
+                    u.f.w,
+                    u.f.h,
+                    false  // RGB, not RGBA
+                );
+            }
             if (rc->tex)
-                rc->tex->update_rgb(u.f.buffer->data(), u.f.w, u.f.h);
+            {
+                if(u.f.nv12)
+                    rc->tex->update_nv12(u.f.buffer->data(), u.f.w, u.f.h);
+                else
+                    rc->tex->update_rgb(u.f.buffer->data(), u.f.w, u.f.h);
+            }
             else
                 R_LOG_ERROR("Failed to create streaming texture for stream: %s", u.name.c_str());
 
             rc->w = u.f.w;
             rc->h = u.f.h;
+            rc->nv12 = u.f.nv12;
             rc->pts = u.f.pts;
             new_rcs.emplace_back(u.name, rc);
         }
         else if(u.rc->tex)
         {
-            u.rc->tex->update_rgb(u.f.buffer->data(), u.f.w, u.f.h);
+            if(u.f.nv12)
+                u.rc->tex->update_nv12(u.f.buffer->data(), u.f.w, u.f.h);
+            else
+                u.rc->tex->update_rgb(u.f.buffer->data(), u.f.w, u.f.h);
             u.rc->pts = u.f.pts;
         }
     }

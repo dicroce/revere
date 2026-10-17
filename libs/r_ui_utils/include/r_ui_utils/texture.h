@@ -48,6 +48,18 @@ public:
         uint16_t h,
         bool rgba = true);
 
+    // Create empty NV12 streaming texture (for video frames). The renderer
+    // converts to RGB when drawing, so callers skip the CPU conversion. w and h
+    // must be even.
+    R_API static std::shared_ptr<texture> create_streaming_nv12(
+        SDL_Renderer* renderer,
+        uint16_t w,
+        uint16_t h);
+
+    // Update an NV12 texture: a w x h Y plane followed by a w x h/2
+    // interleaved UV plane, both with a pitch of w.
+    R_API bool update_nv12(const uint8_t* pixels, uint16_t w, uint16_t h);
+
     // Update existing texture with new RGBA pixel data
     R_API bool update_rgba(const uint8_t* pixels, uint16_t w, uint16_t h);
 

@@ -13,6 +13,7 @@ namespace vision
 struct frame
 {
     std::shared_ptr<std::vector<uint8_t>> buffer;
+    bool nv12 {false};  // buffer is NV12 (see pipeline_host::nv12_textures), else BGRA
     uint16_t w;
     uint16_t h;
     uint16_t original_w;
