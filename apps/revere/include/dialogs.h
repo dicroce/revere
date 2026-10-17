@@ -1329,6 +1329,45 @@ void repair_storage_modal(
     }
 }
 
+// ---- About Revere ----
+
+// Help > About Revere: which build this is, one fact per line, and Copy for
+// all of it as one line (for a support email). lines[0] is the heading.
+template<typename CLOSE_CB>
+void about_revere_modal(
+    ImGuiContext*,
+    const std::string& name,
+    const std::vector<std::string>& lines,
+    const std::string& copy_text,
+    CLOSE_CB close_cb
+)
+{
+    static bool copied = false;
+    dialog_frame d(name.c_str(), 420.0f);
+    if(!d)
+        return;
+    if(d.appearing())
+        copied = false;
+
+    if(!lines.empty())
+        d.heading(lines[0]);
+    for(size_t i = 1; i < lines.size(); ++i)
+        d.body(lines[i]);
+
+    dialog_frame::button copy {copied ? "Copied" : "Copy details"};
+    int a = d.actions({{"Close", button_kind::primary}}, &copy);
+    if(a == dialog_frame::left)
+    {
+        ImGui::SetClipboardText(copy_text.c_str());
+        copied = true;
+    }
+    else if(a == 0 || d.enter() || d.escape())
+    {
+        d.close();
+        close_cb();
+    }
+}
+
 }
 
 #endif

@@ -15,9 +15,29 @@ add_library(
     ${R_VSS_SOURCES}
 )
 
-# The build version from the root CMakeLists (git tag, else revision), reported
-# by the local API (/cameras "version", MCP serverInfo).
-target_compile_definitions(r_vss PRIVATE REVERE_VERSION_STRING="${REVERE_VERSION_STRING}")
+# The build version, number and revision from the root CMakeLists (fixed at
+# configure time), read through r_vss/r_build_info.h.
+target_compile_definitions(r_vss PRIVATE
+    REVERE_VERSION_STRING="${REVERE_VERSION_STRING}"
+    REVERE_BUILD_NUMBER=${REVERE_BUILD_NUMBER}
+    REVERE_GIT_REVISION="${REVERE_GIT_REVISION}"
+)
+
+# The build time and dirty flag, stamped on every build: this target always
+# runs, rewrites one small .cpp, and only that object recompiles.
+set(R_VSS_BUILD_INFO_CPP ${CMAKE_CURRENT_BINARY_DIR}/generated/revere_build_info.cpp)
+add_custom_target(r_vss_build_info
+    COMMAND ${CMAKE_COMMAND}
+            -DOUT=${R_VSS_BUILD_INFO_CPP}
+            -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+            -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/build_info.cmake
+    BYPRODUCTS ${R_VSS_BUILD_INFO_CPP}
+    COMMENT "Stamping the Revere build time"
+    VERBATIM
+)
+target_sources(r_vss PRIVATE ${R_VSS_BUILD_INFO_CPP})
+add_dependencies(r_vss r_vss_build_info)
 
 target_include_directories(
     r_vss PUBLIC

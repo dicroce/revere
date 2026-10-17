@@ -50,6 +50,14 @@ export async function getCameras() {
   return (await res.json()).cameras ?? []
 }
 
+// Which build this is (no auth needed):
+// { version, build_number, build_time, git_revision, plugins: [{ name, version }] }
+export async function getVersion() {
+  const res = await fetch('/version')
+  if (!res.ok) throw new Error(`version ${res.status}`)
+  return res.json()
+}
+
 // --- auth ---
 
 export async function getAuthStatus() {

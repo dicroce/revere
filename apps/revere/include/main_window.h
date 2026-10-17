@@ -187,13 +187,18 @@ struct main_window_fonts
     std::string key_18;
 };
 
-// "<name>_system_plugin" reads as "<name>" in the list and the status bar.
+// "<name>_system_plugin" (or "lib<name>_system_plugin") reads as "<name>" in
+// the list, the status bar and About Revere.
 inline std::string plugin_short_name(const std::string& name)
 {
     const std::string suffix = "_system_plugin";
-    if(name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
-        return name.substr(0, name.size() - suffix.size());
-    return name;
+    if(name.size() <= suffix.size() || name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
+        return name;
+    auto short_name = name.substr(0, name.size() - suffix.size());
+    // A library file name's "lib" prefix (as on Linux) isn't part of the name.
+    if(short_name.size() > 3 && short_name.compare(0, 3, "lib") == 0)
+        short_name.erase(0, 3);
+    return short_name;
 }
 
 // The plugin's own name for itself when it gives one, else its short name.
@@ -1371,12 +1376,12 @@ inline void main_window(
             std::vector<stat_card> stats;
             if(item.health != stream_health::failed)
             {
-                if(!item.kbps.empty()) stats.push_back({"Bitrate", item.kbps});
-                if(!item.retention.empty()) stats.push_back({"Retention", item.retention});
+                if(!item.kbps.empty()) stats.push_back({"Bitrate", item.kbps, {}, {}});
+                if(!item.retention.empty()) stats.push_back({"Retention", item.retention, {}, {}});
             }
-            if(!item.resolution.empty()) stats.push_back({"Resolution", item.resolution});
-            if(!item.frame_rate.empty()) stats.push_back({"Frame rate", item.frame_rate});
-            if(!item.codec.empty()) stats.push_back({"Codec", upper(item.codec)});
+            if(!item.resolution.empty()) stats.push_back({"Resolution", item.resolution, {}, {}});
+            if(!item.frame_rate.empty()) stats.push_back({"Frame rate", item.frame_rate, {}, {}});
+            if(!item.codec.empty()) stats.push_back({"Codec", upper(item.codec), {}, {}});
             for(auto& c : camera_stat_cards(item, std::chrono::system_clock::now()))
                 stats.push_back(std::move(c));
             stat_cards(stats, fonts);
