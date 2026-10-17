@@ -159,7 +159,11 @@ void test_r_camera_stats::test_local_day_start()
     RTF_ASSERT(now - start < hours(25));    // 25: a DST day
     time_t t = system_clock::to_time_t(start);
     tm local {};
+#ifdef IS_WINDOWS
+    localtime_s(&local, &t);
+#else
     localtime_r(&t, &local);
+#endif
     RTF_ASSERT_EQUAL(local.tm_hour, 0);
     RTF_ASSERT_EQUAL(local.tm_min, 0);
     RTF_ASSERT_EQUAL(local.tm_sec, 0);
