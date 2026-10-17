@@ -33,6 +33,8 @@ target_link_libraries(
     SDL2::SDL2
 )
 
+add_subdirectory(ut)
+
 # Install the shared library (skip on macOS - bundled into .app)
 if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     install(TARGETS r_ui_utils

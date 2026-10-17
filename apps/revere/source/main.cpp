@@ -2275,6 +2275,66 @@ void _set_adaptive_window_size(SDL_Window* window)
     SDL_SetWindowPosition(window, window_x, window_y);
 }
 
+// Puts the main window where it was when Revere last ran, if enough of that
+// spot is on a display connected now (moved fully on screen, shrunk if it no
+// longer fits); otherwise the adaptive size, centered. SDL window coordinates
+// are logical points, so a HiDPI display needs no conversion. Returns whether
+// it was maximized, to maximize it again once it's shown.
+static bool _place_window(SDL_Window* window, const revere::configure_state& cfg)
+{
+    auto saved = cfg.get_window_placement();
+    if(saved)
+    {
+        std::vector<r_ui_utils::window_rect> displays;
+        for(int i = 0; i < SDL_GetNumVideoDisplays(); ++i)
+        {
+            SDL_Rect b;
+            if(SDL_GetDisplayUsableBounds(i, &b) == 0)
+                displays.push_back({b.x, b.y, b.w, b.h});
+        }
+
+        // Room for the title bar above the client area (0 where SDL can't tell).
+        int top = 0;
+        SDL_GetWindowBordersSize(window, &top, nullptr, nullptr, nullptr);
+
+        auto r = r_ui_utils::restore_window_rect(saved->rect, displays, top);
+        if(r)
+        {
+            R_LOG_INFO("Restoring window: %dx%d at (%d, %d)%s", r->w, r->h, r->x, r->y, saved->maximized ? ", maximized" : "");
+            SDL_SetWindowSize(window, r->w, r->h);
+            SDL_SetWindowPosition(window, r->x, r->y);
+            return saved->maximized;
+        }
+        R_LOG_INFO("Saved window position %dx%d at (%d, %d) is off every display; centering",
+                   saved->rect.w, saved->rect.h, saved->rect.x, saved->rect.y);
+    }
+
+    _set_adaptive_window_size(window);
+    return false;
+}
+
+// Remembers where the window is now. Hidden (in the tray) or minimized, the
+// last record stands; maximized, it keeps the normal size and position to come
+// back to.
+static void _record_window_placement(SDL_Window* window, revere::configure_state& cfg)
+{
+    auto flags = SDL_GetWindowFlags(window);
+    if(flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED))
+        return;
+
+    revere::window_placement wp;
+    wp.maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+    auto prev = cfg.get_window_placement();
+    if(wp.maximized && prev)
+        wp.rect = prev->rect;
+    else
+    {
+        SDL_GetWindowPosition(window, &wp.rect.x, &wp.rect.y);
+        SDL_GetWindowSize(window, &wp.rect.w, &wp.rect.h);
+    }
+    cfg.set_window_placement(wp);
+}
+
 void _set_window_icon(SDL_Window* window)
 {
     int x, y, channels;
@@ -3023,8 +3083,13 @@ int main(int argc, char** argv)
     R_LOG_INFO("Set SDL logical size to %dx%d for Retina display support", window_w, window_h);
 #endif
 
-    // Set adaptive window size based on monitor resolution
-    _set_adaptive_window_size(window);
+    // Where it was last time, else the adaptive size based on monitor resolution
+    bool maximize_when_shown = _place_window(window, cfg_state);
+    if(maximize_when_shown && !maybe_start_minimized)
+    {
+        SDL_MaximizeWindow(window);
+        maximize_when_shown = false;
+    }
 
     string vision_cmd = "vision";
 #ifdef IS_WINDOWS
@@ -3163,6 +3228,11 @@ int main(int argc, char** argv)
     bool window_visible = !maybe_start_minimized;  // Start hidden if minimized flag is set
     bool need_render = true;  // Render at least once on startup
 
+    // Moves and resizes are remembered a second after they stop, not on every event of a drag.
+    const auto placement_debounce = chrono::seconds(1);
+    bool placement_changed = false;
+    auto placement_changed_at = chrono::steady_clock::now();
+
     // Main loop
     while(!close_requested)
     {
@@ -3202,7 +3272,22 @@ int main(int argc, char** argv)
                         camera_setup_wizard.next("minimize_to_tray");
                     }
                     if (event.window.event == SDL_WINDOWEVENT_SHOWN)
+                    {
                         window_visible = true;
+                        if (maximize_when_shown)
+                        {
+                            maximize_when_shown = false;
+                            SDL_MaximizeWindow(window);
+                        }
+                    }
+                    if (event.window.event == SDL_WINDOWEVENT_MOVED ||
+                        event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                        event.window.event == SDL_WINDOWEVENT_MAXIMIZED ||
+                        event.window.event == SDL_WINDOWEVENT_RESTORED)
+                    {
+                        placement_changed = true;
+                        placement_changed_at = chrono::steady_clock::now();
+                    }
                     if (event.window.event == SDL_WINDOWEVENT_HIDDEN)
                         window_visible = false;
                     if (event.window.event == SDL_WINDOWEVENT_MINIMIZED)
@@ -3255,6 +3340,12 @@ int main(int argc, char** argv)
             maybe_start_minimized = false;
             SDL_HideWindow(window);
             window_visible = false;
+        }
+
+        if(placement_changed && chrono::steady_clock::now() - placement_changed_at >= placement_debounce)
+        {
+            placement_changed = false;
+            _record_window_placement(window, cfg_state);
         }
 
         if(cfg_state.need_save())
@@ -3748,6 +3839,11 @@ int main(int argc, char** argv)
 
         SDL_RenderPresent(renderer);
     }
+
+    // Where the window is as Revere exits (unless it's in the tray: then where it was last shown).
+    _record_window_placement(window, cfg_state);
+    if(cfg_state.need_save())
+        cfg_state.save();
 
     tray.exit();
 
