@@ -2,6 +2,7 @@
 #ifndef __r_vss_r_recording_context_h
 #define __r_vss_r_recording_context_h
 
+#include "r_vss/r_restream_track.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_ws.h"
 #include "r_disco/r_camera.h"
@@ -75,6 +76,14 @@ struct _frame_context
     r_pipeline::r_gst_buffer buffer;
 };
 
+// The need-data handler for a live restream appsrc: waits for the next frame
+// on `q` and pushes it. It keeps waiting (in short slices) until a frame comes
+// or the appsrc is being shut down. Returning without pushing would leave the
+// appsrc waiting for a push that nothing makes (it asks for data again only
+// after one), so a source that paused for a few seconds stalled the track for
+// the rest of the session while its queue filled.
+R_API void restream_feed(GstElement* appsrc, r_utils::r_blocking_q<_frame_context>& q, r_restream_track_gate& gate);
+
 // One entry in the per-camera GOP cache. Stores the original source pts
 // (in milliseconds, as delivered by the gst source) so the relative spacing
 // can be reconstructed when bursting into a newly-connected viewer's queue.
@@ -94,6 +103,15 @@ struct live_restreaming_state
 
     GstElement* v_appsrc {nullptr};
     GstElement* a_appsrc {nullptr};
+    // Names the session in logs: "<camera> session <n>".
+    uint64_t session_id {0};
+    std::string camera_name;
+    // Whether each track's pipeline branch is asking for data; audio is only
+    // queued while it is (see r_restream_track_gate).
+    r_restream_track_gate video_gate;
+    r_restream_track_gate audio_gate;
+    bool audio_unread {false}; // source thread only: audio is being left out
+    std::chrono::steady_clock::time_point created_at {std::chrono::steady_clock::now()};
     bool live_restream_key_sent {false};
     // Set true at LRS creation; the source thread drains the recording
     // context's GOP cache into this LRS on the next video frame, then clears

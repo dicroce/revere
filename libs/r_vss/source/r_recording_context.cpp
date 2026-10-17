@@ -185,6 +185,31 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             );
 
             this->_sk->iterate_live_restreaming_states(this->_camera.id, [&](live_restreaming_state& lrs) {
+                // Only queue audio this session's pipeline is reading: a client
+                // that didn't set up the audio track (or whose audio branch
+                // stopped) would otherwise fill the queue and drop a frame per
+                // audio frame for as long as it watches.
+                auto now = std::chrono::steady_clock::now();
+                if(!lrs.audio_gate.wanted(now))
+                {
+                    // A new session's audio branch may not have asked yet: only
+                    // call it unread once the session is older than that.
+                    if(!lrs.audio_unread && now - lrs.created_at >= LIVE_RESTREAM_TRACK_IDLE)
+                    {
+                        lrs.audio_unread = true;
+                        lrs.audio_samples.clear();
+                        R_LOG_INFO("live restream: %s session %llu isn't reading audio; not queueing it",
+                                   lrs.camera_name.c_str(), (unsigned long long)lrs.session_id);
+                    }
+                    return;
+                }
+                if(lrs.audio_unread)
+                {
+                    lrs.audio_unread = false;
+                    R_LOG_INFO("live restream: %s session %llu is reading audio again",
+                               lrs.camera_name.c_str(), (unsigned long long)lrs.session_id);
+                }
+
                 if(lrs.live_restream_key_sent)
                 {
                     if(!lrs.first_restream_a_times_set)
@@ -606,31 +631,8 @@ void r_recording_context::write_metadata(const std::string& stream_tag, const st
 static void _need_live_data_cbs(GstElement* appsrc, guint, live_restreaming_state* lrs)
 {
     if(appsrc == lrs->v_appsrc)
-    {
-        auto sample = lrs->video_samples.poll(chrono::milliseconds(3000));
-        if(!sample.is_null())
-        {
-            GstBuffer* output_buffer = gst_buffer_copy(sample.value().buffer.get());
-            GST_BUFFER_PTS(output_buffer) = sample.value().gst_pts;
-            GST_BUFFER_DTS(output_buffer) = sample.value().gst_dts;
-            int ret;
-            g_signal_emit_by_name(appsrc, "push-buffer", output_buffer, &ret);
-            gst_buffer_unref(output_buffer);
-        }
-    }
-    else
-    {
-        auto sample = lrs->audio_samples.poll(chrono::milliseconds(3000));
-        if(!sample.is_null())
-        {
-            GstBuffer* output_buffer = gst_buffer_copy(sample.value().buffer.get());
-            GST_BUFFER_PTS(output_buffer) = sample.value().gst_pts;
-            GST_BUFFER_DTS(output_buffer) = sample.value().gst_dts;
-            int ret;
-            g_signal_emit_by_name(appsrc, "push-buffer", output_buffer, &ret);
-            gst_buffer_unref(output_buffer);
-        }
-    }
+        restream_feed(appsrc, lrs->video_samples, lrs->video_gate);
+    else restream_feed(appsrc, lrs->audio_samples, lrs->audio_gate);
 }
 
 void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, GstRTSPMedia* media)
@@ -640,6 +642,9 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
     lrs->sk = _sk;  // Store stream_keeper pointer for safe cleanup
     lrs->media = media;
     lrs->camera_id = _camera.id;
+    static std::atomic<uint64_t> next_session {1};
+    lrs->session_id = next_session++;
+    lrs->camera_name = (!_camera.friendly_name.is_null() && !_camera.friendly_name.value().empty()) ? _camera.friendly_name.value() : _camera.id;
 
     auto element = gst_rtsp_media_get_element(media);
     if(!element)
