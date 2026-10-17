@@ -2,6 +2,7 @@
 #include "r_utils/r_file.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_process.h"
+#include "r_utils/r_instance_lock.h"
 
 #ifdef IS_WINDOWS
 #include <windows.h>
@@ -51,6 +52,7 @@ void* get_icon_texture_id(const std::string& class_name)
 
 #include "configure_state.h"
 #include "overlay_state.h"
+#include "macos_activation.h"
 #include "gl_utils.h"
 #include "imgui_ui.h"
 #include "utils.h"
@@ -1291,6 +1293,26 @@ int run_overlay(const overlay_opts& opts)
     R_LOG_INFO("Vision overlay mode: camera=%s revere_ip=%s on_top=%d",
         opts.camera_id.c_str(), opts.revere_ip.c_str(), (int)opts.on_top);
 
+    // One overlay per camera: if this camera's is already open, bring that one
+    // to the front (handing it the foreground we were given) and go.
+    const auto lock_path = overlay_lock_path(opts.camera_id);
+    r_utils::r_instance_lock instance(lock_path);
+    if(!instance.held())
+    {
+        R_LOG_INFO("overlay: camera %s is already open (pid %lld); raising it", opts.camera_id.c_str(), (long long)instance.holder_pid());
+        if(instance.holder_pid() > 0)
+        {
+#ifdef IS_WINDOWS
+            AllowSetForegroundWindow((DWORD)instance.holder_pid());
+#elif defined(IS_MACOS)
+            yield_activation_to_pid(instance.holder_pid());
+#endif
+        }
+        r_utils::r_instance_lock::notify(lock_path);
+        r_pipeline::gstreamer_deinit();
+        return 0;
+    }
+
     if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) != 0)
     {
         R_LOG_ERROR("SDL_Init error: %s", SDL_GetError());
@@ -1321,6 +1343,12 @@ int run_overlay(const overlay_opts& opts)
     if(on_top)
         win_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
 
+    // The overlay is opened from revere's View button, so it should come up in
+    // front with focus, not behind revere. On Windows SDL_RaiseWindow only
+    // flashes the taskbar button unless forced (revere's launch also calls
+    // AllowSetForegroundWindow for us).
+    SDL_SetHint(SDL_HINT_FORCE_RAISEWINDOW, "1");
+
     SDL_Window* window = SDL_CreateWindow("Vision", start_x, start_y, start_w, start_h, win_flags);
     if(!window)
     {
@@ -1338,6 +1366,11 @@ int run_overlay(const overlay_opts& opts)
     // Re-assert the resizable style: SDL_WINDOW_BORDERLESS at creation can drop
     // the resize frame that the hit-test RESIZE_* results need.
     SDL_SetWindowResizable(window, SDL_TRUE);
+
+    // To the front, once the window system has seen it (macOS: activates the
+    // app, which revere yielded to, and makes this the key window).
+    SDL_PumpEvents();
+    SDL_RaiseWindow(window);
 
     SDL_Renderer* renderer = nullptr;
 #ifdef IS_WINDOWS
@@ -1478,6 +1511,7 @@ int run_overlay(const overlay_opts& opts)
     // bar would never re-appear once the cursor was over the video.
     auto last_mouse_activity = chrono::steady_clock::now();
     int last_mouse_x = 0, last_mouse_y = 0;
+    auto last_raise_check = chrono::steady_clock::now();
     SDL_GetGlobalMouseState(&last_mouse_x, &last_mouse_y);
     float bar_alpha = 1.0f;   // visible at launch so the controls are discoverable
     bool audio_activated = false;  // one-shot: make this stream's audio active
@@ -1513,6 +1547,19 @@ int run_overlay(const overlay_opts& opts)
             SDL_GetWindowSize(window, &ww, &wh);
             if(gmx >= wx && gmx < wx + ww && gmy >= wy && gmy < wy + wh)
                 last_mouse_activity = chrono::steady_clock::now();
+        }
+
+        // View clicked again for this camera (another overlay process asked):
+        // come to the front. Checked a few times a second; it's a small file read.
+        if(chrono::steady_clock::now() - last_raise_check > chrono::milliseconds(250))
+        {
+            last_raise_check = chrono::steady_clock::now();
+            if(instance.notified())
+            {
+                if(SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)
+                    SDL_RestoreWindow(window);
+                SDL_RaiseWindow(window);
+            }
         }
 
         SDL_Event event;
