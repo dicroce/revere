@@ -14,6 +14,9 @@
 #include "r_utils/r_qr_code.h"
 #include "r_utils/3rdparty/json/json.h"
 #include <algorithm>
+#include <array>
+#include <chrono>
+#include <ctime>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -683,6 +686,274 @@ inline bool compact_toggle(const char* label, bool* v, const main_window_fonts& 
     return clicked;
 }
 
+// A stat card that can also carry a hover hint, a 24-hour strip or a bar per
+// detection class (the camera pane's stats, project-planning#105).
+struct stat_tile
+{
+    std::string label;
+    std::string value;
+    std::string detail;                         // unused here; matches stat_card's fields
+    std::string hint;                           // tooltip; empty = none
+    const std::array<int, 24>* hours {nullptr}; // per-hour counts drawn under the value
+    // Counts by detection group, most first. When set and not empty, the tile
+    // takes a row of its own and draws a bar per group instead of the value.
+    const std::vector<std::pair<std::string, int>>* classes {nullptr};
+};
+
+// A detection group's colour (r_vss::detection_group's names), the same one the
+// overlay and timeline use for its classes.
+inline ImVec4 detection_group_color(const std::string& group)
+{
+    using namespace r_ui_utils::theme;
+    if(group == "vehicle")
+        return class_vehicle;
+    if(group == "animal")
+        return class_animal;
+    return detection_class_color(group);
+}
+
+// stat_cards' grid and look, for stat_tiles. A row holding an hour strip is
+// that much taller; a tile with classes spans the row and is as tall as its
+// bars; the others keep stat_cards' height.
+inline void stat_tiles(const std::vector<stat_tile>& tiles, const main_window_fonts& fonts)
+{
+    using namespace r_ui_utils::theme;
+    if(tiles.empty())
+        return;
+
+    const float min_width = 130.0f;
+    const float gap = 10.0f;
+    const float pad_x = 10.0f;
+    const float pad_y = 8.0f;
+    const float strip_h = 12.0f;
+    const float bar_h = 10.0f;
+    const size_t max_class_lines = 4; // more than this: the top 3 and "N more"
+    ImFont* key_font = font(fonts.key_18);
+    ImFont* value_font = font(fonts.key_22, true);
+    const float base_h = pad_y + key_font->FontSize + 4.0f + value_font->FontSize + pad_y;
+    const float class_line_h = std::max(key_font->FontSize, bar_h) + 6.0f;
+
+    auto wide = [](const stat_tile& t) { return t.classes && !t.classes->empty(); };
+    auto class_lines = [&](const stat_tile& t) {
+        return t.classes->size() <= max_class_lines ? t.classes->size() : max_class_lines;
+    };
+
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const int narrow = (int)std::count_if(tiles.begin(), tiles.end(), [&](const stat_tile& t) { return !wide(t); });
+    int cols = std::max(1, (int)((avail + gap) / (min_width + gap)));
+    cols = std::max(1, std::min(cols, narrow));
+    const float card_w = (avail - gap * (float)(cols - 1)) / (float)cols;
+
+    // Place the tiles: narrow ones fill the grid left to right, a wide one
+    // starts a row and takes all of it.
+    struct place { int row; int col; int span; };
+    std::vector<place> places;
+    int row = 0, col = 0;
+    for(const auto& t : tiles)
+    {
+        if(wide(t))
+        {
+            if(col > 0)
+                ++row;
+            places.push_back({row++, 0, cols});
+            col = 0;
+        }
+        else
+        {
+            places.push_back({row, col, 1});
+            if(++col == cols)
+            {
+                ++row;
+                col = 0;
+            }
+        }
+    }
+    const int rows = col > 0 ? row + 1 : row;
+
+    std::vector<float> row_h((size_t)rows, base_h), row_y((size_t)rows, 0.0f);
+    for(size_t i = 0; i < tiles.size(); ++i)
+    {
+        auto& h = row_h[(size_t)places[i].row];
+        if(wide(tiles[i]))
+            h = std::max(h, pad_y + key_font->FontSize + 6.0f + (float)class_lines(tiles[i]) * class_line_h + pad_y - 6.0f);
+        else if(tiles[i].hours)
+            h = std::max(h, base_h + 6.0f + strip_h);
+    }
+    for(int r = 1; r < rows; ++r)
+        row_y[(size_t)r] = row_y[(size_t)r - 1] + row_h[(size_t)r - 1] + gap;
+
+    auto origin = ImGui::GetCursorScreenPos();
+    auto* dl = ImGui::GetWindowDrawList();
+    const bool hovered_window = ImGui::IsWindowHovered();
+    for(size_t i = 0; i < tiles.size(); ++i)
+    {
+        const auto& t = tiles[i];
+        const auto& p = places[i];
+        const float w = card_w * (float)p.span + gap * (float)(p.span - 1);
+        ImVec2 a(origin.x + (float)p.col * (card_w + gap), origin.y + row_y[(size_t)p.row]);
+        ImVec2 b(a.x + w, a.y + row_h[(size_t)p.row]);
+        dl->AddRectFilled(a, b, ImGui::GetColorU32(surface_card));
+        dl->AddRect(a, b, ImGui::GetColorU32(border_subtle));
+
+        const float inner_w = w - pad_x * 2.0f;
+        ImGui::PushFont(key_font);
+        ellipsis_text(dl, ImVec2(a.x + pad_x, a.y + pad_y), inner_w, text_tertiary, upper(t.label));
+        ImGui::PopFont();
+
+        const float value_y = a.y + pad_y + key_font->FontSize + 4.0f;
+        bool cut = false;
+        std::string full_list;
+        if(wide(t))
+        {
+            // A bar per group, its length against the largest count, then
+            // "7 people" in a column as wide as the widest label; the bars
+            // take the rest. Past max_class_lines the rest fold into "N more".
+            const auto& c = *t.classes;
+            const size_t shown = c.size() <= max_class_lines ? c.size() : max_class_lines - 1;
+            const int peak = std::max(1, c.front().second);
+            const float label_gap = 10.0f;
+            ImGui::PushFont(key_font);
+            float label_w = 0.0f;
+            for(size_t k = 0; k < shown; ++k)
+                label_w = std::max(label_w, ImGui::CalcTextSize(r_vss::format_detection_count(c[k].first, c[k].second).c_str()).x);
+            label_w = std::min(label_w, inner_w * 0.5f);
+            const float track_w = std::max(20.0f, inner_w - label_w - label_gap);
+            const float x0 = a.x + pad_x;
+            for(size_t k = 0; k < shown; ++k)
+            {
+                const float y = value_y + 2.0f + (float)k * class_line_h;
+                const float bar_y = y + (key_font->FontSize - bar_h) * 0.5f;
+                const float len = std::max(3.0f, track_w * (float)c[k].second / (float)peak);
+                dl->AddRectFilled(ImVec2(x0, bar_y), ImVec2(x0 + track_w, bar_y + bar_h), ImGui::GetColorU32(border_subtle));
+                dl->AddRectFilled(ImVec2(x0, bar_y), ImVec2(x0 + len, bar_y + bar_h), ImGui::GetColorU32(detection_group_color(c[k].first)));
+                const float tx = x0 + track_w + label_gap;
+                const std::string label = r_vss::format_detection_count(c[k].first, c[k].second);
+                ellipsis_text(dl, ImVec2(tx, y), a.x + w - pad_x - tx, text_primary, label);
+                cut = cut || ImGui::CalcTextSize(label.c_str()).x > a.x + w - pad_x - tx;
+            }
+            if(shown < c.size())
+            {
+                const float y = value_y + 2.0f + (float)shown * class_line_h;
+                ellipsis_text(dl, ImVec2(x0, y), inner_w, text_tertiary, r_utils::r_string_utils::format("%zu more", c.size() - shown));
+                cut = true;
+            }
+            ImGui::PopFont();
+            if(cut)
+                for(const auto& g : c)
+                    full_list += (full_list.empty() ? "" : "\n") + r_vss::format_detection_count(g.first, g.second);
+        }
+        else
+        {
+            ImGui::PushFont(value_font);
+            ellipsis_text(dl, ImVec2(a.x + pad_x, value_y), inner_w, text_primary, t.value);
+            cut = ImGui::CalcTextSize(t.value.c_str()).x > inner_w;
+            ImGui::PopFont();
+            if(cut)
+                full_list = t.value;
+        }
+
+        if(t.hours)
+        {
+            // One bar an hour, midnight on the left; empty hours keep a hairline
+            // so the day's shape reads.
+            const float top = value_y + value_font->FontSize + 6.0f;
+            const float bottom = top + strip_h;
+            const float slot = inner_w / 24.0f;
+            const int peak = std::max(1, *std::max_element(t.hours->begin(), t.hours->end()));
+            for(int h = 0; h < 24; ++h)
+            {
+                float x0 = a.x + pad_x + (float)h * slot;
+                float x1 = x0 + std::max(1.0f, slot - 2.0f);
+                int n = (*t.hours)[(size_t)h];
+                if(n > 0)
+                {
+                    float bh = std::max(2.0f, strip_h * (float)n / (float)peak);
+                    dl->AddRectFilled(ImVec2(x0, bottom - bh), ImVec2(x1, bottom), ImGui::GetColorU32(accent));
+                }
+                else
+                    dl->AddRectFilled(ImVec2(x0, bottom - 1.0f), ImVec2(x1, bottom), ImGui::GetColorU32(border_default));
+            }
+        }
+
+        if(hovered_window && ImGui::IsMouseHoveringRect(a, b) && (!t.hint.empty() || cut))
+        {
+            std::string tip = full_list;
+            if(!t.hint.empty())
+                tip += (tip.empty() ? "" : "\n\n") + t.hint;
+            // Wrapped, so a long hint stays in the window.
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 22.0f);
+            ImGui::TextUnformatted(tip.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+    }
+    ImGui::Dummy(ImVec2(avail, row_y.back() + row_h.back()));
+}
+
+// The camera pane's stats tiles from what's been read so far (nothing until
+// the first read lands).
+inline std::vector<stat_tile> camera_stat_tiles(const sidebar_list_ui_item& item, std::chrono::system_clock::time_point now)
+{
+    std::vector<stat_tile> tiles;
+    if(!item.stats)
+        return tiles;
+    const auto& s = *item.stats;
+
+    if(!s.storage_bytes.is_null())
+    {
+        std::string v = r_vss::format_storage(s.storage_bytes.value());
+        if(!s.kept.is_null())
+        {
+            auto h = std::chrono::duration_cast<std::chrono::hours>(s.kept.value()).count();
+            v += h < 48 ? r_utils::r_string_utils::format(" \xC2\xB7 %lld h", (long long)h)
+                        : r_utils::r_string_utils::format(" \xC2\xB7 %lld days", (long long)(h / 24));
+        }
+        tiles.push_back({"Storage used", v, "", "Disk space for this camera's recording, motion and analytics files (allocated up front), and how far back its video goes."});
+    }
+
+    const bool motion = !item.motion_detection.is_null() && item.motion_detection.value();
+    if(motion)
+    {
+        tiles.push_back({"Motion today", r_utils::r_string_utils::format(s.motion_events_today == 1 ? "%d event" : "%d events", s.motion_events_today), "",
+                         "Motion events since midnight, by the hour they started.", &s.motion_by_hour});
+    }
+
+    if(s.window_24h.count() > 0)
+    {
+        double pct = 100.0 * (double)s.recorded_24h.count() / (double)s.window_24h.count();
+        std::string up = pct >= 99.95 ? std::string("100%") : r_utils::r_string_utils::format("%.1f%%", pct);
+        up += item.reconnects_24h == 1 ? std::string(" \xC2\xB7 1 drop") : r_utils::r_string_utils::format(" \xC2\xB7 %zu drops", item.reconnects_24h);
+
+        std::string hint = s.window_24h < std::chrono::hours(24) ? "Recorded time since recording began (under 24 h ago)" : "Recorded time in the last 24 h";
+        hint += r_utils::r_string_utils::format(", and %zu stream %s.", item.reconnects_24h, item.reconnects_24h == 1 ? "drop (lost and reconnected)" : "drops (lost and reconnected)");
+        if(now - item.reconnects_counted_since < std::chrono::hours(24))
+        {
+            time_t t = std::chrono::system_clock::to_time_t(item.reconnects_counted_since);
+            char when[32] {};
+            std::strftime(when, sizeof(when), "%H:%M", std::localtime(&t));
+            hint += std::string(" Drops are counted in memory since revere started (") + when + "), not saved across restarts.";
+        }
+        else
+            hint += " Drops are counted in memory while revere runs.";
+        tiles.push_back({"Uptime", up, "", hint});
+    }
+
+    if(motion)
+    {
+        tiles.push_back({"Last motion",
+                         s.last_motion.is_null() ? std::string("None in 24 h") : r_vss::format_ago(std::chrono::duration_cast<std::chrono::seconds>(now - s.last_motion.value())), "",
+                         s.last_motion.is_null() ? std::string() : std::string("When the most recent motion event started.")});
+
+        // Last, as it takes a row of its own once anything's been seen.
+        stat_tile d {"Detected today", "Nothing yet", "",
+                     "Motion events since midnight in which the object detector saw each kind of object, most first."};
+        d.classes = &s.detections_today;
+        tiles.push_back(d);
+    }
+    return tiles;
+}
+
 inline void detail_title(const std::string& title, const std::string& subtitle, const main_window_fonts& fonts)
 {
     ImGui::PushFont(font(fonts.key_24, true));
@@ -1165,7 +1436,12 @@ inline void main_window(
             if(!item.resolution.empty()) stats.push_back({"Resolution", item.resolution});
             if(!item.frame_rate.empty()) stats.push_back({"Frame rate", item.frame_rate});
             if(!item.codec.empty()) stats.push_back({"Codec", upper(item.codec)});
-            stat_cards(stats, fonts);
+            std::vector<stat_tile> tiles;
+            for(const auto& st : stats)
+                tiles.push_back({st.first, st.second});
+            for(auto& t : camera_stat_tiles(item, std::chrono::system_clock::now()))
+                tiles.push_back(std::move(t));
+            stat_tiles(tiles, fonts);
 
             if(!item.motion_detection.is_null())
             {
