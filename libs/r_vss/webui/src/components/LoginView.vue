@@ -3,9 +3,9 @@
     <div class="login-card">
       <img src="/logos/revere-lockup-white.svg" alt="Revere" class="logo" />
 
-      <!-- first run: no system password yet -->
+      <!-- first run: no local web password yet (stored as the system password) -->
       <template v-if="passwordSet === false">
-        <p class="sub">Welcome. Create a system password to secure access.</p>
+        <p class="sub">Welcome. Create a local web password. Anyone opening Revere's web interface on your local network will need it.</p>
         <input
           type="password"
           v-model="password"
@@ -29,7 +29,7 @@
 
       <!-- normal: sign in -->
       <template v-else>
-        <p class="sub">Sign in to continue.</p>
+        <p class="sub">Enter the local web password to continue.</p>
         <input
           type="password"
           v-model="password"

@@ -10,10 +10,14 @@
 #include "r_utils/r_exception.h"
 #include "r_storage/r_storage_file.h"
 #include "r_disco/r_camera.h"
+#include "r_vss/r_camera_stats.h"
 #include <map>
+#include <memory>
+#include <chrono>
 #include <functional>
 #include <mutex>
 #include <string>
+#include <vector>
 #include <cstdint>
 #include "assignment_state.h"
 #include "rtsp_source_camera_config.h"
@@ -25,35 +29,68 @@
 namespace revere
 {
 
-template<typename OK_CB>
-void error_modal(
-    ImGuiContext*,
-    const std::string& name,
-    const std::string& msg,
-    OK_CB ok_cb
-)
+// What the desktop app calls the password for revere's local web interface
+// (stored as the "system password"; the stored name doesn't change). One place,
+// so the wording can change without hunting for strings.
+namespace web_password_text
 {
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::Text("%s", msg.c_str());
-
-        if(ImGui::Button("Ok"))
-        {
-            ImGui::CloseCurrentPopup();
-            ok_cb();
-        }
-
-        ImGui::EndPopup();
-    }
+inline constexpr const char* name = "Local web password";
+inline constexpr const char* menu_item = "Local web password...";
+inline constexpr const char* description = "Protects Revere's web interface on your local network. Anyone opening it will need this password.";
+inline constexpr const char* password_label = "Password";
+inline constexpr const char* confirm_label = "Confirm password";
+inline constexpr const char* error_empty = "Enter a password.";
+inline constexpr const char* error_mismatch = "The passwords don't match.";
+inline constexpr const char* save = "Save";
+inline constexpr const char* cancel = "Cancel";
+inline constexpr const char* remove = "Remove password";
+inline constexpr const char* remove_confirm = "Remove the local web password? The web interface will ask for a new one the next time it's opened.";
+inline constexpr const char* remove_confirm_yes = "Remove";
+inline constexpr const char* remove_confirm_no = "Keep password";
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb)
+// BeginPopupModal with a taller title bar. ImGui sizes the title bar from
+// FramePadding at Begin, so it's raised just for that call; the dialog's
+// own content keeps the normal padding.
+inline bool begin_modal(const char* name, ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize)
 {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 9.0f));
+    bool open = ImGui::BeginPopupModal(name, nullptr, flags);
+    ImGui::PopStyleVar();
+    return open;
+}
+
+// The menu bar's spacing: taller than a frame elsewhere, wider gaps between
+// menus, no box around the bar (a hairline under it instead, drawn by
+// main_menu), and menus with the same roomier items. Every BeginMainMenuBar()
+// needs the same push, or the bar's height changes within a frame.
+inline void push_menu_bar_style()
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 7.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(16.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
+}
+
+inline void pop_menu_bar_style()
+{
+    ImGui::PopStyleVar(4);
+}
+
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB, typename ABOUT_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb, ABOUT_CB about_cb)
+{
+    push_menu_bar_style();
     ImGui::BeginMainMenuBar();
+    {
+        auto* dl = ImGui::GetForegroundDrawList();
+        auto p = ImGui::GetWindowPos();
+        auto sz = ImGui::GetWindowSize();
+        dl->AddLine(ImVec2(p.x, p.y + sz.y - 1.0f), ImVec2(p.x + sz.x, p.y + sz.y - 1.0f), ImGui::GetColorU32(r_ui_utils::theme::border_subtle));
+    }
     if (ImGui::BeginMenu("Cameras"))
     {
-        if (ImGui::MenuItem("Add RTSP Source Camera"))
+        if (ImGui::MenuItem("Add RTSP camera..."))
             add_rtsp_source_camera_cb();
         ImGui::Separator();
         if (ImGui::MenuItem("Exit"))
@@ -65,8 +102,10 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
     {
         if (ImGui::MenuItem("Launch Vision"))
             launch_vision_cb();
-        if (ImGui::MenuItem("Open web UI"))
+        if (ImGui::MenuItem("Open local web UI"))
             open_web_ui_cb();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Opens this recorder's web interface in your browser (localhost:8088).");
         if (ImGui::MenuItem("Minimize to system tray"))
             minimize_cb();
 
@@ -75,10 +114,10 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
     if (ImGui::BeginMenu("Settings"))
     {
         bool startup_enabled = get_startup_state_cb();
-        if (ImGui::MenuItem("Start Revere with system", nullptr, &startup_enabled))
+        if (ImGui::MenuItem("Start Revere at login", nullptr, &startup_enabled))
             set_startup_state_cb(startup_enabled);
 
-        if (ImGui::MenuItem("Set system password..."))
+        if (ImGui::MenuItem(web_password_text::menu_item))
             set_system_password_cb();
 
         ImGui::EndMenu();
@@ -90,8 +129,16 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
 
         ImGui::EndMenu();
     }
+    if (ImGui::BeginMenu("Help"))
+    {
+        if (ImGui::MenuItem("About Revere"))
+            about_cb();
+
+        ImGui::EndMenu();
+    }
     uint16_t h = (uint16_t)ImGui::GetWindowHeight();
     ImGui::EndMainMenuBar();
+    pop_menu_bar_style();
     return h;
 }
 
@@ -246,146 +293,6 @@ void thirds_with_log(
     ImGui::PopStyleColor();
 }
 
-template<typename OK_CB, typename CANCEL_CB>
-void rtsp_credentials_modal(
-    ImGuiContext*,
-    const std::string& name,
-    r_utils::r_nullable<std::string>& u,
-    r_utils::r_nullable<std::string>& p,
-    OK_CB ok_cb,
-    CANCEL_CB cancel_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::Text("Please provide the credentials for the Onvif user you wish\nto connect to this camera as:");
-
-        static char username[64] = {0};
-        static char password[64] = {0};
-
-        // Clear static variables when dialog first opens
-        if(ImGui::IsWindowAppearing())
-        {
-            username[0] = '\0';
-            password[0] = '\0';
-            // Also clear the stored nullable values
-            u = r_utils::r_nullable<std::string>();
-            p = r_utils::r_nullable<std::string>();
-        }
-
-        if(!u.is_null())
-            r_ui_utils::copy_s(username, 64, u.value());
-        if(ImGui::InputText("Username", username, 64))
-            u.set_value(std::string(username));
-
-        if(!p.is_null())
-            r_ui_utils::copy_s(password, 64, p.value());
-        if(ImGui::InputText("Password", password, 64, ImGuiInputTextFlags_Password))
-            p.set_value(std::string(password));
-
-        if(ImGui::Button("Cancel"))
-        {
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Ok"))
-        {
-            ImGui::CloseCurrentPopup();
-            ok_cb();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-// Modal for setting/changing the system password used to authenticate the web
-// UI. ok_cb is invoked with the new password only when the two fields are
-// non-empty and match.
-template<typename OK_CB, typename CANCEL_CB, typename DELETE_CB>
-void system_password_modal(
-    ImGuiContext*,
-    const std::string& name,
-    bool password_is_set,
-    OK_CB ok_cb,
-    CANCEL_CB cancel_cb,
-    DELETE_CB delete_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::Text("Set the system password used to authenticate the web UI:");
-
-        static char password[64] = {0};
-        static char confirm[64] = {0};
-
-        if(ImGui::IsWindowAppearing())
-        {
-            password[0] = '\0';
-            confirm[0] = '\0';
-        }
-
-        ImGui::InputText("Password", password, 64, ImGuiInputTextFlags_Password);
-        ImGui::InputText("Confirm",  confirm,  64, ImGuiInputTextFlags_Password);
-
-        bool empty    = (std::string(password).empty());
-        bool mismatch = (std::string(password) != std::string(confirm));
-
-        if(empty)
-            ImGui::TextColored(r_ui_utils::theme::status_danger_text, "Password must not be empty.");
-        else if(mismatch)
-            ImGui::TextColored(r_ui_utils::theme::status_danger_text, "Passwords do not match.");
-
-        if(ImGui::Button("Cancel"))
-        {
-            password[0] = '\0';
-            confirm[0] = '\0';
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Ok"))
-        {
-            if(!empty && !mismatch)
-            {
-                std::string pw(password);
-                password[0] = '\0';
-                confirm[0] = '\0';
-                ImGui::CloseCurrentPopup();
-                ok_cb(pw);
-            }
-        }
-
-        // Only offer removal when a password is actually set. Clearing it sends
-        // the web UI back to its first-run "create a password" screen.
-        if(password_is_set)
-        {
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            ImGui::PushStyleColor(ImGuiCol_Button, r_ui_utils::theme::action_destructive);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, r_ui_utils::theme::action_destructive_hover);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, r_ui_utils::theme::action_destructive_hover);
-            ImGui::PushStyleColor(ImGuiCol_Text, r_ui_utils::theme::text_on_destructive);
-            if(ImGui::Button("Delete system password"))
-            {
-                password[0] = '\0';
-                confirm[0] = '\0';
-                ImGui::CloseCurrentPopup();
-                delete_cb();
-            }
-            ImGui::PopStyleColor(4);
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
 enum class stream_health
 {
     unknown,        // no status data available
@@ -402,9 +309,25 @@ struct sidebar_list_ui_item
     std::string kbps;
     std::string retention;
     stream_health health {stream_health::unknown};
+    // A recording camera the stream keeper hasn't reported on yet (just after
+    // launch, or just added): shown as "Starting..." rather than a status.
+    bool starting {false};
     // Optional per-card action button (e.g. "Repair" when the camera's
     // recording file is missing). Empty = no button.
     std::string action_label;
+
+    // Shown in the main window's detail pane when known.
+    std::string codec;
+    std::string resolution;     // "2560 × 1920"
+    std::string frame_rate;     // "15 fps"
+    r_utils::r_nullable<bool> motion_detection;
+
+    // The camera pane's stats tiles: the last read of
+    // the camera's storage (null until one lands), and stream reconnects in
+    // the last 24 h, counted in memory since reconnects_counted_since.
+    std::shared_ptr<const r_vss::camera_stats> stats;
+    size_t reconnects_24h {0};
+    std::chrono::system_clock::time_point reconnects_counted_since;
 };
 
 template<typename BUTTON_CLICK_CB, typename ITEM_CLICK_CB, typename FORGET_BUTTON_CLICK_CB, typename PROPERTIES_CLICK_CB, typename VIEW_CLICK_CB, typename ACTION_CLICK_CB>
@@ -596,7 +519,7 @@ void sidebar_list(
     for(size_t i = 0; i < labels.size(); ++i)
     {
         const auto& lbl = labels[i];
-        if(lbl.kbps.empty() && lbl.retention.empty())
+        if(lbl.kbps.empty() && lbl.retention.empty() && !lbl.starting)
             continue;
 
         float item_y = start_y + (float)i * (float)card_pitch;
@@ -616,7 +539,9 @@ void sidebar_list(
             ImGui::TextColored(text, "%s", line.c_str());
         };
 
-        if(failed)
+        if(lbl.starting)
+            status_row(r_ui_utils::theme::status_neutral_dot, secondary, "Starting...");
+        else if(failed)
             status_row(r_ui_utils::theme::status_danger_dot, r_ui_utils::theme::status_danger_text, "Failed to start");
         else if(not_receiving)
             status_row(r_ui_utils::theme::status_warning_dot, r_ui_utils::theme::status_warning_text, "No video Â· bitrate: " + lbl.kbps);
@@ -637,572 +562,6 @@ void sidebar_list(
     ImGui::PopFont();
 }
 
-template<typename OK_CB, typename CANCEL_CB>
-void friendly_name_modal(
-    ImGuiContext*,
-    const std::string& name,
-    revere::assignment_state& as,
-    std::string& fn,
-    OK_CB ok_cb,
-    CANCEL_CB cancel_cb
-)
-{
-    ImGui::SetNextWindowSize(ImVec2(700, 360));
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::SetCursorPos(ImVec2(350 - (320/2), 40));
-        ImGui::Image(as.key_frame_texture ? as.key_frame_texture->imgui_id() : nullptr, ImVec2(320, 240));
-
-        static char friendly_name[64] = {0};
-        // Clear static variable if starting with empty string (new camera)
-        if(fn.empty())
-            friendly_name[0] = '\0';
-        else
-            r_ui_utils::copy_s(friendly_name, 64, fn);
-        if(ImGui::InputText("Camera friendly name", friendly_name, 64))
-            fn = std::string(friendly_name);
-
-        if(ImGui::Button("Cancel", ImVec2(80, 30)))
-        {
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Ok", ImVec2(80, 30)))
-        {
-            ImGui::CloseCurrentPopup();
-            ok_cb();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename CANCEL_CB>
-void please_wait_modal(
-    ImGuiContext*,
-    const std::string& name,
-    const std::string& status_line,  // current step description (empty = hide)
-    CANCEL_CB cancel_cb
-)
-{
-    ImGui::SetNextWindowSize(ImVec2(600, 200));
-
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_NoTitleBar))
-    {
-        const char* header = "Please wait while we communicate with your camera...";
-        auto msg_width = ImGui::CalcTextSize(header);
-        ImGui::SetCursorPos(ImVec2(300-(msg_width.x/2), 50-15));
-        ImGui::Text("%s", header);
-
-        if(!status_line.empty())
-        {
-            auto status_width = ImGui::CalcTextSize(status_line.c_str());
-            ImGui::SetCursorPos(ImVec2(300-(status_width.x/2), 90-15));
-            ImGui::TextColored(r_ui_utils::theme::text_secondary, "%s", status_line.c_str());
-        }
-
-        ImGui::SetCursorPos(ImVec2(300-35, 150-15));
-        if(ImGui::Button("Cancel",ImVec2(70,30)))
-        {
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename OK_CB, typename CANCEL_CB>
-void motion_detection_modal(
-    ImGuiContext*,
-    const std::string& name,
-    bool& do_motion_detection,
-    OK_CB ok_cb,
-    CANCEL_CB cancel_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        int e = (do_motion_detection)?0:1;
-        ImGui::RadioButton("yes", &e, 0); ImGui::SameLine();
-        ImGui::RadioButton("no", &e, 1); ImGui::SameLine();
-        do_motion_detection = (e == 0);
-
-        if(ImGui::Button("Cancel"))
-        {
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Ok"))
-        {
-            ImGui::CloseCurrentPopup();
-            ok_cb();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename NEW_CB, typename EXISTING_CB, typename CANCEL_CB>
-void new_or_existing_modal(
-    ImGuiContext*,
-    const std::string& name,
-    NEW_CB new_cb,
-    EXISTING_CB existing_cb,
-    CANCEL_CB cancel_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        if(ImGui::Button("Cancel"))
-        {
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("New storage file"))
-        {
-            ImGui::CloseCurrentPopup();
-            new_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Existing storage file"))
-        {
-            ImGui::CloseCurrentPopup();
-            existing_cb();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename DEFAULT_CB, typename CUSTOM_CB, typename CANCEL_CB>
-void storage_location_modal(
-    ImGuiContext*,
-    const std::string& name,
-    const std::string& default_path,
-    DEFAULT_CB default_cb,
-    CUSTOM_CB custom_cb,
-    CANCEL_CB cancel_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::Text("Where should recordings be stored?");
-        ImGui::Spacing();
-        ImGui::TextWrapped("Default: %s", default_path.c_str());
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        if(ImGui::Button("Cancel"))
-        {
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Use default"))
-        {
-            ImGui::CloseCurrentPopup();
-            default_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Choose location..."))
-        {
-            ImGui::CloseCurrentPopup();
-            custom_cb();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename OK_CB, typename CANCEL_CB>
-void new_file_name_modal(
-    ImGuiContext*,
-    const std::string& name,
-    std::string& file_name,
-    OK_CB ok_cb,
-    CANCEL_CB cancel_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        static char new_file_name[64] = {0};
-        static std::string last_file_name = "";
-
-        // Always copy when modal appears or when value changes
-        if (ImGui::IsWindowAppearing() || last_file_name != file_name)
-        {
-            r_ui_utils::copy_s(new_file_name, 64, file_name);
-            last_file_name = file_name;
-        }
-
-        if(ImGui::InputText("New file name", new_file_name, 64))
-            file_name = std::string(new_file_name);
-
-        if(ImGui::Button("Cancel"))
-        {
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Ok"))
-        {
-            ImGui::CloseCurrentPopup();
-            ok_cb();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename OK_CB, typename CANCEL_CB>
-void retention_modal(
-    ImGuiContext*,
-    const std::string& name,
-    revere::assignment_state& as,
-    OK_CB ok_cb,
-    CANCEL_CB cancel_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        const float WRAP_WIDTH = 420.0f;
-
-        ImGui::PushTextWrapPos(WRAP_WIDTH);
-        ImGui::TextWrapped("Your recording file size will determine your video retention period.");
-        ImGui::PopTextWrapPos();
-
-        ImGui::Spacing();
-        ImGui::Text("%s", (as.camera_friendly_name + "  |  " + std::to_string((as.byte_rate * 8) / 1024) + " kbps").c_str());
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        ImGui::InputDouble("Retention days", &as.continuous_retention_days, 0.0, 0.0, "%.2f");
-        if(as.continuous_retention_days < 0.0)
-            as.continuous_retention_days = 0.0;
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        auto sz_info = r_storage::required_file_size_for_retention_hours((int64_t)(as.continuous_retention_days * 24.0), as.byte_rate);
-
-        as.num_storage_file_blocks.set_value(sz_info.first);
-        as.storage_file_block_size.set_value(sz_info.second);
-
-        auto human_readable_size = r_storage::human_readable_file_size((double)(as.num_storage_file_blocks.value() * as.storage_file_block_size.value()));
-
-        ImGui::Text("Storage needed: %s", human_readable_size.c_str());
-
-        ImGui::Spacing();
-
-        if(ImGui::Button("Cancel"))
-        {
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Ok"))
-        {
-            ImGui::CloseCurrentPopup();
-            ok_cb();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename OK_CB, typename CANCEL_CB>
-void minimize_to_tray_modal(
-    ImGuiContext*,
-    const std::string& name,
-    OK_CB ok_cb,
-    CANCEL_CB cancel_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::Text("Revere will now be minimized to the system tray. You can restore it by clicking the tray icon.");
-
-        if(ImGui::Button("Cancel"))
-        {
-            cancel_cb();
-            ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Ok"))
-        {
-            ok_cb();
-            ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename OK_CB>
-void startup_enabled_modal(
-    ImGuiContext*,
-    const std::string& name,
-    OK_CB ok_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::Text("Revere will now start minimized to the system tray when the system starts.");
-
-        if(ImGui::Button("Ok"))
-        {
-            ok_cb();
-            ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename OK_CB, typename CANCEL_CB>
-void configure_rtsp_source_camera_modal(
-    ImGuiContext*,
-    const std::string& name,
-    rtsp_source_camera_config& rscc,
-    OK_CB ok_cb,
-    CANCEL_CB cancel_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        // Explain what an RTSP source camera is. Wrap at a fixed width so the
-        // AlwaysAutoResize popup doesn't stretch to the full paragraph width.
-        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
-        ImGui::TextUnformatted(
-            "RTSP Source Cameras in the Revere system are cameras that are not "
-            "discoverable but do have an RTSP interface. Please configure your "
-            "network to not change the IP addresses of these cameras."
-        );
-        ImGui::PopTextWrapPos();
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        static char camera_model_buffer[64] = {0};
-        r_ui_utils::copy_s(camera_model_buffer, 64, rscc.camera_name);
-
-        if(ImGui::InputText("Camera model", camera_model_buffer, 64))
-            rscc.camera_name = std::string(camera_model_buffer);
-
-        static char ipv4_buffer[64] = {0};
-        r_ui_utils::copy_s(ipv4_buffer, 64, rscc.ipv4);
-
-        if(ImGui::InputText("IPv4", ipv4_buffer, 64))
-            rscc.ipv4 = std::string(ipv4_buffer);
-
-        static char rtsp_url_buffer[64] = {0};
-        r_ui_utils::copy_s(rtsp_url_buffer, 64, rscc.rtsp_url);
-
-        if(ImGui::InputText("RTSP URL", rtsp_url_buffer, 64))
-            rscc.rtsp_url = std::string(rtsp_url_buffer);
-
-        static char rtsp_username_buffer[64] = {0};
-        r_ui_utils::copy_s(rtsp_username_buffer, 64, rscc.rtsp_username);
-
-        if(ImGui::InputText("RTSP Username", rtsp_username_buffer, 64))
-            rscc.rtsp_username = std::string(rtsp_username_buffer);
-
-        static char rtsp_password_buffer[64] = {0};
-        r_ui_utils::copy_s(rtsp_password_buffer, 64, rscc.rtsp_password);
-
-        if(ImGui::InputText("RTSP Password", rtsp_password_buffer, 64))
-            rscc.rtsp_password = std::string(rtsp_password_buffer);
-
-        if(ImGui::Button("Cancel"))
-        {
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Ok"))
-        {
-            ImGui::CloseCurrentPopup();
-            ok_cb();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB>
-void camera_properties_modal(
-    ImGuiContext*,
-    const std::string& name,
-    bool& do_motion_detection,
-    bool& do_motion_pruning,
-    std::string& min_continuous_retention_hours,
-    const std::string& record_file_path,
-    OK_CB ok_cb,
-    CANCEL_CB cancel_cb,
-    MOVE_STORAGE_CB move_storage_cb,
-    CHANGE_RETENTION_CB change_retention_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        // Display recording file location (read-only)
-        if(!record_file_path.empty())
-        {
-            ImGui::Text("Recording location:");
-            ImGui::SameLine();
-            ImGui::TextWrapped("%s", record_file_path.c_str());
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-        }
-
-        ImGui::Checkbox("Motion detection", &do_motion_detection);
-
-        if(!do_motion_detection)
-            do_motion_pruning = false;
-        ImGui::BeginDisabled(!do_motion_detection);
-        ImGui::Checkbox("Prune still video", &do_motion_pruning);
-        ImGui::EndDisabled();
-
-        static char retention_hours[64] = {0};
-        r_ui_utils::copy_s(retention_hours, 64, min_continuous_retention_hours);
-        if(ImGui::InputText("Minimum continuous retention hours", retention_hours, 64))
-            min_continuous_retention_hours = std::string(retention_hours);
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        ImGui::Text("Storage management:");
-        ImGui::Spacing();
-
-        if(ImGui::Button("Move storage"))
-        {
-            ImGui::CloseCurrentPopup();
-            move_storage_cb();
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("(?)");
-        if(ImGui::IsItemHovered())
-            ImGui::SetTooltip("Move recording files to a new location.\nOptionally start fresh and discard old recordings.");
-
-        ImGui::SameLine();
-        if(ImGui::Button("Change retention"))
-        {
-            ImGui::CloseCurrentPopup();
-            change_retention_cb();
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("(?)");
-        if(ImGui::IsItemHovered())
-            ImGui::SetTooltip("Resize this camera's recording buffer to keep more or fewer days.\nApplying reallocates the ring and clears this camera's existing recordings.");
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        if(ImGui::Button("Cancel"))
-        {
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Ok"))
-        {
-            ImGui::CloseCurrentPopup();
-            ok_cb();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename DELETE_FILES_CB, typename KEEP_FILES_CB, typename CANCEL_CB>
-void remove_camera_modal(
-    ImGuiContext*,
-    const std::string& name,
-    const std::string& camera_name,
-    bool& delete_files,
-    DELETE_FILES_CB delete_files_cb,
-    KEEP_FILES_CB keep_files_cb,
-    CANCEL_CB cancel_cb
-)
-{
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::Text("Remove camera: %s", camera_name.c_str());
-        ImGui::Spacing();
-        ImGui::Text("Do you want to delete the camera's storage files?");
-        ImGui::Text("This will permanently delete video recordings and motion detection data.");
-        ImGui::Spacing();
-
-        ImGui::Checkbox("Delete storage files (.nts, .mdb, .mdnts, .db)", &delete_files);
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        if(ImGui::Button("Cancel", ImVec2(120, 30)))
-        {
-            ImGui::CloseCurrentPopup();
-            cancel_cb();
-        }
-
-        ImGui::SameLine();
-
-        if(delete_files)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, r_ui_utils::theme::action_destructive);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, r_ui_utils::theme::action_destructive_hover);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, r_ui_utils::theme::action_destructive_hover);
-            ImGui::PushStyleColor(ImGuiCol_Text, r_ui_utils::theme::text_on_destructive);
-            if(ImGui::Button("Remove and delete files", ImVec2(200, 30)))
-            {
-                ImGui::CloseCurrentPopup();
-                delete_files_cb();
-            }
-            ImGui::PopStyleColor(4);
-        }
-        else
-        {
-            if(ImGui::Button("Remove (keep files)", ImVec2(200, 30)))
-            {
-                ImGui::CloseCurrentPopup();
-                keep_files_cb();
-            }
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
 template<typename OK_CB>
 void download_revere_cloud_modal(
     ImGuiContext*,
@@ -1210,7 +569,7 @@ void download_revere_cloud_modal(
     OK_CB ok_cb
 )
 {
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    if (begin_modal(name.c_str()))
     {
         ImGui::Text("We opened a browser with the download links for the Revere Cloud version you need.");
         ImGui::Text("Restart Revere after you install Revere Cloud.");
@@ -1227,79 +586,6 @@ void download_revere_cloud_modal(
     }
 }
 
-// Revere Cloud's Terms of Use and Privacy Policy. Connecting a gateway to
-// Revere Cloud is where this open-source software meets the hosted service,
-// so the notice sits at that step.
-inline constexpr const char* REVERE_CLOUD_TERMS_URL = "https://revere.video/terms";
-inline constexpr const char* REVERE_CLOUD_PRIVACY_URL = "https://revere.video/privacy";
-
-// Text that acts like a link: hand cursor, underline and the URL as a tooltip
-// on hover, open_cb(url) on click.
-template<typename OPEN_CB>
-void link_text(const char* label, const char* url, const ImVec4& color, OPEN_CB open_cb)
-{
-    ImGui::TextColored(color, "%s", label);
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        auto min = ImGui::GetItemRectMin();
-        auto max = ImGui::GetItemRectMax();
-        ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x, max.y), max, ImGui::GetColorU32(color));
-        ImGui::SetTooltip("%s", url);
-    }
-    if (ImGui::IsItemClicked())
-        open_cb(std::string(url));
-}
-
-// "By connecting to Revere Cloud you agree to the Terms of Use and Privacy
-// Policy", with both linked. Flowed word by word so it wraps to whatever width
-// the plugins panel has; each link stays one unbroken, clickable piece.
-template<typename OPEN_CB>
-void revere_cloud_terms_notice(OPEN_CB open_cb)
-{
-    const ImVec4 text_color = r_ui_utils::theme::text_tertiary;
-    const ImVec4 link_color = r_ui_utils::theme::text_link;
-
-    struct piece { std::string text; const char* url; };
-    std::vector<piece> pieces;
-    auto add_words = [&](const std::string& text) {
-        size_t i = 0;
-        while(i < text.size())
-        {
-            size_t j = text.find(' ', i);
-            size_t end = (j == std::string::npos) ? text.size() : j + 1;  // keep the trailing space
-            pieces.push_back({text.substr(i, end - i), nullptr});
-            i = end;
-        }
-    };
-    add_words("By connecting to Revere Cloud you agree to the ");
-    pieces.push_back({"Terms of Use", REVERE_CLOUD_TERMS_URL});
-    add_words(" and ");
-    pieces.push_back({"Privacy Policy", REVERE_CLOUD_PRIVACY_URL});
-    add_words(".");
-
-    const float right = ImGui::GetContentRegionMax().x;
-    bool first = true;
-    for(const auto& p : pieces)
-    {
-        if(!first)
-        {
-            ImGui::SameLine(0.0f, 0.0f);
-            // Measure without a trailing space: a line may end just past the edge with one.
-            std::string fit = p.text;
-            while(!fit.empty() && fit.back() == ' ')
-                fit.pop_back();
-            if(ImGui::GetCursorPosX() + ImGui::CalcTextSize(fit.c_str()).x > right)
-                ImGui::NewLine();
-        }
-        first = false;
-
-        if(p.url)
-            link_text(p.text.c_str(), p.url, link_color, open_cb);
-        else ImGui::TextColored(text_color, "%s", p.text.c_str());
-    }
-}
-
 template<typename DOWNLOAD_CB, typename CLOSE_CB>
 void about_revere_cloud_modal(
     ImGuiContext*,
@@ -1309,14 +595,14 @@ void about_revere_cloud_modal(
 )
 {
     ImGui::SetNextWindowSize(ImVec2(640, 0));
-    if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    if (begin_modal(name.c_str()))
     {
         ImGui::Spacing();
         ImGui::Spacing();
 
         ImGui::SetCursorPosX(16.0f);
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 608.0f);
-        ImGui::TextWrapped("Revere Cloud is an optional plugin for Revere that connects your system to the Revere Cloud infrastructure and enables the Lantern mobile app to access your cameras remotely. Some Revere Cloud features require paying for service (and some do not).");
+        ImGui::TextWrapped("Revere Cloud is an optional plugin for Revere that connects your system to the Revere Cloud infrastructure and enables the Revere mobile app to access your cameras remotely. Some Revere Cloud features require paying for service (and some do not).");
         ImGui::PopTextWrapPos();
 
         ImGui::Spacing();
@@ -1344,362 +630,6 @@ void about_revere_cloud_modal(
         }
 
         ImGui::Spacing();
-
-        ImGui::EndPopup();
-    }
-}
-
-// Resize an existing camera's recording ring buffer to a new retention target.
-// Reuses the same async op/phases as move_storage_modal. Sizing mirrors the
-// setup wizard's retention step: block_size/num_blocks are derived from the
-// live byte_rate and the requested days. Applying reallocates the ring, which
-// clears the camera's existing recordings (a fixed-size ring can't be resized
-// in place), so a confirm checkbox is required before Apply is enabled.
-template<typename START_CB, typename CLOSE_CB, typename CANCEL_OP_CB>
-void change_retention_modal(
-    ImGuiContext*,
-    const std::string& name,
-    const std::string& camera_name,
-    int64_t byte_rate,
-    double& retention_days,
-    bool& confirm_delete,
-    int64_t& out_num_blocks,
-    int64_t& out_block_size,
-    float progress,
-    bool running,
-    bool done,
-    bool error,
-    const std::string& status,
-    START_CB start_cb,
-    CLOSE_CB close_cb,
-    CANCEL_OP_CB cancel_op_cb
-)
-{
-    ImGui::SetNextWindowSize(ImVec2(540, 0), ImGuiCond_Always);
-    if(ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        if(!running && !done)
-        {
-            if(ImGui::IsWindowAppearing())
-                confirm_delete = false;
-
-            ImGui::Text("Camera: %s", camera_name.c_str());
-            if(byte_rate > 0)
-                ImGui::Text("Current bitrate: %lld kbps", (long long)((byte_rate * 8) / 1024));
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            const bool have_bitrate = (byte_rate > 0);
-            if(!have_bitrate)
-            {
-                ImGui::TextColored(r_ui_utils::theme::status_danger_text,
-                    "This camera has no current bitrate (not receiving video).");
-                ImGui::TextWrapped("Retention is sized from the live bitrate, so the camera must be recording before it can be resized.");
-                ImGui::Spacing();
-            }
-
-            ImGui::BeginDisabled(!have_bitrate);
-            ImGui::InputDouble("Retention days", &retention_days, 0.0, 0.0, "%.2f");
-            if(retention_days < 0.0)
-                retention_days = 0.0;
-            ImGui::EndDisabled();
-
-            // Derive the ring geometry from days * bitrate (same as setup).
-            if(have_bitrate)
-            {
-                auto sz = r_storage::required_file_size_for_retention_hours((int64_t)(retention_days * 24.0), byte_rate);
-                out_num_blocks = sz.first;
-                out_block_size = sz.second;
-
-                auto human = r_storage::human_readable_file_size((double)(out_num_blocks * out_block_size));
-                ImGui::Spacing();
-                ImGui::Text("New storage size: %s", human.c_str());
-            }
-
-            ImGui::Spacing();
-            ImGui::TextColored(r_ui_utils::theme::status_danger_text,
-                "Applying reallocates the ring and permanently deletes this camera's existing recordings.");
-            ImGui::Checkbox("I understand the existing recordings will be deleted", &confirm_delete);
-
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            if(ImGui::Button("Cancel", ImVec2(120, 30)))
-            {
-                ImGui::CloseCurrentPopup();
-                close_cb();
-            }
-
-            ImGui::SameLine();
-
-            bool can_start = have_bitrate && retention_days > 0.0 && confirm_delete;
-            ImGui::BeginDisabled(!can_start);
-            if(ImGui::Button("Apply", ImVec2(120, 30)))
-                start_cb();
-            ImGui::EndDisabled();
-        }
-        else if(running)
-        {
-            ImGui::Text("Resizing recording buffer...");
-            ImGui::Spacing();
-            ImGui::ProgressBar(progress, ImVec2(-1, 0));
-            ImGui::Spacing();
-            ImGui::TextWrapped("%s", status.c_str());
-            ImGui::Spacing();
-            if(ImGui::Button("Cancel", ImVec2(120, 30)))
-                cancel_op_cb();
-        }
-        else if(done && !error)
-        {
-            ImGui::CloseCurrentPopup();
-            close_cb();
-        }
-        else if(error)
-        {
-            ImGui::TextColored(r_ui_utils::theme::status_danger_text, "Error:");
-            ImGui::Spacing();
-            ImGui::TextWrapped("%s", status.c_str());
-            ImGui::Spacing();
-            if(ImGui::Button("Close", ImVec2(120, 30)))
-            {
-                ImGui::CloseCurrentPopup();
-                close_cb();
-            }
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-template<typename START_CB, typename CLOSE_CB, typename CANCEL_OP_CB>
-void move_storage_modal(
-    ImGuiContext*,
-    const std::string& name,
-    const std::string& camera_name,
-    std::string& new_dir,
-    bool& start_fresh,
-    bool& delete_confirmed,
-    float progress,
-    bool running,
-    bool done,
-    bool error,
-    const std::string& status,
-    START_CB start_cb,
-    CLOSE_CB close_cb,
-    CANCEL_OP_CB cancel_op_cb
-)
-{
-    ImGui::SetNextWindowSize(ImVec2(540, 0), ImGuiCond_Always);
-    if(ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        if(!running && !done)
-        {
-            if(ImGui::IsWindowAppearing())
-            {
-                start_fresh = false;
-                delete_confirmed = false;
-            }
-
-            ImGui::Text("Camera: %s", camera_name.c_str());
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            ImGui::Text("Destination:");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(300);
-            ImGui::InputText("##move_dir", const_cast<char*>(new_dir.c_str()), new_dir.size() + 1, ImGuiInputTextFlags_ReadOnly);
-            ImGui::SameLine();
-            if(ImGui::Button("Browse..."))
-                ImGuiFileDialog::Instance()->OpenDialog("MoveStorageDirDlg", "Choose destination", nullptr, new_dir.empty() ? "." : new_dir, "", 1, nullptr, 0);
-
-            if(ImGuiFileDialog::Instance()->Display("MoveStorageDirDlg", ImGuiWindowFlags_None, ImVec2(800, 400)))
-            {
-                if(ImGuiFileDialog::Instance()->IsOk())
-                    new_dir = ImGuiFileDialog::Instance()->GetCurrentPath();
-                ImGuiFileDialog::Instance()->Close();
-            }
-
-            ImGui::Spacing();
-            ImGui::Checkbox("Start fresh (don't copy existing recordings)", &start_fresh);
-
-            if(start_fresh)
-            {
-                ImGui::Spacing();
-                ImGui::TextColored(r_ui_utils::theme::status_danger_text, "All existing recordings will be permanently deleted.");
-                ImGui::Checkbox("I understand the recordings will be deleted", &delete_confirmed);
-            }
-
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            if(ImGui::Button("Cancel", ImVec2(120, 30)))
-            {
-                ImGui::CloseCurrentPopup();
-                close_cb();
-            }
-
-            ImGui::SameLine();
-
-            bool can_start = !new_dir.empty() && (!start_fresh || delete_confirmed);
-            ImGui::BeginDisabled(!can_start);
-            if(ImGui::Button("Move", ImVec2(120, 30)))
-                start_cb();
-            ImGui::EndDisabled();
-        }
-        else if(running)
-        {
-            ImGui::Text(start_fresh ? "Resetting storage..." : "Moving storage files...");
-            ImGui::Spacing();
-            ImGui::ProgressBar(progress, ImVec2(-1, 0));
-            ImGui::Spacing();
-            ImGui::TextWrapped("%s", status.c_str());
-            ImGui::Spacing();
-            if(ImGui::Button("Cancel", ImVec2(120, 30)))
-                cancel_op_cb();
-        }
-        else if(done && !error)
-        {
-            ImGui::CloseCurrentPopup();
-            close_cb();
-        }
-        else if(error)
-        {
-            ImGui::TextColored(r_ui_utils::theme::status_danger_text, "Error:");
-            ImGui::Spacing();
-            ImGui::TextWrapped("%s", status.c_str());
-            ImGui::Spacing();
-            if(ImGui::Button("Close", ImVec2(120, 30)))
-            {
-                ImGui::CloseCurrentPopup();
-                close_cb();
-            }
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-// Shown from a recording card's "Repair" button when the camera's recording
-// file is missing on disk. Two ways out:
-//   mode 0  Re-create: allocate fresh, empty files from the geometry stored on
-//           the camera row (same worker as Move Storage's "start fresh").
-//   mode 1  Locate: point the camera at an existing .nts (e.g. one that was
-//           moved by hand or lives on another disk); it is validated, its
-//           geometry is read from the file header, and the sibling .mdb is
-//           picked up or created.
-// Either way the stream keeper restarts the camera afterwards.
-template<typename START_CB, typename CLOSE_CB>
-void repair_storage_modal(
-    ImGuiContext*,
-    const std::string& name,
-    const std::string& camera_name,
-    const std::string& missing_path,
-    int& mode,
-    std::string& locate_path,
-    float progress,
-    bool running,
-    bool done,
-    bool error,
-    const std::string& status,
-    START_CB start_cb,
-    CLOSE_CB close_cb
-)
-{
-    ImGui::SetNextWindowSize(ImVec2(600, 0), ImGuiCond_Always);
-    if(ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        if(!running && !done && !error)
-        {
-            if(ImGui::IsWindowAppearing())
-            {
-                mode = 0;
-                locate_path.clear();
-            }
-
-            ImGui::Text("Camera: %s", camera_name.c_str());
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-            ImGui::TextWrapped("This camera's recording file is missing, so it can't record:");
-            ImGui::TextWrapped("%s", missing_path.c_str());
-            ImGui::Spacing();
-
-            ImGui::RadioButton("Re-create empty recording files", &mode, 0);
-            ImGui::Indent();
-            ImGui::TextWrapped("Allocates new files using the camera's existing retention settings. Any leftover files for this camera are deleted first.");
-            ImGui::Unindent();
-            ImGui::Spacing();
-
-            ImGui::RadioButton("Use an existing recording file", &mode, 1);
-            ImGui::Indent();
-            ImGui::TextWrapped("Pick the camera's .nts file if it was moved. Its recordings are kept; a motion file next to it is reused if present.");
-            ImGui::BeginDisabled(mode != 1);
-            ImGui::SetNextItemWidth(380);
-            ImGui::InputText("##repair_locate_path", const_cast<char*>(locate_path.c_str()), locate_path.size() + 1, ImGuiInputTextFlags_ReadOnly);
-            ImGui::SameLine();
-            if(ImGui::Button("Browse..."))
-            {
-                std::string start_dir = ".";
-                auto slash = missing_path.find_last_of("/\\");
-                if(slash != std::string::npos)
-                    start_dir = missing_path.substr(0, slash);
-                ImGuiFileDialog::Instance()->OpenDialog("RepairLocateFileDlg", "Choose recording file", ".nts", start_dir);
-            }
-            ImGui::EndDisabled();
-            ImGui::Unindent();
-
-            if(ImGuiFileDialog::Instance()->Display("RepairLocateFileDlg", ImGuiWindowFlags_None, ImVec2(800, 400)))
-            {
-                if(ImGuiFileDialog::Instance()->IsOk())
-                    locate_path = ImGuiFileDialog::Instance()->GetFilePathName();
-                ImGuiFileDialog::Instance()->Close();
-            }
-
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            if(ImGui::Button("Cancel", ImVec2(120, 30)))
-            {
-                ImGui::CloseCurrentPopup();
-                close_cb();
-            }
-            ImGui::SameLine();
-            bool can_start = (mode == 0) || !locate_path.empty();
-            ImGui::BeginDisabled(!can_start);
-            if(ImGui::Button("Repair", ImVec2(120, 30)))
-                start_cb();
-            ImGui::EndDisabled();
-        }
-        else if(running)
-        {
-            ImGui::Text(mode == 1 ? "Checking recording file..." : "Re-creating recording files...");
-            ImGui::Spacing();
-            ImGui::ProgressBar(progress, ImVec2(-1, 0));
-            ImGui::Spacing();
-            ImGui::TextWrapped("%s", status.c_str());
-        }
-        else if(done && !error)
-        {
-            ImGui::CloseCurrentPopup();
-            close_cb();
-        }
-        else if(error)
-        {
-            ImGui::TextColored(r_ui_utils::theme::status_danger_text, "Error:");
-            ImGui::Spacing();
-            ImGui::TextWrapped("%s", status.c_str());
-            ImGui::Spacing();
-            if(ImGui::Button("Close", ImVec2(120, 30)))
-            {
-                ImGui::CloseCurrentPopup();
-                close_cb();
-            }
-        }
 
         ImGui::EndPopup();
     }
