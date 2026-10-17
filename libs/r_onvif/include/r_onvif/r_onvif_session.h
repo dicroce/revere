@@ -38,6 +38,26 @@ struct discovered_info
 
 R_API std::vector<discovered_info> filter_discovered(const std::vector<std::string>& discovered);
 
+// Where a camera's ONVIF device service answers. Revere stores only the
+// service's path (xaddrs), and the port varies: 80 on many cameras, 8000 on
+// Reolinks. Tries, each with an unauthenticated GetSystemDateAndTime and a
+// short timeout: hint_port (when set), then unicast WS-Discovery to the host,
+// then 80, 8000 and 8080 over http and 443 over https. Null if none answers.
+struct onvif_endpoint
+{
+    std::string host;
+    int port;
+    std::string protocol;
+    std::string uri;
+};
+
+R_API r_utils::r_nullable<onvif_endpoint> find_device_service(
+    const std::string& host,
+    const std::string& uri,
+    r_utils::r_nullable<int> hint_port = r_utils::r_nullable<int>(),
+    r_utils::r_nullable<std::string> hint_protocol = r_utils::r_nullable<std::string>()
+);
+
 typedef std::string onvif_capabilities;
 typedef std::string onvif_media_service;
 typedef std::string onvif_profile_token;

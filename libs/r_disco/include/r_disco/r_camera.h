@@ -15,6 +15,10 @@ struct r_camera
     r_utils::r_nullable<std::string> friendly_name;
     r_utils::r_nullable<std::string> ipv4;
     r_utils::r_nullable<std::string> xaddrs;
+    // Where the ONVIF device service answers (xaddrs is only its path). Many
+    // cameras use 80, but Reolinks use 8000. Null until discovery or setup finds it.
+    r_utils::r_nullable<int> onvif_port;
+    r_utils::r_nullable<std::string> onvif_protocol;
     r_utils::r_nullable<std::string> address;
     r_utils::r_nullable<std::string> rtsp_url;
     r_utils::r_nullable<std::string> video_codec;

@@ -1354,7 +1354,9 @@ void configure_camera_setup_wizard(
                                 camera.ipv4.value(),
                                 camera.xaddrs.value(),
                                 as.rtsp_username,
-                                as.rtsp_password
+                                as.rtsp_password,
+                                camera.onvif_port,
+                                camera.onvif_protocol
                             );
 
                             as.available_profiles.clear();
@@ -1433,7 +1435,9 @@ void configure_camera_setup_wizard(
                         camera.address.value(),
                         as.rtsp_username,
                         as.rtsp_password,
-                        as.selected_profile_token
+                        as.selected_profile_token,
+                        camera.onvif_port,
+                        camera.onvif_protocol
                     );
                     as.camera = devices.get_camera_by_id(as.camera_id);
 

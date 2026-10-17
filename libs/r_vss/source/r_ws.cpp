@@ -549,7 +549,10 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                     {"height", res.is_null() ? 0 : res.value().second},
                     // 0 / "" when unknown, like width/height.
                     {"fps", src.framerate.is_null() ? 0.0 : (double)src.framerate.value()},
-                    {"onvif_profile", (c.onvif_profile_token.is_null())?"":c.onvif_profile_token.value()}
+                    {"onvif_profile", (c.onvif_profile_token.is_null())?"":c.onvif_profile_token.value()},
+                    // Where the camera's ONVIF device service last answered; 0 / "" when unknown.
+                    {"onvif_port", (c.onvif_port.is_null())?0:c.onvif_port.value()},
+                    {"onvif_protocol", (c.onvif_protocol.is_null())?"":c.onvif_protocol.value()}
                 }
             );
         }
@@ -2438,7 +2441,7 @@ r_http::r_server_response r_ws::_get_camera_profiles(const r_http::r_web_server<
         if(args.find("username") != args.end()) username.set_value(args["username"]);
         if(args.find("password") != args.end()) password.set_value(args["password"]);
 
-        auto profiles = _agent.get_camera_profiles(camera.ipv4.value(), camera.xaddrs.value(), username, password);
+        auto profiles = _agent.get_camera_profiles(camera.ipv4.value(), camera.xaddrs.value(), username, password, camera.onvif_port, camera.onvif_protocol);
 
         json j;
         j["profiles"] = json::array();
@@ -2597,7 +2600,9 @@ void r_ws::_measure(const std::string& job_id)
             camera.address.value(),
             username,
             password,
-            job.profile_token
+            job.profile_token,
+            camera.onvif_port,
+            camera.onvif_protocol
         );
     }
     else if(camera.rtsp_url.is_null())

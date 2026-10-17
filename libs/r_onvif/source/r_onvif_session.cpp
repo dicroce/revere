@@ -70,10 +70,12 @@ static pair<int, string> _http_interact(
     string uri,
     string body,
     soap_version soap_ver = soap_version::unknown,
-    const string& soap_action = ""
+    const string& soap_action = "",
+    int timeout_ms = 30000,
+    int net_attempts = 2
 )
 {
-    const int MAX_NET_ATTEMPTS = 2;
+    const int MAX_NET_ATTEMPTS = net_attempts;
     int redirect_count = 0;
 
 retry_redirect:
@@ -122,10 +124,10 @@ retry_redirect:
             request.add_header("Connection", "close");
             request.add_header("User-Agent", "ONVIF-Client/1.0");
 
-            request.write_request(*sock, 30000);
+            request.write_request(*sock, timeout_ms);
 
             r_http::r_client_response response;
-            response.read_response(*sock, 30000);
+            response.read_response(*sock, timeout_ms);
 
             if(response.get_status() == 302 || response.get_status() == 301 || response.get_status() == 307)
             {
@@ -1763,4 +1765,70 @@ string r_onvif::r_onvif_cam::get_stream_uri(onvif_media_service media_service, o
         throw std::runtime_error("Uri not found in GetStreamUri response");
 
     return node.node().child_value();
+}
+
+// ---------------------------------------------------------------------------
+// Finding a camera's ONVIF device service.
+
+// Whether an ONVIF device service answers at host:port/uri: an unauthenticated
+// GetSystemDateAndTime gets back a SOAP envelope, the time or a fault (a camera
+// that wants credentials or SOAP 1.1 still answers in SOAP). A web server that
+// isn't ONVIF, a closed port or a hung service doesn't. A short timeout and a
+// single attempt, so probing a wedged camera takes seconds, not minutes.
+static bool _answers_onvif(const string& host, int port, const string& uri)
+{
+    try
+    {
+        auto body = _build_soap_envelope(
+            soap_version::soap_1_2, auth_mode::digest,
+            [](pugi::xml_node& b) { b.append_child("tds:GetSystemDateAndTime"); },
+            r_nullable<string>(), r_nullable<string>(), 0
+        );
+        auto result = _http_interact(host, port, "POST", uri, body, soap_version::soap_1_2,
+                                     "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime", 4000, 1);
+        return result.second.find("Envelope") != string::npos;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+r_nullable<r_onvif::onvif_endpoint> r_onvif::find_device_service(
+    const string& host,
+    const string& uri,
+    r_nullable<int> hint_port,
+    r_nullable<string> hint_protocol
+)
+{
+    auto path = uri.empty() ? string("/onvif/device_service") : uri;
+
+    if (!hint_port.is_null() && _answers_onvif(host, hint_port.value(), path))
+        return onvif_endpoint{host, hint_port.value(), hint_protocol.is_null() ? string("http") : hint_protocol.value(), path};
+
+    // The camera says where its service is, when it answers a unicast Probe.
+    for (auto& di : filter_discovered(discover_unicast(r_uuid::generate(), {host})))
+    {
+        if (di.host != host)
+            continue;
+        auto found_uri = di.uri.empty() ? path : di.uri;
+        if (_answers_onvif(host, di.port, found_uri))
+            return onvif_endpoint{host, di.port, di.protocol.empty() ? string("http") : di.protocol, found_uri};
+    }
+
+    const pair<int, const char*> common[] = {{80, "http"}, {8000, "http"}, {8080, "http"}, {443, "https"}};
+    for (auto& c : common)
+    {
+        if (!hint_port.is_null() && c.first == hint_port.value())
+            continue;
+        if (_answers_onvif(host, c.first, path))
+        {
+            R_LOG_INFO("onvif: device service for %s found on port %d", host.c_str(), c.first);
+            return onvif_endpoint{host, c.first, c.second, path};
+        }
+    }
+
+    R_LOG_WARNING("onvif: no device service found for %s (tried %s, unicast discovery, 80, 8000, 8080, 443)",
+                  host.c_str(), hint_port.is_null() ? "no stored port" : ("stored port " + to_string(hint_port.value())).c_str());
+    return r_nullable<onvif_endpoint>();
 }
