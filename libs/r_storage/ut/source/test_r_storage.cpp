@@ -9,7 +9,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_algorithms.h"
 #include "r_utils/r_file.h"
-//#include "r_utils/r_blob_tree.h"
+#include "r_utils/r_blob_tree.h"
 //#include "r_pipeline/r_gst_source.h"
 //#include "r_pipeline/r_arg.h"
 //#include "r_pipeline/r_stream_info.h"
@@ -168,6 +168,47 @@ void test_r_storage::test_r_storage_file_ts_discontinuity_reanchor()
     r_storage_file_reader sfr("ts_test.nts");
     RTF_ASSERT(!sfr.last_ts().is_null());
     RTF_ASSERT((_wall_now_ms() - sfr.last_ts().value()) < 10000);
+}
+
+// query_key returns the key frame at or before ts. Past the newest frame it
+// returns the newest key frame (within 5 minutes), found by seeking to the end
+// rather than walking forward over the last 5 minutes of frames.
+void test_r_storage::test_r_storage_file_query_key()
+{
+    r_storage_file::allocate("key_test.nts", 65536, 10);
+    r_storage_file sf("key_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    // 100 frames 33ms apart, a key every 30th; each frame's first byte is its index.
+    int64_t base = _wall_now_ms() - 20000;
+    for(int i = 0; i < 100; ++i)
+    {
+        vector<uint8_t> frame(64, (uint8_t)i);
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), (i % 30) == 0, base + i * 33, i * 33);
+    }
+    const int64_t newest = base + 99 * 33;
+
+    r_storage_file_reader sfr("key_test.nts");
+    auto key_at = [&](int64_t ts) {
+        auto buf = sfr.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, ts);
+        uint32_t version = 0;
+        auto bt = r_blob_tree::deserialize(buf.data(), buf.size(), version);
+        if(bt["frames"].size() != 1)
+            return -1;
+        return (int)bt["frames"][0]["data"].get_blob()[0];
+    };
+
+    // Within the recording: the key frame that starts ts's GOP.
+    RTF_ASSERT(key_at(base + 45 * 33 + 10) == 30);
+    RTF_ASSERT(key_at(base + 60 * 33) == 60);
+    // At the newest frame, and past it by a minute: the newest key frame.
+    RTF_ASSERT(key_at(newest) == 90);
+    RTF_ASSERT(key_at(newest + 60000) == 90);
+    // More than 5 minutes past the newest frame: nothing, as before.
+    RTF_ASSERT(key_at(newest + 6 * 60000) == -1);
 }
 
 #if 0

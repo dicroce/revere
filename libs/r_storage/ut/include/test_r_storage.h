@@ -7,6 +7,7 @@ public:
     RTF_FIXTURE(test_r_storage);
       TEST(test_r_storage::test_r_storage_file_ts_wobble_clamp);
       TEST(test_r_storage::test_r_storage_file_ts_discontinuity_reanchor);
+      TEST(test_r_storage::test_r_storage_file_query_key);
 #if 0
       TEST(test_r_storage::test_r_dumbdex_writing);
       TEST(test_r_storage::test_r_dumbdex_consistency);
@@ -42,6 +43,7 @@ public:
 
     void test_r_storage_file_ts_wobble_clamp();
     void test_r_storage_file_ts_discontinuity_reanchor();
+    void test_r_storage_file_query_key();
 
 #if 0
     void test_r_dumbdex_writing();
