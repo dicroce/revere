@@ -6,6 +6,7 @@
 #include "r_storage/r_storage_file.h"
 #include "r_storage/r_storage_file_reader.h"
 #include "r_storage/r_ring.h"
+#include "nanots.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_algorithms.h"
 #include "r_utils/r_file.h"
@@ -209,6 +210,61 @@ void test_r_storage::test_r_storage_file_query_key()
     RTF_ASSERT(key_at(newest + 60000) == 90);
     // More than 5 minutes past the newest frame: nothing, as before.
     RTF_ASSERT(key_at(newest + 6 * 60000) == -1);
+}
+
+// Frames big enough that a block holds at most 8: backing up from the newest
+// frame (99) to its key frame (90) has to step into an earlier block.
+void test_r_storage::test_r_storage_file_query_key_across_blocks()
+{
+    r_storage_file::allocate("key_blocks_test.nts", 65536, 40);
+    r_storage_file sf("key_blocks_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    int64_t base = _wall_now_ms() - 20000;
+    for(int i = 0; i < 100; ++i)
+    {
+        vector<uint8_t> frame(8000, (uint8_t)i);
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), (i % 30) == 0, base + i * 33, i * 33);
+    }
+    const int64_t newest = base + 99 * 33;
+
+    r_storage_file_reader sfr("key_blocks_test.nts");
+    auto key_at = [&](int64_t ts) {
+        auto buf = sfr.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, ts);
+        uint32_t version = 0;
+        auto bt = r_blob_tree::deserialize(buf.data(), buf.size(), version);
+        if(bt["frames"].size() != 1)
+            return -1;
+        return (int)bt["frames"][0]["data"].get_blob()[0];
+    };
+
+    // The setup does what it says: key frame 90 is in an earlier block than the newest frame.
+    {
+        nanots_iterator it("key_blocks_test.nts", "video");
+        RTF_ASSERT(it.seek_end());
+        auto newest_block = it.current_block_sequence();
+        RTF_ASSERT(it.find(base + 90 * 33) && it->flags > 0);
+        RTF_ASSERT(it.current_block_sequence() != newest_block);
+    }
+
+    RTF_ASSERT(key_at(newest + 60000) == 90);
+    RTF_ASSERT(key_at(base + 89 * 33) == 60);
+}
+
+// Nothing recorded yet: no frame, and no exception.
+void test_r_storage::test_r_storage_file_query_key_empty()
+{
+    r_storage_file::allocate("key_empty_test.nts", 65536, 10);
+
+    r_storage_file_reader sfr("key_empty_test.nts");
+    vector<uint8_t> buf;
+    RTF_ASSERT_NO_THROW(buf = sfr.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, _wall_now_ms()));
+    uint32_t version = 0;
+    auto bt = r_blob_tree::deserialize(buf.data(), buf.size(), version);
+    RTF_ASSERT(bt["frames"].size() == 0);
 }
 
 #if 0
