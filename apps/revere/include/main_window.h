@@ -521,8 +521,13 @@ inline void stat_cards(const std::vector<stat_card>& stats, const main_window_fo
     const float pad_y = 8.0f;
     ImFont* key_font = font(fonts.key_18);
     ImFont* value_font = font(fonts.key_22, true);
+    // Measured as ellipsis_text measures (CalcTextSize under the font, which
+    // rounds up), so "cut" agrees with whether an ellipsis was drawn.
     auto text_w = [](ImFont* f, const std::string& t) {
-        return f->CalcTextSizeA(f->FontSize, FLT_MAX, 0.0f, t.c_str()).x;
+        ImGui::PushFont(f);
+        float w = ImGui::CalcTextSize(t.c_str()).x;
+        ImGui::PopFont();
+        return w;
     };
     // A value too long for its card ends in an ellipsis and shows in full on hover.
     const float min_width = 130.0f;
