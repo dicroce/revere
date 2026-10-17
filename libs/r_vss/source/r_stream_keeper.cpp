@@ -533,6 +533,11 @@ void r_stream_keeper::set_system_plugin_enabled(const std::string& plugin_name, 
     _system_plugin_host.set_plugin_enabled(plugin_name, enabled);
 }
 
+std::string r_stream_keeper::get_system_plugin_version(const std::string& plugin_name) const
+{
+    return _system_plugin_host.get_plugin_version(plugin_name);
+}
+
 std::string r_stream_keeper::get_system_plugin_status(const std::string& plugin_name) const
 {
     return _system_plugin_host.get_plugin_status(plugin_name);
@@ -614,10 +619,12 @@ void r_stream_keeper::_entry_point()
                 // This ensures that when a stream dies and needs to be recreated, the old
                 // r_recording_context (and its nanots_writer) is fully destroyed before
                 // we attempt to create a new one with the same file path and stream tags.
-                r_funky::erase_if(_streams, [](const auto& c){
+                r_funky::erase_if(_streams, [this](const auto& c){
                     if(c.second->dead())
                     {
                         R_LOG_WARNING("Dead stream detected, removing: %s", c.first.c_str());
+                        // The next pass starts it again: a reconnect.
+                        _reconnects.record(c.first);
                         return true;
                     }
                     return false;

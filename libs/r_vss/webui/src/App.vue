@@ -10,7 +10,7 @@
   <CameraView
     v-else-if="selectedCamera"
     :camera="selectedCamera"
-    @close="selectedCamera = null"
+    @close="closeCamera"
   />
 
   <div v-else class="app">
@@ -44,12 +44,14 @@
         </div>
       </template>
     </main>
+
+    <footer v-if="versionLabel" class="footer" :title="versionDetails">{{ versionLabel }}</footer>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { isAuthed, getAuthStatus, getCameras, logout } from './api.js'
+import { isAuthed, getAuthStatus, getCameras, getVersion, logout } from './api.js'
 import CameraCard from './components/CameraCard.vue'
 import CameraView from './components/CameraView.vue'
 import ManageTab from './components/ManageTab.vue'
@@ -64,7 +66,44 @@ const liveCameras = ref([])
 const error = ref(null)
 const selectedCamera = ref(null)
 
+// ?camera=<id> opens that camera once the camera list has loaded (the desktop
+// app's "Open in web UI"). Closing the camera view drops the parameter, so a
+// reload goes back to the grid.
+let pendingCameraId = new URLSearchParams(window.location.search).get('camera')
+
+function clearCameraParam() {
+  const url = new URL(window.location.href)
+  if (!url.searchParams.has('camera')) return
+  url.searchParams.delete('camera')
+  window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
+}
+
+function openPendingCamera() {
+  if (!pendingCameraId) return
+  const camera = liveCameras.value.find((c) => c.id === pendingCameraId)
+  pendingCameraId = null
+  if (camera) selectedCamera.value = camera
+  else clearCameraParam() // not a recording camera: stay on the grid
+}
+
+function closeCamera() {
+  selectedCamera.value = null
+  clearCameraParam()
+}
+
 let pollId = null
+
+// Which build this is, for support: "Revere 0.0.31 (build 273)", with the
+// build time and plugin versions on hover.
+const version = ref(null)
+const versionLabel = computed(() =>
+  version.value ? `Revere ${version.value.version} (build ${version.value.build_number})` : '')
+const versionDetails = computed(() => {
+  const v = version.value
+  if (!v) return ''
+  const plugins = (v.plugins ?? []).map((p) => `${p.name} ${p.version ?? '(version unknown)'}`)
+  return [`Built ${v.build_time}`, `Revision ${v.git_revision}`, ...plugins].join('\n')
+})
 
 async function loadLive() {
   if (!authed.value) return
@@ -72,6 +111,7 @@ async function loadLive() {
     const cams = await getCameras() // apiFetch attaches the token; clears it on 401
     liveCameras.value = cams.filter((c) => c.state === 'assigned')
     error.value = null
+    openPendingCamera()
   } catch (e) {
     // A 401 clears the token (api.js) -> the gate flips back to the login screen.
     error.value = `Could not reach Revere: ${e.message}`
@@ -86,6 +126,7 @@ function onAuthenticated() {
 function signOut() {
   logout()
   selectedCamera.value = null
+  clearCameraParam()
   liveCameras.value = []
   tab.value = 'manage'
 }
@@ -101,6 +142,7 @@ onMounted(async () => {
     try { await getCameras() } catch { /* invalid token cleared by api.js */ }
   }
   authChecked.value = true
+  getVersion().then((v) => { version.value = v }).catch(() => { /* older Revere: no footer */ })
 
   if (authed.value) loadLive()
   pollId = setInterval(loadLive, 5000)
@@ -164,6 +206,13 @@ onUnmounted(() => clearInterval(pollId))
 .content {
   flex: 1;
   padding: 1.5rem;
+}
+
+.footer {
+  padding: 0.5rem 1.5rem;
+  color: #666;
+  font-size: 0.75rem;
+  border-top: 1px solid #262626;
 }
 
 .camera-grid {

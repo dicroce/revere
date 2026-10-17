@@ -45,6 +45,9 @@ public:
     // Get a plugin's current status message JSON (empty if no message)
     R_API std::string get_plugin_status_message(const std::string& plugin_name) const;
 
+    // Get a plugin's version (empty if the plugin doesn't export get_system_plugin_version)
+    R_API std::string get_plugin_version(const std::string& plugin_name) const;
+
     // Wire up detection events from the motion plugin host to all system plugins
     // that implement system_plugin_post_detection. Call after construction, before start_all().
     R_API void connect_detection_bus(r_motion_event_plugin_host& meph);
@@ -72,6 +75,7 @@ private:
         void (*set_api_result_cb_func)(r_system_plugin_handle, system_plugin_api_result_cb, void*);                   // Optional - nullptr if not supported
         std::string name;
         std::string guid;
+        std::string version;   // Empty if the plugin doesn't report one
     };
 
     std::string _top_dir;

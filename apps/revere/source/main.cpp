@@ -51,6 +51,7 @@
 #include "r_disco/r_camera.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_disk_benchmark.h"
+#include "r_vss/r_build_info.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_file.h"
 #include "r_storage/r_md_storage_file.h"
@@ -76,6 +77,10 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 #include "gl_utils.h"
 
 #include "imgui_ui.h"
+#include "main_window.h"
+#include "dialogs.h"
+#include "r_vss/r_camera_source_info.h"
+#include "r_vss/r_camera_stats.h"
 #include "assignment_state.h"
 #include "configure_state.h"
 #include "rtsp_source_camera_config.h"
@@ -85,11 +90,13 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 
 #include "revere_version.h"
 
-// Version info (generated at build time from git):
+// Version info (generated from git when CMake configures):
 //   #include "revere_version.h"
-//   REVERE_VERSION      - project version, e.g. "0.0.1"
+//   REVERE_VERSION      - project version, e.g. "0.0.1" on a tag, "0.0.1-5-ga1b2c3d" after it
 //   REVERE_GIT_REVISION - short git hash, e.g. "a1b2c3d"
 //   REVERE_GIT_DESCRIBE - git describe output, e.g. "v1.0.0-5-ga1b2c3d"
+//   REVERE_BUILD_NUMBER - commits up to HEAD, e.g. 273
+// The build time and "-dirty" are stamped on every build: r_vss/r_build_info.h.
 //
 // https://github.com/dicroce/revere/releases/download/v0.0.1/revere-v0.0.1-x86_64-windows-setup.exe
 //                                                            revere-v0.0.1-x86_64-linux.flatpak
@@ -218,6 +225,24 @@ struct revere_ui_state
 
     // Cached system plugins list (updated periodically, not per-frame)
     vector<string> loaded_system_plugins;
+
+    // The recording cameras as of the last list update, and the camera pane's
+    // stats (read in the background; set once the cache exists in main()).
+    map<string, r_disco::r_camera> assigned_cameras;
+    r_vss::camera_stats_cache* camera_stats {nullptr};
+
+    // The selected recording camera, for the stats cache to read.
+    r_nullable<r_disco::r_camera> selected_recording_camera() const
+    {
+        r_nullable<r_disco::r_camera> out;
+        if(recording_selected_item >= 0 && recording_selected_item < (int)recording_items.size())
+        {
+            auto it = assigned_cameras.find(recording_items[recording_selected_item].camera_id);
+            if(it != assigned_cameras.end())
+                out.set_value(it->second);
+        }
+        return out;
+    }
     void reset_selection()
     {
         recording_selected_item = -1;
@@ -280,6 +305,24 @@ static string _make_file_name(string name)
     return name + ".nts";
 }
 
+// Resolution and framerate from a camera's recording file (the same reading
+// /cameras reports), re-read at most once a minute per camera since it means
+// opening the file.
+static r_vss::camera_source_info _cached_source_info(const r_disco::r_camera& cam)
+{
+    static map<string, pair<chrono::steady_clock::time_point, r_vss::camera_source_info>> cache;
+    auto now = chrono::steady_clock::now();
+    auto it = cache.find(cam.id);
+    if(it != cache.end() && (now - it->second.first) < chrono::seconds(60))
+        return it->second.second;
+
+    r_vss::camera_source_info info;
+    if(!cam.record_file_path.is_null())
+        info = r_vss::read_camera_source_info(_get_storage_path(cam.record_file_path.value()));
+    cache[cam.id] = {now, info};
+    return info;
+}
+
 void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_vss::r_stream_keeper& streamKeeper)
 {
     // Use cached versions to avoid blocking the UI thread
@@ -295,6 +338,9 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
     for(auto& status : stream_status)
         status_by_id[status.camera.id] = status;
 
+    ui_state.assigned_cameras = assigned;
+    auto now_wall = chrono::system_clock::now();
+
     ui_state.recording_items.clear();
     for(auto& c : assigned)
     {
@@ -302,6 +348,17 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
         item.label = c.second.friendly_name.value();
         item.sub_label = c.second.ipv4.value();
         item.camera_id = c.first;
+        item.codec = c.second.video_codec.is_null() ? string() : c.second.video_codec.value();
+        auto source = _cached_source_info(c.second);
+        if(!source.resolution.is_null())
+            item.resolution = r_string_utils::format("%u \xC3\x97 %u", (unsigned)source.resolution.value().first, (unsigned)source.resolution.value().second);
+        if(!source.framerate.is_null() && source.framerate.value() > 0.0f)
+            item.frame_rate = r_string_utils::format("%g fps", (double)source.framerate.value());
+        item.motion_detection = c.second.do_motion_detection;
+        if(ui_state.camera_stats)
+            item.stats = ui_state.camera_stats->get(c.first);
+        item.reconnects_24h = streamKeeper.reconnects().count_since(c.first, now_wall - chrono::hours(24));
+        item.reconnects_counted_since = streamKeeper.reconnects().started_at();
 
         // Populate kbps, retention, and health if stream status is available
         if(status_by_id.find(c.first) != status_by_id.end())
@@ -337,9 +394,8 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
         }
         else
         {
-            item.kbps = "N/A";
-            item.retention = "N/A";
             item.health = revere::stream_health::unknown;
+            item.starting = true;
         }
 
         ui_state.recording_items.push_back(item);
@@ -378,6 +434,55 @@ void _create_motion_files(const string& motion_path)
     // Also allocate metadata storage for analytics (person detection, etc.)
     // Use 512KB blocks, 30 blocks total
     r_storage::r_md_storage_file::allocate(motion_path, 524288, 30);
+}
+
+// Notices the user said not to show again (a toast's "Don't show again"),
+// one id per line in config/dismissed_notices.txt.
+static std::string _dismissed_notices_path()
+{
+    return revere::sub_dir("config") + PATH_SLASH + "dismissed_notices.txt";
+}
+
+static bool _notice_dismissed(const std::string& id)
+{
+    try
+    {
+        auto path = _dismissed_notices_path();
+        if(!r_fs::file_exists(path))
+            return false;
+        auto bytes = r_fs::read_file(path);
+        std::string text(bytes.begin(), bytes.end());
+        for(const auto& line : r_string_utils::split(text, '\n'))
+            if(r_string_utils::strip(line) == id)
+                return true;
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("Could not read dismissed notices: %s", e.what());
+    }
+    return false;
+}
+
+static void _dismiss_notice(const std::string& id)
+{
+    if(_notice_dismissed(id))
+        return;
+    try
+    {
+        auto path = _dismissed_notices_path();
+        std::string text;
+        if(r_fs::file_exists(path))
+        {
+            auto bytes = r_fs::read_file(path);
+            text.assign(bytes.begin(), bytes.end());
+        }
+        text += id + "\n";
+        r_fs::write_file((const uint8_t*)text.data(), text.size(), path);
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("Could not save dismissed notice %s: %s", id.c_str(), e.what());
+    }
 }
 
 // Helper to get storage file path - handles both legacy (filename only) and new (full path) formats
@@ -542,6 +647,9 @@ struct storage_op_state
 };
 
 static storage_op_state s_storage_op;
+
+// What the logger writes, for the main window's log pane (View > Show log).
+static revere::log_tail s_log_tail;
 
 static vector<pair<string,string>> _get_storage_file_pairs(const r_disco::r_camera& camera)
 {
@@ -1180,10 +1288,9 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "set_system_password",
         [&as, &camera_setup_wizard, &stream_keeper](){
-            ImGui::OpenPopup("Set system password");
-            revere::system_password_modal(
-                GImGui,
-                "Set system password",
+            ImGui::OpenPopup(revere::web_password_text::name);
+            revere::web_password_modal(
+                revere::web_password_text::name,
                 stream_keeper.system_password_set(),
                 [&](const std::string& pw){
                     try
@@ -1300,42 +1407,12 @@ void configure_camera_setup_wizard(
             as.wizard_step = 3;
             auto title = as.step_title("Select stream profile");
             ImGui::OpenPopup(title.c_str());
-            ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Always);
-            if(ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-            {
-                ImGui::TextUnformatted("Choose the stream profile to record:");
-                if(as.profiles_were_filtered)
-                {
-                    ImGui::Spacing();
-                    ImGui::TextColored(r_ui_utils::theme::status_warning_text, "Some profiles were removed because their codecs are not supported.");
-                }
-                ImGui::Spacing();
-
-                for(int i = 0; i < (int)as.available_profiles.size(); ++i)
-                {
-                    auto& p = as.available_profiles[i];
-                    auto label = p.encoding + "  " + std::to_string(p.width) + "x" + std::to_string(p.height);
-                    ImGui::RadioButton(label.c_str(), &as.selected_profile_idx, i);
-                }
-
-                ImGui::Spacing();
-                ImGui::Separator();
-                ImGui::Spacing();
-
-                if(ImGui::Button("Next", ImVec2(120, 0)))
-                {
-                    as.selected_profile_token = as.available_profiles[as.selected_profile_idx].token;
-                    ImGui::CloseCurrentPopup();
-                    camera_setup_wizard.next("complete_interrogation");
-                }
-                ImGui::SameLine();
-                if(ImGui::Button("Cancel", ImVec2(120, 0)))
-                {
-                    ImGui::CloseCurrentPopup();
-                    camera_setup_wizard.cancel();
-                }
-                ImGui::EndPopup();
-            }
+            revere::profile_selection_modal(
+                title,
+                as,
+                [&](){ camera_setup_wizard.next("complete_interrogation"); },
+                [&](){ camera_setup_wizard.cancel(); }
+            );
         }
     );
     camera_setup_wizard.add_step(
@@ -1477,7 +1554,7 @@ void configure_camera_setup_wizard(
         "friendly_name",
         [&as, &camera_setup_wizard](){
             as.wizard_step = 4;
-            auto title = as.step_title("Camera friendly name");
+            auto title = as.step_title("Camera name");
             ImGui::OpenPopup(title.c_str());
             revere::friendly_name_modal(
                 GImGui,
@@ -1495,7 +1572,7 @@ void configure_camera_setup_wizard(
         "please_wait",
         [&as, &camera_setup_wizard](){
             as.wizard_step = 2;
-            auto title = as.step_title("Please wait");
+            auto title = as.step_title("Connecting");
             ImGui::OpenPopup(title.c_str());
 
             // Build a per-phase status line so the user can see what the
@@ -1685,25 +1762,34 @@ void configure_camera_setup_wizard(
         }
     );
     camera_setup_wizard.add_step(
-        "minimize_to_tray",
-        [&ui_state, &camera_setup_wizard](){
-            ImGui::OpenPopup("Minimize to Tray");
-            revere::minimize_to_tray_modal(
-                GImGui,
-                "Minimize to Tray",
-                [&](){camera_setup_wizard.cancel(); ui_state.minimize_requested = true;},
-                [&](){camera_setup_wizard.cancel();}
-            );
-        }
-    );
+        "about_revere",
+        [&camera_setup_wizard, &stream_keeper](){
+            // Which build this is and each loaded plugin's version, for support.
+            std::vector<std::string> lines = {
+                "Revere " + r_vss::revere_version() + " (build " + std::to_string(r_vss::revere_build_number()) + ")",
+                "Built " + r_vss::revere_build_time(),
+                "Revision " + r_vss::revere_git_revision()
+            };
+            std::string copy_text = r_vss::revere_build_summary();
+            for(const auto& name : stream_keeper.get_loaded_system_plugins())
+            {
+                auto v = stream_keeper.get_system_plugin_version(name);
+                // The plugin's own name for itself (its status "name"), else its short name.
+                revere::plugin_view pv;
+                pv.name = name;
+                revere::parse_plugin_status(stream_keeper.get_system_plugin_status(name), pv);
+                std::string label = revere::plugin_display_name(pv);
+                std::string line = label + " " + (v.empty() ? "(version unknown)" : v);
+                lines.push_back(line);
+                copy_text += " \xC2\xB7 " + line;
+            }
 
-    camera_setup_wizard.add_step(
-        "startup_enabled_notification",
-        [&camera_setup_wizard](){
-            ImGui::OpenPopup("Startup enabled");
-            revere::startup_enabled_modal(
+            ImGui::OpenPopup("About Revere");
+            revere::about_revere_modal(
                 GImGui,
-                "Startup enabled",
+                "About Revere",
+                lines,
+                copy_text,
                 [&](){camera_setup_wizard.cancel();}
             );
         }
@@ -1728,10 +1814,10 @@ void configure_camera_setup_wizard(
     camera_setup_wizard.add_step(
         "configure_rtsp_source_camera",
         [&ui_state, &camera_setup_wizard, &rscc, &devices](){
-            ImGui::OpenPopup("Configure RTSP Source Camera");
+            ImGui::OpenPopup("Add RTSP camera");
             revere::configure_rtsp_source_camera_modal(
                 GImGui,
-                "Configure RTSP Source Camera",
+                "Add RTSP camera",
                 rscc,
                 [&](){
                     r_disco::r_camera c;
@@ -1761,17 +1847,23 @@ void configure_camera_setup_wizard(
             // Get camera info to display record file path
             auto camera_id = ui_state.selected_camera_id();
             string record_path;
+            string camera_name;
             if(!camera_id.is_null())
             {
                 auto camera_opt = devices.get_camera_by_id(camera_id.value());
                 if(!camera_opt.is_null() && !camera_opt.value().record_file_path.is_null())
                     record_path = _get_storage_path(camera_opt.value().record_file_path.value());
+                if(!camera_opt.is_null())
+                {
+                    const auto& c = camera_opt.value();
+                    camera_name = !c.friendly_name.is_null() ? c.friendly_name.value() : (!c.camera_name.is_null() ? c.camera_name.value() : string());
+                }
             }
 
             ImGui::OpenPopup("Camera properties");
             revere::camera_properties_modal(
-                GImGui,
                 "Camera properties",
+                camera_name,
                 ui_state.do_motion_detection,
                 ui_state.do_motion_pruning,
                 ui_state.min_continuous_recording_hours,
@@ -2855,6 +2947,7 @@ int main(int argc, char** argv)
     cfg_state.load();
 
     r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
+    r_logger::set_log_callback([](r_logger::LOG_LEVEL, const std::string& line) { s_log_tail.add(line); });
 
     // Install before any worker threads start, so nothing can crash unwatched.
     // Dumps land beside the logs so "send me your logs directory" collects the
@@ -3135,7 +3228,7 @@ int main(int argc, char** argv)
         if(!vision_process.running())
             vision_process.start();
     }));
-    tray.addEntry(Tray::Button("Open web UI", [&]{
+    tray.addEntry(Tray::Button("Open local web UI", [&]{
         revere::open_url_in_browser("http://localhost:8088");
     }));
     tray.addEntry(Tray::Separator());
@@ -3146,7 +3239,9 @@ int main(int argc, char** argv)
     // Configure Dear ImGui (context already created earlier)
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+    // ImGui sets the OS cursor (hand on links and switches, resize arrows on
+    // the splitters). This app used to set ImGuiConfigFlags_NoMouseCursorChange,
+    // with no recorded reason; the vision app still does.
 
     // Setup Dear ImGui style
     r_ui_utils::apply_revere_style(ImGui::GetStyle());
@@ -3210,6 +3305,16 @@ int main(int argc, char** argv)
     r_ui_utils::wizard camera_setup_wizard;
     configure_camera_setup_wizard(as, rscc, camera_setup_wizard, tl, agent, devices, streamKeeper, ui_state);
 
+    // The camera pane's stats tiles: read for the selected camera off the UI
+    // thread, at most every 5 s. Declared after devices
+    // and the stream keeper, so it's destroyed (waiting for a read in
+    // progress) before them.
+    r_vss::camera_stats_cache camera_stats([&devices, top_dir](const r_disco::r_camera& camera) {
+        auto now = chrono::system_clock::now();
+        return r_vss::gather_camera_stats(top_dir, devices, camera, now, r_vss::local_day_start(now));
+    });
+    ui_state.camera_stats = &camera_stats;
+
     _update_list_ui(ui_state, devices, streamKeeper);
 
     // Initialize cached system plugins list
@@ -3224,10 +3329,164 @@ int main(int argc, char** argv)
     auto last_ui_update_ts = chrono::steady_clock::now();
     bool force_ui_update = false;
 
+    // The camera lists come from r_devices' caches, which its thread fills
+    // just after start(), so the first _update_list_ui() above usually sees
+    // them empty. Redraw the moment the first fill lands, and refresh every
+    // 500 ms for a while after launch so stream status appears quickly too.
+    const auto launch_ts = chrono::steady_clock::now();
+    bool cameras_loaded = devices.cache_generation() > 0;
+
 
     bool window_visible = !maybe_start_minimized;  // Start hidden if minimized flag is set
     bool need_render = true;  // Render at least once on startup
 
+    // The main window's list, detail pane and log. Each action does what the
+    // matching button on the old camera cards did.
+    revere::main_window_state main_window_state;
+    revere::main_window_fonts main_window_fonts {FONT_KEY_24, FONT_KEY_22, FONT_KEY_18};
+    bool tray_notice_pending = false;
+    revere::g_dialog_fonts = main_window_fonts;
+    revere::main_window_actions main_window_actions;
+    main_window_actions.select_recording = [&](int i){
+        ui_state.recording_selected_item = i;
+        ui_state.discovered_selected_item = -1;
+        force_ui_update = true;
+    };
+    main_window_actions.select_discovered = [&](int i){
+        ui_state.reset_selection();
+        ui_state.discovered_selected_item = i;
+        ui_state.recording_selected_item = -1;
+        force_ui_update = true;
+    };
+    main_window_actions.select_plugin = [&](){
+        ui_state.reset_selection();
+    };
+    main_window_actions.record = [&](int i){
+        ui_state.discovered_selected_item = i;
+        ui_state.recording_selected_item = -1;
+        force_ui_update = true;
+
+        as.camera_id = ui_state.discovered_items[i].camera_id;
+        as.camera = devices.get_camera_by_id(as.camera_id);
+        if(as.camera.is_null())
+            return;
+        auto& cam = as.camera.value();
+        as.ipv4 = cam.ipv4.is_null() ? "" : cam.ipv4.value();
+        as.wizard_step = 1;
+        as.wizard_total_steps = 9;
+
+        // A manually-added RTSP camera has a stream URL but no
+        // ONVIF address — skip the credentials/profile/ONVIF
+        // steps and probe the RTSP URL directly, reusing the
+        // credentials captured in the Add dialog.
+        if(cam.xaddrs.is_null() && !cam.rtsp_url.is_null())
+        {
+            as.rtsp_username = cam.rtsp_username;
+            as.rtsp_password = cam.rtsp_password;
+            as.selected_profile_token = "";
+            camera_setup_wizard.next("interrogate_rtsp_source");
+        }
+        else
+        {
+            camera_setup_wizard.next("camera_credentials");
+        }
+    };
+    main_window_actions.forget = [&](int i){
+        auto camera_id = ui_state.discovered_items[i].camera_id;
+        auto camera = devices.get_camera_by_id(camera_id);
+        if(!camera.is_null())
+        {
+            devices.remove_camera(camera.value());
+            agent.forget(camera_id);
+            ui_state.reset_selection();
+            force_ui_update = true;
+        }
+    };
+    main_window_actions.remove = [&](int i){
+        // Set up the UI state for the remove dialog
+        ui_state.recording_selected_item = i;
+        ui_state.discovered_selected_item = -1;
+        force_ui_update = true;
+
+        auto maybe_c = devices.get_camera_by_id(ui_state.recording_items[i].camera_id);
+        if(!maybe_c.is_null())
+        {
+            auto c = maybe_c.value();
+            // Store camera name for display in the dialog
+            ui_state.camera_to_remove_name = c.friendly_name.is_null() ?
+                c.camera_name.value() : c.friendly_name.value();
+            // Reset the delete files checkbox to false (unchecked by default)
+            ui_state.delete_camera_files = false;
+            // Show the removal confirmation dialog
+            camera_setup_wizard.next("remove_camera_modal");
+        }
+    };
+    main_window_actions.properties = [&](int i){
+        ui_state.recording_selected_item = i;
+        ui_state.discovered_selected_item = -1;
+        force_ui_update = true;
+
+        // Go to camera properties modal
+        auto camera = devices.get_camera_by_id(ui_state.selected_camera_id().value()).value();
+        ui_state.do_motion_detection = camera.do_motion_detection.value();
+        ui_state.do_motion_pruning = camera.do_motion_pruning.value();
+        ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());
+        camera_setup_wizard.next("camera_properties_modal");
+    };
+    main_window_actions.view = [&](int i){
+        auto cid = ui_state.recording_items[i].camera_id;
+        if(cid.empty())
+            return;
+        string args = " --camera " + cid + " --overlay --revere-ip 127.0.0.1";
+#ifdef IS_MACOS
+        // The overlay comes to the front; without this,
+        // macOS 14+ keeps it behind our window.
+        yield_activation_to("com.revere.vision");
+        _launch_detached(vision_cmd + " --args" + args);
+#else
+        _launch_detached(vision_cmd + args);
+#endif
+    };
+    main_window_actions.repair = [&](int i){
+        // "Repair" on a camera whose recording file is missing.
+        ui_state.recording_selected_item = i;
+        ui_state.discovered_selected_item = -1;
+        force_ui_update = true;
+
+        auto maybe_c = devices.get_camera_by_id(ui_state.recording_items[i].camera_id);
+        if(maybe_c.is_null())
+            return;
+        auto c = maybe_c.value();
+        s_storage_op.camera_id = c.id;
+        s_storage_op.camera_name = c.friendly_name.is_null() ? c.camera_name.value() : c.friendly_name.value();
+        s_storage_op.new_dir.clear();
+        s_storage_op.start_fresh = true;
+        s_storage_op.repair_mode = 0;
+        s_storage_op.locate_path.clear();
+        s_storage_op.missing_path = c.record_file_path.is_null() ? std::string() : _get_storage_path(c.record_file_path.value());
+        s_storage_op.running = false;
+        s_storage_op.done = false;
+        s_storage_op.error = false;
+        s_storage_op.progress = 0.f;
+        {
+            std::lock_guard<std::mutex> g(s_storage_op.mtx);
+            s_storage_op.status.clear();
+        }
+        camera_setup_wizard.next("repair_storage_modal");
+    };
+    main_window_actions.set_plugin_enabled = [&](const std::string& name, bool enabled){
+        streamKeeper.set_system_plugin_enabled(name, enabled);
+    };
+    main_window_actions.add_rtsp_camera = [&](){
+        camera_setup_wizard.next("configure_rtsp_source_camera");
+    };
+    main_window_actions.dismiss_notice = [](const std::string& id){
+        _dismiss_notice(id);
+    };
+    main_window_actions.open_url = [](const std::string& url){
+        try { revere::open_url_in_browser(url); }
+        catch (const std::exception& e) { R_LOG_ERROR("Could not open %s: %s", url.c_str(), e.what()); }
+    };
     // Moves and resizes are remembered a second after they stop, not on every event of a drag.
     const auto placement_debounce = chrono::seconds(1);
     bool placement_changed = false;
@@ -3269,11 +3528,17 @@ int main(int argc, char** argv)
                         event.window.windowID == SDL_GetWindowID(window))
                     {
                         user_close_handled = true;
-                        camera_setup_wizard.next("minimize_to_tray");
+                        ui_state.minimize_requested = true;
                     }
                     if (event.window.event == SDL_WINDOWEVENT_SHOWN)
                     {
                         window_visible = true;
+                        // Back from the tray: say where it was, until told not to.
+                        if(tray_notice_pending)
+                        {
+                            tray_notice_pending = false;
+                            main_window_state.show_toast("Revere kept recording while its window was closed. It runs in the system tray; to quit, use the tray icon's menu or Cameras > Exit.", "minimized_to_tray", 12.0);
+                        }
                         if (maximize_when_shown)
                         {
                             maximize_when_shown = false;
@@ -3359,8 +3624,18 @@ int main(int argc, char** argv)
 
         auto now = chrono::steady_clock::now();
 
+        // Never blocks: starts a stats read when one is due, and redraws when one lands.
+        if(camera_stats.poll(ui_state.selected_recording_camera(), now))
+            force_ui_update = true;
+
         // Check if periodic data update is needed
-        bool need_data_update = ((now - last_ui_update_ts) > chrono::seconds(5)) || force_ui_update;
+        if(!cameras_loaded && devices.cache_generation() > 0)
+        {
+            cameras_loaded = true;
+            force_ui_update = true;
+        }
+        const auto refresh_interval = (now - launch_ts) < chrono::seconds(10) ? chrono::milliseconds(500) : chrono::milliseconds(5000);
+        bool need_data_update = ((now - last_ui_update_ts) > refresh_interval) || force_ui_update;
 
         if(need_data_update)
         {
@@ -3416,7 +3691,7 @@ int main(int argc, char** argv)
                 close_requested = true;
             },
             [&](){
-                camera_setup_wizard.next("minimize_to_tray");
+                ui_state.minimize_requested = true;
             },
             [&](){
                 camera_setup_wizard.next("configure_rtsp_source_camera");
@@ -3437,19 +3712,21 @@ int main(int argc, char** argv)
                 auto exe_path = r_fs::current_exe_path();
                 bool success = r_startup::set_autostart(enabled, "Revere", exe_path, "--start_minimized");
 
-                // Show confirmation dialog only when enabling and operation succeeded
+                // Say what that means, only when enabling worked.
                 if (enabled && success)
-                {
-                    camera_setup_wizard.next("startup_enabled_notification");
-                }
+                    main_window_state.show_toast("Revere will start when you log in, minimized to the system tray.");
             },
             [&](){
                 revere::open_url_in_browser("http://localhost:8088");
             },
             [&](){
                 camera_setup_wizard.next("set_system_password");
+            },
+            [&](){
+                camera_setup_wizard.next("about_revere");
             }
         );
+        revere::main_window_view_menu(main_window_state);
 
         r_utils::r_nullable<std::string> main_status;
 
@@ -3470,345 +3747,34 @@ int main(int argc, char** argv)
             main_status.set_value(string("Revere running"));
         }
 
-        main_layout(
+        std::vector<revere::plugin_view> plugin_views;
+        for(const auto& plugin_name : ui_state.loaded_system_plugins)
+        {
+            revere::plugin_view pv;
+            pv.name = plugin_name;
+            pv.enabled = streamKeeper.is_system_plugin_enabled(plugin_name);
+            revere::parse_plugin_status(streamKeeper.get_system_plugin_status(plugin_name), pv);
+            pv.status_message = streamKeeper.get_system_plugin_status_message(plugin_name);
+            plugin_views.push_back(std::move(pv));
+        }
+
+        main_window_state.cameras_loaded = cameras_loaded;
+        revere::main_window(
             client_top,
             window_width,
             window_height,
-            [&](uint16_t x, uint16_t y, uint16_t w, uint16_t h){
-                revere::thirds(
-                    x,
-                    y,
-                    w,
-                    h,
-                    "Discovered",
-                    [&](uint16_t pw){
-                        revere::sidebar_list(
-                            GImGui,
-                            as,
-                            ui_state.discovered_selected_item,
-                            pw,
-                            ui_state.discovered_items,
-                            "Record",
-                            [&](int i){
-                                as.camera_id = ui_state.discovered_items[i].camera_id;
-                                as.camera = devices.get_camera_by_id(as.camera_id);
-                                auto& cam = as.camera.value();
-                                as.ipv4 = cam.ipv4.is_null() ? "" : cam.ipv4.value();
-                                as.wizard_step = 1;
-                                as.wizard_total_steps = 9;
-
-                                // A manually-added RTSP camera has a stream URL but no
-                                // ONVIF address — skip the credentials/profile/ONVIF
-                                // steps and probe the RTSP URL directly, reusing the
-                                // credentials captured in the Add dialog.
-                                if(cam.xaddrs.is_null() && !cam.rtsp_url.is_null())
-                                {
-                                    as.rtsp_username = cam.rtsp_username;
-                                    as.rtsp_password = cam.rtsp_password;
-                                    as.selected_profile_token = "";
-                                    camera_setup_wizard.next("interrogate_rtsp_source");
-                                }
-                                else
-                                {
-                                    camera_setup_wizard.next("camera_credentials");
-                                }
-                            },
-                            [&](int i){
-                                ui_state.reset_selection();
-                                ui_state.discovered_selected_item = i;
-                                ui_state.recording_selected_item = -1;
-                                force_ui_update = true;
-                            },
-                            true, // should we include a "forget" button?
-                            [&](int i){
-                                auto camera_id = ui_state.discovered_items[i].camera_id;
-                                auto camera = devices.get_camera_by_id(camera_id);
-                                if(!camera.is_null())
-                                {
-                                    devices.remove_camera(camera.value());
-                                    agent.forget(camera_id);
-                                    ui_state.reset_selection();
-                                    force_ui_update = true;
-                                }
-                            },
-                            false, // Dont include the properites button
-                            [](int){},
-                            false, // no view button on discovered (not recording yet)
-                            [](int){},
-                            [](int){}, // no per-card action on discovered
-                            ui_state.discovered_largest_label,
-                            FONT_KEY_24,
-                            FONT_KEY_22,
-                            FONT_KEY_18
-                        );
-                    },
-                    "Recording",
-                    [&](uint16_t pw){
-                        revere::sidebar_list(
-                            GImGui,
-                            as,
-                            ui_state.recording_selected_item,
-                            pw,
-                            ui_state.recording_items,
-                            "Remove",
-                            [&](int i){
-                                // Set up the UI state for the remove dialog
-                                ui_state.recording_selected_item = i;
-                                ui_state.discovered_selected_item = -1;
-                                force_ui_update = true;
-
-                                auto maybe_c = devices.get_camera_by_id(ui_state.recording_items[i].camera_id);
-                                if(!maybe_c.is_null())
-                                {
-                                    auto c = maybe_c.value();
-                                    // Store camera name for display in the dialog
-                                    ui_state.camera_to_remove_name = c.friendly_name.is_null() ?
-                                        c.camera_name.value() : c.friendly_name.value();
-                                    // Reset the delete files checkbox to false (unchecked by default)
-                                    ui_state.delete_camera_files = false;
-                                    // Show the removal confirmation dialog
-                                    camera_setup_wizard.next("remove_camera_modal");
-                                }
-
-                                force_ui_update = true;
-                            },
-                            [&](int i){
-                                ui_state.recording_selected_item = i;
-                                ui_state.discovered_selected_item = -1;
-                                force_ui_update = true;
-                            },
-                            false, // Dont include forget button
-                            [](int){},
-                            true, // Do include the properties button
-                            [&](int i){
-                                // first update the ui state
-                                ui_state.recording_selected_item = i;
-                                ui_state.discovered_selected_item = -1;
-                                force_ui_update = true;
-
-                                // Go to camera properties modal
-                                auto camera = devices.get_camera_by_id(ui_state.selected_camera_id().value()).value();
-                                ui_state.do_motion_detection = camera.do_motion_detection.value();
-                                ui_state.do_motion_pruning = camera.do_motion_pruning.value();
-                                ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());
-                                camera_setup_wizard.next("camera_properties_modal");
-                            },
-                            true, // include the "View" (pop-out overlay) button
-                            [&](int i){
-                                auto cid = ui_state.recording_items[i].camera_id;
-                                if(cid.empty())
-                                    return;
-                                string args = " --camera " + cid + " --overlay --revere-ip 127.0.0.1";
-#ifdef IS_MACOS
-                                // The overlay comes to the front; without this,
-                                // macOS 14+ keeps it behind our window.
-                                yield_activation_to("com.revere.vision");
-                                _launch_detached(vision_cmd + " --args" + args);
-#else
-                                _launch_detached(vision_cmd + args);
-#endif
-                            },
-                            [&](int i){
-                                // "Repair" on a card whose recording file is missing.
-                                ui_state.recording_selected_item = i;
-                                ui_state.discovered_selected_item = -1;
-                                force_ui_update = true;
-
-                                auto maybe_c = devices.get_camera_by_id(ui_state.recording_items[i].camera_id);
-                                if(maybe_c.is_null())
-                                    return;
-                                auto c = maybe_c.value();
-                                s_storage_op.camera_id = c.id;
-                                s_storage_op.camera_name = c.friendly_name.is_null() ? c.camera_name.value() : c.friendly_name.value();
-                                s_storage_op.new_dir.clear();
-                                s_storage_op.start_fresh = true;
-                                s_storage_op.repair_mode = 0;
-                                s_storage_op.locate_path.clear();
-                                s_storage_op.missing_path = c.record_file_path.is_null() ? std::string() : _get_storage_path(c.record_file_path.value());
-                                s_storage_op.running = false;
-                                s_storage_op.done = false;
-                                s_storage_op.error = false;
-                                s_storage_op.progress = 0.f;
-                                {
-                                    std::lock_guard<std::mutex> g(s_storage_op.mtx);
-                                    s_storage_op.status.clear();
-                                }
-                                camera_setup_wizard.next("repair_storage_modal");
-                            },
-                            ui_state.recording_largest_label,
-                            FONT_KEY_24,
-                            FONT_KEY_22,
-                            FONT_KEY_18
-                        );
-                    },
-                    "Loaded system plugins",
-                    [&](uint16_t){
-                        ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_18].inter_tight_regular);
-
-                        // Use cached plugins list instead of calling get_loaded_system_plugins() every frame
-                        if (ui_state.loaded_system_plugins.empty())
-                        {
-                            ImGui::Text("No system plugins loaded");
-                        }
-                        else
-                        {
-                            for (const auto& plugin_name : ui_state.loaded_system_plugins)
-                            {
-                                bool is_enabled = streamKeeper.is_system_plugin_enabled(plugin_name);
-                                if (ImGui::Checkbox(plugin_name.c_str(), &is_enabled))
-                                {
-                                    streamKeeper.set_system_plugin_enabled(plugin_name, is_enabled);
-                                }
-
-                                // Show status indicator if plugin supports it
-                                auto status_json = streamKeeper.get_system_plugin_status(plugin_name);
-                                if (!status_json.empty())
-                                {
-                                    try
-                                    {
-                                    auto sj = nlohmann::json::parse(status_json);
-                                    auto label = sj.value("label", std::string("Unknown"));
-                                    auto color_arr = sj.value("color", std::vector<int>{100, 100, 100});
-                                    int r = color_arr.size() > 0 ? color_arr[0] : 100;
-                                    int g = color_arr.size() > 1 ? color_arr[1] : 100;
-                                    int b = color_arr.size() > 2 ? color_arr[2] : 100;
-                                    ImU32 dot_color = IM_COL32(r, g, b, 255);
-
-                                    ImGui::Indent(28.0f);
-                                    auto cursor = ImGui::GetCursorScreenPos();
-                                    float dot_radius = 5.0f;
-                                    ImVec2 dot_center(cursor.x + dot_radius, cursor.y + ImGui::GetTextLineHeight() * 0.5f);
-                                    ImGui::GetWindowDrawList()->AddCircleFilled(dot_center, dot_radius, dot_color);
-                                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dot_radius * 2.0f + 6.0f);
-                                    ImGui::TextColored(r_ui_utils::theme::text_secondary, "%s", label.c_str());
-
-                                    // Show status message details (parsed from JSON)
-                                    auto status_message = streamKeeper.get_system_plugin_status_message(plugin_name);
-                                    if (!status_message.empty())
-                                    {
-                                        try
-                                        {
-                                            auto j = nlohmann::json::parse(status_message);
-                                            if (j.contains("lines") && j["lines"].is_array())
-                                            {
-                                                for (const auto& line : j["lines"])
-                                                {
-                                                    // {"qr": text}: draw text as a QR code (e.g. the cloud
-                                                    // activation link, to approve from a phone).
-                                                    if (line.contains("qr") && line["qr"].is_string())
-                                                    {
-                                                        auto qr_text = line["qr"].get<std::string>();
-                                                        static std::string qr_cached_text;
-                                                        static r_qr_code::qr_code qr_cached;
-                                                        if (qr_text != qr_cached_text)
-                                                        {
-                                                            qr_cached = r_qr_code::encode(qr_text);
-                                                            qr_cached_text = qr_text;
-                                                        }
-                                                        if (qr_cached.size > 0)
-                                                        {
-                                                            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Or scan with your phone:");
-
-                                                            // Whole pixels per module so it stays sharp; 4-module quiet zone.
-                                                            const int quiet = 4;
-                                                            const int span = qr_cached.size + quiet * 2;
-                                                            float module = std::floor(ImGui::GetContentRegionAvail().x / span);
-                                                            module = std::max(2.0f, std::min(module, 4.0f));
-                                                            auto pos = ImGui::GetCursorScreenPos();
-                                                            ImVec2 origin(std::floor(pos.x), std::floor(pos.y));
-                                                            float side = span * module;
-
-                                                            auto* dl = ImGui::GetWindowDrawList();
-                                                            dl->AddRectFilled(origin, ImVec2(origin.x + side, origin.y + side), IM_COL32(255, 255, 255, 255));
-                                                            for (int y = 0; y < qr_cached.size; ++y)
-                                                            {
-                                                                for (int x = 0; x < qr_cached.size; ++x)
-                                                                {
-                                                                    if (!qr_cached.dark(x, y))
-                                                                        continue;
-                                                                    ImVec2 a(origin.x + (quiet + x) * module, origin.y + (quiet + y) * module);
-                                                                    dl->AddRectFilled(a, ImVec2(a.x + module, a.y + module), IM_COL32(0, 0, 0, 255));
-                                                                }
-                                                            }
-                                                            ImGui::Dummy(ImVec2(side, side));
-                                                        }
-                                                        continue;
-                                                    }
-
-                                                    auto text = line.value("text", std::string());
-                                                    if (text.empty())
-                                                        continue;
-
-                                                    bool has_copy = line.contains("copy");
-                                                    bool has_url = line.contains("url");
-
-                                                    if (has_url)
-                                                    {
-                                                        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
-                                                        ImGui::TextColored(r_ui_utils::theme::text_tertiary, "%s", text.c_str());
-                                                        ImGui::PopTextWrapPos();
-
-                                                        auto url_val = line["url"].get<std::string>();
-                                                        ImGui::SameLine();
-                                                        if (ImGui::SmallButton(("Open##" + text).c_str()))
-                                                        {
-#if defined(IS_MACOS) || defined(__APPLE__)
-                                                            std::string open_cmd = "open \"" + url_val + "\"";
-#elif defined(IS_LINUX)
-                                                            std::string open_cmd = "xdg-open \"" + url_val + "\"";
-#elif defined(IS_WINDOWS)
-                                                            std::string open_cmd = "start \"\" \"" + url_val + "\"";
-#endif
-                                                            system(open_cmd.c_str());
-                                                        }
-                                                        ImGui::SameLine();
-                                                        if (ImGui::SmallButton(("Copy URL##" + text).c_str()))
-                                                            ImGui::SetClipboardText(url_val.c_str());
-                                                    }
-                                                    else
-                                                    {
-                                                        ImGui::TextColored(r_ui_utils::theme::text_primary, "%s", text.c_str());
-
-                                                        if (has_copy)
-                                                        {
-                                                            auto copy_val = line["copy"].get<std::string>();
-                                                            ImGui::SameLine();
-                                                            if (ImGui::SmallButton(("Copy##" + text).c_str()))
-                                                                ImGui::SetClipboardText(copy_val.c_str());
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        catch (...) {}
-                                    }
-
-                                    ImGui::Unindent(28.0f);
-                                    }
-                                    catch (...) {}
-                                }
-
-                                // Connecting to Revere Cloud: the cloud Terms and Privacy
-                                // Policy, under its checkbox and activation code/link.
-                                if (plugin_name.rfind("revere_cloud", 0) == 0)
-                                {
-                                    ImGui::Indent(28.0f);
-                                    revere::revere_cloud_terms_notice([](const std::string& url) {
-                                        try { revere::open_url_in_browser(url); }
-                                        catch (const std::exception& e) { R_LOG_ERROR("Could not open %s: %s", url.c_str(), e.what()); }
-                                    });
-                                    ImGui::Unindent(28.0f);
-                                }
-                            }
-                        }
-
-                        ImGui::PopFont();
-                    }
-                );
-
-            },
-            main_status,
-            FONT_KEY_18
+            main_window_state,
+            ui_state.recording_selected_item,
+            ui_state.discovered_selected_item,
+            ui_state.recording_items,
+            ui_state.discovered_items,
+            plugin_views,
+            main_status.is_null() ? string() : main_status.value(),
+            overflow_flags != r_vss::r_overflow_type::none,
+            string("Revere ") + REVERE_VERSION,
+            s_log_tail,
+            main_window_actions,
+            main_window_fonts
         );
 
         camera_setup_wizard();
@@ -3820,6 +3786,7 @@ int main(int argc, char** argv)
         if(ui_state.minimize_requested)
         {
             ui_state.minimize_requested = false;
+            tray_notice_pending = !_notice_dismissed("minimized_to_tray");
             SDL_HideWindow(window);
             window_visible = false;
         }
@@ -3870,6 +3837,7 @@ int main(int argc, char** argv)
     r_raw_socket::socket_cleanup();
 
     R_LOG_INFO("Shutdown complete");
+    r_logger::clear_log_callback();
     r_logger::uninstall_logger();
 
     // Release the process lock last — this unblocks any waiting --quit process,

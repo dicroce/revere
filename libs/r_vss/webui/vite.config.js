@@ -8,6 +8,7 @@ export default defineConfig({
   // In production the Vue app is served by Revere itself, so no proxy is needed.
   server: {
     proxy: {
+      '/version':          'http://localhost:8088',
       '/cameras':          'http://localhost:8088',
       '/key_frame':        'http://localhost:8088',
       '/contents':         'http://localhost:8088',

@@ -3,7 +3,9 @@
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_query.h"
 #include "r_vss/r_vss_utils.h"
+#include "r_vss/r_camera_source_info.h"
 #include "r_vss/r_motion_engine.h"
+#include "r_vss/r_build_info.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_string_utils.h"
@@ -23,11 +25,6 @@
 #include <functional>
 #include <array>
 #include <fstream>
-
-// Set by libs/r_vss/CMakeLists.txt from the root project's git tag / revision.
-#ifndef REVERE_VERSION_STRING
-#define REVERE_VERSION_STRING "unknown"
-#endif
 
 using namespace r_utils;
 using namespace r_http;
@@ -87,75 +84,19 @@ constexpr size_t MAX_INFLIGHT_EXPORTS = 8;
 constexpr int MAX_FAILED_LOGINS = 5;
 constexpr int LOGIN_LOCKOUT_SECONDS = 30;
 
-// Returns the camera's source video resolution by parsing the SPS from the
-// codec params stored alongside the latest recorded key frame. We can't use
-// r_camera::video_codec_parameters directly — those come from the discovery-
-// time SDP and frequently lack sprop-parameter-sets for cameras that only
-// emit SPS/PPS inline in the bitstream. The stored params, by contrast, are
-// populated by r_recording_context with the actual sprop bytes from the
-// running stream, so they're always present for any camera that's recorded
-// at least one key frame. Null on any failure (codec unknown, no recording,
-// SPS missing) — resolution is best-effort metadata.
-// What the camera's last recorded key frame says about its stream: the
-// coded resolution (from the SPS) and the framerate the recording context
-// stamped into the codec parameters. Best-effort metadata: null when the
-// camera hasn't recorded yet or the frame can't be read.
-struct camera_source_info
-{
-    r_utils::r_nullable<std::pair<uint16_t, uint16_t>> resolution;
-    r_utils::r_nullable<float> framerate;
-};
-
+// The camera's resolution and framerate from its last recorded key frame
+// (r_vss/r_camera_source_info.h). Empty for a camera that has no recording.
 camera_source_info _camera_source_info(const std::string& top_dir, const r_disco::r_camera& c)
 {
-    camera_source_info out;
     if(c.record_file_path.is_null())
-        return out;
-    try
-    {
-        // Path resolution mirrors _get_storage_path() in r_query.cpp.
-        const auto& rfp = c.record_file_path.value();
-        std::string path = (rfp.find('/') != std::string::npos || rfp.find('\\') != std::string::npos)
-            ? rfp
-            : (top_dir + PATH_SLASH + "video" + PATH_SLASH + rfp);
+        return camera_source_info();
 
-        r_storage::r_storage_file_reader sf(path);
-        auto last_ts = sf.last_ts();
-        if(last_ts.is_null())
-            return out;
-
-        auto key_bt_buf = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, last_ts.value());
-        uint32_t version = 0;
-        auto bt = r_utils::r_blob_tree::deserialize(key_bt_buf.data(), key_bt_buf.size(), version);
-
-        if(!bt.has_key("video_codec_name") || !bt.has_key("video_codec_parameters"))
-            return out;
-        auto codec = bt["video_codec_name"].get_string();
-        auto params = bt["video_codec_parameters"].get_string();
-
-        out.framerate = r_pipeline::get_video_codec_framerate(params);
-
-        if(codec == "h264")
-        {
-            auto sps = r_pipeline::get_h264_sps(params);
-            if(!sps.is_null())
-            {
-                auto info = r_pipeline::parse_h264_sps(sps.value());
-                out.resolution.set_value({info.width, info.height});
-            }
-        }
-        else if(codec == "h265")
-        {
-            auto sps = r_pipeline::get_h265_sps(params);
-            if(!sps.is_null())
-            {
-                auto info = r_pipeline::parse_h265_sps(sps.value());
-                out.resolution.set_value({info.width, info.height});
-            }
-        }
-    }
-    catch(...) { /* swallow — stream info is best-effort metadata */ }
-    return out;
+    // Path resolution mirrors _get_storage_path() in r_query.cpp.
+    const auto& rfp = c.record_file_path.value();
+    std::string path = (rfp.find('/') != std::string::npos || rfp.find('\\') != std::string::npos)
+        ? rfp
+        : (top_dir + PATH_SLASH + "video" + PATH_SLASH + rfp);
+    return read_camera_source_info(path);
 }
 
 } // namespace
@@ -171,6 +112,7 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     // 0.0.0.0 would expose all surveillance data to every host on the LAN.
     _server(WEB_SERVER_PORT, "127.0.0.1")
 {
+    _server.add_route(METHOD_GET, "/version", std::bind(&r_ws::_get_version, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/cameras", std::bind(&r_ws::_get_cameras, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/contents", std::bind(&r_ws::_get_contents, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/motion_events", std::bind(&r_ws::_get_motion_events, this, _1, _2, _3));
@@ -500,6 +442,45 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
     R_STHROW(r_http_500_exception, ("Failed to get contents."));
 }
 
+// Which build this is, for the web UI, the cloud plugin and support:
+//   {"version": "0.0.31-dirty", "build_number": 273, "build_time": "2026-10-15T20:01:02Z",
+//    "git_revision": "abc1234", "plugins": [{"name": "...", "version": "0.9.2"}]}
+// A plugin that doesn't report its version has "version": null. No secrets,
+// so no auth, like /auth_status.
+r_http::r_server_response r_ws::_get_version(const r_http::r_web_server<r_utils::r_socket>&,
+                                           r_utils::r_socket&,
+                                           const r_http::r_server_request&)
+{
+    try
+    {
+        json plugins = json::array();
+        for(const auto& name : _stream_keeper.get_loaded_system_plugins())
+        {
+            auto v = _stream_keeper.get_system_plugin_version(name);
+            plugins.push_back({{"name", name}, {"version", v.empty() ? json(nullptr) : json(v)}});
+        }
+
+        json j = {
+            {"version", revere_version()},
+            {"build_number", revere_build_number()},
+            {"build_time", revere_build_time()},
+            {"git_revision", revere_git_revision()},
+            {"plugins", plugins}
+        };
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+
+    R_STHROW(r_http_500_exception, ("Failed to get version."));
+}
+
 r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils::r_socket>&,
                                            r_utils::r_socket&,
                                            const r_http::r_server_request& request)
@@ -573,9 +554,9 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
             );
         }
 
-        // This build's version (the git tag, or the revision between tags),
-        // so clients such as the cloud plugin can report it.
-        j["version"] = REVERE_VERSION_STRING;
+        // This build's version (git describe), so clients such as the cloud
+        // plugin can report it. /version has the build number and time too.
+        j["version"] = revere_version();
 
         r_server_response response;
         response.set_content_type("text/json");
@@ -2953,7 +2934,7 @@ r_utils::r_nullable<std::string> r_ws::_load_system_password()
 void r_ws::_store_system_password(const std::string& password)
 {
     if(_master_key.empty())
-        R_THROW(("Secure storage unavailable; cannot set system password."));
+        R_THROW(("Secure storage unavailable; cannot set the local web password."));
     auto enc = r_credential_crypto::encrypt_credential(password, _master_key);
     // Write to a temp file then atomically rename, so a crash mid-write can't
     // leave a truncated (undecryptable) password file.
@@ -2965,7 +2946,7 @@ void r_ws::_store_system_password(const std::string& password)
 void r_ws::set_system_password(const std::string& password)
 {
     if(password.empty())
-        R_THROW(("System password must not be empty."));
+        R_THROW(("The local web password must not be empty."));
     _store_system_password(password);
     // Existing web sessions must re-authenticate against the new password.
     lock_guard<mutex> lock(_auth_mutex);
@@ -3064,7 +3045,7 @@ r_http::r_server_response r_ws::_post_login(const r_http::r_web_server<r_utils::
 
         auto stored = _load_system_password();
         if(stored.is_null())
-            R_STHROW(r_http_401_exception, ("No system password set."));
+            R_STHROW(r_http_401_exception, ("No local web password is set."));
 
         if(!_ct_equal(req["password"].get<string>(), stored.value()))
         {
@@ -3125,7 +3106,7 @@ r_http::r_server_response r_ws::_post_set_password(const r_http::r_web_server<r_
                 authorized = !stored.is_null() && _ct_equal(req["current_password"].get<string>(), stored.value());
             }
             if(!authorized)
-                R_STHROW(r_http_401_exception, ("Provide a valid token or current_password to change the system password."));
+                R_STHROW(r_http_401_exception, ("Provide a valid token or current_password to change the local web password."));
         }
 
         _store_system_password(new_password);
@@ -3149,7 +3130,7 @@ r_http::r_server_response r_ws::_post_set_password(const r_http::r_web_server<r_
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
-    R_STHROW(r_http_500_exception, ("Failed to set system password."));
+    R_STHROW(r_http_500_exception, ("Failed to set the local web password."));
 }
 
 r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
@@ -3178,7 +3159,7 @@ r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
             return mcp_ok(id, {
                 {"protocolVersion", "2024-11-05"},
                 {"capabilities", {{"tools", json::object()}}},
-                {"serverInfo", {{"name", "revere"}, {"version", REVERE_VERSION_STRING}}}
+                {"serverInfo", {{"name", "revere"}, {"version", revere_version()}}}
             });
         }
 
