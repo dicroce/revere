@@ -8,6 +8,7 @@
 #include "r_http/r_status_codes.h"
 #include "r_http/r_http_exception.h"
 #include "r_utils/r_server_threaded.h"
+#include <chrono>
 #include "r_utils/r_socket.h"
 #include "r_utils/r_macro.h"
 #include "r_utils/r_blob_tree.h"
@@ -76,11 +77,20 @@ public:
             // for a whole request): closing a socket with unread data makes
             // some stacks (Linux) reset the connection, and the client would
             // see a reset instead of the 503 and its Retry-After.
+            // This runs on the accept thread, so it's bounded by a deadline
+            // (not a budget decremented per wait, which a client trickling a
+            // byte every fraction of a millisecond would never use up).
             char discard[4096];
-            uint64_t budget_ms = 50;
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
             size_t drained = 0;
-            while(drained < 65536 && conn.wait_till_recv_wont_block(budget_ms))
+            while(drained < 65536)
             {
+                auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+                if(left <= 0)
+                    break;
+                uint64_t wait_ms = (uint64_t)left;
+                if(!conn.wait_till_recv_wont_block(wait_ms))
+                    break;
                 int n = conn.recv(discard, sizeof(discard));
                 if(n <= 0)
                     break;
@@ -211,7 +221,9 @@ private:
 
         // The request may have waited in the queue for a free worker. If the
         // client has given up in the meantime (its own timeout), nobody will
-        // read the response: don't do the work.
+        // read the response: don't do the work. (A client that half-closes its
+        // side after sending the request, like `nc -N`, looks gone too; none
+        // of revere's clients do that.)
         if( conn.peer_closed() )
             return;
 

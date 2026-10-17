@@ -9,6 +9,11 @@
 
 #include <chrono>
 #include <thread>
+#ifndef IS_WINDOWS
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#endif
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
@@ -825,4 +830,54 @@ void test_r_http::test_web_server_destroyed_with_request_in_flight()
     }
     RTF_ASSERT(finished == 1);
     RTF_ASSERT(entered == 1);
+}
+
+// The busy answer reads what a refused client has sent, on the accept thread,
+// for at most 50 ms. A client trickling a byte every half millisecond mustn't
+// stretch that: the next refused client still gets its 503 straight away.
+void test_r_http::test_web_server_busy_503_trickling_client()
+{
+    int port = RTF_NEXT_PORT();
+    blocking_server server(port, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    r_socket a;
+    _send_get(a, port, "/block");
+    RTF_ASSERT(_wait_for([&](){ return server.blocked == 1; }));
+    r_socket queued;
+    _send_get(queued, port, "/count");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Refused, and sends one byte every 0.5 ms for 3 s.
+    std::atomic<bool> trickling {true};
+    std::thread slow([&](){
+        r_socket s;
+        s.connect("127.0.0.1", port);
+#ifndef IS_WINDOWS
+        int one = 1;
+        setsockopt(s.get_sok_id(), IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#endif
+        auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        char b = 'x';
+        while(trickling && std::chrono::steady_clock::now() < until)
+        {
+            if(s.send(&b, 1) <= 0)
+                break;
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
+        }
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+    // A normal client refused right after it.
+    auto t0 = std::chrono::steady_clock::now();
+    r_socket refused;
+    _send_get(refused, port, "/count");
+    r_client_response busy;
+    busy.read_response(refused);
+    auto took = std::chrono::steady_clock::now() - t0;
+    trickling = false;
+    slow.join();
+
+    RTF_ASSERT(busy.get_status() == 503);
+    RTF_ASSERT(took < std::chrono::milliseconds(500));
 }

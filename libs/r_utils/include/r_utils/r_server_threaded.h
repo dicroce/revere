@@ -104,7 +104,8 @@ public:
     }
 
     // Ends the accept loop: start() returns soon after. Safe to call before
-    // start(), while it's starting, and more than once; never throws.
+    // start(), while it's starting, and more than once; never throws. A
+    // stopped server can't be started again.
     R_API void stop() noexcept
     {
         _stopRequested = true;
