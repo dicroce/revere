@@ -1414,6 +1414,18 @@ int run_overlay(const overlay_opts& opts)
 
     g_renderer = renderer;
 
+#ifdef IS_MACOS
+    // On a Retina display the renderer's output is in pixels (2x the window's
+    // points). Without a logical size everything is drawn in points into the
+    // top-left quarter. Same as the main window: render in points and let SDL
+    // scale, and keep the logical size in step with the window on resize.
+    {
+        int window_w, window_h;
+        SDL_GetWindowSize(window, &window_w, &window_h);
+        SDL_RenderSetLogicalSize(renderer, window_w, window_h);
+    }
+#endif
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
@@ -1573,6 +1585,14 @@ int run_overlay(const overlay_opts& opts)
             if(event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE &&
                event.window.windowID == SDL_GetWindowID(window))
                 close_requested = true;
+#ifdef IS_MACOS
+            if(event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
+            {
+                int new_w, new_h;
+                SDL_GetWindowSize(window, &new_w, &new_h);
+                SDL_RenderSetLogicalSize(renderer, new_w, new_h);
+            }
+#endif
             if(event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE)
                 close_requested = true;
             // Temporary key toggle for always-on-top; becomes the pin button in
