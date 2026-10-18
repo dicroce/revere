@@ -323,6 +323,50 @@ void test_r_utils::test_read_file()
     r_fs::remove_file("foo.txt");
 }
 
+void test_r_utils::test_mkdir_p_concurrent()
+{
+    // Many threads making the same new directory at once (like two vision
+    // windows starting together): none throws, and it exists afterwards.
+    for(int round = 0; round < 20; ++round)
+    {
+        auto top = r_fs::temp_file_name(".", "mkd_");
+        auto dir = top + PATH_SLASH + "logs" + PATH_SLASH;
+        atomic<int> failures {0};
+        atomic<bool> go {false};
+        vector<thread> threads;
+        for(int i = 0; i < 8; ++i)
+        {
+            threads.emplace_back([&](){
+                while(!go) {}
+                try { r_fs::mkdir_p(dir); }
+                catch(...) { ++failures; }
+            });
+        }
+        go = true;
+        for(auto& t : threads)
+            t.join();
+        RTF_ASSERT(failures == 0);
+        RTF_ASSERT(r_fs::is_dir(dir));
+        r_fs::rmdir(top + PATH_SLASH + "logs");
+        r_fs::rmdir(top);
+    }
+}
+
+void test_r_utils::test_mkdir_p_over_file()
+{
+    // A file where the directory should be is still an error.
+    auto path = r_fs::temp_file_name(".", "mkf_");
+    {
+        auto f = r_file::open(path, "w+");
+        fprintf(f, "not a directory");
+    }
+    bool threw = false;
+    try { r_fs::mkdir_p(path); }
+    catch(const exception&) { threw = true; }
+    RTF_ASSERT(threw);
+    r_fs::remove_file(path);
+}
+
 void test_r_utils::test_stat()
 {
     {

@@ -17,6 +17,8 @@ public:
       TEST(test_r_utils::test_stack_trace_concurrent);
       TEST(test_r_utils::test_read_file);
       TEST(test_r_utils::test_stat);
+      TEST(test_r_utils::test_mkdir_p_concurrent);
+      TEST(test_r_utils::test_mkdir_p_over_file);
       TEST(test_r_utils::test_file_lock);
       TEST(test_r_utils::test_shared_file_lock);
       TEST(test_r_utils::test_md5_basic);
@@ -99,6 +101,8 @@ public:
     void test_string_utils_base64_encode();
     void test_string_utils_base64_decode();
     void test_read_file();
+    void test_mkdir_p_concurrent();
+    void test_mkdir_p_over_file();
     void test_stat();
     void test_file_lock();
     void test_shared_file_lock();

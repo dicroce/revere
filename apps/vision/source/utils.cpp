@@ -103,8 +103,9 @@ string vision::sub_dir(const string& subdir)
     auto top = top_dir();
     auto sd = top + PATH_SLASH + subdir + PATH_SLASH;
 
-    if(!r_fs::file_exists(sd))
-        r_fs::mkdir(sd);
+    // mkdir_p, not mkdir: two processes starting at once (two View windows, say)
+    // both see it missing, and the second mkdir would throw on the first's dir.
+    r_fs::mkdir_p(sd);
 
     return sd;
 }
