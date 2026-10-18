@@ -198,6 +198,66 @@ std::shared_ptr<texture> texture::create_streaming(
     return tex;
 }
 
+std::shared_ptr<texture> texture::create_streaming_nv12(
+    SDL_Renderer* renderer,
+    uint16_t w,
+    uint16_t h)
+{
+    if (!renderer || w == 0 || h == 0)
+    {
+        R_LOG_ERROR("Invalid parameters for create_streaming_nv12");
+        return nullptr;
+    }
+
+    auto tex = std::make_shared<texture>();
+    tex->_renderer = renderer;
+    tex->_width = w;
+    tex->_height = h;
+    tex->_is_rgba = false;
+
+    tex->_sdl_texture = SDL_CreateTexture(
+        renderer,
+        SDL_PIXELFORMAT_NV12,
+        SDL_TEXTUREACCESS_STREAMING,
+        w,
+        h
+    );
+
+    if (!tex->_sdl_texture)
+    {
+        R_LOG_ERROR("Failed to create NV12 streaming texture: %s", SDL_GetError());
+        return nullptr;
+    }
+
+    return tex;
+}
+
+bool texture::update_nv12(const uint8_t* pixels, uint16_t w, uint16_t h)
+{
+    if (!_sdl_texture || !pixels)
+    {
+        R_LOG_ERROR("Invalid texture or pixel data in update_nv12");
+        return false;
+    }
+
+    // Unlike update_rgb, this doesn't recreate on a size change: callers make
+    // a new texture when the frame size changes.
+    if (w != _width || h != _height)
+    {
+        R_LOG_ERROR("NV12 frame %dx%d doesn't match texture %dx%d", w, h, _width, _height);
+        return false;
+    }
+
+    const uint8_t* uv = pixels + (size_t)w * h;
+    if (SDL_UpdateNVTexture(_sdl_texture, nullptr, pixels, w, uv, w) != 0)
+    {
+        R_LOG_ERROR("Failed to update NV12 texture: %s", SDL_GetError());
+        return false;
+    }
+
+    return true;
+}
+
 bool texture::update_rgba(const uint8_t* pixels, uint16_t w, uint16_t h)
 {
     if (!_sdl_texture || !pixels)

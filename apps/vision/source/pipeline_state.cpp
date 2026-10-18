@@ -550,9 +550,17 @@ void pipeline_state::_entry_point()
                                     _si.name.c_str(), input_width, input_height, dest_width, dest_height, s.pts);
                             }
 
-                            // Use BGRA format which matches SDL_PIXELFORMAT_ARGB8888 on little-endian (x86)
-                            // BGRA in memory = B G R A bytes = ARGB8888 pixel format
-                            auto decoded_frame = _video_decoder.raw().get(AV_PIX_FMT_BGRA, dest_width, dest_height, 1);
+                            // NV12 when the renderer converts it on the GPU (even
+                            // dimensions; see pipeline_host::nv12_textures). Otherwise
+                            // BGRA, which matches SDL_PIXELFORMAT_ARGB8888 on
+                            // little-endian: B G R A bytes = ARGB8888.
+                            bool nv12 = _ph->nv12_textures() && dest_width >= 2 && dest_height >= 2;
+                            if(nv12)
+                            {
+                                dest_width &= ~1;
+                                dest_height &= ~1;
+                            }
+                            auto decoded_frame = _video_decoder.raw().get(nv12 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_BGRA, dest_width, dest_height, 1);
 
                             static int pixel_log_count = 0;
                             if (decoded_frame && pixel_log_count++ < 5)
@@ -565,6 +573,7 @@ void pipeline_state::_entry_point()
                             _ph->post_video_frame(
                                 _si.name,
                                 decoded_frame,
+                                nv12,
                                 dest_width,
                                 dest_height,
                                 input_width,

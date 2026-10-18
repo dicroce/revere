@@ -17,6 +17,7 @@ struct render_context final
         w(0),
         h(0),
         done(false),
+        nv12(false),
         pts(0)
     {
     }
@@ -26,6 +27,7 @@ struct render_context final
     uint16_t w;
     uint16_t h;
     bool done;
+    bool nv12;    // tex is an NV12 texture
     int64_t pts;  // Presentation timestamp of current frame
 };
 

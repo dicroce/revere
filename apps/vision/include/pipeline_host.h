@@ -142,7 +142,12 @@ public:
 
     void disconnect_stream(int window, const std::string& name);
 
-    void post_video_frame(const std::string& name, std::shared_ptr<std::vector<uint8_t>> buffer, uint16_t w, uint16_t h, uint16_t original_w, uint16_t original_h, int64_t pts);
+    void post_video_frame(const std::string& name, std::shared_ptr<std::vector<uint8_t>> buffer, bool nv12, uint16_t w, uint16_t h, uint16_t original_w, uint16_t original_h, int64_t pts);
+
+    // True when the renderer is accelerated and takes NV12 textures: decoders
+    // then hand over NV12 and the GPU converts to RGB, instead of swscale
+    // converting every frame to BGRA. Set once at construction.
+    bool nv12_textures() const { return _nv12_textures; }
 
     void set_active_audio_stream(const std::string& name);
     void set_stream_volume(const std::string& name, float gain);
@@ -170,7 +175,9 @@ public:
 
     // Called once per UI frame: picks the due frame (if any) for each stream
     // from its presentation queue and uploads it to that stream's texture.
-    void load_video_textures();
+    // True when it uploaded at least one frame, so the caller has something
+    // new to draw.
+    bool load_video_textures();
 
     bool playing(const std::string& stream_name) const;
     std::chrono::system_clock::time_point last_control_bar_pos(const std::string& stream_name) const;
@@ -232,6 +239,7 @@ private:
 
     configure_state& _cfg;
     SDL_Renderer* _renderer;
+    bool _nv12_textures;
     std::map<std::string, stream_info> _stream_infos;
     std::map<std::string, std::shared_ptr<pipeline_state>> _pipes;
 
