@@ -912,35 +912,52 @@ void r_stream_keeper::_entry_point()
     {
         try
         {
-            // All _streams map modifications are protected by _streams_mutex
+            // All _streams map modifications are protected by _streams_mutex.
+            //
+            // IMPORTANT: dead, modified and removed recording contexts are fully
+            // destroyed BEFORE any are added, so when a stream is recreated the
+            // old r_recording_context (and its nanots_writer) is gone before a new
+            // one opens the same file path and stream tags. They are destroyed
+            // outside the lock: a context whose camera has stopped answering can
+            // take seconds to wind down (its event subscription finishing a
+            // request), and nothing else should wait on _streams_mutex for that.
             {
-                std::lock_guard<std::mutex> lock(_streams_mutex);
+                std::vector<std::shared_ptr<r_recording_context>> doomed;
+                {
+                    std::lock_guard<std::mutex> lock(_streams_mutex);
 
-                // IMPORTANT: Remove dead recording contexts FIRST, before any add/remove logic
-                // This ensures that when a stream dies and needs to be recreated, the old
-                // r_recording_context (and its nanots_writer) is fully destroyed before
-                // we attempt to create a new one with the same file path and stream tags.
-                r_funky::erase_if(_streams, [this](const auto& c){
-                    if(c.second->dead())
+                    for(auto it = _streams.begin(); it != _streams.end();)
                     {
-                        R_LOG_WARNING("Dead stream detected, removing: %s", c.first.c_str());
-                        // The next pass starts it again: a reconnect.
-                        _reconnects.record(c.first);
-                        return true;
+                        if(it->second->dead())
+                        {
+                            R_LOG_WARNING("Dead stream detected, removing: %s", it->first.c_str());
+                            // The next pass starts it again: a reconnect.
+                            _reconnects.record(it->first);
+                            doomed.push_back(it->second);
+                            it = _streams.erase(it);
+                        }
+                        else
+                            ++it;
                     }
-                    return false;
-                });
 
+                    if(!_streams.empty())
+                    {
+                        auto cameras = _get_current_cameras();
+
+                        for(auto& rc : _remove_recording_contexts(_devices.get_modified_cameras(cameras)))
+                            doomed.push_back(rc);
+                        for(auto& rc : _remove_recording_contexts(_devices.get_assigned_cameras_removed(cameras)))
+                            doomed.push_back(rc);
+                    }
+                }
+
+                doomed.clear();
+
+                std::lock_guard<std::mutex> lock(_streams_mutex);
                 if(_streams.empty())
                     _add_recording_contexts(_devices.get_assigned_cameras());
                 else
-                {
-                    auto cameras = _get_current_cameras();
-
-                    _remove_recording_contexts(_devices.get_modified_cameras(cameras));
-                    _remove_recording_contexts(_devices.get_assigned_cameras_removed(cameras));
                     _add_recording_contexts(_devices.get_assigned_cameras_added(_get_current_cameras()));
-                }
             }
 
             _tier_tick();
@@ -1151,8 +1168,9 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
     }
 }
 
-void r_stream_keeper::_remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras)
+vector<shared_ptr<r_recording_context>> r_stream_keeper::_remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras)
 {
+    vector<shared_ptr<r_recording_context>> removed;
     for(const auto& camera : cameras)
     {
         // Always clear backoff entry so a remove+re-add resets the retry counter.
@@ -1166,10 +1184,13 @@ void r_stream_keeper::_remove_recording_contexts(const std::vector<r_disco::r_ca
             R_LOG_INFO("Stopping camera stream: %s (%s)", name.c_str(), camera.id.c_str());
             // Stop the recording context and clean up motion engine
             _stop(camera.id);
-            // Erase the recording context (this will close all file handles)
+            // Take the recording context out; the caller destroys it (closing
+            // its file handles) once _streams_mutex is released.
+            removed.push_back(_streams[camera.id]);
             _streams.erase(camera.id);
         }
     }
+    return removed;
 }
 
 vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const

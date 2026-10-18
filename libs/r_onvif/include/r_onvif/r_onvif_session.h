@@ -174,7 +174,9 @@ private:
         r_utils::r_nullable<std::string> username,
         r_utils::r_nullable<std::string> password,
         const std::function<void(pugi::xml_node&)>& build_header = {},
-        bool log_request = true
+        bool log_request = true,
+        int timeout_ms = 30000,
+        int net_attempts = 2
     );
 
     // A request to a pull point's own address: WS-Addressing Action and To, and
@@ -183,7 +185,9 @@ private:
         const onvif_pull_point& pull_point,
         const std::string& soap_action,
         const std::function<void(pugi::xml_node&)>& build_body,
-        bool log_request = true
+        bool log_request = true,
+        int timeout_ms = 30000,
+        int net_attempts = 2
     );
 
     std::vector<std::string> _xaddrs_services;

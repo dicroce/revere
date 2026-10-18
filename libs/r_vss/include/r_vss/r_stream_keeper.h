@@ -263,7 +263,9 @@ private:
     void _rtsp_server_entry_point();
     std::vector<r_disco::r_camera> _get_current_cameras();
     void _add_recording_contexts(const std::vector<r_disco::r_camera>& cameras);
-    void _remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras);
+    // Takes the cameras' contexts out of _streams and returns them, for the
+    // caller to destroy after releasing _streams_mutex.
+    std::vector<std::shared_ptr<r_recording_context>> _remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras);
     std::vector<r_stream_status> _fetch_stream_status() const;
     void _update_status_cache();
     void _update_retention_cache();

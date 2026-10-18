@@ -1437,7 +1437,9 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
     r_nullable<string> username,
     r_nullable<string> password,
     const function<void(pugi::xml_node&)>& build_header,
-    bool log_request
+    bool log_request,
+    int timeout_ms,
+    int net_attempts
 )
 {
     // Determine which SOAP version(s) to try
@@ -1467,7 +1469,7 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
             string body = _build_soap_envelope(ver, auth, build_body, username, password, _time_offset_seconds, build_header);
 
             // Pass SOAP version and action to set appropriate headers
-            result = _http_interact(host, port, "POST", uri, body, ver, soap_action, 30000, 2, log_request);
+            result = _http_interact(host, port, "POST", uri, body, ver, soap_action, timeout_ms, net_attempts, log_request);
 
             // Check if successful
             if (result.first == 200)
@@ -2034,7 +2036,9 @@ pair<int, string> r_onvif::r_onvif_cam::_pull_point_request(
     const onvif_pull_point& pull_point,
     const string& soap_action,
     const function<void(pugi::xml_node&)>& build_body,
-    bool log_request
+    bool log_request,
+    int timeout_ms,
+    int net_attempts
 )
 {
     string host, protocol, uri;
@@ -2056,7 +2060,9 @@ pair<int, string> r_onvif::r_onvif_cam::_pull_point_request(
                 copy.append_attribute("wsa:IsReferenceParameter") = "true";
             }
         },
-        log_request
+        log_request,
+        timeout_ms,
+        net_attempts
     );
 }
 
@@ -2070,7 +2076,9 @@ vector<r_onvif::onvif_event> r_onvif::r_onvif_cam::pull_messages(const onvif_pul
             req.append_child("tev:Timeout").text().set(("PT" + to_string(timeout_seconds) + "S").c_str());
             req.append_child("tev:MessageLimit").text().set(message_limit);
         },
-        false   // every couple of seconds per camera: not worth a log line each
+        false,                              // every couple of seconds per camera: not worth a log line each
+        (timeout_seconds + 5) * 1000,       // the camera holds it timeout_seconds; give up soon after
+        1                                   // the subscriber retries by resubscribing
     );
     if (result.first != 200)
         throw _events_error("PullMessages failed", result);
@@ -2157,7 +2165,8 @@ void r_onvif::r_onvif_cam::renew(const onvif_pull_point& pull_point, int termina
         "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest",
         [termination_seconds](pugi::xml_node& body) {
             body.append_child("wsnt:Renew").append_child("wsnt:TerminationTime").text().set(("PT" + to_string(termination_seconds) + "S").c_str());
-        }
+        },
+        true, 10000, 1
     );
     if (result.first != 200)
         throw _events_error("Renew failed", result);
@@ -2168,7 +2177,8 @@ void r_onvif::r_onvif_cam::unsubscribe(const onvif_pull_point& pull_point)
     auto result = _pull_point_request(
         pull_point,
         "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest",
-        [](pugi::xml_node& body) { body.append_child("wsnt:Unsubscribe"); }
+        [](pugi::xml_node& body) { body.append_child("wsnt:Unsubscribe"); },
+        true, 5000, 1   // on the way out: a camera that has stopped answering mustn't hold up the stop
     );
     if (result.first != 200)
         throw _events_error("Unsubscribe failed", result);
