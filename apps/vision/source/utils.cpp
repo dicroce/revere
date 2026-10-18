@@ -44,13 +44,11 @@ string vision::top_dir()
 
     auto revere_path = r_string_utils::convert_wide_string_to_multi_byte_string(wide_revere_path.c_str());
 
-    if(!r_fs::file_exists(revere_path))
-        r_fs::mkdir(revere_path);
+    r_fs::mkdir_p(revere_path);  // mkdir_p: another process may make it at the same moment
 
     revere_path += PATH_SLASH + "revere";
 
-    if(!r_fs::file_exists(revere_path))
-        r_fs::mkdir(revere_path);
+    r_fs::mkdir_p(revere_path);  // mkdir_p: another process may make it at the same moment
 
     CoTaskMemFree(localAppData);
 
@@ -89,11 +87,9 @@ string vision::top_dir()
     if(ret != 0)
         R_THROW(("Could not get path to application support folder."));
     string path = string(pwd.pw_dir) + PATH_SLASH + "Library" + PATH_SLASH + "Application Support" + PATH_SLASH + "Revere";
-    if(!r_fs::file_exists(path))
-        r_fs::mkdir(path);
+    r_fs::mkdir_p(path);  // mkdir_p: another process may make it at the same moment
     path += PATH_SLASH + "revere";
-    if(!r_fs::file_exists(path))
-        r_fs::mkdir(path);
+    r_fs::mkdir_p(path);  // mkdir_p: another process may make it at the same moment
     return path;
 #endif
 }
