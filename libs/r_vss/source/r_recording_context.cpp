@@ -482,14 +482,21 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
             if(do_motion)
             {
-                this->_sk->post_frame_to_motion_engine(
-                    buffer,
-                    ts,
-                    this->_maybe_video_storage_write_context.value().codec_name,
-                    this->_maybe_video_storage_write_context.value().codec_parameters,
-                    this->_camera.id,
-                    key
-                );
+                // Tier 1: MOG2 finds the motion. Tiers 2 and 3: the camera does.
+                if(this->_sk->motion_tier(this->_camera.id) == motion_tier_1)
+                {
+                    _close_camera_motion_ring();
+                    this->_sk->post_frame_to_motion_engine(
+                        buffer,
+                        ts,
+                        this->_maybe_video_storage_write_context.value().codec_name,
+                        this->_maybe_video_storage_write_context.value().codec_parameters,
+                        this->_camera.id,
+                        key
+                    );
+                }
+                else if(key)
+                    _camera_motion_tick(ts);
             }
         }
         catch(exception& e)
@@ -512,10 +519,10 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
     if(r_onvif_event_subscriber::wanted_for(_camera))
     {
-        auto sk = _sk;
-        auto camera_id = _camera.id;
-        _onvif_events = std::make_unique<r_onvif_event_subscriber>(_camera, [sk, camera_id](const r_onvif_transition& t) {
-            sk->onvif_transition(camera_id, t);
+        // The subscriber is reset before this context is gone (see the destructor).
+        _onvif_events = std::make_unique<r_onvif_event_subscriber>(_camera, [this](const r_onvif_transition& t) {
+            _on_camera_transition(t);
+            _sk->onvif_transition(_camera.id, t);
         });
         _onvif_events->start();
     }
@@ -728,6 +735,95 @@ bool r_recording_context::has_onvif_events() const
 r_onvif_events_status r_recording_context::onvif_events_status() const
 {
     return _onvif_events ? _onvif_events->status() : r_onvif_events_status();
+}
+
+void r_recording_context::_on_camera_transition(const r_onvif_transition& t)
+{
+    if(t.what != "motion")
+        return;
+    auto now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> g(_camera_motion_lock);
+    if(t.active)
+    {
+        if(_camera_motion_sources.empty())
+            _camera_motion_start_ms = now;
+        _camera_motion_sources.insert(t.source);
+        return;
+    }
+    if(_camera_motion_sources.erase(t.source) == 0 || !_camera_motion_sources.empty())
+        return;
+    // Written only on tiers 2 and 3 (the ring is open); on tier 1 MOG2 writes it.
+    if(_camera_motion_ring)
+    {
+        try
+        {
+            uint8_t one = 1;
+            _camera_motion_ring->write_range(system_clock::time_point(milliseconds(_camera_motion_start_ms)),
+                                             system_clock::time_point(milliseconds(now)), &one);
+            _camera_motion_last_s = now / 1000;
+        }
+        catch(const std::exception& e)
+        {
+            R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+        }
+    }
+}
+
+void r_recording_context::_camera_motion_tick(int64_t ts)
+{
+    std::lock_guard<std::mutex> g(_camera_motion_lock);
+    try
+    {
+        if(!_camera_motion_ring)
+        {
+            if(_camera.motion_detection_file_path.is_null())
+                return;
+            // Where the motion engine writes it (see the stream keeper's factory).
+            string path = _camera.motion_detection_file_path.value();
+            if(path.find('/') == string::npos && path.find('\\') == string::npos)
+                path = _top_dir + PATH_SLASH + "video" + PATH_SLASH + path;
+            _camera_motion_ring = std::make_unique<r_ring_storage_sink>(path, RING_MOTION_FLAG_SIZE);
+            _camera_motion_first_ts = ts;
+        }
+
+        // In motion: its run is written when it ends. Like the motion engine,
+        // nothing in the first minute.
+        if(!_camera_motion_sources.empty() || ts - _camera_motion_first_ts <= 60000)
+            return;
+        auto s = ts / 1000;
+        if(s == _camera_motion_last_s)
+            return;
+        uint8_t zero = 0;
+        _camera_motion_ring->write(system_clock::time_point(milliseconds(ts)), &zero);
+        _camera_motion_last_s = s;
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+    }
+}
+
+void r_recording_context::_close_camera_motion_ring()
+{
+    std::lock_guard<std::mutex> g(_camera_motion_lock);
+    if(!_camera_motion_ring)
+        return;
+    try
+    {
+        // Back on tier 1 mid-event: keep what the camera reported so far.
+        if(!_camera_motion_sources.empty())
+        {
+            auto now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+            uint8_t one = 1;
+            _camera_motion_ring->write_range(system_clock::time_point(milliseconds(_camera_motion_start_ms)),
+                                             system_clock::time_point(milliseconds(now)), &one);
+        }
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+    }
+    _camera_motion_ring.reset();
 }
 
 r_nullable<r_live_key_frame> r_recording_context::latest_key_frame() const

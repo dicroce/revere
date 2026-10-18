@@ -379,6 +379,8 @@ void web_password_modal(const char* popup_name, bool password_is_set, OK_CB ok_c
 // operations. The hours field only matters when still-video pruning is on, so
 // it sits under that switch and is disabled otherwise. ok_cb runs with
 // min_continuous_retention_hours holding a whole number of hours, 1 or more.
+// motion_tier is "auto", "1", "2" or "3" (see r_vss::r_tier_controller);
+// tier_status says what the camera uses now and why.
 template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB>
 void camera_properties_modal(
     const char* popup_name,
@@ -386,6 +388,8 @@ void camera_properties_modal(
     bool& do_motion_detection,
     bool& do_motion_pruning,
     std::string& min_continuous_retention_hours,
+    std::string& motion_tier,
+    const std::string& tier_status,
     const std::string& record_file_path,
     OK_CB ok_cb,
     CANCEL_CB cancel_cb,
@@ -415,8 +419,29 @@ void camera_properties_modal(
     if(!do_motion_detection)
         do_motion_pruning = false;
 
-    d.gap(4.0f);
     ImGui::BeginDisabled(!do_motion_detection);
+    d.gap(4.0f);
+    d.label("Motion and objects from");
+    struct tier_choice { const char* value; const char* title; const char* description; };
+    static const tier_choice choices[] = {
+        {"auto", "Automatic", "The camera's own detection once Revere has checked it reports what Revere sees; Revere's otherwise."},
+        {"1", "Revere", "Revere finds motion and objects in the video. Uses the most CPU."},
+        {"2", "Camera", "The camera's motion and its person, vehicle and animal events. Uses the least CPU."},
+        {"3", "Camera motion, Revere objects", "The camera's motion events; Revere finds the objects in them."}
+    };
+    for(auto& c : choices)
+    {
+        d.gap(2.0f);
+        if(d.option((std::string("##tier") + c.value).c_str(), c.title, c.description, motion_tier == c.value))
+            motion_tier = c.value;
+    }
+    if(!tier_status.empty())
+    {
+        d.gap(2.0f);
+        d.body(tier_status);
+    }
+
+    d.gap(4.0f);
     d.toggle("##prune", "Keep only motion in older video",
         "Video older than the time below is deleted unless it has motion in it, so motion is kept for longer in the same space.",
         &do_motion_pruning);

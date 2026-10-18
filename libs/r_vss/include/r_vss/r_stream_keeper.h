@@ -11,6 +11,9 @@
 #include "r_vss/r_camera_stats.h"
 #include "r_vss/r_onvif_event_subscriber.h"
 #include "r_vss/r_detection_pass.h"
+#include "r_vss/r_tier_controller.h"
+#include "r_vss/r_tier_outputs.h"
+#include <functional>
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
 #include "r_utils/r_nullable.h"
@@ -100,9 +103,49 @@ struct r_stream_status
     std::string failure_message;
     int failure_attempt_count {0};
 
-    // The camera's ONVIF event subscription (shadow mode), when it has one.
+    // The camera's ONVIF event subscription, when it has one.
     bool has_onvif_events {false};
     r_onvif_events_status onvif_events;
+
+    // Where its motion and object classes come from.
+    r_tier_status motion_tier;
+};
+
+// Passes MOG2's events on to the motion plugins, and tells the stream keeper
+// about each one (the tier controller compares them with the camera's own).
+class r_motion_event_tee final : public r_motion_event_sink
+{
+public:
+    using event_fn = std::function<void(r_motion_event evt, const std::string& camera_id, int64_t ts)>;
+
+    r_motion_event_tee(r_motion_event_sink& next, event_fn on_event) :
+        _next(next),
+        _on_event(std::move(on_event))
+    {
+    }
+
+    void post(r_motion_event evt, const std::string& camera_id, int64_t ts,
+              const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height,
+              const motion_region& motion_bbox) override
+    {
+        if(_on_event)
+            _on_event(evt, camera_id, ts);
+        _next.post(evt, camera_id, ts, frame_data, width, height, motion_bbox);
+    }
+
+    void post(r_motion_event evt, const std::string& camera_id, int64_t ts,
+              const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height,
+              const motion_region& motion_bbox,
+              const std::vector<motion_region>& motion_regions) override
+    {
+        if(_on_event)
+            _on_event(evt, camera_id, ts);
+        _next.post(evt, camera_id, ts, frame_data, width, height, motion_bbox, motion_regions);
+    }
+
+private:
+    r_motion_event_sink& _next;
+    event_fn _on_event;
 };
 
 enum r_stream_keeper_commands
@@ -155,8 +198,12 @@ public:
     // A camera's event subscription reporting a start or end (any thread).
     R_API void onvif_transition(const std::string& camera_id, const r_onvif_transition& t);
 
-    // The detection pass's finished sessions for a camera (shadow mode).
+    // The detection pass's finished sessions for a camera.
     R_API std::vector<r_detection_session> detection_sessions(const std::string& camera_id, int64_t since_ms);
+
+    // A camera's motion tier now (1 when unknown), and why.
+    R_API int motion_tier(const std::string& camera_id);
+    R_API r_tier_status motion_tier_status(const std::string& camera_id) const;
 
     R_API std::string add_restream_mount(const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, const r_disco::r_camera& camera, r_recording_context* rc, r_utils::r_nullable<r_pipeline::r_encoding> video_encoding, r_utils::r_nullable<r_pipeline::r_encoding> audio_encoding);
     R_API void remove_restream_mount(const std::string& path);
@@ -270,6 +317,7 @@ private:
     std::vector<GstRTSPMediaFactory*> _factories;
     r_motion_tuning_fn _motion_tuning_fn;
     r_motion_event_plugin_host _meph;
+    r_motion_event_tee _motion_tee;
     r_motion_engine _motionEngine;
     r_system_plugin_host _system_plugin_host;
     r_ws _ws;
@@ -294,6 +342,22 @@ private:
     // detection. Kept (stopped) after stop() so late transitions are harmless.
     std::mutex _detection_pass_lock;
     std::unique_ptr<r_detection_pass> _detection_pass;
+
+    // Motion tiers (milestone 5).
+    void _on_mog2_event(r_motion_event evt, const std::string& camera_id, int64_t ts);
+    static void _on_detection_bus(void* userdata, const r_detection& det);
+    void _tier_tick();
+    void _camera_class_output(const std::string& camera_id, const r_onvif_transition& t, int64_t now_ms);
+    void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections);
+    void _pass_session(const r_detection_session& session);
+    bool _motion_detection_on(const std::string& camera_id);
+    std::string _camera_name(const std::string& camera_id);
+
+    mutable std::mutex _tier_lock;
+    r_tier_controller _tiers;
+    std::map<std::string, int64_t> _mog2_starts;                       // camera id -> its MOG2 event's start
+    std::map<std::string, int64_t> _camera_class_starts;               // camera id + "|" + class -> start (tier 2)
+    std::map<std::string, std::vector<r_detection>> _emitted_first;    // camera id -> first found, already on the bus (tier 3)
 };
 
 }

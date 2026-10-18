@@ -107,7 +107,8 @@ R_API void query_remove_camera(const std::string& top_dir, r_disco::r_devices& d
 // detection is enabled it ensures the camera's motion (.mdb/.mdnts) files exist,
 // allocating them if missing. Mirrors the desktop Camera Properties dialog. The
 // caller must bounce() the camera afterward for the change to take effect live.
-R_API void query_update_camera_properties(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours);
+// motion_tier: "auto", "1", "2" or "3" (see r_tier_controller); null leaves it as it is.
+R_API void query_update_camera_properties(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours, const r_utils::r_nullable<std::string>& motion_tier = r_utils::r_nullable<std::string>());
 
 }
 

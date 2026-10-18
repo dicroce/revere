@@ -35,6 +35,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
     _mounts(nullptr),
     _factories(),
     _meph(_devices, _top_dir, *this),
+    _motion_tee(_meph, [this](r_motion_event evt, const string& camera_id, int64_t ts) { _on_mog2_event(evt, camera_id, ts); }),
     _motionEngine(
         [this](const r_motion_work_item& item) -> std::shared_ptr<r_motion_work_context> {
             auto maybe_camera = _devices.get_camera_by_id(item.id);
@@ -57,12 +58,14 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
                 tuning.min_area_fraction
             );
         },
-        _meph
+        _motion_tee
     ),
     _system_plugin_host(top_dir),
     _ws(top_dir, _devices, _agent, *this),
     _prune(_top_dir, _devices)
 {
+    _meph.register_detection_consumer(&r_stream_keeper::_on_detection_bus, this);
+
     auto video_path = top_dir + PATH_SLASH + "video";
 
     if(!r_fs::file_exists(video_path))
@@ -169,10 +172,9 @@ void r_stream_keeper::start()
             [this](const string& camera_id, const r_letterboxed_frame& frame, vector<r_detection>& out) {
                 return _meph.detect_objects(camera_id, frame.ts, frame.rgb, frame.size, frame.size, out);
             },
-            [this](const string& camera_id) -> string {
-                auto c = _devices.get_camera_by_id(camera_id);
-                return (!c.is_null() && !c.value().friendly_name.is_null()) ? c.value().friendly_name.value() : camera_id;
-            });
+            [this](const string& camera_id) -> string { return _camera_name(camera_id); },
+            [this](const string& camera_id, const vector<r_detection>& detections) { _pass_found(camera_id, detections); },
+            [this](const r_detection_session& session) { _pass_session(session); });
         pass->start();
         std::lock_guard<std::mutex> g(_detection_pass_lock);
         _detection_pass = std::move(pass);
@@ -371,8 +373,32 @@ vector<r_onvif_span> r_stream_keeper::onvif_spans(const string& camera_id, int64
     return rc ? rc->onvif_spans(since_ms) : vector<r_onvif_span>();
 }
 
+static int64_t _epoch_ms()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
 void r_stream_keeper::onvif_transition(const string& camera_id, const r_onvif_transition& t)
 {
+    auto now = _epoch_ms();
+    int tier;
+    {
+        std::lock_guard<std::mutex> g(_tier_lock);
+        if(t.what == "motion")
+            _tiers.camera_motion(camera_id, t.active, now);
+        else
+            _tiers.camera_class(camera_id, t.what, t.active, now);
+        tier = _tiers.tier(camera_id);
+    }
+
+    // Tier 2: the camera's own classes are the result; no YOLO.
+    if(tier == motion_tier_2)
+    {
+        if(t.what != "motion")
+            _camera_class_output(camera_id, t, now);
+        return;
+    }
+
     std::lock_guard<std::mutex> g(_detection_pass_lock);
     if(!_detection_pass)
         return;
@@ -380,6 +406,197 @@ void r_stream_keeper::onvif_transition(const string& camera_id, const r_onvif_tr
         _detection_pass->motion(camera_id, t.source, t.active);
     else if(t.active)
         _detection_pass->camera_class(camera_id, t.what);
+}
+
+int r_stream_keeper::motion_tier(const string& camera_id)
+{
+    std::lock_guard<std::mutex> g(_tier_lock);
+    return _tiers.tier(camera_id);
+}
+
+r_tier_status r_stream_keeper::motion_tier_status(const string& camera_id) const
+{
+    std::lock_guard<std::mutex> g(_tier_lock);
+    return _tiers.status(camera_id);
+}
+
+string r_stream_keeper::_camera_name(const string& camera_id)
+{
+    auto c = _devices.get_camera_by_id(camera_id);
+    return (!c.is_null() && !c.value().friendly_name.is_null()) ? c.value().friendly_name.value() : camera_id;
+}
+
+bool r_stream_keeper::_motion_detection_on(const string& camera_id)
+{
+    auto c = _devices.get_camera_by_id(camera_id);
+    return !c.is_null() && !c.value().do_motion_detection.is_null() && c.value().do_motion_detection.value();
+}
+
+void r_stream_keeper::_on_mog2_event(r_motion_event evt, const string& camera_id, int64_t ts)
+{
+    std::lock_guard<std::mutex> g(_tier_lock);
+    if(evt == motion_event_start)
+        _mog2_starts[camera_id] = ts;
+    else if(evt == motion_event_end)
+    {
+        auto it = _mog2_starts.find(camera_id);
+        if(it != _mog2_starts.end())
+        {
+            _tiers.mog2_event(camera_id, it->second, ts);
+            _mog2_starts.erase(it);
+        }
+    }
+}
+
+void r_stream_keeper::_on_detection_bus(void* userdata, const r_detection& det)
+{
+    auto sk = static_cast<r_stream_keeper*>(userdata);
+    std::lock_guard<std::mutex> g(sk->_tier_lock);
+    sk->_tiers.yolo_detection(det.camera_id, det.class_name, det.ts);
+}
+
+void r_stream_keeper::_tier_tick()
+{
+    auto now = _epoch_ms();
+
+    vector<pair<string, std::shared_ptr<r_recording_context>>> streams;
+    {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        for(auto& s : _streams)
+            streams.push_back(s);
+    }
+
+    // Each camera's setting and subscription state, gathered before the lock.
+    struct fact { string id; string setting; int subscription; };  // -1 none, 0 down, 1 up
+    vector<fact> facts;
+    for(auto& s : streams)
+    {
+        fact f {s.first, string(), -1};
+        auto c = _devices.get_camera_by_id(s.first);
+        if(!c.is_null() && !c.value().motion_tier.is_null())
+            f.setting = c.value().motion_tier.value();
+        if(s.second->has_onvif_events())
+            f.subscription = (s.second->onvif_events_status().state == "subscribed") ? 1 : 0;
+        facts.push_back(f);
+    }
+
+    vector<pair<string, r_tier_status>> changed;
+    {
+        std::lock_guard<std::mutex> g(_tier_lock);
+        for(auto& f : facts)
+        {
+            _tiers.set_setting(f.id, f.setting);
+            if(f.subscription >= 0)
+                _tiers.subscription(f.id, f.subscription == 1, now);
+        }
+        for(auto& id : _tiers.tick(now))
+            changed.push_back({id, _tiers.status(id)});
+    }
+
+    for(auto& c : changed)
+    {
+        R_LOG_INFO("motion tier [%s]: tier %d: %s", _camera_name(c.first).c_str(), c.second.tier, c.second.reason.c_str());
+        // Off tier 1: MOG2 stops getting this camera's frames; free its decoder.
+        if(c.second.tier != motion_tier_1)
+            _motionEngine.remove_work_context(c.first);
+    }
+}
+
+void r_stream_keeper::_camera_class_output(const string& camera_id, const r_onvif_transition& t, int64_t now_ms)
+{
+    auto yolo = camera_class_to_yolo(t.what);
+    if(yolo.empty() || !_motion_detection_on(camera_id))
+        return;
+
+    auto key = camera_id + "|" + t.what;
+    r_detection d;
+    d.camera_id = camera_id;
+    d.class_name = yolo;
+    d.confidence = 1.0f;   // cameras give no confidence
+    whole_frame(d);
+
+    if(t.active)
+    {
+        {
+            std::lock_guard<std::mutex> g(_tier_lock);
+            if(_camera_class_starts.count(key))
+                return;
+            _camera_class_starts[key] = now_ms;
+        }
+        d.ts = now_ms;
+        _meph.emit_detection(d);
+        return;
+    }
+
+    int64_t start = 0;
+    {
+        std::lock_guard<std::mutex> g(_tier_lock);
+        auto it = _camera_class_starts.find(key);
+        if(it == _camera_class_starts.end())
+            return;
+        start = it->second;
+        _camera_class_starts.erase(it);
+    }
+    d.ts = start;
+    write_metadata(camera_id, "onvif_events", analytics_json(start, now_ms, {d}, "camera"), start);
+}
+
+static bool _same_detection(const r_detection& a, const r_detection& b)
+{
+    return a.ts == b.ts && a.class_name == b.class_name && a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
+}
+
+void r_stream_keeper::_pass_found(const string& camera_id, const vector<r_detection>& detections)
+{
+    if(motion_tier(camera_id) != motion_tier_3 || !_motion_detection_on(camera_id))
+        return;
+
+    vector<r_detection> reported;
+    for(auto& d : detections)
+        if(reported_class(d.class_name))
+            reported.push_back(d);
+
+    // On the bus at once: an alert shouldn't wait for the session to finish.
+    for(auto& d : reported)
+        _meph.emit_detection(d);
+
+    std::lock_guard<std::mutex> g(_tier_lock);
+    _emitted_first[camera_id] = reported;
+}
+
+void r_stream_keeper::_pass_session(const r_detection_session& session)
+{
+    vector<r_detection> already;
+    {
+        std::lock_guard<std::mutex> g(_tier_lock);
+        auto it = _emitted_first.find(session.camera_id);
+        if(it != _emitted_first.end())
+        {
+            already = it->second;
+            _emitted_first.erase(it);
+        }
+    }
+
+    if(motion_tier(session.camera_id) != motion_tier_3 || !_motion_detection_on(session.camera_id))
+        return;
+
+    vector<r_detection> kept;
+    for(auto& d : session.detections)
+        if(reported_class(d.class_name))
+            kept.push_back(d);
+    if(kept.empty())
+        return;
+
+    write_metadata(session.camera_id, "detection_pass", analytics_json(session.start_ms, session.end_ms, kept, "detection_pass"), kept.front().ts);
+
+    for(auto& d : kept)
+    {
+        bool sent = false;
+        for(auto& a : already)
+            sent = sent || _same_detection(a, d);
+        if(!sent)
+            _meph.emit_detection(d);
+    }
 }
 
 vector<r_detection_session> r_stream_keeper::detection_sessions(const string& camera_id, int64_t since_ms)
@@ -721,6 +938,8 @@ void r_stream_keeper::_entry_point()
                 }
             }
 
+            _tier_tick();
+
             auto c = _cmd_q.poll(std::chrono::seconds(2));
 
             if(!c.is_null())
@@ -957,7 +1176,7 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
         _streams.begin(),
         _streams.end(),
         back_inserter(statuses),
-        [](const auto& c){
+        [this](const auto& c){
             r_stream_status s;
             s.camera = c.second->camera();
             s.bytes_per_second = c.second->bytes_per_second();
@@ -967,6 +1186,7 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.has_onvif_events = c.second->has_onvif_events();
             if(s.has_onvif_events)
                 s.onvif_events = c.second->onvif_events_status();
+            s.motion_tier = motion_tier_status(c.first);
             return s;
         }
     );

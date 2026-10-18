@@ -519,6 +519,7 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
             int64_t storage_write_lag_ms = 0;
             int64_t storage_timeline_lag_ms = 0;
             json onvif_events = nullptr;
+            json motion_tier = nullptr;
             auto sit = status_by_id.find(c.id);
             if(sit != status_by_id.end())
             {
@@ -539,6 +540,16 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                         {"last_error", oe.last_error}
                     };
                 }
+                const auto& mt = sit->second.motion_tier;
+                motion_tier = {
+                    {"tier", mt.tier},
+                    {"automatic", mt.automatic},
+                    {"reason", mt.reason},
+                    {"checked", mt.checked},
+                    {"matched", mt.matched},
+                    {"person_checked", mt.person_checked},
+                    {"person_matched", mt.person_matched}
+                };
             }
 
             j["cameras"].push_back(
@@ -568,8 +579,12 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                     // Where the camera's ONVIF device service last answered; 0 / "" when unknown.
                     {"onvif_port", (c.onvif_port.is_null())?0:c.onvif_port.value()},
                     {"onvif_protocol", (c.onvif_protocol.is_null())?"":c.onvif_protocol.value()},
-                    // The camera's ONVIF event subscription (shadow mode); null when it has none.
-                    {"onvif_events", onvif_events}
+                    // The camera's ONVIF event subscription; null when it has none.
+                    {"onvif_events", onvif_events},
+                    // "auto", "1", "2" or "3": where motion and object classes come from.
+                    {"motion_tier_setting", (c.motion_tier.is_null())?"auto":c.motion_tier.value()},
+                    // The tier in use now and why; null while not recording.
+                    {"motion_tier", motion_tier}
                 }
             );
         }
@@ -2880,8 +2895,11 @@ r_http::r_server_response r_ws::_post_update_camera_properties(const r_http::r_w
         bool do_motion     = req.value("do_motion_detection", false);
         bool do_prune      = req.value("do_motion_pruning", false);
         int  min_hours     = req.value("min_continuous_recording_hours", 24);
+        r_nullable<string> motion_tier;
+        if(req.contains("motion_tier"))
+            motion_tier.set_value(req["motion_tier"].get<string>());
 
-        query_update_camera_properties(_top_dir, _devices, camera_id, do_motion, do_prune, min_hours);
+        query_update_camera_properties(_top_dir, _devices, camera_id, do_motion, do_prune, min_hours, motion_tier);
 
         // Restart the recording context so the new settings take effect live —
         // the poll loop only re-applies stream-config changes, not these.

@@ -27,7 +27,9 @@
 #include <utility>
 #include <deque>
 #include <memory>
+#include <set>
 #include "r_vss/r_onvif_event_subscriber.h"
+#include "r_vss/r_motion_storage_sink.h"
 
 struct _GstRTSPMediaFactory;
 typedef _GstRTSPMediaFactory GstRTSPMediaFactory;
@@ -247,6 +249,14 @@ public:
 
     // The newest key frame received (null before the first).
     R_API r_utils::r_nullable<r_live_key_frame> latest_key_frame() const;
+
+private:
+    // Tiers 2 and 3: the camera's motion goes to the motion ring (.mdb) in
+    // place of MOG2's: a run of 1s when an event ends, 0 each second between.
+    void _on_camera_transition(const r_onvif_transition& t);
+    void _camera_motion_tick(int64_t ts);
+    void _close_camera_motion_ring();
+public:
     R_API std::vector<r_onvif_span> onvif_spans(int64_t since_ms) const;
 
     R_API void create_playback_mount(GstRTSPServer* server, GstRTSPMountPoints* mounts, const std::string& url, uint64_t start_ts, uint64_t end_ts);
@@ -301,6 +311,13 @@ private:
     // their LRS appears with needs_gop_replay set.
     std::deque<_gop_cache_entry> _video_gop_cache;
     std::unique_ptr<r_onvif_event_subscriber> _onvif_events;
+
+    std::mutex _camera_motion_lock;
+    std::unique_ptr<r_ring_storage_sink> _camera_motion_ring;
+    std::set<std::string> _camera_motion_sources;   // sources in motion now
+    int64_t _camera_motion_start_ms {0};
+    int64_t _camera_motion_first_ts {0};
+    int64_t _camera_motion_last_s {-1};
 
     // A reference to the newest key frame (set on the GStreamer thread, read by
     // the detection pass).

@@ -50,11 +50,14 @@ static string _clock(int64_t ms)
     return s.size() >= 19 ? s.substr(11, 8) : s;
 }
 
-r_detection_pass::r_detection_pass(frame_fn live, frame_fn stored, detect_fn detect, name_fn name) :
+r_detection_pass::r_detection_pass(frame_fn live, frame_fn stored, detect_fn detect, name_fn name,
+                                   found_fn on_found, session_fn on_session) :
     _live(std::move(live)),
     _stored(std::move(stored)),
     _detect(std::move(detect)),
-    _name(std::move(name))
+    _name(std::move(name)),
+    _on_found(std::move(on_found)),
+    _on_session(std::move(on_session))
 {
 }
 
@@ -134,7 +137,11 @@ void r_detection_pass::_entry_point()
         }
 
         for (auto& d : done)
+        {
             _log_session(d);
+            if (_on_session)
+                _on_session(d);
+        }
 
         if (look.is_null())
             continue;
@@ -163,8 +170,13 @@ void r_detection_pass::_entry_point()
         if (got && l.kind == look_first)
             _log_first_look(l, dets);
 
-        lock_guard<mutex> g(_lock);
-        _planner.look_done(l, got, frame_ts, dets, _now_ms());
+        vector<r_detection> found;
+        {
+            lock_guard<mutex> g(_lock);
+            found = _planner.look_done(l, got, frame_ts, dets, _now_ms());
+        }
+        if (!found.empty() && _on_found)
+            _on_found(l.camera_id, found);
     }
 }
 

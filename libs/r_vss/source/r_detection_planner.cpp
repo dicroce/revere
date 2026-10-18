@@ -261,11 +261,12 @@ int64_t r_detection_planner::next_due_ms() const
     return due;
 }
 
-void r_detection_planner::look_done(const r_look& look, bool got_frame, int64_t frame_ts, const vector<r_detection>& detections, int64_t now_ms)
+vector<r_detection> r_detection_planner::look_done(const r_look& look, bool got_frame, int64_t frame_ts, const vector<r_detection>& detections, int64_t now_ms)
 {
+    vector<r_detection> first_found;
     auto it = _sessions.find(look.camera_id);
     if (it == _sessions.end())
-        return;
+        return first_found;
     auto& s = it->second;
     if (s.in_flight > 0)
         --s.in_flight;
@@ -292,7 +293,7 @@ void r_detection_planner::look_done(const r_look& look, bool got_frame, int64_t 
             // The live look failed and the event is over: the stored frame is the fallback.
             _plan_stored(s, look_short, s.last_end_ms, now_ms);
         }
-        return;
+        return first_found;
     }
 
     ++s.result.looks;
@@ -309,7 +310,7 @@ void r_detection_planner::look_done(const r_look& look, bool got_frame, int64_t 
     {
         s.pre_roll = detections;
         s.found = any_of(s.seen.begin(), s.seen.end(), is_new);
-        return;
+        return first_found;
     }
 
     if (_live(look.kind))
@@ -323,6 +324,7 @@ void r_detection_planner::look_done(const r_look& look, bool got_frame, int64_t 
             for (auto& d : detections)
                 if (is_new(d))
                     s.result.first_found.push_back(d);
+            first_found = s.result.first_found;
         }
     }
     s.seen.insert(s.seen.end(), detections.begin(), detections.end());
@@ -340,6 +342,7 @@ void r_detection_planner::look_done(const r_look& look, bool got_frame, int64_t 
 
     if (_live(look.kind) && _active(s))
         _plan_live(s, now_ms + (s.found ? FOLLOW_UP_FOUND_MS : FOLLOW_UP_MS));
+    return first_found;
 }
 
 bool r_detection_planner::_done(const _session& s, int64_t now_ms) const

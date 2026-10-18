@@ -40,6 +40,10 @@ struct r_camera
     r_utils::r_nullable<std::string> motion_detection_file_path;
     r_utils::r_nullable<bool> do_motion_pruning;
     r_utils::r_nullable<int> min_continuous_recording_hours;
+    // Where motion and object classes come from (see r_vss::r_tier_controller):
+    // "auto" (or null) lets Revere choose by verifying the camera's own events;
+    // "1", "2" or "3" forces a tier.
+    r_utils::r_nullable<std::string> motion_tier;
 
     std::string stream_config_hash;
 };

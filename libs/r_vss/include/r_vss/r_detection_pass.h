@@ -25,9 +25,10 @@ namespace r_vss
 // newest live key frame, or a stored one by time), runs object detection on
 // it, and keeps each finished session's result.
 //
-// Milestone 4 runs it in shadow mode: results are logged and kept in memory
-// (newest MAX_RESULTS) for comparison with today's MOG2 + YOLO; nothing is
-// written to storage or put on the detection bus.
+// Results are logged and kept in memory (newest MAX_RESULTS); the caller
+// decides what reaches storage and the detection bus (by the camera's tier):
+// on_found as soon as a session first finds something new (alerts stay
+// quick), on_session when a session finishes.
 class r_detection_pass
 {
 public:
@@ -38,6 +39,8 @@ public:
     using detect_fn = std::function<bool(const std::string& camera_id, const r_letterboxed_frame& frame, std::vector<r_detection>& out)>;
     // A camera's display name, for the log.
     using name_fn = std::function<std::string(const std::string& camera_id)>;
+    using found_fn = std::function<void(const std::string& camera_id, const std::vector<r_detection>& detections)>;
+    using session_fn = std::function<void(const r_detection_session& session)>;
 
     enum
     {
@@ -46,7 +49,8 @@ public:
         STORED_MAX_GAP_MS = 10000    // a stored key frame this far before the time wanted: not written yet, or a gap
     };
 
-    R_API r_detection_pass(frame_fn live, frame_fn stored, detect_fn detect, name_fn name);
+    R_API r_detection_pass(frame_fn live, frame_fn stored, detect_fn detect, name_fn name,
+                           found_fn on_found = {}, session_fn on_session = {});
     R_API ~r_detection_pass() noexcept;
 
     r_detection_pass(const r_detection_pass&) = delete;
@@ -71,6 +75,8 @@ private:
     frame_fn _stored;
     detect_fn _detect;
     name_fn _name;
+    found_fn _on_found;
+    session_fn _on_session;
 
     mutable std::mutex _lock;
     std::condition_variable _cv;

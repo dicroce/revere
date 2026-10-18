@@ -116,7 +116,9 @@ public:
     R_API int64_t next_due_ms() const;
 
     // A look's outcome. frame_ts is the time of the frame actually used.
-    R_API void look_done(const r_look& look, bool got_frame, int64_t frame_ts, const std::vector<r_detection>& detections, int64_t now_ms);
+    // Returns what this look found first in its session (its new detections,
+    // when the session had found nothing new before), else nothing.
+    R_API std::vector<r_detection> look_done(const r_look& look, bool got_frame, int64_t frame_ts, const std::vector<r_detection>& detections, int64_t now_ms);
 
     // Sessions that finished; each is returned once.
     R_API std::vector<r_detection_session> finished(int64_t now_ms);
