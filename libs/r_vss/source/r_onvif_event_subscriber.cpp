@@ -77,10 +77,17 @@ vector<r_onvif_span> r_onvif_event_subscriber::spans(int64_t since_ms) const
 
 void r_onvif_event_subscriber::_apply(const vector<r_onvif_transition>& transitions)
 {
-    if (transitions.empty())
-        return;
     auto now = _now_ms();
     lock_guard<mutex> g(_lock);
+
+    // Topics and classes are learned from the first pull's Initialized states
+    // too, which are usually all off and so cause no transitions.
+    _status.motion_topic = _tracker.motion_topic();
+    _status.classes = _tracker.classes();
+
+    if (transitions.empty())
+        return;
+
     for (auto& t : transitions)
     {
         R_LOG_INFO("onvif events [%s]: %s %s", _tag.c_str(), t.what.c_str(), t.active ? "start" : "end");
@@ -98,8 +105,6 @@ void r_onvif_event_subscriber::_apply(const vector<r_onvif_transition>& transiti
         }
     }
     _status.last_event_ms = now;
-    _status.motion_topic = _tracker.motion_topic();
-    _status.classes = _tracker.classes();
 }
 
 void r_onvif_event_subscriber::_entry_point()
