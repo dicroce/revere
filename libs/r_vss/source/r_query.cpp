@@ -940,3 +940,27 @@ vector<r_metadata_entry> r_vss::query_get_analytics(const string& top_dir, r_dev
 
     return result;
 }
+
+r_letterboxed_frame r_vss::decode_letterboxed_key_frame(const std::string& video_codec_name, const std::string& video_codec_parameters, const std::vector<uint8_t>& frame, uint16_t size)
+{
+    uint16_t w = size, h = size;
+    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_RGB24, w, h, true);
+    if(!decoded || decoded->size() < (size_t)w * h * 3)
+        R_THROW(("Unable to decode frame."));
+
+    r_letterboxed_frame out;
+    out.size = size;
+    out.rgb.assign((size_t)size * size * 3, 0);
+    int pad_x = (size - w) / 2, pad_y = (size - h) / 2;
+    for(int y = 0; y < h; ++y)
+        memcpy(&out.rgb[((size_t)(y + pad_y) * size + pad_x) * 3], decoded->data() + (size_t)y * w * 3, (size_t)w * 3);
+    return out;
+}
+
+r_letterboxed_frame r_vss::query_get_letterboxed_key_frame(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t size)
+{
+    auto kf = _find_key_frame(top_dir, devices, camera_id, ts);
+    auto out = decode_letterboxed_key_frame(kf.codec_name, kf.codec_parameters, kf.data, size);
+    out.ts = kf.ts;
+    return out;
+}

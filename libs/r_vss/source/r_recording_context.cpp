@@ -343,7 +343,18 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             // on every key so the cache always starts with a keyframe (until the
             // safety cap kicks in for a misbehaving source).
             if(key)
+            {
                 _video_gop_cache.clear();
+                if(!_maybe_video_storage_write_context.is_null())
+                {
+                    std::lock_guard<std::mutex> g(_latest_key_lock);
+                    _has_latest_key = true;
+                    _latest_key_ts = ts;
+                    _latest_key_buffer = buffer;
+                    _latest_key_codec_name = _maybe_video_storage_write_context.value().codec_name;
+                    _latest_key_codec_parameters = _maybe_video_storage_write_context.value().codec_parameters;
+                }
+            }
             _video_gop_cache.push_back({pts, key, buffer});
             while(_video_gop_cache.size() > GOP_CACHE_MAX_FRAMES)
                 _video_gop_cache.pop_front();
@@ -501,7 +512,11 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
     if(r_onvif_event_subscriber::wanted_for(_camera))
     {
-        _onvif_events = std::make_unique<r_onvif_event_subscriber>(_camera);
+        auto sk = _sk;
+        auto camera_id = _camera.id;
+        _onvif_events = std::make_unique<r_onvif_event_subscriber>(_camera, [sk, camera_id](const r_onvif_transition& t) {
+            sk->onvif_transition(camera_id, t);
+        });
         _onvif_events->start();
     }
 }
@@ -713,6 +728,26 @@ bool r_recording_context::has_onvif_events() const
 r_onvif_events_status r_recording_context::onvif_events_status() const
 {
     return _onvif_events ? _onvif_events->status() : r_onvif_events_status();
+}
+
+r_nullable<r_live_key_frame> r_recording_context::latest_key_frame() const
+{
+    r_nullable<r_live_key_frame> out;
+    r_gst_buffer buffer;
+    r_live_key_frame kf;
+    {
+        std::lock_guard<std::mutex> g(_latest_key_lock);
+        if(!_has_latest_key)
+            return out;
+        buffer = _latest_key_buffer;
+        kf.ts = _latest_key_ts;
+        kf.codec_name = _latest_key_codec_name;
+        kf.codec_parameters = _latest_key_codec_parameters;
+    }
+    auto mi = buffer.map(r_gst_buffer::MT_READ);
+    kf.data.assign(mi.data(), mi.data() + mi.size());
+    out.set_value(std::move(kf));
+    return out;
 }
 
 vector<r_onvif_span> r_recording_context::onvif_spans(int64_t since_ms) const

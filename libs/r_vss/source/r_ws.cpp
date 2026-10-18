@@ -1069,6 +1069,28 @@ r_http::r_server_response r_ws::_get_onvif_events(const r_http::r_web_server<r_u
         for(auto& s : _stream_keeper.onvif_spans(args["camera_id"], since_ms))
             j["onvif_events"].push_back({{"what", s.what}, {"start_ms", s.start_ms}, {"end_ms", s.end_ms}});
 
+        // The detection pass's sessions over those spans (boxes normalised like analytics).
+        auto dets_json = [](const std::vector<r_detection>& dets) {
+            json a = json::array();
+            for(auto& d : dets)
+                a.push_back({{"class_name", d.class_name}, {"confidence", d.confidence}, {"ts", d.ts},
+                             {"x1", d.x1 / 640.0f}, {"y1", d.y1 / 640.0f}, {"x2", d.x2 / 640.0f}, {"y2", d.y2 / 640.0f}});
+            return a;
+        };
+        j["detection_sessions"] = json::array();
+        for(auto& s : _stream_keeper.detection_sessions(args["camera_id"], since_ms))
+            j["detection_sessions"].push_back({
+                {"start_ms", s.start_ms},
+                {"end_ms", s.end_ms},
+                {"camera_classes", s.camera_classes},
+                {"looks", s.looks},
+                {"failed_looks", s.failed_looks},
+                {"dropped_static", s.dropped_static},
+                {"first_look_ms", s.first_look_ms},
+                {"first_look", dets_json(s.first_look)},
+                {"detections", dets_json(s.detections)}
+            });
+
         r_server_response response;
         response.set_content_type("text/json");
         response.set_body(j.dump());

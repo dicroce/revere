@@ -47,6 +47,12 @@ public:
 
     R_API void stop();
 
+    // Every object YOLO finds in one RGB24 frame (640x640), no motion filter,
+    // nothing written or emitted. Safe alongside the worker thread: ncnn runs
+    // each call on its own extractor.
+    R_API std::vector<Detection> detect_objects(const uint8_t* rgb_data, int width, int height);
+    R_API static const char* class_name(int class_id) { return get_class_name(class_id); }
+
     R_API virtual void post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox) override;
     R_API void post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions);
 

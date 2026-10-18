@@ -10,6 +10,7 @@
 #include "r_vss/r_prune.h"
 #include "r_vss/r_camera_stats.h"
 #include "r_vss/r_onvif_event_subscriber.h"
+#include "r_vss/r_detection_pass.h"
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
 #include "r_utils/r_nullable.h"
@@ -151,6 +152,12 @@ public:
     // for a camera that isn't recording or has no subscription.
     R_API std::vector<r_onvif_span> onvif_spans(const std::string& camera_id, int64_t since_ms);
 
+    // A camera's event subscription reporting a start or end (any thread).
+    R_API void onvif_transition(const std::string& camera_id, const r_onvif_transition& t);
+
+    // The detection pass's finished sessions for a camera (shadow mode).
+    R_API std::vector<r_detection_session> detection_sessions(const std::string& camera_id, int64_t since_ms);
+
     R_API std::string add_restream_mount(const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, const r_disco::r_camera& camera, r_recording_context* rc, r_utils::r_nullable<r_pipeline::r_encoding> video_encoding, r_utils::r_nullable<r_pipeline::r_encoding> audio_encoding);
     R_API void remove_restream_mount(const std::string& path);
 
@@ -282,6 +289,11 @@ private:
     std::map<uint64_t, restream_overflow> _restream_overflow_since_log;
     std::chrono::steady_clock::time_point _restream_overflow_window_start {std::chrono::steady_clock::now()};
     r_overflow_type _current_overflow_flags {r_overflow_type::none};
+
+    // Runs over camera-reported motion when a motion plugin offers object
+    // detection. Kept (stopped) after stop() so late transitions are harmless.
+    std::mutex _detection_pass_lock;
+    std::unique_ptr<r_detection_pass> _detection_pass;
 };
 
 }

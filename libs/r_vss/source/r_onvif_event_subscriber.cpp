@@ -24,8 +24,9 @@ bool r_onvif_event_subscriber::wanted_for(const r_disco::r_camera& camera)
            !camera.xaddrs.is_null() && !camera.xaddrs.value().empty();
 }
 
-r_onvif_event_subscriber::r_onvif_event_subscriber(const r_disco::r_camera& camera) :
-    _camera(camera)
+r_onvif_event_subscriber::r_onvif_event_subscriber(const r_disco::r_camera& camera, transition_fn on_transition) :
+    _camera(camera),
+    _on_transition(std::move(on_transition))
 {
     _tag = camera.friendly_name.is_null() ? camera.id : camera.friendly_name.value();
 }
@@ -76,6 +77,14 @@ vector<r_onvif_span> r_onvif_event_subscriber::spans(int64_t since_ms) const
 }
 
 void r_onvif_event_subscriber::_apply(const vector<r_onvif_transition>& transitions)
+{
+    _record(transitions);
+    if (_on_transition)
+        for (auto& t : transitions)
+            _on_transition(t);
+}
+
+void r_onvif_event_subscriber::_record(const vector<r_onvif_transition>& transitions)
 {
     auto now = _now_ms();
     lock_guard<mutex> g(_lock);

@@ -15,6 +15,8 @@ add_executable(
     source/test_r_restream_track.cpp
     include/test_r_onvif_event_tracker.h
     source/test_r_onvif_event_tracker.cpp
+    include/test_r_detection_planner.h
+    source/test_r_detection_planner.cpp
 )
 
 # What r_vss/r_build_info.h should report, from the root CMakeLists.

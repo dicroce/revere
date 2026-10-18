@@ -139,6 +139,45 @@ void r_stream_keeper::start()
 
     _rtsp_server_th = thread(&r_stream_keeper::_rtsp_server_entry_point, this);
 
+    if(_meph.has_object_detector())
+    {
+        auto pass = make_unique<r_detection_pass>(
+            [this](const string& camera_id, int64_t) -> r_nullable<r_letterboxed_frame> {
+                std::shared_ptr<r_recording_context> rc;
+                {
+                    std::lock_guard<std::mutex> lock(_streams_mutex);
+                    auto it = _streams.find(camera_id);
+                    if(it != _streams.end())
+                        rc = it->second;
+                }
+                r_nullable<r_letterboxed_frame> out;
+                if(!rc)
+                    return out;
+                auto kf = rc->latest_key_frame();
+                if(kf.is_null())
+                    return out;
+                auto frame = decode_letterboxed_key_frame(kf.value().codec_name, kf.value().codec_parameters, kf.value().data);
+                frame.ts = kf.value().ts;
+                out.set_value(std::move(frame));
+                return out;
+            },
+            [this](const string& camera_id, int64_t ts) -> r_nullable<r_letterboxed_frame> {
+                r_nullable<r_letterboxed_frame> out;
+                out.set_value(query_get_letterboxed_key_frame(_top_dir, _devices, camera_id, r_time_utils::epoch_millis_to_tp(ts)));
+                return out;
+            },
+            [this](const string& camera_id, const r_letterboxed_frame& frame, vector<r_detection>& out) {
+                return _meph.detect_objects(camera_id, frame.ts, frame.rgb, frame.size, frame.size, out);
+            },
+            [this](const string& camera_id) -> string {
+                auto c = _devices.get_camera_by_id(camera_id);
+                return (!c.is_null() && !c.value().friendly_name.is_null()) ? c.value().friendly_name.value() : camera_id;
+            });
+        pass->start();
+        std::lock_guard<std::mutex> g(_detection_pass_lock);
+        _detection_pass = std::move(pass);
+    }
+
     _th = thread(&r_stream_keeper::_entry_point, this);
 
     _prune.start();
@@ -167,6 +206,17 @@ void r_stream_keeper::stop()
     R_LOG_INFO("Stopping web server...");
     _ws.stop();
     R_LOG_INFO("Web server stopped");
+
+    // Before the plugins it calls for detection.
+    {
+        std::lock_guard<std::mutex> g(_detection_pass_lock);
+        if(_detection_pass)
+        {
+            R_LOG_INFO("Stopping detection pass...");
+            _detection_pass->stop();
+            R_LOG_INFO("Detection pass stopped");
+        }
+    }
 
     {
         std::lock_guard<std::mutex> lock(_streams_mutex);
@@ -319,6 +369,23 @@ vector<r_onvif_span> r_stream_keeper::onvif_spans(const string& camera_id, int64
             rc = it->second;
     }
     return rc ? rc->onvif_spans(since_ms) : vector<r_onvif_span>();
+}
+
+void r_stream_keeper::onvif_transition(const string& camera_id, const r_onvif_transition& t)
+{
+    std::lock_guard<std::mutex> g(_detection_pass_lock);
+    if(!_detection_pass)
+        return;
+    if(t.what == "motion")
+        _detection_pass->motion(camera_id, t.source, t.active);
+    else if(t.active)
+        _detection_pass->camera_class(camera_id, t.what);
+}
+
+vector<r_detection_session> r_stream_keeper::detection_sessions(const string& camera_id, int64_t since_ms)
+{
+    std::lock_guard<std::mutex> g(_detection_pass_lock);
+    return _detection_pass ? _detection_pass->results(camera_id, since_ms) : vector<r_detection_session>();
 }
 
 bool r_stream_keeper::is_recording(const string& id)

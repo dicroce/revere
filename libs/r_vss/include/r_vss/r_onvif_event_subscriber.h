@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -50,7 +51,11 @@ struct r_onvif_events_status
 class r_onvif_event_subscriber
 {
 public:
-    R_API explicit r_onvif_event_subscriber(const r_disco::r_camera& camera);
+    // on_transition is called with each start and end, on the subscriber's
+    // thread, outside its lock.
+    using transition_fn = std::function<void(const r_onvif_transition&)>;
+
+    R_API explicit r_onvif_event_subscriber(const r_disco::r_camera& camera, transition_fn on_transition = {});
     R_API ~r_onvif_event_subscriber() noexcept;
 
     r_onvif_event_subscriber(const r_onvif_event_subscriber&) = delete;
@@ -71,9 +76,11 @@ public:
 private:
     void _entry_point();
     void _apply(const std::vector<r_onvif_transition>& transitions);
+    void _record(const std::vector<r_onvif_transition>& transitions);
     bool _wait(int seconds);  // false if stopping
 
     r_disco::r_camera _camera;
+    transition_fn _on_transition;
     std::string _tag;
     std::thread _th;
     std::atomic<bool> _running {false};
