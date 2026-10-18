@@ -10,6 +10,7 @@ const char* r_vss::look_kind_name(r_look_kind kind)
     switch (kind)
     {
         case look_first: return "first";
+        case look_start: return "start";
         case look_follow_up: return "follow-up";
         case look_pre_roll: return "pre-roll";
         case look_short: return "short";
@@ -25,9 +26,15 @@ static bool _live(r_look_kind kind)
 
 static int _rank(r_look_kind kind)
 {
-    // First looks decide how quickly an alert can go out; stored looks only
-    // refine a session's result.
-    return kind == look_first ? 0 : (kind == look_follow_up ? 1 : 2);
+    // First looks decide how quickly an alert can go out; a start look sees
+    // what set the camera off; the rest refine a session's result.
+    switch (kind)
+    {
+        case look_first: return 0;
+        case look_start: return 1;
+        case look_follow_up: return 2;
+        default: return 3;
+    }
 }
 
 static void _add_unique(vector<string>& v, const string& s)
@@ -117,8 +124,8 @@ void r_detection_planner::motion(const string& camera_id, const string& source, 
             }
 
             _plan_live(s, now_ms + FIRST_LOOK_MS);
-            // After the first look: it only refines the result.
-            _plan_stored(s, look_pre_roll, now_ms - PRE_ROLL_MS, now_ms + FIRST_LOOK_MS + 1);
+            _plan_stored(s, look_start, now_ms, now_ms + STORAGE_DELAY_MS);
+            _plan_stored(s, look_pre_roll, now_ms - PRE_ROLL_MS, now_ms);
             _sessions[camera_id] = s;
             return;
         }
@@ -132,6 +139,7 @@ void r_detection_planner::motion(const string& camera_id, const string& source, 
             s.event_start_ms = now_ms;
             s.result.end_ms = 0;
             _plan_live(s, now_ms + (s.found ? FOLLOW_UP_FOUND_MS : FIRST_LOOK_MS));
+            _plan_stored(s, look_start, now_ms, now_ms + STORAGE_DELAY_MS);
         }
         return;
     }
@@ -171,7 +179,7 @@ void r_detection_planner::camera_class(const string& camera_id, const string& wh
 r_nullable<r_look> r_detection_planner::next_look(int64_t now_ms)
 {
     r_nullable<r_look> best;
-    int64_t best_served = 0;
+    uint64_t best_served = 0;
     auto better = [&](const r_look& l) {
         if (best.is_null())
             return true;
@@ -232,7 +240,7 @@ r_nullable<r_look> r_detection_planner::next_look(int64_t now_ms)
         }
     }
     ++s.in_flight;
-    _last_served[l.camera_id] = now_ms;
+    _last_served[l.camera_id] = ++_turn;
     return best;
 }
 
@@ -304,15 +312,19 @@ void r_detection_planner::look_done(const r_look& look, bool got_frame, int64_t 
         return;
     }
 
-    if (s.result.first_look_ms == 0)
-    {
-        s.result.first_look_ms = now_ms;
-        s.result.first_look = detections;
-    }
     if (_live(look.kind))
         s.live_ok = true;
     if (any_of(detections.begin(), detections.end(), is_new))
+    {
         s.found = true;
+        if (s.result.first_found_ms == 0)
+        {
+            s.result.first_found_ms = now_ms;
+            for (auto& d : detections)
+                if (is_new(d))
+                    s.result.first_found.push_back(d);
+        }
+    }
     s.seen.insert(s.seen.end(), detections.begin(), detections.end());
 
     if (s.first_frame_ts < 0 || frame_ts < s.first_frame_ts)

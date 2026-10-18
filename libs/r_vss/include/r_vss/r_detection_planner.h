@@ -19,6 +19,7 @@ namespace r_vss
 enum r_look_kind
 {
     look_first,      // the first look at a session: the newest live key frame, ~2 s after motion started
+    look_start,      // a stored key frame at an event's start (the one at or before it): what set the camera off
     look_follow_up,  // a later live look while the motion lasts
     look_pre_roll,   // a stored key frame from just before the session: what was already there
     look_short,      // a stored key frame from a short event (it ended before the first look): the last one at or before its end
@@ -48,8 +49,8 @@ struct r_detection_session
     int looks {0};                            // looks that produced a frame
     int failed_looks {0};
     int dropped_static {0};                   // detections dropped as things that were already there
-    int64_t first_look_ms {0};                // when the first look's result came, 0 if none
-    std::vector<r_detection> first_look;      // its detections, unfiltered (what an alert would see)
+    int64_t first_found_ms {0};               // when a look first found something new (not in the pre-roll), 0 if none
+    std::vector<r_detection> first_found;     // what it found: what an alert would have said
 };
 
 // Plans the detection pass over camera-reported motion (milestone 4): when to
@@ -62,8 +63,13 @@ struct r_detection_session
 //  - The first look is due FIRST_LOOK_MS after the start, on the newest live
 //    key frame, then follow-ups while the motion lasts: every FOLLOW_UP_MS,
 //    every FOLLOW_UP_FOUND_MS once something has been found.
+//  - A start look at the stored key frame at or before each event's start:
+//    cameras report motion a moment after it begins, and what set them off
+//    may be gone by the first look (a person crossing the edge of the view).
 //  - A pre-roll look at a stored key frame from PRE_ROLL_MS before the start
-//    shows what was there before anything moved.
+//    shows what was there before anything moved. It is due at once (the
+//    frame is already stored), so it is done by the first look, and what the
+//    first look finds can be told apart from what was already there.
 //  - When an event ends: one look at its end frame, or, if it ended before the
 //    first look, at its last key frame (the key frame at or before its end:
 //    only key frames are decoded, and an earlier one could predate the event).
@@ -74,9 +80,9 @@ struct r_detection_session
 //    the same place in the session's first and last frames (IoU >= 0.85, the
 //    same class), are dropped as things that were already there: camera
 //    events have no motion regions to filter by.
-//  - Looks are chosen first looks first, then follow-ups, then stored looks;
-//    within a kind, the camera served longest ago goes first, so one busy
-//    camera can't starve the rest.
+//  - Looks are chosen first looks first, then start looks, then follow-ups,
+//    then the rest; within a kind, the camera served longest ago goes first,
+//    so one busy camera can't starve the rest.
 class r_detection_planner
 {
 public:
@@ -146,7 +152,8 @@ private:
 
     std::map<std::string, _session> _sessions;            // camera id -> its open session
     std::vector<r_detection_session> _finished;           // finished, not yet returned
-    std::map<std::string, int64_t> _last_served;          // camera id -> when it last got a look
+    std::map<std::string, uint64_t> _last_served;         // camera id -> the turn it last got a look (0 = never)
+    uint64_t _turn {0};
     std::map<std::string, std::deque<std::pair<std::string, int64_t>>> _early_classes;  // camera id -> (class, when), before a session
 };
 

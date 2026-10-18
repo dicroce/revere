@@ -1086,8 +1086,8 @@ r_http::r_server_response r_ws::_get_onvif_events(const r_http::r_web_server<r_u
                 {"looks", s.looks},
                 {"failed_looks", s.failed_looks},
                 {"dropped_static", s.dropped_static},
-                {"first_look_ms", s.first_look_ms},
-                {"first_look", dets_json(s.first_look)},
+                {"first_found_ms", s.first_found_ms},
+                {"first_found", dets_json(s.first_found)},
                 {"detections", dets_json(s.detections)}
             });
 

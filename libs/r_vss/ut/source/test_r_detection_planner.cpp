@@ -50,6 +50,13 @@ void test_r_detection_planner::test_first_look_then_follow_ups()
     P p;
     p.motion("a", "", true, 1000);
 
+    // The pre-roll is due at once: its frame is already stored.
+    auto pre = p.next_look(1000);
+    RTF_ASSERT(!pre.is_null());
+    RTF_ASSERT(pre.value().kind == look_pre_roll);
+    RTF_ASSERT_EQUAL(pre.value().ts, (int64_t)(1000 - P::PRE_ROLL_MS));
+    p.look_done(pre.value(), true, -2000, {}, 1200);
+
     RTF_ASSERT(p.next_look(2999).is_null());
     RTF_ASSERT_EQUAL(p.next_due_ms(), (int64_t)3000);
 
@@ -58,12 +65,13 @@ void test_r_detection_planner::test_first_look_then_follow_ups()
     RTF_ASSERT(first.value().kind == look_first);
     p.look_done(first.value(), true, 2900, {_det("person", 100, 100, 200, 300)}, 3100);
 
-    // The pre-roll comes after the first look.
-    auto pre = p.next_look(3100);
-    RTF_ASSERT(!pre.is_null());
-    RTF_ASSERT(pre.value().kind == look_pre_roll);
-    RTF_ASSERT_EQUAL(pre.value().ts, (int64_t)(1000 - P::PRE_ROLL_MS));
-    p.look_done(pre.value(), true, -2000, {}, 3200);
+    // Then the start look.
+    auto start = p.next_look(3100);
+    RTF_ASSERT(!start.is_null());
+    RTF_ASSERT(start.value().kind == look_start);
+    RTF_ASSERT_EQUAL(start.value().ts, (int64_t)1000);
+    p.look_done(start.value(), true, 900, {}, 3150);
+    RTF_ASSERT(p.next_look(3150).is_null());
 
     // Something was found, so the follow-up is the slow one.
     RTF_ASSERT(p.next_look(3100 + P::FOLLOW_UP_FOUND_MS - 1).is_null());
@@ -86,10 +94,10 @@ void test_r_detection_planner::test_first_look_then_follow_ups()
     RTF_ASSERT_EQUAL(f.size(), (size_t)1);
     RTF_ASSERT_EQUAL(f[0].start_ms, (int64_t)1000);
     RTF_ASSERT_EQUAL(f[0].end_ms, (int64_t)20000);
-    RTF_ASSERT_EQUAL(f[0].looks, 4);
+    RTF_ASSERT_EQUAL(f[0].looks, 5);
     RTF_ASSERT_EQUAL(f[0].detections.size(), (size_t)2);
-    RTF_ASSERT_EQUAL(f[0].first_look_ms, (int64_t)3100);
-    RTF_ASSERT_EQUAL(f[0].first_look.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(f[0].first_found_ms, (int64_t)3100);
+    RTF_ASSERT_EQUAL(f[0].first_found.size(), (size_t)1);
     RTF_ASSERT(p.finished(100000).empty());
 }
 
@@ -105,13 +113,14 @@ void test_r_detection_planner::test_short_event_uses_last_key_frame()
         return l.kind == look_short ? vector<r_detection>{_det("person", 0, 0, 50, 100)} : vector<r_detection>{};
     }, &looks, &f);
 
-    RTF_ASSERT_EQUAL(looks.size(), (size_t)2);
+    RTF_ASSERT_EQUAL(looks.size(), (size_t)3);
     RTF_ASSERT(looks[0].kind == look_pre_roll);
-    RTF_ASSERT(looks[1].kind == look_short);
-    RTF_ASSERT_EQUAL(looks[1].ts, (int64_t)2000);
+    RTF_ASSERT(looks[1].kind == look_start);
+    RTF_ASSERT(looks[2].kind == look_short);
+    RTF_ASSERT_EQUAL(looks[2].ts, (int64_t)2000);
     RTF_ASSERT_EQUAL(f.size(), (size_t)1);
     RTF_ASSERT_EQUAL(f[0].detections.size(), (size_t)1);
-    RTF_ASSERT_EQUAL(f[0].first_look.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(f[0].first_found.size(), (size_t)1);
 }
 
 void test_r_detection_planner::test_events_cluster_into_one_session()
@@ -137,14 +146,16 @@ void test_r_detection_planner::test_events_cluster_into_one_session()
     RTF_ASSERT_EQUAL(f[0].start_ms, (int64_t)1000);
     RTF_ASSERT_EQUAL(f[0].end_ms, (int64_t)15000);
 
-    int first = 0, pre = 0;
+    int first = 0, pre = 0, start = 0;
     for (auto& l : looks)
     {
         if (l.kind == look_first) ++first;
         if (l.kind == look_pre_roll) ++pre;
+        if (l.kind == look_start) ++start;
     }
     RTF_ASSERT_EQUAL(first, 1);
     RTF_ASSERT_EQUAL(pre, 1);
+    RTF_ASSERT_EQUAL(start, 2);  // one per event
 }
 
 void test_r_detection_planner::test_far_apart_events_are_separate()
@@ -180,12 +191,13 @@ void test_r_detection_planner::test_pre_roll_drops_parked_objects()
     }, nullptr, &f);
 
     RTF_ASSERT_EQUAL(f.size(), (size_t)1);
-    RTF_ASSERT_EQUAL(f[0].detections.size(), (size_t)2);
+    RTF_ASSERT_EQUAL(f[0].detections.size(), (size_t)3);   // first, start and end looks
     for (auto& d : f[0].detections)
         RTF_ASSERT_EQUAL(d.class_name, string("person"));
-    RTF_ASSERT_EQUAL(f[0].dropped_static, 2);
-    // What an alert would have seen is kept unfiltered.
-    RTF_ASSERT_EQUAL(f[0].first_look.size(), (size_t)2);
+    RTF_ASSERT_EQUAL(f[0].dropped_static, 3);
+    // The pre-roll ran before the first look, so the parked car isn't news.
+    RTF_ASSERT_EQUAL(f[0].first_found.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(f[0].first_found[0].class_name, string("person"));
 }
 
 void test_r_detection_planner::test_first_and_last_frame_static_check()
@@ -207,7 +219,7 @@ void test_r_detection_planner::test_first_and_last_frame_static_check()
     RTF_ASSERT_EQUAL(f.size(), (size_t)1);
     RTF_ASSERT_EQUAL(f[0].detections.size(), (size_t)1);
     RTF_ASSERT_EQUAL(f[0].detections[0].class_name, string("person"));
-    RTF_ASSERT_EQUAL(f[0].dropped_static, 3);
+    RTF_ASSERT_EQUAL(f[0].dropped_static, 4);   // the bin in the first, start, follow-up and end looks
 }
 
 void test_r_detection_planner::test_failed_stored_look_retries_once()
@@ -240,8 +252,7 @@ void test_r_detection_planner::test_failed_stored_look_retries_once()
     RTF_ASSERT_EQUAL(middles, (int)P::MAX_ATTEMPTS);
     RTF_ASSERT_EQUAL(f.size(), (size_t)1);
     RTF_ASSERT_EQUAL(f[0].failed_looks, (int)P::MAX_ATTEMPTS);
-    RTF_ASSERT_EQUAL(f[0].looks, 1);  // the pre-roll
-    RTF_ASSERT_EQUAL(f[0].first_look_ms, (int64_t)0);
+    RTF_ASSERT_EQUAL(f[0].looks, 2);  // the start look and the pre-roll
 }
 
 // Two cameras' stored looks all due at once take turns, rather than one
@@ -250,9 +261,9 @@ void test_r_detection_planner::test_fair_between_cameras()
 {
     P p;
     p.motion("a", "", true, 0);
-    p.motion("a", "", false, 100);    // pre-roll due 2001, short look due 2100
+    p.motion("a", "", false, 100);    // pre-roll 0, start 2000, short 2100
     p.motion("b", "", true, 1000);
-    p.motion("b", "", false, 1100);   // pre-roll due 3001, short look due 3100
+    p.motion("b", "", false, 1100);   // pre-roll 1000, start 3000, short 3100
 
     vector<string> order;
     while (true)
@@ -264,19 +275,21 @@ void test_r_detection_planner::test_fair_between_cameras()
         p.look_done(l.value(), true, l.value().ts, {}, 4000);
     }
 
-    RTF_ASSERT_EQUAL(order.size(), (size_t)4);
-    RTF_ASSERT_EQUAL(order[0], string("a:pre-roll"));
-    RTF_ASSERT_EQUAL(order[1], string("b:pre-roll"));
-    RTF_ASSERT_EQUAL(order[2], string("a:short"));
-    RTF_ASSERT_EQUAL(order[3], string("b:short"));
+    RTF_ASSERT_EQUAL(order.size(), (size_t)6);
+    RTF_ASSERT_EQUAL(order[0], string("a:start"));
+    RTF_ASSERT_EQUAL(order[1], string("b:start"));
+    RTF_ASSERT_EQUAL(order[2], string("a:pre-roll"));
+    RTF_ASSERT_EQUAL(order[3], string("b:pre-roll"));
+    RTF_ASSERT_EQUAL(order[4], string("a:short"));
+    RTF_ASSERT_EQUAL(order[5], string("b:short"));
 
     // A first look beats a follow-up that fell due earlier.
     P q;
     q.motion("a", "", true, 0);
     auto a1 = q.next_look(2000);
     q.look_done(a1.value(), true, 2000, {}, 2000);     // a's follow-up due 6000
-    auto apre = q.next_look(2001);
-    q.look_done(apre.value(), true, 0, {}, 2001);
+    for (auto more = q.next_look(2001); !more.is_null(); more = q.next_look(2001))
+        q.look_done(more.value(), true, 0, {}, 2001);         // a's start look and pre-roll
     q.motion("b", "", true, 5000);                      // b's first look due 7000
     auto l = q.next_look(7000);
     RTF_ASSERT_EQUAL(l.value().camera_id, string("b"));
