@@ -394,12 +394,14 @@ void r_utils::r_fs::mkdir_p(const std::string& path)
     if(!dir.empty() && !is_dir(dir))
         mkdir_p(dir);
 
-    // Now create this directory
+    // Now create this directory. Another process or thread may make it between
+    // the check above and here; that's fine, as long as what's there is a
+    // directory and not a file.
 #ifdef IS_WINDOWS
-    if(_mkdir(path.c_str()) < 0 && errno != EEXIST)
+    if(_mkdir(path.c_str()) < 0 && (errno != EEXIST || !is_dir(path)))
         R_STHROW(r_internal_exception, ("Unable to make directory: %s",path.c_str()));
 #else
-    if(::mkdir(path.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0 && errno != EEXIST)
+    if(::mkdir(path.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0 && (errno != EEXIST || !is_dir(path)))
         R_STHROW(r_internal_exception, ("Unable to make directory: %s",path.c_str()));
 #endif
 }
