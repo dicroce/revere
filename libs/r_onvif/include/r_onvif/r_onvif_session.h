@@ -173,7 +173,8 @@ private:
         const std::function<void(pugi::xml_node&)>& build_body,
         r_utils::r_nullable<std::string> username,
         r_utils::r_nullable<std::string> password,
-        const std::function<void(pugi::xml_node&)>& build_header = {}
+        const std::function<void(pugi::xml_node&)>& build_header = {},
+        bool log_request = true
     );
 
     // A request to a pull point's own address: WS-Addressing Action and To, and
@@ -181,7 +182,8 @@ private:
     std::pair<int, std::string> _pull_point_request(
         const onvif_pull_point& pull_point,
         const std::string& soap_action,
-        const std::function<void(pugi::xml_node&)>& build_body
+        const std::function<void(pugi::xml_node&)>& build_body,
+        bool log_request = true
     );
 
     std::vector<std::string> _xaddrs_services;

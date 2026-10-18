@@ -72,7 +72,8 @@ static pair<int, string> _http_interact(
     soap_version soap_ver = soap_version::unknown,
     const string& soap_action = "",
     int timeout_ms = 30000,
-    int net_attempts = 2
+    int net_attempts = 2,
+    bool log_request = true   // false for requests made every few seconds (event pulls); failures still log
 )
 {
     const int MAX_NET_ATTEMPTS = net_attempts;
@@ -92,7 +93,8 @@ retry_redirect:
 
         try
         {
-            R_LOG_INFO("HTTP interact: %s(%d)(%s)", host.c_str(), port, uri.c_str());
+            if (log_request)
+                R_LOG_INFO("HTTP interact: %s(%d)(%s)", host.c_str(), port, uri.c_str());
 
             std::unique_ptr<r_utils::r_socket_base> sock;
             if (port == 443)
@@ -1434,7 +1436,8 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
     const function<void(pugi::xml_node&)>& build_body,
     r_nullable<string> username,
     r_nullable<string> password,
-    const function<void(pugi::xml_node&)>& build_header
+    const function<void(pugi::xml_node&)>& build_header,
+    bool log_request
 )
 {
     // Determine which SOAP version(s) to try
@@ -1464,7 +1467,7 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
             string body = _build_soap_envelope(ver, auth, build_body, username, password, _time_offset_seconds, build_header);
 
             // Pass SOAP version and action to set appropriate headers
-            result = _http_interact(host, port, "POST", uri, body, ver, soap_action);
+            result = _http_interact(host, port, "POST", uri, body, ver, soap_action, 30000, 2, log_request);
 
             // Check if successful
             if (result.first == 200)
@@ -2030,7 +2033,8 @@ r_onvif::onvif_pull_point r_onvif::parse_create_pull_point_response(const string
 pair<int, string> r_onvif::r_onvif_cam::_pull_point_request(
     const onvif_pull_point& pull_point,
     const string& soap_action,
-    const function<void(pugi::xml_node&)>& build_body
+    const function<void(pugi::xml_node&)>& build_body,
+    bool log_request
 )
 {
     string host, protocol, uri;
@@ -2051,7 +2055,8 @@ pair<int, string> r_onvif::r_onvif_cam::_pull_point_request(
                 auto copy = header.append_copy(tmp.document_element());
                 copy.append_attribute("wsa:IsReferenceParameter") = "true";
             }
-        }
+        },
+        log_request
     );
 }
 
@@ -2064,7 +2069,8 @@ vector<r_onvif::onvif_event> r_onvif::r_onvif_cam::pull_messages(const onvif_pul
             auto req = body.append_child("tev:PullMessages");
             req.append_child("tev:Timeout").text().set(("PT" + to_string(timeout_seconds) + "S").c_str());
             req.append_child("tev:MessageLimit").text().set(message_limit);
-        }
+        },
+        false   // every couple of seconds per camera: not worth a log line each
     );
     if (result.first != 200)
         throw _events_error("PullMessages failed", result);
