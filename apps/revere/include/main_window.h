@@ -137,8 +137,8 @@ private:
 struct main_window_state
 {
     float list_width {260.0f};
-    // Which list sections are open. In memory for now; to be saved with the
-    // window placement, like list_width.
+    // Which list sections are open. main.cpp loads these from revere_cfg.json
+    // at start and saves them as soon as one changes.
     bool recording_open {true};
     bool discovered_open {true};
     bool plugins_open {true};

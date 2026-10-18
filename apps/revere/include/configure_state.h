@@ -7,6 +7,7 @@
 #include <mutex>
 #include <optional>
 #include "r_ui_utils/window_placement.h"
+#include "r_ui_utils/section_state.h"
 
 namespace revere
 {
@@ -96,10 +97,16 @@ struct configure_state final
     std::optional<window_placement> get_window_placement() const;
     void set_window_placement(const window_placement& placement);
 
+    // Whether a main window list section is open, by a stable key ("recording",
+    // "discovered", "plugins"); def when nothing is saved for it.
+    bool get_section_open(const std::string& key, bool def) const;
+    void set_section_open(const std::string& key, bool open);
+
 private:
     std::string _top_dir;
     std::map<std::string, std::map<int, std::string>> _camera_answers;
     std::optional<window_placement> _window_placement;
+    r_ui_utils::sections_open _sections_open;
     mutable bool _need_save {false};
     mutable std::mutex _mutex;
 };

@@ -5,6 +5,8 @@ add_executable(
     r_ui_utils_ut
     include/test_window_placement.h
     source/test_window_placement.cpp
+    include/test_section_state.h
+    source/test_section_state.cpp
 )
 
 target_include_directories(

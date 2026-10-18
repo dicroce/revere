@@ -3343,6 +3343,22 @@ int main(int argc, char** argv)
     // The main window's list, detail pane and log. Each action does what the
     // matching button on the old camera cards did.
     revere::main_window_state main_window_state;
+    // Sections the user closed stay closed across runs; the default is open.
+    main_window_state.recording_open = cfg_state.get_section_open("recording", main_window_state.recording_open);
+    main_window_state.discovered_open = cfg_state.get_section_open("discovered", main_window_state.discovered_open);
+    main_window_state.plugins_open = cfg_state.get_section_open("plugins", main_window_state.plugins_open);
+    // Records a section only when it's opened or closed, so one that's never
+    // been touched keeps following the default.
+    auto record_section = [&](const char* key, bool open, bool& last) {
+        if(open != last)
+        {
+            cfg_state.set_section_open(key, open);
+            last = open;
+        }
+    };
+    bool last_recording_open = main_window_state.recording_open;
+    bool last_discovered_open = main_window_state.discovered_open;
+    bool last_plugins_open = main_window_state.plugins_open;
     revere::main_window_fonts main_window_fonts {FONT_KEY_24, FONT_KEY_22, FONT_KEY_18};
     bool tray_notice_pending = false;
     revere::g_dialog_fonts = main_window_fonts;
@@ -3776,6 +3792,11 @@ int main(int argc, char** argv)
             main_window_actions,
             main_window_fonts
         );
+        // A click on a section header saves on this pass of the loop (need_save),
+        // so a crash or force-quit keeps it.
+        record_section("recording", main_window_state.recording_open, last_recording_open);
+        record_section("discovered", main_window_state.discovered_open, last_discovered_open);
+        record_section("plugins", main_window_state.plugins_open, last_plugins_open);
 
         camera_setup_wizard();
 
