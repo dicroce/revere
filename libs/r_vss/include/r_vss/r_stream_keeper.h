@@ -338,7 +338,7 @@ private:
     std::chrono::steady_clock::time_point _restream_overflow_window_start {std::chrono::steady_clock::now()};
     r_overflow_type _current_overflow_flags {r_overflow_type::none};
 
-    // Runs over camera-reported motion when a motion plugin offers object
+    // Runs over tier 3 cameras' motion when a motion plugin offers object
     // detection. Kept (stopped) after stop() so late transitions are harmless.
     std::mutex _detection_pass_lock;
     std::unique_ptr<r_detection_pass> _detection_pass;

@@ -399,6 +399,11 @@ void r_stream_keeper::onvif_transition(const string& camera_id, const r_onvif_tr
         return;
     }
 
+    // Only tier 3 runs the detection pass. Tier 1 has the YOLO motion plugin
+    // on MOG2's events; running the pass there too would be YOLO twice.
+    if(tier != motion_tier_3)
+        return;
+
     std::lock_guard<std::mutex> g(_detection_pass_lock);
     if(!_detection_pass)
         return;
