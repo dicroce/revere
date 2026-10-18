@@ -1814,16 +1814,20 @@ r_nullable<r_onvif::onvif_endpoint> r_onvif::find_device_service(
     const string& host,
     const string& uri,
     r_nullable<int> hint_port,
-    r_nullable<string> hint_protocol
+    r_nullable<string> hint_protocol,
+    const std::function<bool()>& should_continue
 )
 {
     auto path = uri.empty() ? string("/onvif/device_service") : uri;
+    auto stopping = [&]() { return should_continue && !should_continue(); };
 
     if (!hint_port.is_null() && _answers_onvif(host, hint_port.value(), path))
         return onvif_endpoint{host, hint_port.value(), hint_protocol.is_null() ? string("http") : hint_protocol.value(), path};
 
     // The camera says where its service is, when it answers a unicast Probe.
-    for (auto& di : filter_discovered(discover_unicast(r_uuid::generate(), {host})))
+    if (stopping())
+        return r_nullable<onvif_endpoint>();
+    for (auto& di : filter_discovered(discover_unicast(r_uuid::generate(), {host}, should_continue)))
     {
         if (di.host != host)
             continue;
@@ -1835,6 +1839,8 @@ r_nullable<r_onvif::onvif_endpoint> r_onvif::find_device_service(
     const pair<int, const char*> common[] = {{80, "http"}, {8000, "http"}, {8080, "http"}, {443, "https"}};
     for (auto& c : common)
     {
+        if (stopping())
+            return r_nullable<onvif_endpoint>();
         if (!hint_port.is_null() && c.first == hint_port.value())
             continue;
         if (_answers_onvif(host, c.first, path))

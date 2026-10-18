@@ -26,6 +26,8 @@
 #include <thread>
 #include <utility>
 #include <deque>
+#include <memory>
+#include "r_vss/r_onvif_event_subscriber.h"
 
 struct _GstRTSPMediaFactory;
 typedef _GstRTSPMediaFactory GstRTSPMediaFactory;
@@ -229,6 +231,12 @@ public:
 
     R_API void stop();
 
+    // The camera's ONVIF event subscription (shadow mode). Null status/empty
+    // spans for a camera without one (added by RTSP URL).
+    R_API bool has_onvif_events() const;
+    R_API r_onvif_events_status onvif_events_status() const;
+    R_API std::vector<r_onvif_span> onvif_spans(int64_t since_ms) const;
+
     R_API void create_playback_mount(GstRTSPServer* server, GstRTSPMountPoints* mounts, const std::string& url, uint64_t start_ts, uint64_t end_ts);
 
 private:
@@ -280,6 +288,7 @@ private:
     // no mutex needed. Drained into a new live RTSP viewer's queue when
     // their LRS appears with needs_gop_replay set.
     std::deque<_gop_cache_entry> _video_gop_cache;
+    std::unique_ptr<r_onvif_event_subscriber> _onvif_events;
 };
 
 }

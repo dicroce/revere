@@ -55,7 +55,8 @@ R_API r_utils::r_nullable<onvif_endpoint> find_device_service(
     const std::string& host,
     const std::string& uri,
     r_utils::r_nullable<int> hint_port = r_utils::r_nullable<int>(),
-    r_utils::r_nullable<std::string> hint_protocol = r_utils::r_nullable<std::string>()
+    r_utils::r_nullable<std::string> hint_protocol = r_utils::r_nullable<std::string>(),
+    const std::function<bool()>& should_continue = {}  // polled between attempts; false stops the search
 );
 
 typedef std::string onvif_capabilities;

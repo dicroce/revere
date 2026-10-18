@@ -9,6 +9,7 @@
 #include "r_vss/r_ws.h"
 #include "r_vss/r_prune.h"
 #include "r_vss/r_camera_stats.h"
+#include "r_vss/r_onvif_event_subscriber.h"
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
 #include "r_utils/r_nullable.h"
@@ -97,6 +98,10 @@ struct r_stream_status
     bool failed {false};
     std::string failure_message;
     int failure_attempt_count {0};
+
+    // The camera's ONVIF event subscription (shadow mode), when it has one.
+    bool has_onvif_events {false};
+    r_onvif_events_status onvif_events;
 };
 
 enum r_stream_keeper_commands
@@ -141,6 +146,10 @@ public:
     R_API std::vector<r_stream_status> fetch_stream_status();
 
     R_API bool is_recording(const std::string& id);
+
+    // Camera-reported event spans since since_ms (ONVIF, shadow mode); empty
+    // for a camera that isn't recording or has no subscription.
+    R_API std::vector<r_onvif_span> onvif_spans(const std::string& camera_id, int64_t since_ms);
 
     R_API std::string add_restream_mount(const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, const r_disco::r_camera& camera, r_recording_context* rc, r_utils::r_nullable<r_pipeline::r_encoding> video_encoding, r_utils::r_nullable<r_pipeline::r_encoding> audio_encoding);
     R_API void remove_restream_mount(const std::string& path);

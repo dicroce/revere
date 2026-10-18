@@ -309,6 +309,18 @@ void r_stream_keeper::_update_status_cache()
     _status_cache = std::move(status);
 }
 
+vector<r_onvif_span> r_stream_keeper::onvif_spans(const string& camera_id, int64_t since_ms)
+{
+    std::shared_ptr<r_recording_context> rc;
+    {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        auto it = _streams.find(camera_id);
+        if(it != _streams.end())
+            rc = it->second;
+    }
+    return rc ? rc->onvif_spans(since_ms) : vector<r_onvif_span>();
+}
+
 bool r_stream_keeper::is_recording(const string& id)
 {
     r_stream_keeper_cmd cmd;
@@ -885,6 +897,9 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.receiving_video = c.second->receiving_video();
             s.storage_write_lag_ms = c.second->storage_write_lag_ms();
             s.storage_timeline_lag_ms = c.second->storage_timeline_lag_ms();
+            s.has_onvif_events = c.second->has_onvif_events();
+            if(s.has_onvif_events)
+                s.onvif_events = c.second->onvif_events_status();
             return s;
         }
     );

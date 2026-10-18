@@ -498,6 +498,12 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
         _source.set_sim_mttf_seconds(sim_mttf_seconds);
 
     _source.play();
+
+    if(r_onvif_event_subscriber::wanted_for(_camera))
+    {
+        _onvif_events = std::make_unique<r_onvif_event_subscriber>(_camera);
+        _onvif_events->start();
+    }
 }
 
 r_recording_context::~r_recording_context() noexcept
@@ -505,6 +511,9 @@ r_recording_context::~r_recording_context() noexcept
     _sk->remove_restream_mount(_restream_mount_path);
 
     _source.stop();
+
+    // Waits for the subscriber's thread (stop() already asked it to finish).
+    _onvif_events.reset();
 
     // Explicitly clear write contexts BEFORE _storage_file is destroyed
     // This ensures nanots write_context unique_ptrs are destroyed immediately,
@@ -689,7 +698,26 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
 
 void r_recording_context::stop()
 {
+    // Asks without waiting, so stopping every camera at shutdown winds their
+    // subscribers down in parallel; the destructor waits.
+    if(_onvif_events)
+        _onvif_events->request_stop();
     _source.stop();
+}
+
+bool r_recording_context::has_onvif_events() const
+{
+    return (bool)_onvif_events;
+}
+
+r_onvif_events_status r_recording_context::onvif_events_status() const
+{
+    return _onvif_events ? _onvif_events->status() : r_onvif_events_status();
+}
+
+vector<r_onvif_span> r_recording_context::onvif_spans(int64_t since_ms) const
+{
+    return _onvif_events ? _onvif_events->spans(since_ms) : vector<r_onvif_span>();
 }
 
 void r_recording_context::create_playback_mount(GstRTSPServer*, GstRTSPMountPoints* mounts, const std::string& url, uint64_t start_ts, uint64_t end_ts)

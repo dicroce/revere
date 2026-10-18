@@ -13,6 +13,8 @@ add_executable(
     source/test_r_snapshot_cache.cpp
     include/test_r_restream_track.h
     source/test_r_restream_track.cpp
+    include/test_r_onvif_event_tracker.h
+    source/test_r_onvif_event_tracker.cpp
 )
 
 # What r_vss/r_build_info.h should report, from the root CMakeLists.
@@ -37,6 +39,7 @@ target_link_libraries(
     r_av
     r_motion
     r_disco
+    r_onvif
     r_storage
     r_utils
     opencv::opencv
