@@ -2943,11 +2943,12 @@ int main(int argc, char** argv)
     auto log_path = revere::sub_dir("logs");
     revere::sub_dir("config");  // Ensure config dir exists for plugins
 
-    revere::configure_state cfg_state(r_fs::platform_path(top_dir));
-    cfg_state.load();
-
     r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
     r_logger::set_log_callback([](r_logger::LOG_LEVEL, const std::string& line) { s_log_tail.add(line); });
+
+    // After the logger, so a settings file that can't be read is in the log.
+    revere::configure_state cfg_state(r_fs::platform_path(top_dir));
+    cfg_state.load();
 
     // Install before any worker threads start, so nothing can crash unwatched.
     // Dumps land beside the logs so "send me your logs directory" collects the
@@ -3343,6 +3344,8 @@ int main(int argc, char** argv)
     // The main window's list, detail pane and log. Each action does what the
     // matching button on the old camera cards did.
     revere::main_window_state main_window_state;
+    if(!cfg_state.load_problem().empty())
+        main_window_state.show_toast(cfg_state.load_problem(), "config_load_problem", 30.0);
     // Sections the user closed stay closed across runs; the default is open.
     main_window_state.recording_open = cfg_state.get_section_open("recording", main_window_state.recording_open);
     main_window_state.discovered_open = cfg_state.get_section_open("discovered", main_window_state.discovered_open);
