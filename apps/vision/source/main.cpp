@@ -1574,6 +1574,7 @@ int run_overlay(const overlay_opts& opts)
     // so frames are still picked up on time. Drawing every vsync instead (120
     // Hz on ProMotion displays) costs a lot of CPU for nothing new on screen.
     bool need_draw = true;
+    bool min_size_set = false;  // see SDL_SetWindowMinimumSize below
     auto last_draw = chrono::steady_clock::now();
 
     auto toggle_on_top = [&]() {
@@ -1788,6 +1789,16 @@ int run_overlay(const overlay_opts& opts)
 
             uint16_t cb_h = (uint16_t)(6.0f * ImGui::GetTextLineHeightWithSpacing());
             float block_top = (float)win_h - (float)cb_h;
+
+            // Once the time bar's height is known (it follows the font): never
+            // smaller than the corner strip and the time bar need, so the strip
+            // can't run off the left edge or over the bar. SDL also grows a
+            // window that's smaller, such as one saved at its old size.
+            if(!min_size_set)
+            {
+                SDL_SetWindowMinimumSize(window, overlay_min_width(), overlay_min_height((float)cb_h));
+                min_size_set = true;
+            }
 
             ImGui::PushStyleVar(ImGuiStyleVar_Alpha, bar_alpha);
 
