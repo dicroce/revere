@@ -14,6 +14,7 @@ configure_state::configure_state(const string& top_dir) :
     _top_dir(top_dir),
     _camera_answers(),
     _window_placement(),
+    _sections_open(),
     _need_save(false),
     _mutex()
 {
@@ -57,6 +58,11 @@ void configure_state::load()
             _window_placement = wp;
         }
     }
+
+    // Older files have no "sections"; a bad entry leaves that section at its default.
+    _sections_open.clear();
+    if(j.contains("sections"))
+        _sections_open = r_ui_utils::parse_sections_open(j["sections"]);
 }
 
 bool configure_state::need_save() const
@@ -85,6 +91,8 @@ void configure_state::save()
         const auto& wp = *_window_placement;
         j["window"] = { {"x", wp.rect.x}, {"y", wp.rect.y}, {"w", wp.rect.w}, {"h", wp.rect.h}, {"maximized", wp.maximized} };
     }
+    if(!_sections_open.empty())
+        j["sections"] = r_ui_utils::sections_open_to_json(_sections_open);
 
     auto cfg_txt = j.dump();
     auto cfg_dir = _top_dir + PATH_SLASH + "config";
@@ -107,6 +115,22 @@ void configure_state::set_window_placement(const window_placement& placement)
     if(_window_placement && *_window_placement == placement)
         return;
     _window_placement = placement;
+    _need_save = true;
+}
+
+bool configure_state::get_section_open(const string& key, bool def) const
+{
+    lock_guard<mutex> lock(_mutex);
+    return r_ui_utils::section_open(_sections_open, key, def);
+}
+
+void configure_state::set_section_open(const string& key, bool open)
+{
+    lock_guard<mutex> lock(_mutex);
+    auto found = _sections_open.find(key);
+    if(found != _sections_open.end() && found->second == open)
+        return;
+    _sections_open[key] = open;
     _need_save = true;
 }
 
