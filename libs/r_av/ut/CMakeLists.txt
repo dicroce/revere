@@ -7,6 +7,8 @@ add_executable(
     source/test_r_codec.cpp
     include/test_r_transcoder_repro.h
     source/test_r_transcoder_repro.cpp
+    include/test_r_output_frame_selector.h
+    source/test_r_output_frame_selector.cpp
 )
 
 target_include_directories(

@@ -63,6 +63,7 @@ public:
 
 private:
     void _clear();
+    void _release_hw_frame();
 
     AVCodecID _codec_id;
     r_hw_accel _hw_accel;
