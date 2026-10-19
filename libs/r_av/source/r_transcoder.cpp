@@ -40,7 +40,8 @@ r_transcoder::r_transcoder(
     _level(41),
     _frame_count(0),
     _input_timebase(input_timebase),
-    _selector(),
+    // Fill gaps of up to a second; a longer one is a jump, not a stall
+    _selector((framerate.num + framerate.den - 1) / framerate.den),
     _last_decoded_frame(nullptr)
 {
     // Set extradata on decoder
@@ -249,6 +250,11 @@ void r_transcoder::_worker_thread()
     }
 }
 
+r_output_frame_selector::r_output_frame_selector(int64_t max_repeats) :
+    _max_repeats(max_repeats)
+{
+}
+
 r_output_frame_plan r_output_frame_selector::next(int64_t encoder_pts)
 {
     r_output_frame_plan plan;
@@ -261,7 +267,8 @@ r_output_frame_plan r_output_frame_selector::next(int64_t encoder_pts)
         return plan;
 
     plan.keep = true;
-    plan.repeats = encoder_pts - _next_pts;
+    auto gap = encoder_pts - _next_pts;
+    plan.repeats = (gap <= _max_repeats) ? gap : 0;
     plan.pts = encoder_pts;
     _next_pts = encoder_pts + 1;
     return plan;

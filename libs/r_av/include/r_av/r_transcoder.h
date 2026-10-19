@@ -21,6 +21,7 @@ extern "C"
 #include <atomic>
 #include <functional>
 #include <chrono>
+#include <cstdint>
 #include <memory> // For std::shared_ptr
 
 namespace r_av
@@ -38,15 +39,21 @@ struct r_output_frame_plan
 
 // Fits input frames to the output frame rate. Feed it each decoded frame's pts
 // already rescaled to the encoder timebase (1/fps): a frame that lands on a
-// tick already filled is dropped, and a gap of missing ticks is filled by
-// repeating the previous frame.
+// tick already filled is dropped, and a short gap of missing ticks is filled by
+// repeating the previous frame. A gap longer than max_repeats ticks is a jump
+// (the input skipped ahead to catch up with live), not a stall: the frame after
+// it is encoded at its own pts with no repeats, so the output jumps with it
+// instead of encoding seconds of a held picture on a stream that is behind.
 class r_output_frame_selector final
 {
 public:
+    R_API explicit r_output_frame_selector(int64_t max_repeats = INT64_MAX);
+
     R_API r_output_frame_plan next(int64_t encoder_pts);
     R_API void reset();
 
 private:
+    int64_t _max_repeats;
     int64_t _next_pts {-1};
 };
 

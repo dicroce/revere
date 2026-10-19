@@ -116,6 +116,29 @@ void test_r_output_frame_selector::test_gap_repeats_previous_frame()
     RTF_ASSERT(selector.next(15).keep);
 }
 
+void test_r_output_frame_selector::test_long_gap_jumps_without_repeats()
+{
+    // At 15 fps with a one second limit, the input skipping 2.5 s ahead (a
+    // live stream catching up to its newest keyframe) is a jump: the frame
+    // after it is kept at its own pts, and nothing is repeated.
+    r_output_frame_selector selector(15);
+    RTF_ASSERT(selector.next(0).keep);
+
+    auto stall = selector.next(16); // 15 missing ticks: a stall, filled
+    RTF_ASSERT(stall.keep);
+    RTF_ASSERT(stall.repeats == 15);
+
+    auto jump = selector.next(16 + 38); // 37 missing ticks: a jump
+    RTF_ASSERT(jump.keep);
+    RTF_ASSERT(jump.pts == 54);
+    RTF_ASSERT(jump.repeats == 0);
+
+    // and the output clock carries on from the new position
+    RTF_ASSERT(!selector.next(54).keep);
+    auto after = selector.next(55);
+    RTF_ASSERT(after.keep && after.repeats == 0 && after.pts == 55);
+}
+
 void test_r_output_frame_selector::test_reset_starts_over()
 {
     r_output_frame_selector selector;
