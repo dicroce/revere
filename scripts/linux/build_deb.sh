@@ -35,8 +35,9 @@ fi
 [[ "$VERSION" != v* ]] && VERSION="v${VERSION}"
 
 # Debian versions must start with a digit: v0.0.31 -> 0.0.31, a hash build
-# (vabc1234) -> 0.0.0~gabc1234, which sorts below any release.
-if [[ "$VERSION" =~ ^v[0-9] ]]; then
+# (vabc1234, v9c11372) -> 0.0.0~gabc1234, which sorts below any release. A
+# release has dots; a hash, even one starting with a digit, has none.
+if [[ "$VERSION" =~ ^v[0-9]+(\.[0-9]+)+$ ]]; then
     DEB_VERSION="${VERSION#v}"
 else
     DEB_VERSION="0.0.0~g${VERSION#v}"
