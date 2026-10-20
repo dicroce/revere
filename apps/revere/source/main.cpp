@@ -1260,6 +1260,8 @@ static std::string _revere_cloud_download_url(const std::string& version)
     std::string base_url = "https://github.com/dicroce/revere/releases/download/v" + version + "/";
 #if defined(IS_WINDOWS)
     return base_url + "revere-v" + version + "-windows-cloud-setup.exe";
+#elif defined(IS_LINUX) && defined(__aarch64__)
+    return base_url + "revere-v" + version + "-linux-arm64-cloud.run";
 #elif defined(IS_LINUX)
     return base_url + "revere-v" + version + "-linux-cloud.run";
 #elif defined(IS_MACOS)

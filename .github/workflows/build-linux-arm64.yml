@@ -1,0 +1,242 @@
+name: Build & Release Linux arm64
+
+# arm64 Linux (Raspberry Pi 4/5 and other Debian-based boards), as a .deb plus
+# the arm64 cloud .run. Same triggers as the other platforms:
+#   - push of a v* tag  -> build AND attach both to the PUBLIC GitHub Release
+#   - workflow_dispatch -> build only (assets named with the short git hash)
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # NCNN is built from source (not in apt) and cached. Bump to rebuild.
+  NCNN_VERSION: "20240820"
+
+jobs:
+  build-linux-arm64:
+    # Raspberry Pi OS is Debian. Building in bookworm (glibc 2.36, FFmpeg 5.1,
+    # GStreamer 1.22) gives a .deb whose dpkg-shlibdeps dependencies install on
+    # Pi OS bookworm and later; Ubuntu 24.04's newer libraries would not.
+    runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+
+    steps:
+      # Before checkout: without git in the container, actions/checkout falls
+      # back to a tarball, and the build's version comes from git describe.
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake git pkg-config patchelf file \
+            ca-certificates curl zstd \
+            libopencv-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
+            libssl-dev libsqlite3-dev uuid-dev \
+            libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libgtk-3-dev libayatana-appindicator3-dev libcairo2-dev \
+            libasound2-dev libpulse-dev
+          # The workspace isn't owned by the container's root user.
+          git config --global --add safe.directory '*'
+
+      - name: Checkout revere
+        uses: actions/checkout@v4
+        with:
+          path: revere
+          fetch-depth: 0
+
+      # Version-lock revere_cloud to the tag on tag builds (same policy as the
+      # other platforms). For workflow_dispatch this resolves to main. curl, not
+      # gh: the bookworm container has no gh.
+      - name: Determine revere_cloud ref
+        id: cloudref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.REVERE_CLOUD_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+            if curl -sf -o /dev/null -H "Authorization: Bearer ${GH_TOKEN}" \
+                "https://api.github.com/repos/dicroce/revere_cloud/git/ref/tags/${tag}"; then
+              echo "ref=${tag}" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::revere_cloud is missing tag '${tag}'. Tag it too:"
+              echo "::error::(cd revere_cloud && git tag ${tag} && git push origin ${tag})"
+              exit 1
+            fi
+          else
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout revere_cloud
+        uses: actions/checkout@v4
+        with:
+          repository: dicroce/revere_cloud
+          ref: ${{ steps.cloudref.outputs.ref }}
+          path: revere_cloud
+          fetch-depth: 0
+          token: ${{ secrets.REVERE_CLOUD_TOKEN }}
+
+      # Static NCNN, linked into the yolov8 plugin: a .deb has no linuxdeploy
+      # step to bundle a shared libncnn the way the AppImage does.
+      - name: Restore cached NCNN
+        id: cache-ncnn
+        uses: actions/cache@v4
+        with:
+          path: ncnn-install
+          key: ncnn-arm64-bookworm-static-${{ env.NCNN_VERSION }}
+
+      - name: Build NCNN (cache miss only)
+        if: steps.cache-ncnn.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${NCNN_VERSION}" https://github.com/Tencent/ncnn.git
+          cmake -S ncnn -B ncnn-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/ncnn-install" \
+            -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF \
+            -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_BENCHMARK=OFF \
+            -DNCNN_SHARED_LIB=OFF -DNCNN_VULKAN=OFF
+          cmake --build ncnn-build --parallel "$(nproc)"
+          cmake --install ncnn-build
+
+      # PORTABLE: no -march=native, which would target the runner's CPU and
+      # could use instructions a Pi's Cortex-A72/A76 doesn't have.
+      - name: Configure
+        run: |
+          cmake -S revere -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DREVERE_PORTABLE_BUILD=ON \
+            -DEXTERNAL_PLUGIN_REPOS="${GITHUB_WORKSPACE}/revere_cloud"
+        env:
+          NCNN_TOP_DIR: ${{ github.workspace }}/ncnn-install
+
+      - name: Build
+        run: cmake --build build --parallel "$(nproc)"
+
+      # The release version: the tag on tag builds (e.g. v0.0.22), else the
+      # short git hash (workflow_dispatch test builds).
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            ver="${GITHUB_REF_NAME}"            # already vX.Y.Z
+          else
+            ver="v$(git -C revere rev-parse --short HEAD)"
+          fi
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "Version: $ver"
+
+      - name: Stage release assets (.deb + cloud .run)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${{ steps.ver.outputs.ver }}"
+          mkdir -p dist
+          VERSION="$ver" \
+          REVERE_BUILD_DIR="${GITHUB_WORKSPACE}/build" \
+          REVERE_RELEASES_DIR="${GITHUB_WORKSPACE}/dist" \
+          bash revere/scripts/linux/build_deb.sh
+          VERSION="$ver" \
+          REVERE_BUILD_DIR="${GITHUB_WORKSPACE}/build" \
+          REVERE_CLOUD_PLUGIN_PATH="${GITHUB_WORKSPACE}/build/system_plugins/revere_cloud_system_plugin.so" \
+          REVERE_RELEASES_DIR="${GITHUB_WORKSPACE}/dist" \
+          bash revere/scripts/linux/create_cloud_plugin_installer.sh
+          echo "=== dist/ ==="; ls -la dist
+
+      # Install the .deb the way a user would (apt resolves its Depends), then
+      # run it headless: it must stay up and serve the web UI.
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -uo pipefail
+          apt-get install -y ./dist/revere-*-linux-arm64.deb
+          mkdir -p /tmp/revere-data/secret
+          cd /opt/revere
+          timeout --preserve-status 20s ./revere --headless \
+            --data-dir /tmp/revere-data --secret-dir /tmp/revere-data/secret > /tmp/revere_run.log 2>&1 &
+          app=$!
+          web=000
+          for i in $(seq 1 30); do
+            web="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8088/ || true)"
+            [ "$web" = "200" ] && break
+            sleep 0.5
+          done
+          wait "$app"; rc=$?
+          echo "=== BEGIN app output ==="; cat /tmp/revere_run.log; echo "=== END app output ==="
+          echo "web UI: $web, exit: $rc"
+          # 143 = still running when timeout sent SIGTERM; it exits 0 on SIGTERM.
+          case "$rc" in
+            0|143) ;;
+            *) echo "::error::revere exited abnormally (rc=$rc)"; exit 1;;
+          esac
+          [ "$web" = "200" ] || { echo "::error::web UI did not answer (got $web)"; exit 1; }
+          echo "smoke test OK"
+
+      - name: Upload Linux arm64 assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-assets
+          path: dist/*
+          if-no-files-found: error
+
+  # Only runs for tag pushes. Attaches the .deb + arm64 cloud .run to the
+  # PUBLIC GitHub Release for this tag (shared with the other platforms).
+  release:
+    needs: [build-linux-arm64]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux arm64 assets
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-arm64-assets
+          path: dist
+
+      - name: Verify asset versions match the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The cloud .run name must contain the tag's version, or the in-app
+          # "Download Revere Cloud" URL (built from the binary's baked-in version)
+          # would 404. Guard both assets.
+          tag="${GITHUB_REF_NAME}"; version="${tag#v}"
+          echo "Tag: $tag  -> expected version: $version"
+          echo "Built assets:"; ls -1 dist
+          for expected in "revere-v${version}-linux-arm64.deb" "revere-v${version}-linux-arm64-cloud.run"; do
+            if [ ! -f "dist/${expected}" ]; then
+              echo "::error::Expected asset '${expected}' not found — refusing to release"
+              echo "::error::(would leave dead in-app download links)."
+              exit 1
+            fi
+          done
+          echo "Version guard passed: both Linux arm64 assets match $tag."
+
+      - name: Create/update public release and upload Linux arm64 assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # Create the release if missing. The other platforms' release jobs race
+          # us for the same tag, so tolerate "already exists".
+          if ! gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "${GITHUB_REPOSITORY}" --title "$tag" --generate-notes \
+              || gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1
+          fi
+          # Distinct filenames per platform → concurrent --clobber uploads are safe.
+          gh release upload "$tag" dist/* --repo "${GITHUB_REPOSITORY}" --clobber
+          echo "Published Linux arm64 assets to release $tag."
