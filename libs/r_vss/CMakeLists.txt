@@ -50,6 +50,7 @@ target_link_libraries(
     r_pipeline
     r_av
     r_motion
+    r_cameras
     r_disco
     r_storage
     r_utils

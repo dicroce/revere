@@ -466,6 +466,15 @@ std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_person
     return detections;
 }
 
+std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_objects(const uint8_t* rgb_data, int width, int height)
+{
+    if (!_running)
+        return {};
+    // No motion evidence: every detection passes the region filter.
+    r_vss::motion_region none = {0, 0, 0, 0, false};
+    return detect_persons(rgb_data, width, height, std::string(), 0, none, {});
+}
+
 void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms)
 {
     auto& devices = _host->get_devices();
@@ -720,6 +729,31 @@ R_API void post_motion_event(
 
     // Call the C++ method
     plugin_ptr->post_motion_event(evt_enum, camera_id_str, ts, frame_data_vec, width, height, motion_bbox);
+}
+
+R_API int detect_objects(
+    r_motion_plugin_handle plugin,
+    const uint8_t* frame_data,
+    size_t frame_data_size,
+    uint16_t width,
+    uint16_t height,
+    r_object_detection_cb on_detection,
+    void* userdata)
+{
+    if (!plugin || !frame_data || frame_data_size != (size_t)width * height * 3)
+        return -1;
+    yolov8_motion_plugin* plugin_ptr = reinterpret_cast<yolov8_motion_plugin*>(plugin);
+    try
+    {
+        for (const auto& d : plugin_ptr->detect_objects(frame_data, width, height))
+            on_detection(userdata, yolov8_motion_plugin::class_name(d.class_id), d.score, d.x1, d.y1, d.x2, d.y2);
+        return 0;
+    }
+    catch (const std::exception& e)
+    {
+        R_LOG_ERROR("yolov8_motion_plugin: detect_objects failed: %s", e.what());
+        return -1;
+    }
 }
 
 R_API void post_motion_event_regions(

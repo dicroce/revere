@@ -18,6 +18,11 @@
 #include <sys/time.h>
 #endif
 
+#ifndef IS_WINDOWS
+#include <fcntl.h>
+#include <errno.h>
+#endif
+
 using namespace r_utils;
 using namespace std;
 
@@ -137,6 +142,89 @@ void r_raw_socket::connect( const string& host, int port )
 		if(valid())
 			R_STHROW(r_socket_connect_exception, ("Unable to connect to %s:%d.", _host.c_str(), port));
 	}
+}
+
+static void _set_blocking( sock_t sok, bool blocking )
+{
+#ifdef IS_WINDOWS
+    u_long non_blocking = blocking ? 0 : 1;
+    ioctlsocket( sok, FIONBIO, &non_blocking );
+#else
+    int flags = fcntl( sok, F_GETFL, 0 );
+    if( flags >= 0 )
+        fcntl( sok, F_SETFL, blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK) );
+#endif
+}
+
+void r_raw_socket::connect( const string& host, int port, uint64_t timeout_ms )
+{
+    if( timeout_ms == 0 )
+    {
+        connect( host, port );
+        return;
+    }
+
+    if( !valid() )
+        create( r_socket_address::get_address_family(host) );
+
+    _host = host;
+
+    _addr.set_address( host, port );
+
+    sock_t sok = _sok;
+    _set_blocking( sok, false );
+
+    int err = ::connect( sok, _addr.get_sock_addr(), _addr.sock_addr_size() );
+
+    if( err < 0 )
+    {
+#ifdef IS_WINDOWS
+        bool pending = WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+        bool pending = errno == EINPROGRESS;
+#endif
+        bool connected = false;
+        if( pending )
+        {
+            // Writable once connected; Windows reports a failed connect as an exception.
+            fd_set write_fds, except_fds;
+            FD_ZERO( &write_fds );
+            FD_ZERO( &except_fds );
+            FD_SET( sok, &write_fds );
+            FD_SET( sok, &except_fds );
+
+            struct timeval tv;
+            tv.tv_sec = (long)(timeout_ms / 1000);
+            tv.tv_usec = (long)((timeout_ms % 1000) * 1000);
+
+            int n = select( (int)(sok + 1), NULL, &write_fds, &except_fds, &tv );
+            if( n > 0 )
+            {
+                int so_error = 0;
+                socklen_t len = sizeof(so_error);
+                if( getsockopt( sok, SOL_SOCKET, SO_ERROR, (char*)&so_error, &len ) == 0 && so_error == 0 &&
+                    FD_ISSET( sok, &write_fds ) )
+                    connected = true;
+            }
+            else if( n == 0 )
+            {
+                _set_blocking( sok, true );
+                if( valid() )
+                    R_STHROW( r_socket_connect_exception, ("Timed out connecting to %s:%d.", _host.c_str(), port) );
+                return;
+            }
+        }
+
+        if( !connected )
+        {
+            _set_blocking( sok, true );
+            if( valid() )
+                R_STHROW( r_socket_connect_exception, ("Unable to connect to %s:%d.", _host.c_str(), port) );
+            return;
+        }
+    }
+
+    _set_blocking( sok, true );
 }
 
 void r_raw_socket::listen( int backlog )
@@ -354,7 +442,8 @@ void r_socket::connect( const string& host, int port )
     if( ::setsockopt( (sock_t)_sok.get_sok_id(), SOL_SOCKET, SO_SNDTIMEO, (const char*)&connect_timeout, sizeof(connect_timeout) ) < 0 )
         R_STHROW( r_socket_exception, ("Unable to configure socket.") );
 
-    _sok.connect(host, port);
+    // The timeouts above don't cover connect() itself on Windows.
+    _sok.connect(host, port, _ioTimeOut);
 }
 
 int r_socket::send( const void* buf, size_t len )

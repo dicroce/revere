@@ -86,6 +86,11 @@ public:
     R_API void create( int af );
 
     R_API virtual void connect( const std::string& host, int port );
+    /// Connect, giving up after timeout_ms (0 = wait as long as the OS does).
+    /// A blocking connect() ignores SO_SNDTIMEO on Windows and waits ~21 s for
+    /// a host that doesn't answer; this connects non-blocking and waits for
+    /// at most timeout_ms instead. Throws r_socket_connect_exception.
+    R_API void connect( const std::string& host, int port, uint64_t timeout_ms );
     R_API void listen( int backlog = MAX_BACKLOG );
     R_API void bind( int port, const std::string& ip = "" );
     R_API r_raw_socket accept();

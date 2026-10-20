@@ -837,13 +837,58 @@ inline bool compact_toggle(const char* label, bool* v, const main_window_fonts& 
     return clicked;
 }
 
+// Where the camera's motion and objects come from (its motion tier), and how
+// it got there: shown while motion detection is on and the tier is known.
+inline r_utils::r_nullable<stat_card> motion_source_card(const sidebar_list_ui_item& item)
+{
+    r_utils::r_nullable<stat_card> out;
+    if(item.motion_detection.is_null() || !item.motion_detection.value() || item.motion_tier < 1 || item.motion_tier > 3)
+        return out;
+
+    static const char* values[] = {"", "Revere", "Camera", "Camera + Revere"};
+    static const char* meanings[] = {
+        "",
+        "Revere finds the motion in the video and the objects in it.",
+        "The camera's own motion and person, vehicle and animal events.",
+        "The camera's own motion events; Revere finds the objects in them."
+    };
+
+    std::string detail;
+    if(!item.motion_tier_automatic)
+        detail = "set by you";
+    else if(item.motion_tier > 1)
+        detail = "verified";
+    else if(item.motion_tier_checked >= 5 && item.motion_tier_matched < item.motion_tier_checked)
+        detail = r_utils::r_string_utils::format("camera missed %d of %d", item.motion_tier_checked - item.motion_tier_matched, item.motion_tier_checked);
+    else if(item.motion_tier_checked > 0 || item.motion_tier_reason.find("checking") != std::string::npos)
+        detail = r_utils::r_string_utils::format("checking \xC2\xB7 %d of 5", std::min(item.motion_tier_checked, 5));
+
+    std::string hint = std::string(meanings[item.motion_tier]);
+    if(!item.motion_tier_reason.empty())
+    {
+        std::string reason = item.motion_tier_reason;
+        reason[0] = (char)std::toupper((unsigned char)reason[0]);
+        hint += " " + reason + ".";
+    }
+    if(item.motion_tier_automatic)
+        hint += " Change it in Properties.";
+
+    out.set_value(stat_card{"Detection", values[item.motion_tier], detail, hint});
+    return out;
+}
+
 // The camera pane's stat cards from what's been read so far (nothing until
 // the first read lands).
 inline std::vector<stat_card> camera_stat_cards(const sidebar_list_ui_item& item, std::chrono::system_clock::time_point now)
 {
     std::vector<stat_card> cards;
+    auto source = motion_source_card(item);
     if(!item.stats)
+    {
+        if(!source.is_null())
+            cards.push_back(source.value());
         return cards;
+    }
     const auto& s = *item.stats;
 
     if(!s.storage_bytes.is_null())
@@ -890,6 +935,10 @@ inline std::vector<stat_card> camera_stat_cards(const sidebar_list_ui_item& item
         cards.push_back({"Last motion",
                          s.last_motion.is_null() ? std::string("None in 24 h") : r_vss::format_ago(std::chrono::duration_cast<std::chrono::seconds>(now - s.last_motion.value())), "",
                          s.last_motion.is_null() ? std::string() : std::string("When the most recent motion event started.")});
+
+        // Beside it: where that motion (and what was in it) came from.
+        if(!source.is_null())
+            cards.push_back(source.value());
 
         // Last, as it takes a row of its own once anything's been seen.
         stat_card d {"Detected today", "Nothing yet", "",

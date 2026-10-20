@@ -116,6 +116,7 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     _server.add_route(METHOD_GET, "/cameras", std::bind(&r_ws::_get_cameras, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/contents", std::bind(&r_ws::_get_contents, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/motion_events", std::bind(&r_ws::_get_motion_events, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/camera_events", std::bind(&r_ws::_get_camera_events, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/analytics", std::bind(&r_ws::_get_analytics, this, _1, _2, _3));
 
     _server.add_route(METHOD_GET, "/key_frame", std::bind(&r_ws::_get_key_frame, this, _1, _2, _3));
@@ -517,6 +518,8 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
             bool stream_failed = false;
             int64_t storage_write_lag_ms = 0;
             int64_t storage_timeline_lag_ms = 0;
+            json camera_events = nullptr;
+            json motion_tier = nullptr;
             auto sit = status_by_id.find(c.id);
             if(sit != status_by_id.end())
             {
@@ -524,6 +527,31 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                 stream_failed = sit->second.failed;
                 storage_write_lag_ms = sit->second.storage_write_lag_ms;
                 storage_timeline_lag_ms = sit->second.storage_timeline_lag_ms;
+                if(sit->second.has_camera_events)
+                {
+                    const auto& oe = sit->second.camera_events;
+                    camera_events = {
+                        {"source", oe.source},
+                        {"up", oe.up},
+                        {"state", oe.state},
+                        {"port", oe.port},
+                        {"motion_topic", oe.motion_topic},
+                        {"classes", oe.classes},
+                        {"last_event_ms", oe.last_event_ms},
+                        {"failures", oe.failures},
+                        {"last_error", oe.last_error}
+                    };
+                }
+                const auto& mt = sit->second.motion_tier;
+                motion_tier = {
+                    {"tier", mt.tier},
+                    {"automatic", mt.automatic},
+                    {"reason", mt.reason},
+                    {"checked", mt.checked},
+                    {"matched", mt.matched},
+                    {"person_checked", mt.person_checked},
+                    {"person_matched", mt.person_matched}
+                };
             }
 
             j["cameras"].push_back(
@@ -549,7 +577,16 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                     {"height", res.is_null() ? 0 : res.value().second},
                     // 0 / "" when unknown, like width/height.
                     {"fps", src.framerate.is_null() ? 0.0 : (double)src.framerate.value()},
-                    {"onvif_profile", (c.onvif_profile_token.is_null())?"":c.onvif_profile_token.value()}
+                    {"onvif_profile", (c.onvif_profile_token.is_null())?"":c.onvif_profile_token.value()},
+                    // Where the camera's ONVIF device service last answered; 0 / "" when unknown.
+                    {"onvif_port", (c.onvif_port.is_null())?0:c.onvif_port.value()},
+                    {"onvif_protocol", (c.onvif_protocol.is_null())?"":c.onvif_protocol.value()},
+                    // The camera's ONVIF event subscription; null when it has none.
+                    {"camera_events", camera_events},
+                    // "auto", "1", "2" or "3": where motion and object classes come from.
+                    {"motion_tier_setting", (c.motion_tier.is_null())?"auto":c.motion_tier.value()},
+                    // The tier in use now and why; null while not recording.
+                    {"motion_tier", motion_tier}
                 }
             );
         }
@@ -1026,6 +1063,63 @@ r_http::r_server_response r_ws::_get_analytics(const r_http::r_web_server<r_util
     R_STHROW(r_http_500_exception, ("Failed to query analytics."));
 }
 
+
+// GET /camera_events?camera_id=<id>[&since_ms=<epoch ms>]: the camera's own
+// event spans (motion, person, vehicle, ...) on Revere's clock, as its ONVIF
+// subscription reported them (shadow mode, kept in memory, newest 500). For
+// comparing with /motion_events.
+r_http::r_server_response r_ws::_get_camera_events(const r_http::r_web_server<r_utils::r_socket>&,
+                                                  r_utils::r_socket&,
+                                                  const r_http::r_server_request& request)
+{
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("camera_id") == args.end())
+            R_THROW(("Missing camera_id."));
+        int64_t since_ms = 0;
+        if(args.find("since_ms") != args.end())
+            since_ms = r_string_utils::s_to_int64(args["since_ms"]);
+
+        json j;
+        j["camera_events"] = json::array();
+        for(auto& s : _stream_keeper.camera_spans(args["camera_id"], since_ms))
+            j["camera_events"].push_back({{"what", s.what}, {"start_ms", s.start_ms}, {"end_ms", s.end_ms}});
+
+        // The detection pass's sessions over those spans (boxes normalised like analytics).
+        auto dets_json = [](const std::vector<r_detection>& dets) {
+            json a = json::array();
+            for(auto& d : dets)
+                a.push_back({{"class_name", d.class_name}, {"confidence", d.confidence}, {"ts", d.ts},
+                             {"x1", d.x1 / 640.0f}, {"y1", d.y1 / 640.0f}, {"x2", d.x2 / 640.0f}, {"y2", d.y2 / 640.0f}});
+            return a;
+        };
+        j["detection_sessions"] = json::array();
+        for(auto& s : _stream_keeper.detection_sessions(args["camera_id"], since_ms))
+            j["detection_sessions"].push_back({
+                {"start_ms", s.start_ms},
+                {"end_ms", s.end_ms},
+                {"camera_classes", s.camera_classes},
+                {"looks", s.looks},
+                {"failed_looks", s.failed_looks},
+                {"dropped_static", s.dropped_static},
+                {"first_found_ms", s.first_found_ms},
+                {"first_found", dets_json(s.first_found)},
+                {"detections", dets_json(s.detections)}
+            });
+
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+
+    R_STHROW(r_http_500_exception, ("Failed to get ONVIF events."));
+}
 
 r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_utils::r_socket>&,
                                                    r_utils::r_socket&,
@@ -2438,7 +2532,7 @@ r_http::r_server_response r_ws::_get_camera_profiles(const r_http::r_web_server<
         if(args.find("username") != args.end()) username.set_value(args["username"]);
         if(args.find("password") != args.end()) password.set_value(args["password"]);
 
-        auto profiles = _agent.get_camera_profiles(camera.ipv4.value(), camera.xaddrs.value(), username, password);
+        auto profiles = _agent.get_camera_profiles(camera.ipv4.value(), camera.xaddrs.value(), username, password, camera.onvif_port, camera.onvif_protocol);
 
         json j;
         j["profiles"] = json::array();
@@ -2597,7 +2691,9 @@ void r_ws::_measure(const std::string& job_id)
             camera.address.value(),
             username,
             password,
-            job.profile_token
+            job.profile_token,
+            camera.onvif_port,
+            camera.onvif_protocol
         );
     }
     else if(camera.rtsp_url.is_null())
@@ -2801,8 +2897,11 @@ r_http::r_server_response r_ws::_post_update_camera_properties(const r_http::r_w
         bool do_motion     = req.value("do_motion_detection", false);
         bool do_prune      = req.value("do_motion_pruning", false);
         int  min_hours     = req.value("min_continuous_recording_hours", 24);
+        r_nullable<string> motion_tier;
+        if(req.contains("motion_tier"))
+            motion_tier.set_value(req["motion_tier"].get<string>());
 
-        query_update_camera_properties(_top_dir, _devices, camera_id, do_motion, do_prune, min_hours);
+        query_update_camera_properties(_top_dir, _devices, camera_id, do_motion, do_prune, min_hours, motion_tier);
 
         // Restart the recording context so the new settings take effect live —
         // the poll loop only re-applies stream-config changes, not these.

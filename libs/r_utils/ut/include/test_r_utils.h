@@ -27,6 +27,7 @@ public:
       TEST(test_r_utils::test_socket_move_assignable);
       TEST(test_r_utils::test_socket_close_warm_socket);
       TEST(test_r_utils::test_socket_wont_block);
+      TEST(test_r_utils::test_socket_connect_timeout);
       TEST(test_r_utils::test_buffered);
       TEST(test_r_utils::test_ssl_socket_connect_to_example_com);
       TEST(test_r_utils::test_ssl_socket_connect_to_google);
@@ -112,6 +113,7 @@ public:
     void test_socket_move_assignable();
     void test_socket_close_warm_socket();
     void test_socket_wont_block();
+    void test_socket_connect_timeout();
     void test_buffered();
     void test_ssl_socket_connect_to_example_com();
     void test_ssl_socket_connect_to_google();

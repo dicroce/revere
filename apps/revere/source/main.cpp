@@ -212,6 +212,8 @@ struct revere_ui_state
     bool do_motion_detection {false};
     bool do_motion_pruning {false};
     std::string min_continuous_recording_hours {"24"};
+    std::string motion_tier {"auto"};
+    std::string motion_tier_status;
 
     // camera removal dialog
     bool delete_camera_files {false};
@@ -390,6 +392,11 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
                 auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
                 item.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
                 item.health = status.receiving_video ? revere::stream_health::healthy : revere::stream_health::not_receiving;
+                item.motion_tier = status.motion_tier.tier;
+                item.motion_tier_automatic = status.motion_tier.automatic;
+                item.motion_tier_reason = status.motion_tier.reason;
+                item.motion_tier_checked = status.motion_tier.checked;
+                item.motion_tier_matched = status.motion_tier.matched;
             }
         }
         else
@@ -1253,6 +1260,8 @@ static std::string _revere_cloud_download_url(const std::string& version)
     std::string base_url = "https://github.com/dicroce/revere/releases/download/v" + version + "/";
 #if defined(IS_WINDOWS)
     return base_url + "revere-v" + version + "-windows-cloud-setup.exe";
+#elif defined(IS_LINUX) && defined(__aarch64__)
+    return base_url + "revere-v" + version + "-linux-arm64-cloud.run";
 #elif defined(IS_LINUX)
     return base_url + "revere-v" + version + "-linux-cloud.run";
 #elif defined(IS_MACOS)
@@ -1354,7 +1363,9 @@ void configure_camera_setup_wizard(
                                 camera.ipv4.value(),
                                 camera.xaddrs.value(),
                                 as.rtsp_username,
-                                as.rtsp_password
+                                as.rtsp_password,
+                                camera.onvif_port,
+                                camera.onvif_protocol
                             );
 
                             as.available_profiles.clear();
@@ -1433,7 +1444,9 @@ void configure_camera_setup_wizard(
                         camera.address.value(),
                         as.rtsp_username,
                         as.rtsp_password,
-                        as.selected_profile_token
+                        as.selected_profile_token,
+                        camera.onvif_port,
+                        camera.onvif_protocol
                     );
                     as.camera = devices.get_camera_by_id(as.camera_id);
 
@@ -1867,6 +1880,8 @@ void configure_camera_setup_wizard(
                 ui_state.do_motion_detection,
                 ui_state.do_motion_pruning,
                 ui_state.min_continuous_recording_hours,
+                ui_state.motion_tier,
+                ui_state.motion_tier_status,
                 record_path,
                 [&](){
                     // OK button
@@ -1896,6 +1911,7 @@ void configure_camera_setup_wizard(
                     camera.motion_detection_file_path.set_value(motion_file_name);
                     camera.do_motion_pruning.set_value(ui_state.do_motion_pruning);
                     camera.min_continuous_recording_hours.set_value(r_string_utils::s_to_int(ui_state.min_continuous_recording_hours));
+                    camera.motion_tier.set_value(ui_state.motion_tier);
                     devices.save_camera(camera);
 
                     stream_keeper.bounce(camera_id.value());
@@ -3447,6 +3463,14 @@ int main(int argc, char** argv)
         ui_state.do_motion_detection = camera.do_motion_detection.value();
         ui_state.do_motion_pruning = camera.do_motion_pruning.value();
         ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());
+        ui_state.motion_tier = camera.motion_tier.is_null() ? string("auto") : camera.motion_tier.value();
+        {
+            auto ts = streamKeeper.motion_tier_status(camera.id);
+            static const char* names[] = {"", "Revere's detection", "the camera's detection", "the camera's motion and Revere's objects"};
+            ui_state.motion_tier_status = (ts.tier >= 1 && ts.tier <= 3)
+                ? string("Using ") + names[ts.tier] + ": " + ts.reason + "."
+                : string();
+        }
         camera_setup_wizard.next("camera_properties_modal");
     };
     main_window_actions.view = [&](int i){

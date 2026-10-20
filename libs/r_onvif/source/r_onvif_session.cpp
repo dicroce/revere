@@ -70,10 +70,13 @@ static pair<int, string> _http_interact(
     string uri,
     string body,
     soap_version soap_ver = soap_version::unknown,
-    const string& soap_action = ""
+    const string& soap_action = "",
+    int timeout_ms = 30000,
+    int net_attempts = 2,
+    bool log_request = true   // false for requests made every few seconds (event pulls); failures still log
 )
 {
-    const int MAX_NET_ATTEMPTS = 2;
+    const int MAX_NET_ATTEMPTS = net_attempts;
     int redirect_count = 0;
 
 retry_redirect:
@@ -90,7 +93,8 @@ retry_redirect:
 
         try
         {
-            R_LOG_INFO("HTTP interact: %s(%d)(%s)", host.c_str(), port, uri.c_str());
+            if (log_request)
+                R_LOG_INFO("HTTP interact: %s(%d)(%s)", host.c_str(), port, uri.c_str());
 
             std::unique_ptr<r_utils::r_socket_base> sock;
             if (port == 443)
@@ -122,10 +126,10 @@ retry_redirect:
             request.add_header("Connection", "close");
             request.add_header("User-Agent", "ONVIF-Client/1.0");
 
-            request.write_request(*sock, 30000);
+            request.write_request(*sock, timeout_ms);
 
             r_http::r_client_response response;
-            response.read_response(*sock, 30000);
+            response.read_response(*sock, timeout_ms);
 
             if(response.get_status() == 302 || response.get_status() == 301 || response.get_status() == 307)
             {
@@ -1347,7 +1351,8 @@ static string _build_soap_envelope(
     const function<void(pugi::xml_node&)>& build_body,
     const r_nullable<string>& username,
     const r_nullable<string>& password,
-    int time_offset_seconds
+    int time_offset_seconds,
+    const function<void(pugi::xml_node&)>& build_header = {}
 )
 {
     pugi::xml_document doc;
@@ -1369,6 +1374,11 @@ static string _build_soap_envelope(
     envelope.append_attribute("xmlns:tds") = "http://www.onvif.org/ver10/device/wsdl";
     envelope.append_attribute("xmlns:trt") = "http://www.onvif.org/ver10/media/wsdl";
     envelope.append_attribute("xmlns:tt") = "http://www.onvif.org/ver10/schema";
+    // Events: WS-Addressing, WS-BaseNotification and the ONVIF events service.
+    envelope.append_attribute("xmlns:wsa") = "http://www.w3.org/2005/08/addressing";
+    envelope.append_attribute("xmlns:wsnt") = "http://docs.oasis-open.org/wsn/b-2";
+    envelope.append_attribute("xmlns:tev") = "http://www.onvif.org/ver10/events/wsdl";
+    envelope.append_attribute("xmlns:tan") = "http://www.onvif.org/ver20/analytics/wsdl";
 
     // Add authentication header if credentials are provided
     if (username && password)
@@ -1377,6 +1387,16 @@ static string _build_soap_envelope(
             _add_username_text_header(&doc, envelope, username.value(), password.value(), time_offset_seconds);
         else
             _add_username_digest_header(&doc, envelope, username.value(), password.value(), time_offset_seconds);
+    }
+
+    // Further headers (WS-Addressing, echoed ReferenceParameters) go in the same
+    // Header the security token is in, or a new one when there are no credentials.
+    if (build_header)
+    {
+        pugi::xml_node header = envelope.child("SOAP-ENV:Header");
+        if (!header)
+            header = envelope.prepend_child("SOAP-ENV:Header");
+        build_header(header);
     }
 
     // Create body and let caller populate it
@@ -1416,7 +1436,11 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
     const string& soap_action,
     const function<void(pugi::xml_node&)>& build_body,
     r_nullable<string> username,
-    r_nullable<string> password
+    r_nullable<string> password,
+    const function<void(pugi::xml_node&)>& build_header,
+    bool log_request,
+    int timeout_ms,
+    int net_attempts
 )
 {
     // Determine which SOAP version(s) to try
@@ -1443,10 +1467,10 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
         // Try each auth mode for this SOAP version
         for (auto auth : auth_modes_to_try)
         {
-            string body = _build_soap_envelope(ver, auth, build_body, username, password, _time_offset_seconds);
+            string body = _build_soap_envelope(ver, auth, build_body, username, password, _time_offset_seconds, build_header);
 
             // Pass SOAP version and action to set appropriate headers
-            result = _http_interact(host, port, "POST", uri, body, ver, soap_action);
+            result = _http_interact(host, port, "POST", uri, body, ver, soap_action, timeout_ms, net_attempts, log_request);
 
             // Check if successful
             if (result.first == 200)
@@ -1763,4 +1787,667 @@ string r_onvif::r_onvif_cam::get_stream_uri(onvif_media_service media_service, o
         throw std::runtime_error("Uri not found in GetStreamUri response");
 
     return node.node().child_value();
+}
+
+// ---------------------------------------------------------------------------
+// Finding a camera's ONVIF device service.
+
+// Whether an ONVIF device service answers at host:port/uri: an unauthenticated
+// GetSystemDateAndTime gets back a SOAP envelope, the time or a fault (a camera
+// that wants credentials or SOAP 1.1 still answers in SOAP). A web server that
+// isn't ONVIF, a closed port or a hung service doesn't. A short timeout and a
+// single attempt, so probing a wedged camera takes seconds, not minutes.
+static bool _answers_onvif(const string& host, int port, const string& uri)
+{
+    try
+    {
+        auto body = _build_soap_envelope(
+            soap_version::soap_1_2, auth_mode::digest,
+            [](pugi::xml_node& b) { b.append_child("tds:GetSystemDateAndTime"); },
+            r_nullable<string>(), r_nullable<string>(), 0
+        );
+        auto result = _http_interact(host, port, "POST", uri, body, soap_version::soap_1_2,
+                                     "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime", 4000, 1);
+        return result.second.find("Envelope") != string::npos;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+r_nullable<r_onvif::onvif_endpoint> r_onvif::find_device_service(
+    const string& host,
+    const string& uri,
+    r_nullable<int> hint_port,
+    r_nullable<string> hint_protocol,
+    const std::function<bool()>& should_continue
+)
+{
+    auto path = uri.empty() ? string("/onvif/device_service") : uri;
+    auto stopping = [&]() { return should_continue && !should_continue(); };
+
+    if (!hint_port.is_null() && _answers_onvif(host, hint_port.value(), path))
+        return onvif_endpoint{host, hint_port.value(), hint_protocol.is_null() ? string("http") : hint_protocol.value(), path};
+
+    // The camera says where its service is, when it answers a unicast Probe.
+    if (stopping())
+        return r_nullable<onvif_endpoint>();
+    for (auto& di : filter_discovered(discover_unicast(r_uuid::generate(), {host}, should_continue)))
+    {
+        if (di.host != host)
+            continue;
+        auto found_uri = di.uri.empty() ? path : di.uri;
+        if (_answers_onvif(host, di.port, found_uri))
+            return onvif_endpoint{host, di.port, di.protocol.empty() ? string("http") : di.protocol, found_uri};
+    }
+
+    const pair<int, const char*> common[] = {{80, "http"}, {8000, "http"}, {8080, "http"}, {443, "https"}};
+    for (auto& c : common)
+    {
+        if (stopping())
+            return r_nullable<onvif_endpoint>();
+        if (!hint_port.is_null() && c.first == hint_port.value())
+            continue;
+        if (_answers_onvif(host, c.first, path))
+        {
+            R_LOG_INFO("onvif: device service for %s found on port %d", host.c_str(), c.first);
+            return onvif_endpoint{host, c.first, c.second, path};
+        }
+    }
+
+    R_LOG_WARNING("onvif: no device service found for %s (tried %s, unicast discovery, 80, 8000, 8080, 443)",
+                  host.c_str(), hint_port.is_null() ? "no stored port" : ("stored port " + to_string(hint_port.value())).c_str());
+    return r_nullable<onvif_endpoint>();
+}
+
+// ---------------------------------------------------------------------------
+// Events: pull point subscriptions (ONVIF Core, Event service).
+
+// The camera's own explanation from a SOAP fault, so a failed events call says
+// why (e.g. "ter:InvalidArgVal", "Action not supported").
+static string _fault_reason(const string& body)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(body.c_str()))
+        return body.substr(0, 300);
+    string out;
+    for (auto name : {"Value", "Text", "faultcode", "faultstring"})
+    {
+        string xp = "//" + _xpath_local(name);
+        for (auto& n : doc.select_nodes(xp.c_str()))
+        {
+            string v = n.node().child_value();
+            if (!v.empty())
+                out += (out.empty() ? "" : " | ") + v;
+        }
+    }
+    return out.empty() ? body.substr(0, 300) : out;
+}
+
+static runtime_error _events_error(const string& what, const pair<int, string>& result)
+{
+    return runtime_error(what + ": HTTP " + to_string(result.first) + " " + _fault_reason(result.second));
+}
+
+// The namespace a prefix means at node, from the nearest xmlns declaration.
+static string _resolve_prefix(pugi::xml_node node, const string& prefix)
+{
+    string attr = prefix.empty() ? string("xmlns") : "xmlns:" + prefix;
+    for (auto n = node; n; n = n.parent())
+    {
+        auto a = n.attribute(attr.c_str());
+        if (a)
+            return a.value();
+    }
+    return string();
+}
+
+// An element copied out of its document loses the xmlns declarations it
+// inherited. Serialize it with every prefix it (or a descendant) uses declared.
+static string _serialize_standalone(pugi::xml_node element)
+{
+    map<string, string> decls;
+    auto note = [&](pugi::xml_node src, const string& qname) {
+        auto colon = qname.find(':');
+        string prefix = colon == string::npos ? string() : qname.substr(0, colon);
+        if (prefix == "xmlns" || prefix == "xml" || decls.count(prefix))
+            return;
+        auto ns = _resolve_prefix(src, prefix);
+        if (!ns.empty())
+            decls[prefix] = ns;
+    };
+    function<void(pugi::xml_node)> visit = [&](pugi::xml_node n) {
+        if (n.type() != pugi::node_element)
+            return;
+        note(n, n.name());
+        for (auto a : n.attributes())
+            if (string(a.name()).find(':') != string::npos)
+                note(n, a.name());
+        for (auto c : n.children())
+            visit(c);
+    };
+    visit(element);
+
+    pugi::xml_document doc;
+    auto copy = doc.append_copy(element);
+    for (auto& d : decls)
+    {
+        string attr = d.first.empty() ? string("xmlns") : "xmlns:" + d.first;
+        if (!copy.attribute(attr.c_str()))
+            copy.append_attribute(attr.c_str()) = d.second.c_str();
+    }
+
+    ostringstream oss;
+    doc.save(oss, "", pugi::format_raw | pugi::format_no_declaration);
+    return oss.str();
+}
+
+r_nullable<string> r_onvif::r_onvif_cam::get_events_service(const onvif_capabilities& capabilities) const
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(capabilities.c_str()))
+        throw std::runtime_error("Failed to parse capabilities XML");
+    string xp = "//" + _xpath_local("Events") + "/" + _xpath_local("XAddr");
+    auto node = doc.select_node(xp.c_str());
+    if (!node || string(node.node().child_value()).empty())
+        return r_nullable<string>();
+    return string(node.node().child_value());
+}
+
+// WS-Addressing Action and To: required by many cameras on events requests.
+static function<void(pugi::xml_node&)> _addressing_headers(const string& action, const string& to)
+{
+    return [action, to](pugi::xml_node& header) {
+        header.append_child("wsa:Action").text().set(action.c_str());
+        header.append_child("wsa:MessageID").text().set(("urn:uuid:" + r_uuid::generate()).c_str());
+        header.append_child("wsa:To").text().set(to.c_str());
+    };
+}
+
+string r_onvif::r_onvif_cam::get_event_properties(const string& events_service)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(events_service, host, port, protocol, uri);
+
+    const string action = "http://www.onvif.org/ver10/events/wsdl/EventPortType/GetEventPropertiesRequest";
+    auto result = _soap_request(
+        host, port, uri, action,
+        [](pugi::xml_node& body) { body.append_child("tev:GetEventProperties"); },
+        _username, _password,
+        _addressing_headers(action, events_service)
+    );
+    if (result.first != 200)
+        throw _events_error("GetEventProperties failed", result);
+    return result.second;
+}
+
+r_nullable<string> r_onvif::r_onvif_cam::get_analytics_service(const onvif_capabilities& capabilities) const
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(capabilities.c_str()))
+        throw std::runtime_error("Failed to parse capabilities XML");
+    string xp = "//" + _xpath_local("Analytics") + "/" + _xpath_local("XAddr");
+    auto node = doc.select_node(xp.c_str());
+    if (!node || string(node.node().child_value()).empty())
+        return r_nullable<string>();
+    return string(node.node().child_value());
+}
+
+string r_onvif::r_onvif_cam::get_video_analytics_configurations(const onvif_media_service& media_service)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(media_service, host, port, protocol, uri);
+    auto result = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver10/media/wsdl/GetVideoAnalyticsConfigurations",
+        [](pugi::xml_node& body) { body.append_child("trt:GetVideoAnalyticsConfigurations"); },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("GetVideoAnalyticsConfigurations failed", result);
+    return result.second;
+}
+
+// An analytics service request whose body is <tan:op><tan:ConfigurationToken>token</...></...>.
+static function<void(pugi::xml_node&)> _analytics_body(const string& op, const string& configuration_token)
+{
+    return [op, configuration_token](pugi::xml_node& body) {
+        auto req = body.append_child(("tan:" + op).c_str());
+        req.append_child("tan:ConfigurationToken").text().set(configuration_token.c_str());
+    };
+}
+
+string r_onvif::r_onvif_cam::get_supported_rules(const string& analytics_service, const string& configuration_token)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(analytics_service, host, port, protocol, uri);
+    auto result = _soap_request(host, port, uri, "http://www.onvif.org/ver20/analytics/wsdl/GetSupportedRules",
+                                _analytics_body("GetSupportedRules", configuration_token), _username, _password);
+    if (result.first != 200)
+        throw _events_error("GetSupportedRules failed", result);
+    return result.second;
+}
+
+string r_onvif::r_onvif_cam::get_rules(const string& analytics_service, const string& configuration_token)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(analytics_service, host, port, protocol, uri);
+    auto result = _soap_request(host, port, uri, "http://www.onvif.org/ver20/analytics/wsdl/GetRules",
+                                _analytics_body("GetRules", configuration_token), _username, _password);
+    if (result.first != 200)
+        throw _events_error("GetRules failed", result);
+    return result.second;
+}
+
+string r_onvif::r_onvif_cam::get_analytics_modules(const string& analytics_service, const string& configuration_token)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(analytics_service, host, port, protocol, uri);
+    auto result = _soap_request(host, port, uri, "http://www.onvif.org/ver20/analytics/wsdl/GetAnalyticsModules",
+                                _analytics_body("GetAnalyticsModules", configuration_token), _username, _password);
+    if (result.first != 200)
+        throw _events_error("GetAnalyticsModules failed", result);
+    return result.second;
+}
+
+vector<uint8_t> r_onvif::packbits_decode(const vector<uint8_t>& in)
+{
+    vector<uint8_t> out;
+    size_t i = 0;
+    while (i < in.size())
+    {
+        int8_t n = (int8_t)in[i++];
+        if (n >= 0)
+        {
+            for (int k = 0; k <= n && i < in.size(); ++k)
+                out.push_back(in[i++]);
+        }
+        else if (n != -128)
+        {
+            if (i >= in.size())
+                break;
+            uint8_t b = in[i++];
+            for (int k = 0; k < 1 - n; ++k)
+                out.push_back(b);
+        }
+    }
+    return out;
+}
+
+vector<uint8_t> r_onvif::packbits_encode(const vector<uint8_t>& in)
+{
+    vector<uint8_t> out;
+    size_t i = 0, n = in.size();
+    while (i < n)
+    {
+        size_t run = 1;
+        while (i + run < n && run < 128 && in[i + run] == in[i])
+            ++run;
+        if (run >= 2)
+        {
+            out.push_back((uint8_t)(int8_t)(1 - (int)run));
+            out.push_back(in[i]);
+            i += run;
+            continue;
+        }
+        // Literal bytes, up to the next run of two or more.
+        size_t j = i;
+        while (j < n && j - i < 128 && !(j + 1 < n && in[j] == in[j + 1]))
+            ++j;
+        if (j == i)
+            j = i + 1;
+        out.push_back((uint8_t)(j - i - 1));
+        out.insert(out.end(), in.begin() + i, in.begin() + j);
+        i = j;
+    }
+    return out;
+}
+
+bool r_onvif::cell_mask_empty(const string& active_cells, int cells)
+{
+    vector<uint8_t> bits;
+    try { bits = packbits_decode(r_string_utils::from_base64(active_cells)); }
+    catch (...) { return true; }
+    for (int c = 0; c < cells && (size_t)(c / 8) < bits.size(); ++c)
+        if (bits[c / 8] & (0x80 >> (c % 8)))
+            return false;
+    return true;
+}
+
+string r_onvif::full_cell_mask(int columns, int rows)
+{
+    int cells = columns * rows;
+    vector<uint8_t> bits((cells + 7) / 8, 0xFF);
+    if (cells % 8)
+        bits.back() = (uint8_t)(0xFF << (8 - cells % 8));
+    auto packed = packbits_encode(bits);
+    return r_string_utils::to_base64(packed.data(), packed.size());
+}
+
+static bool _ends_with(const string& s, const string& suffix)
+{
+    return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+static string _local(const char* name)
+{
+    string s(name);
+    auto colon = s.find(':');
+    return colon == string::npos ? s : s.substr(colon + 1);
+}
+
+vector<r_onvif::onvif_cell_motion_rule> r_onvif::parse_cell_motion_rules(const string& xml)
+{
+    vector<onvif_cell_motion_rule> out;
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetVideoAnalyticsConfigurations response");
+
+    for (auto cx : doc.select_nodes("//*[local-name()='Configurations']"))
+    {
+        auto config = cx.node();
+        string token = config.attribute("token").value();
+        int columns = 0, rows = 0;
+        auto layout = config.select_node(".//*[local-name()='CellLayout']");
+        if (layout)
+        {
+            columns = layout.node().attribute("Columns").as_int();
+            rows = layout.node().attribute("Rows").as_int();
+        }
+        for (auto rx : config.select_nodes(".//*[local-name()='Rule']"))
+        {
+            auto rule = rx.node();
+            if (!_ends_with(rule.attribute("Type").value(), "CellMotionDetector"))
+                continue;
+            onvif_cell_motion_rule r;
+            r.configuration_token = token;
+            r.rule_name = rule.attribute("Name").value();
+            r.columns = columns;
+            r.rows = rows;
+            for (auto ix : rule.select_nodes(".//*[local-name()='SimpleItem']"))
+                if (string(ix.node().attribute("Name").value()) == "ActiveCells")
+                    r.active_cells = ix.node().attribute("Value").value();
+            out.push_back(r);
+        }
+    }
+    return out;
+}
+
+vector<string> r_onvif::r_onvif_cam::fill_empty_cell_motion_regions(const onvif_capabilities& capabilities)
+{
+    vector<string> changed;
+    auto analytics = get_analytics_service(capabilities);
+    if (analytics.is_null())
+        return changed;
+    auto media = get_media_service(capabilities);
+    auto configs = get_video_analytics_configurations(media);
+
+    pugi::xml_document doc;
+    if (!doc.load_string(configs.c_str()))
+        throw std::runtime_error("Failed to parse GetVideoAnalyticsConfigurations response");
+
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(analytics.value(), host, port, protocol, uri);
+
+    for (auto& r : parse_cell_motion_rules(configs))
+    {
+        int cells = r.columns * r.rows;
+        if (cells <= 0 || !cell_mask_empty(r.active_cells, cells))
+            continue;
+
+        // The rule as the camera has it, to send back with only ActiveCells changed.
+        string xp = "//*[local-name()='Configurations'][@token='" + r.configuration_token +
+                    "']//*[local-name()='Rule'][@Name='" + r.rule_name + "']";
+        auto rule = doc.select_node(xp.c_str()).node();
+        if (!rule)
+            continue;
+        auto full = full_cell_mask(r.columns, r.rows);
+
+        auto result = _soap_request(
+            host, port, uri, "http://www.onvif.org/ver20/analytics/wsdl/ModifyRules",
+            [&](pugi::xml_node& body) {
+                auto req = body.append_child("tan:ModifyRules");
+                req.append_child("tan:ConfigurationToken").text().set(r.configuration_token.c_str());
+                auto out = req.append_child("tan:Rule");
+                out.append_attribute("Name") = r.rule_name.c_str();
+                out.append_attribute("Type") = ("tt:" + _local(rule.attribute("Type").value())).c_str();
+                auto params = out.append_child("tt:Parameters");
+                auto in_params = rule.select_node("./*[local-name()='Parameters']").node();
+                for (auto item : in_params.children())
+                {
+                    string local = _local(item.name());
+                    if (local == "SimpleItem")
+                    {
+                        string name = item.attribute("Name").value();
+                        auto si = params.append_child("tt:SimpleItem");
+                        si.append_attribute("Name") = name.c_str();
+                        si.append_attribute("Value") = (name == "ActiveCells") ? full.c_str() : item.attribute("Value").value();
+                    }
+                    else if (local == "ElementItem")
+                        params.append_copy(item);
+                }
+            },
+            _username, _password
+        );
+        if (result.first != 200)
+            throw _events_error("ModifyRules failed for " + r.rule_name, result);
+
+        // The camera may accept it and keep its own: check.
+        bool kept = false;
+        for (auto& after : parse_cell_motion_rules(get_video_analytics_configurations(media)))
+            if (after.configuration_token == r.configuration_token && after.rule_name == r.rule_name)
+                kept = !cell_mask_empty(after.active_cells, cells);
+        if (!kept)
+            throw std::runtime_error("the camera accepted a whole-frame region for " + r.rule_name + " but kept it empty");
+        changed.push_back(r.configuration_token + "/" + r.rule_name);
+    }
+    return changed;
+}
+
+r_onvif::onvif_pull_point r_onvif::r_onvif_cam::create_pull_point_subscription(const string& events_service, int termination_seconds)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(events_service, host, port, protocol, uri);
+
+    const string action = "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest";
+    auto result = _soap_request(
+        host, port, uri, action,
+        [termination_seconds](pugi::xml_node& body) {
+            auto req = body.append_child("tev:CreatePullPointSubscription");
+            req.append_child("tev:InitialTerminationTime").text().set(("PT" + to_string(termination_seconds) + "S").c_str());
+        },
+        _username, _password,
+        _addressing_headers(action, events_service)
+    );
+    if (result.first != 200)
+        throw _events_error("CreatePullPointSubscription failed", result);
+
+    return parse_create_pull_point_response(result.second);
+}
+
+r_onvif::onvif_pull_point r_onvif::parse_create_pull_point_response(const string& xml)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw runtime_error("CreatePullPointSubscription: unparseable response");
+
+    onvif_pull_point pp;
+    string xp = "//" + _xpath_local("SubscriptionReference") + "/" + _xpath_local("Address");
+    auto addr = doc.select_node(xp.c_str());
+    if (!addr)
+        throw runtime_error("CreatePullPointSubscription: no SubscriptionReference/Address");
+    pp.address = r_string_utils::strip(addr.node().child_value());
+
+    xp = "//" + _xpath_local("SubscriptionReference") + "/" + _xpath_local("ReferenceParameters");
+    auto refs = doc.select_node(xp.c_str());
+    if (refs)
+        for (auto child : refs.node().children())
+            if (child.type() == pugi::node_element)
+                pp.reference_parameters.push_back(_serialize_standalone(child));
+
+    xp = "//" + _xpath_local("TerminationTime");
+    auto term = doc.select_node(xp.c_str());
+    if (term)
+        pp.termination_time = term.node().child_value();
+
+    return pp;
+}
+
+pair<int, string> r_onvif::r_onvif_cam::_pull_point_request(
+    const onvif_pull_point& pull_point,
+    const string& soap_action,
+    const function<void(pugi::xml_node&)>& build_body,
+    bool log_request,
+    int timeout_ms,
+    int net_attempts
+)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(pull_point.address, host, port, protocol, uri);
+
+    auto addressing = _addressing_headers(soap_action, pull_point.address);
+    auto refs = pull_point.reference_parameters;
+    return _soap_request(
+        host, port, uri, soap_action, build_body, _username, _password,
+        [addressing, refs](pugi::xml_node& header) {
+            addressing(header);
+            for (auto& r : refs)
+            {
+                pugi::xml_document tmp;
+                if (!tmp.load_string(r.c_str()))
+                    continue;
+                auto copy = header.append_copy(tmp.document_element());
+                copy.append_attribute("wsa:IsReferenceParameter") = "true";
+            }
+        },
+        log_request,
+        timeout_ms,
+        net_attempts
+    );
+}
+
+vector<r_onvif::onvif_event> r_onvif::r_onvif_cam::pull_messages(const onvif_pull_point& pull_point, int timeout_seconds, int message_limit)
+{
+    auto result = _pull_point_request(
+        pull_point,
+        "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest",
+        [timeout_seconds, message_limit](pugi::xml_node& body) {
+            auto req = body.append_child("tev:PullMessages");
+            req.append_child("tev:Timeout").text().set(("PT" + to_string(timeout_seconds) + "S").c_str());
+            req.append_child("tev:MessageLimit").text().set(message_limit);
+        },
+        false,                              // every couple of seconds per camera: not worth a log line each
+        (timeout_seconds + 5) * 1000,       // the camera holds it timeout_seconds; give up soon after
+        1                                   // the subscriber retries by resubscribing
+    );
+    if (result.first != 200)
+        throw _events_error("PullMessages failed", result);
+
+    return parse_pull_messages_response(result.second);
+}
+
+vector<r_onvif::onvif_event> r_onvif::parse_pull_messages_response(const string& xml)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw runtime_error("PullMessages: unparseable response");
+
+    vector<onvif_event> events;
+    string xp = "//" + _xpath_local("NotificationMessage");
+    for (auto& nm : doc.select_nodes(xp.c_str()))
+    {
+        onvif_event ev;
+        auto topic = nm.node().select_node(("./" + _xpath_local("Topic")).c_str());
+        if (topic)
+            ev.topic = r_string_utils::strip(topic.node().child_value());
+
+        // wsnt:Message wraps the tt:Message that carries the data.
+        auto msg = nm.node().select_node(("./" + _xpath_local("Message") + "/" + _xpath_local("Message")).c_str());
+        if (msg)
+        {
+            auto m = msg.node();
+            ev.utc_time = m.attribute("UtcTime").value();
+            ev.property_operation = m.attribute("PropertyOperation").value();
+            auto items = [&](const char* section, vector<pair<string, string>>& out) {
+                string sx = "./" + _xpath_local(section) + "/" + _xpath_local("SimpleItem");
+                for (auto& si : m.select_nodes(sx.c_str()))
+                    out.emplace_back(si.node().attribute("Name").value(), si.node().attribute("Value").value());
+            };
+            items("Source", ev.source);
+            items("Data", ev.data);
+        }
+        events.push_back(ev);
+    }
+    return events;
+}
+
+static string _local_name(const char* qname)
+{
+    string s = qname;
+    auto c = s.find(':');
+    return c == string::npos ? s : s.substr(c + 1);
+}
+
+static void _collect_topics(pugi::xml_node n, const string& path, vector<string>& out)
+{
+    for (auto c : n.children())
+    {
+        if (c.type() != pugi::node_element)
+            continue;
+        string name = _local_name(c.name());
+        if (name == "MessageDescription" || name == "Documentation")
+            continue;
+        string p = path.empty() ? name : path + "/" + name;
+        for (auto a : c.attributes())
+            if (_local_name(a.name()) == "topic" && string(a.value()) == "true")
+                out.push_back(p);
+        _collect_topics(c, p, out);
+    }
+}
+
+vector<string> r_onvif::parse_event_topics(const string& xml)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw runtime_error("GetEventProperties: unparseable response");
+    vector<string> topics;
+    string xp = "//" + _xpath_local("TopicSet");
+    auto ts = doc.select_node(xp.c_str());
+    if (ts)
+        _collect_topics(ts.node(), "", topics);
+    return topics;
+}
+
+void r_onvif::r_onvif_cam::renew(const onvif_pull_point& pull_point, int termination_seconds)
+{
+    auto result = _pull_point_request(
+        pull_point,
+        "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest",
+        [termination_seconds](pugi::xml_node& body) {
+            body.append_child("wsnt:Renew").append_child("wsnt:TerminationTime").text().set(("PT" + to_string(termination_seconds) + "S").c_str());
+        },
+        true, 10000, 1
+    );
+    if (result.first != 200)
+        throw _events_error("Renew failed", result);
+}
+
+void r_onvif::r_onvif_cam::unsubscribe(const onvif_pull_point& pull_point)
+{
+    auto result = _pull_point_request(
+        pull_point,
+        "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest",
+        [](pugi::xml_node& body) { body.append_child("wsnt:Unsubscribe"); },
+        true, 5000, 1   // on the way out: a camera that has stopped answering mustn't hold up the stop
+    );
+    if (result.first != 200)
+        throw _events_error("Unsubscribe failed", result);
 }

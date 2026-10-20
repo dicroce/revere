@@ -27,7 +27,14 @@ if [ -z "${VERSION:-}" ]; then
 fi
 [[ "$VERSION" != v* ]] && VERSION="v${VERSION}"
 mkdir -p "$OUTPUT_DIR"
-OUTPUT_FILE="$OUTPUT_DIR/revere-${VERSION}-linux-cloud.run"
+# x86_64 keeps the original name; other architectures name theirs, matching
+# the in-app download URL (_revere_cloud_download_url in main.cpp).
+case "$(uname -m)" in
+    x86_64)  ARCH_SUFFIX="" ;;
+    aarch64) ARCH_SUFFIX="-arm64" ;;
+    *)       ARCH_SUFFIX="-$(uname -m)" ;;
+esac
+OUTPUT_FILE="$OUTPUT_DIR/revere-${VERSION}-linux${ARCH_SUFFIX}-cloud.run"
 
 # Check plugin exists
 if [ ! -f "$PLUGIN_PATH" ]; then
@@ -45,10 +52,15 @@ cat > "$OUTPUT_FILE" << 'INSTALLER_HEADER'
 #!/bin/bash
 # Revere Cloud Plugin Installer
 # This is a self-extracting installer - the .so is appended after the __PAYLOAD__ marker
+#
+# Usage: ./revere-<version>-linux-cloud.run [data-dir]
+#   data-dir defaults to ~/Documents/revere/revere (the desktop app's). For
+#   Revere running as a service: sudo ./revere-<version>-linux-cloud.run /var/lib/revere
 
 set -e
 
-PLUGIN_DIR="$HOME/Documents/revere/revere/system_plugins"
+DATA_DIR="${1:-$HOME/Documents/revere/revere}"
+PLUGIN_DIR="$DATA_DIR/system_plugins"
 PLUGIN_NAME="revere_cloud_system_plugin.so"
 
 echo "Revere Cloud Plugin Installer"
@@ -56,8 +68,8 @@ echo "=============================="
 echo ""
 
 # Check if revere directory exists
-if [ ! -d "$HOME/Documents/revere/revere" ]; then
-    echo "Error: Revere does not appear to be installed."
+if [ ! -d "$DATA_DIR" ]; then
+    echo "Error: Revere does not appear to be installed (no $DATA_DIR)."
     echo "Please run Revere at least once before installing the plugin."
     exit 1
 fi
@@ -71,6 +83,8 @@ ARCHIVE_START=$(awk '/^__PAYLOAD__$/{print NR + 1; exit 0; }' "$0")
 echo "Installing plugin to: $PLUGIN_DIR/$PLUGIN_NAME"
 tail -n +"$ARCHIVE_START" "$0" > "$PLUGIN_DIR/$PLUGIN_NAME"
 chmod 755 "$PLUGIN_DIR/$PLUGIN_NAME"
+# Installed as root into a service's data dir: give it to the service's user.
+chown --reference="$DATA_DIR" "$PLUGIN_DIR" "$PLUGIN_DIR/$PLUGIN_NAME" 2>/dev/null || true
 
 echo ""
 echo "Installation complete!"

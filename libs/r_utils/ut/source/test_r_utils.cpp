@@ -639,6 +639,68 @@ void test_r_utils::test_socket_wont_block()
     t.join();
 }
 
+void test_r_utils::test_socket_connect_timeout()
+{
+    using namespace std::chrono;
+
+    // A host that never answers (a TEST-NET-1 address: reserved, unroutable).
+    // A blocking connect waited ~21 s for this on Windows.
+    {
+        r_socket sok;
+        sok.set_io_timeout( 1000 );
+        auto start = steady_clock::now();
+        bool threw = false;
+        try { sok.connect( "192.0.2.1", 80 ); }
+        catch( r_socket_connect_exception& ) { threw = true; }
+        auto elapsed = duration_cast<milliseconds>( steady_clock::now() - start ).count();
+        RTF_ASSERT( threw );
+        RTF_ASSERT( elapsed < 3000 );
+    }
+
+    // Nothing listening: refused at once, not after the timeout.
+    {
+        int port = RTF_NEXT_PORT();
+        r_socket sok;
+        sok.set_io_timeout( 5000 );
+        auto start = steady_clock::now();
+        bool threw = false;
+        try { sok.connect( "127.0.0.1", port ); }
+        catch( r_socket_connect_exception& ) { threw = true; }
+        auto elapsed = duration_cast<milliseconds>( steady_clock::now() - start ).count();
+        RTF_ASSERT( threw );
+        RTF_ASSERT( elapsed < 4500 );
+    }
+
+    // A listener: connects, and the socket is blocking again for send/recv.
+    {
+        int port = RTF_NEXT_PORT();
+        r_socket server_sok;
+        server_sok.bind( port );
+        server_sok.listen();
+
+        thread t([&](){
+            auto connected = server_sok.accept();
+            unsigned int val = 13;
+            connected.send( &val, 4 );
+        });
+
+        r_socket client_sok;
+        client_sok.set_io_timeout( 2000 );
+        client_sok.connect( "127.0.0.1", port );
+        unsigned int val = 0;
+        int got = 0;
+        while( got < 4 )
+        {
+            int n = client_sok.recv( ((char*)&val) + got, 4 - got );
+            if( n <= 0 )
+                break;
+            got += n;
+        }
+        RTF_ASSERT( got == 4 && val == 13 );
+        t.join();
+    }
+}
+
 void test_r_utils::test_buffered()
 {
     r_socket sok;
