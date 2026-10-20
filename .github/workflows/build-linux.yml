@@ -133,11 +133,18 @@ jobs:
       #  - drop the app's bundled gstreamer_plugins and let
       #    linuxdeploy-plugin-gstreamer bundle a complete, rpath-correct set into
       #    usr/lib/gstreamer-1.0.
+      #  - drop the vision.desktop the install puts in usr/share/applications.
+      #    linuxdeploy-plugin-gstreamer runs linuxdeploy again with no
+      #    --desktop-file, and that run deploys the first .desktop file it
+      #    finds; vision.desktop's Exec is the install path (usr/revere/vision),
+      #    gone after the move, and when it came first v0.0.31's build failed.
+      #    revere.desktop is the AppImage's only entry point.
       - name: Prune AppDir and align to FHS bin layout
         run: |
           set -euo pipefail
           rm -rf AppDir/usr/revere/system_plugins
           rm -rf AppDir/usr/revere/gstreamer_plugins
+          rm -f AppDir/usr/share/applications/vision.desktop
           mv AppDir/usr/revere AppDir/usr/bin
           echo "AppDir/usr/bin contents:"; ls -la AppDir/usr/bin
 
