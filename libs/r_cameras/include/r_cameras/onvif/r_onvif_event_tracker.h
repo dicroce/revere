@@ -1,14 +1,15 @@
 
-#ifndef __r_vss_r_onvif_event_tracker_h
-#define __r_vss_r_onvif_event_tracker_h
+#ifndef __r_cameras_onvif_r_onvif_event_tracker_h
+#define __r_cameras_onvif_r_onvif_event_tracker_h
 
+#include "r_cameras/r_camera_events.h"
 #include "r_onvif/r_onvif_session.h"
 #include "r_utils/r_macro.h"
 #include <map>
 #include <string>
 #include <vector>
 
-namespace r_vss
+namespace r_cameras
 {
 
 // What a camera's ONVIF events mean to Revere, without any networking: maps
@@ -22,18 +23,16 @@ namespace r_vss
 // Initialized state instead of leaving the event open.
 //
 // Cameras raise one motion on several topics at once (the Axis fires five for
-// every burst), so one motion topic is used per camera: the best one it has
-// raised, in the order RuleEngine/MotionRegionDetector, then
-// RuleEngine/CellMotionDetector, then VideoSource/MotionAlarm.
+// every burst), and which topics actually fire depends on the camera and its
+// settings: Office announces CellMotionDetector but, with a region of interest
+// set, reports motion only on VideoSource/MotionAlarm. So motion is the camera's
+// as a whole: in motion while any of its motion topics (RuleEngine/
+// MotionRegionDetector, RuleEngine/CellMotionDetector, VideoSource/MotionAlarm),
+// from any source, is active; one start when the first goes active, one end
+// when the last goes inactive. Motion transitions carry an empty source.
 
-struct r_onvif_transition
-{
-    std::string what;        // "motion", or a class: "person", "vehicle", "animal", "package", "visitor", "face"
-    bool active {false};     // true = started, false = ended
-    std::string topic;       // the camera's topic, as received
-    std::string source;      // the event's source items, "Name=Value ..." (several video sources stay apart)
-};
-
+// Transitions carry the camera's topic as received, and for classes the
+// event's source items ("Name=Value ...": several video sources stay apart).
 class r_onvif_event_tracker
 {
 public:
@@ -41,13 +40,14 @@ public:
     struct rule;
 
     // Transitions caused by one pull's events, in order.
-    R_API std::vector<r_onvif_transition> process(const std::vector<r_onvif::onvif_event>& events);
+    R_API std::vector<r_camera_transition> process(const std::vector<r_onvif::onvif_event>& events);
 
     // Ends for everything still active (the subscriber is stopping, or an event
     // has run longer than anything real).
-    R_API std::vector<r_onvif_transition> close_all();
+    R_API std::vector<r_camera_transition> close_all();
 
-    // The motion topic in use (normalized, e.g. "RuleEngine/CellMotionDetector"); empty until one is seen.
+    // The motion topic that most recently went active (normalized, e.g.
+    // "VideoSource/MotionAlarm"); empty until one has.
     R_API std::string motion_topic() const;
 
     // The detection classes the camera has reported on, in any state.
@@ -60,8 +60,11 @@ public:
 private:
     const rule* _match(const std::string& normalized_topic, const r_onvif::onvif_event& ev, std::string& value) const;
 
-    int _motion_priority {-1};           // index into the motion rules of the topic in use; -1 = none yet
-    std::map<std::string, bool> _state;  // what + "|" + source -> active
+    std::map<std::string, bool> _motion_state;  // motion topic + "|" + source -> active
+    bool _motion_active {false};                // any of them
+    std::string _motion_topic;
+    std::string _motion_raw_topic;              // as received, for the transitions
+    std::map<std::string, bool> _state;  // class + "|" + source -> active
     std::map<std::string, std::string> _topic_of;  // same key -> topic, for close_all
     std::vector<std::string> _classes;
 };

@@ -1,8 +1,8 @@
-#include "r_vss/r_onvif_event_tracker.h"
+#include "r_cameras/onvif/r_onvif_event_tracker.h"
 #include <algorithm>
 #include <cctype>
 
-using namespace r_vss;
+using namespace r_cameras;
 using namespace std;
 
 // A topic (normalized, matched as a prefix) and the data item that carries its
@@ -16,7 +16,7 @@ struct r_onvif_event_tracker::rule
     const char* what;
 };
 
-// In order of preference: the first is the best motion topic.
+// The topics cameras raise motion on: any of them active is motion.
 static const r_onvif_event_tracker::rule* _motion_rules()
 {
     static const r_onvif_event_tracker::rule rules[] = {
@@ -93,9 +93,9 @@ const r_onvif_event_tracker::rule* r_onvif_event_tracker::_match(const string& t
     return nullptr;
 }
 
-vector<r_onvif_transition> r_onvif_event_tracker::process(const vector<r_onvif::onvif_event>& events)
+vector<r_camera_transition> r_onvif_event_tracker::process(const vector<r_onvif::onvif_event>& events)
 {
-    vector<r_onvif_transition> out;
+    vector<r_camera_transition> out;
     for (auto& ev : events)
     {
         auto topic = normalize_topic(ev.topic);
@@ -105,42 +105,37 @@ vector<r_onvif_transition> r_onvif_event_tracker::process(const vector<r_onvif::
             continue;
 
         string what = r->what;
-        bool carried_active = false;
-        if (what == "motion")
-        {
-            int priority = (int)(r - _motion_rules());
-            if (_motion_priority < 0 || priority < _motion_priority)
-            {
-                // A better motion topic: drop the state kept for the lesser one,
-                // but a motion it has open carries over (it is the same motion),
-                // so it isn't started twice or left without an end.
-                for (auto it = _state.begin(); it != _state.end();)
-                {
-                    if (it->first.compare(0, 7, "motion|") == 0)
-                    {
-                        carried_active = carried_active || it->second;
-                        _topic_of.erase(it->first);
-                        it = _state.erase(it);
-                    }
-                    else
-                        ++it;
-                }
-                _motion_priority = priority;
-            }
-            if (priority != _motion_priority)
-                continue;  // the same motion on a lesser topic
-        }
-        else if (find(_classes.begin(), _classes.end(), what) == _classes.end())
-            _classes.push_back(what);
-
         string source;
         for (auto& s : ev.source)
             source += (source.empty() ? "" : " ") + s.first + "=" + s.second;
+        bool active = _truthy(value);
+
+        if (what == "motion")
+        {
+            // Initialized, Changed and Deleted alike: the state each topic is in.
+            _motion_state[string(r->topic) + "|" + source] = active;
+            if (active)
+            {
+                _motion_topic = r->topic;
+                _motion_raw_topic = ev.topic;
+            }
+            bool any = false;
+            for (auto& m : _motion_state)
+                any = any || m.second;
+            if (any != _motion_active)
+            {
+                _motion_active = any;
+                out.push_back({"motion", any, active ? ev.topic : _motion_raw_topic, string()});
+            }
+            continue;
+        }
+
+        if (find(_classes.begin(), _classes.end(), what) == _classes.end())
+            _classes.push_back(what);
 
         auto key = what + "|" + source;
-        bool active = _truthy(value);
         auto it = _state.find(key);
-        bool was_active = carried_active || (it != _state.end() && it->second);
+        bool was_active = it != _state.end() && it->second;
         _state[key] = active;
         _topic_of[key] = ev.topic;
 
@@ -151,9 +146,14 @@ vector<r_onvif_transition> r_onvif_event_tracker::process(const vector<r_onvif::
     return out;
 }
 
-vector<r_onvif_transition> r_onvif_event_tracker::close_all()
+vector<r_camera_transition> r_onvif_event_tracker::close_all()
 {
-    vector<r_onvif_transition> out;
+    vector<r_camera_transition> out;
+    if (_motion_active)
+        out.push_back({"motion", false, _motion_raw_topic, string()});
+    _motion_active = false;
+    for (auto& m : _motion_state)
+        m.second = false;
     for (auto& s : _state)
     {
         if (!s.second)
@@ -167,7 +167,7 @@ vector<r_onvif_transition> r_onvif_event_tracker::close_all()
 
 string r_onvif_event_tracker::motion_topic() const
 {
-    return _motion_priority < 0 ? string() : string(_motion_rules()[_motion_priority].topic);
+    return _motion_topic;
 }
 
 vector<string> r_onvif_event_tracker::classes() const

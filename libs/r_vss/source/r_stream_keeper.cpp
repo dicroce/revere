@@ -361,7 +361,7 @@ void r_stream_keeper::_update_status_cache()
     _status_cache = std::move(status);
 }
 
-vector<r_onvif_span> r_stream_keeper::onvif_spans(const string& camera_id, int64_t since_ms)
+vector<r_cameras::r_camera_span> r_stream_keeper::camera_spans(const string& camera_id, int64_t since_ms)
 {
     std::shared_ptr<r_recording_context> rc;
     {
@@ -370,7 +370,7 @@ vector<r_onvif_span> r_stream_keeper::onvif_spans(const string& camera_id, int64
         if(it != _streams.end())
             rc = it->second;
     }
-    return rc ? rc->onvif_spans(since_ms) : vector<r_onvif_span>();
+    return rc ? rc->camera_spans(since_ms) : vector<r_cameras::r_camera_span>();
 }
 
 static int64_t _epoch_ms()
@@ -378,7 +378,7 @@ static int64_t _epoch_ms()
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-void r_stream_keeper::onvif_transition(const string& camera_id, const r_onvif_transition& t)
+void r_stream_keeper::camera_transition(const string& camera_id, const r_cameras::r_camera_transition& t)
 {
     auto now = _epoch_ms();
     int tier;
@@ -471,31 +471,58 @@ void r_stream_keeper::_tier_tick()
             streams.push_back(s);
     }
 
-    // Each camera's setting and subscription state, gathered before the lock.
-    struct fact { string id; string setting; int subscription; };  // -1 none, 0 down, 1 up
+    // Each camera's setting, saved verification and subscription state,
+    // gathered before the lock.
+    struct fact { string id; string setting; int subscription; int saved_verified; };  // subscription: -1 none, 0 down, 1 up
     vector<fact> facts;
     for(auto& s : streams)
     {
-        fact f {s.first, string(), -1};
+        fact f {s.first, string(), -1, 0};
         auto c = _devices.get_camera_by_id(s.first);
         if(!c.is_null() && !c.value().motion_tier.is_null())
             f.setting = c.value().motion_tier.value();
-        if(s.second->has_onvif_events())
-            f.subscription = (s.second->onvif_events_status().state == "subscribed") ? 1 : 0;
+        if(!c.is_null() && !c.value().motion_tier_verified.is_null())
+            f.saved_verified = c.value().motion_tier_verified.value();
+        if(s.second->has_camera_events())
+            f.subscription = s.second->camera_events_status().up ? 1 : 0;
         facts.push_back(f);
     }
 
     vector<pair<string, r_tier_status>> changed;
+    vector<pair<string, int>> verified_changed;   // camera id -> verification to save
     {
         std::lock_guard<std::mutex> g(_tier_lock);
         for(auto& f : facts)
         {
+            // A verification saved before this run, given back once.
+            if(_tiers_restored.insert(f.id).second)
+                _tiers.restore(f.id, f.saved_verified, now);
             _tiers.set_setting(f.id, f.setting);
             if(f.subscription >= 0)
                 _tiers.subscription(f.id, f.subscription == 1, now);
         }
         for(auto& id : _tiers.tick(now))
             changed.push_back({id, _tiers.status(id)});
+        for(auto& f : facts)
+        {
+            auto v = _tiers.verified_tier(f.id);
+            if(v != f.saved_verified)
+                verified_changed.push_back({f.id, v});
+        }
+    }
+
+    // Keep verification across restarts.
+    for(auto& v : verified_changed)
+    {
+        auto c = _devices.get_camera_by_id(v.first);
+        if(c.is_null())
+            continue;
+        auto camera = c.value();
+        if(v.second == 0)
+            camera.motion_tier_verified.clear();
+        else
+            camera.motion_tier_verified.set_value(v.second);
+        _devices.save_camera(camera);
     }
 
     for(auto& c : changed)
@@ -507,7 +534,7 @@ void r_stream_keeper::_tier_tick()
     }
 }
 
-void r_stream_keeper::_camera_class_output(const string& camera_id, const r_onvif_transition& t, int64_t now_ms)
+void r_stream_keeper::_camera_class_output(const string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms)
 {
     auto yolo = camera_class_to_yolo(t.what);
     if(yolo.empty() || !_motion_detection_on(camera_id))
@@ -543,7 +570,7 @@ void r_stream_keeper::_camera_class_output(const string& camera_id, const r_onvi
         _camera_class_starts.erase(it);
     }
     d.ts = start;
-    write_metadata(camera_id, "onvif_events", analytics_json(start, now_ms, {d}, "camera"), start);
+    write_metadata(camera_id, "camera_events", analytics_json(start, now_ms, {d}, "camera"), start);
 }
 
 static bool _same_detection(const r_detection& a, const r_detection& b)
@@ -580,6 +607,16 @@ void r_stream_keeper::_pass_session(const r_detection_session& session)
             already = it->second;
             _emitted_first.erase(it);
         }
+    }
+
+    // A person check for the tier controller: the pass's YOLO against the
+    // camera's own person reports (how a tier 3 camera earns tier 2).
+    {
+        bool yolo_person = any_of(session.detections.begin(), session.detections.end(),
+                                  [](const r_detection& d) { return d.class_name == "person"; });
+        bool camera_person = find(session.camera_classes.begin(), session.camera_classes.end(), "person") != session.camera_classes.end();
+        std::lock_guard<std::mutex> g(_tier_lock);
+        _tiers.pass_session(session.camera_id, yolo_person, camera_person);
     }
 
     if(motion_tier(session.camera_id) != motion_tier_3 || !_motion_detection_on(session.camera_id))
@@ -1209,9 +1246,9 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.receiving_video = c.second->receiving_video();
             s.storage_write_lag_ms = c.second->storage_write_lag_ms();
             s.storage_timeline_lag_ms = c.second->storage_timeline_lag_ms();
-            s.has_onvif_events = c.second->has_onvif_events();
-            if(s.has_onvif_events)
-                s.onvif_events = c.second->onvif_events_status();
+            s.has_camera_events = c.second->has_camera_events();
+            if(s.has_camera_events)
+                s.camera_events = c.second->camera_events_status();
             s.motion_tier = motion_tier_status(c.first);
             return s;
         }

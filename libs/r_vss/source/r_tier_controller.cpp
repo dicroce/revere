@@ -1,4 +1,5 @@
 #include "r_vss/r_tier_controller.h"
+#include "r_vss/r_tier_outputs.h"
 #include "r_utils/r_string_utils.h"
 #include <algorithm>
 
@@ -62,8 +63,44 @@ void r_tier_controller::mog2_event(const string& camera_id, int64_t start_ms, in
 
 void r_tier_controller::yolo_detection(const string& camera_id, const string& class_name, int64_t ts)
 {
+    if (!reported_class(class_name))
+        return;
+    auto& c = _cameras[camera_id];
+    c.yolo_found.push_back(ts);
     if (class_name == "person")
-        _cameras[camera_id].yolo_person.push_back(ts);
+        c.yolo_person.push_back(ts);
+}
+
+void r_tier_controller::pass_session(const string& camera_id, bool yolo_person, bool camera_person)
+{
+    if (!yolo_person)
+        return;
+    auto& c = _cameras[camera_id];
+    c.person_checks.push_back(camera_person);
+    while (c.person_checks.size() > WINDOW)
+        c.person_checks.pop_front();
+}
+
+bool r_tier_controller::_person_ok(const _camera& c)
+{
+    int n = (int)c.person_checks.size();
+    int matched = (int)count(c.person_checks.begin(), c.person_checks.end(), true);
+    return n >= MIN_PERSON_EVENTS && matched >= MATCH_RATE * n;
+}
+
+int r_tier_controller::verified_tier(const string& camera_id) const
+{
+    auto it = _cameras.find(camera_id);
+    return it == _cameras.end() ? 0 : it->second.verified_tier;
+}
+
+void r_tier_controller::restore(const string& camera_id, int verified_tier, int64_t now_ms)
+{
+    if (verified_tier != motion_tier_2 && verified_tier != motion_tier_3)
+        return;
+    auto& c = _cameras[camera_id];
+    c.verified_tier = verified_tier;
+    c.verified_at = now_ms;   // the silence check counts from now
 }
 
 bool r_tier_controller::_overlaps(const deque<_span>& spans, int64_t start, int64_t end, int64_t now_ms)
@@ -86,6 +123,12 @@ void r_tier_controller::_check_pending(_camera& c, int64_t now_ms)
         if (!c.known || !c.up || c.up_since > ev.first)
             continue;
 
+        auto in_event = [&](int64_t ts) { return ts >= ev.first - MATCH_SLACK_MS && ts <= ev.second + MATCH_SLACK_MS; };
+
+        // Only events with something real in them: see the class comment.
+        if (!any_of(c.yolo_found.begin(), c.yolo_found.end(), in_event))
+            continue;
+
         _check k;
         k.motion = _overlaps(c.motion, ev.first - MATCH_SLACK_MS, ev.second + MATCH_SLACK_MS, now_ms);
         k.person = any_of(c.yolo_person.begin(), c.yolo_person.end(), [&](int64_t ts) {
@@ -95,6 +138,12 @@ void r_tier_controller::_check_pending(_camera& c, int64_t now_ms)
         c.window.push_back(k);
         while (c.window.size() > WINDOW)
             c.window.pop_front();
+        if (k.person)
+        {
+            c.person_checks.push_back(k.camera_person);
+            while (c.person_checks.size() > WINDOW)
+                c.person_checks.pop_front();
+        }
     }
 }
 
@@ -108,9 +157,11 @@ void r_tier_controller::_verify(_camera& c)
         person += k.person ? 1 : 0;
         camera_person += k.camera_person ? 1 : 0;
     }
+    (void)person;
+    (void)camera_person;
     if (checked < MIN_EVENTS || matched < MATCH_RATE * checked)
         return;
-    c.verified_tier = (person >= MIN_PERSON_EVENTS && camera_person >= MATCH_RATE * person) ? motion_tier_2 : motion_tier_3;
+    c.verified_tier = _person_ok(c) ? motion_tier_2 : motion_tier_3;
 }
 
 int r_tier_controller::_decide(_camera& c, int64_t now_ms)
@@ -167,6 +218,7 @@ int r_tier_controller::_decide(_camera& c, int64_t now_ms)
     {
         c.verified_tier = 0;
         c.window.clear();
+        c.person_checks.clear();
         c.reason = "the camera reported no motion for 12 hours; checking it again";
         return motion_tier_1;
     }
@@ -180,6 +232,9 @@ int r_tier_controller::_decide(_camera& c, int64_t now_ms)
         c.reason = "the camera's events match; waiting for its subscription to stay up";
         return motion_tier_1;
     }
+    // Verified for tier 3, and its person reports now shown to match: tier 2.
+    if (c.verified_tier == motion_tier_3 && _person_ok(c))
+        c.verified_tier = motion_tier_2;
     c.reason = (c.verified_tier == motion_tier_2)
         ? "the camera's motion and person events match Revere's"
         : "the camera's motion events match Revere's; Revere finds the objects";
@@ -195,6 +250,8 @@ void r_tier_controller::_prune(_camera& c, int64_t now_ms)
         c.person.pop_front();
     while (!c.yolo_person.empty() && now_ms - c.yolo_person.front() > KEEP_MS)
         c.yolo_person.pop_front();
+    while (!c.yolo_found.empty() && now_ms - c.yolo_found.front() > KEEP_MS)
+        c.yolo_found.pop_front();
 }
 
 vector<string> r_tier_controller::tick(int64_t now_ms)
@@ -231,9 +288,9 @@ r_tier_status r_tier_controller::status_of(const _camera& c)
     for (auto& k : c.window)
     {
         s.matched += k.motion ? 1 : 0;
-        s.person_checked += k.person ? 1 : 0;
-        s.person_matched += k.camera_person ? 1 : 0;
     }
+    s.person_checked = (int)c.person_checks.size();
+    s.person_matched = (int)count(c.person_checks.begin(), c.person_checks.end(), true);
     return s;
 }
 

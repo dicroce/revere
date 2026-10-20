@@ -12,6 +12,9 @@ public:
       TEST(test_r_tier_controller::test_down_falls_back_and_returns);
       TEST(test_r_tier_controller::test_silence_checks_again);
       TEST(test_r_tier_controller::test_outage_events_not_counted);
+      TEST(test_r_tier_controller::test_unconfirmed_events_ignored);
+      TEST(test_r_tier_controller::test_tier_3_earns_tier_2);
+      TEST(test_r_tier_controller::test_restore);
       TEST(test_r_tier_controller::test_forced_tiers);
     RTF_FIXTURE_END();
 
@@ -28,5 +31,8 @@ public:
     void test_down_falls_back_and_returns();
     void test_silence_checks_again();
     void test_outage_events_not_counted();
+    void test_unconfirmed_events_ignored();
+    void test_tier_3_earns_tier_2();
+    void test_restore();
     void test_forced_tiers();
 };

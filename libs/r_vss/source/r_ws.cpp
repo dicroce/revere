@@ -116,7 +116,7 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     _server.add_route(METHOD_GET, "/cameras", std::bind(&r_ws::_get_cameras, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/contents", std::bind(&r_ws::_get_contents, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/motion_events", std::bind(&r_ws::_get_motion_events, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/onvif_events", std::bind(&r_ws::_get_onvif_events, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/camera_events", std::bind(&r_ws::_get_camera_events, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/analytics", std::bind(&r_ws::_get_analytics, this, _1, _2, _3));
 
     _server.add_route(METHOD_GET, "/key_frame", std::bind(&r_ws::_get_key_frame, this, _1, _2, _3));
@@ -518,7 +518,7 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
             bool stream_failed = false;
             int64_t storage_write_lag_ms = 0;
             int64_t storage_timeline_lag_ms = 0;
-            json onvif_events = nullptr;
+            json camera_events = nullptr;
             json motion_tier = nullptr;
             auto sit = status_by_id.find(c.id);
             if(sit != status_by_id.end())
@@ -527,10 +527,12 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                 stream_failed = sit->second.failed;
                 storage_write_lag_ms = sit->second.storage_write_lag_ms;
                 storage_timeline_lag_ms = sit->second.storage_timeline_lag_ms;
-                if(sit->second.has_onvif_events)
+                if(sit->second.has_camera_events)
                 {
-                    const auto& oe = sit->second.onvif_events;
-                    onvif_events = {
+                    const auto& oe = sit->second.camera_events;
+                    camera_events = {
+                        {"source", oe.source},
+                        {"up", oe.up},
                         {"state", oe.state},
                         {"port", oe.port},
                         {"motion_topic", oe.motion_topic},
@@ -580,7 +582,7 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                     {"onvif_port", (c.onvif_port.is_null())?0:c.onvif_port.value()},
                     {"onvif_protocol", (c.onvif_protocol.is_null())?"":c.onvif_protocol.value()},
                     // The camera's ONVIF event subscription; null when it has none.
-                    {"onvif_events", onvif_events},
+                    {"camera_events", camera_events},
                     // "auto", "1", "2" or "3": where motion and object classes come from.
                     {"motion_tier_setting", (c.motion_tier.is_null())?"auto":c.motion_tier.value()},
                     // The tier in use now and why; null while not recording.
@@ -1062,11 +1064,11 @@ r_http::r_server_response r_ws::_get_analytics(const r_http::r_web_server<r_util
 }
 
 
-// GET /onvif_events?camera_id=<id>[&since_ms=<epoch ms>]: the camera's own
+// GET /camera_events?camera_id=<id>[&since_ms=<epoch ms>]: the camera's own
 // event spans (motion, person, vehicle, ...) on Revere's clock, as its ONVIF
 // subscription reported them (shadow mode, kept in memory, newest 500). For
 // comparing with /motion_events.
-r_http::r_server_response r_ws::_get_onvif_events(const r_http::r_web_server<r_utils::r_socket>&,
+r_http::r_server_response r_ws::_get_camera_events(const r_http::r_web_server<r_utils::r_socket>&,
                                                   r_utils::r_socket&,
                                                   const r_http::r_server_request& request)
 {
@@ -1080,9 +1082,9 @@ r_http::r_server_response r_ws::_get_onvif_events(const r_http::r_web_server<r_u
             since_ms = r_string_utils::s_to_int64(args["since_ms"]);
 
         json j;
-        j["onvif_events"] = json::array();
-        for(auto& s : _stream_keeper.onvif_spans(args["camera_id"], since_ms))
-            j["onvif_events"].push_back({{"what", s.what}, {"start_ms", s.start_ms}, {"end_ms", s.end_ms}});
+        j["camera_events"] = json::array();
+        for(auto& s : _stream_keeper.camera_spans(args["camera_id"], since_ms))
+            j["camera_events"].push_back({{"what", s.what}, {"start_ms", s.start_ms}, {"end_ms", s.end_ms}});
 
         // The detection pass's sessions over those spans (boxes normalised like analytics).
         auto dets_json = [](const std::vector<r_detection>& dets) {

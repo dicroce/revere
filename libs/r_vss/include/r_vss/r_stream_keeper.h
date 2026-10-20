@@ -9,7 +9,7 @@
 #include "r_vss/r_ws.h"
 #include "r_vss/r_prune.h"
 #include "r_vss/r_camera_stats.h"
-#include "r_vss/r_onvif_event_subscriber.h"
+#include "r_cameras/r_camera_events.h"
 #include "r_vss/r_detection_pass.h"
 #include "r_vss/r_tier_controller.h"
 #include "r_vss/r_tier_outputs.h"
@@ -104,8 +104,8 @@ struct r_stream_status
     int failure_attempt_count {0};
 
     // The camera's ONVIF event subscription, when it has one.
-    bool has_onvif_events {false};
-    r_onvif_events_status onvif_events;
+    bool has_camera_events {false};
+    r_cameras::r_camera_events_status camera_events;
 
     // Where its motion and object classes come from.
     r_tier_status motion_tier;
@@ -193,10 +193,10 @@ public:
 
     // Camera-reported event spans since since_ms (ONVIF, shadow mode); empty
     // for a camera that isn't recording or has no subscription.
-    R_API std::vector<r_onvif_span> onvif_spans(const std::string& camera_id, int64_t since_ms);
+    R_API std::vector<r_cameras::r_camera_span> camera_spans(const std::string& camera_id, int64_t since_ms);
 
     // A camera's event subscription reporting a start or end (any thread).
-    R_API void onvif_transition(const std::string& camera_id, const r_onvif_transition& t);
+    R_API void camera_transition(const std::string& camera_id, const r_cameras::r_camera_transition& t);
 
     // The detection pass's finished sessions for a camera.
     R_API std::vector<r_detection_session> detection_sessions(const std::string& camera_id, int64_t since_ms);
@@ -349,7 +349,7 @@ private:
     void _on_mog2_event(r_motion_event evt, const std::string& camera_id, int64_t ts);
     static void _on_detection_bus(void* userdata, const r_detection& det);
     void _tier_tick();
-    void _camera_class_output(const std::string& camera_id, const r_onvif_transition& t, int64_t now_ms);
+    void _camera_class_output(const std::string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms);
     void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections);
     void _pass_session(const r_detection_session& session);
     bool _motion_detection_on(const std::string& camera_id);
@@ -360,6 +360,7 @@ private:
     std::map<std::string, int64_t> _mog2_starts;                       // camera id -> its MOG2 event's start
     std::map<std::string, int64_t> _camera_class_starts;               // camera id + "|" + class -> start (tier 2)
     std::map<std::string, std::vector<r_detection>> _emitted_first;    // camera id -> first found, already on the bus (tier 3)
+    std::set<std::string> _tiers_restored;                             // cameras whose saved verification was given back
 };
 
 }

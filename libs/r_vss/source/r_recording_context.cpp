@@ -517,14 +517,14 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
     _source.play();
 
-    if(r_onvif_event_subscriber::wanted_for(_camera))
+    if(r_cameras::camera_events_wanted(_camera))
     {
         // The subscriber is reset before this context is gone (see the destructor).
-        _onvif_events = std::make_unique<r_onvif_event_subscriber>(_camera, [this](const r_onvif_transition& t) {
+        _camera_events = r_cameras::make_camera_events(_camera, [this](const r_cameras::r_camera_transition& t) {
             _on_camera_transition(t);
-            _sk->onvif_transition(_camera.id, t);
+            _sk->camera_transition(_camera.id, t);
         });
-        _onvif_events->start();
+        _camera_events->start();
     }
 }
 
@@ -535,7 +535,7 @@ r_recording_context::~r_recording_context() noexcept
     _source.stop();
 
     // Waits for the subscriber's thread (stop() already asked it to finish).
-    _onvif_events.reset();
+    _camera_events.reset();
 
     // Explicitly clear write contexts BEFORE _storage_file is destroyed
     // This ensures nanots write_context unique_ptrs are destroyed immediately,
@@ -722,22 +722,22 @@ void r_recording_context::stop()
 {
     // Asks without waiting, so stopping every camera at shutdown winds their
     // subscribers down in parallel; the destructor waits.
-    if(_onvif_events)
-        _onvif_events->request_stop();
+    if(_camera_events)
+        _camera_events->request_stop();
     _source.stop();
 }
 
-bool r_recording_context::has_onvif_events() const
+bool r_recording_context::has_camera_events() const
 {
-    return (bool)_onvif_events;
+    return (bool)_camera_events;
 }
 
-r_onvif_events_status r_recording_context::onvif_events_status() const
+r_cameras::r_camera_events_status r_recording_context::camera_events_status() const
 {
-    return _onvif_events ? _onvif_events->status() : r_onvif_events_status();
+    return _camera_events ? _camera_events->status() : r_cameras::r_camera_events_status();
 }
 
-void r_recording_context::_on_camera_transition(const r_onvif_transition& t)
+void r_recording_context::_on_camera_transition(const r_cameras::r_camera_transition& t)
 {
     if(t.what != "motion")
         return;
@@ -846,9 +846,9 @@ r_nullable<r_live_key_frame> r_recording_context::latest_key_frame() const
     return out;
 }
 
-vector<r_onvif_span> r_recording_context::onvif_spans(int64_t since_ms) const
+vector<r_cameras::r_camera_span> r_recording_context::camera_spans(int64_t since_ms) const
 {
-    return _onvif_events ? _onvif_events->spans(since_ms) : vector<r_onvif_span>();
+    return _camera_events ? _camera_events->spans(since_ms) : vector<r_cameras::r_camera_span>();
 }
 
 void r_recording_context::create_playback_mount(GstRTSPServer*, GstRTSPMountPoints* mounts, const std::string& url, uint64_t start_ts, uint64_t end_ts)

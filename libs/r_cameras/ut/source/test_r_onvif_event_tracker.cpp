@@ -1,9 +1,9 @@
 #include "test_r_onvif_event_tracker.h"
-#include "r_vss/r_onvif_event_tracker.h"
+#include "r_cameras/onvif/r_onvif_event_tracker.h"
 #include <string>
 #include <vector>
 
-using namespace r_vss;
+using namespace r_cameras;
 using namespace r_onvif;
 using namespace std;
 
@@ -41,13 +41,14 @@ void test_r_onvif_event_tracker::test_reolink_motion_and_person()
         _ev("tns1:RuleEngine/MyRuleDetector/VehicleDetect", "State", "false", "Initialized")
     });
     RTF_ASSERT(tr.empty());
-    RTF_ASSERT_EQUAL(t.motion_topic(), string("RuleEngine/CellMotionDetector"));
+    RTF_ASSERT(t.motion_topic().empty());   // announced, not yet seen active
     RTF_ASSERT_EQUAL(t.classes().size(), (size_t)2);
 
     tr = t.process({_ev("tns1:RuleEngine/CellMotionDetector/Motion", "IsMotion", "true")});
     RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
     RTF_ASSERT_EQUAL(tr[0].what, string("motion"));
     RTF_ASSERT(tr[0].active);
+    RTF_ASSERT_EQUAL(t.motion_topic(), string("RuleEngine/CellMotionDetector"));
 
     // A repeat of the same state is not a transition.
     tr = t.process({_ev("tns1:RuleEngine/CellMotionDetector/Motion", "IsMotion", "true")});
@@ -69,9 +70,9 @@ void test_r_onvif_event_tracker::test_reolink_motion_and_person()
     RTF_ASSERT(!tr[1].active);
 }
 
-// Axis with VMD: one burst raises several topics (values 1/0); only the best
-// motion topic counts.
-void test_r_onvif_event_tracker::test_axis_burst_uses_one_topic()
+// Axis with VMD: one burst raises several topics and sources (values 1/0):
+// one motion start, and one end once the last of them has ended.
+void test_r_onvif_event_tracker::test_axis_burst_is_one_motion()
 {
     r_onvif_event_tracker t;
     vector<pair<string, string>> profile1 = {{"VideoSource", "0"}, {"RuleName", "VMD 4: Profile 1"}};
@@ -87,33 +88,24 @@ void test_r_onvif_event_tracker::test_axis_burst_uses_one_topic()
         };
     };
 
-    // MotionAlarm comes first and starts the motion; the better topic takes
-    // over without a second start. Profile 2 is another source: its own start.
     auto tr = t.process(burst("1"));
-    RTF_ASSERT_EQUAL(t.motion_topic(), string("RuleEngine/MotionRegionDetector"));
-    RTF_ASSERT_EQUAL(tr.size(), (size_t)2);
-    for (auto& x : tr)
-        RTF_ASSERT(x.active);
+    RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(tr[0].what, string("motion"));
+    RTF_ASSERT(tr[0].active);
+    RTF_ASSERT(tr[0].source.empty());
 
     tr = t.process(burst("0"));
-    for (auto& x : tr)
-    {
-        RTF_ASSERT(!x.active);
-        RTF_ASSERT(x.topic.find("MotionRegionDetector") != string::npos);
-    }
-    RTF_ASSERT_EQUAL(tr.size(), (size_t)2);
+    RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
+    RTF_ASSERT(!tr[0].active);
     RTF_ASSERT(t.close_all().empty());
 
-    // Later bursts: MotionAlarm is ignored, one start per profile.
     tr = t.process(burst("1"));
-    RTF_ASSERT_EQUAL(tr.size(), (size_t)2);
-    for (auto& x : tr)
-        RTF_ASSERT(x.topic.find("MotionRegionDetector") != string::npos);
+    RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
 }
 
-// The lesser topic arrives first and its motion is still on when the better
-// topic shows up: one start, one end, nothing left open.
-void test_r_onvif_event_tracker::test_topic_upgrade_mid_motion()
+// Topics that overlap: motion lasts from the first going active to the last
+// going inactive.
+void test_r_onvif_event_tracker::test_overlapping_topics()
 {
     r_onvif_event_tracker t;
     vector<pair<string, string>> src = {{"VideoSource", "0"}};
@@ -127,22 +119,43 @@ void test_r_onvif_event_tracker::test_topic_upgrade_mid_motion()
     RTF_ASSERT(tr.empty());
     RTF_ASSERT_EQUAL(t.motion_topic(), string("RuleEngine/MotionRegionDetector"));
 
-    // The lesser topic is ignored from now on.
     tr = t.process({_ev("tns1:VideoSource/MotionAlarm", "State", "false", "Changed", src)});
-    RTF_ASSERT(tr.empty());
+    RTF_ASSERT(tr.empty());   // still moving on the other topic
 
     tr = t.process({_ev("tns1:RuleEngine/MotionRegionDetector/Motion", "State", "false", "Changed", src)});
     RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
     RTF_ASSERT(!tr[0].active);
     RTF_ASSERT(t.close_all().empty());
+}
 
-    // Upgrading with the motion already off ends it.
-    r_onvif_event_tracker t2;
-    t2.process({_ev("tns1:VideoSource/MotionAlarm", "State", "true", "Changed", src)});
-    tr = t2.process({_ev("tns1:RuleEngine/CellMotionDetector/Motion", "IsMotion", "false", "Changed", src)});
+// Office (2026-10-20): announces CellMotionDetector (and MotionAlarm) as off,
+// then, with a region of interest set, reports motion only on MotionAlarm,
+// ending it with "Deleted". Picking one topic from the announcements missed it all.
+void test_r_onvif_event_tracker::test_motion_on_an_announced_lesser_topic()
+{
+    r_onvif_event_tracker t;
+    vector<pair<string, string>> src = {{"Source", "0001"}};
+
+    auto tr = t.process({
+        _ev("tns1:VideoSource/MotionAlarm", "State", "false", "Initialized", src),
+        _ev("tns1:RuleEngine/tt:CellMotionDetector", "IsMotion", "false", "Initialized", src),
+        _ev("tns1:UserAlarm/IVA/HumanShapeDetect", "State", "false", "Initialized", {{"VideoSourceConfigurationToken", "VideoSourceMain"}})
+    });
+    RTF_ASSERT(tr.empty());
+    RTF_ASSERT(t.motion_topic().empty());
+
+    tr = t.process({_ev("tns1:VideoSource/MotionAlarm", "State", "true", "Changed", src)});
+    RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
+    RTF_ASSERT(tr[0].active);
+    RTF_ASSERT_EQUAL(t.motion_topic(), string("VideoSource/MotionAlarm"));
+
+    // A second "true" (a new object id) is the same motion.
+    tr = t.process({_ev("tns1:VideoSource/MotionAlarm", "State", "true", "Changed", src)});
+    RTF_ASSERT(tr.empty());
+
+    tr = t.process({_ev("tns1:VideoSource/MotionAlarm", "State", "false", "Deleted", src)});
     RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
     RTF_ASSERT(!tr[0].active);
-    RTF_ASSERT(t2.close_all().empty());
 }
 
 // A subscription that dropped mid-motion: the next one's Initialized state
@@ -166,8 +179,8 @@ void test_r_onvif_event_tracker::test_initialized_corrects_state()
     RTF_ASSERT(tr[0].active);
 }
 
-// Two video sources' motions are separate states.
-void test_r_onvif_event_tracker::test_sources_stay_apart()
+// Two video sources' motions are one camera's motion; their classes stay apart.
+void test_r_onvif_event_tracker::test_sources()
 {
     r_onvif_event_tracker t;
     vector<pair<string, string>> a = {{"VideoSourceConfigurationToken", "A"}};
@@ -177,16 +190,20 @@ void test_r_onvif_event_tracker::test_sources_stay_apart()
         _ev("tns1:RuleEngine/CellMotionDetector/Motion", "IsMotion", "true", "Changed", a),
         _ev("tns1:RuleEngine/CellMotionDetector/Motion", "IsMotion", "true", "Changed", b)
     });
+    RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
+
+    tr = t.process({_ev("tns1:RuleEngine/CellMotionDetector/Motion", "IsMotion", "false", "Changed", a)});
+    RTF_ASSERT(tr.empty());
+
+    tr = t.process({
+        _ev("tns1:RuleEngine/MyRuleDetector/PeopleDetect", "State", "true", "Changed", a),
+        _ev("tns1:RuleEngine/MyRuleDetector/PeopleDetect", "State", "true", "Changed", b)
+    });
     RTF_ASSERT_EQUAL(tr.size(), (size_t)2);
     RTF_ASSERT(tr[0].source != tr[1].source);
 
-    tr = t.process({_ev("tns1:RuleEngine/CellMotionDetector/Motion", "IsMotion", "false", "Changed", a)});
-    RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
-    RTF_ASSERT_EQUAL(tr[0].source, string("VideoSourceConfigurationToken=A"));
-
     tr = t.close_all();
-    RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
-    RTF_ASSERT_EQUAL(tr[0].source, string("VideoSourceConfigurationToken=B"));
+    RTF_ASSERT_EQUAL(tr.size(), (size_t)3);   // the motion, and each source's person
 }
 
 // The generic Office camera: IVA/IVB classes, "active" for on.

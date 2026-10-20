@@ -12,9 +12,9 @@ typedef r_tier_controller T;
 static const int64_t MIN = 60 * 1000;
 
 // One motion event at t (10 s long): MOG2 saw it; the camera reported motion
-// if `camera`, YOLO found a person if `person`, the camera said person if
-// `camera_person`.
-static void _event(T& t, const string& id, int64_t at, bool camera, bool person = false, bool camera_person = false)
+// if `camera`, YOLO found a person if `person` (else a car, unless not
+// `confirmed`: YOLO found nothing), the camera said person if `camera_person`.
+static void _event(T& t, const string& id, int64_t at, bool camera, bool person = false, bool camera_person = false, bool confirmed = true)
 {
     if (camera)
     {
@@ -29,6 +29,8 @@ static void _event(T& t, const string& id, int64_t at, bool camera, bool person 
     t.mog2_event(id, at, at + 10000);
     if (person)
         t.yolo_detection(id, "person", at + 4000);
+    else if (confirmed)
+        t.yolo_detection(id, "car", at + 4000);
 }
 
 // n events a minute apart from `from`, all matching, then ticks to settle.
@@ -173,6 +175,87 @@ void test_r_tier_controller::test_outage_events_not_counted()
     t.tick(at + T::VERIFY_DELAY_MS);
     RTF_ASSERT_EQUAL(t.status("a").checked, 0);
     RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_1);
+}
+
+// MOG2 events YOLO found nothing in (light, shadows) don't count, either way.
+void test_r_tier_controller::test_unconfirmed_events_ignored()
+{
+    T t;
+    t.subscription("a", true, 0);
+    int64_t at = 10 * MIN;
+    for (int i = 0; i < 10; ++i, at += MIN)
+    {
+        _event(t, "a", at, false, false, false, false);   // the camera ignored it, YOLO found nothing
+        t.tick(at + 10000);
+    }
+    // Classes no one acts on don't confirm an event either.
+    _event(t, "a", at, false, false, false, false);
+    t.yolo_detection("a", "bowl", at + 4000);
+    at += MIN;
+    t.tick(at + T::VERIFY_DELAY_MS);
+    RTF_ASSERT_EQUAL(t.status("a").checked, 0);
+    RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_1);
+
+    // Real ones it reported: verified, the empty ones notwithstanding.
+    _events(t, "a", at + MIN, (int)T::MIN_EVENTS);
+    RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_3);
+    RTF_ASSERT_EQUAL(t.verified_tier("a"), (int)motion_tier_3);
+}
+
+// Verified for tier 3 before meeting three people: the detection pass's
+// sessions are its person checks, and matching ones earn it tier 2.
+void test_r_tier_controller::test_tier_3_earns_tier_2()
+{
+    T t;
+    t.subscription("a", true, 0);
+    auto now = _events(t, "a", 10 * MIN, (int)T::MIN_EVENTS);   // cars only
+    RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_3);
+
+    t.pass_session("a", true, true);
+    t.pass_session("a", false, false);   // no person found: not a check
+    t.pass_session("a", true, true);
+    t.tick(now + 1000);
+    RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_3);   // two isn't enough
+
+    t.pass_session("a", true, true);
+    t.tick(now + 2000);
+    RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_2);
+    RTF_ASSERT_EQUAL(t.verified_tier("a"), (int)motion_tier_2);
+    RTF_ASSERT_EQUAL(t.status("a").person_checked, 3);
+
+    // A camera that misses people stays on tier 3.
+    T u;
+    u.subscription("b", true, 0);
+    now = _events(u, "b", 10 * MIN, (int)T::MIN_EVENTS);
+    for (int i = 0; i < 5; ++i)
+        u.pass_session("b", true, i == 0);
+    u.tick(now + 1000);
+    RTF_ASSERT_EQUAL(u.tier("b"), (int)motion_tier_3);
+}
+
+// A verification saved before a restart: back on that tier once the
+// subscription has stayed up, with nothing checked again.
+void test_r_tier_controller::test_restore()
+{
+    T t;
+    t.restore("a", 2, 0);
+    t.restore("b", 7, 0);   // not a tier: ignored
+    t.subscription("a", true, 1000);
+    t.subscription("b", true, 1000);
+    t.tick(1000 + T::STABLE_MS - 1);
+    RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_1);
+    t.tick(1000 + T::STABLE_MS);
+    RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_2);
+    RTF_ASSERT_EQUAL(t.status("a").checked, 0);
+    RTF_ASSERT_EQUAL(t.tier("b"), (int)motion_tier_1);
+    RTF_ASSERT_EQUAL(t.verified_tier("b"), 0);
+
+    // The silence check counts from the restore, not from long ago.
+    t.tick(T::SILENCE_MS - 1);
+    RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_2);
+    t.tick(T::SILENCE_MS + 1);
+    RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_1);
+    RTF_ASSERT_EQUAL(t.verified_tier("a"), 0);   // to be saved as unverified
 }
 
 void test_r_tier_controller::test_forced_tiers()
