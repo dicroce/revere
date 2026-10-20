@@ -10,6 +10,15 @@ extern "C"
 #include <libavutil/pixfmt.h>
 }
 
+// FFmpeg 6.1 renamed FF_PROFILE_* to AV_PROFILE_*; older ones (Debian
+// bookworm and Raspberry Pi OS ship 5.1) only have the FF_ names.
+#ifndef AV_PROFILE_H264_MAIN
+#define AV_PROFILE_H264_MAIN FF_PROFILE_H264_MAIN
+#endif
+#ifndef AV_PROFILE_HEVC_MAIN
+#define AV_PROFILE_HEVC_MAIN FF_PROFILE_HEVC_MAIN
+#endif
+
 #include "r_av/r_codec_state.h"
 #include "r_av/r_hw_accel.h"
 #include "r_utils/r_std_utils.h"
