@@ -2,6 +2,7 @@
 #ifndef r_mux_r_muxer_h
 #define r_mux_r_muxer_h
 
+#include "r_av/r_ffmpeg_compat.h"
 #include "r_av/r_format_utils.h"
 #include "r_utils/r_std_utils.h"
 #include "r_utils/r_macro.h"
