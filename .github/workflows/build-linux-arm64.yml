@@ -7,6 +7,9 @@ name: Build & Release Linux arm64
 on:
   push:
     tags: ['v*']
+    # TEMPORARY: first runs from this branch (workflow_dispatch needs the
+    # workflow on main). Remove before merging.
+    branches: ['feat/onvif-event-motion']
   workflow_dispatch:
 
 permissions:
