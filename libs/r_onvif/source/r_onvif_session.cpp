@@ -1378,6 +1378,7 @@ static string _build_soap_envelope(
     envelope.append_attribute("xmlns:wsa") = "http://www.w3.org/2005/08/addressing";
     envelope.append_attribute("xmlns:wsnt") = "http://docs.oasis-open.org/wsn/b-2";
     envelope.append_attribute("xmlns:tev") = "http://www.onvif.org/ver10/events/wsdl";
+    envelope.append_attribute("xmlns:tan") = "http://www.onvif.org/ver20/analytics/wsdl";
 
     // Add authentication header if credentials are provided
     if (username && password)
@@ -1980,6 +1981,273 @@ string r_onvif::r_onvif_cam::get_event_properties(const string& events_service)
     if (result.first != 200)
         throw _events_error("GetEventProperties failed", result);
     return result.second;
+}
+
+r_nullable<string> r_onvif::r_onvif_cam::get_analytics_service(const onvif_capabilities& capabilities) const
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(capabilities.c_str()))
+        throw std::runtime_error("Failed to parse capabilities XML");
+    string xp = "//" + _xpath_local("Analytics") + "/" + _xpath_local("XAddr");
+    auto node = doc.select_node(xp.c_str());
+    if (!node || string(node.node().child_value()).empty())
+        return r_nullable<string>();
+    return string(node.node().child_value());
+}
+
+string r_onvif::r_onvif_cam::get_video_analytics_configurations(const onvif_media_service& media_service)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(media_service, host, port, protocol, uri);
+    auto result = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver10/media/wsdl/GetVideoAnalyticsConfigurations",
+        [](pugi::xml_node& body) { body.append_child("trt:GetVideoAnalyticsConfigurations"); },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("GetVideoAnalyticsConfigurations failed", result);
+    return result.second;
+}
+
+// An analytics service request whose body is <tan:op><tan:ConfigurationToken>token</...></...>.
+static function<void(pugi::xml_node&)> _analytics_body(const string& op, const string& configuration_token)
+{
+    return [op, configuration_token](pugi::xml_node& body) {
+        auto req = body.append_child(("tan:" + op).c_str());
+        req.append_child("tan:ConfigurationToken").text().set(configuration_token.c_str());
+    };
+}
+
+string r_onvif::r_onvif_cam::get_supported_rules(const string& analytics_service, const string& configuration_token)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(analytics_service, host, port, protocol, uri);
+    auto result = _soap_request(host, port, uri, "http://www.onvif.org/ver20/analytics/wsdl/GetSupportedRules",
+                                _analytics_body("GetSupportedRules", configuration_token), _username, _password);
+    if (result.first != 200)
+        throw _events_error("GetSupportedRules failed", result);
+    return result.second;
+}
+
+string r_onvif::r_onvif_cam::get_rules(const string& analytics_service, const string& configuration_token)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(analytics_service, host, port, protocol, uri);
+    auto result = _soap_request(host, port, uri, "http://www.onvif.org/ver20/analytics/wsdl/GetRules",
+                                _analytics_body("GetRules", configuration_token), _username, _password);
+    if (result.first != 200)
+        throw _events_error("GetRules failed", result);
+    return result.second;
+}
+
+string r_onvif::r_onvif_cam::get_analytics_modules(const string& analytics_service, const string& configuration_token)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(analytics_service, host, port, protocol, uri);
+    auto result = _soap_request(host, port, uri, "http://www.onvif.org/ver20/analytics/wsdl/GetAnalyticsModules",
+                                _analytics_body("GetAnalyticsModules", configuration_token), _username, _password);
+    if (result.first != 200)
+        throw _events_error("GetAnalyticsModules failed", result);
+    return result.second;
+}
+
+vector<uint8_t> r_onvif::packbits_decode(const vector<uint8_t>& in)
+{
+    vector<uint8_t> out;
+    size_t i = 0;
+    while (i < in.size())
+    {
+        int8_t n = (int8_t)in[i++];
+        if (n >= 0)
+        {
+            for (int k = 0; k <= n && i < in.size(); ++k)
+                out.push_back(in[i++]);
+        }
+        else if (n != -128)
+        {
+            if (i >= in.size())
+                break;
+            uint8_t b = in[i++];
+            for (int k = 0; k < 1 - n; ++k)
+                out.push_back(b);
+        }
+    }
+    return out;
+}
+
+vector<uint8_t> r_onvif::packbits_encode(const vector<uint8_t>& in)
+{
+    vector<uint8_t> out;
+    size_t i = 0, n = in.size();
+    while (i < n)
+    {
+        size_t run = 1;
+        while (i + run < n && run < 128 && in[i + run] == in[i])
+            ++run;
+        if (run >= 2)
+        {
+            out.push_back((uint8_t)(int8_t)(1 - (int)run));
+            out.push_back(in[i]);
+            i += run;
+            continue;
+        }
+        // Literal bytes, up to the next run of two or more.
+        size_t j = i;
+        while (j < n && j - i < 128 && !(j + 1 < n && in[j] == in[j + 1]))
+            ++j;
+        if (j == i)
+            j = i + 1;
+        out.push_back((uint8_t)(j - i - 1));
+        out.insert(out.end(), in.begin() + i, in.begin() + j);
+        i = j;
+    }
+    return out;
+}
+
+bool r_onvif::cell_mask_empty(const string& active_cells, int cells)
+{
+    vector<uint8_t> bits;
+    try { bits = packbits_decode(r_string_utils::from_base64(active_cells)); }
+    catch (...) { return true; }
+    for (int c = 0; c < cells && (size_t)(c / 8) < bits.size(); ++c)
+        if (bits[c / 8] & (0x80 >> (c % 8)))
+            return false;
+    return true;
+}
+
+string r_onvif::full_cell_mask(int columns, int rows)
+{
+    int cells = columns * rows;
+    vector<uint8_t> bits((cells + 7) / 8, 0xFF);
+    if (cells % 8)
+        bits.back() = (uint8_t)(0xFF << (8 - cells % 8));
+    auto packed = packbits_encode(bits);
+    return r_string_utils::to_base64(packed.data(), packed.size());
+}
+
+static bool _ends_with(const string& s, const string& suffix)
+{
+    return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+static string _local(const char* name)
+{
+    string s(name);
+    auto colon = s.find(':');
+    return colon == string::npos ? s : s.substr(colon + 1);
+}
+
+vector<r_onvif::onvif_cell_motion_rule> r_onvif::parse_cell_motion_rules(const string& xml)
+{
+    vector<onvif_cell_motion_rule> out;
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetVideoAnalyticsConfigurations response");
+
+    for (auto cx : doc.select_nodes("//*[local-name()='Configurations']"))
+    {
+        auto config = cx.node();
+        string token = config.attribute("token").value();
+        int columns = 0, rows = 0;
+        auto layout = config.select_node(".//*[local-name()='CellLayout']");
+        if (layout)
+        {
+            columns = layout.node().attribute("Columns").as_int();
+            rows = layout.node().attribute("Rows").as_int();
+        }
+        for (auto rx : config.select_nodes(".//*[local-name()='Rule']"))
+        {
+            auto rule = rx.node();
+            if (!_ends_with(rule.attribute("Type").value(), "CellMotionDetector"))
+                continue;
+            onvif_cell_motion_rule r;
+            r.configuration_token = token;
+            r.rule_name = rule.attribute("Name").value();
+            r.columns = columns;
+            r.rows = rows;
+            for (auto ix : rule.select_nodes(".//*[local-name()='SimpleItem']"))
+                if (string(ix.node().attribute("Name").value()) == "ActiveCells")
+                    r.active_cells = ix.node().attribute("Value").value();
+            out.push_back(r);
+        }
+    }
+    return out;
+}
+
+vector<string> r_onvif::r_onvif_cam::fill_empty_cell_motion_regions(const onvif_capabilities& capabilities)
+{
+    vector<string> changed;
+    auto analytics = get_analytics_service(capabilities);
+    if (analytics.is_null())
+        return changed;
+    auto media = get_media_service(capabilities);
+    auto configs = get_video_analytics_configurations(media);
+
+    pugi::xml_document doc;
+    if (!doc.load_string(configs.c_str()))
+        throw std::runtime_error("Failed to parse GetVideoAnalyticsConfigurations response");
+
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(analytics.value(), host, port, protocol, uri);
+
+    for (auto& r : parse_cell_motion_rules(configs))
+    {
+        int cells = r.columns * r.rows;
+        if (cells <= 0 || !cell_mask_empty(r.active_cells, cells))
+            continue;
+
+        // The rule as the camera has it, to send back with only ActiveCells changed.
+        string xp = "//*[local-name()='Configurations'][@token='" + r.configuration_token +
+                    "']//*[local-name()='Rule'][@Name='" + r.rule_name + "']";
+        auto rule = doc.select_node(xp.c_str()).node();
+        if (!rule)
+            continue;
+        auto full = full_cell_mask(r.columns, r.rows);
+
+        auto result = _soap_request(
+            host, port, uri, "http://www.onvif.org/ver20/analytics/wsdl/ModifyRules",
+            [&](pugi::xml_node& body) {
+                auto req = body.append_child("tan:ModifyRules");
+                req.append_child("tan:ConfigurationToken").text().set(r.configuration_token.c_str());
+                auto out = req.append_child("tan:Rule");
+                out.append_attribute("Name") = r.rule_name.c_str();
+                out.append_attribute("Type") = ("tt:" + _local(rule.attribute("Type").value())).c_str();
+                auto params = out.append_child("tt:Parameters");
+                auto in_params = rule.select_node("./*[local-name()='Parameters']").node();
+                for (auto item : in_params.children())
+                {
+                    string local = _local(item.name());
+                    if (local == "SimpleItem")
+                    {
+                        string name = item.attribute("Name").value();
+                        auto si = params.append_child("tt:SimpleItem");
+                        si.append_attribute("Name") = name.c_str();
+                        si.append_attribute("Value") = (name == "ActiveCells") ? full.c_str() : item.attribute("Value").value();
+                    }
+                    else if (local == "ElementItem")
+                        params.append_copy(item);
+                }
+            },
+            _username, _password
+        );
+        if (result.first != 200)
+            throw _events_error("ModifyRules failed for " + r.rule_name, result);
+
+        // The camera may accept it and keep its own: check.
+        bool kept = false;
+        for (auto& after : parse_cell_motion_rules(get_video_analytics_configurations(media)))
+            if (after.configuration_token == r.configuration_token && after.rule_name == r.rule_name)
+                kept = !cell_mask_empty(after.active_cells, cells);
+        if (!kept)
+            throw std::runtime_error("the camera accepted a whole-frame region for " + r.rule_name + " but kept it empty");
+        changed.push_back(r.configuration_token + "/" + r.rule_name);
+    }
+    return changed;
 }
 
 r_onvif::onvif_pull_point r_onvif::r_onvif_cam::create_pull_point_subscription(const string& events_service, int termination_seconds)

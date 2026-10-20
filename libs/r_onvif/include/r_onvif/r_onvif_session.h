@@ -109,6 +109,28 @@ R_API std::vector<onvif_event> parse_pull_messages_response(const std::string& x
 // ("RuleEngine/CellMotionDetector/Motion").
 R_API std::vector<std::string> parse_event_topics(const std::string& xml);
 
+// Cell motion regions. A tt:CellMotionDetector rule's ActiveCells is one bit
+// per cell of its motion engine's CellLayout (Columns x Rows, row by row, most
+// significant bit first), PackBits-compressed, base64.
+R_API std::vector<uint8_t> packbits_decode(const std::vector<uint8_t>& in);
+R_API std::vector<uint8_t> packbits_encode(const std::vector<uint8_t>& in);
+// No cell set among the first `cells` (a mask that doesn't decode counts as empty).
+R_API bool cell_mask_empty(const std::string& active_cells, int cells);
+// Every cell of a columns x rows layout set.
+R_API std::string full_cell_mask(int columns, int rows);
+
+struct onvif_cell_motion_rule
+{
+    std::string configuration_token;
+    std::string rule_name;
+    int columns {0};             // its configuration's CellLayout; 0 x 0 when it has none
+    int rows {0};
+    std::string active_cells;
+};
+
+// Each tt:CellMotionDetector rule in a GetVideoAnalyticsConfigurations response.
+R_API std::vector<onvif_cell_motion_rule> parse_cell_motion_rules(const std::string& xml);
+
 enum class soap_version
 {
     soap_1_2,   // SOAP 1.2 (default, modern)
@@ -149,6 +171,23 @@ public:
 
     // GetEventProperties: the raw response, whose TopicSet lists the topics the camera can raise.
     R_API std::string get_event_properties(const std::string& events_service);
+
+    // Analytics (motion regions and rules). The analytics service's XAddr from
+    // GetCapabilities, null if the camera has none. The rest return the
+    // camera's raw response and throw on a SOAP fault.
+    R_API r_utils::r_nullable<std::string> get_analytics_service(const onvif_capabilities& capabilities) const;
+    R_API std::string get_video_analytics_configurations(const onvif_media_service& media_service);
+    R_API std::string get_supported_rules(const std::string& analytics_service, const std::string& configuration_token);
+    R_API std::string get_rules(const std::string& analytics_service, const std::string& configuration_token);
+    R_API std::string get_analytics_modules(const std::string& analytics_service, const std::string& configuration_token);
+
+    // Sets every tt:CellMotionDetector rule whose region is empty (no cell
+    // active: the camera detects nothing) to the whole frame, then reads it
+    // back. A rule with any region drawn is left alone, so a user's region is
+    // never overwritten. Returns the rules it set ("configuration/rule").
+    // Nothing for a camera without analytics (Reolinks have none over ONVIF).
+    // Throws if the camera rejects the change or doesn't keep it.
+    R_API std::vector<std::string> fill_empty_cell_motion_regions(const onvif_capabilities& capabilities);
 
     // CreatePullPointSubscription with an InitialTerminationTime of termination_seconds.
     R_API onvif_pull_point create_pull_point_subscription(const std::string& events_service, int termination_seconds);

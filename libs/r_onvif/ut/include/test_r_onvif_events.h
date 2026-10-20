@@ -12,6 +12,9 @@ public:
       TEST(test_r_onvif_events::test_pull_messages_empty);
       TEST(test_r_onvif_events::test_event_topics);
       TEST(test_r_onvif_events::test_unparseable_responses_throw);
+      TEST(test_r_onvif_events::test_packbits);
+      TEST(test_r_onvif_events::test_cell_masks);
+      TEST(test_r_onvif_events::test_cell_motion_rules);
     RTF_FIXTURE_END();
 
     virtual ~test_r_onvif_events() throw() {}
@@ -25,4 +28,7 @@ public:
     void test_pull_messages_empty();
     void test_event_topics();
     void test_unparseable_responses_throw();
+    void test_packbits();
+    void test_cell_masks();
+    void test_cell_motion_rules();
 };

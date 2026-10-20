@@ -1,5 +1,6 @@
 #include "test_r_onvif_events.h"
 #include "r_onvif/r_onvif_session.h"
+#include "r_utils/r_string_utils.h"
 #include <pugixml.hpp>
 #include <stdexcept>
 #include <string>
@@ -141,5 +142,101 @@ void test_r_onvif_events::test_unparseable_responses_throw()
 
     threw = false;
     try { parse_pull_messages_response(""); } catch (const runtime_error&) { threw = true; }
+    RTF_ASSERT(threw);
+}
+
+void test_r_onvif_events::test_packbits()
+{
+    // Runs, literals, and a run longer than one PackBits block (128).
+    vector<uint8_t> in;
+    for (int i = 0; i < 300; ++i) in.push_back(0xFF);
+    in.push_back(0x01); in.push_back(0x02); in.push_back(0x03);
+    in.push_back(0x00); in.push_back(0x00);
+    in.push_back(0x7F);
+    auto packed = packbits_encode(in);
+    RTF_ASSERT(packed.size() < in.size());
+    RTF_ASSERT(packbits_decode(packed) == in);
+
+    RTF_ASSERT(packbits_decode(packbits_encode({})).empty());
+    vector<uint8_t> one = {0x42};
+    RTF_ASSERT(packbits_decode(packbits_encode(one)) == one);
+}
+
+void test_r_onvif_events::test_cell_masks()
+{
+    // Office's (2026-10-20): every cell of its 22 x 18 grid.
+    RTF_ASSERT_EQUAL(full_cell_mask(22, 18), string("0P8A8A=="));
+    RTF_ASSERT(!cell_mask_empty("0P8A8A==", 22 * 18));
+
+    // No cells: 50 zero bytes.
+    vector<uint8_t> zeros(50, 0);
+    auto packed = packbits_encode(zeros);
+    auto empty = r_utils::r_string_utils::to_base64(packed.data(), packed.size());
+    RTF_ASSERT(cell_mask_empty(empty, 22 * 18));
+
+    // One cell, the last one.
+    vector<uint8_t> last(50, 0);
+    last[49] = 0x10;   // cell 395: bit 3 of byte 49
+    packed = packbits_encode(last);
+    RTF_ASSERT(!cell_mask_empty(r_utils::r_string_utils::to_base64(packed.data(), packed.size()), 22 * 18));
+
+    // Missing or broken: empty.
+    RTF_ASSERT(cell_mask_empty("", 22 * 18));
+
+    // A layout that isn't a multiple of 8 cells pads with zero bits.
+    RTF_ASSERT(!cell_mask_empty(full_cell_mask(3, 3), 9));
+}
+
+// Office's GetVideoAnalyticsConfigurations response (2026-10-20), trimmed.
+static const char* OFFICE_ANALYTICS =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:tt=\"http://www.onvif.org/ver10/schema\" "
+    "xmlns:trt=\"http://www.onvif.org/ver10/media/wsdl\"><SOAP-ENV:Body><trt:GetVideoAnalyticsConfigurationsResponse>"
+    "<trt:Configurations token=\"0001\"><tt:Name>0001</tt:Name><tt:UseCount>2</tt:UseCount>"
+    "<tt:AnalyticsEngineConfiguration>"
+    "<tt:AnalyticsModule Name=\"MyCellMotion\" Type=\"tt:CellMotionEngine\"><tt:Parameters>"
+    "<tt:SimpleItem Name=\"Sensitivity\" Value=\"88\"/>"
+    "<tt:ElementItem Name=\"Layout\"><tt:CellLayout Columns=\"22\" Rows=\"18\"><tt:Transformation>"
+    "<tt:Translate x=\"-1.000000\" y=\"-1.000000\"/><tt:Scale x=\"-0.090909\" y=\"0.111111\"/>"
+    "</tt:Transformation></tt:CellLayout></tt:ElementItem>"
+    "</tt:Parameters></tt:AnalyticsModule>"
+    "</tt:AnalyticsEngineConfiguration>"
+    "<tt:RuleEngineConfiguration>"
+    "<tt:Rule Name=\"MyMotionDetector\" Type=\"tt:CellMotionDetector\"><tt:Parameters>"
+    "<tt:SimpleItem Name=\"MinCount\" Value=\"8\"/><tt:SimpleItem Name=\"AlarmOnDelay\" Value=\"1000\"/>"
+    "<tt:SimpleItem Name=\"AlarmOffDelay\" Value=\"1000\"/><tt:SimpleItem Name=\"ActiveCells\" Value=\"0P8A8A==\"/>"
+    "</tt:Parameters></tt:Rule>"
+    "<tt:Rule Name=\"MyFieldDetector1\" Type=\"tt:FieldDetector\"><tt:Parameters>"
+    "<tt:SimpleItem Name=\"Armed\" Value=\"true\"/></tt:Parameters></tt:Rule>"
+    "</tt:RuleEngineConfiguration>"
+    "</trt:Configurations></trt:GetVideoAnalyticsConfigurationsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
+
+// The Axis's: a MotionRegionDetector polygon, no cell rule.
+static const char* AXIS_ANALYTICS =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:tt=\"http://www.onvif.org/ver10/schema\" "
+    "xmlns:trt=\"http://www.onvif.org/ver10/media/wsdl\"><SOAP-ENV:Body><trt:GetVideoAnalyticsConfigurationsResponse>"
+    "<trt:Configurations token=\"0\"><tt:Name>analytics0</tt:Name><tt:UseCount>0</tt:UseCount>"
+    "<tt:AnalyticsEngineConfiguration/><tt:RuleEngineConfiguration>"
+    "<tt:Rule Name=\"Profile 1\" Type=\"tt:MotionRegionDetector\"><Parameters xmlns=\"http://www.onvif.org/ver10/schema\">"
+    "<tt:ElementItem Name=\"MotionRegion\"/></Parameters></tt:Rule>"
+    "</tt:RuleEngineConfiguration></trt:Configurations>"
+    "</trt:GetVideoAnalyticsConfigurationsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
+
+void test_r_onvif_events::test_cell_motion_rules()
+{
+    auto rules = parse_cell_motion_rules(OFFICE_ANALYTICS);
+    RTF_ASSERT_EQUAL(rules.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(rules[0].configuration_token, string("0001"));
+    RTF_ASSERT_EQUAL(rules[0].rule_name, string("MyMotionDetector"));
+    RTF_ASSERT_EQUAL(rules[0].columns, 22);
+    RTF_ASSERT_EQUAL(rules[0].rows, 18);
+    RTF_ASSERT_EQUAL(rules[0].active_cells, string("0P8A8A=="));
+
+    RTF_ASSERT(parse_cell_motion_rules(AXIS_ANALYTICS).empty());
+
+    bool threw = false;
+    try { parse_cell_motion_rules("not xml"); }
+    catch (const std::exception&) { threw = true; }
     RTF_ASSERT(threw);
 }
