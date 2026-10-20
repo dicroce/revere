@@ -322,6 +322,15 @@ struct sidebar_list_ui_item
     std::string frame_rate;     // "15 fps"
     r_utils::r_nullable<bool> motion_detection;
 
+    // Where its motion and object classes come from now (r_vss::r_tier_status):
+    // 1 Revere's own, 2 the camera's, 3 the camera's motion with Revere's
+    // objects; 0 until the stream keeper reports it.
+    int motion_tier {0};
+    bool motion_tier_automatic {true};
+    std::string motion_tier_reason;
+    int motion_tier_checked {0};
+    int motion_tier_matched {0};
+
     // The camera pane's stats tiles: the last read of
     // the camera's storage (null until one lands), and stream reconnects in
     // the last 24 h, counted in memory since reconnects_counted_since.

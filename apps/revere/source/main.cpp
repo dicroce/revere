@@ -392,6 +392,11 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
                 auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
                 item.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
                 item.health = status.receiving_video ? revere::stream_health::healthy : revere::stream_health::not_receiving;
+                item.motion_tier = status.motion_tier.tier;
+                item.motion_tier_automatic = status.motion_tier.automatic;
+                item.motion_tier_reason = status.motion_tier.reason;
+                item.motion_tier_checked = status.motion_tier.checked;
+                item.motion_tier_matched = status.motion_tier.matched;
             }
         }
         else
