@@ -191,3 +191,46 @@ export async function addRtspCamera(fields) {
   })
   return res.json()
 }
+
+// --- storage operations (the desktop's Move storage / Change retention) ---
+
+// { record_file_path, byte_rate, file_size_text, retention_days }, plus
+// new_file_size_text for days when given (what Change retention would make).
+export async function getStorageInfo(cameraId, days) {
+  const res = await apiFetch('/storage_info?' + qs({ camera_id: cameraId, days }))
+  return res.json()
+}
+
+// Moves the camera's files to newDir, a folder on the machine Revere runs on;
+// with startFresh, deletes its recordings and creates empty files there.
+export async function moveStorage(cameraId, newDir, startFresh, deleteConfirmed) {
+  const res = await apiFetch('/storage_move', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ camera_id: cameraId, new_dir: newDir, start_fresh: startFresh, delete_confirmed: deleteConfirmed }),
+  })
+  return res.json()
+}
+
+// Recreates the recording file for days of video at the current bitrate,
+// deleting the camera's recordings.
+export async function changeRetention(cameraId, days, deleteConfirmed) {
+  const res = await apiFetch('/storage_change_retention', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ camera_id: cameraId, days, delete_confirmed: deleteConfirmed }),
+  })
+  return res.json()
+}
+
+// The running (or last) storage operation:
+// { kind, camera_id, running, done, error, progress (0..1), status }.
+export async function getStorageOp() {
+  const res = await apiFetch('/storage_op')
+  return res.json()
+}
+
+export async function cancelStorageOp() {
+  const res = await apiFetch('/storage_op_cancel', { method: 'POST' })
+  return res.json()
+}

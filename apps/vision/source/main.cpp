@@ -404,6 +404,16 @@ static overlay_opts _parse_overlay_opts(const std::vector<std::string>& args)
 
 int run_overlay(const overlay_opts& opts);
 
+// Audio is optional: with no usable audio device (a headless Pi, a machine
+// with sound disabled, or an SDL built without ALSA/PulseAudio, which falls
+// back to OSS's missing /dev/dsp) the video still plays. The audio pipeline
+// already skips a device that fails to open.
+static void _init_audio()
+{
+    if(SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
+        R_LOG_WARNING("No audio (%s); video plays without sound.", SDL_GetError());
+}
+
 // Fire-and-forget process launch for the per-camera overlay windows. NOT
 // r_process: its Windows destructor WaitForSingleObject(INFINITE)s on the child
 // (detached is ignored there), so a local r_process would freeze this app until
@@ -508,11 +518,12 @@ int main(int argc, char** argv)
     auto top_dir = vision::top_dir();
 
     // Setup SDL
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) != 0)
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
     {
         R_LOG_ERROR("SDL_Init error: %s", SDL_GetError());
         return 1;
     }
+    _init_audio();
     SDL_EnableScreenSaver();
 
     // Create window with specific flags for software rendering
@@ -1335,11 +1346,12 @@ int run_overlay(const overlay_opts& opts)
         return 0;
     }
 
-    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) != 0)
+    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
     {
         R_LOG_ERROR("SDL_Init error: %s", SDL_GetError());
         return 1;
     }
+    _init_audio();
     SDL_EnableScreenSaver();
 
     // Restore this camera's saved placement/pin. A missing or corrupt file, or
