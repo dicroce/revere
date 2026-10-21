@@ -393,13 +393,12 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
         st.last_arrival_pts = display_pts;
     }
 
-    // If something goes into an empty queue, wake up the main loop.
-    if(pres.q.empty())
-    {
-        SDL_Event event;
-        event.type = SDL_USEREVENT;
-        SDL_PushEvent(&event);
-    }
+    // No SDL_PushEvent to wake the main loop: SDL 2's wakeup path races the
+    // main thread when called from here (SDL_SendWakeupEvent re-reads
+    // wakeup_window after checking it, while SDL_WaitEventTimeout clears it
+    // without the lock on timeout), and Cocoa_SendWakeupEvent then crashes on
+    // a NULL window. The main loops don't need it: the View window waits at
+    // most 4 ms, the main window doesn't wait, and _has_new_frames is atomic.
 
     // Bounded jitter buffer: drop the oldest frame if arrival outruns
     // presentation. Note: rc->pts is set at presentation time (in
