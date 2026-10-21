@@ -74,10 +74,13 @@ R_API int64_t fetch_bytes_per_second(
     const r_utils::r_nullable<std::string>& password = r_utils::r_nullable<std::string>()
 );
 
+// protocols is the camera's RTSP transport setting: "TCP" (falls back to UDP
+// when the camera answers but won't stream over TCP) or "UDP" (used as is).
 R_API r_camera_params fetch_camera_params(
     const std::string& rtsp_url,
     const r_utils::r_nullable<std::string>& username = r_utils::r_nullable<std::string>(),
-    const r_utils::r_nullable<std::string>& password = r_utils::r_nullable<std::string>()
+    const r_utils::r_nullable<std::string>& password = r_utils::r_nullable<std::string>(),
+    const std::string& protocols = RTSP_DEFAULT_PROTOCOLS
 );
 
 class r_gst_caps final

@@ -110,6 +110,11 @@ struct r_stream_status
 
     // Where its motion and object classes come from.
     r_tier_status motion_tier;
+
+    // The RTSP transport the recorder is using ("TCP" or "UDP"), and whether
+    // that's UDP standing in for a TCP setting the camera refused.
+    std::string rtsp_transport;
+    bool rtsp_transport_fallback {false};
 };
 
 // Passes MOG2's events on to the motion plugins, and tells the stream keeper

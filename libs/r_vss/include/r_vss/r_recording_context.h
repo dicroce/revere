@@ -222,6 +222,9 @@ public:
     // The camera answered: its SDP arrived, so it is reachable and speaks RTSP
     R_API bool answered() const { return _answered; }
 
+    // The RTSP transport this attempt uses ("TCP" or "UDP")
+    R_API const std::string& rtsp_protocols() const { return _rtsp_protocols; }
+
     // How far storage persistence trails frame reception, in ms: the gap
     // between the last received video frame and the last one successfully
     // written to storage. ~0 when healthy; grows when write_frame is failing
@@ -299,6 +302,7 @@ private:
     bool _got_first_audio_sample;
     std::atomic<bool> _got_first_video_sample;
     std::atomic<bool> _answered {false};
+    std::string _rtsp_protocols;
 
     // Sliding-window bitrate tracking. Samples are (timestamp, cumulative bytes).
     // Appended at most once every 500ms from the packet receive paths; trimmed to

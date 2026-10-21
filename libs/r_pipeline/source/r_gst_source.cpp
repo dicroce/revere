@@ -285,15 +285,18 @@ static r_camera_params _fetch_camera_params(
 r_camera_params r_pipeline::fetch_camera_params(
     const std::string& rtsp_url,
     const r_utils::r_nullable<std::string>& username,
-    const r_utils::r_nullable<std::string>& password
+    const r_utils::r_nullable<std::string>& password,
+    const std::string& protocols
 )
 {
-    // TCP first, as the recorder: over UDP, loss and reordering under load
-    // corrupt the stream. A camera that answers but won't send media over
-    // TCP is measured over UDP instead, so it can still be added.
+    // As the recorder: TCP unless the camera is set to UDP. Over UDP, loss and
+    // reordering under load corrupt the stream. A camera set to TCP that
+    // answers but won't send media over it is measured over UDP instead, so it
+    // can still be added (the recorder falls back the same way).
     bool answered = false, received_video = false;
-    auto cp = _fetch_camera_params(rtsp_url, username, password, "TCP", answered, received_video);
-    if(rtsp_probe_retry_over_udp(answered, received_video))
+    const bool udp = (protocols == "UDP");
+    auto cp = _fetch_camera_params(rtsp_url, username, password, udp ? "UDP" : "TCP", answered, received_video);
+    if(!udp && rtsp_probe_retry_over_udp(answered, received_video))
     {
         R_LOG_WARNING("Camera answered but sent no video over RTSP/TCP; probing over UDP");
         cp = _fetch_camera_params(rtsp_url, username, password, "UDP", answered, received_video);

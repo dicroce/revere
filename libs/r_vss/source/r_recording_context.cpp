@@ -98,6 +98,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     // TCP unless this camera has shown it won't stream over it (see
     // r_rtsp_transport): over UDP, lost and reordered packets under load
     // ended up as out-of-order frames in recordings.
+    _rtsp_protocols = rtsp_protocols;
     add_argument(arguments, "protocols", rtsp_protocols);
 
     if(!_camera.rtsp_username.is_null())
