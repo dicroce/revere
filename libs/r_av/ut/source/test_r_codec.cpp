@@ -277,8 +277,9 @@ struct guarded_copy
 // FFmpeg reads up to AV_INPUT_BUFFER_PADDING_SIZE past the end of its input.
 // A key frame whose buffer ends exactly at a page boundary (a stored frame in
 // a vector) used to fault there, or read a neighbour's heap. Decoded in parse
-// mode, in direct mode with the parameter sets as extradata, and through a
-// decoder moved between attach_buffer() and decode().
+// mode, in direct mode with the parameter sets as extradata (set_extradata()
+// copies them, so this checks decoding with extradata, not its padding), and
+// through a decoder moved between attach_buffer() and decode().
 void test_r_codec::test_decode_input_ending_at_a_page()
 {
 #ifndef IS_WINDOWS
@@ -326,13 +327,12 @@ void test_r_codec::test_decode_input_ending_at_a_page()
         RTF_ASSERT(out && luma_error(*out, src) < 6.0);
     }
 
-    // Direct mode, parameter sets as extradata (which ends at a page too).
+    // Direct mode, parameter sets as extradata.
     if(!parameter_sets.empty())
     {
         guarded_copy g(idr);
-        guarded_copy ed(parameter_sets);
         r_video_decoder dec(AV_CODEC_ID_H264);
-        dec.set_extradata(vector<uint8_t>(ed.data, ed.data + parameter_sets.size()));
+        dec.set_extradata(parameter_sets);
         dec.attach_buffer(g.data, idr.size());
         auto out = decode_all(dec);
         RTF_ASSERT(out && luma_error(*out, src) < 6.0);
