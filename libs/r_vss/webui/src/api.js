@@ -192,6 +192,24 @@ export async function addRtspCamera(fields) {
   return res.json()
 }
 
+// --- system plugins (the desktop's Plugins section) ---
+
+// [{ name, display_name, version, enabled, status: { label, tone } | null,
+//    lines: [{ text, url?, copy? } | { tiles, title? } | { qr, qr_svg }] }]
+export async function getSystemPlugins() {
+  const res = await apiFetch('/system_plugins')
+  return (await res.json()).plugins ?? []
+}
+
+export async function setSystemPluginEnabled(name, enabled) {
+  const res = await apiFetch('/system_plugin_enabled', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, enabled }),
+  })
+  return res.json()
+}
+
 // --- storage operations (the desktop's Move storage / Change retention) ---
 
 // { record_file_path, byte_rate, file_size_text, retention_days }, plus
