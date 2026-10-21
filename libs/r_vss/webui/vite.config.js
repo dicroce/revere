@@ -36,6 +36,12 @@ export default defineConfig({
       '/update_camera_properties': 'http://localhost:8088',
       '/forget_camera':    'http://localhost:8088',
       '/add_rtsp_camera':  'http://localhost:8088',
+      // Storage operations (Move storage / Change retention)
+      '/storage_info':     'http://localhost:8088',
+      '/storage_move':     'http://localhost:8088',
+      '/storage_change_retention': 'http://localhost:8088',
+      '/storage_op':       'http://localhost:8088',
+      '/storage_op_cancel': 'http://localhost:8088',
     }
   },
 

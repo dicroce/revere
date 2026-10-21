@@ -70,6 +70,14 @@
       @done="onRecorded"
     />
 
+    <StorageDialog
+      v-if="storageCamera"
+      :camera="storageCamera"
+      :mode="storageMode"
+      @close="storageCamera = null"
+      @done="onStorageDone"
+    />
+
     <!-- remove confirmation -->
     <div v-if="removeTarget" class="overlay" @mousedown="onBackdropDown" @mouseup.self="backdropPress && cancelRemove()">
       <div class="dialog">
@@ -151,6 +159,10 @@
               >{{ copied ? 'Copied' : 'Copy path' }}</button>
             </div>
           </div>
+          <div class="storage-actions">
+            <button class="ghost small" :disabled="propsBusy" @click="openStorage('move')">Move storage…</button>
+            <button class="ghost small" :disabled="propsBusy" @click="openStorage('retention')">Change retention…</button>
+          </div>
 
           <p v-if="propsBusy" class="muted">Saving… (restarting camera)</p>
           <p v-if="propsError" class="err">{{ propsError }}</p>
@@ -194,6 +206,7 @@ import {
   removeCamera, updateCameraProperties, forgetCamera, addRtspCamera,
 } from '../api.js'
 import RecordWizard from './RecordWizard.vue'
+import StorageDialog from './StorageDialog.vue'
 
 const cameras = ref([])
 const error = ref(null)
@@ -220,6 +233,22 @@ const propsTier = ref('auto')
 const propsBusy = ref(false)
 const propsError = ref('')
 const copied = ref(false)
+
+// Move storage / Change retention, opened from Camera Properties (which they
+// replace, as on the desktop).
+const storageCamera = ref(null)
+const storageMode = ref('move')
+
+function openStorage(mode) {
+  storageMode.value = mode
+  storageCamera.value = propsTarget.value
+  propsTarget.value = null
+}
+
+function onStorageDone() {
+  storageCamera.value = null
+  refresh()
+}
 
 // Where motion and object classes come from (r_vss::r_tier_controller), worded
 // as in the desktop's Camera properties dialog.
@@ -579,6 +608,7 @@ button:disabled { cursor: default; opacity: 0.6; }
   margin-top: 0.2rem;
 }
 .dialog .loc .title { display: block; font-size: 0.85rem; color: #bbb; margin-bottom: 0.3rem; }
+.dialog .storage-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
 .dialog .path-row { display: flex; align-items: center; gap: 0.6rem; }
 .dialog .path-row code {
   flex: 1;

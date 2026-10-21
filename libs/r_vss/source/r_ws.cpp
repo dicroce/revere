@@ -25,6 +25,7 @@
 #include <functional>
 #include <array>
 #include <fstream>
+#include <filesystem>
 
 using namespace r_utils;
 using namespace r_http;
@@ -147,6 +148,11 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     _server.add_route(METHOD_POST, "/update_camera_properties", std::bind(&r_ws::_post_update_camera_properties, this, _1, _2, _3));
     _server.add_route(METHOD_POST, "/forget_camera", std::bind(&r_ws::_post_forget_camera, this, _1, _2, _3));
     _server.add_route(METHOD_POST, "/add_rtsp_camera", std::bind(&r_ws::_post_add_rtsp_camera, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/storage_info", std::bind(&r_ws::_get_storage_info, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/storage_move", std::bind(&r_ws::_post_storage_move, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/storage_change_retention", std::bind(&r_ws::_post_storage_change_retention, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/storage_op", std::bind(&r_ws::_get_storage_op, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/storage_op_cancel", std::bind(&r_ws::_post_storage_op_cancel, this, _1, _2, _3));
 
     _server.add_route(METHOD_GET, "/auth_status", std::bind(&r_ws::_get_auth_status, this, _1, _2, _3));
     _server.add_route(METHOD_POST, "/login", std::bind(&r_ws::_post_login, this, _1, _2, _3));
@@ -203,6 +209,12 @@ void r_ws::stop()
         _measure_q.wake();
         _measure_th.join();
     }
+    // A storage operation runs to its end (only a move's copy can stop early);
+    // its suspend/resume are served by the stream keeper's thread, which is
+    // still running here.
+    _storage_op.cancel_requested = true;
+    if(_storage_th.joinable())
+        _storage_th.join();
     _server.stop();
 }
 
@@ -3012,6 +3024,241 @@ r_http::r_server_response r_ws::_post_add_rtsp_camera(const r_http::r_web_server
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to add RTSP camera."));
+}
+
+// A thrown r_http exception reaches the client as a bare status code; the
+// storage endpoints answer their user errors with {"error": message} instead,
+// which the web UI shows.
+static r_server_response _json_reply(const json& j, status_code code = response_ok)
+{
+    r_server_response response;
+    if(code != response_ok)
+        response.set_status_code(code);
+    response.set_content_type("text/json");
+    response.set_body(j.dump());
+    return response;
+}
+
+static r_server_response _json_error(status_code code, const string& message)
+{
+    return _json_reply(json{{"error", message}}, code);
+}
+
+// The camera's recording bitrate, 0 when it isn't receiving video.
+static int64_t _camera_byte_rate(r_stream_keeper& stream_keeper, const string& camera_id)
+{
+    for(auto& st : stream_keeper.fetch_stream_status())
+        if(st.camera.id == camera_id)
+            return st.bytes_per_second;
+    return 0;
+}
+
+bool r_ws::_start_storage_op(const string& kind, const r_camera& camera, function<void(r_storage_op&)> work)
+{
+    lock_guard<mutex> g(_storage_mutex);
+    if(_storage_op.running)
+        return false;
+    if(_storage_th.joinable())
+        _storage_th.join();
+
+    _storage_op.progress = 0.f;
+    _storage_op.done = false;
+    _storage_op.error = false;
+    _storage_op.cancel_requested = false;
+    _storage_op.set_status("");
+    _storage_op.running = true;
+    _storage_op_camera_id = camera.id;
+    _storage_op_kind = kind;
+
+    _storage_th = thread([this, work](){ work(_storage_op); });
+    return true;
+}
+
+r_http::r_server_response r_ws::_get_storage_info(const r_http::r_web_server<r_utils::r_socket>&,
+                                                  r_utils::r_socket&,
+                                                  const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("camera_id") == args.end())
+            return _json_error(response_bad_request, "Missing camera_id.");
+
+        auto maybe_camera = _devices.get_camera_by_id(args["camera_id"]);
+        if(maybe_camera.is_null())
+            return _json_error(response_not_found, "Unknown camera.");
+        auto camera = maybe_camera.value();
+
+        int64_t bps = _camera_byte_rate(_stream_keeper, camera.id);
+        int64_t nb = camera.n_record_file_blocks.is_null() ? 0 : camera.n_record_file_blocks.value();
+        int64_t bs = camera.record_file_block_size.is_null() ? 0 : camera.record_file_block_size.value();
+
+        json j;
+        j["camera_id"] = camera.id;
+        j["record_file_path"] = camera.record_file_path.is_null() ? string() : storage_path(_top_dir, camera.record_file_path.value());
+        j["byte_rate"] = bps;
+        j["file_size"] = nb * bs;
+        j["file_size_text"] = human_readable_file_size((double)(nb * bs));
+        // The days the file holds at the current bitrate (as the desktop shows).
+        j["retention_days"] = (bps > 0 && nb > 0 && bs > 0) ? ((double)(nb * bs) / (double)bps / 86400.0) : 0.0;
+
+        // With days: the file size Change retention would make, for the dialog.
+        if(args.find("days") != args.end())
+        {
+            double days = r_string_utils::s_to_double(args["days"]);
+            if(bps > 0 && days > 0.0)
+            {
+                auto sz = required_file_size_for_retention_hours((int64_t)(days * 24.0), bps);
+                j["new_file_size"] = sz.first * sz.second;
+                j["new_file_size_text"] = human_readable_file_size((double)(sz.first * sz.second));
+            }
+        }
+
+        return _json_reply(j);
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to get storage info."));
+}
+
+r_http::r_server_response r_ws::_post_storage_move(const r_http::r_web_server<r_utils::r_socket>&,
+                                                   r_utils::r_socket&,
+                                                   const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+
+        auto maybe_camera = _devices.get_camera_by_id(req.value("camera_id", string()));
+        if(maybe_camera.is_null())
+            return _json_error(response_not_found, "Unknown camera.");
+        auto camera = maybe_camera.value();
+        if(camera.record_file_path.is_null())
+            return _json_error(response_bad_request, "This camera has no recording file.");
+
+        auto new_dir = r_string_utils::strip(req.value("new_dir", string()));
+        bool start_fresh = req.value("start_fresh", false);
+        bool delete_confirmed = req.value("delete_confirmed", false);
+
+        // A folder on the machine Revere runs on, which the web UI can't browse.
+        std::error_code ec;
+        if(new_dir.empty() || !std::filesystem::path(new_dir).is_absolute())
+            return _json_error(response_bad_request, "Enter the full path of a folder on the machine Revere runs on.");
+        if(!std::filesystem::is_directory(new_dir, ec))
+            return _json_error(response_bad_request, "There's no folder at " + new_dir + " on the machine Revere runs on.");
+        if(start_fresh && !delete_confirmed)
+            return _json_error(response_bad_request, "Starting fresh deletes this camera's recordings; confirm that first.");
+
+        auto current_dir = std::filesystem::path(storage_path(_top_dir, camera.record_file_path.value())).parent_path();
+        if(!start_fresh && std::filesystem::equivalent(current_dir, new_dir, ec))
+            return _json_error(response_bad_request, "The recording files are already in that folder.");
+
+        auto top_dir = _top_dir;
+        auto& stream_keeper = _stream_keeper;
+        auto& devices = _devices;
+        bool started = _start_storage_op(start_fresh ? "reset" : "move", camera, [top_dir, &stream_keeper, &devices, camera, new_dir, start_fresh](r_storage_op& op){
+            if(start_fresh)
+                storage_reset(top_dir, stream_keeper, devices, camera, new_dir, op);
+            else
+                storage_move(top_dir, stream_keeper, devices, camera, new_dir, op);
+        });
+        if(!started)
+            return _json_error(response_bad_request, "Another storage operation is still running.");
+
+        return _json_reply(json{{"status", "started"}});
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to start moving storage."));
+}
+
+r_http::r_server_response r_ws::_post_storage_change_retention(const r_http::r_web_server<r_utils::r_socket>&,
+                                                               r_utils::r_socket&,
+                                                               const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+
+        auto maybe_camera = _devices.get_camera_by_id(req.value("camera_id", string()));
+        if(maybe_camera.is_null())
+            return _json_error(response_not_found, "Unknown camera.");
+        auto camera = maybe_camera.value();
+        if(camera.record_file_path.is_null())
+            return _json_error(response_bad_request, "This camera has no recording file.");
+
+        double days = req.value("days", 0.0);
+        if(!req.value("delete_confirmed", false))
+            return _json_error(response_bad_request, "Resizing deletes this camera's recordings; confirm that first.");
+        if(!(days > 0.0))
+            return _json_error(response_bad_request, "Enter a number of days greater than 0.");
+
+        int64_t bps = _camera_byte_rate(_stream_keeper, camera.id);
+        if(bps <= 0)
+            return _json_error(response_bad_request, "This camera isn't receiving video, so there's no bitrate to size the file from.");
+
+        auto sz = required_file_size_for_retention_hours((int64_t)(days * 24.0), bps);
+
+        auto top_dir = _top_dir;
+        auto& stream_keeper = _stream_keeper;
+        auto& devices = _devices;
+        bool started = _start_storage_op("retention", camera, [top_dir, &stream_keeper, &devices, camera, sz](r_storage_op& op){
+            storage_change_retention(top_dir, stream_keeper, devices, camera, sz.first, sz.second, op);
+        });
+        if(!started)
+            return _json_error(response_bad_request, "Another storage operation is still running.");
+
+        return _json_reply(json{{"status", "started"}});
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to start changing retention."));
+}
+
+r_http::r_server_response r_ws::_get_storage_op(const r_http::r_web_server<r_utils::r_socket>&,
+                                                r_utils::r_socket&,
+                                                const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    // running until the operation ends; then error, or done (a move cancelled
+    // part way is done, with the status saying so).
+    json j;
+    {
+        lock_guard<mutex> g(_storage_mutex);
+        j["kind"] = _storage_op_kind;
+        j["camera_id"] = _storage_op_camera_id;
+    }
+    j["running"] = _storage_op.running.load();
+    j["done"] = _storage_op.done.load();
+    j["error"] = _storage_op.error.load();
+    j["progress"] = _storage_op.progress.load();
+    j["status"] = _storage_op.get_status();
+    return _json_reply(j);
+}
+
+r_http::r_server_response r_ws::_post_storage_op_cancel(const r_http::r_web_server<r_utils::r_socket>&,
+                                                        r_utils::r_socket&,
+                                                        const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    // Only a move's copy between filesystems can stop part way.
+    if(_storage_op.running)
+        _storage_op.cancel_requested = true;
+    return _json_reply(json{{"status", "ok"}});
 }
 
 std::string r_ws::_password_path() const
