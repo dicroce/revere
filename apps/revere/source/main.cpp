@@ -23,6 +23,7 @@
 #endif
 
 #include "macos_activation.h"
+#include "vision_launch.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
 #include "imgui/imgui_impl_sdl2.h"
@@ -36,6 +37,7 @@
 #include <fstream>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_logger.h"
@@ -109,12 +111,13 @@ using namespace std;
 using namespace r_utils;
 using namespace revere;
 
+#ifndef IS_MACOS
 // Fire-and-forget process launch for the per-camera "View" overlay windows. NOT
 // r_process (whose Windows destructor WaitForSingleObject(INFINITE)s on the
 // child — detached is ignored there — so a local one would freeze the UI until
 // the overlay closes). Windows uses CreateProcess + immediate CloseHandle;
-// Linux/macOS use r_process's detached path (which clears its pid on start(),
-// making its destructor a no-op).
+// Linux uses r_process's detached path (which clears its pid on start(),
+// making its destructor a no-op). macOS uses _launch_vision() below.
 static void _launch_detached(const std::string& cmd)
 {
 #ifdef IS_WINDOWS
@@ -149,6 +152,27 @@ static void _launch_detached(const std::string& cmd)
     }
 #endif
 }
+#endif
+
+#ifdef IS_MACOS
+// Opens Vision (with `args`, if any) in front of revere. False if there's no
+// Vision to open; the caller tells the user.
+static bool _launch_vision(const vector<string>& args)
+{
+    auto app = find_vision_app(r_fs::working_directory());
+    if(app.empty())
+    {
+        R_LOG_ERROR("vision launch failed: no runnable vision.app next to revere.app or in /Applications");
+        return false;
+    }
+    // Lets it come to the front; without this, macOS 14+ keeps it behind our window.
+    yield_activation_to("com.revere.vision");
+    open_app(app, args);
+    return true;
+}
+
+static const char* VISION_NOT_FOUND = "Couldn't find Vision. It belongs next to Revere: Vision.app in Applications.";
+#endif
 
 // Strip the [0] [1] [2]... backtrace lines that r_utils exceptions append to
 // what() so the user-facing error modal shows only the human-readable cause.
@@ -3200,23 +3224,22 @@ int main(int argc, char** argv)
         maximize_when_shown = false;
     }
 
+#ifdef IS_MACOS
+    {
+        auto vision_app = find_vision_app(r_fs::working_directory());
+        if(vision_app.empty())
+            R_LOG_ERROR("vision: no runnable vision.app next to revere.app or in /Applications; View and Launch Vision won't work");
+        else
+            R_LOG_INFO("vision: %s", vision_app.c_str());
+    }
+#else
     string vision_cmd = "vision";
 #ifdef IS_WINDOWS
     vision_cmd = "vision.exe";
-#elif defined(IS_MACOS)
-    // On macOS, use 'open' command to launch the app bundle
-    // Look for vision.app next to revere.app first, then fall back to /Applications
-    {
-        auto exe_dir = r_fs::working_directory();
-        auto local_vision = exe_dir + "/../../../vision.app";
-        if(r_fs::is_dir(local_vision))
-            vision_cmd = "open -n " + local_vision;
-        else
-            vision_cmd = "open -n /Applications/Vision.app";
-    }
 #endif
 
     r_process vision_process(vision_cmd, true); // Use detached process
+#endif
 
 #if !defined(IS_MACOS)
     _set_window_icon(window);
@@ -3241,8 +3264,12 @@ int main(int argc, char** argv)
         SDL_HideWindow(window);
     }));
     tray.addEntry(Tray::Button("Launch Vision", [&]{
+#ifdef IS_MACOS
+        _launch_vision({});
+#else
         if(!vision_process.running())
             vision_process.start();
+#endif
     }));
     tray.addEntry(Tray::Button("Open local web UI", [&]{
         revere::open_url_in_browser("http://localhost:8088");
@@ -3477,14 +3504,14 @@ int main(int argc, char** argv)
         auto cid = ui_state.recording_items[i].camera_id;
         if(cid.empty())
             return;
-        string args = " --camera " + cid + " --overlay --revere-ip 127.0.0.1";
 #ifdef IS_MACOS
-        // The overlay comes to the front; without this,
-        // macOS 14+ keeps it behind our window.
-        yield_activation_to("com.revere.vision");
-        _launch_detached(vision_cmd + " --args" + args);
+        if(!_launch_vision({"--camera", cid, "--overlay", "--revere-ip", "127.0.0.1"}))
+        {
+            as.error_message = VISION_NOT_FOUND;
+            camera_setup_wizard.next("error_modal");
+        }
 #else
-        _launch_detached(vision_cmd + args);
+        _launch_detached(vision_cmd + " --camera " + cid + " --overlay --revere-ip 127.0.0.1");
 #endif
     };
     main_window_actions.repair = [&](int i){
@@ -3737,8 +3764,16 @@ int main(int argc, char** argv)
                 camera_setup_wizard.next("configure_rtsp_source_camera");
             },
             [&](){
+#ifdef IS_MACOS
+                if(!_launch_vision({}))
+                {
+                    as.error_message = VISION_NOT_FOUND;
+                    camera_setup_wizard.next("error_modal");
+                }
+#else
                 if(!vision_process.running())
                     vision_process.start();
+#endif
             },
             [&](){
                 camera_setup_wizard.next("about_revere_cloud");
