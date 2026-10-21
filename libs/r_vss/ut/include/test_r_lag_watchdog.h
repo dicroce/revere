@@ -9,6 +9,7 @@ public:
       TEST(test_r_lag_watchdog::test_backlog_lags_then_reconnects);
       TEST(test_r_lag_watchdog::test_stuck_behind_reconnects);
       TEST(test_r_lag_watchdog::test_blips_that_drain);
+      TEST(test_r_lag_watchdog::test_stuck_over_2s_reconnects);
       TEST(test_r_lag_watchdog::test_camera_clock_jumps);
       TEST(test_r_lag_watchdog::test_b_frame_order);
       TEST(test_r_lag_watchdog::test_connect_burst);
@@ -29,6 +30,7 @@ public:
     void test_backlog_lags_then_reconnects();
     void test_stuck_behind_reconnects();
     void test_blips_that_drain();
+    void test_stuck_over_2s_reconnects();
     void test_camera_clock_jumps();
     void test_b_frame_order();
     void test_connect_burst();

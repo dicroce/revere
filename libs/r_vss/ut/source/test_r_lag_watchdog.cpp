@@ -107,16 +107,26 @@ void test_r_lag_watchdog::test_slow_camera_crystal()
         RTF_ASSERT(s.w.lag_ms() < 50);
         RTF_ASSERT_EQUAL(s.first_lagging, (int64_t)-1);
     }
-    // A camera stamping 30 fps while it sends 29.97 (camera time at 0.999x),
-    // for 2 hours: 7.2 s adrift by the end.
+    // The worst a clock should do: an NTP slew (500 ppm) on a crystal 100 ppm
+    // slow, for 2 hours: 4.3 s adrift by the end.
     {
         stream s;
-        s.run(2 * 60 * MIN, 29.97 / 30);
+        s.run(2 * 60 * MIN, 1.0 - 600e-6);
         RTF_ASSERT(s.w.lag_ms() < 50);
         RTF_ASSERT_EQUAL(s.first_lagging, (int64_t)-1);
         RTF_ASSERT_EQUAL(s.first_reconnect, (int64_t)-1);
     }
-    // But a link 2% short of the stream is caught within a minute.
+    // But a link 0.4% short is caught within 5 minutes (~3 ms a second
+    // over the allowance), long before it is 7 s behind.
+    {
+        stream s;
+        s.run(MIN);
+        auto t0 = s.now();
+        s.run(30 * MIN, 0.996);
+        RTF_ASSERT(s.first_lagging > 0);
+        RTF_ASSERT(s.first_lagging - t0 < 5 * MIN);
+    }
+    // And a link 2% short within a minute.
     {
         stream s;
         s.run(MIN);
@@ -130,7 +140,7 @@ void test_r_lag_watchdog::test_slow_camera_crystal()
 void test_r_lag_watchdog::test_backlog_lags_then_reconnects()
 {
     // Live for a minute, then camera time at 0.8x arrival time: lag grows
-    // ~195 ms a second (200 less the drift allowance). Over 500 ms at ~2.6 s,
+    // ~199 ms a second (200 less the drift allowance). Over 500 ms at ~2.5 s,
     // lagging 2 s later; over 2 s at ~10.3 s, reconnect 1 s later.
     stream s;
     s.run(MIN);
@@ -200,6 +210,58 @@ void test_r_lag_watchdog::test_blips_that_drain()
         RTF_ASSERT_EQUAL(s.caught_up, 1);
         RTF_ASSERT(!s.w.lagging());
     }
+    // A 3.5 s stall draining at 2x: over 2 s for ~1.5 s, but falling all the
+    // while. Left to drain (reconnecting would lose the queued footage).
+    {
+        stream s;
+        s.run(MIN);
+        s.stall(3500);
+        s.drain(2.0);
+        s.run(30 * SEC);
+        RTF_ASSERT_EQUAL(s.first_reconnect, (int64_t)-1);
+        RTF_ASSERT_EQUAL(s.caught_up, 1);
+    }
+    // A 6 s stall draining at 1.5x: falling, so not the fast reconnect, but
+    // over 500 ms for ~11 s: STUCK_MS is the backstop.
+    {
+        stream s;
+        s.run(MIN);
+        s.stall(6000);
+        auto t0 = s.now();
+        s.drain(1.5);
+        RTF_ASSERT(s.first_reconnect - t0 >= 10000);
+        RTF_ASSERT(s.first_reconnect - t0 <= 10100);
+    }
+}
+
+void test_r_lag_watchdog::test_stuck_over_2s_reconnects()
+{
+    // A 2.5 s stall, then frames at the live rate: over 2 s and not falling.
+    // The fast reconnect, 1 s after.
+    {
+        stream s;
+        s.run(MIN);
+        s.stall(2500);
+        auto t0 = s.now();
+        s.run(5 * SEC);
+        RTF_ASSERT(s.first_reconnect - t0 >= 1000);
+        RTF_ASSERT(s.first_reconnect - t0 <= 1100);
+    }
+    // Draining, then stuck again before it gets under 2 s: once it stops
+    // falling from its peak it waits for STUCK_MS rather than reconnecting
+    // straight away, as it is still under the peak.
+    {
+        stream s;
+        s.run(MIN);
+        s.stall(4000);
+        auto t0 = s.now();
+        s.drain(2.0, 3000);
+        s.run(8 * SEC);
+        RTF_ASSERT_EQUAL(s.first_reconnect, (int64_t)-1);
+        s.run(3 * SEC);
+        RTF_ASSERT(s.first_reconnect - t0 >= 10000);
+        RTF_ASSERT(s.first_reconnect - t0 <= 10100);
+    }
 }
 
 void test_r_lag_watchdog::test_camera_clock_jumps()
@@ -228,7 +290,7 @@ void test_r_lag_watchdog::test_camera_clock_jumps()
     s.frame(1.0, -200);
     RTF_ASSERT_EQUAL(s.jumps, 2);
     RTF_ASSERT(s.w.lag_ms() >= 200);
-    s.run(MIN);
+    s.run(5 * MIN);
     RTF_ASSERT(s.w.lag_ms() < 60);
 
     // Jumping back and forth by 5 s every 10 s for 10 minutes.

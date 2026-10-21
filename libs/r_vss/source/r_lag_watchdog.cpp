@@ -72,7 +72,11 @@ r_lag_watchdog::r_lag_event r_lag_watchdog::frame(int64_t camera_ms, int64_t arr
     if(_lag_ms >= RECONNECT_LAG_MS)
     {
         if(_reconnect_since < 0)
+        {
             _reconnect_since = arrival_ms;
+            _reconnect_peak = 0;
+        }
+        _reconnect_peak = max(_reconnect_peak, _lag_ms);
     }
     else
         _reconnect_since = -1;
@@ -94,7 +98,9 @@ int64_t r_lag_watchdog::behind_for_ms(int64_t arrival_ms) const
 
 bool r_lag_watchdog::wants_reconnect() const
 {
-    if(_reconnect_since >= 0 && _last_arrival_ms - _reconnect_since >= RECONNECT_SUSTAIN_MS)
+    // Over RECONNECT_LAG_MS, but draining: leave it, unless it's stuck.
+    if(_reconnect_since >= 0 && _last_arrival_ms - _reconnect_since >= RECONNECT_SUSTAIN_MS &&
+       _lag_ms >= _reconnect_peak - DRAIN_MARGIN_MS)
         return true;
     return _over_since >= 0 && _last_arrival_ms - _over_since >= STUCK_MS;
 }

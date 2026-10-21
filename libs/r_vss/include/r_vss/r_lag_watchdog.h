@@ -41,11 +41,11 @@ struct r_lag_snapshot
 //  - drops at once to any lower offset (a frame that came sooner: the
 //    connect-time burst, or a camera clock that jumped forward);
 //  - rises towards higher offsets by at most DRIFT_ALLOWANCE_PPM of the time
-//    passed (5 ms a second), so a camera clock that runs a little slow never
-//    adds up to lag: a crystal's ~100 ppm, or a camera stamping a nominal
-//    30 fps while sending 29.97 (1000 ppm). A backlog grows faster: a link
-//    1% short of the stream's bitrate adds 10 ms a second, and a struggling
-//    one hundreds;
+//    passed (1 ms a second), so a camera clock that runs a little slow never
+//    adds up to lag: a crystal's 50-100 ppm, an NTP slew's at most 500. A
+//    backlog growing faster than that shows (0.4% short: 3 ms a second);
+//    a link 1% short of the stream's bitrate adds 9, and a struggling one
+//    hundreds;
 //  - is re-anchored at the frame when camera time steps back more than
 //    JUMP_MS from the newest camera time seen (a clock jump, a stream
 //    restart). Smaller steps back are B-frame order. Lag building at that
@@ -56,11 +56,13 @@ struct r_lag_snapshot
 //
 // The two levels on top of it:
 //  - lagging(): lag over LAG_MS for LAG_SUSTAIN_MS. Logged and counted.
-//  - wants_reconnect(): lag over RECONNECT_LAG_MS for RECONNECT_SUSTAIN_MS,
-//    or over LAG_MS for STUCK_MS (behind, and not draining). Reconnecting
-//    drops the backlog and returns to live, but costs seconds (RTSP setup,
-//    then waiting for a key frame), so a blip that drains by itself (a UDP
-//    jitterbuffer wait, a Wi-Fi stall) mustn't trigger it.
+//  - wants_reconnect(): lag over RECONNECT_LAG_MS for RECONNECT_SUSTAIN_MS
+//    and not falling (within DRAIN_MARGIN_MS of its peak since it went over),
+//    or over LAG_MS for STUCK_MS (behind, and not caught up). Reconnecting
+//    drops the backlog and returns to live, but the dropped frames are never
+//    recorded and it costs seconds (RTSP setup, then waiting for a key
+//    frame), so a backlog that is draining by itself (after a Wi-Fi stall or
+//    a jitterbuffer wait) is left to drain, with STUCK_MS as the backstop.
 // An episode ends when lag falls back under CAUGHT_UP_MS. Lag that never
 // lasted LAG_SUSTAIN_MS isn't an episode and isn't logged.
 class r_lag_watchdog
@@ -73,9 +75,10 @@ public:
         RECONNECT_LAG_MS = 2000,
         RECONNECT_SUSTAIN_MS = 1000,
         STUCK_MS = 10000,
+        DRAIN_MARGIN_MS = 200,
         CAUGHT_UP_MS = 250,
         JUMP_MS = 250,
-        DRIFT_ALLOWANCE_PPM = 5000,
+        DRIFT_ALLOWANCE_PPM = 1000,
         RATE_WINDOW_MS = 5000,
         RATE_SAMPLE_MS = 200
     };
@@ -120,6 +123,7 @@ private:
     int64_t _peak_ms {0};
     int64_t _over_since {-1};      // arrival when lag went over LAG_MS
     int64_t _reconnect_since {-1}; // arrival when lag went over RECONNECT_LAG_MS
+    int64_t _reconnect_peak {0};   // peak lag since then
     int64_t _last_episode_ms {0};
     bool _lagging {false};
     int _episodes {0};
