@@ -291,3 +291,48 @@ void test_r_motion_engine::test_real_frames_trigger_motion()
     }
     RTF_ASSERT(has_start);
 }
+
+void test_r_motion_engine::test_skips_to_newest_key_frame()
+{
+    capturing_event_sink event_sink;
+
+    // The first frame holds the engine up for 800 ms (a slow decode); the
+    // factory then throws, so no frame needs decoding. Which frames reach it
+    // is what's checked.
+    std::mutex mtx;
+    std::vector<int64_t> seen;
+    auto factory = [&](const r_motion_work_item& item) -> std::shared_ptr<r_motion_work_context> {
+        bool first;
+        {
+            std::lock_guard<std::mutex> g(mtx);
+            first = seen.empty();
+            seen.push_back(item.ts);
+        }
+        if(first)
+            rtf_usleep(800000);
+        throw std::runtime_error("no decoder in this test");
+    };
+
+    r_motion_engine engine(factory, event_sink);
+    engine.start();
+
+    engine.post_frame(r_pipeline::r_gst_buffer{}, 1000, "h264", "", "a", true);
+    rtf_usleep(100000);
+    // Queued behind it: four more from "a" and one from "b".
+    for(int64_t ts : {2000, 3000, 4000, 5000})
+        engine.post_frame(r_pipeline::r_gst_buffer{}, ts, "h264", "", "a", true, 120);
+    engine.post_frame(r_pipeline::r_gst_buffer{}, 2500, "h264", "", "b", true);
+
+    for(int i = 0; i < 100 && engine.get_queue_size() > 0; ++i)
+        rtf_usleep(20000);
+    rtf_usleep(100000);
+    engine.stop();
+
+    // "a"'s three stale frames were skipped for its newest; "b"'s only one wasn't.
+    std::lock_guard<std::mutex> g(mtx);
+    RTF_ASSERT_EQUAL(engine.skipped_count(), (size_t)3);
+    RTF_ASSERT_EQUAL(seen.size(), (size_t)3);
+    RTF_ASSERT_EQUAL(seen[0], (int64_t)1000);
+    RTF_ASSERT_EQUAL(seen[1], (int64_t)5000);
+    RTF_ASSERT_EQUAL(seen[2], (int64_t)2500);
+}

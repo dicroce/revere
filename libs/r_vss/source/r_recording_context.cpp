@@ -320,6 +320,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 this->_got_first_video_sample = true;
 
             _last_v_time = system_clock::now();
+            auto ingest_lag_ms = _watch_lag(pts);
             auto mi = buffer.map(r_gst_buffer::MT_READ);
             _v_bytes_received += mi.size();
             _record_byte_sample();
@@ -492,7 +493,8 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                         this->_maybe_video_storage_write_context.value().codec_name,
                         this->_maybe_video_storage_write_context.value().codec_parameters,
                         this->_camera.id,
-                        key
+                        key,
+                        ingest_lag_ms
                     );
                 }
                 else if(key)
@@ -548,6 +550,40 @@ r_recording_context::~r_recording_context() noexcept
 
     if(!_maybe_audio_storage_write_context.is_null())
         _maybe_audio_storage_write_context.clear();
+}
+
+int64_t r_recording_context::_watch_lag(int64_t pts)
+{
+    auto now_ms = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    r_lag_watchdog::r_lag_event event;
+    r_lag_snapshot lag;
+    {
+        std::lock_guard<std::mutex> g(_lag_lok);
+        event = _lag.frame(pts, now_ms);
+        lag = _lag.snapshot(now_ms);
+    }
+
+    auto name = _camera.friendly_name.is_null() ? _camera.id : _camera.friendly_name.value();
+    if(event == r_lag_watchdog::lag_started)
+        R_LOG_WARNING("ingest lag[%s]: %lld ms behind live for %lld ms (camera time at %.2fx real time); events from this camera are late",
+                      name.c_str(), (long long)lag.lag_ms, (long long)lag.behind_for_ms, lag.rate);
+    else if(event == r_lag_watchdog::lag_caught_up)
+    {
+        std::lock_guard<std::mutex> g(_lag_lok);
+        R_LOG_INFO("ingest lag[%s]: caught up after %lld ms behind (peak %lld ms)",
+                   name.c_str(), (long long)_lag.last_episode_ms(), (long long)_lag.peak_lag_ms());
+    }
+    else if(event == r_lag_watchdog::lag_clock_jump)
+        R_LOG_INFO("ingest lag[%s]: camera time jumped back; lag measure re-anchored", name.c_str());
+
+    return lag.lag_ms;
+}
+
+r_lag_snapshot r_recording_context::ingest_lag() const
+{
+    auto now_ms = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> g(_lag_lok);
+    return _lag.snapshot(now_ms);
 }
 
 bool r_recording_context::receiving_video() const

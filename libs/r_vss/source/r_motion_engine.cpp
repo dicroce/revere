@@ -18,6 +18,11 @@ using namespace std;
 using namespace std::chrono;
 
 namespace {
+    int64_t steady_ms()
+    {
+        return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    }
+
     // Letterbox parameters for 640x640 target
     struct letterbox_params {
         int scaled_w;
@@ -88,7 +93,7 @@ void r_motion_engine::stop() noexcept
     }
 }
 
-void r_motion_engine::post_frame(r_pipeline::r_gst_buffer buffer, int64_t ts, const string& video_codec_name, const string& video_codec_parameters, const string& id, bool is_key_frame)
+void r_motion_engine::post_frame(r_pipeline::r_gst_buffer buffer, int64_t ts, const string& video_codec_name, const string& video_codec_parameters, const string& id, bool is_key_frame, int64_t ingest_lag_ms)
 {
     // Motion detection intentionally operates on key frames only. Do not make
     // every inter frame compete with useful work in the bounded queue.
@@ -102,6 +107,9 @@ void r_motion_engine::post_frame(r_pipeline::r_gst_buffer buffer, int64_t ts, co
     item.id = id;
     item.ts = ts;
     item.is_key_frame = is_key_frame;
+    item.seq = _newest.posted(id);
+    item.ingest_lag_ms = ingest_lag_ms;
+    item.posted_ms = steady_ms();
 
     _work.post(item);
 }
@@ -145,6 +153,25 @@ void r_motion_engine::_entry_point()
                 if(found_wc != _work_contexts.end())
                 {
                     _work_contexts.erase(found_wc);
+                }
+                _newest.forget(work.id);
+                _skip_log.erase(work.id);
+                continue;
+            }
+
+            // Behind: look at this camera's newest key frame instead, so a
+            // person at the door is seen as soon as their frame arrives.
+            auto started_ms = steady_ms();
+            if(_newest.skip(work.id, work.seq, started_ms - work.posted_ms))
+            {
+                ++_skipped;
+                auto& sl = _skip_log[work.id];
+                ++sl.second;
+                if(started_ms - sl.first >= 10000)
+                {
+                    R_LOG_WARNING("motion[%s]: skipped %zu stale key frames for newer ones (this one waited %lld ms)",
+                                  work.id.c_str(), sl.second, (long long)(started_ms - work.posted_ms));
+                    sl = {started_ms, 0};
                 }
                 continue;
             }
@@ -220,6 +247,9 @@ void r_motion_engine::_entry_point()
                                 kf_entry.height = 640;
                                 kf_entry.bbox = motion_bbox;
                                 kf_entry.regions = motion_regions;
+                                kf_entry.ingest_lag_ms = work.ingest_lag_ms;
+                                kf_entry.posted_ms = work.posted_ms;
+                                kf_entry.detected_ms = steady_ms();
                                 wc->keyframe_motion_buffer().push(kf_entry);
 
                                 // Event state machine (keyframe-only mode)
@@ -244,8 +274,24 @@ void r_motion_engine::_entry_point()
                                         wc->set_no_motion_count(0);
 
                                         // Post event start with the first triggering frame
+                                        auto confirmed_ms = steady_ms();
                                         _meph.post(r_vss::motion_event_start, wc->get_camera_id(), trigger_entry.ts,
                                                    trigger_entry.decoded_image, trigger_entry.width, trigger_entry.height, trigger_entry.bbox, trigger_entry.regions);
+                                        auto handed_ms = steady_ms();
+
+                                        // Where the time from the person at the door to the event went, for
+                                        // the trigger frame: behind live on arrival (camera encode and the
+                                        // network's own fixed delay aren't measurable here), in the motion queue
+                                        // (with decode and MOG2), waiting for the n key frames that confirm
+                                        // it, and in the motion plugins. revere_cloud's push comes after.
+                                        R_LOG_INFO("motion event latency[%s]: trigger frame %lld ms behind live when handed to the plugins "
+                                                   "(ingest lag %lld, queue+decode+motion %lld, confirming over %zu key frames %lld, plugins %lld)",
+                                                   wc->get_camera_id().c_str(),
+                                                   (long long)(trigger_entry.ingest_lag_ms + handed_ms - trigger_entry.posted_ms),
+                                                   (long long)trigger_entry.ingest_lag_ms,
+                                                   (long long)(trigger_entry.detected_ms - trigger_entry.posted_ms),
+                                                   n, (long long)(confirmed_ms - trigger_entry.detected_ms),
+                                                   (long long)(handed_ms - confirmed_ms));
 
                                         // Post updates for subsequent frames (including current)
                                         for(size_t i = first_motion_idx + 1; i < wc->keyframe_motion_buffer().size(); ++i)
