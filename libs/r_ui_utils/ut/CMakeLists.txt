@@ -9,6 +9,8 @@ add_executable(
     source/test_section_state.cpp
     include/test_text_selection.h
     source/test_text_selection.cpp
+    include/test_log_tail.h
+    source/test_log_tail.cpp
 )
 
 target_include_directories(

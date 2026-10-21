@@ -11,6 +11,7 @@
 // action calls the callback the old cards called.
 
 #include "imgui_ui.h"
+#include "r_ui_utils/log_tail.h"
 #include "r_ui_utils/text_selection.h"
 #include "r_utils/r_qr_code.h"
 #include "r_utils/3rdparty/json/json.h"
@@ -107,40 +108,8 @@ inline void parse_plugin_status(const std::string& status_json, plugin_view& pv)
     catch(...) {}
 }
 
-// The last lines the logger wrote, for the log pane. add() may be called from
-// any thread (it's installed as the logger callback); the UI reads under the lock.
-class log_tail
-{
-public:
-    explicit log_tail(size_t max_lines = 1000) : _max_lines(max_lines) {}
-
-    void add(const std::string& line)
-    {
-        std::lock_guard<std::mutex> g(_mtx);
-        _lines.push_back(line);
-        while(_lines.size() > _max_lines)
-        {
-            _lines.pop_front();
-            ++_first;
-        }
-    }
-
-    // cb(lines, first): first is the number of the front line, counted from
-    // the first line ever added, so a selection keeps to its text as old lines
-    // drop off the front.
-    template<typename CB>
-    void with_lines(CB cb) const
-    {
-        std::lock_guard<std::mutex> g(_mtx);
-        cb(_lines, _first);
-    }
-
-private:
-    mutable std::mutex _mtx;
-    std::deque<std::string> _lines;
-    uint64_t _first {0};
-    size_t _max_lines;
-};
+// The log pane's lines (see r_ui_utils/log_tail.h).
+using r_ui_utils::log_tail;
 
 struct main_window_state
 {
@@ -1017,6 +986,11 @@ inline void plugin_status_line(const plugin_view& p, const main_window_fonts& fo
 // Only the visible lines are drawn and hit-tested (ImGuiListClipper, one line
 // per row), so a full log costs a screenful a frame; the text is gathered
 // only when copied. follow: scroll to the newest line.
+//
+// All of it runs inside log.with_lines(), under log_tail's lock, which the
+// logger callback (log_tail::add) also takes: nothing in that lambda may log
+// (R_LOG_*), or the UI thread deadlocks on itself. The clipboard and the
+// toast run after it, outside the lock.
 inline void log_pane(main_window_state& state, const log_tail& log, bool follow)
 {
     using r_ui_utils::text_pos;
@@ -1033,6 +1007,10 @@ inline void log_pane(main_window_state& state, const log_tail& log, bool follow)
 
     // The pane, not a scrollbar or the button: where a drag starts.
     const bool over_text = ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered();
+    // ImGui 1.88 (vendored) reports Cmd as io.KeySuper and Ctrl as io.KeyCtrl
+    // on every platform, so macOS shortcuts test KeySuper, as its InputText
+    // does. Later versions swap the two under ConfigMacOSXBehaviors (Cmd then
+    // arrives as KeyCtrl): after an ImGui upgrade this becomes io.KeyCtrl alone.
     const bool mac = io.ConfigMacOSXBehaviors;
     const bool shortcut = (mac ? (io.KeySuper && !io.KeyCtrl) : (io.KeyCtrl && !io.KeySuper)) && !io.KeyAlt && !io.KeyShift;
     const bool keys = ImGui::IsWindowFocused() && shortcut && !io.WantTextInput;
