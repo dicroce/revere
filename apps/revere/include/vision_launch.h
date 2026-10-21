@@ -18,8 +18,9 @@ std::string app_bundle_executable(const std::string& app_path);
 std::string find_vision_app(const std::string& exe_dir);
 
 // Runs `open -n <app> [--args <args>]` without a shell (so nothing needs
-// quoting). A detached thread waits for open and logs its failure with the
-// exit status and what it printed, so the UI doesn't wait on LaunchServices.
+// quoting) and without inheriting revere's fds. A detached thread waits for
+// open and logs its failure with the exit status and what it printed, so the
+// UI doesn't wait on LaunchServices.
 // on_exit, if set, gets open's exit code (-1 if it didn't exit normally) on
 // that thread. False if open couldn't be started (logged).
 bool open_app(const std::string& app, const std::vector<std::string>& args,
