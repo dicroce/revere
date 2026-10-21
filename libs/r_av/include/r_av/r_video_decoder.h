@@ -103,6 +103,7 @@ private:
     std::unique_ptr<gap_guard> _gaps;
     void _gap_after_send(const uint8_t* data, size_t size);
     bool _gap_take_output();
+    r_codec_state _flush_receive();
 };
 
 }

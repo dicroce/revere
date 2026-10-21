@@ -94,6 +94,18 @@ void r_h264_frame_num_tracker::reset()
     _have_ref = false;
 }
 
+vector<uint8_t> r_h264_frame_num_tracker::parameter_sets() const
+{
+    vector<uint8_t> out;
+    for(auto* m : {&_sps_nal, &_pps_nal})
+        for(auto& kv : *m)
+        {
+            out.insert(out.end(), {0, 0, 0, 1});
+            out.insert(out.end(), kv.second.begin(), kv.second.end());
+        }
+    return out;
+}
+
 r_h264_frame_num_tracker::result r_h264_frame_num_tracker::feed(const uint8_t* data, size_t size)
 {
     // Walk the Annex B start codes; each NAL runs to the next one.
@@ -190,6 +202,7 @@ void r_h264_frame_num_tracker::_sps(const uint8_t* nal, size_t size)
     if(it != _sps_by_id.end() && it->second.log2_max_frame_num != s.log2_max_frame_num)
         _have_ref = false;  // a new stream layout: wait for its IDR before judging
     _sps_by_id[sps_id] = s;
+    _sps_nal[sps_id].assign(nal, nal + size);
 }
 
 void r_h264_frame_num_tracker::_pps(const uint8_t* nal, size_t size)
@@ -199,7 +212,10 @@ void r_h264_frame_num_tracker::_pps(const uint8_t* nal, size_t size)
     auto pps_id = br.ue();
     auto sps_id = br.ue();
     if(!br.overrun && pps_id <= 255 && sps_id <= 31)
+    {
         _sps_of_pps[pps_id] = sps_id;
+        _pps_nal[pps_id].assign(nal, nal + size);
+    }
 }
 
 r_h264_frame_num_tracker::result r_h264_frame_num_tracker::_slice(const uint8_t* nal, size_t size)

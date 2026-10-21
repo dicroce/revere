@@ -260,6 +260,19 @@ void test_r_h264_frame_num::test_sps_change_waits_for_idr()
     RTF_ASSERT(gaps_in(t, wider, run(1, 300, 256)) == 0);
 }
 
+void test_r_h264_frame_num::test_parameter_sets_kept()
+{
+    r_h264_frame_num_tracker t;
+    RTF_ASSERT(t.parameter_sets().empty());
+    sps_opts o;
+    sps_opts other = o;
+    other.log2_max_frame_num = 7;
+    feed(t, cat({sps(o), pps(), slice(true, true, 0, 4)}));
+    // A newer SPS of the same id replaces it; parameter sets come back SPS first.
+    feed(t, cat({pps(), sps(other)}));
+    RTF_ASSERT(t.parameter_sets() == cat({sps(other), pps()}));
+}
+
 void test_r_h264_frame_num::test_gaps_allowed()
 {
     r_h264_frame_num_tracker t;

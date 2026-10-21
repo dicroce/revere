@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <vector>
 
 namespace r_av
 {
@@ -36,6 +37,9 @@ public:
     R_API result feed(const uint8_t* data, size_t size);
     R_API void reset();
 
+    // The last SPS and PPS of each id seen, as Annex B (SPSs first).
+    R_API std::vector<uint8_t> parameter_sets() const;
+
 private:
     struct sps_info { int log2_max_frame_num {4}; bool separate_colour_plane {false}; bool gaps_allowed {false}; };
 
@@ -45,6 +49,8 @@ private:
 
     std::map<uint32_t, sps_info> _sps_by_id;
     std::map<uint32_t, uint32_t> _sps_of_pps;
+    std::map<uint32_t, std::vector<uint8_t>> _sps_nal;
+    std::map<uint32_t, std::vector<uint8_t>> _pps_nal;
     bool _have_ref {false};
     uint32_t _last_ref_frame_num {0};
 };

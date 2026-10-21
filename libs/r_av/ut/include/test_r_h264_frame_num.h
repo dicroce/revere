@@ -12,6 +12,7 @@ public:
       TEST(test_r_h264_frame_num::test_multi_slice_counts_once);
       TEST(test_r_h264_frame_num::test_sps_change_waits_for_idr);
       TEST(test_r_h264_frame_num::test_gaps_allowed);
+      TEST(test_r_h264_frame_num::test_parameter_sets_kept);
       TEST(test_r_h264_frame_num::test_high_profile_scaling_matrix);
       TEST(test_r_h264_frame_num::test_emulation_prevention);
       TEST(test_r_h264_frame_num::test_real_encoder_stream);
@@ -30,6 +31,7 @@ public:
     void test_multi_slice_counts_once();
     void test_sps_change_waits_for_idr();
     void test_gaps_allowed();
+    void test_parameter_sets_kept();
     void test_high_profile_scaling_matrix();
     void test_emulation_prevention();
     void test_real_encoder_stream();

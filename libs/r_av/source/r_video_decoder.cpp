@@ -48,7 +48,9 @@ static string _ff_rc_to_msg(int rc)
 // every 4-10 s or more), replay the GOP so far into a software decoder and
 // output its pictures until the IDR, then go back to hardware alone.
 static const double GAP_FREEZE_SECONDS = 2.0;
-static const size_t GAP_MAX_GOP_BYTES = 64 * 1024 * 1024; // past this, freeze rather than replay
+// The GOP is kept for that replay. Past this size (a long GOP at a high bitrate)
+// it isn't, and a gap holds until the IDR instead: 16 MB covers 8 s at 16 Mbit/s.
+static const size_t GAP_MAX_GOP_BYTES = 16 * 1024 * 1024;
 
 struct r_video_decoder::gap_guard
 {
@@ -420,7 +422,7 @@ r_codec_state r_video_decoder::decode()
         if(recv_result >= 0)
         {
             if(_gaps && !_gap_take_output())
-                return R_CODEC_STATE_HUNGRY;
+                return (_parse_input && _remaining_size > 0) ? decode() : R_CODEC_STATE_HUNGRY;
             if(_hw_accel != r_hw_accel::none && _frame->format == _hw_pix_fmt)
             {
                 int tr = av_hwframe_transfer_data(_sw_frame, _frame, 0);
@@ -451,8 +453,11 @@ r_codec_state r_video_decoder::decode()
 
         if (recv_result >= 0)
         {
+            // The packet wasn't sent. Hiding this picture leaves the caller
+            // nothing to take, so send it now rather than let the caller move
+            // on: losing it would be a new gap (or the awaited IDR).
             if(_gaps && !_gap_take_output())
-                return R_CODEC_STATE_HUNGRY;
+                return decode();
             return R_CODEC_STATE_AGAIN_HAS_OUTPUT;
         }
         else
@@ -474,31 +479,30 @@ r_codec_state r_video_decoder::flush()
     int ret = avcodec_send_packet(_context, nullptr);
     if(ret == AVERROR(EAGAIN))
     {
-        auto rf_ret = avcodec_receive_frame(_context, _frame);
-
-        if(rf_ret == AVERROR(EAGAIN) || rf_ret == AVERROR_EOF)
-            return R_CODEC_STATE_EOF;
-        else if(rf_ret < 0)
-            R_THROW(("Failed to flush decoder: %s", _ff_rc_to_msg(rf_ret).c_str()));
-
-        if(_gaps && !_gap_take_output())
-            return R_CODEC_STATE_EOF;
-        return R_CODEC_STATE_HAS_OUTPUT;
+        return _flush_receive();
     }
     else if(ret == AVERROR_EOF)
         return R_CODEC_STATE_EOF;
     else if(ret < 0)
         R_THROW(("Failed to flush decoder: %s", _ff_rc_to_msg(ret).c_str()));
 
-    auto rf_ret = avcodec_receive_frame(_context, _frame);
-    if(rf_ret == AVERROR(EAGAIN) || rf_ret == AVERROR_EOF)
-        return R_CODEC_STATE_EOF;
-    else if(rf_ret < 0)
-        R_THROW(("Failed to flush decoder: %s", _ff_rc_to_msg(rf_ret).c_str()));
+    return _flush_receive();
+}
 
-    if(_gaps && !_gap_take_output())
-        return R_CODEC_STATE_EOF;
-    return R_CODEC_STATE_HAS_OUTPUT;
+// The next picture still in the decoder, skipping any held back after lost frames.
+r_codec_state r_video_decoder::_flush_receive()
+{
+    while(true)
+    {
+        auto rf_ret = avcodec_receive_frame(_context, _frame);
+        if(rf_ret == AVERROR(EAGAIN) || rf_ret == AVERROR_EOF)
+            return R_CODEC_STATE_EOF;
+        else if(rf_ret < 0)
+            R_THROW(("Failed to flush decoder: %s", _ff_rc_to_msg(rf_ret).c_str()));
+
+        if(!_gaps || _gap_take_output())
+            return R_CODEC_STATE_HAS_OUTPUT;
+    }
 }
 
 shared_ptr<vector<uint8_t>> r_video_decoder::get(AVPixelFormat output_format, uint16_t output_width, uint16_t output_height, int alignment)
@@ -696,6 +700,13 @@ void r_video_decoder::_gap_after_send(const uint8_t* data, size_t size)
             avcodec_free_context(&g.sw_ctx);
         g.gop_ok = false;  // don't retry every packet
         return;
+    }
+    // The last SPS/PPS seen, in case this GOP doesn't carry its own.
+    auto ps = g.tracker.parameter_sets();
+    if(!ps.empty())
+    {
+        ps.resize(ps.size() + AV_INPUT_BUFFER_PADDING_SIZE, 0);
+        g.sw_decode(ps.data(), ps.size() - AV_INPUT_BUFFER_PADDING_SIZE);
     }
     for(size_t i = 0; i < g.gop.size(); ++i)
         g.sw_decode(g.gop[i].data(), g.gop_sizes[i]);
