@@ -1266,15 +1266,19 @@ gboolean r_gst_source::_bus_callback(GstBus* bus, GstMessage* message)
         if(!_retry_attempted && !_sample_sent)
         {
             R_LOG_INFO("Retrying RTSP connection with short-header=true for legacy camera compatibility");
-            _retry_attempted = true;
-            _use_short_header = true;
 
             // Clean up error info
             g_error_free(err);
             g_free(debug_info);
 
-            // Stop current pipeline and retry
+            // Stop current pipeline and retry. stop() resets the retry flags
+            // for the next connection, so set them after it: set before, the
+            // retry's own failure retried again, and a camera that refuses
+            // the connection (a transport it won't do, a 403) was reconnected
+            // in a tight loop, thousands of times a second.
             stop();
+            _retry_attempted = true;
+            _use_short_header = true;
             play();
         }
         else
