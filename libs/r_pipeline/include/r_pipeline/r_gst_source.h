@@ -33,6 +33,12 @@
 namespace r_pipeline
 {
 
+// RTSP lower transports for rtspsrc when the caller doesn't pass "protocols"
+const char* const RTSP_DEFAULT_PROTOCOLS = "TCP";
+
+// "TCP,UDP,TLS" style list -> GstRTSPLowerTrans flags (unknown names ignored)
+R_API uint32_t rtsp_protocol_flags(const std::string& protocols);
+
 R_API void gstreamer_init();
 R_API void gstreamer_deinit();
 
@@ -178,6 +184,9 @@ public:
     R_API void stop();
     R_API bool running() const;
 
+    // GstRTSPLowerTrans flags the last play() gave rtspsrc (0 before play())
+    R_API uint32_t protocol_flags() const;
+
     // Simulated failure for leak testing: stream silently stops delivering samples
     // after a random interval near mttf_seconds. 0 = disabled.
     R_API void set_sim_mttf_seconds(uint32_t mttf) { _sim_mttf_seconds = mttf; }
@@ -244,6 +253,7 @@ private:
 
     /// optional arguments
     r_utils::r_nullable<std::string> _protocols;
+    uint32_t _protocol_flags {0};
     r_utils::r_nullable<std::string> _buffer_mode; // rtspsrc buffer-mode enum value
                                                    // (0=none,1=slave,2=buffer,3=auto,4=synced);
                                                    // overrides the protocols-implied default

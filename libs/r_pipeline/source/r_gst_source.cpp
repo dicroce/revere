@@ -300,7 +300,7 @@ void r_gst_source::set_args(const vector<r_arg>& args)
     _password = _args["password"];
 }
 
-static uint32_t _parse_protocol_flags(const string& protocols_str)
+uint32_t r_pipeline::rtsp_protocol_flags(const string& protocols_str)
 {
     uint32_t flags = 0;
     for(auto& token : r_string_utils::split(protocols_str, ','))
@@ -311,6 +311,12 @@ static uint32_t _parse_protocol_flags(const string& protocols_str)
         else if(lower == "tls") flags |= 0x00000020;
     }
     return flags;
+}
+
+uint32_t r_gst_source::protocol_flags() const
+{
+    lock_guard<mutex> g(_state_lok);
+    return _protocol_flags;
 }
 
 void r_gst_source::play()
@@ -324,10 +330,15 @@ void r_gst_source::play()
         // 0x00000001 = GST_RTSP_LOWER_TRANS_UDP
         // 0x00000004 = GST_RTSP_LOWER_TRANS_TCP
         // 0x00000020 = GST_RTSP_LOWER_TRANS_TLS
-        // Note: GStreamer tries UDP before TCP regardless of string order.
-        // To force TCP only, pass protocols="TCP".
-        auto protocols_str = _protocols.is_null() ? string("TCP,UDP,TLS") : _protocols.value();
-        uint32_t protocol_flags = _parse_protocol_flags(protocols_str);
+        // GStreamer tries UDP before TCP regardless of string order, so the
+        // default is TCP alone. Over UDP a high-resolution keyframe is
+        // hundreds of packets in one burst; under load the socket buffer
+        // overflows, and lost or reordered packets end up as corrupt or
+        // out-of-order frames in recordings. Callers pass protocols="UDP" for
+        // a camera that won't stream over TCP.
+        auto protocols_str = _protocols.is_null() ? string(RTSP_DEFAULT_PROTOCOLS) : _protocols.value();
+        uint32_t protocol_flags = rtsp_protocol_flags(protocols_str);
+        _protocol_flags = protocol_flags;
         g_object_set(G_OBJECT(rtspsrc), "protocols", protocol_flags, NULL);
         if(!_protocols.is_null())
             g_object_set(G_OBJECT(rtspsrc), "buffer-mode", 1, NULL);
