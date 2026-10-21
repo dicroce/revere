@@ -57,9 +57,7 @@ r_early_alerts::r_decision r_early_alerts::consider(const string& camera_id, con
     {
         for(const auto& a : it->second)
         {
-            if(a.class_name != class_name || ts - a.last_seen > ANCHOR_TTL_MS)
-                continue;
-            if(!a.strong && a.sightings < SIGHTINGS_FOR_ANCHOR)
+            if(a.class_name != class_name || !a.active(ts))
                 continue;
             auto iou = box_iou(a.box, box);
             if(iou >= ANCHOR_MATCH_IOU && iou > d.anchor_iou)
@@ -101,7 +99,7 @@ bool r_early_alerts::event_ended(const string& camera_id, int64_t ts, const vect
 
     // Lapsed anchors go first, so they don't take a slot or match.
     auto before = anchors.size();
-    anchors.erase(remove_if(anchors.begin(), anchors.end(), [&](const anchor& a){ return ts - a.last_seen > ANCHOR_TTL_MS; }), anchors.end());
+    anchors.erase(remove_if(anchors.begin(), anchors.end(), [&](const anchor& a){ return a.lapsed(ts); }), anchors.end());
     changed = anchors.size() != before;
 
     for(const auto& s : start_frame)
@@ -165,9 +163,7 @@ size_t r_early_alerts::anchor_count(const string& camera_id, int64_t now) const
     auto it = _anchors.find(camera_id);
     if(it == _anchors.end())
         return 0;
-    return (size_t)count_if(it->second.begin(), it->second.end(), [&](const anchor& a){
-        return now - a.last_seen <= ANCHOR_TTL_MS && (a.strong || a.sightings >= SIGHTINGS_FOR_ANCHOR);
-    });
+    return (size_t)count_if(it->second.begin(), it->second.end(), [&](const anchor& a){ return a.active(now); });
 }
 
 string r_early_alerts::to_json() const

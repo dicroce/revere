@@ -115,29 +115,77 @@ void test_r_early_alerts::test_jittery_leaf()
 {
     E e;
     // Leaves YOLO calls a person, jumping around between the start and end
-    // frames (IoU ~0.6): a sighting, not yet an anchor.
+    // frames (IoU ~0.6): a sighting each event, not yet an anchor.
     auto jitter = shift(LEAVES, 6, -7);
     RTF_ASSERT(box_iou(LEAVES, jitter) > E::SIGHTING_IOU);
     RTF_ASSERT(box_iou(LEAVES, jitter) < E::STATIC_IOU);
     _event(e, T0, {{"person", LEAVES}}, {{"person", jitter}});
     RTF_ASSERT_EQUAL(e.anchor_count("c", T0), (size_t)0);
 
-    // So the next event still sends it early (and the log says so)...
+    // So the next events still send it early (and the log says so)...
     e.event_started("c");
     RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.66f, shift(LEAVES, -4, 5), T0 + 10 * MIN).verdict, (int)E::early_sent);
-    // ...and it ends with the leaves in both frames again: an anchor.
     e.event_ended("c", T0 + 10 * MIN + 30000, {{"person", shift(LEAVES, -4, 5)}}, {{"person", shift(LEAVES, 5, 3)}});
-    RTF_ASSERT_EQUAL(e.anchor_count("c", T0 + 11 * MIN), (size_t)1);
+    RTF_ASSERT_EQUAL(e.anchor_count("c", T0 + 11 * MIN), (size_t)0);
+    e.event_started("c");
+    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.66f, LEAVES, T0 + 20 * MIN).verdict, (int)E::early_sent);
+    // ...until the third in two hours makes it a (person) anchor.
+    e.event_ended("c", T0 + 20 * MIN + 30000, {{"person", LEAVES}}, {{"person", jitter}});
+    RTF_ASSERT_EQUAL(e.anchor_count("c", T0 + 21 * MIN), (size_t)1);
 
     // Then it's held, wherever it jitters to (IoU >= 0.5).
     e.event_started("c");
-    auto d = e.consider("c", "person", 0.71f, shift(LEAVES, 3, -3), T0 + 20 * MIN);
+    auto d = e.consider("c", "person", 0.71f, shift(LEAVES, 3, -3), T0 + 30 * MIN);
     RTF_ASSERT_EQUAL((int)d.verdict, (int)E::early_anchored);
     RTF_ASSERT(!d.strong_anchor);
     // At 45% the floor holds it anyway.
-    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.45f, LEAVES, T0 + 20 * MIN).verdict, (int)E::early_below_floor);
+    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.45f, LEAVES, T0 + 30 * MIN).verdict, (int)E::early_below_floor);
     // A person walking up the path, away from the leaves, is sent.
-    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.83f, box(300, 200, 50, 140), T0 + 20 * MIN).verdict, (int)E::early_sent);
+    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.83f, box(300, 200, 50, 140), T0 + 30 * MIN).verdict, (int)E::early_sent);
+
+    // Two hours without the leaves: the person anchor has gone.
+    e.event_started("c");
+    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.71f, LEAVES, T0 + 20 * MIN + 30000 + E::PERSON_WEAK_TTL_MS + 1).verdict, (int)E::early_sent);
+
+    // A vehicle needs only two sightings and keeps a day.
+    E v;
+    auto bin = box(500, 400, 60, 70);
+    _event(v, T0, {{"truck", bin}}, {{"truck", shift(bin, 8, 6)}});
+    _event(v, T0 + 10 * MIN, {{"truck", bin}}, {{"truck", shift(bin, -8, 5)}});
+    RTF_ASSERT_EQUAL(v.anchor_count("c", T0 + 10 * MIN + E::PERSON_WEAK_TTL_MS + 1), (size_t)1);
+}
+
+void test_r_early_alerts::test_doorstep_visitors()
+{
+    // Visitors standing on the doorstep when the event started and ended,
+    // twice in a day, a little apart: no anchor, the next visitor is sent.
+    E e;
+    auto step = box(260, 160, 60, 170);
+    _event(e, T0, {{"person", step}}, {{"person", shift(step, 10, 4)}});
+    _event(e, T0 + 5 * HOUR, {{"person", shift(step, -6, 0)}}, {{"person", shift(step, 4, 8)}});
+    RTF_ASSERT_EQUAL(e.anchor_count("c", T0 + 5 * HOUR), (size_t)0);
+    e.event_started("c");
+    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.8f, step, T0 + 6 * HOUR).verdict, (int)E::early_sent);
+
+    // Twice within the hour: still two sightings, not three.
+    E f;
+    _event(f, T0, {{"person", step}}, {{"person", shift(step, 10, 4)}});
+    _event(f, T0 + 40 * MIN, {{"person", step}}, {{"person", shift(step, 4, 8)}});
+    f.event_started("c");
+    RTF_ASSERT_EQUAL((int)f.consider("c", "person", 0.8f, step, T0 + 50 * MIN).verdict, (int)E::early_sent);
+
+    // Three in two hours do anchor it, but only for two hours after the last.
+    _event(f, T0 + 80 * MIN, {{"person", step}}, {{"person", shift(step, 4, 8)}});
+    f.event_started("c");
+    RTF_ASSERT_EQUAL((int)f.consider("c", "person", 0.8f, step, T0 + 90 * MIN).verdict, (int)E::early_anchored);
+    f.event_started("c");
+    RTF_ASSERT_EQUAL((int)f.consider("c", "person", 0.8f, step, T0 + 80 * MIN + E::PERSON_WEAK_TTL_MS + 1).verdict, (int)E::early_sent);
+
+    // Sightings more than two hours apart don't add up.
+    E g;
+    for(int i = 0; i < 5; ++i)
+        _event(g, T0 + i * 3 * HOUR, {{"person", step}}, {{"person", shift(step, 10, 4)}});
+    RTF_ASSERT_EQUAL(g.anchor_count("c", T0 + 12 * HOUR), (size_t)0);
 }
 
 void test_r_early_alerts::test_passer_by_is_no_anchor()
@@ -208,20 +256,21 @@ void test_r_early_alerts::test_json_round_trip()
     auto jitter = shift(LEAVES, 6, -7);
     _event(e, T0 + MIN, {{"person", LEAVES}}, {{"person", jitter}});
     _event(e, T0 + 2 * MIN, {{"person", LEAVES}}, {{"person", jitter}});
+    _event(e, T0 + 3 * MIN, {{"person", LEAVES}}, {{"person", jitter}});
 
     // A restart: the anchors come back from the file.
     E r;
     r.from_json(e.to_json());
-    RTF_ASSERT_EQUAL(r.anchor_count("c", T0 + 3 * MIN), (size_t)2);
+    RTF_ASSERT_EQUAL(r.anchor_count("c", T0 + 4 * MIN), (size_t)2);
     r.event_started("c");
-    RTF_ASSERT_EQUAL((int)r.consider("c", "car", 0.9f, PARKED_CAR, T0 + 3 * MIN).verdict, (int)E::early_anchored);
-    RTF_ASSERT_EQUAL((int)r.consider("c", "person", 0.9f, LEAVES, T0 + 3 * MIN).verdict, (int)E::early_anchored);
+    RTF_ASSERT_EQUAL((int)r.consider("c", "car", 0.9f, PARKED_CAR, T0 + 4 * MIN).verdict, (int)E::early_anchored);
+    RTF_ASSERT_EQUAL((int)r.consider("c", "person", 0.9f, LEAVES, T0 + 4 * MIN).verdict, (int)E::early_anchored);
 
     // A file it can't read changes nothing; bad entries are skipped.
     r.from_json("not json");
-    RTF_ASSERT_EQUAL(r.anchor_count("c", T0 + 3 * MIN), (size_t)2);
+    RTF_ASSERT_EQUAL(r.anchor_count("c", T0 + 4 * MIN), (size_t)2);
     r.from_json("[1, 2]");
-    RTF_ASSERT_EQUAL(r.anchor_count("c", T0 + 3 * MIN), (size_t)2);
+    RTF_ASSERT_EQUAL(r.anchor_count("c", T0 + 4 * MIN), (size_t)2);
     r.from_json(R"({"c": [{"class": "car", "x1": 1}], "d": "x", "e": [{"class": "car", "x1": 400, "y1": 300, "x2": 560, "y2": 390, "sightings": 1, "strong": true, "last_seen": )" + to_string(T0) + "}]}");
     RTF_ASSERT_EQUAL(r.anchor_count("c", T0), (size_t)0);
     RTF_ASSERT_EQUAL(r.anchor_count("e", T0), (size_t)1);

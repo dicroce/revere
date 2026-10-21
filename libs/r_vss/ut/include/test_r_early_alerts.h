@@ -9,6 +9,7 @@ public:
       TEST(test_r_early_alerts::test_look_interval);
       TEST(test_r_early_alerts::test_parked_car_anchor);
       TEST(test_r_early_alerts::test_jittery_leaf);
+      TEST(test_r_early_alerts::test_doorstep_visitors);
       TEST(test_r_early_alerts::test_passer_by_is_no_anchor);
       TEST(test_r_early_alerts::test_anchor_lapses);
       TEST(test_r_early_alerts::test_anchor_cap);
@@ -26,6 +27,7 @@ public:
     void test_look_interval();
     void test_parked_car_anchor();
     void test_jittery_leaf();
+    void test_doorstep_visitors();
     void test_passer_by_is_no_anchor();
     void test_anchor_lapses();
     void test_anchor_cap();

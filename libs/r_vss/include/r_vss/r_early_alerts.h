@@ -51,7 +51,17 @@ R_API std::string alert_group_of(const std::string& class_name);
 // jitter) is a sighting, and SIGHTINGS_FOR_ANCHOR sightings in separate
 // events make an anchor. A detection matches an anchor of its class at IoU
 // >= ANCHOR_MATCH_IOU. An anchor lapses ANCHOR_TTL_MS after it was last seen,
-// and a camera keeps at most MAX_ANCHORS (the oldest go). to_json and
+// and a camera keeps at most MAX_ANCHORS (the oldest go).
+//
+// Persons are stricter: a visitor standing on the doorstep when two events
+// start and end would otherwise anchor the doorstep and hold back every later
+// visitor's early alert there, on the camera that needs it most. So a weak
+// person anchor takes PERSON_SIGHTINGS_FOR_ANCHOR sightings and lapses
+// PERSON_WEAK_TTL_MS after the last: leaves in the wind recur many times an
+// hour and anchor; visitors rarely stand in the same place three times in two
+// hours, and if they do the anchor is gone two hours later. Strong person
+// anchors (still between the start and end frames) keep ANCHOR_TTL_MS: the
+// end-of-event analysis already treats such a person as static. to_json and
 // from_json keep them across restarts.
 //
 // Until an event has sent something early, the plugin looks every
@@ -69,11 +79,13 @@ public:
     enum
     {
         SIGHTINGS_FOR_ANCHOR = 2,
+        PERSON_SIGHTINGS_FOR_ANCHOR = 3,
         MAX_ANCHORS = 32,
         FAST_LOOK_MS = 1000,
         SLOW_LOOK_MS = 5000
     };
     static constexpr int64_t ANCHOR_TTL_MS = 24LL * 60 * 60 * 1000;
+    static constexpr int64_t PERSON_WEAK_TTL_MS = 2LL * 60 * 60 * 1000;
 
     enum r_verdict
     {
@@ -122,6 +134,13 @@ private:
         int sightings {0};
         bool strong {false};
         int64_t last_seen {0};
+
+        int64_t ttl_ms() const { return (class_name == "person" && !strong) ? PERSON_WEAK_TTL_MS : ANCHOR_TTL_MS; }
+        bool lapsed(int64_t now) const { return now - last_seen > ttl_ms(); }
+        bool active(int64_t now) const
+        {
+            return !lapsed(now) && (strong || sightings >= (class_name == "person" ? (int)PERSON_SIGHTINGS_FOR_ANCHOR : (int)SIGHTINGS_FOR_ANCHOR));
+        }
     };
     struct event_state
     {
