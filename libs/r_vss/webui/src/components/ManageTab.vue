@@ -99,31 +99,66 @@
 
     <!-- properties -->
     <div v-if="propsTarget" class="overlay" @mousedown="onBackdropDown" @mouseup.self="backdropPress && cancelProps()">
-      <div class="dialog">
-        <header><h3>Camera Properties</h3></header>
+      <div class="dialog props">
+        <header>
+          <h3>Camera Properties</h3>
+          <p class="cam-title">{{ propsTarget.friendly_name || propsTarget.camera_name || propsTarget.id }}</p>
+        </header>
         <div class="body">
-          <p class="muted loc">
-            Recording Location:<br /><span>{{ propsTarget.record_file_path || '—' }}</span>
-          </p>
-          <label class="check">
+          <label class="check option">
             <input type="checkbox" v-model="propsMotion" :disabled="propsBusy" />
-            <span>Motion Detection</span>
+            <span>
+              <span class="title">Motion detection</span>
+              <span class="desc">Finds movement in this camera's video and marks it as motion events you can search and review.</span>
+            </span>
           </label>
-          <label class="check">
-            <input type="checkbox" v-model="propsPrune" :disabled="propsBusy" />
-            <span>Prune Still Video</span>
+
+          <fieldset class="tiers" :class="{ off: !propsMotion }" :disabled="propsBusy || !propsMotion">
+            <legend>Motion and objects from</legend>
+            <label v-for="t in tierChoices" :key="t.value" class="check option">
+              <input type="radio" name="motion_tier" :value="t.value" v-model="propsTier" />
+              <span>
+                <span class="title">{{ t.title }}</span>
+                <span class="desc">{{ t.description }}</span>
+              </span>
+            </label>
+            <p v-if="tierStatus" class="blurb">{{ tierStatus }}</p>
+          </fieldset>
+
+          <label class="check option" :class="{ off: !propsMotion }">
+            <input type="checkbox" v-model="propsPrune" :disabled="propsBusy || !propsMotion" />
+            <span>
+              <span class="title">Keep only motion in older video</span>
+              <span class="desc">Video older than the time below is deleted unless it has motion in it, so motion is kept for longer in the same space.</span>
+            </span>
           </label>
-          <label class="field">
-            <input type="number" min="1" max="8760" v-model.number="propsHours" :disabled="propsBusy" />
-            <span>Minimum continuous retention hours</span>
+          <label class="field indent" :class="{ off: !propsPrune }">
+            <span>Keep continuous video for at least</span>
+            <input type="number" min="1" max="999999" step="1" v-model.number="propsHours" :disabled="propsBusy || !propsPrune" />
+            <span>hours</span>
           </label>
+          <p v-if="propsPrune && !hoursOk" class="err">Enter a whole number of hours, 1 or more.</p>
+
+          <h4 class="section">Storage</h4>
+          <div class="loc">
+            <span class="title">Recording file</span>
+            <div class="path-row">
+              <code>{{ propsTarget.record_file_path || '—' }}</code>
+              <button
+                v-if="propsTarget.record_file_path"
+                class="ghost small"
+                @click="copyPath(propsTarget.record_file_path)"
+              >{{ copied ? 'Copied' : 'Copy path' }}</button>
+            </div>
+          </div>
+
           <p v-if="propsBusy" class="muted">Saving… (restarting camera)</p>
           <p v-if="propsError" class="err">{{ propsError }}</p>
         </div>
         <footer>
           <button class="ghost" :disabled="propsBusy" @click="cancelProps">Cancel</button>
           <span class="spacer"></span>
-          <button class="primary" :disabled="propsBusy || !(propsHours >= 1)" @click="confirmProps">Ok</button>
+          <button class="primary" :disabled="propsBusy || (propsPrune && !hoursOk)" @click="confirmProps">Ok</button>
         </footer>
       </div>
     </div>
@@ -153,7 +188,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   isAuthed, getCameras,
   removeCamera, updateCameraProperties, forgetCamera, addRtspCamera,
@@ -181,8 +216,35 @@ const propsTarget = ref(null)
 const propsMotion = ref(true)
 const propsPrune = ref(false)
 const propsHours = ref(24)
+const propsTier = ref('auto')
 const propsBusy = ref(false)
 const propsError = ref('')
+const copied = ref(false)
+
+// Where motion and object classes come from (r_vss::r_tier_controller), worded
+// as in the desktop's Camera properties dialog.
+const tierChoices = [
+  { value: 'auto', title: 'Automatic', description: "The camera's own detection once Revere has checked it reports what Revere sees; Revere's otherwise." },
+  { value: '1', title: 'Revere', description: 'Revere finds motion and objects in the video. Uses the most CPU.' },
+  { value: '2', title: 'Camera', description: "The camera's motion and its person, vehicle and animal events. Uses the least CPU." },
+  { value: '3', title: 'Camera motion, Revere objects', description: "The camera's motion events; Revere finds the objects in them." },
+]
+const tierNames = ['', "Revere's detection", "the camera's detection", "the camera's motion and Revere's objects"]
+
+// What the camera uses now and why, from /cameras' motion_tier status (live,
+// so it follows tier changes while the dialog is open).
+const tierStatus = computed(() => {
+  if (!propsTarget.value) return ''
+  const live = cameras.value.find((c) => c.id === propsTarget.value.id) || propsTarget.value
+  const mt = live.motion_tier
+  if (!mt || !(mt.tier >= 1 && mt.tier <= 3)) return ''
+  return `Using ${tierNames[mt.tier]}: ${mt.reason}.`
+})
+
+const hoursOk = computed(() => Number.isInteger(propsHours.value) && propsHours.value >= 1 && propsHours.value <= 999999)
+
+// Pruning keeps only motion, so it needs motion detection (as on the desktop).
+watch(propsMotion, (on) => { if (!on) propsPrune.value = false })
 
 const addOpen = ref(false)
 const addBusy = ref(false)
@@ -285,7 +347,28 @@ function askProperties(camera) {
   propsMotion.value = !!camera.do_motion_detection
   propsPrune.value = !!camera.do_motion_pruning
   propsHours.value = camera.min_continuous_recording_hours ?? 24
+  propsTier.value = camera.motion_tier_setting || 'auto'
   propsError.value = ''
+  copied.value = false
+}
+
+// navigator.clipboard needs a secure context (https or localhost); the web UI
+// is often opened over plain http on the LAN, so fall back to execCommand.
+async function copyPath(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+  copied.value = true
+  setTimeout(() => { copied.value = false }, 1500)
 }
 
 function cancelProps() {
@@ -300,7 +383,8 @@ async function confirmProps() {
     await updateCameraProperties(propsTarget.value.id, {
       do_motion_detection: propsMotion.value,
       do_motion_pruning: propsPrune.value,
-      min_continuous_recording_hours: propsHours.value,
+      min_continuous_recording_hours: hoursOk.value ? propsHours.value : (propsTarget.value.min_continuous_recording_hours ?? 24),
+      motion_tier: propsTier.value,
     })
     propsTarget.value = null
     await refresh()
@@ -461,4 +545,50 @@ button:disabled { cursor: default; opacity: 0.6; }
   border-top: 1px solid #363636;
 }
 .dialog .spacer { flex: 1; }
+/* style.css zeroes padding and only .small sets it, so footer buttons were bare text */
+.dialog footer button:not(.small) { padding: 0.45rem 1rem; font-size: 0.9rem; }
+
+/* camera properties */
+.dialog.props { width: 480px; max-height: calc(100vh - 2rem); display: flex; flex-direction: column; }
+.dialog.props .body { overflow-y: auto; gap: 0.8rem; }
+.dialog .cam-title { font-size: 0.85rem; color: #aaa; margin-top: 0.2rem; }
+.dialog .option { align-items: flex-start; }
+.dialog .option input { margin-top: 0.2rem; flex: none; }
+.dialog .option .title { display: block; font-size: 0.9rem; }
+.dialog .option .desc { display: block; font-size: 0.8rem; color: #999; line-height: 1.4; margin-top: 0.1rem; }
+.dialog .tiers {
+  border: none;
+  margin: 0 0 0 1.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.dialog .tiers legend { font-size: 0.8rem; color: #bbb; margin-bottom: 0.4rem; padding: 0; }
+.dialog .off { opacity: 0.5; }
+.dialog .off, .dialog .off .option { cursor: default; }
+.dialog .field.indent { margin-left: 1.5rem; font-size: 0.85rem; color: #bbb; flex-wrap: wrap; }
+.dialog .section {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #888;
+  border-top: 1px solid #363636;
+  padding-top: 0.8rem;
+  margin-top: 0.2rem;
+}
+.dialog .loc .title { display: block; font-size: 0.85rem; color: #bbb; margin-bottom: 0.3rem; }
+.dialog .path-row { display: flex; align-items: center; gap: 0.6rem; }
+.dialog .path-row code {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: #aaa;
+  word-break: break-all;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+}
 </style>
