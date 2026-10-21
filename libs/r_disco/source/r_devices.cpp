@@ -801,6 +801,12 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
     r_devices_cmd_result result;
 
     // Encrypt credentials before saving
+    // Only "TCP" or "UDP" reach the SQL below (it's formatted, not bound):
+    // anything else is stored as TCP, the default.
+    r_nullable<string> rtsp_transport;
+    if(!camera.rtsp_transport.is_null())
+        rtsp_transport.set_value(camera.rtsp_transport.value() == "UDP" ? string("UDP") : string("TCP"));
+
     r_camera encrypted_camera = camera;
     if(!encrypted_camera.rtsp_username.is_null())
     {
@@ -883,7 +889,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.min_continuous_recording_hours.is_null())?"min_continuous_recording_hours, ":"",
             (!camera.motion_tier.is_null())?"motion_tier, ":"",
             (!camera.motion_tier_verified.is_null())?"motion_tier_verified, ":"",
-            (!camera.rtsp_transport.is_null())?"rtsp_transport, ":"",
+            (!rtsp_transport.is_null())?"rtsp_transport, ":"",
 
             r_string_utils::format("'%s', ", camera.id.c_str()).c_str(),
             (!camera.camera_name.is_null())?r_string_utils::format("'%s', ", camera.camera_name.value().c_str()).c_str():"",
@@ -913,7 +919,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.min_continuous_recording_hours.is_null())?r_string_utils::format("%d, ", camera.min_continuous_recording_hours.value()).c_str():"",
             (!camera.motion_tier.is_null())?r_string_utils::format("'%s', ", camera.motion_tier.value().c_str()).c_str():"",
             (!camera.motion_tier_verified.is_null())?r_string_utils::format("%d, ", camera.motion_tier_verified.value()).c_str():"",
-            (!camera.rtsp_transport.is_null())?r_string_utils::format("'%s', ", camera.rtsp_transport.value().c_str()).c_str():"",
+            (!rtsp_transport.is_null())?r_string_utils::format("'%s', ", rtsp_transport.value().c_str()).c_str():"",
 
             "unixepoch(), ",
             r_string_utils::format("'%s'", hash.c_str()).c_str()

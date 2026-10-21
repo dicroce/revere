@@ -113,6 +113,18 @@ void test_r_rtsp_transport::test_rtsp_transport_saved()
     u = devices.get_camera_by_id("cam-udp");
     RTF_ASSERT(u.value().rtsp_transport.value() == "TCP");
 
+    // Anything but TCP or UDP is stored as TCP, and never reaches the SQL as
+    // is. From UDP, so a save that failed instead would leave UDP behind.
+    c.rtsp_transport.set_value("UDP");
+    devices.save_camera(c);
+    RTF_ASSERT(devices.get_camera_by_id("cam-udp").value().rtsp_transport.value() == "UDP");
+    c.rtsp_transport.set_value("UDP'); DROP TABLE cameras; --");
+    devices.save_camera(c);
+    u = devices.get_camera_by_id("cam-udp");
+    RTF_ASSERT(!u.is_null());
+    RTF_ASSERT(u.value().rtsp_transport.value() == "TCP");
+    RTF_ASSERT(!devices.get_camera_by_id("cam-default").is_null());
+
     devices.stop();
 }
 
