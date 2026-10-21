@@ -258,6 +258,15 @@ private:
                                                       r_utils::r_socket& conn,
                                                       const r_http::r_server_request& request);
 
+    // System plugins (the desktop's Plugins section).
+    r_http::r_server_response _get_system_plugins(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                  r_utils::r_socket& conn,
+                                                  const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_system_plugin_enabled(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                          r_utils::r_socket& conn,
+                                                          const r_http::r_server_request& request);
+
     // Starts kind ("move", "reset" or "retention") on its own thread, or
     // returns false when one is already running.
     bool _start_storage_op(const std::string& kind, const r_disco::r_camera& camera, std::function<void(r_storage_op&)> work);

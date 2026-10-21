@@ -42,6 +42,9 @@ export default defineConfig({
       '/storage_change_retention': 'http://localhost:8088',
       '/storage_op':       'http://localhost:8088',
       '/storage_op_cancel': 'http://localhost:8088',
+      // System plugins
+      '/system_plugins':   'http://localhost:8088',
+      '/system_plugin_enabled': 'http://localhost:8088',
     }
   },
 

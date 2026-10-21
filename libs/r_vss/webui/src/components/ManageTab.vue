@@ -63,6 +63,8 @@
       </section>
     </div>
 
+    <PluginsSection :authed="authed" />
+
     <RecordWizard
       v-if="wizardCamera"
       :camera="wizardCamera"
@@ -207,6 +209,7 @@ import {
 } from '../api.js'
 import RecordWizard from './RecordWizard.vue'
 import StorageDialog from './StorageDialog.vue'
+import PluginsSection from './PluginsSection.vue'
 
 const cameras = ref([])
 const error = ref(null)
