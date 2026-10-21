@@ -968,6 +968,11 @@ void r_stream_keeper::_entry_point()
                         if(it->second->dead())
                         {
                             R_LOG_WARNING("Dead stream detected, removing: %s", it->first.c_str());
+                            auto& transport = _rtsp_transports[it->first];
+                            auto was = transport.protocols();
+                            if(transport.attempt_ended(it->second->answered(), it->second->receiving_video()))
+                                R_LOG_WARNING("Camera %s answered but sent no video over RTSP/%s; retrying over %s",
+                                              it->first.c_str(), was.c_str(), transport.protocols().c_str());
                             // The next pass starts it again: a reconnect.
                             _reconnects.record(it->first);
                             doomed.push_back(it->second);
@@ -1181,10 +1186,11 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         if(fc_it != _failed_cameras.end() && fc_it->second.next_retry_time > now)
             continue;
 
-        R_LOG_INFO("Starting camera stream: %s (%s)", name.c_str(), camera.id.c_str());
+        auto protocols = _rtsp_transports[camera.id].protocols();
+        R_LOG_INFO("Starting camera stream: %s (%s) over RTSP/%s", name.c_str(), camera.id.c_str(), protocols.c_str());
         try
         {
-            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds);
+            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds, protocols);
             // Construction succeeded — clear any prior failure state for this camera.
             _failed_cameras.erase(camera.id);
         }

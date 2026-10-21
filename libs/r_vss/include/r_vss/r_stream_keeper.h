@@ -13,6 +13,7 @@
 #include "r_vss/r_detection_pass.h"
 #include "r_vss/r_tier_controller.h"
 #include "r_vss/r_tier_outputs.h"
+#include "r_vss/r_rtsp_transport.h"
 #include <functional>
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
@@ -300,6 +301,8 @@ private:
         std::string last_error;
     };
     std::map<std::string, _failed_camera_state> _failed_cameras;
+    // Per camera, kept across reconnects; protected by _streams_mutex
+    std::map<std::string, r_rtsp_transport> _rtsp_transports;
     reconnect_log _reconnects;
     r_utils::r_work_q<r_stream_keeper_cmd, r_stream_keeper_result> _cmd_q;
 
