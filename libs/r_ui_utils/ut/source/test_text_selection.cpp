@@ -75,6 +75,12 @@ void test_text_selection::test_line_span()
     sel.select({0, 4}, {0, 80});
     RTF_ASSERT(sel.line_span(0, 9, from, to, eol));
     RTF_ASSERT(from == 4 && to == 9 && !eol);
+    // A drag that starts right of a short line's end and goes on down: only
+    // that line's break is selected from it.
+    sel.select({0, 50}, {1, 3});
+    RTF_ASSERT(sel.line_span(0, 9, from, to, eol));
+    RTF_ASSERT(from == 9 && to == 9 && eol);
+    RTF_ASSERT_EQUAL(selected_text(sel, log_lines, 0), string("\nbra"));
 
     // An empty line in the middle of a selection is still selected (its
     // line break).
