@@ -13,6 +13,7 @@ struct rtsp_source_camera_config
     std::string rtsp_url;
     std::string rtsp_username;
     std::string rtsp_password;
+    std::string rtsp_transport {"TCP"};  // "TCP" or "UDP"
 };
 
 }

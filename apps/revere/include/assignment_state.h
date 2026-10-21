@@ -37,6 +37,7 @@ struct assignment_state
     bool profiles_were_filtered {false};
     r_utils::r_nullable<std::string> rtsp_username;
     r_utils::r_nullable<std::string> rtsp_password;
+    std::string rtsp_transport {"TCP"};  // "TCP" or "UDP", chosen with the stream
     std::string camera_friendly_name;
     int64_t byte_rate {64000};
     double continuous_retention_days {3.0};
