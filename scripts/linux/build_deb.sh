@@ -76,12 +76,23 @@ fi
 
 mkdir -p "$PKG_DIR/usr/share/applications" "$PKG_DIR/usr/share/icons/hicolor/256x256/apps"
 cp "$PROJECT_DIR/apps/revere/R.png" "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/revere.png"
+cp "$PROJECT_DIR/apps/vision/V.png" "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/vision.png"
 cat > "$PKG_DIR/usr/share/applications/revere.desktop" << 'EOF'
 [Desktop Entry]
 Type=Application
 Name=Revere
 Exec=/opt/revere/revere
 Icon=revere
+Categories=AudioVideo;Video;
+Terminal=false
+EOF
+cat > "$PKG_DIR/usr/share/applications/vision.desktop" << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Vision
+Comment=Watch Revere's cameras, live and recorded
+Exec=/opt/revere/vision
+Icon=vision
 Categories=AudioVideo;Video;
 Terminal=false
 EOF
