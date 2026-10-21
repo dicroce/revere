@@ -151,6 +151,7 @@ void test_r_early_alerts::test_jittery_leaf()
     E v;
     auto bin = box(500, 400, 60, 70);
     _event(v, T0, {{"truck", bin}}, {{"truck", shift(bin, 8, 6)}});
+    RTF_ASSERT_EQUAL(v.anchor_count("c", T0), (size_t)0);
     _event(v, T0 + 10 * MIN, {{"truck", bin}}, {{"truck", shift(bin, -8, 5)}});
     RTF_ASSERT_EQUAL(v.anchor_count("c", T0 + 10 * MIN + E::PERSON_WEAK_TTL_MS + 1), (size_t)1);
 }
@@ -180,6 +181,14 @@ void test_r_early_alerts::test_doorstep_visitors()
     RTF_ASSERT_EQUAL((int)f.consider("c", "person", 0.8f, step, T0 + 90 * MIN).verdict, (int)E::early_anchored);
     f.event_started("c");
     RTF_ASSERT_EQUAL((int)f.consider("c", "person", 0.8f, step, T0 + 80 * MIN + E::PERSON_WEAK_TTL_MS + 1).verdict, (int)E::early_sent);
+
+    // A person who stood stock still through the start and end frames (the
+    // end-of-event analysis calls that static too) is a strong anchor, kept
+    // for the day like any other.
+    E h;
+    _event(h, T0, {{"person", step}}, {{"person", shift(step, 1, 1)}});
+    h.event_started("c");
+    RTF_ASSERT_EQUAL((int)h.consider("c", "person", 0.8f, step, T0 + 5 * HOUR).verdict, (int)E::early_anchored);
 
     // Sightings more than two hours apart don't add up.
     E g;
