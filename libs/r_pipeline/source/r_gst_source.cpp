@@ -1,5 +1,6 @@
 
 #include "r_pipeline/r_gst_source.h"
+#include <atomic>
 #include "r_utils/r_exception.h"
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_std_utils.h"
@@ -78,8 +79,10 @@ map<string, r_sdp_media> r_pipeline::fetch_sdp_media(
 
     r_work_q<int, void> q;
     map<string, r_sdp_media> medias;
+    std::atomic<bool> got_sdp {false};
     src.set_sdp_media_cb([&](const map<string, r_sdp_media>& sdp_medias){
         medias = sdp_medias;
+        got_sdp = true;
     });
     src.set_video_sample_cb([&](const sample_context& sc, const r_gst_buffer&, bool key, int64_t){
         q.post(42);
@@ -94,15 +97,26 @@ map<string, r_sdp_media> r_pipeline::fetch_sdp_media(
     return medias;
 }
 
-int64_t r_pipeline::fetch_bytes_per_second(
+bool r_pipeline::rtsp_probe_retry_over_udp(bool answered, bool received_video)
+{
+    // The camera answered DESCRIBE but no media came over TCP: the transport
+    // is the likely problem. If it didn't answer at all, UDP won't help.
+    return answered && !received_video;
+}
+
+static int64_t _fetch_bytes_per_second(
     const std::string& rtsp_url,
     int measured_duration_seconds,
     const r_utils::r_nullable<std::string>& username,
-    const r_utils::r_nullable<std::string>& password
+    const r_utils::r_nullable<std::string>& password,
+    const string& protocols,
+    bool& answered,
+    bool& received_video
 )
 {
     vector<r_arg> arguments;
     add_argument(arguments, "url", rtsp_url);
+    add_argument(arguments, "protocols", protocols);
 
     if(!username.is_null())
         add_argument(arguments, "username", username.value());
@@ -114,6 +128,11 @@ int64_t r_pipeline::fetch_bytes_per_second(
     src.set_args(arguments);
 
     bool done = false;
+
+    std::atomic<bool> got_sdp {false};
+    src.set_sdp_media_cb([&](const map<string, r_sdp_media>&){
+        got_sdp = true;
+    });
 
     int64_t audio_byte_total = 0;
     src.set_audio_sample_cb([&](const sample_context& sc, const r_gst_buffer& buffer, bool key, int64_t pts){
@@ -147,17 +166,41 @@ int64_t r_pipeline::fetch_bytes_per_second(
 
     src.stop();
 
+    answered = got_sdp;
+    received_video = stream_start_time_set;
+
     return (int64_t)(((double)(audio_byte_total + video_byte_total)) / (double)duration_cast<seconds>(delta).count());
 }
 
-r_camera_params r_pipeline::fetch_camera_params(
+int64_t r_pipeline::fetch_bytes_per_second(
     const std::string& rtsp_url,
+    int measured_duration_seconds,
     const r_utils::r_nullable<std::string>& username,
     const r_utils::r_nullable<std::string>& password
 )
 {
+    bool answered = false, received_video = false;
+    auto bps = _fetch_bytes_per_second(rtsp_url, measured_duration_seconds, username, password, "TCP", answered, received_video);
+    if(rtsp_probe_retry_over_udp(answered, received_video))
+    {
+        R_LOG_WARNING("Camera answered but sent no video over RTSP/TCP; measuring over UDP");
+        bps = _fetch_bytes_per_second(rtsp_url, measured_duration_seconds, username, password, "UDP", answered, received_video);
+    }
+    return bps;
+}
+
+static r_camera_params _fetch_camera_params(
+    const std::string& rtsp_url,
+    const r_utils::r_nullable<std::string>& username,
+    const r_utils::r_nullable<std::string>& password,
+    const string& protocols,
+    bool& answered,
+    bool& received_video
+)
+{
     vector<r_arg> arguments;
     add_argument(arguments, "url", rtsp_url);
+    add_argument(arguments, "protocols", protocols);
 
     if(!username.is_null())
         add_argument(arguments, "username", username.value());
@@ -171,8 +214,10 @@ r_camera_params r_pipeline::fetch_camera_params(
     bool done = false;
 
     map<string, r_sdp_media> medias;
+    std::atomic<bool> got_sdp {false};
     src.set_sdp_media_cb([&](const map<string, r_sdp_media>& sdp_medias){
         medias = sdp_medias;
+        got_sdp = true;
     });
 
     int64_t audio_byte_total = 0;
@@ -230,6 +275,29 @@ r_camera_params r_pipeline::fetch_camera_params(
     cp.sdp_medias = medias;
     cp.video_key_frame = video_key_frame;
     cp.sample_ctx = captured_sample_ctx;
+    cp.protocols = protocols;
+
+    answered = got_sdp;
+    received_video = stream_start_time_set;
+    return cp;
+}
+
+r_camera_params r_pipeline::fetch_camera_params(
+    const std::string& rtsp_url,
+    const r_utils::r_nullable<std::string>& username,
+    const r_utils::r_nullable<std::string>& password
+)
+{
+    // TCP first, as the recorder: over UDP, loss and reordering under load
+    // corrupt the stream. A camera that answers but won't send media over
+    // TCP is measured over UDP instead, so it can still be added.
+    bool answered = false, received_video = false;
+    auto cp = _fetch_camera_params(rtsp_url, username, password, "TCP", answered, received_video);
+    if(rtsp_probe_retry_over_udp(answered, received_video))
+    {
+        R_LOG_WARNING("Camera answered but sent no video over RTSP/TCP; probing over UDP");
+        cp = _fetch_camera_params(rtsp_url, username, password, "UDP", answered, received_video);
+    }
     return cp;
 }
 

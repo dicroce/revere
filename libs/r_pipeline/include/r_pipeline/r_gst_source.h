@@ -53,7 +53,13 @@ struct r_camera_params
     std::map<std::string, r_sdp_media> sdp_medias;
     std::vector<uint8_t> video_key_frame;
     sample_context sample_ctx;
+    std::string protocols; // the RTSP transport these were measured over ("TCP" or "UDP")
 };
+
+// Probes (fetch_camera_params, fetch_bytes_per_second) go over TCP first. True
+// when a TCP probe should be repeated over UDP: the camera answered (its SDP
+// arrived) but sent no video.
+R_API bool rtsp_probe_retry_over_udp(bool answered, bool received_video);
 
 R_API std::map<std::string, r_sdp_media> fetch_sdp_media(
     const std::string& rtsp_url,

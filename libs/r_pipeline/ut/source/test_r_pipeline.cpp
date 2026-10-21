@@ -141,6 +141,16 @@ void test_r_pipeline::test_rtsp_protocol_flags()
     RTF_ASSERT(rtsp_protocol_flags("bogus") == 0);
 }
 
+void test_r_pipeline::test_rtsp_probe_retry_over_udp()
+{
+    // Answered over TCP but no video: the camera won't stream over TCP
+    RTF_ASSERT(rtsp_probe_retry_over_udp(true, false));
+    // Video came: TCP works
+    RTF_ASSERT(!rtsp_probe_retry_over_udp(true, true));
+    // No answer: unreachable or wrong URL, UDP won't help
+    RTF_ASSERT(!rtsp_probe_retry_over_udp(false, false));
+}
+
 #if 0
 void test_r_pipeline::test_gst_source_h265_aac()
 {

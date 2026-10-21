@@ -297,7 +297,7 @@ private:
     std::mutex _playback_restreaming_states_lok;
     std::map<GstRTSPMedia*, std::shared_ptr<playback_restreaming_state>> _playback_restreaming_states;
     bool _got_first_audio_sample;
-    bool _got_first_video_sample;
+    std::atomic<bool> _got_first_video_sample;
     std::atomic<bool> _answered {false};
 
     // Sliding-window bitrate tracking. Samples are (timestamp, cumulative bytes).
