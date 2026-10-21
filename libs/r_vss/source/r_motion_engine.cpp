@@ -234,8 +234,7 @@ void r_motion_engine::_entry_point()
                                         n, [](const r_keyframe_motion_entry& e) { return e.has_motion; });
 
                                     // Not confirmed yet: object detection may confirm this frame alone.
-                                    if(!should_start && is_significant && _probe &&
-                                       (wc->get_last_probe_ts() < 0 || work.ts - wc->get_last_probe_ts() >= PROBE_INTERVAL_MS))
+                                    if(_probe && probe_due(should_start, is_significant, wc->get_last_probe_ts(), work.ts))
                                     {
                                         wc->set_last_probe_ts(work.ts);
                                         if(_probe(wc->get_camera_id(), work.ts, letterbox_data, 640, 640, motion_bbox, motion_regions))

@@ -20,7 +20,7 @@ static r_box box(float x, float y, float w, float h) { return {x, y, x + w, y + 
 static r_box shift(const r_box& b, float dx, float dy) { return {b.x1 + dx, b.y1 + dy, b.x2 + dx, b.y2 + dy}; }
 
 // The parked car and the "person" that is leaves, where YOLO puts them.
-static const r_box JEEP = box(400, 300, 160, 90);
+static const r_box PARKED_CAR = box(400, 300, 160, 90);
 static const r_box LEAVES = box(60, 120, 40, 90);
 
 // One event on camera "c" at ts: its start and end frames saw these.
@@ -32,8 +32,8 @@ static bool _event(E& e, int64_t ts, const vector<E::r_seen>& start, const vecto
 
 void test_r_early_alerts::test_box_iou()
 {
-    RTF_ASSERT(fabs(box_iou(JEEP, JEEP) - 1.0f) < 1e-6);
-    RTF_ASSERT(box_iou(JEEP, LEAVES) == 0.0f);
+    RTF_ASSERT(fabs(box_iou(PARKED_CAR, PARKED_CAR) - 1.0f) < 1e-6);
+    RTF_ASSERT(box_iou(PARKED_CAR, LEAVES) == 0.0f);
     // Half overlapping along x: 1/3.
     RTF_ASSERT(fabs(box_iou(box(0, 0, 10, 10), box(5, 0, 10, 10)) - 1.0f / 3) < 1e-6);
     RTF_ASSERT(box_iou(box(0, 0, 0, 0), box(0, 0, 0, 0)) == 0.0f);
@@ -52,8 +52,8 @@ void test_r_early_alerts::test_floor_and_once_per_class()
     RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.60f, LEAVES, T0 + 1000).verdict, (int)E::early_sent);
     // Once per class per event; another class goes on its own.
     RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.95f, LEAVES, T0 + 2000).verdict, (int)E::early_already_sent);
-    RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.8f, JEEP, T0 + 2000).verdict, (int)E::early_sent);
-    RTF_ASSERT_EQUAL((int)e.consider("c", "truck", 0.8f, JEEP, T0 + 2000).verdict, (int)E::early_sent);
+    RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.8f, PARKED_CAR, T0 + 2000).verdict, (int)E::early_sent);
+    RTF_ASSERT_EQUAL((int)e.consider("c", "truck", 0.8f, PARKED_CAR, T0 + 2000).verdict, (int)E::early_sent);
     // Another camera is its own event.
     e.event_started("d");
     RTF_ASSERT_EQUAL((int)e.consider("d", "person", 0.7f, LEAVES, T0).verdict, (int)E::early_sent);
@@ -89,23 +89,26 @@ void test_r_early_alerts::test_look_interval()
 void test_r_early_alerts::test_parked_car_anchor()
 {
     E e;
-    // A moving shadow beside the parked Jeep: in both endpoint frames, still.
-    RTF_ASSERT(_event(e, T0, {{"car", JEEP}}, {{"car", shift(JEEP, 2, 1)}}));
+    // A moving shadow beside a parked car: in both endpoint frames, still.
+    RTF_ASSERT(_event(e, T0, {{"car", PARKED_CAR}}, {{"car", shift(PARKED_CAR, 2, 1)}}));
     RTF_ASSERT_EQUAL(e.anchor_count("c", T0), (size_t)1);
 
-    // Next time, YOLO's Jeep box (a little off) isn't sent early...
+    // Next time, YOLO's parked car box (a little off) isn't sent early...
     e.event_started("c");
-    auto d = e.consider("c", "car", 0.92f, shift(JEEP, -6, 4), T0 + HOUR);
+    auto d = e.consider("c", "car", 0.92f, shift(PARKED_CAR, -6, 4), T0 + HOUR);
     RTF_ASSERT_EQUAL((int)d.verdict, (int)E::early_anchored);
     RTF_ASSERT(d.strong_anchor);
     RTF_ASSERT(d.anchor_iou > 0.8f);
-    // ...but a car driving past elsewhere is, and so is a person by the Jeep.
+    // ...but a car driving past elsewhere is, and so is a person by the parked car.
     RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.92f, box(20, 330, 150, 80), T0 + HOUR).verdict, (int)E::early_sent);
     e.event_started("c");
     RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.8f, box(380, 260, 40, 110), T0 + HOUR).verdict, (int)E::early_sent);
-    // A car on half of the Jeep's spot (pulling in beside it) isn't held.
+    // A person on the car's own box isn't held by the car's anchor.
     e.event_started("c");
-    RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.9f, shift(JEEP, 90, 0), T0 + HOUR).verdict, (int)E::early_sent);
+    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.8f, PARKED_CAR, T0 + HOUR).verdict, (int)E::early_sent);
+    // A car on half of the parked car's spot (pulling in beside it) isn't held.
+    e.event_started("c");
+    RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.9f, shift(PARKED_CAR, 90, 0), T0 + HOUR).verdict, (int)E::early_sent);
 }
 
 void test_r_early_alerts::test_jittery_leaf()
@@ -159,18 +162,18 @@ void test_r_early_alerts::test_passer_by_is_no_anchor()
 void test_r_early_alerts::test_anchor_lapses()
 {
     E e;
-    _event(e, T0, {{"car", JEEP}}, {{"car", JEEP}});
+    _event(e, T0, {{"car", PARKED_CAR}}, {{"car", PARKED_CAR}});
     e.event_started("c");
-    RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.9f, JEEP, T0 + E::ANCHOR_TTL_MS).verdict, (int)E::early_anchored);
-    // A day without seeing it: the Jeep has gone; a car there is sent.
+    RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.9f, PARKED_CAR, T0 + E::ANCHOR_TTL_MS).verdict, (int)E::early_anchored);
+    // A day without seeing it: the parked car has gone; a car there is sent.
     e.event_started("c");
-    RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.9f, JEEP, T0 + E::ANCHOR_TTL_MS + 1).verdict, (int)E::early_sent);
+    RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.9f, PARKED_CAR, T0 + E::ANCHOR_TTL_MS + 1).verdict, (int)E::early_sent);
     RTF_ASSERT_EQUAL(e.anchor_count("c", T0 + E::ANCHOR_TTL_MS + 1), (size_t)0);
 
     // Seen again within the day, it stays.
     E k;
     for(int64_t t = T0; t < T0 + 3 * E::ANCHOR_TTL_MS; t += 12 * HOUR)
-        _event(k, t, {{"car", JEEP}}, {{"car", JEEP}});
+        _event(k, t, {{"car", PARKED_CAR}}, {{"car", PARKED_CAR}});
     RTF_ASSERT_EQUAL(k.anchor_count("c", T0 + 3 * E::ANCHOR_TTL_MS), (size_t)1);
 
     // Two sightings more than a day apart are lapsed, not an anchor.
@@ -201,7 +204,7 @@ void test_r_early_alerts::test_anchor_cap()
 void test_r_early_alerts::test_json_round_trip()
 {
     E e;
-    _event(e, T0, {{"car", JEEP}}, {{"car", JEEP}});
+    _event(e, T0, {{"car", PARKED_CAR}}, {{"car", PARKED_CAR}});
     auto jitter = shift(LEAVES, 6, -7);
     _event(e, T0 + MIN, {{"person", LEAVES}}, {{"person", jitter}});
     _event(e, T0 + 2 * MIN, {{"person", LEAVES}}, {{"person", jitter}});
@@ -211,11 +214,13 @@ void test_r_early_alerts::test_json_round_trip()
     r.from_json(e.to_json());
     RTF_ASSERT_EQUAL(r.anchor_count("c", T0 + 3 * MIN), (size_t)2);
     r.event_started("c");
-    RTF_ASSERT_EQUAL((int)r.consider("c", "car", 0.9f, JEEP, T0 + 3 * MIN).verdict, (int)E::early_anchored);
+    RTF_ASSERT_EQUAL((int)r.consider("c", "car", 0.9f, PARKED_CAR, T0 + 3 * MIN).verdict, (int)E::early_anchored);
     RTF_ASSERT_EQUAL((int)r.consider("c", "person", 0.9f, LEAVES, T0 + 3 * MIN).verdict, (int)E::early_anchored);
 
     // A file it can't read changes nothing; bad entries are skipped.
     r.from_json("not json");
+    RTF_ASSERT_EQUAL(r.anchor_count("c", T0 + 3 * MIN), (size_t)2);
+    r.from_json("[1, 2]");
     RTF_ASSERT_EQUAL(r.anchor_count("c", T0 + 3 * MIN), (size_t)2);
     r.from_json(R"({"c": [{"class": "car", "x1": 1}], "d": "x", "e": [{"class": "car", "x1": 400, "y1": 300, "x2": 560, "y2": 390, "sightings": 1, "strong": true, "last_seen": )" + to_string(T0) + "}]}");
     RTF_ASSERT_EQUAL(r.anchor_count("c", T0), (size_t)0);

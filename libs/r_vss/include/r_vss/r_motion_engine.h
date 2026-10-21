@@ -184,6 +184,12 @@ public:
     // Set before start().
     enum { PROBE_INTERVAL_MS = 2000 };
     void set_probe(r_motion_probe_fn probe) { _probe = std::move(probe); }
+    // Whether a key frame gets a probe: significant, its camera not already
+    // confirmed by MOG2, and PROBE_INTERVAL_MS since the last (-1: none).
+    static bool probe_due(bool confirmed, bool significant, int64_t last_probe_ts, int64_t ts)
+    {
+        return !confirmed && significant && (last_probe_ts < 0 || ts - last_probe_ts >= PROBE_INTERVAL_MS);
+    }
 
 private:
     void _entry_point();

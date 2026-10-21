@@ -406,4 +406,12 @@ void test_r_motion_engine::test_probe_starts_event_on_first_frame()
     RTF_ASSERT_EQUAL(refused.probe_ts[0], plain.start_ts);
     for(size_t i = 1; i < refused.probe_ts.size(); ++i)
         RTF_ASSERT(refused.probe_ts[i] - refused.probe_ts[i - 1] >= (int64_t)r_motion_engine::PROBE_INTERVAL_MS);
+
+    // Which frames get one: significant, not yet confirmed, and spaced.
+    typedef r_motion_engine M;
+    RTF_ASSERT(M::probe_due(false, true, -1, 5000));
+    RTF_ASSERT(!M::probe_due(false, false, -1, 5000));
+    RTF_ASSERT(!M::probe_due(true, true, -1, 5000));
+    RTF_ASSERT(!M::probe_due(false, true, 4000, 4000 + M::PROBE_INTERVAL_MS - 1));
+    RTF_ASSERT(M::probe_due(false, true, 4000, 4000 + M::PROBE_INTERVAL_MS));
 }
