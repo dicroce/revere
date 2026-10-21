@@ -24,7 +24,7 @@ struct r_lag_snapshot
 };
 
 // How far one camera's frames reach us behind live, without trusting the
-// camera's clock (camera clocks can be wrong or jump; Raccoon Cam 5's did).
+// camera's clock (camera clocks can be wrong, and some jump).
 // Over RTSP/TCP nothing is dropped: a link that can't carry the stream
 // buffers instead, and the camera silently falls further behind. Events have
 // to be near real time (a person at the door → a push with a picture), so
