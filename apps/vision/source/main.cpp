@@ -1695,7 +1695,12 @@ int run_overlay(const overlay_opts& opts)
 
         if(!need_draw && chrono::steady_clock::now() - last_draw < idle_redraw)
         {
-            SDL_WaitEventTimeout(nullptr, 4);
+            // SDL_Delay, not SDL_WaitEventTimeout: SDL 2's wait path hands
+            // other threads a wakeup_window it clears without its lock, so a
+            // push from any thread (SDL's own CoreAudio hot-plug listener when
+            // headphones connect, say) can crash in Cocoa_SendWakeupEvent.
+            // The loop polls events at the top, so 4 ms is the most it waits.
+            SDL_Delay(4);
             continue;
         }
         need_draw = false;
