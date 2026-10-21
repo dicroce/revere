@@ -43,6 +43,7 @@ target_link_libraries(
     r_av
     r_motion
     r_disco
+    r_db
     r_onvif
     r_storage
     r_utils

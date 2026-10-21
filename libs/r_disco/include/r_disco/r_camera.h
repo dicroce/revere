@@ -47,6 +47,10 @@ struct r_camera
     // The tier automatic verification last chose (2 or 3), kept across
     // restarts; null when not verified.
     r_utils::r_nullable<int> motion_tier_verified;
+    // RTSP transport to the camera: "TCP" (or null, the default) or "UDP".
+    // With TCP, a camera that answers but won't stream over it falls back to
+    // UDP automatically (see r_vss::r_rtsp_transport); UDP is used as is.
+    r_utils::r_nullable<std::string> rtsp_transport;
 
     std::string stream_config_hash;
 };
