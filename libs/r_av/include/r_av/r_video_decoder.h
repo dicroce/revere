@@ -70,7 +70,8 @@ private:
     AVCodecContext* _context;
     AVCodecParserContext* _parser;
     bool _parse_input;
-    const uint8_t* _buffer;
+    std::vector<uint8_t> _input;  // the attached data plus zeroed AV_INPUT_BUFFER_PADDING_SIZE
+    const uint8_t* _buffer;       // into _input
     size_t _buffer_size;
     const uint8_t* _pos;
     int _remaining_size;
