@@ -68,14 +68,31 @@ mv "$WORK_DIR/install/revere" "$PKG_DIR/opt/revere"
 rm -rf "$PKG_DIR/opt/revere/system_plugins"
 find "$PKG_DIR/opt/revere" -name '*.a' -delete
 
+# Without it Revere still records, but finds no objects (tier 1 and 3 run YOLO).
+if [ ! -f "$PKG_DIR/opt/revere/motion_plugins/yolov8_motion_plugin.so" ]; then
+    echo "Warning: no yolov8_motion_plugin.so in the build; this package has no object detection."
+    echo "         Configure with NCNN_TOP_DIR set (see docs/BUILDING.md) to build it."
+fi
+
 mkdir -p "$PKG_DIR/usr/share/applications" "$PKG_DIR/usr/share/icons/hicolor/256x256/apps"
 cp "$PROJECT_DIR/apps/revere/R.png" "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/revere.png"
+cp "$PROJECT_DIR/apps/vision/V.png" "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/vision.png"
 cat > "$PKG_DIR/usr/share/applications/revere.desktop" << 'EOF'
 [Desktop Entry]
 Type=Application
 Name=Revere
 Exec=/opt/revere/revere
 Icon=revere
+Categories=AudioVideo;Video;
+Terminal=false
+EOF
+cat > "$PKG_DIR/usr/share/applications/vision.desktop" << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Vision
+Comment=Watch Revere's cameras, live and recorded
+Exec=/opt/revere/vision
+Icon=vision
 Categories=AudioVideo;Video;
 Terminal=false
 EOF

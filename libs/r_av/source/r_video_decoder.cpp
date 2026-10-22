@@ -1,6 +1,8 @@
 
 #include "r_av/r_video_decoder.h"
+#include "r_av/r_h264_frame_num.h"
 #include "r_utils/r_exception.h"
+#include "r_utils/r_logger.h"
 #include "r_utils/r_std_utils.h"
 #include <cstring>
 #include <libavutil/hwcontext.h>
@@ -10,7 +12,6 @@ using namespace r_utils;
 using namespace r_utils::r_std_utils;
 using namespace std;
 
-static const uint8_t READ_PADDING = 32;
 
 static const char* _accel_name(r_hw_accel accel)
 {
@@ -32,6 +33,86 @@ static string _ff_rc_to_msg(int rc)
         R_THROW(("Unknown ff return code."));
     return string(msg_buffer);
 }
+
+// Lost frames on VideoToolbox. VideoToolbox decodes H.264 with its own
+// reference state; when frames are missing (a frame_num gap: RTP loss drops
+// whole frames, keyframes included) it reports no error and predicts the
+// pictures that follow from whatever surface it has, often one from seconds
+// earlier, so old pictures come back mid-stream (and are re-encoded as such
+// into clips and live video). Software decoding conceals a gap from the last
+// picture instead: smeared, but never out of order.
+//
+// So after a gap: keep decoding, but output nothing until the next IDR. If
+// none comes within GAP_FREEZE_SECONDS (long-GOP and "smart" cameras send one
+// every 4-10 s or more), replay the GOP so far into a software decoder and
+// output its pictures until the IDR, then go back to hardware alone.
+static const double GAP_FREEZE_SECONDS = 2.0;
+// The GOP is kept for that replay. Past this size (a long GOP at a high bitrate)
+// it isn't, and a gap holds until the IDR instead: 16 MB covers 8 s at 16 Mbit/s.
+static const size_t GAP_MAX_GOP_BYTES = 16 * 1024 * 1024;
+
+struct r_video_decoder::gap_guard
+{
+    r_h264_frame_num_tracker tracker;
+    std::string tag;
+    r_decoder_gap_stats stats;
+
+    // The current GOP, from its IDR, for a software replay (with read padding).
+    vector<vector<uint8_t>> gop;
+    vector<size_t> gop_sizes;
+    size_t gop_bytes {0};
+    bool gop_ok {false};
+
+    bool hiding {false};
+    uint64_t pictures_since_gap {0};
+    uint64_t episode_gaps {0};
+    uint64_t episode_hidden {0};
+    uint64_t episode_software {0};
+
+    AVCodecContext* sw_ctx {nullptr};
+    AVFrame* sw_out {nullptr};
+    bool sw_out_ready {false};
+
+    ~gap_guard()
+    {
+        end_episode();
+    }
+
+    void end_episode()
+    {
+        if(hiding)
+            R_LOG_WARNING("video decode%s%s: frames lost before decode (%llu gap%s); held back %llu picture%s and decoded %llu in software until the next keyframe",
+                          tag.empty() ? "" : " ", tag.c_str(),
+                          (unsigned long long)episode_gaps, episode_gaps == 1 ? "" : "s",
+                          (unsigned long long)episode_hidden, episode_hidden == 1 ? "" : "s",
+                          (unsigned long long)episode_software);
+        hiding = false;
+        sw_out_ready = false;
+        if(sw_out)
+            av_frame_free(&sw_out);
+        if(sw_ctx)
+            avcodec_free_context(&sw_ctx);
+    }
+
+    // Sends one packet to the software decoder; sw_out_ready says whether a
+    // picture came out of it (the newest, in sw_out).
+    void sw_decode(const uint8_t* data, size_t size)
+    {
+        sw_out_ready = false;
+        auto pkt = shared_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* p) { av_packet_free(&p); });
+        pkt->data = const_cast<uint8_t*>(data);
+        pkt->size = (int)size;
+        if(avcodec_send_packet(sw_ctx, pkt.get()) < 0)
+            return;
+        auto got = shared_ptr<AVFrame>(av_frame_alloc(), [](AVFrame* f) { av_frame_free(&f); });
+        while(avcodec_receive_frame(sw_ctx, got.get()) >= 0)
+        {
+            av_frame_unref(sw_out);
+            av_frame_move_ref(sw_out, got.get());
+            sw_out_ready = true;
+        }
+    }
+};
 
 bool r_av::operator<(const r_scaler_state& lhs, const r_scaler_state& rhs)
 {
@@ -122,6 +203,9 @@ r_video_decoder::r_video_decoder(AVCodecID codec_id, r_hw_accel accel, bool pars
 
     _context->flags |= AV_CODEC_FLAG_LOW_DELAY;
     _context->workaround_bugs = FF_BUG_AUTODETECT;
+
+    if(_codec_id == AV_CODEC_ID_H264 && _hw_accel == r_hw_accel::videotoolbox)
+        _gaps = make_unique<gap_guard>();
 }
 
 r_video_decoder::r_video_decoder(r_video_decoder&& obj) :
@@ -131,6 +215,7 @@ r_video_decoder::r_video_decoder(r_video_decoder&& obj) :
     _context(std::move(obj._context)),
     _parser(std::move(obj._parser)),
     _parse_input(std::move(obj._parse_input)),
+    _input(std::move(obj._input)),  // keeps its heap block: _buffer and _pos still point into it
     _buffer(std::move(obj._buffer)),
     _buffer_size(std::move(obj._buffer_size)),
     _pos(std::move(obj._pos)),
@@ -140,7 +225,8 @@ r_video_decoder::r_video_decoder(r_video_decoder&& obj) :
     _hw_device_ctx(std::move(obj._hw_device_ctx)),
     _hw_pix_fmt(std::move(obj._hw_pix_fmt)),
     _scalers(std::move(obj._scalers)),
-    _codec_opened(std::move(obj._codec_opened))
+    _codec_opened(std::move(obj._codec_opened)),
+    _gaps(std::move(obj._gaps))
 {
     obj._codec_id = AV_CODEC_ID_NONE;
     obj._hw_accel = r_hw_accel::none;
@@ -182,6 +268,7 @@ r_video_decoder& r_video_decoder::operator=(r_video_decoder&& obj)
         _parser = std::move(obj._parser);
         obj._parser = nullptr;
         _parse_input = std::move(obj._parse_input);
+        _input = std::move(obj._input);  // keeps its heap block: _buffer and _pos still point into it
         _buffer = std::move(obj._buffer);
         obj._buffer = nullptr;
         _buffer_size = std::move(obj._buffer_size);
@@ -199,6 +286,7 @@ r_video_decoder& r_video_decoder::operator=(r_video_decoder&& obj)
         obj._hw_pix_fmt = AV_PIX_FMT_NONE;
         _scalers = std::move(obj._scalers);
         _codec_opened = std::move(obj._codec_opened);
+        _gaps = std::move(obj._gaps);
 
         // _context->opaque points into obj's _hw_pix_fmt — redirect to ours
         if(_context && _hw_accel != r_hw_accel::none)
@@ -220,7 +308,10 @@ void r_video_decoder::set_extradata(const vector<uint8_t>& ed)
         _context->extradata_size = 0;
     }
 
-    _context->extradata = (uint8_t*)av_malloc(ed.size() + READ_PADDING);
+    // Zeroed padding past the end, as FFmpeg requires of extradata too.
+    _context->extradata = (uint8_t*)av_mallocz(ed.size() + AV_INPUT_BUFFER_PADDING_SIZE);
+    if(!_context->extradata)
+        R_THROW(("Unable to allocate extradata."));
     _context->extradata_size = (int)ed.size();
     memcpy(_context->extradata, ed.data(), ed.size());
 }
@@ -258,7 +349,17 @@ void r_video_decoder::_open_codec()
 
 void r_video_decoder::attach_buffer(const uint8_t* data, size_t size)
 {
-    _buffer = data;
+    // FFmpeg reads up to AV_INPUT_BUFFER_PADDING_SIZE bytes past the end of
+    // its input (the bitstream reader and the parser read ahead in words). A
+    // caller's buffer usually ends exactly at its data: a stored key frame in
+    // a vector, say. Reading past it reads someone else's heap, or faults at a
+    // page boundary. So decode from our own copy, padded with zeros. It's
+    // reused between calls, so a large key frame doesn't allocate each time.
+    _input.resize(size + AV_INPUT_BUFFER_PADDING_SIZE);
+    if(size > 0)
+        memcpy(_input.data(), data, size);
+    memset(_input.data() + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    _buffer = _input.data();
     _buffer_size = size;
     _pos = _buffer;
     _remaining_size = (int)_buffer_size;
@@ -267,6 +368,11 @@ void r_video_decoder::attach_buffer(const uint8_t* data, size_t size)
 r_codec_state r_video_decoder::decode()
 {
     _open_codec();
+
+    // A frame get() never downloaded still holds a decoder surface. Give it
+    // back before sending more input: some hardware pools (d3d11va) are fixed
+    // size, and before get() did the download the surface was already free here.
+    _release_hw_frame();
 
     auto packet = shared_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* pkt) { av_packet_free(&pkt); });
 
@@ -319,6 +425,9 @@ r_codec_state r_video_decoder::decode()
     int send_result = avcodec_send_packet(_context, packet.get());
 
     if (send_result >= 0) {
+        if(_gaps)
+            _gap_after_send(packet->data, packet->size);
+
         if(!_parse_input)
         {
             // In direct mode, entire packet was consumed
@@ -331,14 +440,9 @@ r_codec_state r_video_decoder::decode()
 
         if(recv_result >= 0)
         {
-            if(_hw_accel != r_hw_accel::none && _frame->format == _hw_pix_fmt)
-            {
-                int tr = av_hwframe_transfer_data(_sw_frame, _frame, 0);
-                if(tr < 0)
-                    R_THROW(("Failed to transfer hw frame to cpu: %s", _ff_rc_to_msg(tr).c_str()));
-                av_frame_unref(_frame);
-                av_frame_move_ref(_frame, _sw_frame);
-            }
+            // A hardware frame stays on the GPU until get() asks for it (#71).
+            if(_gaps && !_gap_take_output())
+                return (_parse_input && _remaining_size > 0) ? decode() : R_CODEC_STATE_HUNGRY;
             return R_CODEC_STATE_HAS_OUTPUT;
         }
         else if (recv_result == AVERROR_EOF)
@@ -360,7 +464,14 @@ r_codec_state r_video_decoder::decode()
         int recv_result = avcodec_receive_frame(_context, _frame);
 
         if (recv_result >= 0)
+        {
+            // The packet wasn't sent. Hiding this picture leaves the caller
+            // nothing to take, so send it now rather than let the caller move
+            // on: losing it would be a new gap (or the awaited IDR).
+            if(_gaps && !_gap_take_output())
+                return decode();
             return R_CODEC_STATE_AGAIN_HAS_OUTPUT;
+        }
         else
             return R_CODEC_STATE_HUNGRY;
     }
@@ -377,34 +488,52 @@ r_codec_state r_video_decoder::flush()
 {
     _open_codec();
 
+    _release_hw_frame();
+
     int ret = avcodec_send_packet(_context, nullptr);
     if(ret == AVERROR(EAGAIN))
     {
-        auto rf_ret = avcodec_receive_frame(_context, _frame);
-
-        if(rf_ret == AVERROR(EAGAIN) || rf_ret == AVERROR_EOF)
-            return R_CODEC_STATE_EOF;
-        else if(rf_ret < 0)
-            R_THROW(("Failed to flush decoder: %s", _ff_rc_to_msg(rf_ret).c_str()));
-
-        return R_CODEC_STATE_HAS_OUTPUT;
+        return _flush_receive();
     }
     else if(ret == AVERROR_EOF)
         return R_CODEC_STATE_EOF;
     else if(ret < 0)
         R_THROW(("Failed to flush decoder: %s", _ff_rc_to_msg(ret).c_str()));
 
-    auto rf_ret = avcodec_receive_frame(_context, _frame);
-    if(rf_ret == AVERROR(EAGAIN) || rf_ret == AVERROR_EOF)
-        return R_CODEC_STATE_EOF;
-    else if(rf_ret < 0)
-        R_THROW(("Failed to flush decoder: %s", _ff_rc_to_msg(rf_ret).c_str()));
+    return _flush_receive();
+}
 
-    return R_CODEC_STATE_HAS_OUTPUT;
+// The next picture still in the decoder, skipping any held back after lost frames.
+r_codec_state r_video_decoder::_flush_receive()
+{
+    while(true)
+    {
+        auto rf_ret = avcodec_receive_frame(_context, _frame);
+        if(rf_ret == AVERROR(EAGAIN) || rf_ret == AVERROR_EOF)
+            return R_CODEC_STATE_EOF;
+        else if(rf_ret < 0)
+            R_THROW(("Failed to flush decoder: %s", _ff_rc_to_msg(rf_ret).c_str()));
+
+        if(!_gaps || _gap_take_output())
+            return R_CODEC_STATE_HAS_OUTPUT;
+    }
 }
 
 shared_ptr<vector<uint8_t>> r_video_decoder::get(AVPixelFormat output_format, uint16_t output_width, uint16_t output_height, int alignment)
 {
+    // A hardware decoder's frame stays on the GPU until it is asked for: the
+    // download is a full-resolution copy, and callers that decode every frame
+    // but keep only some (a 30 fps camera at 15 fps out) skip it for the rest.
+    // Doing it here also covers frames from flush() and the EAGAIN path.
+    if(_hw_accel != r_hw_accel::none && _frame->format == _hw_pix_fmt)
+    {
+        int tr = av_hwframe_transfer_data(_sw_frame, _frame, 0);
+        if(tr < 0)
+            R_THROW(("Failed to transfer hw frame to cpu: %s", _ff_rc_to_msg(tr).c_str()));
+        av_frame_unref(_frame);
+        av_frame_move_ref(_frame, _sw_frame);
+    }
+
     // Use frame properties directly: in the hw path _context->pix_fmt is the
     // hw pixel format, but after transfer _frame holds the sw format.
     r_scaler_state state;
@@ -497,8 +626,151 @@ uint16_t r_video_decoder::input_height() const
     return (uint16_t)_context->height;
 }
 
+void r_video_decoder::set_log_tag(const string& tag)
+{
+    if(_gaps)
+        _gaps->tag = tag;
+}
+
+r_decoder_gap_stats r_video_decoder::gap_stats() const
+{
+    return _gaps ? _gaps->stats : r_decoder_gap_stats();
+}
+
+// Called with each packet the hardware decoder accepted.
+void r_video_decoder::_gap_after_send(const uint8_t* data, size_t size)
+{
+    auto& g = *_gaps;
+    auto r = g.tracker.feed(data, size);
+
+    if(r == r_h264_frame_num_tracker::IDR)
+    {
+        g.end_episode();
+        g.gop.clear();
+        g.gop_sizes.clear();
+        g.gop_bytes = 0;
+        g.gop_ok = true;
+    }
+
+    if(g.gop_ok)
+    {
+        vector<uint8_t> copy(size + AV_INPUT_BUFFER_PADDING_SIZE, 0);
+        memcpy(copy.data(), data, size);
+        g.gop.push_back(std::move(copy));
+        g.gop_sizes.push_back(size);
+        g.gop_bytes += size;
+        if(g.gop_bytes > GAP_MAX_GOP_BYTES)
+        {
+            g.gop_ok = false;
+            g.gop.clear();
+            g.gop_sizes.clear();
+            g.gop_bytes = 0;
+        }
+    }
+
+    if(r == r_h264_frame_num_tracker::GAP)
+    {
+        ++g.stats.gaps;
+        if(!g.hiding)
+        {
+            g.hiding = true;
+            g.pictures_since_gap = 0;
+            g.episode_gaps = 0;
+            g.episode_hidden = 0;
+            g.episode_software = 0;
+        }
+        ++g.episode_gaps;
+    }
+
+    if(!g.hiding)
+        return;
+
+    if(g.sw_ctx)
+    {
+        g.sw_decode(data, size);
+        return;
+    }
+
+    if(r != r_h264_frame_num_tracker::NO_PICTURE)
+        ++g.pictures_since_gap;
+
+    double fps = (_context->framerate.num > 0 && _context->framerate.den > 0) ? av_q2d(_context->framerate) : 0.0;
+    if(fps < 1.0 || fps > 120.0)
+        fps = 30.0;
+    if(!g.gop_ok || (double)g.pictures_since_gap < GAP_FREEZE_SECONDS * fps)
+        return;
+
+    // No keyframe yet: decode the rest of this GOP in software, starting from its IDR.
+    g.sw_ctx = avcodec_alloc_context3(_codec);
+    g.sw_out = av_frame_alloc();
+    if(g.sw_ctx && g.sw_out && _context->extradata && _context->extradata_size > 0)
+    {
+        g.sw_ctx->extradata = (uint8_t*)av_mallocz(_context->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
+        if(g.sw_ctx->extradata)
+        {
+            memcpy(g.sw_ctx->extradata, _context->extradata, _context->extradata_size);
+            g.sw_ctx->extradata_size = _context->extradata_size;
+        }
+    }
+    if(g.sw_ctx)
+    {
+        g.sw_ctx->thread_type = FF_THREAD_SLICE;  // frame threads would delay output
+        g.sw_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    }
+    if(!g.sw_ctx || !g.sw_out || avcodec_open2(g.sw_ctx, _codec, nullptr) < 0)
+    {
+        R_LOG_ERROR("video decode%s%s: could not open a software decoder for the rest of the GOP; holding until the next keyframe",
+                    g.tag.empty() ? "" : " ", g.tag.c_str());
+        if(g.sw_out)
+            av_frame_free(&g.sw_out);
+        if(g.sw_ctx)
+            avcodec_free_context(&g.sw_ctx);
+        g.gop_ok = false;  // don't retry every packet
+        return;
+    }
+    // The last SPS/PPS seen, in case this GOP doesn't carry its own.
+    auto ps = g.tracker.parameter_sets();
+    if(!ps.empty())
+    {
+        ps.resize(ps.size() + AV_INPUT_BUFFER_PADDING_SIZE, 0);
+        g.sw_decode(ps.data(), ps.size() - AV_INPUT_BUFFER_PADDING_SIZE);
+    }
+    for(size_t i = 0; i < g.gop.size(); ++i)
+        g.sw_decode(g.gop[i].data(), g.gop_sizes[i]);
+}
+
+// Called with each picture the hardware decoder put out (in _frame): false
+// to hide it; with a software picture to show instead, that replaces it.
+bool r_video_decoder::_gap_take_output()
+{
+    auto& g = *_gaps;
+    if(!g.hiding)
+        return true;
+
+    av_frame_unref(_frame);
+    if(g.sw_ctx && g.sw_out_ready)
+    {
+        av_frame_move_ref(_frame, g.sw_out);
+        g.sw_out_ready = false;
+        ++g.stats.software_pictures;
+        ++g.episode_software;
+        return true;
+    }
+    ++g.stats.hidden_pictures;
+    ++g.episode_hidden;
+    return false;
+}
+
+void r_video_decoder::_release_hw_frame()
+{
+    if(_frame && _hw_accel != r_hw_accel::none && _frame->format == _hw_pix_fmt)
+        av_frame_unref(_frame);
+}
+
 void r_video_decoder::_clear()
 {
+    _gaps.reset();
+
     for(auto s : _scalers)
         sws_freeContext(s.second);
     _scalers.clear();

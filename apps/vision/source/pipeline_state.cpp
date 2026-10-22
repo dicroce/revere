@@ -395,6 +395,13 @@ void pipeline_state::play_live()
     // delivery jitter onto the timestamps our presentation pacer paces by
     // (observed as run-to-run flips between clean and paired pts).
     add_argument(arguments, "buffer-mode", string("0"));
+    // TCP, as playback uses: rtspsrc otherwise tries UDP first, and a
+    // high-resolution keyframe is hundreds of RTP packets in a burst. Under
+    // load the socket buffer overflows, and each lost packet shows as a
+    // smeared, part-updated picture wherever there's motion until the next
+    // keyframe. The restream is revere's own (usually on this machine), so
+    // TCP costs nothing.
+    add_argument(arguments, "protocols", string("TCP"));
     _source.set_args(arguments);
 
     _source.play();

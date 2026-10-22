@@ -5,7 +5,11 @@ name: Build & Release macOS
 #                          PUBLIC GitHub Release for that tag
 #   - workflow_dispatch -> build only (assets named with the short git hash)
 #
-# Target: Apple Silicon (arm64) on macos-14. Unsigned (users clear quarantine).
+# Target: Apple Silicon (arm64) on macos-15. Unsigned (users clear quarantine).
+# The app needs at least the runner's macOS (Homebrew's bottles target it).
+# Homebrew bottles only its three newest supported macOS versions; on an older
+# runner it compiles every updated formula (llvm, vtk, opencv, ...) and the job
+# hits the 6-hour limit in brew install, as macos-14 did from v0.0.30 on.
 on:
   push:
     tags: ['v*']
@@ -16,7 +20,7 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-14   # Apple Silicon (arm64)
+    runs-on: macos-15   # Apple Silicon (arm64)
 
     steps:
       - name: Checkout revere

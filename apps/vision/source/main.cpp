@@ -404,6 +404,16 @@ static overlay_opts _parse_overlay_opts(const std::vector<std::string>& args)
 
 int run_overlay(const overlay_opts& opts);
 
+// Audio is optional: with no usable audio device (a headless Pi, a machine
+// with sound disabled, or an SDL built without ALSA/PulseAudio, which falls
+// back to OSS's missing /dev/dsp) the video still plays. The audio pipeline
+// already skips a device that fails to open.
+static void _init_audio()
+{
+    if(SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
+        R_LOG_WARNING("No audio (%s); video plays without sound.", SDL_GetError());
+}
+
 // Fire-and-forget process launch for the per-camera overlay windows. NOT
 // r_process: its Windows destructor WaitForSingleObject(INFINITE)s on the child
 // (detached is ignored there), so a local r_process would freeze this app until
@@ -508,11 +518,12 @@ int main(int argc, char** argv)
     auto top_dir = vision::top_dir();
 
     // Setup SDL
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) != 0)
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
     {
         R_LOG_ERROR("SDL_Init error: %s", SDL_GetError());
         return 1;
     }
+    _init_audio();
     SDL_EnableScreenSaver();
 
     // Create window with specific flags for software rendering
@@ -1208,7 +1219,10 @@ int main(int argc, char** argv)
         comm_thread.join();
     }
 
-    // Cleanup
+    // Cleanup. The icon textures go before the renderer: SDL_DestroyRenderer
+    // frees every texture it made, so destroying them later, when the global
+    // map is torn down at exit, would touch freed memory.
+    g_icon_textures.clear();
     ImGui_ImplSDLRenderer_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
@@ -1335,11 +1349,12 @@ int run_overlay(const overlay_opts& opts)
         return 0;
     }
 
-    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) != 0)
+    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
     {
         R_LOG_ERROR("SDL_Init error: %s", SDL_GetError());
         return 1;
     }
+    _init_audio();
     SDL_EnableScreenSaver();
 
     // Restore this camera's saved placement/pin. A missing or corrupt file, or
@@ -1574,6 +1589,7 @@ int run_overlay(const overlay_opts& opts)
     // so frames are still picked up on time. Drawing every vsync instead (120
     // Hz on ProMotion displays) costs a lot of CPU for nothing new on screen.
     bool need_draw = true;
+    bool min_size_set = false;  // see SDL_SetWindowMinimumSize below
     auto last_draw = chrono::steady_clock::now();
 
     auto toggle_on_top = [&]() {
@@ -1695,7 +1711,12 @@ int run_overlay(const overlay_opts& opts)
 
         if(!need_draw && chrono::steady_clock::now() - last_draw < idle_redraw)
         {
-            SDL_WaitEventTimeout(nullptr, 4);
+            // SDL_Delay, not SDL_WaitEventTimeout: SDL 2's wait path hands
+            // other threads a wakeup_window it clears without its lock, so a
+            // push from any thread (SDL's own CoreAudio hot-plug listener when
+            // headphones connect, say) can crash in Cocoa_SendWakeupEvent.
+            // The loop polls events at the top, so 4 ms is the most it waits.
+            SDL_Delay(4);
             continue;
         }
         need_draw = false;
@@ -1789,6 +1810,16 @@ int run_overlay(const overlay_opts& opts)
             uint16_t cb_h = (uint16_t)(6.0f * ImGui::GetTextLineHeightWithSpacing());
             float block_top = (float)win_h - (float)cb_h;
 
+            // Once the time bar's height is known (it follows the font): never
+            // smaller than the corner strip and the time bar need, so the strip
+            // can't run off the left edge or over the bar. SDL also grows a
+            // window that's smaller, such as one saved at its old size.
+            if(!min_size_set)
+            {
+                SDL_SetWindowMinimumSize(window, overlay_min_width(), overlay_min_height((float)cb_h));
+                min_size_set = true;
+            }
+
             ImGui::PushStyleVar(ImGuiStyleVar_Alpha, bar_alpha);
 
             // The full, existing control bar: timeline scrub, play/live, export,
@@ -1864,6 +1895,8 @@ int run_overlay(const overlay_opts& opts)
     ph.stop();
     }  // pipeline_host destructs here, before gstreamer_deinit()
 
+    // Before the renderer, which frees its textures (see main's cleanup).
+    g_icon_textures.clear();
     ImGui_ImplSDLRenderer_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();

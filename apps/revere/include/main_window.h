@@ -11,6 +11,8 @@
 // action calls the callback the old cards called.
 
 #include "imgui_ui.h"
+#include "r_ui_utils/log_tail.h"
+#include "r_ui_utils/text_selection.h"
 #include "r_utils/r_qr_code.h"
 #include "r_utils/3rdparty/json/json.h"
 #include <algorithm>
@@ -106,33 +108,8 @@ inline void parse_plugin_status(const std::string& status_json, plugin_view& pv)
     catch(...) {}
 }
 
-// The last lines the logger wrote, for the log pane. add() may be called from
-// any thread (it's installed as the logger callback); the UI reads under the lock.
-class log_tail
-{
-public:
-    explicit log_tail(size_t max_lines = 1000) : _max_lines(max_lines) {}
-
-    void add(const std::string& line)
-    {
-        std::lock_guard<std::mutex> g(_mtx);
-        _lines.push_back(line);
-        while(_lines.size() > _max_lines)
-            _lines.pop_front();
-    }
-
-    template<typename CB>
-    void with_lines(CB cb) const
-    {
-        std::lock_guard<std::mutex> g(_mtx);
-        cb(_lines);
-    }
-
-private:
-    mutable std::mutex _mtx;
-    std::deque<std::string> _lines;
-    size_t _max_lines;
-};
+// The log pane's lines (see r_ui_utils/log_tail.h).
+using r_ui_utils::log_tail;
 
 struct main_window_state
 {
@@ -144,6 +121,9 @@ struct main_window_state
     bool plugins_open {true};
     bool show_log {false};
     float log_height {180.0f};
+    // Text selected in the log pane, and whether the mouse is dragging it out.
+    r_ui_utils::text_selection log_selection;
+    bool log_dragging {false};
     std::string selected_plugin;    // empty unless a plugin row is selected
     // False until r_devices' first cache fill; the camera sections say
     // "Loading cameras..." rather than that they're empty.
@@ -1000,6 +980,158 @@ inline void plugin_status_line(const plugin_view& p, const main_window_fonts& fo
     ImGui::PopFont();
 }
 
+// The log pane's lines, selectable like text: drag to select (dragging past
+// the top or bottom scrolls), double-click for a line, Cmd/Ctrl+C to copy,
+// Cmd/Ctrl+A for all of it, or the right-click menu and the Copy all button.
+// Only the visible lines are drawn and hit-tested (ImGuiListClipper, one line
+// per row), so a full log costs a screenful a frame; the text is gathered
+// only when copied. follow: scroll to the newest line.
+//
+// All of it runs inside log.with_lines(), under log_tail's lock, which the
+// logger callback (log_tail::add) also takes: nothing in that lambda may log
+// (R_LOG_*), or the UI thread deadlocks on itself. The clipboard and the
+// toast run after it, outside the lock.
+inline void log_pane(main_window_state& state, const log_tail& log, bool follow)
+{
+    using r_ui_utils::text_pos;
+    auto& io = ImGui::GetIO();
+    auto& sel = state.log_selection;
+    const float line_h = ImGui::GetTextLineHeightWithSpacing();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 wp = ImGui::GetWindowPos();
+    const ImVec2 mouse = io.MousePos;
+    const ImU32 selected_bg = ImGui::GetColorU32(ImGuiCol_TextSelectedBg);
+    const float eol_w = ImGui::CalcTextSize(" ").x;
+    auto* dl = ImGui::GetWindowDrawList();
+    auto text_w = [](const char* b, const char* e) { return ImGui::CalcTextSize(b, e).x; };
+
+    // The pane, not a scrollbar or the button: where a drag starts.
+    const bool over_text = ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered();
+    // ImGui 1.88 (vendored) reports Cmd as io.KeySuper and Ctrl as io.KeyCtrl
+    // on every platform, so macOS shortcuts test KeySuper, as its InputText
+    // does. Later versions swap the two under ConfigMacOSXBehaviors (Cmd then
+    // arrives as KeyCtrl): after an ImGui upgrade this becomes io.KeyCtrl alone.
+    const bool mac = io.ConfigMacOSXBehaviors;
+    const bool shortcut = (mac ? (io.KeySuper && !io.KeyCtrl) : (io.KeyCtrl && !io.KeySuper)) && !io.KeyAlt && !io.KeyShift;
+    const bool keys = ImGui::IsWindowFocused() && shortcut && !io.WantTextInput;
+
+    std::string copy;
+    bool copied_all = false;
+    log.with_lines([&](const std::deque<std::string>& lines, uint64_t first) {
+        const uint64_t last = first + lines.size();
+        auto select_all = [&]() {
+            if(!lines.empty())
+                sel.select({first, 0}, {last - 1, lines.back().size()});
+        };
+        // The place in the text under p (clamped to the first and last lines).
+        auto pos_at = [&](const ImVec2& p) -> text_pos {
+            if(lines.empty())
+                return {first, 0};
+            float row = std::floor((p.y - origin.y) / line_h);
+            if(row < 0.0f)
+                return {first, 0};
+            if(row >= (float)lines.size())
+                return {last - 1, lines.back().size()};
+            const auto& text = lines[(size_t)row];
+            return {first + (uint64_t)row, r_ui_utils::col_at_x(text, p.x - origin.x, text_w)};
+        };
+
+        ImGuiListClipper clipper;
+        clipper.Begin((int)lines.size(), line_h);
+        while(clipper.Step())
+        {
+            for(int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
+            {
+                const auto& text = lines[i];
+                size_t from, to;
+                bool eol;
+                if(sel.line_span(first + i, text.size(), from, to, eol))
+                {
+                    auto p = ImGui::GetCursorScreenPos();
+                    float x1 = p.x + text_w(text.data(), text.data() + from);
+                    float x2 = p.x + text_w(text.data(), text.data() + to) + (eol ? eol_w : 0.0f);
+                    dl->AddRectFilled(ImVec2(x1, p.y), ImVec2(x2, p.y + line_h), selected_bg);
+                }
+                ImGui::TextUnformatted(text.data(), text.data() + text.size());
+            }
+        }
+        if(follow)
+            ImGui::SetScrollHereY(1.0f);
+
+        if(over_text)
+        {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
+            if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            {
+                auto p = pos_at(mouse);
+                sel.select({p.line, 0}, {p.line, lines.empty() ? 0 : lines[(size_t)(p.line - first)].size()});
+                state.log_dragging = false;
+            }
+            else if(ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            {
+                if(io.KeyShift && !sel.empty())
+                    sel.extend(pos_at(mouse));
+                else
+                    sel.begin(pos_at(mouse));
+                state.log_dragging = true;
+            }
+        }
+        if(state.log_dragging)
+        {
+            if(ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            {
+                sel.extend(pos_at(mouse));
+                if(mouse.y < wp.y)
+                    ImGui::SetScrollY(ImGui::GetScrollY() - line_h);
+                else if(mouse.y > wp.y + ImGui::GetWindowHeight())
+                    ImGui::SetScrollY(ImGui::GetScrollY() + line_h);
+            }
+            else
+                state.log_dragging = false;
+        }
+
+        if(keys && ImGui::IsKeyPressed(ImGuiKey_A, false))
+            select_all();
+        if(keys && ImGui::IsKeyPressed(ImGuiKey_C, false) && !sel.empty())
+            copy = r_ui_utils::selected_text(sel, lines, first);
+
+        ImGui::PushStyleColor(ImGuiCol_Text, r_ui_utils::theme::text_primary);
+        if(ImGui::BeginPopupContextWindow("##log_menu", ImGuiPopupFlags_MouseButtonRight))
+        {
+            if(ImGui::MenuItem("Copy", mac ? "Cmd+C" : "Ctrl+C", false, !sel.empty()))
+                copy = r_ui_utils::selected_text(sel, lines, first);
+            if(ImGui::MenuItem("Select all", mac ? "Cmd+A" : "Ctrl+A", false, !lines.empty()))
+                select_all();
+            if(ImGui::MenuItem("Copy all", nullptr, false, !lines.empty()))
+            {
+                copy = r_ui_utils::all_text(lines);
+                copied_all = true;
+            }
+            ImGui::EndPopup();
+        }
+
+        // Copy all, pinned to the pane's top right over the text.
+        const char* label = "Copy all";
+        auto size = button_size(label, true);
+        ImGui::SetCursorScreenPos(ImVec2(wp.x + ImGui::GetWindowContentRegionMax().x + ImGui::GetScrollX() - size.x,
+                                         wp.y + ImGui::GetWindowContentRegionMin().y + ImGui::GetScrollY()));
+        if(styled_button(label, button_kind::normal, true) && !lines.empty())
+        {
+            copy = r_ui_utils::all_text(lines);
+            copied_all = true;
+        }
+        ImGui::PopStyleColor();
+    });
+
+    // Outside the log's lock: the clipboard can take a moment.
+    if(!copy.empty())
+    {
+        ImGui::SetClipboardText(copy.c_str());
+        if(copied_all)
+            state.show_toast("Log copied to the clipboard.");
+    }
+}
+
 } // namespace main_window_detail
 
 // Text that acts like a link: link color, hand cursor, underline and the URL
@@ -1537,17 +1669,10 @@ inline void main_window(
         ImGui::BeginChild("##log", ImVec2(w, 0.0f), false, ImGuiWindowFlags_AlwaysUseWindowPadding | ImGuiWindowFlags_HorizontalScrollbar);
         ImGui::PushFont(font(fonts.key_18));
         ImGui::PushStyleColor(ImGuiCol_Text, text_secondary);
-        // Follow new lines while scrolled to the bottom; stay put after scrolling up.
+        // Follow new lines while scrolled to the bottom; stay put after
+        // scrolling up, or while selecting.
         const bool at_bottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f;
-        log.with_lines([&](const std::deque<std::string>& lines) {
-            ImGuiListClipper clipper;
-            clipper.Begin((int)lines.size());
-            while(clipper.Step())
-                for(int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
-                    ImGui::TextUnformatted(lines[i].c_str());
-        });
-        if(at_bottom)
-            ImGui::SetScrollHereY(1.0f);
+        log_pane(state, log, at_bottom && !state.log_dragging);
         ImGui::PopStyleColor();
         ImGui::PopFont();
         ImGui::EndChild();

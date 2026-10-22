@@ -61,6 +61,13 @@ yolov8_motion_plugin::yolov8_motion_plugin(r_vss::r_motion_event_plugin_host* ho
 
         _initialized = true;
 
+        // Static anchors learnt before a restart (see r_vss::r_early_alerts).
+        auto anchors_path = _anchors_path();
+        if (!anchors_path.empty() && r_fs::file_exists(anchors_path)) {
+            auto bytes = r_fs::read_file(anchors_path);
+            _early.from_json(std::string(bytes.begin(), bytes.end()));
+        }
+
         // Start processing thread
         _running = true;
         _thread = std::thread(&yolov8_motion_plugin::_entry_point, this);
@@ -116,8 +123,9 @@ void yolov8_motion_plugin::post_motion_event(r_vss::r_motion_event evt, const st
     msg.motion_regions = motion_regions;
 
     if (evt == r_vss::motion_event_update) {
-        // UPDATE frames: buffer them, and queue periodic frames every 5 seconds for long events
-        const int64_t LONG_EVENT_INTERVAL_MS = 5000;
+        // UPDATE frames: buffer them, and queue periodic frames: every second
+        // until the event has sent an early alert, then every 5 seconds.
+        const int64_t LONG_EVENT_INTERVAL_MS = _early.look_interval_ms(camera_id);
         bool should_queue_periodic = false;
 
         {
@@ -195,6 +203,7 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             }
             // Record motion start time
             _camera_motion_start_time[msg.camera_id] = msg.ts;
+            _early.event_started(msg.camera_id);
 
             // Process START frame immediately
             size_t expected_size = msg.width * msg.height * 3;
@@ -203,7 +212,10 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
                 auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox, msg.motion_regions, &endpoint_detections);
                 _camera_start_frame_detections[msg.camera_id] = std::move(endpoint_detections);
                 if(r_vss::has_valid_motion_evidence(msg.motion_bbox, msg.motion_regions))
+                {
                     _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
+                    _early_alerts_for(msg.camera_id, detections);
+                }
                 _camera_last_processed_ts[msg.camera_id] = msg.ts;
             }
         }
@@ -215,6 +227,7 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
                 auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox, msg.motion_regions);
                 _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
                 _camera_last_processed_ts[msg.camera_id] = msg.ts;
+                _early_alerts_for(msg.camera_id, detections);
             }
         }
 
@@ -264,6 +277,15 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
 
             // Analyze all detections for this motion sequence and log results
             _analyze_and_log_detections(msg.camera_id, msg.ts);
+
+            // Learn static anchors from the frames that started and ended it.
+            std::vector<r_vss::r_early_alerts::r_seen> start_seen, end_seen;
+            for (const auto& d : _camera_start_frame_detections[msg.camera_id])
+                start_seen.push_back({get_class_name(d.class_id), {d.x1, d.y1, d.x2, d.y2}});
+            for (const auto& d : _camera_end_frame_detections[msg.camera_id])
+                end_seen.push_back({get_class_name(d.class_id), {d.x1, d.y1, d.x2, d.y2}});
+            if (_early.event_ended(msg.camera_id, msg.ts, start_seen, end_seen))
+                _save_anchors();
 
             // Clear the detection list for this camera
             _camera_detections[msg.camera_id].clear();
@@ -635,6 +657,8 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
         for (const auto& detection : it->second) {
             if (disproven.find(detection.class_id) != disproven.end()) continue;
             if (is_static_detection(detection)) continue;
+            // Already on the bus, sent early.
+            if (_early.sent_early(camera_id, get_class_name(detection.class_id), detection.timestamp)) continue;
 
             r_vss::r_detection det;
             det.camera_id  = camera_id;
@@ -647,6 +671,63 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
             det.y2         = detection.y2;
             _host->emit_detection(det);
         }
+    }
+}
+
+void yolov8_motion_plugin::_early_alerts_for(const std::string& camera_id, const std::vector<Detection>& detections)
+{
+    for (const auto& d : detections) {
+        const char* class_name = get_class_name(d.class_id);
+        auto decision = _early.consider(camera_id, class_name, d.score, {d.x1, d.y1, d.x2, d.y2}, d.timestamp);
+        switch (decision.verdict) {
+            case r_vss::r_early_alerts::early_not_alerting:
+            case r_vss::r_early_alerts::early_already_sent:
+                continue;
+            case r_vss::r_early_alerts::early_below_floor:
+                R_LOG_INFO("yolov8_motion_plugin: early %s on %s at %.0f%%: held, under the %.0f%% floor",
+                           class_name, camera_id.c_str(), d.score * 100, r_vss::r_early_alerts::MIN_CONFIDENCE * 100);
+                continue;
+            case r_vss::r_early_alerts::early_anchored:
+                R_LOG_INFO("yolov8_motion_plugin: early %s on %s at %.0f%%: held, on a %s static anchor (IoU %.2f)",
+                           class_name, camera_id.c_str(), d.score * 100, decision.strong_anchor ? "parked" : "recurring", decision.anchor_iou);
+                continue;
+            case r_vss::r_early_alerts::early_sent:
+                break;
+        }
+
+        R_LOG_INFO("yolov8_motion_plugin: early %s on %s at %.0f%%: sent", class_name, camera_id.c_str(), d.score * 100);
+        r_vss::r_detection det;
+        det.camera_id  = camera_id;
+        det.ts         = d.timestamp;
+        det.class_name = class_name;
+        det.confidence = d.score;
+        det.x1         = d.x1;
+        det.y1         = d.y1;
+        det.x2         = d.x2;
+        det.y2         = d.y2;
+        _host->emit_detection(det);
+    }
+}
+
+std::string yolov8_motion_plugin::_anchors_path() const
+{
+    if (!_host || _host->get_top_dir().empty())
+        return std::string();
+    return _host->get_top_dir() + PATH_SLASH + "yolov8_static_anchors.json";
+}
+
+void yolov8_motion_plugin::_save_anchors()
+{
+    auto path = _anchors_path();
+    if (path.empty())
+        return;
+    try {
+        auto j = _early.to_json();
+        auto tmp = path + ".tmp";
+        r_fs::write_file((const uint8_t*)j.data(), j.size(), tmp);
+        r_fs::atomic_rename_file(tmp, path);
+    } catch (const std::exception& e) {
+        R_LOG_ERROR("yolov8_motion_plugin: couldn't save static anchors: %s", e.what());
     }
 }
 
