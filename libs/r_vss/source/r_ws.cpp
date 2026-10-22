@@ -11,6 +11,7 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_blob_tree.h"
+#include "r_utils/r_qr_code.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_disco/r_camera.h"
 #include "r_storage/r_storage_file.h"
@@ -25,6 +26,9 @@
 #include <functional>
 #include <array>
 #include <fstream>
+#include <filesystem>
+#include <algorithm>
+#include <cmath>
 
 using namespace r_utils;
 using namespace r_http;
@@ -147,6 +151,13 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     _server.add_route(METHOD_POST, "/update_camera_properties", std::bind(&r_ws::_post_update_camera_properties, this, _1, _2, _3));
     _server.add_route(METHOD_POST, "/forget_camera", std::bind(&r_ws::_post_forget_camera, this, _1, _2, _3));
     _server.add_route(METHOD_POST, "/add_rtsp_camera", std::bind(&r_ws::_post_add_rtsp_camera, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/storage_info", std::bind(&r_ws::_get_storage_info, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/storage_move", std::bind(&r_ws::_post_storage_move, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/storage_change_retention", std::bind(&r_ws::_post_storage_change_retention, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/storage_op", std::bind(&r_ws::_get_storage_op, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/storage_op_cancel", std::bind(&r_ws::_post_storage_op_cancel, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/system_plugins", std::bind(&r_ws::_get_system_plugins, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/system_plugin_enabled", std::bind(&r_ws::_post_system_plugin_enabled, this, _1, _2, _3));
 
     _server.add_route(METHOD_GET, "/auth_status", std::bind(&r_ws::_get_auth_status, this, _1, _2, _3));
     _server.add_route(METHOD_POST, "/login", std::bind(&r_ws::_post_login, this, _1, _2, _3));
@@ -203,6 +214,12 @@ void r_ws::stop()
         _measure_q.wake();
         _measure_th.join();
     }
+    // A storage operation runs to its end (only a move's copy can stop early);
+    // its suspend/resume are served by the stream keeper's thread, which is
+    // still running here.
+    _storage_op.cancel_requested = true;
+    if(_storage_th.joinable())
+        _storage_th.join();
     _server.stop();
 }
 
@@ -3012,6 +3029,390 @@ r_http::r_server_response r_ws::_post_add_rtsp_camera(const r_http::r_web_server
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to add RTSP camera."));
+}
+
+// A thrown r_http exception reaches the client as a bare status code; the
+// storage endpoints answer their user errors with {"error": message} instead,
+// which the web UI shows.
+static r_server_response _json_reply(const json& j, status_code code = response_ok)
+{
+    r_server_response response;
+    if(code != response_ok)
+        response.set_status_code(code);
+    response.set_content_type("text/json");
+    response.set_body(j.dump());
+    return response;
+}
+
+static r_server_response _json_error(status_code code, const string& message)
+{
+    return _json_reply(json{{"error", message}}, code);
+}
+
+// The camera's recording bitrate, 0 when it isn't receiving video.
+static int64_t _camera_byte_rate(r_stream_keeper& stream_keeper, const string& camera_id)
+{
+    for(auto& st : stream_keeper.fetch_stream_status())
+        if(st.camera.id == camera_id)
+            return st.bytes_per_second;
+    return 0;
+}
+
+bool r_ws::_start_storage_op(const string& kind, const r_camera& camera, function<void(r_storage_op&)> work)
+{
+    lock_guard<mutex> g(_storage_mutex);
+    if(_storage_op.running)
+        return false;
+    if(_storage_th.joinable())
+        _storage_th.join();
+
+    _storage_op.progress = 0.f;
+    _storage_op.done = false;
+    _storage_op.error = false;
+    _storage_op.cancel_requested = false;
+    _storage_op.set_status("");
+    _storage_op.running = true;
+    _storage_op_camera_id = camera.id;
+    _storage_op_kind = kind;
+
+    _storage_th = thread([this, work](){ work(_storage_op); });
+    return true;
+}
+
+r_http::r_server_response r_ws::_get_storage_info(const r_http::r_web_server<r_utils::r_socket>&,
+                                                  r_utils::r_socket&,
+                                                  const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("camera_id") == args.end())
+            return _json_error(response_bad_request, "Missing camera_id.");
+
+        auto maybe_camera = _devices.get_camera_by_id(args["camera_id"]);
+        if(maybe_camera.is_null())
+            return _json_error(response_not_found, "Unknown camera.");
+        auto camera = maybe_camera.value();
+
+        int64_t bps = _camera_byte_rate(_stream_keeper, camera.id);
+        int64_t nb = camera.n_record_file_blocks.is_null() ? 0 : camera.n_record_file_blocks.value();
+        int64_t bs = camera.record_file_block_size.is_null() ? 0 : camera.record_file_block_size.value();
+
+        json j;
+        j["camera_id"] = camera.id;
+        j["record_file_path"] = camera.record_file_path.is_null() ? string() : storage_path(_top_dir, camera.record_file_path.value());
+        j["byte_rate"] = bps;
+        j["file_size"] = nb * bs;
+        j["file_size_text"] = human_readable_file_size((double)(nb * bs));
+        // The days the file holds at the current bitrate (as the desktop shows).
+        j["retention_days"] = (bps > 0 && nb > 0 && bs > 0) ? ((double)(nb * bs) / (double)bps / 86400.0) : 0.0;
+
+        // With days: the file size Change retention would make, for the dialog.
+        if(args.find("days") != args.end())
+        {
+            double days = r_string_utils::s_to_double(args["days"]);
+            if(bps > 0 && days > 0.0)
+            {
+                auto sz = required_file_size_for_retention_hours((int64_t)(days * 24.0), bps);
+                j["new_file_size"] = sz.first * sz.second;
+                j["new_file_size_text"] = human_readable_file_size((double)(sz.first * sz.second));
+            }
+        }
+
+        return _json_reply(j);
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to get storage info."));
+}
+
+r_http::r_server_response r_ws::_post_storage_move(const r_http::r_web_server<r_utils::r_socket>&,
+                                                   r_utils::r_socket&,
+                                                   const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+
+        auto maybe_camera = _devices.get_camera_by_id(req.value("camera_id", string()));
+        if(maybe_camera.is_null())
+            return _json_error(response_not_found, "Unknown camera.");
+        auto camera = maybe_camera.value();
+        if(camera.record_file_path.is_null())
+            return _json_error(response_bad_request, "This camera has no recording file.");
+
+        auto new_dir = r_string_utils::strip(req.value("new_dir", string()));
+        bool start_fresh = req.value("start_fresh", false);
+        bool delete_confirmed = req.value("delete_confirmed", false);
+
+        // A folder on the machine Revere runs on, which the web UI can't browse.
+        std::error_code ec;
+        if(new_dir.empty() || !std::filesystem::path(new_dir).is_absolute())
+            return _json_error(response_bad_request, "Enter the full path of a folder on the machine Revere runs on.");
+        if(!std::filesystem::is_directory(new_dir, ec))
+            return _json_error(response_bad_request, "There's no folder at " + new_dir + " on the machine Revere runs on.");
+        if(start_fresh && !delete_confirmed)
+            return _json_error(response_bad_request, "Starting fresh deletes this camera's recordings; confirm that first.");
+
+        auto current_dir = std::filesystem::path(storage_path(_top_dir, camera.record_file_path.value())).parent_path();
+        if(!start_fresh && std::filesystem::equivalent(current_dir, new_dir, ec))
+            return _json_error(response_bad_request, "The recording files are already in that folder.");
+
+        auto top_dir = _top_dir;
+        auto& stream_keeper = _stream_keeper;
+        auto& devices = _devices;
+        bool started = _start_storage_op(start_fresh ? "reset" : "move", camera, [top_dir, &stream_keeper, &devices, camera, new_dir, start_fresh](r_storage_op& op){
+            if(start_fresh)
+                storage_reset(top_dir, stream_keeper, devices, camera, new_dir, op);
+            else
+                storage_move(top_dir, stream_keeper, devices, camera, new_dir, op);
+        });
+        if(!started)
+            return _json_error(response_bad_request, "Another storage operation is still running.");
+
+        return _json_reply(json{{"status", "started"}});
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to start moving storage."));
+}
+
+r_http::r_server_response r_ws::_post_storage_change_retention(const r_http::r_web_server<r_utils::r_socket>&,
+                                                               r_utils::r_socket&,
+                                                               const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+
+        auto maybe_camera = _devices.get_camera_by_id(req.value("camera_id", string()));
+        if(maybe_camera.is_null())
+            return _json_error(response_not_found, "Unknown camera.");
+        auto camera = maybe_camera.value();
+        if(camera.record_file_path.is_null())
+            return _json_error(response_bad_request, "This camera has no recording file.");
+
+        double days = req.value("days", 0.0);
+        if(!req.value("delete_confirmed", false))
+            return _json_error(response_bad_request, "Resizing deletes this camera's recordings; confirm that first.");
+        if(!(days > 0.0))
+            return _json_error(response_bad_request, "Enter a number of days greater than 0.");
+
+        int64_t bps = _camera_byte_rate(_stream_keeper, camera.id);
+        if(bps <= 0)
+            return _json_error(response_bad_request, "This camera isn't receiving video, so there's no bitrate to size the file from.");
+
+        auto sz = required_file_size_for_retention_hours((int64_t)(days * 24.0), bps);
+
+        auto top_dir = _top_dir;
+        auto& stream_keeper = _stream_keeper;
+        auto& devices = _devices;
+        bool started = _start_storage_op("retention", camera, [top_dir, &stream_keeper, &devices, camera, sz](r_storage_op& op){
+            storage_change_retention(top_dir, stream_keeper, devices, camera, sz.first, sz.second, op);
+        });
+        if(!started)
+            return _json_error(response_bad_request, "Another storage operation is still running.");
+
+        return _json_reply(json{{"status", "started"}});
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to start changing retention."));
+}
+
+r_http::r_server_response r_ws::_get_storage_op(const r_http::r_web_server<r_utils::r_socket>&,
+                                                r_utils::r_socket&,
+                                                const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    // running until the operation ends; then error, or done (a move cancelled
+    // part way is done, with the status saying so).
+    json j;
+    {
+        lock_guard<mutex> g(_storage_mutex);
+        j["kind"] = _storage_op_kind;
+        j["camera_id"] = _storage_op_camera_id;
+    }
+    j["running"] = _storage_op.running.load();
+    j["done"] = _storage_op.done.load();
+    j["error"] = _storage_op.error.load();
+    j["progress"] = _storage_op.progress.load();
+    j["status"] = _storage_op.get_status();
+    return _json_reply(j);
+}
+
+// A plugin status colour as one of the status tones the UIs draw ("ok",
+// "warning", "error", "neutral"), as the desktop's plugin_status_color does: a
+// name, "#rrggbb" or [r, g, b]; a colour by hue, and anything grey, dark or
+// outside green/amber/red is neutral.
+static string _plugin_status_tone(const json& c)
+{
+    double r = 0, g = 0, b = 0;
+    if(c.is_string())
+    {
+        auto n = r_string_utils::to_lower(c.get<string>());
+        if(n == "green" || n == "ok" || n == "success") return "ok";
+        if(n == "yellow" || n == "amber" || n == "orange" || n == "warn" || n == "warning") return "warning";
+        if(n == "red" || n == "error" || n == "danger") return "error";
+        if(n.size() != 7 || n[0] != '#' || !all_of(n.begin() + 1, n.end(), [](unsigned char ch) { return isxdigit(ch); }))
+            return "neutral";
+        auto v = stoul(n.substr(1), nullptr, 16);
+        r = ((v >> 16) & 0xff) / 255.0; g = ((v >> 8) & 0xff) / 255.0; b = (v & 0xff) / 255.0;
+    }
+    else if(c.is_array() && c.size() >= 3 && c[0].is_number() && c[1].is_number() && c[2].is_number())
+    {
+        auto ch = [&](size_t i) { return clamp(c[i].get<int>(), 0, 255) / 255.0; };
+        r = ch(0); g = ch(1); b = ch(2);
+    }
+    else
+        return "neutral";
+
+    double mx = max({r, g, b}), mn = min({r, g, b}), d = mx - mn;
+    double sat = mx > 0 ? d / mx : 0, val = mx;
+    if(sat < 0.25 || val < 0.2)
+        return "neutral";
+    double deg = (mx == r) ? 60.0 * fmod((g - b) / d, 6.0) : (mx == g) ? 60.0 * ((b - r) / d + 2.0) : 60.0 * ((r - g) / d + 4.0);
+    if(deg < 0) deg += 360.0;
+    if(deg >= 75.0 && deg < 170.0) return "ok";
+    if(deg >= 20.0 && deg < 75.0) return "warning";
+    if(deg < 20.0 || deg >= 330.0) return "error";
+    return "neutral";
+}
+
+// A QR code as SVG, with the 4-module quiet zone; empty if the text doesn't fit.
+static string _qr_svg(const string& text)
+{
+    auto qr = r_qr_code::encode(text);
+    if(qr.size == 0)
+        return string();
+    const int quiet = 4, span = qr.size + quiet * 2;
+    string path;
+    for(int y = 0; y < qr.size; ++y)
+        for(int x = 0; x < qr.size; ++x)
+            if(qr.dark(x, y))
+                path += r_string_utils::format("M%d %dh1v1h-1z", x + quiet, y + quiet);
+    return r_string_utils::format("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %d %d\" shape-rendering=\"crispEdges\">"
+                                  "<rect width=\"%d\" height=\"%d\" fill=\"#fff\"/><path d=\"%s\" fill=\"#000\"/></svg>",
+                                  span, span, span, span, path.c_str());
+}
+
+// The system plugins, as the desktop's Plugins section shows them:
+//   {"plugins": [{"name", "display_name", "version", "enabled",
+//                 "status": {"label", "tone"} or null, "lines": [...]}]}
+// lines are the plugin's status message lines as it gives them (text, with url
+// or copy; tiles; qr), a qr line also carrying its code drawn as "qr_svg".
+// Authenticated, unlike /version: a plugin's lines can hold a pairing code.
+r_http::r_server_response r_ws::_get_system_plugins(const r_http::r_web_server<r_utils::r_socket>&,
+                                                    r_utils::r_socket&,
+                                                    const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        json plugins = json::array();
+        for(const auto& name : _stream_keeper.get_loaded_system_plugins())
+        {
+            json p;
+            p["name"] = name;
+            p["display_name"] = "";
+            p["version"] = _stream_keeper.get_system_plugin_version(name);
+            p["enabled"] = _stream_keeper.is_system_plugin_enabled(name);
+            p["status"] = nullptr;
+            p["lines"] = json::array();
+
+            // A plugin's JSON that doesn't parse is left out, as on the desktop.
+            auto status = _stream_keeper.get_system_plugin_status(name);
+            if(!status.empty())
+            {
+                auto sj = json::parse(status, nullptr, false);
+                if(sj.is_object())
+                {
+                    if(sj.contains("name") && sj["name"].is_string())
+                        p["display_name"] = sj["name"];
+                    p["status"] = {{"label", sj.value("label", string("Unknown"))},
+                                   {"tone", sj.contains("color") ? _plugin_status_tone(sj["color"]) : string("neutral")}};
+                }
+            }
+
+            auto message = _stream_keeper.get_system_plugin_status_message(name);
+            if(!message.empty())
+            {
+                auto mj = json::parse(message, nullptr, false);
+                if(mj.is_object() && mj.contains("lines") && mj["lines"].is_array())
+                {
+                    for(auto line : mj["lines"])
+                    {
+                        if(!line.is_object())
+                            continue;
+                        if(line.contains("qr") && line["qr"].is_string())
+                            line["qr_svg"] = _qr_svg(line["qr"].get<string>());
+                        p["lines"].push_back(line);
+                    }
+                }
+            }
+
+            plugins.push_back(p);
+        }
+        return _json_reply(json{{"plugins", plugins}});
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to get system plugins."));
+}
+
+r_http::r_server_response r_ws::_post_system_plugin_enabled(const r_http::r_web_server<r_utils::r_socket>&,
+                                                            r_utils::r_socket&,
+                                                            const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto req = json::parse(request.get_body_as_string(), nullptr, false);
+        if(!req.is_object() || !req.contains("name") || !req["name"].is_string() || !req.contains("enabled") || !req["enabled"].is_boolean())
+            return _json_error(response_bad_request, "Expected {\"name\": ..., \"enabled\": true|false}.");
+
+        auto name = req["name"].get<string>();
+        auto loaded = _stream_keeper.get_loaded_system_plugins();
+        if(find(loaded.begin(), loaded.end(), name) == loaded.end())
+            return _json_error(response_not_found, "No plugin named " + name + ".");
+
+        _stream_keeper.set_system_plugin_enabled(name, req["enabled"].get<bool>());
+        return _json_reply(json{{"name", name}, {"enabled", _stream_keeper.is_system_plugin_enabled(name)}});
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to set the plugin's enabled state."));
+}
+
+r_http::r_server_response r_ws::_post_storage_op_cancel(const r_http::r_web_server<r_utils::r_socket>&,
+                                                        r_utils::r_socket&,
+                                                        const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    // Only a move's copy between filesystems can stop part way.
+    if(_storage_op.running)
+        _storage_op.cancel_requested = true;
+    return _json_reply(json{{"status", "ok"}});
 }
 
 std::string r_ws::_password_path() const

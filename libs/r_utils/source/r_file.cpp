@@ -4,6 +4,7 @@
 #include <random>
 #include <regex>
 #include <algorithm>
+#include <ctime>
 #ifdef IS_WINDOWS
 #include <Windows.h>
 #include <Io.h>
@@ -248,6 +249,63 @@ void r_utils::r_fs::atomic_rename_file(const string& oldPath, const string& newP
     if(rename(oldPath.c_str(), newPath.c_str()) < 0)
         R_STHROW(r_internal_exception, ("Unable to rename %s to %s", oldPath.c_str(), newPath.c_str()));
 #endif
+}
+
+void r_utils::r_fs::atomic_write_file(const uint8_t* bytes, size_t len, const string& path)
+{
+    string dir, name;
+    break_path(path, dir, name);
+    auto tmp_path = temp_file_name(dir, name + ".tmp-");
+
+    try
+    {
+        {
+            auto f = r_file::open(tmp_path, "wb");
+            if(len > 0 && fwrite(bytes, 1, len, f) != len)
+                R_STHROW(r_io_exception, ("Unable to write file: %s", tmp_path.c_str()));
+            if(fflush(f) != 0)
+                R_STHROW(r_io_exception, ("Unable to flush file: %s", tmp_path.c_str()));
+#ifdef IS_WINDOWS
+            if(_commit(_fileno(f)) != 0)
+                R_STHROW(r_io_exception, ("Unable to sync file: %s", tmp_path.c_str()));
+#elif defined(IS_MACOS)
+            // fsync on macOS doesn't reach the platter; F_FULLFSYNC does. Some
+            // filesystems refuse it, and fsync is the next best.
+            if(fcntl(::fileno(f), F_FULLFSYNC) != 0 && fsync(::fileno(f)) != 0)
+                R_STHROW(r_io_exception, ("Unable to sync file: %s", tmp_path.c_str()));
+#else
+            if(fsync(::fileno(f)) != 0)
+                R_STHROW(r_io_exception, ("Unable to sync file: %s", tmp_path.c_str()));
+#endif
+        }
+        atomic_rename_file(tmp_path, path);
+    }
+    catch(...)
+    {
+        if(file_exists(tmp_path))
+            remove_file(tmp_path);
+        throw;
+    }
+}
+
+string r_utils::r_fs::quarantine_file(const string& path)
+{
+    auto now = time(nullptr);
+    struct tm tm_now;
+#ifdef IS_WINDOWS
+    localtime_s(&tm_now, &now);
+#else
+    localtime_r(&now, &tm_now);
+#endif
+    char stamp[32];
+    strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tm_now);
+
+    auto bad_path = path + ".bad-" + stamp;
+    for(int i = 2; file_exists(bad_path); ++i)
+        bad_path = path + ".bad-" + stamp + "-" + to_string(i);
+
+    atomic_rename_file(path, bad_path);
+    return bad_path;
 }
 
 bool r_utils::r_fs::file_exists(const string& path)

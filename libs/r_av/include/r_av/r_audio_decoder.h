@@ -71,7 +71,8 @@ private:
     AVCodecID _codec_id;
     const AVCodec* _codec;
     AVCodecContext* _context;
-    const uint8_t* _buffer;
+    std::vector<uint8_t> _input;  // the attached data plus zeroed AV_INPUT_BUFFER_PADDING_SIZE
+    const uint8_t* _buffer;       // into _input
     size_t _buffer_size;
     AVFrame* _frame;
     std::map<r_resampler_state, SwrContext*> _resamplers;

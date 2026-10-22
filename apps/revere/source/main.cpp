@@ -23,6 +23,7 @@
 #endif
 
 #include "macos_activation.h"
+#include "vision_launch.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
 #include "imgui/imgui_impl_sdl2.h"
@@ -36,6 +37,7 @@
 #include <fstream>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_logger.h"
@@ -52,6 +54,7 @@
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_disk_benchmark.h"
 #include "r_vss/r_build_info.h"
+#include "r_vss/r_storage_ops.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_file.h"
 #include "r_storage/r_md_storage_file.h"
@@ -109,12 +112,13 @@ using namespace std;
 using namespace r_utils;
 using namespace revere;
 
+#ifndef IS_MACOS
 // Fire-and-forget process launch for the per-camera "View" overlay windows. NOT
 // r_process (whose Windows destructor WaitForSingleObject(INFINITE)s on the
 // child — detached is ignored there — so a local one would freeze the UI until
 // the overlay closes). Windows uses CreateProcess + immediate CloseHandle;
-// Linux/macOS use r_process's detached path (which clears its pid on start(),
-// making its destructor a no-op).
+// Linux uses r_process's detached path (which clears its pid on start(),
+// making its destructor a no-op). macOS uses _launch_vision() below.
 static void _launch_detached(const std::string& cmd)
 {
 #ifdef IS_WINDOWS
@@ -149,6 +153,27 @@ static void _launch_detached(const std::string& cmd)
     }
 #endif
 }
+#endif
+
+#ifdef IS_MACOS
+// Opens Vision (with `args`, if any) in front of revere. False if there's no
+// Vision to open; the caller tells the user.
+static bool _launch_vision(const vector<string>& args)
+{
+    auto app = find_vision_app(r_fs::working_directory());
+    if(app.empty())
+    {
+        R_LOG_ERROR("vision launch failed: no runnable vision.app next to revere.app or in /Applications");
+        return false;
+    }
+    // Lets it come to the front; without this, macOS 14+ keeps it behind our window.
+    yield_activation_to("com.revere.vision");
+    open_app(app, args);
+    return true;
+}
+
+static const char* VISION_NOT_FOUND = "Couldn't find Vision. It belongs next to Revere: Vision.app in Applications.";
+#endif
 
 // Strip the [0] [1] [2]... backtrace lines that r_utils exceptions append to
 // what() so the user-facing error modal shows only the human-readable cause.
@@ -627,18 +652,14 @@ void _delete_camera_files(const r_disco::r_camera& camera)
     }
 }
 
-struct storage_op_state
+// The dialogs' side of a storage operation; progress, status and the
+// running/done/error/cancel flags come from r_vss::r_storage_op, which the
+// operations themselves (r_vss/r_storage_ops.h) report through.
+struct storage_op_state : r_vss::r_storage_op
 {
     std::string camera_id;
     std::string camera_name;
     std::string new_dir;
-    std::atomic<float> progress{0.f};
-    std::mutex mtx;
-    std::string status;
-    std::atomic<bool> running{false};
-    std::atomic<bool> done{false};
-    std::atomic<bool> error{false};
-    std::atomic<bool> cancel_requested{false};
     bool start_fresh{false};
     bool delete_confirmed{false};
 
@@ -660,418 +681,31 @@ static storage_op_state s_storage_op;
 // What the logger writes, for the main window's log pane (View > Show log).
 static revere::log_tail s_log_tail;
 
-static vector<pair<string,string>> _get_storage_file_pairs(const r_disco::r_camera& camera)
+// The storage operations live in r_vss (r_storage_ops.h), shared with the web
+// UI's endpoints; these run them against this process's data dir.
+static string _storage_top_dir()
 {
-    vector<pair<string,string>> files;
-
-    if(!camera.record_file_path.is_null())
-    {
-        auto p = _get_storage_path(camera.record_file_path.value());
-        if(r_fs::file_exists(p))
-        {
-            auto fn = std::filesystem::path(p).filename().string();
-            files.push_back({p, fn});
-        }
-    }
-
-    if(!camera.motion_detection_file_path.is_null())
-    {
-        auto mdb = _get_storage_path(camera.motion_detection_file_path.value());
-        auto base = (mdb.size() >= 4 && mdb.substr(mdb.size()-4) == ".mdb")
-                    ? mdb.substr(0, mdb.size()-4) : mdb;
-        for(const char* ext : {".mdb", ".db", ".mdnts", ".mdnts.db", ".mdnts.db-shm", ".mdnts.db-wal"})
-        {
-            auto p = base + ext;
-            if(r_fs::file_exists(p))
-            {
-                auto fn = std::filesystem::path(p).filename().string();
-                files.push_back({p, fn});
-            }
-        }
-    }
-
-    return files;
+    return r_fs::platform_path(revere::top_dir());
 }
 
-// Copy src to dst in chunks. progress_cb returns false to cancel.
-static void _copy_file_chunked(const string& src, const string& dst,
-                                std::function<bool(uint64_t, uint64_t)> progress_cb)
+static void _do_move_storage(r_vss::r_stream_keeper& stream_keeper, r_disco::r_devices& devices, r_disco::r_camera camera, const string& new_dir, storage_op_state& op)
 {
-    constexpr size_t CHUNK = 4 * 1024 * 1024; // 4 MB
-    auto file_size = std::filesystem::file_size(src);
-
-    std::ifstream in(src, std::ios::binary);
-    if(!in) R_THROW(("Failed to open %s for reading", src.c_str()));
-    std::ofstream out(dst, std::ios::binary | std::ios::trunc);
-    if(!out) R_THROW(("Failed to open %s for writing", dst.c_str()));
-
-    vector<char> buf(CHUNK);
-    uint64_t copied = 0;
-    while(in)
-    {
-        in.read(buf.data(), CHUNK);
-        auto n = in.gcount();
-        if(n <= 0) break;
-        out.write(buf.data(), n);
-        if(!out) R_THROW(("Write error on %s", dst.c_str()));
-        copied += n;
-        if(!progress_cb(copied, file_size))
-        {
-            out.close();
-            std::filesystem::remove(dst);
-            return; // cancelled
-        }
-    }
+    r_vss::storage_move(_storage_top_dir(), stream_keeper, devices, camera, new_dir, op);
 }
 
-static void _do_move_storage(
-    r_vss::r_stream_keeper& stream_keeper,
-    r_disco::r_devices& devices,
-    r_disco::r_camera camera,
-    const string& new_dir,
-    storage_op_state& op
-)
+static void _do_reset_storage(r_vss::r_stream_keeper& stream_keeper, r_disco::r_devices& devices, r_disco::r_camera camera, const string& new_dir, storage_op_state& op)
 {
-    auto set_status = [&](const string& s) {
-        std::lock_guard<std::mutex> g(op.mtx);
-        op.status = s;
-    };
-
-    bool suspended = false;
-    try
-    {
-        auto files = _get_storage_file_pairs(camera);
-
-        // Check for conflicts before touching anything
-        for(auto& [src, fn] : files)
-        {
-            auto dst = revere::join_path(new_dir, fn);
-            if(std::filesystem::exists(dst) && src != dst)
-                R_THROW(("Destination file already exists: %s\nRemove it first or choose a different directory.", dst.c_str()));
-        }
-
-        stream_keeper.suspend(camera.id);
-        suspended = true;
-
-        if(files.empty())
-        {
-            set_status("No storage files found.");
-            op.progress = 1.f;
-            op.done = true;
-            op.running = false;
-            stream_keeper.resume(camera.id);
-            return;
-        }
-
-        // Weight progress by file size so the big .nts drives the bar
-        uint64_t total_bytes = 0;
-        for(auto& [src, fn] : files)
-        {
-            std::error_code ec;
-            auto sz = std::filesystem::file_size(src, ec);
-            total_bytes += ec ? 0 : sz;
-        }
-        if(total_bytes == 0) total_bytes = 1;
-
-        string new_nts_path;
-        string new_mdb_path;
-        uint64_t bytes_done = 0;
-
-        for(auto& [src, fn] : files)
-        {
-            auto dst = revere::join_path(new_dir, fn);
-            set_status("Moving: " + fn);
-
-            std::error_code ec;
-            std::filesystem::rename(src, dst, ec);
-            if(ec)
-            {
-                // Cross-device: chunked copy so we can report progress
-                uint64_t file_size = std::filesystem::file_size(src, ec);
-                if(ec) file_size = 0;
-                uint64_t bytes_done_before = bytes_done;
-
-                _copy_file_chunked(src, dst, [&](uint64_t copied, uint64_t /*sz*/) -> bool {
-                    op.progress = (float)(bytes_done_before + copied) / (float)total_bytes;
-                    return !op.cancel_requested.load();
-                });
-                if(op.cancel_requested) R_THROW(("Cancelled"));
-                std::filesystem::remove(src, ec);
-                bytes_done += file_size;
-            }
-            else
-            {
-                // rename was instant (same filesystem)
-                uint64_t sz = 0;
-                auto fsz = std::filesystem::file_size(dst, ec);
-                if(!ec) sz = fsz;
-                bytes_done += sz;
-            }
-
-            op.progress = (float)bytes_done / (float)total_bytes;
-
-            if(!camera.record_file_path.is_null())
-                if(src == _get_storage_path(camera.record_file_path.value()))
-                    new_nts_path = dst;
-            if(!camera.motion_detection_file_path.is_null())
-                if(src == _get_storage_path(camera.motion_detection_file_path.value()))
-                    new_mdb_path = dst;
-        }
-
-        set_status("Updating database...");
-        if(!new_nts_path.empty())
-            camera.record_file_path.set_value(new_nts_path);
-        if(!new_mdb_path.empty())
-            camera.motion_detection_file_path.set_value(new_mdb_path);
-        devices.save_camera(camera);
-
-        set_status("Move complete. Recording will resume.");
-        op.progress = 1.f;
-        op.done = true;
-        op.running = false;
-        stream_keeper.resume(camera.id);
-    }
-    catch(const std::exception& e)
-    {
-        if(op.cancel_requested)
-        {
-            set_status("Move cancelled. Recording will resume.");
-            op.cancel_requested = false;
-        }
-        else
-        {
-            set_status(string("Error: ") + e.what());
-            op.error = true;
-        }
-        op.done = true;
-        op.running = false;
-        if(suspended)
-            stream_keeper.resume(camera.id);
-    }
+    r_vss::storage_reset(_storage_top_dir(), stream_keeper, devices, camera, new_dir, op);
 }
 
-static void _do_reset_storage(
-    r_vss::r_stream_keeper& stream_keeper,
-    r_disco::r_devices& devices,
-    r_disco::r_camera camera,
-    const string& new_dir,
-    storage_op_state& op
-)
+static void _do_locate_storage(r_vss::r_stream_keeper& stream_keeper, r_disco::r_devices& devices, r_disco::r_camera camera, const string& nts_path, storage_op_state& op)
 {
-    auto set_status = [&](const string& s) {
-        std::lock_guard<std::mutex> g(op.mtx);
-        op.status = s;
-    };
-
-    try
-    {
-        stream_keeper.suspend(camera.id);
-
-        set_status("Deleting old storage files...");
-        _delete_camera_files(camera);
-        op.progress = 0.3f;
-
-        // Compute target directory
-        string target_dir = new_dir;
-        if(target_dir.empty() && !camera.record_file_path.is_null())
-            target_dir = std::filesystem::path(_get_storage_path(camera.record_file_path.value())).parent_path().string();
-        if(target_dir.empty())
-            target_dir = revere::sub_dir("video");
-
-        string new_nts_path;
-        string new_mdb_path;
-
-        if(!camera.record_file_path.is_null())
-        {
-            auto fn = std::filesystem::path(_get_storage_path(camera.record_file_path.value())).filename().string();
-            new_nts_path = revere::join_path(target_dir, fn);
-        }
-        if(!camera.motion_detection_file_path.is_null())
-        {
-            auto fn = std::filesystem::path(_get_storage_path(camera.motion_detection_file_path.value())).filename().string();
-            new_mdb_path = revere::join_path(target_dir, fn);
-        }
-
-        set_status("Allocating new storage files...");
-
-        if(!new_nts_path.empty() && !camera.n_record_file_blocks.is_null() && !camera.record_file_block_size.is_null())
-        {
-            r_storage::r_storage_file::allocate(
-                new_nts_path,
-                camera.record_file_block_size.value(),
-                camera.n_record_file_blocks.value()
-            );
-        }
-        op.progress = 0.7f;
-
-        if(!new_mdb_path.empty())
-            _create_motion_files(new_mdb_path);
-        op.progress = 0.9f;
-
-        set_status("Updating database...");
-        if(!new_nts_path.empty())
-            camera.record_file_path.set_value(new_nts_path);
-        if(!new_mdb_path.empty())
-            camera.motion_detection_file_path.set_value(new_mdb_path);
-        devices.save_camera(camera);
-
-        set_status("Reset complete. Recording will resume.");
-        op.progress = 1.f;
-        op.done = true;
-        op.running = false;
-        stream_keeper.resume(camera.id);
-    }
-    catch(const std::exception& e)
-    {
-        set_status(string("Error: ") + e.what());
-        op.error = true;
-        op.running = false;
-        stream_keeper.resume(camera.id);
-    }
+    r_vss::storage_locate(_storage_top_dir(), stream_keeper, devices, camera, nts_path, op);
 }
 
-// Repair (locate): adopt an existing .nts the user pointed us at. Validates it
-// the same way the recorder would (missing / truncated / bad magic all throw),
-// takes block geometry from the file header so retention math and any later
-// reset use the real ring size, reuses a sibling .mdb if one exists (creates
-// one otherwise when motion detection is on), then repoints the camera row.
-static void _do_locate_storage(
-    r_vss::r_stream_keeper& stream_keeper,
-    r_disco::r_devices& devices,
-    r_disco::r_camera camera,
-    const string& nts_path,
-    storage_op_state& op
-)
+static void _do_change_retention(r_vss::r_stream_keeper& stream_keeper, r_disco::r_devices& devices, r_disco::r_camera camera, int64_t new_num_blocks, int64_t new_block_size, storage_op_state& op)
 {
-    auto set_status = [&](const string& s) {
-        std::lock_guard<std::mutex> g(op.mtx);
-        op.status = s;
-    };
-
-    try
-    {
-        stream_keeper.suspend(camera.id);
-
-        set_status("Checking recording file...");
-        {
-            // Throws r_not_found / generic on missing, truncated or non-nanots files.
-            r_storage::r_storage_file_reader reader(nts_path);
-            (void)reader.last_ts();
-        }
-        op.progress = 0.4f;
-
-        // Geometry straight from the nanots header (see nanots.h):
-        //   8: block_size (u32)   12: n_blocks (u32)
-        uint32_t block_size = 0, n_blocks = 0;
-        {
-            std::ifstream in(nts_path, std::ios::binary);
-            char hdr[16] = {0};
-            if(!in.read(hdr, sizeof(hdr)))
-                R_THROW(("Unable to read header of %s", nts_path.c_str()));
-            memcpy(&block_size, hdr + 8, 4);
-            memcpy(&n_blocks, hdr + 12, 4);
-        }
-        if(block_size == 0)
-            R_THROW(("%s does not look like a nanots recording file.", nts_path.c_str()));
-        op.progress = 0.6f;
-
-        auto dot = nts_path.find_last_of('.');
-        auto mdb_path = (dot == string::npos) ? nts_path + ".mdb" : nts_path.substr(0, dot) + ".mdb";
-        bool do_motion = !camera.do_motion_detection.is_null() && camera.do_motion_detection.value();
-        if(do_motion && !r_fs::file_exists(mdb_path))
-        {
-            set_status("Creating motion files...");
-            _create_motion_files(mdb_path);
-        }
-        op.progress = 0.8f;
-
-        set_status("Updating database...");
-        camera.record_file_path.set_value(nts_path);
-        camera.record_file_block_size.set_value(block_size);
-        if(n_blocks > 0)
-            camera.n_record_file_blocks.set_value(n_blocks);
-        if(do_motion)
-            camera.motion_detection_file_path.set_value(mdb_path);
-        devices.save_camera(camera);
-
-        set_status("Recording file attached. Recording will resume.");
-        op.progress = 1.f;
-        op.done = true;
-        op.running = false;
-        stream_keeper.resume(camera.id);
-    }
-    catch(const std::exception& e)
-    {
-        set_status(string("Error: ") + e.what());
-        op.error = true;
-        op.running = false;
-        stream_keeper.resume(camera.id);
-    }
-}
-
-// Reallocate a camera's recording ring at a new size (new retention). Mirrors
-// _do_reset_storage but swaps in a caller-computed block geometry and reuses the
-// existing file paths. A fixed-size ring can't be resized in place, so this
-// clears the camera's existing recordings — the UI confirms before calling.
-static void _do_change_retention(
-    r_vss::r_stream_keeper& stream_keeper,
-    r_disco::r_devices& devices,
-    r_disco::r_camera camera,
-    int64_t new_num_blocks,
-    int64_t new_block_size,
-    storage_op_state& op
-)
-{
-    auto set_status = [&](const string& s) {
-        std::lock_guard<std::mutex> g(op.mtx);
-        op.status = s;
-    };
-
-    try
-    {
-        if(new_num_blocks <= 0 || new_block_size <= 0)
-            R_THROW(("Invalid retention size."));
-
-        stream_keeper.suspend(camera.id);
-
-        set_status("Deleting old recordings...");
-        _delete_camera_files(camera);
-        op.progress = 0.3f;
-
-        string nts_path;
-        string mdb_path;
-        if(!camera.record_file_path.is_null())
-            nts_path = _get_storage_path(camera.record_file_path.value());
-        if(!camera.motion_detection_file_path.is_null())
-            mdb_path = _get_storage_path(camera.motion_detection_file_path.value());
-
-        set_status("Allocating new storage file...");
-        if(!nts_path.empty())
-            r_storage::r_storage_file::allocate(nts_path, new_block_size, new_num_blocks);
-        op.progress = 0.7f;
-
-        if(!mdb_path.empty())
-            _create_motion_files(mdb_path);
-        op.progress = 0.9f;
-
-        set_status("Updating database...");
-        camera.n_record_file_blocks.set_value(new_num_blocks);
-        camera.record_file_block_size.set_value(new_block_size);
-        devices.save_camera(camera);
-
-        set_status("Retention updated. Recording will resume.");
-        op.progress = 1.f;
-        op.done = true;
-        op.running = false;
-        stream_keeper.resume(camera.id);
-    }
-    catch(const std::exception& e)
-    {
-        set_status(string("Error: ") + e.what());
-        op.error = true;
-        op.running = false;
-        stream_keeper.resume(camera.id);
-    }
+    r_vss::storage_change_retention(_storage_top_dir(), stream_keeper, devices, camera, new_num_blocks, new_block_size, op);
 }
 
 void _on_new_file(revere::assignment_state& as, r_ui_utils::wizard& camera_setup_wizard, r_disco::r_devices& devices, revere_ui_state& ui_state, r_vss::r_stream_keeper& streamKeeper)
@@ -2974,11 +2608,12 @@ int main(int argc, char** argv)
     auto log_path = revere::sub_dir("logs");
     revere::sub_dir("config");  // Ensure config dir exists for plugins
 
-    revere::configure_state cfg_state(r_fs::platform_path(top_dir));
-    cfg_state.load();
-
     r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
     r_logger::set_log_callback([](r_logger::LOG_LEVEL, const std::string& line) { s_log_tail.add(line); });
+
+    // After the logger, so a settings file that can't be read is in the log.
+    revere::configure_state cfg_state(r_fs::platform_path(top_dir));
+    cfg_state.load();
 
     // Install before any worker threads start, so nothing can crash unwatched.
     // Dumps land beside the logs so "send me your logs directory" collects the
@@ -3215,23 +2850,22 @@ int main(int argc, char** argv)
         maximize_when_shown = false;
     }
 
+#ifdef IS_MACOS
+    {
+        auto vision_app = find_vision_app(r_fs::working_directory());
+        if(vision_app.empty())
+            R_LOG_ERROR("vision: no runnable vision.app next to revere.app or in /Applications; View and Launch Vision won't work");
+        else
+            R_LOG_INFO("vision: %s", vision_app.c_str());
+    }
+#else
     string vision_cmd = "vision";
 #ifdef IS_WINDOWS
     vision_cmd = "vision.exe";
-#elif defined(IS_MACOS)
-    // On macOS, use 'open' command to launch the app bundle
-    // Look for vision.app next to revere.app first, then fall back to /Applications
-    {
-        auto exe_dir = r_fs::working_directory();
-        auto local_vision = exe_dir + "/../../../vision.app";
-        if(r_fs::is_dir(local_vision))
-            vision_cmd = "open -n " + local_vision;
-        else
-            vision_cmd = "open -n /Applications/Vision.app";
-    }
 #endif
 
     r_process vision_process(vision_cmd, true); // Use detached process
+#endif
 
 #if !defined(IS_MACOS)
     _set_window_icon(window);
@@ -3256,8 +2890,12 @@ int main(int argc, char** argv)
         SDL_HideWindow(window);
     }));
     tray.addEntry(Tray::Button("Launch Vision", [&]{
+#ifdef IS_MACOS
+        _launch_vision({});
+#else
         if(!vision_process.running())
             vision_process.start();
+#endif
     }));
     tray.addEntry(Tray::Button("Open local web UI", [&]{
         revere::open_url_in_browser("http://localhost:8088");
@@ -3374,6 +3012,8 @@ int main(int argc, char** argv)
     // The main window's list, detail pane and log. Each action does what the
     // matching button on the old camera cards did.
     revere::main_window_state main_window_state;
+    if(!cfg_state.load_problem().empty())
+        main_window_state.show_toast(cfg_state.load_problem(), "config_load_problem", 30.0);
     // Sections the user closed stay closed across runs; the default is open.
     main_window_state.recording_open = cfg_state.get_section_open("recording", main_window_state.recording_open);
     main_window_state.discovered_open = cfg_state.get_section_open("discovered", main_window_state.discovered_open);
@@ -3501,14 +3141,14 @@ int main(int argc, char** argv)
         auto cid = ui_state.recording_items[i].camera_id;
         if(cid.empty())
             return;
-        string args = " --camera " + cid + " --overlay --revere-ip 127.0.0.1";
 #ifdef IS_MACOS
-        // The overlay comes to the front; without this,
-        // macOS 14+ keeps it behind our window.
-        yield_activation_to("com.revere.vision");
-        _launch_detached(vision_cmd + " --args" + args);
+        if(!_launch_vision({"--camera", cid, "--overlay", "--revere-ip", "127.0.0.1"}))
+        {
+            as.error_message = VISION_NOT_FOUND;
+            camera_setup_wizard.next("error_modal");
+        }
 #else
-        _launch_detached(vision_cmd + args);
+        _launch_detached(vision_cmd + " --camera " + cid + " --overlay --revere-ip 127.0.0.1");
 #endif
     };
     main_window_actions.repair = [&](int i){
@@ -3762,8 +3402,16 @@ int main(int argc, char** argv)
                 camera_setup_wizard.next("configure_rtsp_source_camera");
             },
             [&](){
+#ifdef IS_MACOS
+                if(!_launch_vision({}))
+                {
+                    as.error_message = VISION_NOT_FOUND;
+                    camera_setup_wizard.next("error_modal");
+                }
+#else
                 if(!vision_process.running())
                     vision_process.start();
+#endif
             },
             [&](){
                 camera_setup_wizard.next("about_revere_cloud");

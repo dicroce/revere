@@ -97,6 +97,33 @@ inline void draw_speaker(ImDrawList* dl, ImVec2 c, ImU32 col, float level)
     }
 }
 
+// The strip's size, without drawing it.
+inline float corner_strip_w()
+{
+    const float gap = 2.0f;
+    return pad * 2.0f + button + gap + slider_w + 8.0f + gap + button + gap + button;
+}
+
+inline float corner_strip_h()
+{
+    return pad * 2.0f + button;
+}
+
+}
+
+// The narrowest the View window can be and still show the whole strip, with
+// its inset on both sides.
+inline int overlay_min_width()
+{
+    using namespace overlay_controls_detail;
+    return (int)std::ceil(corner_strip_w() + 2.0f * inset);
+}
+
+// The lowest it can be with the strip clear of a time bar time_bar_h high.
+inline int overlay_min_height(float time_bar_h)
+{
+    using namespace overlay_controls_detail;
+    return (int)std::ceil(inset + corner_strip_h() + inset + time_bar_h);
 }
 
 // Draws the strip and returns what was clicked. volume is the stream's gain
@@ -108,8 +135,8 @@ inline overlay_controls_result overlay_corner_controls(float win_w, float alpha,
     overlay_controls_result r;
 
     const float gap = 2.0f;
-    r.w = pad * 2.0f + button + gap + slider_w + 8.0f + gap + button + gap + button;
-    r.h = pad * 2.0f + button;
+    r.w = corner_strip_w();
+    r.h = corner_strip_h();
     r.x = win_w - inset - r.w;
     r.y = inset;
 

@@ -1,5 +1,6 @@
 
 #include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_early_alerts.h"
 #include "r_vss/r_motion_storage_sink.h"
 #include "r_av/r_muxer.h"
 #include "r_vss/r_recording_context.h"
@@ -76,6 +77,23 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
     gst_rtsp_server_set_service(_server, "8554");
 
     _mounts = gst_rtsp_server_get_mount_points(_server);
+
+    // A person on a camera's first significant key frame starts its event at
+    // once, rather than after MOG2's confirmation (see r_motion_engine).
+    _motionEngine.set_probe([this](const string& camera_id, int64_t ts, const vector<uint8_t>& frame, uint16_t w, uint16_t h,
+                                   const motion_region& bbox, const vector<motion_region>& regions) {
+        vector<r_detection> found;
+        if(!_meph.detect_objects(camera_id, ts, frame, w, h, found))
+            return false;
+        vector<r_probe_detection> dets;
+        for(const auto& d : found)
+            dets.push_back({d.class_name, d.confidence, {d.x1, d.y1, d.x2, d.y2}});
+        if(!probe_confirms(dets, bbox, regions))
+            return false;
+        R_LOG_INFO("motion probe[%s]: a person on its first significant key frame; event started without waiting for %d",
+                   _camera_name(camera_id).c_str(), (int)DEFAULT_MOTION_CONFIRM_FRAMES);
+        return true;
+    });
 
     _motionEngine.start();
     _system_plugin_host.connect_detection_bus(_meph);

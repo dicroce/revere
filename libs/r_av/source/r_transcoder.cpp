@@ -40,7 +40,8 @@ r_transcoder::r_transcoder(
     _level(41),
     _frame_count(0),
     _input_timebase(input_timebase),
-    _next_pts(-1),
+    // Fill gaps of up to a second; a longer one is a jump, not a stall
+    _selector((framerate.num + framerate.den - 1) / framerate.den),
     _last_decoded_frame(nullptr)
 {
     // Set extradata on decoder
@@ -84,7 +85,7 @@ void r_transcoder::start()
     _last_bitrate_check = std::chrono::steady_clock::now();
     _bytes_encoded_this_window = 0;
     _frame_count = 0;
-    _next_pts = -1;
+    _selector.reset();
     _last_decoded_frame = nullptr;
 
     _worker = std::thread(&r_transcoder::_worker_thread, this);
@@ -164,34 +165,19 @@ void r_transcoder::_worker_thread()
                 decode_state != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
                 continue;
 
-            // 3. Get decoded frame (with scaling)
-            auto decoded = _decoder.get(
-                AV_PIX_FMT_YUV420P,
-                _output_width,
-                _output_height,
-                1
-            );
-
-            // 4. Resampling Logic
-            // Convert input PTS to encoder timebase
-            int64_t rescaled_pts = av_rescale_q(frame.pts, _input_timebase, encoder_tb);
-
-            if (_next_pts == -1)
-                _next_pts = rescaled_pts;
-
-            // If input is behind expected, drop it (except if it's the very first one, but we handled that)
-            if (rescaled_pts < _next_pts)
-            {
-                // Drop frame to catch up
+            // 3. Fit the frame to the output rate, BEFORE it is downloaded and
+            // scaled: at a 30 fps camera and 15 fps output, half the frames
+            // are dropped, and scaling those first cost more than the decode.
+            auto plan = _selector.next(av_rescale_q(frame.pts, _input_timebase, encoder_tb));
+            if (!plan.keep)
                 continue;
-            }
 
-            // If input is ahead, duplicate previous frame to fill gap
-            while (rescaled_pts > _next_pts)
+            // 4. Fill a gap in the input by repeating the previous frame
+            for (int64_t pts = plan.pts - plan.repeats; pts < plan.pts; ++pts)
             {
                 if (_last_decoded_frame)
                 {
-                    _encoder.attach_buffer(_last_decoded_frame->data(), _last_decoded_frame->size(), _next_pts);
+                    _encoder.attach_buffer(_last_decoded_frame->data(), _last_decoded_frame->size(), pts);
                     while(true)
                     {
                         auto encode_state = _encoder.encode();
@@ -204,11 +190,18 @@ void r_transcoder::_worker_thread()
                         else break;
                     }
                 }
-                _next_pts++;
             }
 
+            // 5. Get decoded frame (with scaling)
+            auto decoded = _decoder.get(
+                AV_PIX_FMT_YUV420P,
+                _output_width,
+                _output_height,
+                1
+            );
+
             // Encode current frame
-            _encoder.attach_buffer(decoded->data(), decoded->size(), _next_pts);
+            _encoder.attach_buffer(decoded->data(), decoded->size(), plan.pts);
             
             while(true)
             {
@@ -240,7 +233,6 @@ void r_transcoder::_worker_thread()
                 }
 
             _last_decoded_frame = decoded;
-            _next_pts++;
         }
 
         // Flush encoder
@@ -256,6 +248,35 @@ void r_transcoder::_worker_thread()
     {
         R_LOG_ERROR("Transcoder worker thread error: %s", ex.what());
     }
+}
+
+r_output_frame_selector::r_output_frame_selector(int64_t max_repeats) :
+    _max_repeats(max_repeats)
+{
+}
+
+r_output_frame_plan r_output_frame_selector::next(int64_t encoder_pts)
+{
+    r_output_frame_plan plan;
+
+    if (_next_pts == -1)
+        _next_pts = encoder_pts;
+
+    // Behind the output clock: this tick is already filled, so drop the frame
+    if (encoder_pts < _next_pts)
+        return plan;
+
+    plan.keep = true;
+    auto gap = encoder_pts - _next_pts;
+    plan.repeats = (gap <= _max_repeats) ? gap : 0;
+    plan.pts = encoder_pts;
+    _next_pts = encoder_pts + 1;
+    return plan;
+}
+
+void r_output_frame_selector::reset()
+{
+    _next_pts = -1;
 }
 
 void r_transcoder::_adjust_bitrate()

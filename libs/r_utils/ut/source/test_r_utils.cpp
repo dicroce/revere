@@ -1,5 +1,7 @@
 
 #include "test_r_utils.h"
+#include <filesystem>
+#include <algorithm>
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_weekly_schedule.h"
 #include "r_utils/r_stack_trace.h"
@@ -365,6 +367,73 @@ void test_r_utils::test_mkdir_p_over_file()
     catch(const exception&) { threw = true; }
     RTF_ASSERT(threw);
     r_fs::remove_file(path);
+}
+
+// Files in dir, by name.
+static vector<string> _files_in(const string& dir)
+{
+    vector<string> names;
+    for(auto& e : std::filesystem::directory_iterator(dir))
+        names.push_back(e.path().filename().string());
+    sort(names.begin(), names.end());
+    return names;
+}
+
+void test_r_utils::test_atomic_write_file()
+{
+    auto dir = r_fs::temp_file_name(".", "awf_");
+    r_fs::mkdir(dir);
+    auto path = dir + PATH_SLASH + "cfg.json";
+
+    // New file.
+    string first = "{\"a\": 1}";
+    r_fs::atomic_write_file((const uint8_t*)first.data(), first.size(), path);
+    auto fb = r_fs::read_file(path);
+    RTF_ASSERT(string((char*)fb.data(), fb.size()) == first);
+
+    // Replacing a longer file with a shorter one leaves exactly the new bytes.
+    string longer(10000, 'x');
+    r_fs::atomic_write_file((const uint8_t*)longer.data(), longer.size(), path);
+    string shorter = "{}";
+    r_fs::atomic_write_file((const uint8_t*)shorter.data(), shorter.size(), path);
+    fb = r_fs::read_file(path);
+    RTF_ASSERT(string((char*)fb.data(), fb.size()) == shorter);
+
+    // No temp file is left behind.
+    RTF_ASSERT(_files_in(dir) == vector<string>{"cfg.json"});
+
+    // A write that can't happen (no such directory) throws and leaves nothing.
+    auto missing = dir + PATH_SLASH + "nope" + PATH_SLASH + "cfg.json";
+    bool threw = false;
+    try { r_fs::atomic_write_file((const uint8_t*)first.data(), first.size(), missing); }
+    catch(const exception&) { threw = true; }
+    RTF_ASSERT(threw);
+    RTF_ASSERT(_files_in(dir) == vector<string>{"cfg.json"});
+
+    std::filesystem::remove_all(dir);
+}
+
+void test_r_utils::test_quarantine_file()
+{
+    auto dir = r_fs::temp_file_name(".", "qf_");
+    r_fs::mkdir(dir);
+    auto path = dir + PATH_SLASH + "cfg.json";
+
+    string bad = "{\"camera_answers\": {\"cam";
+    r_fs::write_file((const uint8_t*)bad.data(), bad.size(), path);
+    auto moved = r_fs::quarantine_file(path);
+    RTF_ASSERT(!r_fs::file_exists(path));
+    RTF_ASSERT(r_string_utils::starts_with(moved, path + ".bad-"));
+    auto fb = r_fs::read_file(moved);
+    RTF_ASSERT(string((char*)fb.data(), fb.size()) == bad);
+
+    // A second bad file in the same second doesn't replace the first.
+    r_fs::write_file((const uint8_t*)bad.data(), bad.size(), path);
+    auto moved2 = r_fs::quarantine_file(path);
+    RTF_ASSERT(moved2 != moved);
+    RTF_ASSERT(r_fs::file_exists(moved) && r_fs::file_exists(moved2));
+
+    std::filesystem::remove_all(dir);
 }
 
 void test_r_utils::test_stat()

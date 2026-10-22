@@ -9,7 +9,6 @@ using namespace r_utils;
 using namespace r_utils::r_std_utils;
 using namespace std;
 
-static const uint8_t READ_PADDING = 32;
 
 static string _ff_rc_to_msg(int rc)
 {
@@ -72,6 +71,7 @@ r_audio_decoder::r_audio_decoder(r_audio_decoder&& obj) :
     _codec_id(std::move(obj._codec_id)),
     _codec(std::move(obj._codec)),
     _context(std::move(obj._context)),
+    _input(std::move(obj._input)),  // keeps its heap block: _buffer still points into it
     _buffer(std::move(obj._buffer)),
     _buffer_size(std::move(obj._buffer_size)),
     _frame(std::move(obj._frame)),
@@ -103,6 +103,7 @@ r_audio_decoder& r_audio_decoder::operator=(r_audio_decoder&& obj)
         obj._codec = nullptr;
         _context = std::move(obj._context);
         obj._context = nullptr;
+        _input = std::move(obj._input);  // keeps its heap block: _buffer still points into it
         _buffer = std::move(obj._buffer);
         obj._buffer = nullptr;
         _buffer_size = std::move(obj._buffer_size);
@@ -128,7 +129,10 @@ void r_audio_decoder::set_extradata(const vector<uint8_t>& ed)
         _context->extradata_size = 0;
     }
 
-    _context->extradata = (uint8_t*)av_malloc(ed.size() + READ_PADDING);
+    // Zeroed padding past the end, as FFmpeg requires of extradata too.
+    _context->extradata = (uint8_t*)av_mallocz(ed.size() + AV_INPUT_BUFFER_PADDING_SIZE);
+    if(!_context->extradata)
+        R_THROW(("Unable to allocate extradata."));
     _context->extradata_size = (int)ed.size();
     memcpy(_context->extradata, ed.data(), ed.size());
 }
@@ -158,7 +162,17 @@ void r_audio_decoder::_open_codec()
 
 void r_audio_decoder::attach_buffer(const uint8_t* data, size_t size)
 {
-    _buffer = data;
+    // FFmpeg reads up to AV_INPUT_BUFFER_PADDING_SIZE bytes past the end of
+    // its input (the bitstream reader and the parser read ahead in words). A
+    // caller's buffer usually ends exactly at its data: a stored key frame in
+    // a vector, say. Reading past it reads someone else's heap, or faults at a
+    // page boundary. So decode from our own copy, padded with zeros. It's
+    // reused between calls, so a large key frame doesn't allocate each time.
+    _input.resize(size + AV_INPUT_BUFFER_PADDING_SIZE);
+    if(size > 0)
+        memcpy(_input.data(), data, size);
+    memset(_input.data() + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    _buffer = _input.data();
     _buffer_size = size;
 }
 

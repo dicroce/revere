@@ -72,6 +72,10 @@ constexpr double LIVE_RESTREAM_CATCHUP_RATE = 0.10;
 
 class r_recording_context;
 
+// Prefix for a camera's GStreamer element names (its pipeline, depayloaders,
+// appsinks): the friendly name, or the camera id when it has none, then "_".
+R_API std::string recording_source_name_prefix(const r_disco::r_camera& camera);
+
 struct _frame_context
 {
     uint64_t gst_pts;
