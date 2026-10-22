@@ -33,6 +33,12 @@
 namespace r_pipeline
 {
 
+// RTSP lower transports for rtspsrc when the caller doesn't pass "protocols"
+const char* const RTSP_DEFAULT_PROTOCOLS = "TCP";
+
+// "TCP,UDP,TLS" style list -> GstRTSPLowerTrans flags (unknown names ignored)
+R_API uint32_t rtsp_protocol_flags(const std::string& protocols);
+
 R_API void gstreamer_init();
 R_API void gstreamer_deinit();
 
@@ -47,7 +53,13 @@ struct r_camera_params
     std::map<std::string, r_sdp_media> sdp_medias;
     std::vector<uint8_t> video_key_frame;
     sample_context sample_ctx;
+    std::string protocols; // the RTSP transport these were measured over ("TCP" or "UDP")
 };
+
+// Probes (fetch_camera_params, fetch_bytes_per_second) go over TCP first. True
+// when a TCP probe should be repeated over UDP: the camera answered (its SDP
+// arrived) but sent no video.
+R_API bool rtsp_probe_retry_over_udp(bool answered, bool received_video);
 
 R_API std::map<std::string, r_sdp_media> fetch_sdp_media(
     const std::string& rtsp_url,
@@ -62,10 +74,13 @@ R_API int64_t fetch_bytes_per_second(
     const r_utils::r_nullable<std::string>& password = r_utils::r_nullable<std::string>()
 );
 
+// protocols is the camera's RTSP transport setting: "TCP" (falls back to UDP
+// when the camera answers but won't stream over TCP) or "UDP" (used as is).
 R_API r_camera_params fetch_camera_params(
     const std::string& rtsp_url,
     const r_utils::r_nullable<std::string>& username = r_utils::r_nullable<std::string>(),
-    const r_utils::r_nullable<std::string>& password = r_utils::r_nullable<std::string>()
+    const r_utils::r_nullable<std::string>& password = r_utils::r_nullable<std::string>(),
+    const std::string& protocols = RTSP_DEFAULT_PROTOCOLS
 );
 
 class r_gst_caps final
@@ -178,6 +193,9 @@ public:
     R_API void stop();
     R_API bool running() const;
 
+    // GstRTSPLowerTrans flags the last play() gave rtspsrc (0 before play())
+    R_API uint32_t protocol_flags() const;
+
     // Simulated failure for leak testing: stream silently stops delivering samples
     // after a random interval near mttf_seconds. 0 = disabled.
     R_API void set_sim_mttf_seconds(uint32_t mttf) { _sim_mttf_seconds = mttf; }
@@ -244,6 +262,7 @@ private:
 
     /// optional arguments
     r_utils::r_nullable<std::string> _protocols;
+    uint32_t _protocol_flags {0};
     r_utils::r_nullable<std::string> _buffer_mode; // rtspsrc buffer-mode enum value
                                                    // (0=none,1=slave,2=buffer,3=auto,4=synced);
                                                    // overrides the protocols-implied default

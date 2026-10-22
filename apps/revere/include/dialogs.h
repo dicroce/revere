@@ -372,6 +372,25 @@ void web_password_modal(const char* popup_name, bool password_is_set, OK_CB ok_c
     }
 }
 
+// ---- RTSP transport ----
+
+// How Revere receives the camera's video: TCP (the default) or UDP, as two
+// options with what each is for. transport is "TCP" or "UDP".
+inline void rtsp_transport_options(dialog_frame& d, std::string& transport)
+{
+    d.label("Connection");
+    d.gap(2.0f);
+    if(d.option("##transport_tcp", "TCP (recommended)",
+        "Reliable on Wi-Fi and busy networks.",
+        transport != "UDP"))
+        transport = "TCP";
+    d.gap(2.0f);
+    if(d.option("##transport_udp", "UDP",
+        "Lower latency on a good wired network, but drops or corrupts video when packets are lost.",
+        transport == "UDP"))
+        transport = "UDP";
+}
+
 // ---- Camera properties ----
 
 // Detection settings first (each a switch with a line saying what it does),
@@ -381,6 +400,8 @@ void web_password_modal(const char* popup_name, bool password_is_set, OK_CB ok_c
 // min_continuous_retention_hours holding a whole number of hours, 1 or more.
 // motion_tier is "auto", "1", "2" or "3" (see r_vss::r_tier_controller);
 // tier_status says what the camera uses now and why.
+// rtsp_transport is "TCP" or "UDP"; transport_status, when not empty, says
+// the camera is on UDP because it refused TCP.
 template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB>
 void camera_properties_modal(
     const char* popup_name,
@@ -390,6 +411,8 @@ void camera_properties_modal(
     std::string& min_continuous_retention_hours,
     std::string& motion_tier,
     const std::string& tier_status,
+    std::string& rtsp_transport,
+    const std::string& transport_status,
     const std::string& record_file_path,
     OK_CB ok_cb,
     CANCEL_CB cancel_cb,
@@ -462,6 +485,14 @@ void camera_properties_modal(
                           std::stol(hours_s) >= 1;
     if(tried && do_motion_pruning && !hours_ok)
         d.error("Enter a whole number of hours, 1 or more.");
+
+    d.section("Network");
+    rtsp_transport_options(d, rtsp_transport);
+    if(!transport_status.empty())
+    {
+        d.gap(2.0f);
+        d.body(transport_status, r_ui_utils::theme::status_warning_text);
+    }
 
     d.section("Storage");
     if(!record_file_path.empty())
@@ -622,6 +653,8 @@ void configure_rtsp_source_camera_modal(
     d.field("RTSP URL", "##url", url, sizeof(url), 0, "rtsp://192.168.1.20:554/stream1");
     d.field("Username", "##username", username, sizeof(username), 0, "Optional");
     d.field("Password", "##password", password, sizeof(password), ImGuiInputTextFlags_Password, "Optional");
+    d.gap(4.0f);
+    rtsp_transport_options(d, rscc.rtsp_transport);
 
     std::string url_s(url);
     const bool url_ok = url_s.rfind("rtsp://", 0) == 0 || url_s.rfind("rtsps://", 0) == 0;
@@ -774,6 +807,9 @@ void profile_selection_modal(
             as.selected_profile_idx = i;
         ImGui::PopID();
     }
+
+    d.gap(6.0f);
+    rtsp_transport_options(d, as.rtsp_transport);
 
     const bool have = !as.available_profiles.empty();
     int a = d.actions({{"Cancel"}, {"Next", button_kind::primary, have}});

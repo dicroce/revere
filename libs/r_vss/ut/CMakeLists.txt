@@ -17,6 +17,12 @@ add_executable(
     source/test_r_detection_planner.cpp
     include/test_r_tier_controller.h
     source/test_r_tier_controller.cpp
+    include/test_r_early_alerts.h
+    source/test_r_early_alerts.cpp
+    include/test_r_recording_context.h
+    source/test_r_recording_context.cpp
+    include/test_r_rtsp_transport.h
+    source/test_r_rtsp_transport.cpp
     include/test_r_lag_watchdog.h
     source/test_r_lag_watchdog.cpp
 )
@@ -43,6 +49,7 @@ target_link_libraries(
     r_av
     r_motion
     r_disco
+    r_db
     r_onvif
     r_storage
     r_utils

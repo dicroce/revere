@@ -13,6 +13,7 @@
 #include "r_vss/r_detection_pass.h"
 #include "r_vss/r_tier_controller.h"
 #include "r_vss/r_tier_outputs.h"
+#include "r_vss/r_rtsp_transport.h"
 #include "r_vss/r_lag_watchdog.h"
 #include <functional>
 #include "r_disco/r_devices.h"
@@ -110,6 +111,11 @@ struct r_stream_status
 
     // Where its motion and object classes come from.
     r_tier_status motion_tier;
+
+    // The RTSP transport the recorder is using ("TCP" or "UDP"), and whether
+    // that's UDP standing in for a TCP setting the camera refused.
+    std::string rtsp_transport;
+    bool rtsp_transport_fallback {false};
 
     // How far its frames reach us behind live (see r_lag_watchdog), its lag
     // reconnects in the last hour, and whether that flags it as more than its
@@ -308,6 +314,8 @@ private:
         std::string last_error;
     };
     std::map<std::string, _failed_camera_state> _failed_cameras;
+    // Per camera, kept across reconnects; protected by _streams_mutex
+    std::map<std::string, r_rtsp_transport> _rtsp_transports;
     reconnect_log _reconnects;
     // Reconnects asked for by a camera's lag watchdog, with their backoff.
     r_lag_reconnects _lag_reconnects;

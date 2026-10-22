@@ -1,5 +1,6 @@
 
 #include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_early_alerts.h"
 #include "r_vss/r_motion_storage_sink.h"
 #include "r_av/r_muxer.h"
 #include "r_vss/r_recording_context.h"
@@ -76,6 +77,23 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
     gst_rtsp_server_set_service(_server, "8554");
 
     _mounts = gst_rtsp_server_get_mount_points(_server);
+
+    // A person on a camera's first significant key frame starts its event at
+    // once, rather than after MOG2's confirmation (see r_motion_engine).
+    _motionEngine.set_probe([this](const string& camera_id, int64_t ts, const vector<uint8_t>& frame, uint16_t w, uint16_t h,
+                                   const motion_region& bbox, const vector<motion_region>& regions) {
+        vector<r_detection> found;
+        if(!_meph.detect_objects(camera_id, ts, frame, w, h, found))
+            return false;
+        vector<r_probe_detection> dets;
+        for(const auto& d : found)
+            dets.push_back({d.class_name, d.confidence, {d.x1, d.y1, d.x2, d.y2}});
+        if(!probe_confirms(dets, bbox, regions))
+            return false;
+        R_LOG_INFO("motion probe[%s]: a person on its first significant key frame; event started without waiting for %d",
+                   _camera_name(camera_id).c_str(), (int)DEFAULT_MOTION_CONFIRM_FRAMES);
+        return true;
+    });
 
     _motionEngine.start();
     _system_plugin_host.connect_detection_bus(_meph);
@@ -993,6 +1011,15 @@ void r_stream_keeper::_entry_point()
                         if(it->second->dead())
                         {
                             R_LOG_WARNING("Dead stream detected, removing: %s", it->first.c_str());
+                            // Only an attempt over the transport the fallback
+                            // chose counts: a camera set to UDP never uses it,
+                            // and one bounced after a settings change starts over.
+                            auto& transport = _rtsp_transports[it->first];
+                            auto was = transport.protocols();
+                            if(it->second->rtsp_protocols() == was &&
+                               transport.attempt_ended(it->second->answered(), it->second->receiving_video()))
+                                R_LOG_WARNING("Camera %s answered but sent no video over RTSP/%s; retrying over %s",
+                                              it->first.c_str(), was.c_str(), transport.protocols().c_str());
                             // The next pass starts it again: a reconnect.
                             _reconnects.record(it->first);
                             doomed.push_back(it->second);
@@ -1056,6 +1083,8 @@ void r_stream_keeper::_entry_point()
                         auto it = _streams.find(cmd.first.id);
                         if(it != _streams.end())
                             rc = it->second;
+                        // A bounce follows a settings change: try TCP afresh
+                        _rtsp_transports.erase(cmd.first.id);
                     }
 
                     // Stop the recording context WITHOUT holding _streams_mutex
@@ -1212,10 +1241,14 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         if(fc_it != _failed_cameras.end() && fc_it->second.next_retry_time > now)
             continue;
 
-        R_LOG_INFO("Starting camera stream: %s (%s)", name.c_str(), camera.id.c_str());
+        // UDP when the camera is set to it; otherwise TCP, or UDP standing in
+        // for TCP the camera refused (r_rtsp_transport)
+        auto protocols = (!camera.rtsp_transport.is_null() && camera.rtsp_transport.value() == "UDP") ?
+            string("UDP") : _rtsp_transports[camera.id].protocols();
+        R_LOG_INFO("Starting camera stream: %s (%s) over RTSP/%s", name.c_str(), camera.id.c_str(), protocols.c_str());
         try
         {
-            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds);
+            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds, protocols);
             // Construction succeeded — clear any prior failure state for this camera.
             _failed_cameras.erase(camera.id);
         }
@@ -1281,6 +1314,9 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             if(s.has_camera_events)
                 s.camera_events = c.second->camera_events_status();
             s.motion_tier = motion_tier_status(c.first);
+            s.rtsp_transport = c.second->rtsp_protocols();
+            const bool set_udp = !s.camera.rtsp_transport.is_null() && s.camera.rtsp_transport.value() == "UDP";
+            s.rtsp_transport_fallback = !set_udp && s.rtsp_transport == "UDP";
             auto now_ms = chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now().time_since_epoch()).count();
             s.ingest_lag = c.second->ingest_lag();
             s.lag_reconnects_1h = _lag_reconnects.recent(c.first, now_ms);

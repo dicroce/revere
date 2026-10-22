@@ -4,6 +4,7 @@
 #include "r_vss/r_motion_plugin.h"
 #include "r_utils/r_macro.h"
 #include "r_utils/r_blocking_q.h"
+#include "r_vss/r_early_alerts.h"
 #include <memory>
 #include <vector>
 #include <thread>
@@ -72,11 +73,17 @@ private:
     std::map<std::string, int64_t> _camera_last_processed_ts; // Timestamp of last processed frame per camera (worker thread only)
     std::map<std::string, std::vector<Detection>> _camera_start_frame_detections;
     std::map<std::string, std::vector<Detection>> _camera_end_frame_detections;
+    r_vss::r_early_alerts _early;
 
     void _entry_point();
     void _process_motion_event(const MotionEventMessage& msg);
     std::vector<Detection> detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions, std::vector<Detection>* unfiltered_detections = nullptr);
     void _analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms);
+    // Puts the first person, vehicle or animal of each class in an event on
+    // the detection bus as soon as YOLO sees it (r_vss::r_early_alerts), and logs each decision.
+    void _early_alerts_for(const std::string& camera_id, const std::vector<Detection>& detections);
+    std::string _anchors_path() const;
+    void _save_anchors();
     static const char* get_class_name(int class_id);
 };
 

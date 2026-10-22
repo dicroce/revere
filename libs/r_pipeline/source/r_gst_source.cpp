@@ -1,5 +1,6 @@
 
 #include "r_pipeline/r_gst_source.h"
+#include <atomic>
 #include "r_utils/r_exception.h"
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_std_utils.h"
@@ -78,8 +79,10 @@ map<string, r_sdp_media> r_pipeline::fetch_sdp_media(
 
     r_work_q<int, void> q;
     map<string, r_sdp_media> medias;
+    std::atomic<bool> got_sdp {false};
     src.set_sdp_media_cb([&](const map<string, r_sdp_media>& sdp_medias){
         medias = sdp_medias;
+        got_sdp = true;
     });
     src.set_video_sample_cb([&](const sample_context& sc, const r_gst_buffer&, bool key, int64_t){
         q.post(42);
@@ -94,15 +97,26 @@ map<string, r_sdp_media> r_pipeline::fetch_sdp_media(
     return medias;
 }
 
-int64_t r_pipeline::fetch_bytes_per_second(
+bool r_pipeline::rtsp_probe_retry_over_udp(bool answered, bool received_video)
+{
+    // The camera answered DESCRIBE but no media came over TCP: the transport
+    // is the likely problem. If it didn't answer at all, UDP won't help.
+    return answered && !received_video;
+}
+
+static int64_t _fetch_bytes_per_second(
     const std::string& rtsp_url,
     int measured_duration_seconds,
     const r_utils::r_nullable<std::string>& username,
-    const r_utils::r_nullable<std::string>& password
+    const r_utils::r_nullable<std::string>& password,
+    const string& protocols,
+    bool& answered,
+    bool& received_video
 )
 {
     vector<r_arg> arguments;
     add_argument(arguments, "url", rtsp_url);
+    add_argument(arguments, "protocols", protocols);
 
     if(!username.is_null())
         add_argument(arguments, "username", username.value());
@@ -114,6 +128,11 @@ int64_t r_pipeline::fetch_bytes_per_second(
     src.set_args(arguments);
 
     bool done = false;
+
+    std::atomic<bool> got_sdp {false};
+    src.set_sdp_media_cb([&](const map<string, r_sdp_media>&){
+        got_sdp = true;
+    });
 
     int64_t audio_byte_total = 0;
     src.set_audio_sample_cb([&](const sample_context& sc, const r_gst_buffer& buffer, bool key, int64_t pts){
@@ -147,17 +166,41 @@ int64_t r_pipeline::fetch_bytes_per_second(
 
     src.stop();
 
+    answered = got_sdp;
+    received_video = stream_start_time_set;
+
     return (int64_t)(((double)(audio_byte_total + video_byte_total)) / (double)duration_cast<seconds>(delta).count());
 }
 
-r_camera_params r_pipeline::fetch_camera_params(
+int64_t r_pipeline::fetch_bytes_per_second(
     const std::string& rtsp_url,
+    int measured_duration_seconds,
     const r_utils::r_nullable<std::string>& username,
     const r_utils::r_nullable<std::string>& password
 )
 {
+    bool answered = false, received_video = false;
+    auto bps = _fetch_bytes_per_second(rtsp_url, measured_duration_seconds, username, password, "TCP", answered, received_video);
+    if(rtsp_probe_retry_over_udp(answered, received_video))
+    {
+        R_LOG_WARNING("Camera answered but sent no video over RTSP/TCP; measuring over UDP");
+        bps = _fetch_bytes_per_second(rtsp_url, measured_duration_seconds, username, password, "UDP", answered, received_video);
+    }
+    return bps;
+}
+
+static r_camera_params _fetch_camera_params(
+    const std::string& rtsp_url,
+    const r_utils::r_nullable<std::string>& username,
+    const r_utils::r_nullable<std::string>& password,
+    const string& protocols,
+    bool& answered,
+    bool& received_video
+)
+{
     vector<r_arg> arguments;
     add_argument(arguments, "url", rtsp_url);
+    add_argument(arguments, "protocols", protocols);
 
     if(!username.is_null())
         add_argument(arguments, "username", username.value());
@@ -171,8 +214,10 @@ r_camera_params r_pipeline::fetch_camera_params(
     bool done = false;
 
     map<string, r_sdp_media> medias;
+    std::atomic<bool> got_sdp {false};
     src.set_sdp_media_cb([&](const map<string, r_sdp_media>& sdp_medias){
         medias = sdp_medias;
+        got_sdp = true;
     });
 
     int64_t audio_byte_total = 0;
@@ -230,6 +275,32 @@ r_camera_params r_pipeline::fetch_camera_params(
     cp.sdp_medias = medias;
     cp.video_key_frame = video_key_frame;
     cp.sample_ctx = captured_sample_ctx;
+    cp.protocols = protocols;
+
+    answered = got_sdp;
+    received_video = stream_start_time_set;
+    return cp;
+}
+
+r_camera_params r_pipeline::fetch_camera_params(
+    const std::string& rtsp_url,
+    const r_utils::r_nullable<std::string>& username,
+    const r_utils::r_nullable<std::string>& password,
+    const std::string& protocols
+)
+{
+    // As the recorder: TCP unless the camera is set to UDP. Over UDP, loss and
+    // reordering under load corrupt the stream. A camera set to TCP that
+    // answers but won't send media over it is measured over UDP instead, so it
+    // can still be added (the recorder falls back the same way).
+    bool answered = false, received_video = false;
+    const bool udp = (protocols == "UDP");
+    auto cp = _fetch_camera_params(rtsp_url, username, password, udp ? "UDP" : "TCP", answered, received_video);
+    if(!udp && rtsp_probe_retry_over_udp(answered, received_video))
+    {
+        R_LOG_WARNING("Camera answered but sent no video over RTSP/TCP; probing over UDP");
+        cp = _fetch_camera_params(rtsp_url, username, password, "UDP", answered, received_video);
+    }
     return cp;
 }
 
@@ -300,7 +371,7 @@ void r_gst_source::set_args(const vector<r_arg>& args)
     _password = _args["password"];
 }
 
-static uint32_t _parse_protocol_flags(const string& protocols_str)
+uint32_t r_pipeline::rtsp_protocol_flags(const string& protocols_str)
 {
     uint32_t flags = 0;
     for(auto& token : r_string_utils::split(protocols_str, ','))
@@ -311,6 +382,12 @@ static uint32_t _parse_protocol_flags(const string& protocols_str)
         else if(lower == "tls") flags |= 0x00000020;
     }
     return flags;
+}
+
+uint32_t r_gst_source::protocol_flags() const
+{
+    lock_guard<mutex> g(_state_lok);
+    return _protocol_flags;
 }
 
 void r_gst_source::play()
@@ -324,10 +401,15 @@ void r_gst_source::play()
         // 0x00000001 = GST_RTSP_LOWER_TRANS_UDP
         // 0x00000004 = GST_RTSP_LOWER_TRANS_TCP
         // 0x00000020 = GST_RTSP_LOWER_TRANS_TLS
-        // Note: GStreamer tries UDP before TCP regardless of string order.
-        // To force TCP only, pass protocols="TCP".
-        auto protocols_str = _protocols.is_null() ? string("TCP,UDP,TLS") : _protocols.value();
-        uint32_t protocol_flags = _parse_protocol_flags(protocols_str);
+        // GStreamer tries UDP before TCP regardless of string order, so the
+        // default is TCP alone. Over UDP a high-resolution keyframe is
+        // hundreds of packets in one burst; under load the socket buffer
+        // overflows, and lost or reordered packets end up as corrupt or
+        // out-of-order frames in recordings. Callers pass protocols="UDP" for
+        // a camera that won't stream over TCP.
+        auto protocols_str = _protocols.is_null() ? string(RTSP_DEFAULT_PROTOCOLS) : _protocols.value();
+        uint32_t protocol_flags = rtsp_protocol_flags(protocols_str);
+        _protocol_flags = protocol_flags;
         g_object_set(G_OBJECT(rtspsrc), "protocols", protocol_flags, NULL);
         if(!_protocols.is_null())
             g_object_set(G_OBJECT(rtspsrc), "buffer-mode", 1, NULL);
@@ -1266,15 +1348,19 @@ gboolean r_gst_source::_bus_callback(GstBus* bus, GstMessage* message)
         if(!_retry_attempted && !_sample_sent)
         {
             R_LOG_INFO("Retrying RTSP connection with short-header=true for legacy camera compatibility");
-            _retry_attempted = true;
-            _use_short_header = true;
 
             // Clean up error info
             g_error_free(err);
             g_free(debug_info);
 
-            // Stop current pipeline and retry
+            // Stop current pipeline and retry. stop() resets the retry flags
+            // for the next connection, so set them after it: set before, the
+            // retry's own failure retried again, and a camera that refuses
+            // the connection (a transport it won't do, a 403) was reconnected
+            // in a tight loop, thousands of times a second.
             stop();
+            _retry_attempted = true;
+            _use_short_header = true;
             play();
         }
         else

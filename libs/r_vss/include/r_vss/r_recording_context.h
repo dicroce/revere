@@ -73,6 +73,10 @@ constexpr double LIVE_RESTREAM_CATCHUP_RATE = 0.10;
 
 class r_recording_context;
 
+// Prefix for a camera's GStreamer element names (its pipeline, depayloaders,
+// appsinks): the friendly name, or the camera id when it has none, then "_".
+R_API std::string recording_source_name_prefix(const r_disco::r_camera& camera);
+
 struct _frame_context
 {
     uint64_t gst_pts;
@@ -204,7 +208,7 @@ struct playback_restreaming_state
 class r_recording_context
 {
 public:
-    R_API r_recording_context(r_stream_keeper* sk, const r_disco::r_camera& camera, const std::string& top_dir, r_ws& ws, uint32_t sim_mttf_seconds = 0);
+    R_API r_recording_context(r_stream_keeper* sk, const r_disco::r_camera& camera, const std::string& top_dir, r_ws& ws, uint32_t sim_mttf_seconds = 0, const std::string& rtsp_protocols = "TCP");
     R_API r_recording_context(const r_recording_context&) = delete;
     R_API r_recording_context(r_recording_context&&) = delete;
     R_API ~r_recording_context() noexcept;
@@ -219,6 +223,12 @@ public:
     R_API int32_t bytes_per_second() const;
 
     R_API bool receiving_video() const;
+
+    // The camera answered: its SDP arrived, so it is reachable and speaks RTSP
+    R_API bool answered() const { return _answered; }
+
+    // The RTSP transport this attempt uses ("TCP" or "UDP")
+    R_API const std::string& rtsp_protocols() const { return _rtsp_protocols; }
 
     // How far storage persistence trails frame reception, in ms: the gap
     // between the last received video frame and the last one successfully
@@ -300,7 +310,9 @@ private:
     std::mutex _playback_restreaming_states_lok;
     std::map<GstRTSPMedia*, std::shared_ptr<playback_restreaming_state>> _playback_restreaming_states;
     bool _got_first_audio_sample;
-    bool _got_first_video_sample;
+    std::atomic<bool> _got_first_video_sample;
+    std::atomic<bool> _answered {false};
+    std::string _rtsp_protocols;
 
     // Sliding-window bitrate tracking. Samples are (timestamp, cumulative bytes).
     // Appended at most once every 500ms from the packet receive paths; trimmed to

@@ -527,6 +527,17 @@ void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
             });
         }
         [[fallthrough]];
+        case 6:
+        {
+            // Null on existing rows means TCP, the default
+            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
+                conn.exec(
+                    "ALTER TABLE cameras ADD COLUMN rtsp_transport TEXT;"
+                );
+                _set_db_version(conn, 7);
+            });
+        }
+        [[fallthrough]];
         default:
             break;
     };
@@ -713,6 +724,8 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
         camera.motion_tier = row.at("motion_tier").value();
     if(row.count("motion_tier_verified") && !row.at("motion_tier_verified").is_null())
         camera.motion_tier_verified = s_to_int(row.at("motion_tier_verified").value());
+    if(row.count("rtsp_transport") && !row.at("rtsp_transport").is_null())
+        camera.rtsp_transport = row.at("rtsp_transport").value();
 
     camera.stream_config_hash = row.at("stream_config_hash").value();
     return camera;
@@ -788,6 +801,12 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
     r_devices_cmd_result result;
 
     // Encrypt credentials before saving
+    // Only "TCP" or "UDP" reach the SQL below (it's formatted, not bound):
+    // anything else is stored as TCP, the default.
+    r_nullable<string> rtsp_transport;
+    if(!camera.rtsp_transport.is_null())
+        rtsp_transport.set_value(camera.rtsp_transport.value() == "UDP" ? string("UDP") : string("TCP"));
+
     r_camera encrypted_camera = camera;
     if(!encrypted_camera.rtsp_username.is_null())
     {
@@ -810,8 +829,9 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
 
     auto query = r_string_utils::format(
             "REPLACE INTO cameras("
-                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%s%s%slast_update_time, stream_config_hash) "
+                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%s%s%s%slast_update_time, stream_config_hash) "
             "VALUES("
+                "%s"
                 "%s"
                 "%s"
                 "%s"
@@ -869,6 +889,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.min_continuous_recording_hours.is_null())?"min_continuous_recording_hours, ":"",
             (!camera.motion_tier.is_null())?"motion_tier, ":"",
             (!camera.motion_tier_verified.is_null())?"motion_tier_verified, ":"",
+            (!rtsp_transport.is_null())?"rtsp_transport, ":"",
 
             r_string_utils::format("'%s', ", camera.id.c_str()).c_str(),
             (!camera.camera_name.is_null())?r_string_utils::format("'%s', ", camera.camera_name.value().c_str()).c_str():"",
@@ -898,6 +919,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.min_continuous_recording_hours.is_null())?r_string_utils::format("%d, ", camera.min_continuous_recording_hours.value()).c_str():"",
             (!camera.motion_tier.is_null())?r_string_utils::format("'%s', ", camera.motion_tier.value().c_str()).c_str():"",
             (!camera.motion_tier_verified.is_null())?r_string_utils::format("%d, ", camera.motion_tier_verified.value()).c_str():"",
+            (!rtsp_transport.is_null())?r_string_utils::format("'%s', ", rtsp_transport.value().c_str()).c_str():"",
 
             "unixepoch(), ",
             r_string_utils::format("'%s'", hash.c_str()).c_str()

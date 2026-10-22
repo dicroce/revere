@@ -393,13 +393,12 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
         st.last_arrival_pts = display_pts;
     }
 
-    // If something goes into an empty queue, wake up the main loop.
-    if(pres.q.empty())
-    {
-        SDL_Event event;
-        event.type = SDL_USEREVENT;
-        SDL_PushEvent(&event);
-    }
+    // No SDL_PushEvent to wake the main loop: SDL 2's wakeup path races the
+    // main thread when called from here (SDL_SendWakeupEvent re-reads
+    // wakeup_window after checking it, while SDL_WaitEventTimeout clears it
+    // without the lock on timeout), and Cocoa_SendWakeupEvent then crashes on
+    // a NULL window. The main loops don't need it: the View window waits at
+    // most 4 ms, the main window doesn't wait, and _has_new_frames is atomic.
 
     // Bounded jitter buffer: drop the oldest frame if arrival outruns
     // presentation. Note: rc->pts is set at presentation time (in
@@ -707,7 +706,17 @@ bool pipeline_host::load_video_textures()
             // Create streaming texture for video (optimized for frequent updates)
             auto rc = std::make_shared<render_context>();
             if(u.f.nv12)
+            {
+                // The colour matrix comes from the camera's resolution, not the
+                // texture's: frames are scaled to the window, so SDL's AUTOMATIC
+                // mode (which goes by texture height) would treat a small window
+                // of an HD camera as SD. HD cameras use BT.709, SD ones BT.601.
+                // Metal and OpenGL read the mode when the texture is made, so this
+                // holds per stream there; Direct3D reads it at draw time, so with
+                // SD and HD cameras both on screen the last one made wins.
+                SDL_SetYUVConversionMode(u.f.original_h > 576 ? SDL_YUV_CONVERSION_BT709 : SDL_YUV_CONVERSION_BT601);
                 rc->tex = r_ui_utils::texture::create_streaming_nv12(_renderer, u.f.w, u.f.h);
+            }
             else
             {
                 rc->tex = r_ui_utils::texture::create_streaming(

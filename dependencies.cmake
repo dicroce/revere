@@ -365,10 +365,18 @@ if(NOT TARGET uuid::uuid)
 endif()
 
 # ---- NCNN (Optional - for neural network plugins) ----
+# NCNN_TOP_DIR from the environment is kept in the cache (or pass
+# -DNCNN_TOP_DIR=...): CMake re-configures on its own when HEAD moves (see
+# CMakeLists.txt), often in a shell without the variable, and that used to
+# drop the yolov8 plugin from the build without a word. -U NCNN_TOP_DIR
+# forgets it.
+if(DEFINED ENV{NCNN_TOP_DIR})
+    set(NCNN_TOP_DIR "$ENV{NCNN_TOP_DIR}" CACHE PATH "NCNN install prefix, for the AI detection plugins" FORCE)
+endif()
 set(NCNN_AVAILABLE FALSE)
 if(NOT TARGET ncnn::ncnn)
-    if(DEFINED ENV{NCNN_TOP_DIR})
-        set(NCNN_ROOT "$ENV{NCNN_TOP_DIR}")
+    if(NCNN_TOP_DIR)
+        set(NCNN_ROOT "${NCNN_TOP_DIR}")
         set(NCNN_AVAILABLE TRUE)
 
         add_library(ncnn::ncnn INTERFACE IMPORTED GLOBAL)

@@ -10,6 +10,7 @@
 #include "r_pipeline/r_gst_source.h"
 #include "r_utils/r_file.h"
 #include <chrono>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -290,6 +291,129 @@ void test_r_motion_engine::test_real_frames_trigger_motion()
         }
     }
     RTF_ASSERT(has_start);
+}
+
+namespace
+{
+
+struct probe_run
+{
+    int start_index {-1};      // key frame whose processing posted the first start
+    int64_t start_ts {-1};
+    int updates_at_start {0};  // updates posted along with it (MOG2's confirmation backfill)
+    std::vector<int64_t> probe_ts;
+    std::vector<int64_t> frame_ts;
+};
+
+// Feeds bad_guy.mp4's key frames 1 s apart, one at a time (each processed
+// before the next), with `probe` (null: none) set on the engine.
+probe_run _run_clip(const std::function<bool()>& probe)
+{
+    r_pipeline::gstreamer_init();
+    r_fs::write_file(bad_guy_mp4, bad_guy_mp4_len, "bad_guy.mp4");
+
+    AVCodecID codec_id;
+    vector<uint8_t> extradata;
+    int vsi;
+    {
+        r_demuxer d("bad_guy.mp4", false);
+        vsi = d.get_video_stream_index();
+        codec_id = d.get_stream_info(vsi).codec_id;
+        extradata = d.get_extradata(vsi);
+    }
+
+    probe_run run;
+    capturing_event_sink sink;
+    r_motion_engine engine([&](const r_motion_work_item& item) -> std::shared_ptr<r_motion_work_context> {
+        return make_shared<r_motion_work_context>(codec_id, item.id, extradata, make_unique<null_storage_sink>());
+    }, sink);
+    if(probe)
+        engine.set_probe([&](const std::string&, int64_t ts, const std::vector<uint8_t>& frame, uint16_t w, uint16_t h,
+                             const motion_region&, const std::vector<motion_region>&) {
+            RTF_ASSERT_EQUAL(frame.size(), (size_t)640 * 640 * 3);
+            RTF_ASSERT(w == 640 && h == 640);
+            run.probe_ts.push_back(ts);
+            return probe();
+        });
+    engine.start();
+
+    {
+        r_demuxer demuxer("bad_guy.mp4", false);
+        int64_t ts = 1000000;
+        size_t posted = 0;
+        int index = 0;
+        while(demuxer.read_frame())
+        {
+            auto fi = demuxer.get_frame_info();
+            if(fi.index != vsi || !fi.key)
+                continue;
+            r_pipeline::r_gst_buffer buf(fi.data, fi.size);
+            engine.post_frame(buf, ts, "h264", "", "cam", true);
+            ++posted;
+            for(int i = 0; i < 500 && engine.processed_count() < posted; ++i)
+                rtf_usleep(10000);
+            run.frame_ts.push_back(ts);
+            if(run.start_index < 0)
+            {
+                auto events = sink.events();
+                for(size_t k = 0; k < events.size(); ++k)
+                {
+                    if(events[k].evt != motion_event_start)
+                        continue;
+                    run.start_index = index;
+                    run.start_ts = events[k].ts;
+                    for(size_t u = k + 1; u < events.size(); ++u)
+                        if(events[u].evt == motion_event_update) ++run.updates_at_start;
+                    break;
+                }
+            }
+            ts += 1000;
+            ++index;
+        }
+    }
+    engine.stop();
+    r_fs::remove_file("bad_guy.mp4");
+    return run;
+}
+
+}
+
+void test_r_motion_engine::test_probe_starts_event_on_first_frame()
+{
+    // Without a probe: MOG2's confirmation, DEFAULT_MOTION_CONFIRM_FRAMES
+    // significant key frames, then a start backdated to the first of them.
+    auto plain = _run_clip(nullptr);
+    RTF_ASSERT(plain.start_index >= 0);
+    RTF_ASSERT_EQUAL(plain.updates_at_start, (int)DEFAULT_MOTION_CONFIRM_FRAMES - 1);
+    auto first_significant = plain.start_index - ((int)DEFAULT_MOTION_CONFIRM_FRAMES - 1);
+    RTF_ASSERT_EQUAL(plain.start_ts, plain.frame_ts[first_significant]);
+
+    // A probe that confirms: the event starts on that first significant
+    // frame, two key frames (2 s here) sooner, at the same time stamp.
+    auto confirmed = _run_clip([]{ return true; });
+    RTF_ASSERT_EQUAL(confirmed.start_index, first_significant);
+    RTF_ASSERT_EQUAL(confirmed.start_ts, plain.start_ts);
+    RTF_ASSERT_EQUAL(confirmed.updates_at_start, 0);
+    RTF_ASSERT_EQUAL(confirmed.probe_ts.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(confirmed.probe_ts[0], plain.start_ts);
+
+    // A probe that doesn't: MOG2's confirmation as before, and the probe ran
+    // no more than once per PROBE_INTERVAL_MS, only outside an event.
+    auto refused = _run_clip([]{ return false; });
+    RTF_ASSERT_EQUAL(refused.start_index, plain.start_index);
+    RTF_ASSERT_EQUAL(refused.start_ts, plain.start_ts);
+    RTF_ASSERT(!refused.probe_ts.empty());
+    RTF_ASSERT_EQUAL(refused.probe_ts[0], plain.start_ts);
+    for(size_t i = 1; i < refused.probe_ts.size(); ++i)
+        RTF_ASSERT(refused.probe_ts[i] - refused.probe_ts[i - 1] >= (int64_t)r_motion_engine::PROBE_INTERVAL_MS);
+
+    // Which frames get one: significant, not yet confirmed, and spaced.
+    typedef r_motion_engine M;
+    RTF_ASSERT(M::probe_due(false, true, -1, 5000));
+    RTF_ASSERT(!M::probe_due(false, false, -1, 5000));
+    RTF_ASSERT(!M::probe_due(true, true, -1, 5000));
+    RTF_ASSERT(!M::probe_due(false, true, 4000, 4000 + M::PROBE_INTERVAL_MS - 1));
+    RTF_ASSERT(M::probe_due(false, true, 4000, 4000 + M::PROBE_INTERVAL_MS));
 }
 
 void test_r_motion_engine::test_skips_to_newest_key_frame()

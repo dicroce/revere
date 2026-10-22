@@ -125,6 +125,10 @@ public:
     size_t get_no_motion_count() const { return _no_motion_count; }
     void set_no_motion_count(size_t v) { _no_motion_count = v; }
 
+    // Frame time of the last probe (see r_motion_probe_fn), -1 for none.
+    int64_t get_last_probe_ts() const { return _last_probe_ts; }
+    void set_last_probe_ts(int64_t ts) { _last_probe_ts = ts; }
+
 private:
     r_motion::r_motion_state _motion_state;
     r_av::r_video_decoder _video_decoder;
@@ -144,9 +148,17 @@ private:
 
     // Counter for consecutive keyframes without motion (for event end hysteresis)
     size_t _no_motion_count {0};
+
+    int64_t _last_probe_ts {-1};
 };
 
 using r_motion_work_context_factory = std::function<std::shared_ptr<r_motion_work_context>(const r_motion_work_item&)>;
+
+// Asked on a camera's first significant key frame while it isn't in an event:
+// true if object detection on the frame (640x640 letterboxed RGB24) confirms
+// it as an event on its own (see probe_confirms in r_early_alerts.h).
+using r_motion_probe_fn = std::function<bool(const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame, uint16_t width, uint16_t height,
+                                             const motion_region& motion_bbox, const std::vector<motion_region>& motion_regions)>;
 
 class r_motion_engine final
 {
@@ -173,6 +185,24 @@ public:
     // Returns current queue size
     R_API size_t get_queue_size() const;
 
+    // Work items finished (frames, skipped frames and removals), for tests.
+    size_t processed_count() const { return _processed.load(); }
+
+    // A camera whose first significant key frame object detection confirms
+    // starts its event on that frame instead of waiting for
+    // DEFAULT_MOTION_CONFIRM_FRAMES of them: a person at the door is an event
+    // as soon as their frame is decoded. At most one probe per camera every
+    // PROBE_INTERVAL_MS of frame time, as it runs detection on this thread.
+    // Set before start().
+    enum { PROBE_INTERVAL_MS = 2000 };
+    void set_probe(r_motion_probe_fn probe) { _probe = std::move(probe); }
+    // Whether a key frame gets a probe: significant, its camera not already
+    // confirmed by MOG2, and PROBE_INTERVAL_MS since the last (-1: none).
+    static bool probe_due(bool confirmed, bool significant, int64_t last_probe_ts, int64_t ts)
+    {
+        return !confirmed && significant && (last_probe_ts < 0 || ts - last_probe_ts >= PROBE_INTERVAL_MS);
+    }
+
     // Key frames skipped for a newer one from the same camera (see
     // r_newest_frame_gate), in total.
     R_API size_t skipped_count() const { return _skipped.load(); }
@@ -187,6 +217,8 @@ private:
     bool _running;
     std::thread _thread;
     r_motion_event_sink& _meph;
+    r_motion_probe_fn _probe;
+    std::atomic<size_t> _processed {0};
     r_newest_frame_gate _newest;
     std::atomic<size_t> _skipped {0};
     std::map<std::string, std::pair<int64_t, size_t>> _skip_log; // camera: (last logged, skipped since)

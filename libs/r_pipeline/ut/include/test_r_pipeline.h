@@ -7,6 +7,8 @@ public:
     RTF_FIXTURE(test_r_pipeline);
       TEST(test_r_pipeline::test_gst_source_h264_aac);
       TEST(test_r_pipeline::test_stream_info_get_video_codec_framerate);
+      TEST(test_r_pipeline::test_rtsp_protocol_flags);
+      TEST(test_r_pipeline::test_rtsp_probe_retry_over_udp);
 #if 0
       TEST(test_r_pipeline::test_gst_source_h265_aac);
       TEST(test_r_pipeline::test_gst_source_h264_mulaw);
@@ -29,6 +31,8 @@ public:
 
     void test_gst_source_h264_aac();
     void test_stream_info_get_video_codec_framerate();
+    void test_rtsp_protocol_flags();
+    void test_rtsp_probe_retry_over_udp();
 #if 0
     void test_gst_source_h265_aac();
     void test_gst_source_h264_mulaw();

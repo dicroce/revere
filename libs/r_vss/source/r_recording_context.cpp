@@ -52,11 +52,20 @@ static string _get_storage_path(const string& record_file_path, const string& to
     return top_dir + PATH_SLASH + "video" + PATH_SLASH + record_file_path;
 }
 
-r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& camera, const string& top_dir, r_ws& ws, uint32_t sim_mttf_seconds) :
+string r_vss::recording_source_name_prefix(const r_camera& camera)
+{
+    // Not camera.friendly_name + "_": r_nullable converts to bool, so that
+    // compiled as pointer arithmetic on "_" and named every camera's elements
+    // "" or "_" instead of after the camera.
+    auto name = (camera.friendly_name.is_null() || camera.friendly_name.value().empty()) ? camera.id : camera.friendly_name.value();
+    return name + "_";
+}
+
+r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& camera, const string& top_dir, r_ws& ws, uint32_t sim_mttf_seconds, const string& rtsp_protocols) :
     _sk(sk),
     _camera(camera),
     _top_dir(top_dir),
-    _source(camera.friendly_name + "_"),
+    _source(recording_source_name_prefix(camera)),
     _storage_file(_get_storage_path(camera.record_file_path.value(), top_dir)),
     _md_storage_file(),
     _maybe_video_storage_write_context(),
@@ -95,6 +104,11 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     // from smoothed arrival times — that wobble is what storage's
     // monotonicity clamp then turns into +1ms pairs baked into recordings.
     add_argument(arguments, "buffer-mode", string("0"));
+    // TCP unless this camera has shown it won't stream over it (see
+    // r_rtsp_transport): over UDP, lost and reordered packets under load
+    // ended up as out-of-order frames in recordings.
+    _rtsp_protocols = rtsp_protocols;
+    add_argument(arguments, "protocols", rtsp_protocols);
 
     if(!_camera.rtsp_username.is_null())
         add_argument(arguments, "username", _camera.rtsp_username.value());
@@ -509,6 +523,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     });
 
     _source.set_sdp_media_cb([this](const map<string, r_sdp_media>& sdp_medias){
+        this->_answered = true;
         this->_sdp_medias = sdp_medias;
         if(this->_sdp_medias.find("audio") != this->_sdp_medias.end())
             this->_has_audio = true;

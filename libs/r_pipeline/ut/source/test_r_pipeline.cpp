@@ -112,6 +112,9 @@ void test_r_pipeline::test_gst_source_h264_aac()
 
     src.play();
 
+    // No "protocols" argument: rtspsrc gets TCP alone, never UDP first
+    RTF_ASSERT(src.protocol_flags() == 0x00000004);
+
     std::this_thread::sleep_for(std::chrono::seconds(5));
 
     g_main_loop_quit(loop);
@@ -125,6 +128,27 @@ void test_r_pipeline::test_gst_source_h264_aac()
     RTF_ASSERT(got_ready && got_audio && got_video);
 
     gst_deinit();
+}
+
+void test_r_pipeline::test_rtsp_protocol_flags()
+{
+    // GstRTSPLowerTrans: UDP 0x1, TCP 0x4, TLS 0x20
+    RTF_ASSERT(string(RTSP_DEFAULT_PROTOCOLS) == "TCP");
+    RTF_ASSERT(rtsp_protocol_flags(RTSP_DEFAULT_PROTOCOLS) == 0x00000004);
+    RTF_ASSERT(rtsp_protocol_flags("UDP") == 0x00000001);
+    RTF_ASSERT(rtsp_protocol_flags("tcp,udp") == 0x00000005);
+    RTF_ASSERT(rtsp_protocol_flags("TCP,UDP,TLS") == 0x00000025);
+    RTF_ASSERT(rtsp_protocol_flags("bogus") == 0);
+}
+
+void test_r_pipeline::test_rtsp_probe_retry_over_udp()
+{
+    // Answered over TCP but no video: the camera won't stream over TCP
+    RTF_ASSERT(rtsp_probe_retry_over_udp(true, false));
+    // Video came: TCP works
+    RTF_ASSERT(!rtsp_probe_retry_over_udp(true, true));
+    // No answer: unreachable or wrong URL, UDP won't help
+    RTF_ASSERT(!rtsp_probe_retry_over_udp(false, false));
 }
 
 #if 0
