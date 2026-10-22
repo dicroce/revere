@@ -986,6 +986,15 @@ void r_stream_keeper::_entry_point()
                         if(it->second->dead())
                         {
                             R_LOG_WARNING("Dead stream detected, removing: %s", it->first.c_str());
+                            // Only an attempt over the transport the fallback
+                            // chose counts: a camera set to UDP never uses it,
+                            // and one bounced after a settings change starts over.
+                            auto& transport = _rtsp_transports[it->first];
+                            auto was = transport.protocols();
+                            if(it->second->rtsp_protocols() == was &&
+                               transport.attempt_ended(it->second->answered(), it->second->receiving_video()))
+                                R_LOG_WARNING("Camera %s answered but sent no video over RTSP/%s; retrying over %s",
+                                              it->first.c_str(), was.c_str(), transport.protocols().c_str());
                             // The next pass starts it again: a reconnect.
                             _reconnects.record(it->first);
                             doomed.push_back(it->second);
@@ -1043,6 +1052,8 @@ void r_stream_keeper::_entry_point()
                         auto it = _streams.find(cmd.first.id);
                         if(it != _streams.end())
                             rc = it->second;
+                        // A bounce follows a settings change: try TCP afresh
+                        _rtsp_transports.erase(cmd.first.id);
                     }
 
                     // Stop the recording context WITHOUT holding _streams_mutex
@@ -1199,10 +1210,14 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         if(fc_it != _failed_cameras.end() && fc_it->second.next_retry_time > now)
             continue;
 
-        R_LOG_INFO("Starting camera stream: %s (%s)", name.c_str(), camera.id.c_str());
+        // UDP when the camera is set to it; otherwise TCP, or UDP standing in
+        // for TCP the camera refused (r_rtsp_transport)
+        auto protocols = (!camera.rtsp_transport.is_null() && camera.rtsp_transport.value() == "UDP") ?
+            string("UDP") : _rtsp_transports[camera.id].protocols();
+        R_LOG_INFO("Starting camera stream: %s (%s) over RTSP/%s", name.c_str(), camera.id.c_str(), protocols.c_str());
         try
         {
-            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds);
+            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds, protocols);
             // Construction succeeded — clear any prior failure state for this camera.
             _failed_cameras.erase(camera.id);
         }
@@ -1268,6 +1283,9 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             if(s.has_camera_events)
                 s.camera_events = c.second->camera_events_status();
             s.motion_tier = motion_tier_status(c.first);
+            s.rtsp_transport = c.second->rtsp_protocols();
+            const bool set_udp = !s.camera.rtsp_transport.is_null() && s.camera.rtsp_transport.value() == "UDP";
+            s.rtsp_transport_fallback = !set_udp && s.rtsp_transport == "UDP";
             return s;
         }
     );

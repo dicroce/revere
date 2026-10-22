@@ -269,7 +269,8 @@ measured_camera r_vss::query_measure_camera(const string& top_dir, r_devices& de
         R_THROW(("Camera has not been interrogated (no rtsp_url)."));
 
     // Streams the camera for ~15s to measure its bitrate and grab a keyframe.
-    auto cp = r_pipeline::fetch_camera_params(camera.rtsp_url.value(), username, password);
+    auto cp = r_pipeline::fetch_camera_params(camera.rtsp_url.value(), username, password,
+        camera.rtsp_transport.is_null() ? string(r_pipeline::RTSP_DEFAULT_PROTOCOLS) : camera.rtsp_transport.value());
 
     if(cp.sdp_medias.empty() || cp.bytes_per_second == 0)
         R_THROW(("Unable to communicate with camera."));
