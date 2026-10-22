@@ -94,7 +94,9 @@ void test_r_output_frame_selector::test_jitter_fills_every_tick_once()
         ++kept;
     }
     RTF_ASSERT(covered >= 299 && covered <= 301);
-    RTF_ASSERT(kept >= 280 && kept <= 300);
+    // kept can equal covered: a run with no repeats (MSVC's distribution of
+    // this seed gives 301 kept, 301 covered) is as right as one with some.
+    RTF_ASSERT(kept >= 280 && kept <= covered);
 }
 
 void test_r_output_frame_selector::test_gap_repeats_previous_frame()
