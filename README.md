@@ -2,7 +2,7 @@
 
 [![License: BSD 3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
 [![Get it from the Snap Store](https://snapcraft.io/revere/badge.svg)](https://snapcraft.io/revere)
-![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS%20%7C%20Raspberry%20Pi-lightgrey)
 
 Revere is an open source video surveillance system with ONVIF camera support, motion detection, recording, playback and object detection.
 
@@ -32,7 +32,7 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 - Motion detection with AI plugin support
 - Continuous recording with optional pruning of non-motion video
 - RTSP restreaming of live and recorded video
-- Cross-platform (Linux/Windows/Mac)
+- Cross-platform (Linux/Windows/Mac, plus arm64 Linux builds for Raspberry Pi)
 - Full featured API
 - YOLOv8 object detection (people, cars, bikes, animals and other common objects), run only on frames containing motion
 - Multi-camera viewer (Vision) with motion timeline, playback, export and a floating single-camera overlay mode
@@ -78,10 +78,12 @@ On Linux the simplest way is to install the revere snap:
 
 [![Get it from the Snap Store](https://snapcraft.io/en/dark/install.svg)](https://snapcraft.io/revere)
 
+On a Raspberry Pi (or any other arm64 Debian-based board), download the `.deb` from the releases page and install it with `apt` — see [Raspberry Pi / arm64 Linux](#raspberry-pi--arm64-linux) below.
+
 ### Prerequisites
 
 1) One or more IP cameras - Revere supports a wide variety of ONVIF-compatible cameras (Axis cameras are the most compatible, with Reolink a close second), and non-ONVIF cameras can be added by RTSP URL.
-2) A Windows, Linux or macOS computer.
+2) A Windows, Linux or macOS computer, or a Raspberry Pi 4/5 running 64-bit Raspberry Pi OS (bookworm or later).
 
 ### Installation
 
@@ -111,11 +113,32 @@ On Linux the simplest way is to install the revere snap:
   ```
   Run it with `/usr/local/revere/revere`. To run it headless as a service instead, see [Run Headless Service](#run-headless-service) below.
 
+**Raspberry Pi / arm64 Linux**
+
+Every release also ships a native `aarch64` build for Raspberry Pi 4/5 and other arm64 Debian-based boards. It's packaged as a `.deb` built against Debian bookworm, so its dependencies resolve on 64-bit Raspberry Pi OS bookworm (or later) and on Debian/Ubuntu arm64 releases of the same age or newer. The 32-bit Pi OS is not supported.
+
+- Download `revere-vX.Y.Z-linux-arm64.deb` from the [GitHub releases page](https://github.com/dicroce/revere/releases) and install it with `apt`, which pulls in the runtime dependencies:
+  ```bash
+  sudo apt install ./revere-v*-linux-arm64.deb
+  ```
+  The package installs to `/opt/revere` and adds Revere and Vision to the desktop menu, but it does not start anything on its own.
+- Most people will want to run a Pi headless and manage it from the web UI. Install the `systemd` service (see [Run Headless Service](#run-headless-service) for details — note the binary lives at `/opt/revere/revere` rather than `/usr/local/revere/revere` on a `.deb` install):
+  ```bash
+  sudo /opt/revere/revere --install-service
+  ```
+  Then open `http://<pi-address>:8088/` from another machine on your LAN.
+- Upgrading is just installing the newer `.deb` the same way; a running service is restarted automatically. `sudo apt remove revere` uninstalls the service but leaves your recordings in `/var/lib/revere`.
+- For cloud access, releases include a matching arm64 plugin installer, `revere-vX.Y.Z-linux-arm64-cloud.run`. Point it at the service's data directory when installing into a headless setup:
+  ```bash
+  chmod +x revere-v*-linux-arm64-cloud.run
+  sudo ./revere-v*-linux-arm64-cloud.run /var/lib/revere
+  ```
+
 ### Run Headless Service
 
 On Linux, Revere can run as a headless `systemd` service — recording, ONVIF discovery and the web UI (on http://localhost:8088/) with no desktop session. This is the recommended way to run Revere on a server, NAS or always-on mini-PC.
 
-First build from source and install to `/usr/local/revere` using the same steps as the Linux [Installation](#installation) section above (`cmake …` then `sudo cmake --install .`). See [Building from Source](docs/BUILDING.md) for the full list of build prerequisites.
+First build from source and install to `/usr/local/revere` using the same steps as the Linux [Installation](#installation) section above (`cmake …` then `sudo cmake --install .`). See [Building from Source](docs/BUILDING.md) for the full list of build prerequisites. On a Raspberry Pi or other arm64 board you can skip the build and install the release `.deb` instead (see [Raspberry Pi / arm64 Linux](#raspberry-pi--arm64-linux)); in that case substitute `/opt/revere` for `/usr/local/revere` in the commands below.
 
 Then install and start the service. Run it as root — it creates a dedicated `revere` system user and the `/var/lib/revere` data directory, writes `/etc/systemd/system/revere.service`, and enables it to start on boot:
 
@@ -183,15 +206,20 @@ Multiple plugin repos can be separated by semicolons.
 
 | Platform | Status |
 |----------|--------|
-| Ubuntu 22.04+ | ✅ Tested |
+| Ubuntu 22.04+ (x86_64) | ✅ Tested |
 | Windows 10/11 | ✅ Tested |
 | macOS 10.15+ | ✅ Tested |
 | Snap | ✅ Tested |
+| Raspberry Pi OS 64-bit, bookworm+ (arm64 `.deb`) | ✅ Tested on Raspberry Pi 5 |
+| Other arm64 Debian/Ubuntu (bookworm-era or newer) | ⚠️ Should work (same `.deb`), untested |
 
 ## System Requirements
 
 ### Minimum
-A reasonably modern computer is required. As a rough floor, a Raspberry Pi 5 was too slow to be usable in testing — plan on a modern desktop or laptop CPU for smooth multi-camera recording and playback.
+For the desktop apps (Revere + Vision) with several cameras, plan on a modern desktop or laptop CPU — smooth multi-camera decoding and playback is the expensive part.
+
+### Raspberry Pi
+The arm64 `.deb` is aimed at running Revere headless on a Raspberry Pi 4 or 5 as a small always-on recorder, managed through the web UI. Recording and RTSP restreaming are light, but motion detection and especially YOLOv8 object detection are CPU-bound, so keep the camera count and the number of cameras with analytics enabled modest, and expect a Pi 4 to handle less than a Pi 5. The desktop apps install too, but the Pi is not a good fit for viewing many cameras at once — use Vision or the web UI from another machine instead. Record to a USB SSD rather than the SD card.
 
 ### Storage
 Storage requirements vary based on number of cameras, resolution, bitrate, and retention period. Revere uses the camera's bitrate to estimate retention when configuring recording. Generally:
