@@ -11,6 +11,7 @@ public:
       TEST(test_r_motion_engine::test_factory_receives_work_item);
       TEST(test_r_motion_engine::test_real_frames_trigger_motion);
       TEST(test_r_motion_engine::test_probe_starts_event_on_first_frame);
+      TEST(test_r_motion_engine::test_skips_to_newest_key_frame);
     RTF_FIXTURE_END();
 
     virtual ~test_r_motion_engine() throw() {}
@@ -25,4 +26,5 @@ public:
     void test_factory_receives_work_item();
     void test_real_frames_trigger_motion();
     void test_probe_starts_event_on_first_frame();
+    void test_skips_to_newest_key_frame();
 };

@@ -10,6 +10,7 @@
 #include "r_pipeline/r_gst_buffer.h"
 #include "r_vss/r_motion_event_sink.h"
 #include "r_vss/r_motion_storage_sink.h"
+#include "r_vss/r_lag_watchdog.h"
 #include <atomic>
 #include <functional>
 #include <vector>
@@ -52,6 +53,10 @@ struct r_keyframe_motion_entry
     uint16_t height;
     motion_region bbox;
     std::vector<motion_region> regions;
+    // For the event latency log (see r_motion_work_item).
+    int64_t ingest_lag_ms {0};
+    int64_t posted_ms {0};
+    int64_t detected_ms {0};
 };
 
 struct r_motion_work_item
@@ -62,6 +67,13 @@ struct r_motion_work_item
     std::string id;
     int64_t ts;
     bool is_key_frame;
+    // For skipping stale frames and the event latency log: the frame's place
+    // among its camera's queued key frames (r_newest_frame_gate), how far
+    // behind live it reached us (r_lag_watchdog), and when it was queued
+    // (steady clock, ms).
+    uint64_t seq {0};
+    int64_t ingest_lag_ms {0};
+    int64_t posted_ms {0};
 };
 
 struct r_motion_work_context
@@ -163,7 +175,7 @@ public:
     R_API void start();
     R_API void stop() noexcept;
 
-    R_API void post_frame(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_parameters, const std::string& id, bool is_key_frame);
+    R_API void post_frame(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_parameters, const std::string& id, bool is_key_frame, int64_t ingest_lag_ms = 0);
 
     R_API void remove_work_context(const std::string& camera_id);
 
@@ -173,7 +185,7 @@ public:
     // Returns current queue size
     R_API size_t get_queue_size() const;
 
-    // Work items finished (frames and removals), for tests.
+    // Work items finished (frames, skipped frames and removals), for tests.
     size_t processed_count() const { return _processed.load(); }
 
     // A camera whose first significant key frame object detection confirms
@@ -191,6 +203,10 @@ public:
         return !confirmed && significant && (last_probe_ts < 0 || ts - last_probe_ts >= PROBE_INTERVAL_MS);
     }
 
+    // Key frames skipped for a newer one from the same camera (see
+    // r_newest_frame_gate), in total.
+    R_API size_t skipped_count() const { return _skipped.load(); }
+
 private:
     void _entry_point();
     std::map<std::string, std::shared_ptr<r_motion_work_context>>::iterator _create_work_context(const r_motion_work_item& item);
@@ -203,6 +219,9 @@ private:
     r_motion_event_sink& _meph;
     r_motion_probe_fn _probe;
     std::atomic<size_t> _processed {0};
+    r_newest_frame_gate _newest;
+    std::atomic<size_t> _skipped {0};
+    std::map<std::string, std::pair<int64_t, size_t>> _skip_log; // camera: (last logged, skipped since)
 };
 
 }

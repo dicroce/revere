@@ -768,9 +768,34 @@ void r_stream_keeper::remove_restream_mount(const string& mount_path)
     }
 }
 
-void r_stream_keeper::post_frame_to_motion_engine(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_params, const std::string& camera_id, bool is_key_frame)
+void r_stream_keeper::post_frame_to_motion_engine(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_params, const std::string& camera_id, bool is_key_frame, int64_t ingest_lag_ms)
 {
-    _motionEngine.post_frame(buffer, ts, video_codec_name, video_codec_params, camera_id, is_key_frame);
+    _motionEngine.post_frame(buffer, ts, video_codec_name, video_codec_params, camera_id, is_key_frame, ingest_lag_ms);
+}
+
+// A camera whose watchdog wants a reconnect is dropped here and started again
+// on the next pass, like a dead one: that throws its backlog away. Lag
+// reconnects back off (r_lag_reconnects); while held off the camera stays
+// connected, behind, and flagged.
+bool r_stream_keeper::_lag_reconnect(const string& camera_id, const r_recording_context& rc)
+{
+    auto lag = rc.ingest_lag();
+    if(!lag.wants_reconnect)
+        return false;
+
+    auto now_ms = chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now().time_since_epoch()).count();
+    auto c = rc.camera();
+    auto name = c.friendly_name.is_null() ? camera_id : c.friendly_name.value();
+    if(!_lag_reconnects.try_reconnect(camera_id, now_ms))
+        return false;
+
+    R_LOG_WARNING("ingest lag[%s]: %lld ms behind live for %lld ms (camera time at %.2fx real time); reconnecting to drop the backlog "
+                  "(lag reconnect %d in the last hour; the next is held off %llds)%s%s",
+                  name.c_str(), (long long)lag.lag_ms, (long long)lag.behind_for_ms, lag.rate,
+                  _lag_reconnects.recent(camera_id, now_ms), (long long)(_lag_reconnects.held_off_ms(camera_id, now_ms) / 1000),
+                  _lag_reconnects.flagged(camera_id, now_ms) ? ": " : "",
+                  _lag_reconnects.flagged(camera_id, now_ms) ? LAG_FLAG_MESSAGE : "");
+    return true;
 }
 
 vector<uint8_t> r_stream_keeper::get_jpg(const string& camera_id, int64_t ts, uint16_t w, uint16_t h)
@@ -996,6 +1021,12 @@ void r_stream_keeper::_entry_point()
                                 R_LOG_WARNING("Camera %s answered but sent no video over RTSP/%s; retrying over %s",
                                               it->first.c_str(), was.c_str(), transport.protocols().c_str());
                             // The next pass starts it again: a reconnect.
+                            _reconnects.record(it->first);
+                            doomed.push_back(it->second);
+                            it = _streams.erase(it);
+                        }
+                        else if(_lag_reconnect(it->first, *it->second))
+                        {
                             _reconnects.record(it->first);
                             doomed.push_back(it->second);
                             it = _streams.erase(it);
@@ -1286,6 +1317,10 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.rtsp_transport = c.second->rtsp_protocols();
             const bool set_udp = !s.camera.rtsp_transport.is_null() && s.camera.rtsp_transport.value() == "UDP";
             s.rtsp_transport_fallback = !set_udp && s.rtsp_transport == "UDP";
+            auto now_ms = chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now().time_since_epoch()).count();
+            s.ingest_lag = c.second->ingest_lag();
+            s.lag_reconnects_1h = _lag_reconnects.recent(c.first, now_ms);
+            s.falling_behind = s.ingest_lag.lagging || _lag_reconnects.flagged(c.first, now_ms);
             return s;
         }
     );

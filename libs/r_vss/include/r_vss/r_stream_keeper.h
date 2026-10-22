@@ -14,6 +14,7 @@
 #include "r_vss/r_tier_controller.h"
 #include "r_vss/r_tier_outputs.h"
 #include "r_vss/r_rtsp_transport.h"
+#include "r_vss/r_lag_watchdog.h"
 #include <functional>
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
@@ -115,6 +116,13 @@ struct r_stream_status
     // that's UDP standing in for a TCP setting the camera refused.
     std::string rtsp_transport;
     bool rtsp_transport_fallback {false};
+
+    // How far its frames reach us behind live (see r_lag_watchdog), its lag
+    // reconnects in the last hour, and whether that flags it as more than its
+    // network can carry (LAG_FLAG_MESSAGE).
+    r_lag_snapshot ingest_lag;
+    int lag_reconnects_1h {0};
+    bool falling_behind {false};
 };
 
 // Passes MOG2's events on to the motion plugins, and tells the stream keeper
@@ -214,7 +222,7 @@ public:
     R_API std::string add_restream_mount(const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, const r_disco::r_camera& camera, r_recording_context* rc, r_utils::r_nullable<r_pipeline::r_encoding> video_encoding, r_utils::r_nullable<r_pipeline::r_encoding> audio_encoding);
     R_API void remove_restream_mount(const std::string& path);
 
-    R_API void post_frame_to_motion_engine(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_params, const std::string& camera_id, bool is_key_frame);
+    R_API void post_frame_to_motion_engine(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_params, const std::string& camera_id, bool is_key_frame, int64_t ingest_lag_ms = 0);
 
     R_API std::vector<uint8_t> get_jpg(const std::string& camera_id, int64_t ts, uint16_t w, uint16_t h);
 
@@ -309,6 +317,9 @@ private:
     // Per camera, kept across reconnects; protected by _streams_mutex
     std::map<std::string, r_rtsp_transport> _rtsp_transports;
     reconnect_log _reconnects;
+    // Reconnects asked for by a camera's lag watchdog, with their backoff.
+    r_lag_reconnects _lag_reconnects;
+    bool _lag_reconnect(const std::string& camera_id, const r_recording_context& rc);
     r_utils::r_work_q<r_stream_keeper_cmd, r_stream_keeper_result> _cmd_q;
 
     // Cached stream status for non-blocking reads from GUI thread

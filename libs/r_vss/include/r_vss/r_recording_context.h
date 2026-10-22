@@ -3,6 +3,7 @@
 #define __r_vss_r_recording_context_h
 
 #include "r_vss/r_restream_track.h"
+#include "r_vss/r_lag_watchdog.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_ws.h"
 #include "r_disco/r_camera.h"
@@ -244,6 +245,11 @@ public:
     // video.
     R_API int64_t storage_timeline_lag_ms() const;
 
+    // How far this camera's frames reach us behind live (see r_lag_watchdog).
+    // wants_reconnect: far enough behind, for long enough, that the stream
+    // keeper should reconnect it to drop the backlog (it decides, with backoff).
+    R_API r_lag_snapshot ingest_lag() const;
+
     R_API r_storage::r_md_storage_file& metadata_storage();
 
     R_API void write_metadata(const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);
@@ -312,9 +318,14 @@ private:
     // Appended at most once every 500ms from the packet receive paths; trimmed to
     // a 30s retention so bytes_per_second() can compute rate over the last ~10s.
     mutable std::mutex _byte_rate_mutex;
+    // Fed from the video sample callback, read by the stream keeper.
+    mutable std::mutex _lag_lok;
+    r_lag_watchdog _lag;
     mutable std::deque<std::pair<std::chrono::system_clock::time_point, uint64_t>> _byte_rate_samples;
 
     void _record_byte_sample();
+    // Feeds the lag watchdog one video frame and logs what it found; returns its lag, ms.
+    int64_t _watch_lag(int64_t pts);
     bool _die;
     r_ws& _ws;
     // Per-camera rolling cache of video frames since the last keyframe.

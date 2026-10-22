@@ -537,6 +537,7 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
             int64_t storage_timeline_lag_ms = 0;
             json camera_events = nullptr;
             json motion_tier = nullptr;
+            json ingest_lag = nullptr;
             auto sit = status_by_id.find(c.id);
             if(sit != status_by_id.end())
             {
@@ -559,6 +560,17 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                         {"last_error", oe.last_error}
                     };
                 }
+                const auto& il = sit->second.ingest_lag;
+                ingest_lag = {
+                    {"lag_ms", il.lag_ms},
+                    {"behind_for_ms", il.behind_for_ms},
+                    {"rate", il.rate},
+                    {"lagging", il.lagging},
+                    {"episodes", il.episodes},
+                    {"lag_reconnects_1h", sit->second.lag_reconnects_1h},
+                    {"falling_behind", sit->second.falling_behind},
+                    {"message", sit->second.falling_behind ? LAG_FLAG_MESSAGE : ""}
+                };
                 const auto& mt = sit->second.motion_tier;
                 motion_tier = {
                     {"tier", mt.tier},
@@ -603,7 +615,9 @@ r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils:
                     // "auto", "1", "2" or "3": where motion and object classes come from.
                     {"motion_tier_setting", (c.motion_tier.is_null())?"auto":c.motion_tier.value()},
                     // The tier in use now and why; null while not recording.
-                    {"motion_tier", motion_tier}
+                    {"motion_tier", motion_tier},
+                    // How far its frames reach us behind live; null while not recording.
+                    {"ingest_lag", ingest_lag}
                 }
             );
         }

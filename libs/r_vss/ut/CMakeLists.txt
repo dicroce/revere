@@ -23,6 +23,8 @@ add_executable(
     source/test_r_recording_context.cpp
     include/test_r_rtsp_transport.h
     source/test_r_rtsp_transport.cpp
+    include/test_r_lag_watchdog.h
+    source/test_r_lag_watchdog.cpp
 )
 
 # What r_vss/r_build_info.h should report, from the root CMakeLists.
