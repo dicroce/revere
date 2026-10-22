@@ -9,6 +9,8 @@ add_executable(
     source/test_r_transcoder_repro.cpp
     include/test_r_h264_frame_num.h
     source/test_r_h264_frame_num.cpp
+    include/test_r_output_frame_selector.h
+    source/test_r_output_frame_selector.cpp
 )
 
 target_include_directories(

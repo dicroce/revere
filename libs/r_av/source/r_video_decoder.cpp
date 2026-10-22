@@ -369,6 +369,11 @@ r_codec_state r_video_decoder::decode()
 {
     _open_codec();
 
+    // A frame get() never downloaded still holds a decoder surface. Give it
+    // back before sending more input: some hardware pools (d3d11va) are fixed
+    // size, and before get() did the download the surface was already free here.
+    _release_hw_frame();
+
     auto packet = shared_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* pkt) { av_packet_free(&pkt); });
 
     if(_parse_input && _parser)
@@ -435,16 +440,9 @@ r_codec_state r_video_decoder::decode()
 
         if(recv_result >= 0)
         {
+            // A hardware frame stays on the GPU until get() asks for it (#71).
             if(_gaps && !_gap_take_output())
                 return (_parse_input && _remaining_size > 0) ? decode() : R_CODEC_STATE_HUNGRY;
-            if(_hw_accel != r_hw_accel::none && _frame->format == _hw_pix_fmt)
-            {
-                int tr = av_hwframe_transfer_data(_sw_frame, _frame, 0);
-                if(tr < 0)
-                    R_THROW(("Failed to transfer hw frame to cpu: %s", _ff_rc_to_msg(tr).c_str()));
-                av_frame_unref(_frame);
-                av_frame_move_ref(_frame, _sw_frame);
-            }
             return R_CODEC_STATE_HAS_OUTPUT;
         }
         else if (recv_result == AVERROR_EOF)
@@ -490,6 +488,8 @@ r_codec_state r_video_decoder::flush()
 {
     _open_codec();
 
+    _release_hw_frame();
+
     int ret = avcodec_send_packet(_context, nullptr);
     if(ret == AVERROR(EAGAIN))
     {
@@ -521,6 +521,19 @@ r_codec_state r_video_decoder::_flush_receive()
 
 shared_ptr<vector<uint8_t>> r_video_decoder::get(AVPixelFormat output_format, uint16_t output_width, uint16_t output_height, int alignment)
 {
+    // A hardware decoder's frame stays on the GPU until it is asked for: the
+    // download is a full-resolution copy, and callers that decode every frame
+    // but keep only some (a 30 fps camera at 15 fps out) skip it for the rest.
+    // Doing it here also covers frames from flush() and the EAGAIN path.
+    if(_hw_accel != r_hw_accel::none && _frame->format == _hw_pix_fmt)
+    {
+        int tr = av_hwframe_transfer_data(_sw_frame, _frame, 0);
+        if(tr < 0)
+            R_THROW(("Failed to transfer hw frame to cpu: %s", _ff_rc_to_msg(tr).c_str()));
+        av_frame_unref(_frame);
+        av_frame_move_ref(_frame, _sw_frame);
+    }
+
     // Use frame properties directly: in the hw path _context->pix_fmt is the
     // hw pixel format, but after transfer _frame holds the sw format.
     r_scaler_state state;
@@ -746,6 +759,12 @@ bool r_video_decoder::_gap_take_output()
     ++g.stats.hidden_pictures;
     ++g.episode_hidden;
     return false;
+}
+
+void r_video_decoder::_release_hw_frame()
+{
+    if(_frame && _hw_accel != r_hw_accel::none && _frame->format == _hw_pix_fmt)
+        av_frame_unref(_frame);
 }
 
 void r_video_decoder::_clear()
