@@ -343,7 +343,18 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             // on every key so the cache always starts with a keyframe (until the
             // safety cap kicks in for a misbehaving source).
             if(key)
+            {
                 _video_gop_cache.clear();
+                if(!_maybe_video_storage_write_context.is_null())
+                {
+                    std::lock_guard<std::mutex> g(_latest_key_lock);
+                    _has_latest_key = true;
+                    _latest_key_ts = ts;
+                    _latest_key_buffer = buffer;
+                    _latest_key_codec_name = _maybe_video_storage_write_context.value().codec_name;
+                    _latest_key_codec_parameters = _maybe_video_storage_write_context.value().codec_parameters;
+                }
+            }
             _video_gop_cache.push_back({pts, key, buffer});
             while(_video_gop_cache.size() > GOP_CACHE_MAX_FRAMES)
                 _video_gop_cache.pop_front();
@@ -471,14 +482,21 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
             if(do_motion)
             {
-                this->_sk->post_frame_to_motion_engine(
-                    buffer,
-                    ts,
-                    this->_maybe_video_storage_write_context.value().codec_name,
-                    this->_maybe_video_storage_write_context.value().codec_parameters,
-                    this->_camera.id,
-                    key
-                );
+                // Tier 1: MOG2 finds the motion. Tiers 2 and 3: the camera does.
+                if(this->_sk->motion_tier(this->_camera.id) == motion_tier_1)
+                {
+                    _close_camera_motion_ring();
+                    this->_sk->post_frame_to_motion_engine(
+                        buffer,
+                        ts,
+                        this->_maybe_video_storage_write_context.value().codec_name,
+                        this->_maybe_video_storage_write_context.value().codec_parameters,
+                        this->_camera.id,
+                        key
+                    );
+                }
+                else if(key)
+                    _camera_motion_tick(ts);
             }
         }
         catch(exception& e)
@@ -498,6 +516,16 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
         _source.set_sim_mttf_seconds(sim_mttf_seconds);
 
     _source.play();
+
+    if(r_cameras::camera_events_wanted(_camera))
+    {
+        // The subscriber is reset before this context is gone (see the destructor).
+        _camera_events = r_cameras::make_camera_events(_camera, [this](const r_cameras::r_camera_transition& t) {
+            _on_camera_transition(t);
+            _sk->camera_transition(_camera.id, t);
+        });
+        _camera_events->start();
+    }
 }
 
 r_recording_context::~r_recording_context() noexcept
@@ -505,6 +533,9 @@ r_recording_context::~r_recording_context() noexcept
     _sk->remove_restream_mount(_restream_mount_path);
 
     _source.stop();
+
+    // Waits for the subscriber's thread (stop() already asked it to finish).
+    _camera_events.reset();
 
     // Explicitly clear write contexts BEFORE _storage_file is destroyed
     // This ensures nanots write_context unique_ptrs are destroyed immediately,
@@ -689,7 +720,135 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
 
 void r_recording_context::stop()
 {
+    // Asks without waiting, so stopping every camera at shutdown winds their
+    // subscribers down in parallel; the destructor waits.
+    if(_camera_events)
+        _camera_events->request_stop();
     _source.stop();
+}
+
+bool r_recording_context::has_camera_events() const
+{
+    return (bool)_camera_events;
+}
+
+r_cameras::r_camera_events_status r_recording_context::camera_events_status() const
+{
+    return _camera_events ? _camera_events->status() : r_cameras::r_camera_events_status();
+}
+
+void r_recording_context::_on_camera_transition(const r_cameras::r_camera_transition& t)
+{
+    if(t.what != "motion")
+        return;
+    auto now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> g(_camera_motion_lock);
+    if(t.active)
+    {
+        if(_camera_motion_sources.empty())
+            _camera_motion_start_ms = now;
+        _camera_motion_sources.insert(t.source);
+        return;
+    }
+    if(_camera_motion_sources.erase(t.source) == 0 || !_camera_motion_sources.empty())
+        return;
+    // Written only on tiers 2 and 3 (the ring is open); on tier 1 MOG2 writes it.
+    if(_camera_motion_ring)
+    {
+        try
+        {
+            uint8_t one = 1;
+            _camera_motion_ring->write_range(system_clock::time_point(milliseconds(_camera_motion_start_ms)),
+                                             system_clock::time_point(milliseconds(now)), &one);
+            _camera_motion_last_s = now / 1000;
+        }
+        catch(const std::exception& e)
+        {
+            R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+        }
+    }
+}
+
+void r_recording_context::_camera_motion_tick(int64_t ts)
+{
+    std::lock_guard<std::mutex> g(_camera_motion_lock);
+    try
+    {
+        if(!_camera_motion_ring)
+        {
+            if(_camera.motion_detection_file_path.is_null())
+                return;
+            // Where the motion engine writes it (see the stream keeper's factory).
+            string path = _camera.motion_detection_file_path.value();
+            if(path.find('/') == string::npos && path.find('\\') == string::npos)
+                path = _top_dir + PATH_SLASH + "video" + PATH_SLASH + path;
+            _camera_motion_ring = std::make_unique<r_ring_storage_sink>(path, RING_MOTION_FLAG_SIZE);
+            _camera_motion_first_ts = ts;
+        }
+
+        // In motion: its run is written when it ends. Like the motion engine,
+        // nothing in the first minute.
+        if(!_camera_motion_sources.empty() || ts - _camera_motion_first_ts <= 60000)
+            return;
+        auto s = ts / 1000;
+        if(s == _camera_motion_last_s)
+            return;
+        uint8_t zero = 0;
+        _camera_motion_ring->write(system_clock::time_point(milliseconds(ts)), &zero);
+        _camera_motion_last_s = s;
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+    }
+}
+
+void r_recording_context::_close_camera_motion_ring()
+{
+    std::lock_guard<std::mutex> g(_camera_motion_lock);
+    if(!_camera_motion_ring)
+        return;
+    try
+    {
+        // Back on tier 1 mid-event: keep what the camera reported so far.
+        if(!_camera_motion_sources.empty())
+        {
+            auto now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+            uint8_t one = 1;
+            _camera_motion_ring->write_range(system_clock::time_point(milliseconds(_camera_motion_start_ms)),
+                                             system_clock::time_point(milliseconds(now)), &one);
+        }
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+    }
+    _camera_motion_ring.reset();
+}
+
+r_nullable<r_live_key_frame> r_recording_context::latest_key_frame() const
+{
+    r_nullable<r_live_key_frame> out;
+    r_gst_buffer buffer;
+    r_live_key_frame kf;
+    {
+        std::lock_guard<std::mutex> g(_latest_key_lock);
+        if(!_has_latest_key)
+            return out;
+        buffer = _latest_key_buffer;
+        kf.ts = _latest_key_ts;
+        kf.codec_name = _latest_key_codec_name;
+        kf.codec_parameters = _latest_key_codec_parameters;
+    }
+    auto mi = buffer.map(r_gst_buffer::MT_READ);
+    kf.data.assign(mi.data(), mi.data() + mi.size());
+    out.set_value(std::move(kf));
+    return out;
+}
+
+vector<r_cameras::r_camera_span> r_recording_context::camera_spans(int64_t since_ms) const
+{
+    return _camera_events ? _camera_events->spans(since_ms) : vector<r_cameras::r_camera_span>();
 }
 
 void r_recording_context::create_playback_mount(GstRTSPServer*, GstRTSPMountPoints* mounts, const std::string& url, uint64_t start_ts, uint64_t end_ts)

@@ -26,6 +26,10 @@
 #include <thread>
 #include <utility>
 #include <deque>
+#include <memory>
+#include <set>
+#include "r_cameras/r_camera_events.h"
+#include "r_vss/r_motion_storage_sink.h"
 
 struct _GstRTSPMediaFactory;
 typedef _GstRTSPMediaFactory GstRTSPMediaFactory;
@@ -87,6 +91,15 @@ R_API void restream_feed(GstElement* appsrc, r_utils::r_blocking_q<_frame_contex
 // One entry in the per-camera GOP cache. Stores the original source pts
 // (in milliseconds, as delivered by the gst source) so the relative spacing
 // can be reconstructed when bursting into a newly-connected viewer's queue.
+// The newest video key frame as received, for the detection pass's first look.
+struct r_live_key_frame
+{
+    int64_t ts {0};
+    std::string codec_name;
+    std::string codec_parameters;
+    std::vector<uint8_t> data;
+};
+
 struct _gop_cache_entry
 {
     int64_t pts;
@@ -229,6 +242,23 @@ public:
 
     R_API void stop();
 
+    // The camera's ONVIF event subscription (shadow mode). Null status/empty
+    // spans for a camera without one (added by RTSP URL).
+    R_API bool has_camera_events() const;
+    R_API r_cameras::r_camera_events_status camera_events_status() const;
+
+    // The newest key frame received (null before the first).
+    R_API r_utils::r_nullable<r_live_key_frame> latest_key_frame() const;
+
+private:
+    // Tiers 2 and 3: the camera's motion goes to the motion ring (.mdb) in
+    // place of MOG2's: a run of 1s when an event ends, 0 each second between.
+    void _on_camera_transition(const r_cameras::r_camera_transition& t);
+    void _camera_motion_tick(int64_t ts);
+    void _close_camera_motion_ring();
+public:
+    R_API std::vector<r_cameras::r_camera_span> camera_spans(int64_t since_ms) const;
+
     R_API void create_playback_mount(GstRTSPServer* server, GstRTSPMountPoints* mounts, const std::string& url, uint64_t start_ts, uint64_t end_ts);
 
 private:
@@ -280,6 +310,23 @@ private:
     // no mutex needed. Drained into a new live RTSP viewer's queue when
     // their LRS appears with needs_gop_replay set.
     std::deque<_gop_cache_entry> _video_gop_cache;
+    std::unique_ptr<r_cameras::r_camera_events> _camera_events;
+
+    std::mutex _camera_motion_lock;
+    std::unique_ptr<r_ring_storage_sink> _camera_motion_ring;
+    std::set<std::string> _camera_motion_sources;   // sources in motion now
+    int64_t _camera_motion_start_ms {0};
+    int64_t _camera_motion_first_ts {0};
+    int64_t _camera_motion_last_s {-1};
+
+    // A reference to the newest key frame (set on the GStreamer thread, read by
+    // the detection pass).
+    mutable std::mutex _latest_key_lock;
+    bool _has_latest_key {false};
+    int64_t _latest_key_ts {0};
+    r_pipeline::r_gst_buffer _latest_key_buffer;
+    std::string _latest_key_codec_name;
+    std::string _latest_key_codec_parameters;
 };
 
 }

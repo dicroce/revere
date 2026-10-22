@@ -45,10 +45,15 @@ vector<r_onvif::onvif_profile_info> r_onvif_provider::get_camera_profiles(
     const string& ipv4,
     const string& xaddrs,
     r_nullable<string> username,
-    r_nullable<string> password
+    r_nullable<string> password,
+    r_nullable<int> onvif_port,
+    r_nullable<string> onvif_protocol
 )
 {
-    r_onvif::r_onvif_cam cam(ipv4, 80, "http", xaddrs, username, password);
+    auto ep = r_onvif::find_device_service(ipv4, xaddrs, onvif_port, onvif_protocol);
+    if(ep.is_null())
+        R_THROW(("No ONVIF device service answers at %s. Check that ONVIF is enabled on the camera.", ipv4.c_str()));
+    r_onvif::r_onvif_cam cam(ep.value().host, ep.value().port, ep.value().protocol, ep.value().uri, username, password);
     auto caps = cam.get_camera_capabilities();
     auto oms = cam.get_media_service(caps);
     return cam.get_profile_tokens(oms);
@@ -97,7 +102,18 @@ void r_onvif_provider::interrogate_camera(
                     auth_hint = hint_it->second.auth_mode;
                 }
 
-                int port = sc.port.is_null() ? 80 : sc.port.value();
+                // Discovery and re-interrogation pass a freshly discovered port;
+                // find it only when it is missing.
+                if(sc.port.is_null())
+                {
+                    auto ep = r_onvif::find_device_service(sc.ipv4.value(), sc.xaddrs.value());
+                    if(ep.is_null())
+                        R_THROW(("No ONVIF device service answers at %s.", sc.ipv4.value().c_str()));
+                    sc.port = ep.value().port;
+                    sc.protocol = ep.value().protocol;
+                    sc.xaddrs = ep.value().uri;
+                }
+                int port = sc.port.value();
                 string protocol = sc.protocol.is_null() ? "http" : sc.protocol.value();
                 r_onvif::r_onvif_cam cam(sc.ipv4.value(), port, protocol, sc.xaddrs.value(), username, password, soap_hint, auth_hint);
 
@@ -199,7 +215,9 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
     const std::string& address,
     r_utils::r_nullable<std::string> username,
     r_utils::r_nullable<std::string> password,
-    const std::string& preferred_profile_token
+    const std::string& preferred_profile_token,
+    r_utils::r_nullable<int> onvif_port,
+    r_utils::r_nullable<std::string> onvif_protocol
 )
 {
     r_nullable<r_stream_config> config_nullable;
@@ -210,6 +228,8 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
     config.ipv4 = ipv4;
     config.xaddrs = xaddrs;
     config.address = address;
+    config.port = onvif_port;
+    config.protocol = onvif_protocol;
 
     _cache_check_expiration(id);
 
@@ -219,6 +239,16 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
     {
         if(_agent && _agent->_is_recording(config.id))
             return r_nullable<r_stream_config>();
+
+        // Once, before the retries: where the device service answers. The
+        // stored port is checked and found again if stale, and the result is
+        // saved with the camera through the returned config.
+        auto ep = r_onvif::find_device_service(ipv4, xaddrs, config.port, config.protocol);
+        if(ep.is_null())
+            R_THROW(("No ONVIF device service answers at %s. Check that ONVIF is enabled on the camera.", ipv4.c_str()));
+        config.port = ep.value().port;
+        config.protocol = ep.value().protocol;
+        config.xaddrs = ep.value().uri;
 
         const int max_attempts = 3;
         for (int attempt = 0; attempt < max_attempts; ++attempt)
@@ -242,9 +272,7 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
                     auth_hint = hint_it->second.auth_mode;
                 }
 
-                int port = config.port.is_null() ? 80 : config.port.value();
-                string protocol = config.protocol.is_null() ? "http" : config.protocol.value();
-                r_onvif::r_onvif_cam cam(config.ipv4.value(), port, protocol, xaddrs, username, password, soap_hint, auth_hint);
+                r_onvif::r_onvif_cam cam(config.ipv4.value(), config.port.value(), config.protocol.value(), config.xaddrs.value(), username, password, soap_hint, auth_hint);
 
                 auto caps = cam.get_camera_capabilities();
                 auto oms = cam.get_media_service(caps);

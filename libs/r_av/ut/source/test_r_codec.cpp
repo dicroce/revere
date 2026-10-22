@@ -8,6 +8,10 @@
 #include "r_av/r_demuxer.h"
 #include "r_av/r_muxer.h"
 #include "r_utils/r_file.h"
+#ifndef IS_WINDOWS
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 // Added to the global namespace by test_r_mux.cpp, so extern'd here:
 extern unsigned char true_north_mp4[];
@@ -209,4 +213,143 @@ void test_r_codec::test_mjpeg_snapshot_quality()
     }
     RTF_ASSERT(dc_quant > 0);
     RTF_ASSERT(dc_quant <= 8);   // ~quality 85+; the regression produced ~35
+}
+
+namespace
+{
+
+const uint16_t PAD_W = 320, PAD_H = 240;
+
+// A picture to check the decode against: a gradient with a bright block.
+vector<uint8_t> pad_test_picture()
+{
+    vector<uint8_t> yuv(PAD_W * PAD_H * 3 / 2, 128);
+    for(int y = 0; y < PAD_H; ++y)
+        for(int x = 0; x < PAD_W; ++x)
+            yuv[y * PAD_W + x] = (uint8_t)(16 + ((x + y) % 200));
+    for(int y = 80; y < 160; ++y)
+        for(int x = 120; x < 200; ++x)
+            yuv[y * PAD_W + x] = 235;
+    return yuv;
+}
+
+// Mean absolute luma difference between a decode and the source picture.
+double luma_error(const vector<uint8_t>& a, const vector<uint8_t>& b)
+{
+    double sum = 0;
+    for(size_t i = 0; i < (size_t)PAD_W * PAD_H; ++i)
+        sum += abs((int)a[i] - (int)b[i]);
+    return sum / (PAD_W * PAD_H);
+}
+
+#ifndef IS_WINDOWS
+// `data` copied so its last byte is the last readable byte: the next page is
+// PROT_NONE, so reading even one byte past the end faults.
+struct guarded_copy
+{
+    uint8_t* base {nullptr};
+    size_t mapped {0};
+    const uint8_t* data {nullptr};
+
+    explicit guarded_copy(const vector<uint8_t>& src)
+    {
+        size_t page = (size_t)sysconf(_SC_PAGESIZE);
+        size_t pages = (src.size() + page - 1) / page + 1;
+        mapped = pages * page;
+        void* p = mmap(nullptr, mapped, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        RTF_ASSERT(p != MAP_FAILED);
+        base = (uint8_t*)p;
+        RTF_ASSERT(mprotect(base + mapped - page, page, PROT_NONE) == 0);
+        uint8_t* start = base + mapped - page - src.size();
+        memcpy(start, src.data(), src.size());
+        data = start;
+    }
+    ~guarded_copy()
+    {
+        if(base)
+            munmap(base, mapped);
+    }
+};
+#endif
+
+}
+
+// FFmpeg reads up to AV_INPUT_BUFFER_PADDING_SIZE past the end of its input.
+// A key frame whose buffer ends exactly at a page boundary (a stored frame in
+// a vector) used to fault there, or read a neighbour's heap. Decoded in parse
+// mode, in direct mode with the parameter sets as extradata (set_extradata()
+// copies them, so this checks decoding with extradata, not its padding), and
+// through a decoder moved between attach_buffer() and decode().
+void test_r_codec::test_decode_input_ending_at_a_page()
+{
+#ifndef IS_WINDOWS
+    auto src = pad_test_picture();
+
+    r_video_encoder enc(AV_CODEC_ID_H264, 1000000, PAD_W, PAD_H, AVRational{30, 1}, AV_PIX_FMT_YUV420P, 0, 30,
+                        AV_PROFILE_H264_HIGH, 41, "veryfast", "zerolatency");
+    auto parameter_sets = enc.get_extradata();
+    RTF_ASSERT(parameter_sets.empty() || parameter_sets[0] == 0);  // Annex B
+    enc.attach_buffer(src.data(), src.size(), 0);
+    vector<uint8_t> idr;
+    while(enc.encode() == R_CODEC_STATE_HAS_OUTPUT)
+    {
+        auto pi = enc.get();
+        idr.assign(pi.data, pi.data + pi.size);
+    }
+    while(idr.empty() && enc.flush() == R_CODEC_STATE_HAS_OUTPUT)
+    {
+        auto pi = enc.get();
+        idr.assign(pi.data, pi.data + pi.size);
+    }
+    RTF_ASSERT(!idr.empty());
+
+    auto decode_all = [](r_video_decoder& dec) -> shared_ptr<vector<uint8_t>> {
+        for(int i = 0; i < 10; ++i)
+        {
+            auto st = dec.decode();
+            if(st == R_CODEC_STATE_HAS_OUTPUT || st == R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+                return dec.get(AV_PIX_FMT_YUV420P, PAD_W, PAD_H, 1);
+        }
+        for(int i = 0; i < 10; ++i)
+            if(dec.flush() == R_CODEC_STATE_HAS_OUTPUT)
+                return dec.get(AV_PIX_FMT_YUV420P, PAD_W, PAD_H, 1);
+        return nullptr;
+    };
+
+    // Parse mode, parameter sets in band: what r_query's single-frame decode does.
+    {
+        vector<uint8_t> frame = parameter_sets;
+        frame.insert(frame.end(), idr.begin(), idr.end());
+        guarded_copy g(frame);
+        r_video_decoder dec(AV_CODEC_ID_H264, r_hw_accel::none, true);
+        dec.attach_buffer(g.data, frame.size());
+        auto out = decode_all(dec);
+        RTF_ASSERT(out && luma_error(*out, src) < 6.0);
+    }
+
+    // Direct mode, parameter sets as extradata.
+    if(!parameter_sets.empty())
+    {
+        guarded_copy g(idr);
+        r_video_decoder dec(AV_CODEC_ID_H264);
+        dec.set_extradata(parameter_sets);
+        dec.attach_buffer(g.data, idr.size());
+        auto out = decode_all(dec);
+        RTF_ASSERT(out && luma_error(*out, src) < 6.0);
+    }
+
+    // Moved between attach_buffer() and decode(): the padded copy moves with it.
+    {
+        vector<uint8_t> frame = parameter_sets;
+        frame.insert(frame.end(), idr.begin(), idr.end());
+        r_video_decoder first(AV_CODEC_ID_H264, r_hw_accel::none, true);
+        {
+            guarded_copy g(frame);
+            first.attach_buffer(g.data, frame.size());
+        }   // the caller's buffer is gone; the decoder decodes its own copy
+        r_video_decoder moved(std::move(first));
+        auto out = decode_all(moved);
+        RTF_ASSERT(out && luma_error(*out, src) < 6.0);
+    }
+#endif
 }

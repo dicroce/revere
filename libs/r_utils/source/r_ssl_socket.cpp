@@ -186,7 +186,8 @@ void r_ssl_socket::connect(const std::string& host, int port)
     if( ::setsockopt( (sock_t)_sok.get_sok_id(), SOL_SOCKET, SO_SNDTIMEO, (const char*)&connect_timeout, sizeof(connect_timeout) ) < 0 )
         R_THROW(("Unable to configure socket send timeout."));
 
-    _sok.connect(host, port);
+    // The timeouts above don't cover connect() itself on Windows.
+    _sok.connect(host, port, _ioTimeOut);
 
     mbedtls_ssl_set_bio(&_ssl, &_sok, _mbedtls_send, _mbedtls_recv, nullptr);
 

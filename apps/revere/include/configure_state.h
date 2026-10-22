@@ -85,7 +85,11 @@ struct configure_state final
     configure_state(const std::string& top_dir);
     ~configure_state() = default;
 
+    // Never throws on a bad file: see load_problem().
     void load();
+    // Set when load() found the file unreadable: what happened and where the
+    // file went, to show the user. Empty otherwise.
+    std::string load_problem() const;
     bool need_save() const;
     void save();
 
@@ -108,6 +112,9 @@ private:
     std::optional<window_placement> _window_placement;
     r_ui_utils::sections_open _sections_open;
     mutable bool _need_save {false};
+    // Set when the file couldn't be read or moved aside: saving would replace it.
+    bool _save_blocked {false};
+    std::string _load_problem;
     mutable std::mutex _mutex;
 };
 

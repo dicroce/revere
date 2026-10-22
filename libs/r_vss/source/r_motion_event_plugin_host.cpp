@@ -16,6 +16,7 @@ typedef void (*stop_plugin_func)(r_motion_plugin_handle);
 typedef void (*destroy_plugin_func)(r_motion_plugin_handle);
 typedef void (*post_motion_event_func)(r_motion_plugin_handle, int, const char*, int64_t, const uint8_t*, size_t, uint16_t, uint16_t, int, int, int, int, bool);
 typedef void (*post_motion_event_regions_func)(r_motion_plugin_handle, int, const char*, int64_t, const uint8_t*, size_t, uint16_t, uint16_t, int, int, int, int, bool, const int*, size_t);
+typedef int (*detect_objects_func)(r_motion_plugin_handle, const uint8_t*, size_t, uint16_t, uint16_t, r_object_detection_cb, void*);
 
 r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devices, const std::string& top_dir, r_stream_keeper& stream_keeper)
     : _devices(devices),
@@ -76,6 +77,15 @@ r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devic
                         {
                         }
 
+                        void* detect_symbol = nullptr;
+                        try
+                        {
+                            detect_symbol = lib->resolve_symbol("detect_objects");
+                        }
+                        catch(const std::exception&)
+                        {
+                        }
+
                         if (load_symbol && destroy_symbol && post_symbol)
                         {
                             // Cast to function pointers
@@ -84,13 +94,14 @@ r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devic
                             destroy_plugin_func destroy_func = reinterpret_cast<destroy_plugin_func>(destroy_symbol);
                             post_motion_event_func post_func = reinterpret_cast<post_motion_event_func>(post_symbol);
                             post_motion_event_regions_func post_regions_func = post_regions_symbol ? reinterpret_cast<post_motion_event_regions_func>(post_regions_symbol) : nullptr;
+                            detect_objects_func detect_func = detect_symbol ? reinterpret_cast<detect_objects_func>(detect_symbol) : nullptr;
 
                             // Call load_plugin with host handle (this pointer cast to opaque handle)
                             r_motion_plugin_handle plugin_handle = load_func(reinterpret_cast<r_motion_event_plugin_host_handle>(this));
 
                             if (plugin_handle)
                             {
-                                _plugins.push_back({std::move(lib), plugin_handle, stop_func, destroy_func, post_func, post_regions_func});
+                                _plugins.push_back({std::move(lib), plugin_handle, stop_func, destroy_func, post_func, post_regions_func, detect_func});
                                 R_LOG_INFO("Loaded motion plugin: %s", filename.c_str());
                             }
                             else
@@ -139,8 +150,52 @@ r_motion_event_plugin_host::~r_motion_event_plugin_host()
     _plugins.clear();
 }
 
+bool r_motion_event_plugin_host::has_object_detector() const
+{
+    for(auto& p : _plugins)
+        if(p.plugin_handle && p.detect_func)
+            return true;
+    return false;
+}
+
+bool r_motion_event_plugin_host::detect_objects(const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data,
+                                                uint16_t width, uint16_t height, std::vector<r_detection>& out)
+{
+    if(_stopped)
+        return false;
+
+    struct ctx_t
+    {
+        const std::string* camera_id;
+        int64_t ts;
+        std::vector<r_detection>* out;
+    } ctx {&camera_id, ts, &out};
+
+    for(auto& p : _plugins)
+    {
+        if(!p.plugin_handle || !p.detect_func)
+            continue;
+        out.clear();
+        int rc = p.detect_func(p.plugin_handle, frame_data.data(), frame_data.size(), width, height,
+            [](void* userdata, const char* class_name, float confidence, float x1, float y1, float x2, float y2) {
+                auto c = static_cast<ctx_t*>(userdata);
+                r_detection d;
+                d.camera_id = *c->camera_id;
+                d.ts = c->ts;
+                d.class_name = class_name ? class_name : "";
+                d.confidence = confidence;
+                d.x1 = x1; d.y1 = y1; d.x2 = x2; d.y2 = y2;
+                c->out->push_back(d);
+            }, &ctx);
+        if(rc == 0)
+            return true;
+    }
+    return false;
+}
+
 void r_motion_event_plugin_host::stop()
 {
+    _stopped = true;
     R_LOG_INFO("Stopping all motion plugins...");
 
     // Stop all plugins using their stop_plugin function

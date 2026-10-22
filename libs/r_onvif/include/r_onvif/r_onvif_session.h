@@ -38,6 +38,27 @@ struct discovered_info
 
 R_API std::vector<discovered_info> filter_discovered(const std::vector<std::string>& discovered);
 
+// Where a camera's ONVIF device service answers. Revere stores only the
+// service's path (xaddrs), and the port varies: 80 on many cameras, 8000 on
+// Reolinks. Tries, each with an unauthenticated GetSystemDateAndTime and a
+// short timeout: hint_port (when set), then unicast WS-Discovery to the host,
+// then 80, 8000 and 8080 over http and 443 over https. Null if none answers.
+struct onvif_endpoint
+{
+    std::string host;
+    int port;
+    std::string protocol;
+    std::string uri;
+};
+
+R_API r_utils::r_nullable<onvif_endpoint> find_device_service(
+    const std::string& host,
+    const std::string& uri,
+    r_utils::r_nullable<int> hint_port = r_utils::r_nullable<int>(),
+    r_utils::r_nullable<std::string> hint_protocol = r_utils::r_nullable<std::string>(),
+    const std::function<bool()>& should_continue = {}  // polled between attempts; false stops the search
+);
+
 typedef std::string onvif_capabilities;
 typedef std::string onvif_media_service;
 typedef std::string onvif_profile_token;
@@ -49,6 +70,66 @@ struct onvif_profile_info
     uint16_t width;
     uint16_t height;
 };
+
+// ONVIF events (Event service, WS-BaseNotification pull point).
+//
+// A pull point is created on the events service and then polled at its own
+// address. Many cameras hand back ReferenceParameters with the subscription
+// (an id the camera needs to find it) that must be echoed as SOAP headers on
+// every request to that address, alongside the WS-Addressing Action and To.
+struct onvif_pull_point
+{
+    std::string address;                            // wsa:Address of the SubscriptionReference
+    std::vector<std::string> reference_parameters;  // serialized elements to echo as SOAP headers
+    std::string termination_time;                   // as the camera reported it (may be empty)
+};
+
+struct onvif_event
+{
+    std::string topic;              // e.g. "tns1:RuleEngine/CellMotionDetector/Motion"
+    std::string utc_time;           // tt:Message/@UtcTime
+    std::string property_operation; // Initialized, Changed or Deleted (may be empty)
+    std::vector<std::pair<std::string, std::string>> source; // tt:Source SimpleItems (Name, Value)
+    std::vector<std::pair<std::string, std::string>> data;   // tt:Data SimpleItems (Name, Value)
+};
+
+// The parsing behind the events calls, separate so it can be tested without a
+// camera. Each throws std::runtime_error on a response it can't use.
+//
+// CreatePullPointSubscriptionResponse: the subscription's address, its
+// ReferenceParameters (each serialized with the xmlns declarations it uses,
+// ready to echo as a SOAP header) and the termination time.
+R_API onvif_pull_point parse_create_pull_point_response(const std::string& xml);
+
+// PullMessagesResponse: one onvif_event per NotificationMessage.
+R_API std::vector<onvif_event> parse_pull_messages_response(const std::string& xml);
+
+// GetEventPropertiesResponse: every topic in its TopicSet marked
+// wstop:topic="true", as a path of local names without prefixes
+// ("RuleEngine/CellMotionDetector/Motion").
+R_API std::vector<std::string> parse_event_topics(const std::string& xml);
+
+// Cell motion regions. A tt:CellMotionDetector rule's ActiveCells is one bit
+// per cell of its motion engine's CellLayout (Columns x Rows, row by row, most
+// significant bit first), PackBits-compressed, base64.
+R_API std::vector<uint8_t> packbits_decode(const std::vector<uint8_t>& in);
+R_API std::vector<uint8_t> packbits_encode(const std::vector<uint8_t>& in);
+// No cell set among the first `cells` (a mask that doesn't decode counts as empty).
+R_API bool cell_mask_empty(const std::string& active_cells, int cells);
+// Every cell of a columns x rows layout set.
+R_API std::string full_cell_mask(int columns, int rows);
+
+struct onvif_cell_motion_rule
+{
+    std::string configuration_token;
+    std::string rule_name;
+    int columns {0};             // its configuration's CellLayout; 0 x 0 when it has none
+    int rows {0};
+    std::string active_cells;
+};
+
+// Each tt:CellMotionDetector rule in a GetVideoAnalyticsConfigurations response.
+R_API std::vector<onvif_cell_motion_rule> parse_cell_motion_rules(const std::string& xml);
 
 enum class soap_version
 {
@@ -85,6 +166,40 @@ public:
 
     R_API std::string get_stream_uri(onvif_media_service media_service, onvif_profile_token profile_token);
 
+    // The events service's XAddr from GetCapabilities. Null if the camera has none.
+    R_API r_utils::r_nullable<std::string> get_events_service(const onvif_capabilities& capabilities) const;
+
+    // GetEventProperties: the raw response, whose TopicSet lists the topics the camera can raise.
+    R_API std::string get_event_properties(const std::string& events_service);
+
+    // Analytics (motion regions and rules). The analytics service's XAddr from
+    // GetCapabilities, null if the camera has none. The rest return the
+    // camera's raw response and throw on a SOAP fault.
+    R_API r_utils::r_nullable<std::string> get_analytics_service(const onvif_capabilities& capabilities) const;
+    R_API std::string get_video_analytics_configurations(const onvif_media_service& media_service);
+    R_API std::string get_supported_rules(const std::string& analytics_service, const std::string& configuration_token);
+    R_API std::string get_rules(const std::string& analytics_service, const std::string& configuration_token);
+    R_API std::string get_analytics_modules(const std::string& analytics_service, const std::string& configuration_token);
+
+    // Sets every tt:CellMotionDetector rule whose region is empty (no cell
+    // active: the camera detects nothing) to the whole frame, then reads it
+    // back. A rule with any region drawn is left alone, so a user's region is
+    // never overwritten. Returns the rules it set ("configuration/rule").
+    // Nothing for a camera without analytics (Reolinks have none over ONVIF).
+    // Throws if the camera rejects the change or doesn't keep it.
+    R_API std::vector<std::string> fill_empty_cell_motion_regions(const onvif_capabilities& capabilities);
+
+    // CreatePullPointSubscription with an InitialTerminationTime of termination_seconds.
+    R_API onvif_pull_point create_pull_point_subscription(const std::string& events_service, int termination_seconds);
+
+    // PullMessages: waits up to timeout_seconds on the camera for up to message_limit events.
+    R_API std::vector<onvif_event> pull_messages(const onvif_pull_point& pull_point, int timeout_seconds, int message_limit);
+
+    // Renew the subscription for another termination_seconds.
+    R_API void renew(const onvif_pull_point& pull_point, int termination_seconds);
+
+    R_API void unsubscribe(const onvif_pull_point& pull_point);
+
     soap_version get_soap_version() const { return _soap_ver; }
     auth_mode get_auth_mode() const { return _auth_mode; }
 
@@ -96,7 +211,22 @@ private:
         const std::string& soap_action,
         const std::function<void(pugi::xml_node&)>& build_body,
         r_utils::r_nullable<std::string> username,
-        r_utils::r_nullable<std::string> password
+        r_utils::r_nullable<std::string> password,
+        const std::function<void(pugi::xml_node&)>& build_header = {},
+        bool log_request = true,
+        int timeout_ms = 30000,
+        int net_attempts = 2
+    );
+
+    // A request to a pull point's own address: WS-Addressing Action and To, and
+    // its ReferenceParameters, as headers.
+    std::pair<int, std::string> _pull_point_request(
+        const onvif_pull_point& pull_point,
+        const std::string& soap_action,
+        const std::function<void(pugi::xml_node&)>& build_body,
+        bool log_request = true,
+        int timeout_ms = 30000,
+        int net_attempts = 2
     );
 
     std::vector<std::string> _xaddrs_services;

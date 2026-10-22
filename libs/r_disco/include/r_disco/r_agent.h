@@ -75,11 +75,16 @@ public:
     R_API void start();
     R_API void stop();
 
+    // onvif_port/onvif_protocol: where the camera's device service was last
+    // found (r_camera::onvif_port); null when unknown. Checked, and found again
+    // if stale (r_onvif::find_device_service).
     R_API std::vector<r_onvif::onvif_profile_info> get_camera_profiles(
         const std::string& ipv4,
         const std::string& xaddrs,
         r_utils::r_nullable<std::string> username,
-        r_utils::r_nullable<std::string> password
+        r_utils::r_nullable<std::string> password,
+        r_utils::r_nullable<int> onvif_port = r_utils::r_nullable<int>(),
+        r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
     );
 
     R_API void interrogate_camera(
@@ -89,7 +94,9 @@ public:
         const std::string& address,
         r_utils::r_nullable<std::string> username,
         r_utils::r_nullable<std::string> password,
-        const std::string& preferred_profile_token = ""
+        const std::string& preferred_profile_token = "",
+        r_utils::r_nullable<int> onvif_port = r_utils::r_nullable<int>(),
+        r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
     );
 
     R_API void forget(const std::string& id);

@@ -19,6 +19,8 @@ public:
       TEST(test_r_utils::test_stat);
       TEST(test_r_utils::test_mkdir_p_concurrent);
       TEST(test_r_utils::test_mkdir_p_over_file);
+      TEST(test_r_utils::test_atomic_write_file);
+      TEST(test_r_utils::test_quarantine_file);
       TEST(test_r_utils::test_file_lock);
       TEST(test_r_utils::test_shared_file_lock);
       TEST(test_r_utils::test_md5_basic);
@@ -27,6 +29,7 @@ public:
       TEST(test_r_utils::test_socket_move_assignable);
       TEST(test_r_utils::test_socket_close_warm_socket);
       TEST(test_r_utils::test_socket_wont_block);
+      TEST(test_r_utils::test_socket_connect_timeout);
       TEST(test_r_utils::test_buffered);
       TEST(test_r_utils::test_ssl_socket_connect_to_example_com);
       TEST(test_r_utils::test_ssl_socket_connect_to_google);
@@ -103,6 +106,8 @@ public:
     void test_read_file();
     void test_mkdir_p_concurrent();
     void test_mkdir_p_over_file();
+    void test_atomic_write_file();
+    void test_quarantine_file();
     void test_stat();
     void test_file_lock();
     void test_shared_file_lock();
@@ -112,6 +117,7 @@ public:
     void test_socket_move_assignable();
     void test_socket_close_warm_socket();
     void test_socket_wont_block();
+    void test_socket_connect_timeout();
     void test_buffered();
     void test_ssl_socket_connect_to_example_com();
     void test_ssl_socket_connect_to_google();

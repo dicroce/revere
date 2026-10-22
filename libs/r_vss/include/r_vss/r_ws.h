@@ -10,6 +10,7 @@
 #include "r_disco/r_agent.h"
 #include "r_storage/r_storage_file.h"
 #include "r_vss/r_query.h"
+#include "r_vss/r_storage_ops.h"
 #include "r_av/r_video_decoder.h"
 #include "r_av/r_video_encoder.h"
 #include "r_av/r_audio_decoder.h"
@@ -156,6 +157,10 @@ private:
                                                  r_utils::r_socket& conn,
                                                  const r_http::r_server_request& request);
 
+    r_http::r_server_response _get_camera_events(const r_http::r_web_server<r_utils::r_socket>& r_ws,
+                                                r_utils::r_socket& conn,
+                                                const r_http::r_server_request& request);
+
     r_http::r_server_response _get_analytics(const r_http::r_web_server<r_utils::r_socket>& r_ws,
                                              r_utils::r_socket& conn,
                                              const r_http::r_server_request& request);
@@ -231,6 +236,40 @@ private:
     r_http::r_server_response _post_add_rtsp_camera(const r_http::r_web_server<r_utils::r_socket>& ws,
                                                     r_utils::r_socket& conn,
                                                     const r_http::r_server_request& request);
+
+    // Move storage / Change retention (the desktop's Camera properties).
+    r_http::r_server_response _get_storage_info(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                r_utils::r_socket& conn,
+                                                const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_storage_move(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                 r_utils::r_socket& conn,
+                                                 const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_storage_change_retention(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                             r_utils::r_socket& conn,
+                                                             const r_http::r_server_request& request);
+
+    r_http::r_server_response _get_storage_op(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                              r_utils::r_socket& conn,
+                                              const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_storage_op_cancel(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                      r_utils::r_socket& conn,
+                                                      const r_http::r_server_request& request);
+
+    // System plugins (the desktop's Plugins section).
+    r_http::r_server_response _get_system_plugins(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                  r_utils::r_socket& conn,
+                                                  const r_http::r_server_request& request);
+
+    r_http::r_server_response _post_system_plugin_enabled(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                          r_utils::r_socket& conn,
+                                                          const r_http::r_server_request& request);
+
+    // Starts kind ("move", "reset" or "retention") on its own thread, or
+    // returns false when one is already running.
+    bool _start_storage_op(const std::string& kind, const r_disco::r_camera& camera, std::function<void(r_storage_op&)> work);
 
     void _measure_entry_point();
     void _measure(const std::string& job_id);
@@ -313,6 +352,15 @@ private:
     r_utils::r_blocking_q<std::string> _measure_q;   // job ids
     std::map<std::string, measure_job> _measure_jobs;
     std::map<std::string, measure_result> _measure_results;
+
+    // The web UI's storage operation (r_storage_ops.h): one at a time, on
+    // _storage_th, which the client polls through /storage_op. _storage_mutex
+    // guards starting one and the camera id and kind.
+    std::thread _storage_th;
+    r_storage_op _storage_op;
+    std::string _storage_op_camera_id;
+    std::string _storage_op_kind;
+    std::mutex _storage_mutex;
     std::mutex _measure_mutex;
 
     // Auth state for the camera-management endpoints. The system password is

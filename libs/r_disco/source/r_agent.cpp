@@ -60,11 +60,13 @@ vector<r_onvif::onvif_profile_info> r_agent::get_camera_profiles(
     const string& ipv4,
     const string& xaddrs,
     r_nullable<string> username,
-    r_nullable<string> password
+    r_nullable<string> password,
+    r_nullable<int> onvif_port,
+    r_nullable<string> onvif_protocol
 )
 {
     lock_guard<mutex> lk(_interrogation_mutex);
-    return _onvif_provider->get_camera_profiles(ipv4, xaddrs, username, password);
+    return _onvif_provider->get_camera_profiles(ipv4, xaddrs, username, password, onvif_port, onvif_protocol);
 }
 
 void r_agent::interrogate_camera(
@@ -74,7 +76,9 @@ void r_agent::interrogate_camera(
     const std::string& address,
     r_nullable<string> username,
     r_nullable<string> password,
-    const std::string& preferred_profile_token
+    const std::string& preferred_profile_token,
+    r_nullable<int> onvif_port,
+    r_nullable<string> onvif_protocol
 )
 {
     lock_guard<mutex> lk(_interrogation_mutex);
@@ -84,7 +88,7 @@ void r_agent::interrogate_camera(
     hash.finalize();
     auto id = hash.get_as_uuid();
 
-    auto sc = _onvif_provider->interrogate_camera(id, camera_name, ipv4, xaddrs, address, username, password, preferred_profile_token);
+    auto sc = _onvif_provider->interrogate_camera(id, camera_name, ipv4, xaddrs, address, username, password, preferred_profile_token, onvif_port, onvif_protocol);
 
     vector<pair<r_stream_config, string>> output;
     output.push_back(make_pair(sc.value(), hash_stream_config(sc.value())));
@@ -321,6 +325,8 @@ void r_agent::_do_reinterrogation(const r_stream_config& discovered_sc, r_camera
             if(!sc.camera_name.is_null())               stored.camera_name = sc.camera_name;
             if(!sc.ipv4.is_null())                      stored.ipv4 = sc.ipv4;
             if(!sc.xaddrs.is_null())                    stored.xaddrs = sc.xaddrs;
+            if(!sc.port.is_null())                      stored.onvif_port = sc.port;
+            if(!sc.protocol.is_null())                  stored.onvif_protocol = sc.protocol;
             if(!sc.address.is_null())                   stored.address = sc.address;
             if(!sc.rtsp_url.is_null())                  stored.rtsp_url = sc.rtsp_url;
             if(!sc.video_codec.is_null())               stored.video_codec = sc.video_codec;

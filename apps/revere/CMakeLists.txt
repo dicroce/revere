@@ -19,7 +19,7 @@ include(FetchContent)
 if(NOT PACKAGED_BUILD)
     if(APPLE)
         set(CMAKE_INSTALL_RPATH "@executable_path/../lib;@executable_path")
-        set(CMAKE_BUILD_RPATH "@executable_path/../lib;@executable_path/../../libs/r_utils;@executable_path/../../libs/r_ui_utils;@executable_path/../../libs/r_av;@executable_path/../../libs/r_pipeline;@executable_path/../../libs/r_storage;@executable_path/../../libs/r_motion;@executable_path/../../libs/r_onvif;@executable_path/../../libs/r_http;@executable_path/../../libs/r_db;@executable_path/../../libs/r_fakey")
+        set(CMAKE_BUILD_RPATH "@executable_path/../lib;@executable_path/../../libs/r_utils;@executable_path/../../libs/r_ui_utils;@executable_path/../../libs/r_av;@executable_path/../../libs/r_pipeline;@executable_path/../../libs/r_storage;@executable_path/../../libs/r_motion;@executable_path/../../libs/r_onvif;@executable_path/../../libs/r_http;@executable_path/../../libs/r_db;@executable_path/../../libs/r_fakey;@executable_path/../../libs/r_cameras")
     else()
         set(CMAKE_INSTALL_RPATH $ORIGIN)
     endif()
@@ -74,6 +74,7 @@ elseif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         ${REVERE_HEADERS}
         ${REVERE_SOURCES}
         ${CMAKE_CURRENT_SOURCE_DIR}/source/macos_activation.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/vision_launch.mm
     )
     target_link_libraries(revere "-framework AppKit")
 else()
@@ -163,7 +164,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     target_sources(revere PRIVATE ${APP_ICON})
 
     # Copy shared libraries into the app bundle so it can find them at runtime
-    set(REVERE_LIBS r_utils r_ui_utils r_av r_pipeline r_storage r_motion r_onvif r_http r_db r_fakey r_disco r_vss)
+    set(REVERE_LIBS r_utils r_ui_utils r_av r_pipeline r_storage r_motion r_onvif r_http r_db r_fakey r_disco r_cameras r_vss)
     foreach(LIB ${REVERE_LIBS})
         add_custom_command(TARGET revere POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/lib
@@ -212,3 +213,4 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     endif()
 endif()
 
+add_subdirectory(ut)

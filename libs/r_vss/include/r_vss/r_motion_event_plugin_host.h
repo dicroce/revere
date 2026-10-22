@@ -8,6 +8,7 @@
 #include "r_utils/r_macro.h"
 #include "r_disco/r_devices.h"
 
+#include <atomic>
 #include <list>
 #include <map>
 #include <mutex>
@@ -45,6 +46,13 @@ public:
     R_API void post(r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const motion_region& motion_bbox) override;
     R_API void post(r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const motion_region& motion_bbox, const std::vector<motion_region>& motion_regions) override;
 
+    // Object detection on one RGB24 frame by the first plugin that offers it
+    // (detect_objects), with no side effects; false if none could. Fills in
+    // camera_id and ts on each detection.
+    R_API bool has_object_detector() const;
+    R_API bool detect_objects(const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data,
+                              uint16_t width, uint16_t height, std::vector<r_detection>& out);
+
     R_API void emit_detection(const r_detection& det);
     R_API void register_detection_consumer(r_detection_callback callback, void* userdata);
 
@@ -61,6 +69,7 @@ private:
         void (*destroy_func)(r_motion_plugin_handle);  // Function pointer to destroy_plugin
         void (*post_func)(r_motion_plugin_handle, int, const char*, int64_t, const uint8_t*, size_t, uint16_t, uint16_t, int, int, int, int, bool);  // Function pointer to post_motion_event
         void (*post_regions_func)(r_motion_plugin_handle, int, const char*, int64_t, const uint8_t*, size_t, uint16_t, uint16_t, int, int, int, int, bool, const int*, size_t); // Optional v2 entry point
+        int (*detect_func)(r_motion_plugin_handle, const uint8_t*, size_t, uint16_t, uint16_t, r_object_detection_cb, void*); // Optional
     };
 
     r_disco::r_devices& _devices;
@@ -68,6 +77,7 @@ private:
     r_stream_keeper& _stream_keeper;
     std::list<plugin_info> _plugins;
     std::vector<std::pair<r_detection_callback, void*>> _detection_consumers;
+    std::atomic<bool> _stopped {false};
     std::mutex _detection_consumers_mutex;
 };
 

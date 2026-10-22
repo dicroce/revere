@@ -3,6 +3,8 @@ add_executable(
     r_onvif_ut
     include/test_r_onvif.h
     source/test_r_onvif.cpp
+    include/test_r_onvif_events.h
+    source/test_r_onvif_events.cpp
 )
 
 target_include_directories(

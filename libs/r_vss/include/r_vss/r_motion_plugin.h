@@ -140,6 +140,24 @@ R_API void post_motion_event_regions(
     size_t motion_region_count
 );
 
+// Optional: object detection on one frame with no side effects (nothing
+// written, nothing emitted), for the host's detection pass. frame_data is
+// RGB24, width x height (the 640x640 letterbox the motion engine posts). Calls
+// on_detection once per object found, box in frame pixels. Returns 0 on
+// success. May be called from any thread, alongside post_motion_event.
+typedef void (*r_object_detection_cb)(void* userdata, const char* class_name, float confidence,
+                                      float x1, float y1, float x2, float y2);
+
+R_API int detect_objects(
+    r_motion_plugin_handle plugin,
+    const uint8_t* frame_data,
+    size_t frame_data_size,
+    uint16_t width,
+    uint16_t height,
+    r_object_detection_cb on_detection,
+    void* userdata
+);
+
 #ifdef __cplusplus
 }
 #endif

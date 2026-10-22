@@ -97,6 +97,14 @@ R_API int fileno(FILE* f);
 R_API std::vector<uint8_t> read_file(const std::string& path);
 R_API void write_file(const uint8_t* bytes, size_t len, const std::string& path);
 R_API void atomic_rename_file(const std::string& oldPath, const std::string& newPath);
+// Writes path so that it's either the old contents or the new, never a mix: a
+// temp file in the same directory, flushed to disk, then renamed over path. A
+// crash or power cut mid-write leaves the old file in place.
+R_API void atomic_write_file(const uint8_t* bytes, size_t len, const std::string& path);
+// Moves a file that couldn't be read out of the way, to path + ".bad-<time>"
+// (with a counter if that's taken), and returns where it went. Nothing is
+// deleted, so whatever it held can still be recovered by hand.
+R_API std::string quarantine_file(const std::string& path);
 R_API bool file_exists(const std::string& path);
 R_API bool is_reg(const std::string& path);
 R_API bool is_dir(const std::string& path);

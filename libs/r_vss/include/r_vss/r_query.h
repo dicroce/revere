@@ -49,6 +49,21 @@ R_API std::chrono::hours query_get_retention_hours(const std::string& top_dir, r
 
 R_API std::vector<uint8_t> query_get_key_frame(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts);
 
+// A key frame decoded the way YOLO takes it: RGB24, scaled to fit size x size
+// with its aspect kept, centred on black (the motion engine's letterbox).
+struct r_letterboxed_frame
+{
+    int64_t ts {0};             // the key frame's time
+    std::vector<uint8_t> rgb;   // size * size * 3
+    uint16_t size {640};
+};
+
+// Throws if the frame doesn't decode.
+R_API r_letterboxed_frame decode_letterboxed_key_frame(const std::string& video_codec_name, const std::string& video_codec_parameters, const std::vector<uint8_t>& frame, uint16_t size = 640);
+
+// The stored key frame at or before ts, letterboxed.
+R_API r_letterboxed_frame query_get_letterboxed_key_frame(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t size = 640);
+
 R_API std::vector<uint8_t> query_get_bgr24_frame(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h);
 
 R_API std::vector<uint8_t> query_get_rgb24_frame(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h);
@@ -92,7 +107,8 @@ R_API void query_remove_camera(const std::string& top_dir, r_disco::r_devices& d
 // detection is enabled it ensures the camera's motion (.mdb/.mdnts) files exist,
 // allocating them if missing. Mirrors the desktop Camera Properties dialog. The
 // caller must bounce() the camera afterward for the change to take effect live.
-R_API void query_update_camera_properties(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours);
+// motion_tier: "auto", "1", "2" or "3" (see r_tier_controller); null leaves it as it is.
+R_API void query_update_camera_properties(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours, const r_utils::r_nullable<std::string>& motion_tier = r_utils::r_nullable<std::string>());
 
 }
 

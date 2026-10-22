@@ -1,6 +1,7 @@
 #include "r_vss/r_query.h"
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_snapshot_cache.h"
+#include "r_vss/r_storage_ops.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_blob_tree.h"
@@ -30,11 +31,7 @@ using namespace std::chrono;
 // Helper to get storage file path - handles both legacy (filename only) and new (full path) formats
 static string _get_storage_path(const string& record_file_path, const string& top_dir)
 {
-    // Check if it's already a full path (contains path separators)
-    if(record_file_path.find('/') != string::npos || record_file_path.find('\\') != string::npos)
-        return record_file_path;
-    // Legacy format: just filename, prepend default video directory
-    return top_dir + PATH_SLASH + "video" + PATH_SLASH + record_file_path;
+    return storage_path(top_dir, record_file_path);
 }
 
 // Helper: check if frame data has inline SPS (H.264 NAL type 7)
@@ -259,15 +256,6 @@ static string _safe_file_stem(const string& name)
     return out;
 }
 
-// Allocate the motion ring buffer + analytics metadata storage alongside the
-// recording file. Mirrors _create_motion_files() in the desktop app.
-static void _create_motion_files(const string& motion_path)
-{
-    if(r_fs::file_exists(motion_path))
-        return;
-    r_ring::allocate(motion_path, 11, 2592000);          // 1 flag/sec, ~30 days
-    r_md_storage_file::allocate(motion_path, 524288, 30); // 512KB blocks x 30
-}
 
 measured_camera r_vss::query_measure_camera(const string& top_dir, r_devices& devices, const string& camera_id, const r_nullable<string>& username, const r_nullable<string>& password, uint16_t w, uint16_t h)
 {
@@ -390,7 +378,7 @@ void r_vss::query_configure_camera(const string& top_dir, r_devices& devices, co
         auto dot = file_name.find_last_of('.');
         auto motion_file_name = (dot == string::npos) ? (file_name + ".mdb") : (file_name.substr(0, dot) + ".mdb");
         motion_path = video_path + PATH_SLASH + motion_file_name;
-        _create_motion_files(motion_path);
+        create_motion_files(motion_path);
     }
 
     r_storage_file::allocate(storage_path, block_size, num_blocks);
@@ -415,46 +403,6 @@ void r_vss::query_configure_camera(const string& top_dir, r_devices& devices, co
     devices.assign_camera(camera);
 }
 
-// Best-effort deletion of a camera's storage files. Mirrors _delete_camera_files
-// in the desktop app: the main .nts plus the motion ring (.mdb), its sqlite
-// sidecar (.db), and the analytics metadata store (.mdnts/.mdnts.db and its
-// WAL/SHM journals). Each removal is independent — a missing or locked file is
-// logged and skipped, never fatal.
-static void _remove_if_exists(const string& path)
-{
-    if(path.empty() || !r_fs::file_exists(path))
-        return;
-    try
-    {
-        r_fs::remove_file(path);
-        R_LOG_INFO("Deleted camera storage file: %s", path.c_str());
-    }
-    catch(const std::exception& e)
-    {
-        R_LOG_ERROR("Failed to delete %s: %s", path.c_str(), e.what());
-    }
-}
-
-static void _delete_camera_files(const string& top_dir, const r_camera& camera)
-{
-    if(!camera.record_file_path.is_null())
-        _remove_if_exists(_get_storage_path(camera.record_file_path.value(), top_dir));
-
-    if(!camera.motion_detection_file_path.is_null())
-    {
-        auto mdb = _get_storage_path(camera.motion_detection_file_path.value(), top_dir);
-        auto base = (mdb.size() >= 4 && mdb.substr(mdb.size() - 4) == ".mdb")
-                    ? mdb.substr(0, mdb.size() - 4)
-                    : mdb;
-        _remove_if_exists(base + ".mdb");            // motion ring buffer
-        _remove_if_exists(base + ".db");             // ring buffer sqlite sidecar
-        _remove_if_exists(base + ".mdnts");          // analytics metadata store
-        _remove_if_exists(base + ".mdnts.db");       // metadata sqlite
-        _remove_if_exists(base + ".mdnts.db-shm");   // WAL shared-memory
-        _remove_if_exists(base + ".mdnts.db-wal");   // WAL journal
-    }
-}
-
 void r_vss::query_remove_camera(const string& top_dir, r_devices& devices, const string& camera_id, bool delete_files)
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
@@ -473,12 +421,16 @@ void r_vss::query_remove_camera(const string& top_dir, r_devices& devices, const
         // Give the stream keeper time to close handles before we delete (Windows
         // won't remove a file with open handles). Matches the desktop's wait.
         std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-        _delete_camera_files(top_dir, camera);
+        delete_camera_files(top_dir, camera);
     }
 }
 
-void r_vss::query_update_camera_properties(const string& top_dir, r_devices& devices, const string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours)
+void r_vss::query_update_camera_properties(const string& top_dir, r_devices& devices, const string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours, const r_nullable<string>& motion_tier)
 {
+    if(!motion_tier.is_null() && motion_tier.value() != "auto" && motion_tier.value() != "1" &&
+       motion_tier.value() != "2" && motion_tier.value() != "3")
+        R_THROW(("motion_tier must be auto, 1, 2 or 3."));
+
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
         R_THROW(("Unknown camera id: %s", camera_id.c_str()));
@@ -502,7 +454,7 @@ void r_vss::query_update_camera_properties(const string& top_dir, r_devices& dev
             auto base = camera.record_file_path.value();
             auto dot = base.find_last_of('.');
             motion_file_name = (dot == string::npos) ? (base + ".mdb") : (base.substr(0, dot) + ".mdb");
-            _create_motion_files(_get_storage_path(motion_file_name, top_dir));
+            create_motion_files(_get_storage_path(motion_file_name, top_dir));
         }
         camera.motion_detection_file_path.set_value(motion_file_name);
     }
@@ -510,6 +462,8 @@ void r_vss::query_update_camera_properties(const string& top_dir, r_devices& dev
     camera.do_motion_detection.set_value(do_motion_detection);
     camera.do_motion_pruning.set_value(do_motion_pruning);
     camera.min_continuous_recording_hours.set_value(min_continuous_recording_hours);
+    if(!motion_tier.is_null())
+        camera.motion_tier.set_value(motion_tier.value());
 
     devices.save_camera(camera);
 }
@@ -939,4 +893,28 @@ vector<r_metadata_entry> r_vss::query_get_analytics(const string& top_dir, r_dev
     }
 
     return result;
+}
+
+r_letterboxed_frame r_vss::decode_letterboxed_key_frame(const std::string& video_codec_name, const std::string& video_codec_parameters, const std::vector<uint8_t>& frame, uint16_t size)
+{
+    uint16_t w = size, h = size;
+    auto decoded = _decode_single_frame(video_codec_name, video_codec_parameters, frame, AV_PIX_FMT_RGB24, w, h, true);
+    if(!decoded || decoded->size() < (size_t)w * h * 3)
+        R_THROW(("Unable to decode frame."));
+
+    r_letterboxed_frame out;
+    out.size = size;
+    out.rgb.assign((size_t)size * size * 3, 0);
+    int pad_x = (size - w) / 2, pad_y = (size - h) / 2;
+    for(int y = 0; y < h; ++y)
+        memcpy(&out.rgb[((size_t)(y + pad_y) * size + pad_x) * 3], decoded->data() + (size_t)y * w * 3, (size_t)w * 3);
+    return out;
+}
+
+r_letterboxed_frame r_vss::query_get_letterboxed_key_frame(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t size)
+{
+    auto kf = _find_key_frame(top_dir, devices, camera_id, ts);
+    auto out = decode_letterboxed_key_frame(kf.codec_name, kf.codec_parameters, kf.data, size);
+    out.ts = kf.ts;
+    return out;
 }

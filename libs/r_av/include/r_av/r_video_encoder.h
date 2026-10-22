@@ -11,6 +11,7 @@ extern "C"
 }
 
 #include "r_av/r_codec_state.h"
+#include "r_av/r_ffmpeg_compat.h"
 #include "r_av/r_hw_accel.h"
 #include "r_utils/r_std_utils.h"
 #include "r_utils/r_macro.h"

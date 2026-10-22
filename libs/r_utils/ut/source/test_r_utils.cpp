@@ -1,5 +1,7 @@
 
 #include "test_r_utils.h"
+#include <filesystem>
+#include <algorithm>
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_weekly_schedule.h"
 #include "r_utils/r_stack_trace.h"
@@ -367,6 +369,73 @@ void test_r_utils::test_mkdir_p_over_file()
     r_fs::remove_file(path);
 }
 
+// Files in dir, by name.
+static vector<string> _files_in(const string& dir)
+{
+    vector<string> names;
+    for(auto& e : std::filesystem::directory_iterator(dir))
+        names.push_back(e.path().filename().string());
+    sort(names.begin(), names.end());
+    return names;
+}
+
+void test_r_utils::test_atomic_write_file()
+{
+    auto dir = r_fs::temp_file_name(".", "awf_");
+    r_fs::mkdir(dir);
+    auto path = dir + PATH_SLASH + "cfg.json";
+
+    // New file.
+    string first = "{\"a\": 1}";
+    r_fs::atomic_write_file((const uint8_t*)first.data(), first.size(), path);
+    auto fb = r_fs::read_file(path);
+    RTF_ASSERT(string((char*)fb.data(), fb.size()) == first);
+
+    // Replacing a longer file with a shorter one leaves exactly the new bytes.
+    string longer(10000, 'x');
+    r_fs::atomic_write_file((const uint8_t*)longer.data(), longer.size(), path);
+    string shorter = "{}";
+    r_fs::atomic_write_file((const uint8_t*)shorter.data(), shorter.size(), path);
+    fb = r_fs::read_file(path);
+    RTF_ASSERT(string((char*)fb.data(), fb.size()) == shorter);
+
+    // No temp file is left behind.
+    RTF_ASSERT(_files_in(dir) == vector<string>{"cfg.json"});
+
+    // A write that can't happen (no such directory) throws and leaves nothing.
+    auto missing = dir + PATH_SLASH + "nope" + PATH_SLASH + "cfg.json";
+    bool threw = false;
+    try { r_fs::atomic_write_file((const uint8_t*)first.data(), first.size(), missing); }
+    catch(const exception&) { threw = true; }
+    RTF_ASSERT(threw);
+    RTF_ASSERT(_files_in(dir) == vector<string>{"cfg.json"});
+
+    std::filesystem::remove_all(dir);
+}
+
+void test_r_utils::test_quarantine_file()
+{
+    auto dir = r_fs::temp_file_name(".", "qf_");
+    r_fs::mkdir(dir);
+    auto path = dir + PATH_SLASH + "cfg.json";
+
+    string bad = "{\"camera_answers\": {\"cam";
+    r_fs::write_file((const uint8_t*)bad.data(), bad.size(), path);
+    auto moved = r_fs::quarantine_file(path);
+    RTF_ASSERT(!r_fs::file_exists(path));
+    RTF_ASSERT(r_string_utils::starts_with(moved, path + ".bad-"));
+    auto fb = r_fs::read_file(moved);
+    RTF_ASSERT(string((char*)fb.data(), fb.size()) == bad);
+
+    // A second bad file in the same second doesn't replace the first.
+    r_fs::write_file((const uint8_t*)bad.data(), bad.size(), path);
+    auto moved2 = r_fs::quarantine_file(path);
+    RTF_ASSERT(moved2 != moved);
+    RTF_ASSERT(r_fs::file_exists(moved) && r_fs::file_exists(moved2));
+
+    std::filesystem::remove_all(dir);
+}
+
 void test_r_utils::test_stat()
 {
     {
@@ -637,6 +706,68 @@ void test_r_utils::test_socket_wont_block()
     RTF_ASSERT( read_thirteen == true );
 
     t.join();
+}
+
+void test_r_utils::test_socket_connect_timeout()
+{
+    using namespace std::chrono;
+
+    // A host that never answers (a TEST-NET-1 address: reserved, unroutable).
+    // A blocking connect waited ~21 s for this on Windows.
+    {
+        r_socket sok;
+        sok.set_io_timeout( 1000 );
+        auto start = steady_clock::now();
+        bool threw = false;
+        try { sok.connect( "192.0.2.1", 80 ); }
+        catch( r_socket_connect_exception& ) { threw = true; }
+        auto elapsed = duration_cast<milliseconds>( steady_clock::now() - start ).count();
+        RTF_ASSERT( threw );
+        RTF_ASSERT( elapsed < 3000 );
+    }
+
+    // Nothing listening: refused at once, not after the timeout.
+    {
+        int port = RTF_NEXT_PORT();
+        r_socket sok;
+        sok.set_io_timeout( 5000 );
+        auto start = steady_clock::now();
+        bool threw = false;
+        try { sok.connect( "127.0.0.1", port ); }
+        catch( r_socket_connect_exception& ) { threw = true; }
+        auto elapsed = duration_cast<milliseconds>( steady_clock::now() - start ).count();
+        RTF_ASSERT( threw );
+        RTF_ASSERT( elapsed < 4500 );
+    }
+
+    // A listener: connects, and the socket is blocking again for send/recv.
+    {
+        int port = RTF_NEXT_PORT();
+        r_socket server_sok;
+        server_sok.bind( port );
+        server_sok.listen();
+
+        thread t([&](){
+            auto connected = server_sok.accept();
+            unsigned int val = 13;
+            connected.send( &val, 4 );
+        });
+
+        r_socket client_sok;
+        client_sok.set_io_timeout( 2000 );
+        client_sok.connect( "127.0.0.1", port );
+        unsigned int val = 0;
+        int got = 0;
+        while( got < 4 )
+        {
+            int n = client_sok.recv( ((char*)&val) + got, 4 - got );
+            if( n <= 0 )
+                break;
+            got += n;
+        }
+        RTF_ASSERT( got == 4 && val == 13 );
+        t.join();
+    }
 }
 
 void test_r_utils::test_buffered()

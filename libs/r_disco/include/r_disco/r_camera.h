@@ -15,6 +15,10 @@ struct r_camera
     r_utils::r_nullable<std::string> friendly_name;
     r_utils::r_nullable<std::string> ipv4;
     r_utils::r_nullable<std::string> xaddrs;
+    // Where the ONVIF device service answers (xaddrs is only its path). Many
+    // cameras use 80, but Reolinks use 8000. Null until discovery or setup finds it.
+    r_utils::r_nullable<int> onvif_port;
+    r_utils::r_nullable<std::string> onvif_protocol;
     r_utils::r_nullable<std::string> address;
     r_utils::r_nullable<std::string> rtsp_url;
     r_utils::r_nullable<std::string> video_codec;
@@ -36,6 +40,13 @@ struct r_camera
     r_utils::r_nullable<std::string> motion_detection_file_path;
     r_utils::r_nullable<bool> do_motion_pruning;
     r_utils::r_nullable<int> min_continuous_recording_hours;
+    // Where motion and object classes come from (see r_vss::r_tier_controller):
+    // "auto" (or null) lets Revere choose by verifying the camera's own events;
+    // "1", "2" or "3" forces a tier.
+    r_utils::r_nullable<std::string> motion_tier;
+    // The tier automatic verification last chose (2 or 3), kept across
+    // restarts; null when not verified.
+    r_utils::r_nullable<int> motion_tier_verified;
 
     std::string stream_config_hash;
 };
