@@ -18,6 +18,7 @@ extern "C"
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <string>
 
 namespace r_av
 {
@@ -36,6 +37,14 @@ struct r_scaler_state
 };
 
 R_API bool operator<(const r_scaler_state& lhs, const r_scaler_state& rhs);
+
+// Frames lost before they reached the decoder (see r_h264_frame_num_tracker).
+struct r_decoder_gap_stats
+{
+    uint64_t gaps {0};              // times frame_num skipped
+    uint64_t hidden_pictures {0};   // pictures not output while waiting for a keyframe
+    uint64_t software_pictures {0}; // pictures decoded in software meanwhile
+};
 
 class r_video_decoder final
 {
@@ -61,6 +70,10 @@ public:
     R_API uint16_t input_width() const;
     R_API uint16_t input_height() const;
 
+    // Names this stream in the gap log lines (a camera id, say).
+    R_API void set_log_tag(const std::string& tag);
+    R_API r_decoder_gap_stats gap_stats() const;
+
 private:
     void _clear();
 
@@ -84,6 +97,14 @@ private:
 
     void _open_codec();
     static AVPixelFormat _get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);
+
+    // H.264 on VideoToolbox: after lost frames, hide output until the next
+    // IDR (or decode in software if none comes soon). See r_video_decoder.cpp.
+    struct gap_guard;
+    std::unique_ptr<gap_guard> _gaps;
+    void _gap_after_send(const uint8_t* data, size_t size);
+    bool _gap_take_output();
+    r_codec_state _flush_receive();
 };
 
 }
