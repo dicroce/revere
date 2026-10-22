@@ -74,6 +74,7 @@ elseif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         ${REVERE_HEADERS}
         ${REVERE_SOURCES}
         ${CMAKE_CURRENT_SOURCE_DIR}/source/macos_activation.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/vision_launch.mm
     )
     target_link_libraries(revere "-framework AppKit")
 else()
