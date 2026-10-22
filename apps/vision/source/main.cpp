@@ -1219,7 +1219,10 @@ int main(int argc, char** argv)
         comm_thread.join();
     }
 
-    // Cleanup
+    // Cleanup. The icon textures go before the renderer: SDL_DestroyRenderer
+    // frees every texture it made, so destroying them later, when the global
+    // map is torn down at exit, would touch freed memory.
+    g_icon_textures.clear();
     ImGui_ImplSDLRenderer_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
@@ -1876,6 +1879,8 @@ int run_overlay(const overlay_opts& opts)
     ph.stop();
     }  // pipeline_host destructs here, before gstreamer_deinit()
 
+    // Before the renderer, which frees its textures (see main's cleanup).
+    g_icon_textures.clear();
     ImGui_ImplSDLRenderer_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
