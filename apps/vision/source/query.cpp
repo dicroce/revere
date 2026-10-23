@@ -52,10 +52,10 @@ vector<sidebar_list_ui_item> vision::query_cameras(const string& ip_address)
     return cameras;
 }
 
-vector<uint8_t> vision::query_key(const string& ip_address, const string& camera_id, const string& start_time)
+vector<uint8_t> vision::query_key(const string& ip_address, const string& camera_id, const string& start_time, uint64_t timeout_ms)
 {
     r_socket sok;
-    sok.set_io_timeout(10000);
+    sok.set_io_timeout(timeout_ms);
 
     sok.connect(ip_address, 8088);
 

@@ -83,6 +83,25 @@ using namespace std;
 using namespace r_utils;
 using namespace vision;
 
+// What a pane is waiting on ("Connecting to camera..."), over the bottom left
+// of the current window's picture, or the top left where a time bar covers the
+// bottom (overlay mode). Nothing when text is empty.
+static void draw_view_label(const std::string& text, bool top = false)
+{
+    if(text.empty())
+        return;
+    const float margin = 8.0f, pad_x = 8.0f, pad_y = 4.0f;
+    ImVec2 pos = ImGui::GetWindowPos();
+    ImVec2 size = ImGui::GetWindowSize();
+    ImVec2 text_size = ImGui::CalcTextSize(text.c_str());
+    float box_h = text_size.y + 2 * pad_y;
+    ImVec2 box_min(pos.x + margin, top ? pos.y + margin : pos.y + size.y - margin - box_h);
+    ImVec2 box_max(box_min.x + text_size.x + 2 * pad_x, box_min.y + box_h);
+    auto* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(box_min, box_max, IM_COL32(0, 0, 0, 160), 4.0f);
+    dl->AddText(ImVec2(box_min.x + pad_x, box_min.y + pad_y), IM_COL32(255, 255, 255, 230), text.c_str());
+}
+
 // Load PNG from embedded data and create SDL texture
 static std::shared_ptr<r_ui_utils::texture> create_png_texture(const unsigned char* png_data, unsigned int png_len)
 {
@@ -1143,6 +1162,8 @@ int main(int argc, char** argv)
                                 }
                             }
 
+                            draw_view_label(ph.view_label(name));
+
                             // Note: The BeginPopupContextItem() applies to the last widget we have emitted. At this point
                             // we have emitted the image, so we want to apply the popup to the image.
                             if(ImGui::BeginPopupContextItem("popup_menu"))
@@ -1977,6 +1998,8 @@ int run_overlay(const overlay_opts& opts)
                 ImGui::Image(rc->tex->imgui_id(), ImVec2(sw, sh), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
             }
         }
+
+        draw_view_label(ph.view_label(si.name), true);
 
         ImGui::End();
         ImGui::PopStyleVar();
