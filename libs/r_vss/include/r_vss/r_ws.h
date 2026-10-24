@@ -106,6 +106,7 @@ class r_ws final
         int percent_complete = 0;
         std::chrono::steady_clock::time_point completed_at{};
         std::string file_path;
+        bool failed = false;   // the worker threw; percent_complete is still set to 100 so the entry is pruned
     };
 
 public:

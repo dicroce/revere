@@ -30,7 +30,7 @@
       <template v-else>
         <div v-if="error" class="error">{{ error }}</div>
         <div v-else-if="liveCameras.length === 0" class="empty">
-          No cameras are recording yet. Add one from the Cameras tab.
+          No cameras are recording yet. Add one from the Config tab.
         </div>
         <div v-else class="camera-grid">
           <CameraCard

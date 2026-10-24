@@ -2,9 +2,9 @@
   CameraPlayer — the video surface for a single camera.
 
   Three display modes, driven entirely by the `isoTime` prop:
-    • live  (isoTime === null) — a JPEG that refreshes every few seconds. Live
-      video is a follow-up; for now "live" is the same snapshot slideshow the UI
-      has always shown.
+    • live  (isoTime === null) — real video via Media Source Extensions,
+      appended from the server's /transcode_fmp4 endpoint and kept near the
+      live edge. A still is shown until the first frame can paint.
     • scrub (isoTime is an ISO string, not playing) — a single JPEG at that
       instant. Cheap and instant, ideal while dragging the timeline.
     • play  (the user hit Play on a scrubbed position) — real video via Media

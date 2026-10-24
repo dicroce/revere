@@ -735,6 +735,7 @@ void r_ws::_export_entry_point()
         auto job = item.value();
         auto job_id = job.id;
 
+        bool failed = false;
         try
         {
             if(job.type == export_type::standard)
@@ -744,6 +745,7 @@ void r_ws::_export_entry_point()
         }
         catch(const exception& ex)
         {
+            failed = true;
             R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
         }
 
@@ -754,6 +756,7 @@ void r_ws::_export_entry_point()
             {
                 it->second.percent_complete = 100;
                 it->second.completed_at = steady_clock::now();
+                it->second.failed = failed;
             }
             auto cutoff = steady_clock::now() - minutes(5);
             for(auto it2 = _export_progress.begin(); it2 != _export_progress.end(); )
@@ -2463,6 +2466,7 @@ r_http::r_server_response r_ws::_get_export_progress(const r_http::r_web_server<
         json j;
         j["id"] = id;
         j["percent_complete"] = it->second.percent_complete;
+        j["failed"] = it->second.failed;
 
         r_server_response response;
         response.set_content_type("text/json");

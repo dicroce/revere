@@ -384,8 +384,9 @@ function askProperties(camera) {
   copied.value = false
 }
 
-// navigator.clipboard needs a secure context (https or localhost); the web UI
-// is often opened over plain http on the LAN, so fall back to execCommand.
+// navigator.clipboard needs a secure context (https or localhost). The web UI
+// is served over plain http on 127.0.0.1, which counts as secure, but keep the
+// execCommand fallback for browsers/contexts where it is still unavailable.
 async function copyPath(text) {
   try {
     await navigator.clipboard.writeText(text)

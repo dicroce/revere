@@ -7,6 +7,7 @@
         <span class="time-label">{{ fmtTime(playheadTime) }}</span>
       </div>
       <div class="right">
+        <span v-if="exportError && !exporting" class="export-error" @click="exportError = ''" title="Dismiss">{{ exportError }}</span>
         <span v-if="exporting" class="exporting-label">Exporting {{ exportPercent }}%</span>
 
         <template v-else-if="exportMode">
@@ -72,6 +73,7 @@ const exportStart   = ref(null)  // Date — frozen start marker (was playheadTi
 const exportEnd     = ref(null)  // Date — user-positioned end marker
 const exporting     = ref(false) // server-side export running (between Finish Export and download)
 const exportPercent = ref(0)
+const exportError   = ref('')    // inline failure message; cleared on next Export click / dismiss
 
 // --- icon preload ---
 const ICON_NAMES = ['airplane','backpack','bicycle','bird','boat','bus','car','cat',
@@ -376,6 +378,7 @@ watch(() => props.playheadIso, (iso) => {
 
 // --- export ---
 function startExport() {
+  exportError.value = ''
   // Freeze current playhead as start, default end one minute later (clamped
   // to now in case the user is already near-live).
   const startMs = playheadTime.value.getTime()
@@ -404,6 +407,18 @@ function fmtForFile(d) {
 
 let exportPoll = null
 
+// Stop polling and drop back to the normal (non-export) controls, showing
+// `message` inline where the "Exporting N%" label was.
+function failExport(message) {
+  if (exportPoll) { clearInterval(exportPoll); exportPoll = null }
+  exportError.value = message
+  exporting.value   = false
+  exportMode.value  = false
+  exportStart.value = null
+  exportEnd.value   = null
+  draw()
+}
+
 async function finishExport() {
   if (!exportStart.value || !exportEnd.value) return
   const s = exportStart.value.toISOString()
@@ -426,16 +441,31 @@ async function finishExport() {
     if (!res.ok) throw new Error(`server returned ${res.status}`)
     id = (await res.json()).id
   } catch (err) {
-    alert('Failed to start export: ' + err.message)
-    exporting.value = false
+    failExport('Export failed: ' + err.message)
     return
   }
 
+  // /export_progress replies 404 when the id is unknown (e.g. revere restarted
+  // or the finished job was already pruned) and 500 on other failures; error
+  // responses carry no body. A few consecutive network errors also give up,
+  // otherwise a dead server would leave "Exporting N%" on screen forever.
+  let pollFailures = 0
   exportPoll = setInterval(async () => {
     try {
       const r = await fetch('/export_progress?id=' + encodeURIComponent(id))
-      if (!r.ok) return
+      if (!r.ok) {
+        failExport(r.status === 404 ? 'Export failed: export not found on server'
+                                    : `Export failed: server returned ${r.status}`)
+        return
+      }
+      pollFailures = 0
       const j = await r.json()
+      // The worker reports 100% even when it threw (so the entry is pruned);
+      // `failed` tells us the file was never written.
+      if (j.failed) {
+        failExport('Export failed on the server (see the revere log)')
+        return
+      }
       exportPercent.value = j.percent_complete | 0
       if (exportPercent.value >= 100) {
         clearInterval(exportPoll)
@@ -450,7 +480,9 @@ async function finishExport() {
         exportEnd.value   = null
         draw()
       }
-    } catch (_) { /* keep polling */ }
+    } catch (err) {
+      if (++pollFailures >= 5) failExport('Export failed: ' + (err.message || 'cannot reach server'))
+    }
   }, 1000)
 }
 
@@ -556,6 +588,12 @@ onUnmounted(() => {
   font-size: 0.8rem;
   color: #4caf50;
   font-variant-numeric: tabular-nums;
+}
+
+.export-error {
+  font-size: 0.8rem;
+  color: #e57373;
+  cursor: pointer;
 }
 
 .time-label {
