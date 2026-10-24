@@ -47,12 +47,28 @@
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
       @lostpointercapture="onPointerUp"
+      @pointerleave="hideHover"
     />
+    <!-- Hover preview: a small /jpg of the hovered instant plus its time label.
+         Shown only for mouse/pen hover (not touch, not while scrubbing). -->
+    <div
+      v-if="hover.visible"
+      class="hover-tip"
+      :style="{ left: hover.left + 'px', bottom: hover.bottom + 'px', width: hoverTipWidth + 'px' }"
+    >
+      <div v-if="hover.hasSegment" class="hover-thumb" :style="{ height: hoverThumbH + 'px' }">
+        <img v-if="hover.imgUrl" :src="hover.imgUrl" alt="" draggable="false" />
+        <span v-else-if="hover.error" class="hover-msg">No frame</span>
+        <span v-else class="hover-msg">Loading…</span>
+      </div>
+      <div class="hover-label">{{ fmtPlayhead(new Date(hover.ms)) }}</div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { apiFetch } from '../api.js'
 
 const props = defineProps({
   cameraId:   String,
@@ -62,7 +78,10 @@ const props = defineProps({
   playheadIso: { type: String, default: null },
   // True when the parent is in live mode (vs seeked playback). While live, the
   // timeline keeps following "now" and the live video drives the playhead.
-  live: { type: Boolean, default: false }
+  live: { type: Boolean, default: false },
+  // Camera frame size when known; sizes the hover preview's aspect ratio.
+  cameraWidth:  { type: Number, default: 0 },
+  cameraHeight: { type: Number, default: 0 }
 })
 const emit  = defineEmits(['seek', 'live'])
 
@@ -423,12 +442,143 @@ function handleSeek(e) {
 function onPointerDown(e) {
   if (exporting.value) return
   if (e.pointerType === 'mouse' && e.button !== 0) return
+  hideHover()
   dragging.value = true
   try { canvas.value.setPointerCapture(e.pointerId) } catch (_) {}
   handleSeek(e)
 }
-function onPointerMove(e) { if (dragging.value) handleSeek(e) }
+function onPointerMove(e) {
+  if (dragging.value) { handleSeek(e); return }
+  onHoverMove(e)
+}
 function onPointerUp()    { dragging.value = false }
+
+// --- hover preview ----------------------------------------------------------
+// Moving the mouse over the canvas shows a tooltip with the /jpg frame at the
+// hovered instant. The fetch is debounced until the pointer rests (~120 ms),
+// only one request is in flight at a time (older ones are aborted), and the
+// last HOVER_CACHE_MAX frames are kept by rounded second so re-hovering the
+// same spot is instant. Spans without a recorded segment show the time only.
+const HOVER_DEBOUNCE_MS = 120
+const HOVER_CACHE_MAX   = 30
+const HOVER_THUMB_W     = 192
+const HOVER_PAD         = 4
+
+const hover = reactive({
+  visible:    false,
+  ms:         0,
+  key:        0,       // rounded second of `ms` (cache key / staleness token)
+  hasSegment: false,
+  imgUrl:     null,    // blob: URL of the preview (owned by hoverCache)
+  error:      false,
+  left:       0,       // viewport px (position: fixed)
+  bottom:     0
+})
+
+// Thumbnail height from the camera's aspect when known, else 16:9.
+const hoverThumbH = computed(() => {
+  const w = Number(props.cameraWidth)  || 0
+  const h = Number(props.cameraHeight) || 0
+  if (w > 0 && h > 0) return Math.max(32, Math.round(HOVER_THUMB_W * h / w))
+  return Math.round(HOVER_THUMB_W * 9 / 16)
+})
+const hoverTipWidth = HOVER_THUMB_W + HOVER_PAD * 2
+
+const hoverCache = new Map()   // key(second) -> blob: URL, insertion-ordered (LRU)
+let hoverTimer   = null
+let hoverAbort   = null
+
+function hoverCacheGet(key) {
+  const url = hoverCache.get(key)
+  if (url === undefined) return undefined
+  hoverCache.delete(key); hoverCache.set(key, url)   // refresh recency
+  return url
+}
+
+function hoverCachePut(key, url) {
+  if (hoverCache.has(key)) URL.revokeObjectURL(hoverCache.get(key))
+  hoverCache.set(key, url)
+  while (hoverCache.size > HOVER_CACHE_MAX) {
+    const [oldKey, oldUrl] = hoverCache.entries().next().value
+    hoverCache.delete(oldKey)
+    URL.revokeObjectURL(oldUrl)
+  }
+}
+
+function hoverCacheClear() {
+  for (const url of hoverCache.values()) URL.revokeObjectURL(url)
+  hoverCache.clear()
+}
+
+function hasSegmentAt(ms) {
+  for (const seg of segments.value)
+    if (ms >= seg.start && ms <= seg.end) return true
+  return false
+}
+
+function hideHover() {
+  hover.visible = false
+  hover.imgUrl  = null
+  hover.error   = false
+  hover.key     = 0
+  clearTimeout(hoverTimer); hoverTimer = null
+  if (hoverAbort) { hoverAbort.abort(); hoverAbort = null }
+}
+
+function onHoverMove(e) {
+  if (e.pointerType === 'touch' || exporting.value || !canvas.value) { hideHover(); return }
+  const rect = canvas.value.getBoundingClientRect()
+  if (rect.width === 0 || canvas.value.width === 0) return
+  const x  = (e.clientX - rect.left) * (canvas.value.width / rect.width)
+  const ms = Math.min(xToMs(x), Date.now())
+  if (ms < rangeStart.value.getTime()) { hideHover(); return }
+
+  // Position: centred on the pointer, clamped inside the viewport, just above the canvas.
+  const half = hoverTipWidth / 2
+  hover.left   = Math.round(Math.min(Math.max(e.clientX - half, 4), window.innerWidth - hoverTipWidth - 4))
+  hover.bottom = Math.round(window.innerHeight - rect.top + 6)
+
+  const key = Math.floor(ms / 1000)
+  hover.ms         = ms
+  hover.visible    = true
+  hover.hasSegment = hasSegmentAt(ms)
+
+  if (key === hover.key) return          // same second: label updated, nothing new to fetch
+  hover.key   = key
+  hover.error = false
+  clearTimeout(hoverTimer); hoverTimer = null
+  if (hoverAbort) { hoverAbort.abort(); hoverAbort = null }
+
+  if (!hover.hasSegment) { hover.imgUrl = null; return }
+
+  const cached = hoverCacheGet(key)
+  if (cached) { hover.imgUrl = cached; return }
+
+  hover.imgUrl = null
+  hoverTimer = setTimeout(() => { hoverTimer = null; fetchHoverPreview(key, ms) }, HOVER_DEBOUNCE_MS)
+}
+
+async function fetchHoverPreview(key, ms) {
+  if (!props.cameraId) return
+  const ctrl = new AbortController()
+  hoverAbort = ctrl
+  const url = `/jpg?camera_id=${props.cameraId}`
+            + `&start_time=${encodeURIComponent(new Date(ms).toISOString())}`
+            + `&width=${HOVER_THUMB_W}&height=${hoverThumbH.value}`
+  try {
+    const res  = await apiFetch(url, { signal: ctrl.signal })
+    const blob = await res.blob()
+    if (ctrl.signal.aborted) return
+    const objUrl = URL.createObjectURL(blob)
+    hoverCachePut(key, objUrl)
+    if (hover.visible && hover.key === key) hover.imgUrl = objUrl
+  } catch (err) {
+    if (ctrl.signal.aborted || (err && err.name === 'AbortError')) return
+    if (hover.visible && hover.key === key) hover.error = true
+  } finally {
+    if (hoverAbort === ctrl) hoverAbort = null
+  }
+}
 
 // Follow playback: advance the playhead marker as CameraPlayer reports progress.
 // Ignored while the user is dragging or selecting an export range so we don't
@@ -572,6 +722,9 @@ async function finishExport() {
   }, 1000)
 }
 
+// A different camera means the cached previews are for the wrong source.
+watch(() => props.cameraId, () => { hideHover(); hoverCacheClear() })
+
 // --- resize ---
 let ro = null
 function resize() {
@@ -616,6 +769,8 @@ onUnmounted(() => {
   clearTimeout(seekTimer)
   if (exportPoll) clearInterval(exportPoll)
   if (ro) ro.disconnect()
+  hideHover()
+  hoverCacheClear()
 })
 
 // --- host API (keyboard shortcuts in CameraView) ---------------------------
@@ -728,5 +883,48 @@ defineExpose({
   cursor: crosshair;
   min-height: 0;
   touch-action: none;   /* scrubbing by touch must not scroll/zoom the page */
+}
+
+.hover-tip {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  box-sizing: border-box;
+  padding: 4px;
+  background: #1e1e1e;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+}
+
+.hover-thumb {
+  width: 100%;
+  background: #000;
+  border-radius: 2px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hover-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.hover-msg {
+  font-size: 0.7rem;
+  color: #777;
+}
+
+.hover-label {
+  margin-top: 3px;
+  text-align: center;
+  font-size: 0.75rem;
+  color: #ccc;
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
 }
 </style>

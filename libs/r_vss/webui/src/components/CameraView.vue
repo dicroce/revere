@@ -35,6 +35,8 @@
         ref="timeline"
         :camera-id="camera.id"
         :camera-name="camera.friendly_name || camera.camera_name"
+        :camera-width="Number(camera.width) || 0"
+        :camera-height="Number(camera.height) || 0"
         :playhead-iso="playheadIso"
         :live="seekedTime === null"
         @seek="onSeek"
