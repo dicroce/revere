@@ -238,7 +238,7 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
                 tie(video_codec_name, h264_codec_parameters, video_timebase) = sdp_media_to_s(media);
 
                 auto h264_sps_b = get_h264_sps(h264_codec_parameters);
-                auto h264_pps_b = get_h264_sps(h264_codec_parameters);
+                auto h264_pps_b = get_h264_pps(h264_codec_parameters);
 
                 this->_video_decoder.raw().set_extradata(make_h264_extradata(h264_sps_b, h264_pps_b));
             }

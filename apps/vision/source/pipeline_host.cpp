@@ -6,6 +6,7 @@
 #include "r_http/r_client_request.h"
 #include "r_http/r_client_response.h"
 #include <SDL.h>
+#include <cctype>
 #include "pipeline_host.h"
 #include "pipeline_state.h"
 #include "utils.h"
@@ -959,31 +960,52 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
     auto found_si = _stream_infos.find(stream_name);
     if(found_si != std::end(_stream_infos))
     {
-        auto tmt = system_clock::to_time_t(start);
+        auto maybe_revere_ipv4 = _cfg.get_revere_ipv4();
+        if(maybe_revere_ipv4.is_null())
+        {
+            cbs.exp_state = EXPORT_STATE_FINISHED_ERROR;
+            R_LOG_ERROR("Export request failed: Revere IPv4 address not set.");
+            return;
+        }
+        auto revere_ip = maybe_revere_ipv4.value();
 
-#ifdef IS_WINDOWS
-        struct tm bdt;
-        struct tm* bdtp = nullptr;
-        localtime_s(&bdt, &tmt);
-        bdtp = &bdt;
-#else
-        struct tm* bdtp = localtime(&tmt);
-#endif
+        // Name exports like the web UI does: <camera>_<start>_<end>.mov, where the
+        // timestamps are filesystem-safe ISO 8601 (':' is illegal on Windows and
+        // rejected by the server's file_name check). The restream URL path is the
+        // camera's friendly name with spaces already replaced by '_'.
+        auto camera_name = found_si->second.rtsp_url;
+        auto slash = camera_name.rfind('/');
+        if(slash != string::npos)
+            camera_name = camera_name.substr(slash + 1);
+        for(auto& c : camera_name)
+            if(!isalnum((unsigned char)c) && c != '_' && c != '-')
+                c = '_';
+        if(camera_name.empty())
+            camera_name = "camera";
+
+        auto fmt_for_file = [](const system_clock::time_point& tp){
+            auto s = r_time_utils::tp_to_iso_8601(tp, true);
+            if(!s.empty() && s.back() == 'Z')
+                s.pop_back();
+            for(auto& c : s)
+            {
+                if(c == 'T') c = '_';
+                else if(c == ':' || c == '.') c = '-';
+            }
+            return s;
+        };
 
         auto file_name = r_string_utils::format(
-            "%04d-%02d-%02d_%02d-%02d-%02d.mov",
-            bdtp->tm_year + 1900,
-            bdtp->tm_mon + 1,
-            bdtp->tm_mday,
-            bdtp->tm_hour,
-            bdtp->tm_min,
-            bdtp->tm_sec
+            "%s_%s_%s.mov",
+            camera_name.c_str(),
+            fmt_for_file(start).c_str(),
+            fmt_for_file(end).c_str()
         );
 
         r_socket sok;
-        sok.connect("127.0.0.1", 8088);
+        sok.connect(revere_ip, 8088);
 
-        r_http::r_client_request req("127.0.0.1", 8088);
+        r_http::r_client_request req(revere_ip, 8088);
         req.set_uri(
             r_string_utils::format(
                 "/export?camera_id=%s&start_time=%s&end_time=%s&file_name=%s",

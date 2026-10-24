@@ -160,17 +160,24 @@ void progress_modal(
     ImGui::SetNextWindowSize(ImVec2(400, 120));
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
+        // done_cb returns true to close the modal immediately on completion, or
+        // false to leave it open showing completion until the user dismisses it.
         if(percent_complete >= 100)
         {
-            ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
-            done_cb();
-            return;
+            if(done_cb())
+            {
+                ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+                return;
+            }
+            ImGui::TextUnformatted("Export complete.");
         }
-
-        char overlay[16];
-        snprintf(overlay, sizeof(overlay), "%d%%", percent_complete);
-        ImGui::ProgressBar(percent_complete / 100.0f, ImVec2(-1, 0), overlay);
+        else
+        {
+            char overlay[16];
+            snprintf(overlay, sizeof(overlay), "%d%%", percent_complete);
+            ImGui::ProgressBar(percent_complete / 100.0f, ImVec2(-1, 0), overlay);
+        }
 
         float button_x = (400.0f - 90.0f) * 0.5f;
         ImGui::SetCursorPosX(button_x);

@@ -365,6 +365,15 @@ void _pop_export_folder()
 #endif
 }
 
+bool _revere_is_loopback(const configure_state& cfg)
+{
+    auto maybe_ip = cfg.get_revere_ipv4();
+    if(maybe_ip.is_null())
+        return true;
+    auto ip = maybe_ip.value();
+    return ip == "127.0.0.1" || ip == "localhost" || ip == "::1";
+}
+
 void _set_working_dir()
 {
     // Set the current working directory to the directory of the executable
@@ -1174,8 +1183,16 @@ int main(int argc, char** argv)
                     "Exporting...",
                     ui_state.mcs.obos.cbs.export_percent_complete,
                     [&](){
-                        _pop_export_folder();
-                        ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE;
+                        // The export lands in revere's exports folder. Only pop the
+                        // local folder when revere is on this machine; otherwise leave
+                        // the modal up showing completion until dismissed.
+                        if(_revere_is_loopback(cfg_state))
+                        {
+                            _pop_export_folder();
+                            ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE;
+                            return true;
+                        }
+                        return false;
                     },
                     [&](){ ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE; }
                 );
