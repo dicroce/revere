@@ -87,7 +87,9 @@ static shared_ptr<vector<uint8_t>> _decode_single_frame(
     AVPixelFormat output_format,
     uint16_t& w,
     uint16_t& h,
-    bool preserve_aspect = false)
+    bool preserve_aspect = false,
+    uint16_t* source_w = nullptr,
+    uint16_t* source_h = nullptr)
 {
     // Enable parsing to properly handle Annex B streams with multiple NAL units
     auto codec_id = r_av::encoding_to_av_codec_id(video_codec_name);
@@ -141,6 +143,10 @@ static shared_ptr<vector<uint8_t>> _decode_single_frame(
 
     if(ds == R_CODEC_STATE_HAS_OUTPUT || ds == R_CODEC_STATE_AGAIN_HAS_OUTPUT)
     {
+        if(source_w)
+            *source_w = decoder.input_width();
+        if(source_h)
+            *source_h = decoder.input_height();
         if(preserve_aspect)
             _fit_inside(decoder.input_width(), decoder.input_height(), w, h);
         return decoder.get(output_format, w, h, 1);
@@ -909,6 +915,42 @@ r_letterboxed_frame r_vss::decode_letterboxed_key_frame(const std::string& video
     int pad_x = (size - w) / 2, pad_y = (size - h) / 2;
     for(int y = 0; y < h; ++y)
         memcpy(&out.rgb[((size_t)(y + pad_y) * size + pad_x) * 3], decoded->data() + (size_t)y * w * 3, (size_t)w * 3);
+    return out;
+}
+
+r_display_key_frame r_vss::decode_key_frame_reply(const std::vector<uint8_t>& reply, bool nv12, uint16_t w, uint16_t h)
+{
+    r_display_key_frame out;
+    if(reply.empty() || w < 2 || h < 2)
+        return out;
+
+    try
+    {
+        uint32_t version = 0;
+        auto bt = r_blob_tree::deserialize(reply.data(), reply.size(), version);
+        if(bt["frames"].size() != 1 || !bt["frames"][0].has_key("data") || !bt.has_key("video_codec_name"))
+            return out;
+
+        auto frame = bt["frames"][0]["data"].get_blob();
+        auto codec_parameters = bt.has_key("video_codec_parameters") ? bt["video_codec_parameters"].get_string() : string();
+        uint16_t ow = w, oh = h, sw = 0, sh = 0;
+        auto decoded = _decode_single_frame(bt["video_codec_name"].get_string(), codec_parameters, frame,
+                                            nv12 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_BGRA, ow, oh, true, &sw, &sh);
+        if(!decoded)
+            return out;
+
+        out.ts = r_string_utils::s_to_int64(bt["frames"][0]["ts"].get_string());
+        out.pixels = decoded;
+        out.nv12 = nv12;
+        out.w = ow;
+        out.h = oh;
+        out.source_w = sw;
+        out.source_h = sh;
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_WARNING("decode_key_frame_reply: %s", e.what());
+    }
     return out;
 }
 

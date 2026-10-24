@@ -11,6 +11,7 @@
 #include <cstdint>
 #include "pipeline_host.h"
 #include "query.h"
+#include "r_vss/r_display_key_frame.h"
 
 using namespace vision;
 using namespace r_pipeline;
@@ -259,6 +260,9 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
             else R_THROW(("Unsupported video codec."));
         }
 
+        if(_live)
+            _got_live_sample = true;
+
         sample s;
         s.buffer = move(buffer);
         s.media_type = VIDEO_MEDIA;
@@ -359,10 +363,13 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
 
 pipeline_state::~pipeline_state()
 {
+    _closing = true;
     _source.stop();
     _running = false;
     _process_q.wake();
     _process_th.join();
+    if(_poster_th.joinable())
+        _poster_th.join();
     if(_sdl_audio_device != 0)
     {
         SDL_CloseAudioDevice(_sdl_audio_device);
@@ -391,6 +398,8 @@ void pipeline_state::play_live()
     _playback = false;
     _play_generation++;
     _frames_since_play.store(0);
+    _got_live_sample = false;
+    _live = true;
 
     vector<r_arg> arguments;
     add_argument(arguments, "url", _si.rtsp_url);
@@ -443,6 +452,7 @@ void pipeline_state::play(const system_clock::time_point& start, const system_cl
     R_LOG_INFO("  Playback URL: %s", url.c_str());
 
     _last_play_time = steady_clock::now();
+    _live = false;
 
     vector<r_arg> arguments;
     add_argument(arguments, "url", url);
@@ -455,7 +465,43 @@ void pipeline_state::play(const system_clock::time_point& start, const system_cl
 void pipeline_state::stop()
 {
     _play_generation++;
+    _live = false;
     _source.stop();
+}
+
+void pipeline_state::request_poster()
+{
+    if(_poster_th.joinable())
+        return;
+    // Read here, on the UI thread, which is the one that changes the settings.
+    auto maybe_revere_ipv4 = _cfg_state.get_revere_ipv4();
+    if(maybe_revere_ipv4.is_null())
+        return;
+    _poster_th = thread(&pipeline_state::_poster_entry_point, this, maybe_revere_ipv4.value(), _w, _h);
+}
+
+void pipeline_state::_poster_entry_point(string revere_ip, uint16_t w, uint16_t h)
+{
+    // A short timeout: this only bridges the wait for live, and the pane can't
+    // close until it returns.
+    static const uint64_t POSTER_TIMEOUT_MS = 3000;
+
+    try
+    {
+        // At now, revere answers with the newest key frame recorded in the last 5 minutes.
+        auto now_s = r_time_utils::tp_to_iso_8601(system_clock::now(), false);
+        auto reply = query_key(revere_ip, _si.camera_id, now_s, POSTER_TIMEOUT_MS);
+        if(_closing)
+            return;
+
+        auto kf = r_vss::decode_key_frame_reply(reply, _ph->nv12_textures(), w, h);
+        if(kf.pixels)
+            _ph->post_poster(_si.name, kf);
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_WARNING("vision: no recorded picture for %s: %s", _si.name.c_str(), e.what());
+    }
 }
 
 void pipeline_state::control_bar(const system_clock::time_point& pos)

@@ -19,7 +19,7 @@ struct contents_result
 
 std::vector<sidebar_list_ui_item> query_cameras(const std::string& ip_address);
 
-std::vector<uint8_t> query_key(const std::string& ip_address, const std::string& camera_id, const std::string& start_time);
+std::vector<uint8_t> query_key(const std::string& ip_address, const std::string& camera_id, const std::string& start_time, uint64_t timeout_ms = 10000);
 
 contents_result query_segments(const configure_state& cs, const std::string& camera_id, const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end);
 
