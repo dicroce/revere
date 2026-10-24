@@ -1,13 +1,19 @@
 <template>
   <div class="card">
     <div class="snapshot-wrap" ref="snapshotWrap">
+      <!-- Poster: the JPEG snapshot. Stays up (and refreshing) until live video
+           paints, and is all the tile shows when the browser can't play the
+           camera's native codec. -->
       <img
         :src="snapshotUrl"
         class="snapshot"
         alt=""
         @error="snapError = true"
       />
-      <div v-if="snapError" class="no-snapshot">No image available</div>
+      <!-- Live video (passthrough fMP4 over MSE), pixel-aligned over the poster
+           and revealed once it has a frame. Muted; clicks go to the card. -->
+      <video ref="videoEl" class="live" :class="{ revealed }" muted playsinline></video>
+      <div v-if="snapError && !revealed" class="no-snapshot">No image available</div>
     </div>
     <div class="info">
       <span class="name">{{ camera.friendly_name || camera.camera_name }}</span>
@@ -16,8 +22,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { fitAspect } from '../utils/aspect.js'
+import { useLiveMse } from '../composables/useLiveMse.js'
 
 const props = defineProps({
   camera: Object,
@@ -30,6 +37,19 @@ const snapshotUrl  = ref('')
 const snapshotWrap = ref(null)
 const reqW         = ref(640)
 const reqH         = ref(360)
+const videoEl      = ref(null)
+
+// Live video for the tile. Only runs while the tile is actually on screen and
+// the page is visible, so a large grid doesn't hold a session per hidden tile.
+const { revealed, failed: liveFailed, start: startLive, stop: stopLive } =
+  useLiveMse(videoEl, () => props.camera.id, { passthrough: true })
+let onScreen = false
+function syncLive() {
+  const want = onScreen && document.visibilityState === 'visible' && !liveFailed.value
+  if (want) startLive()
+  else stopLive()
+}
+function onVisibility() { syncLive() }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
 
@@ -68,14 +88,19 @@ function buildUrl() {
 }
 
 function refresh() {
+  if (revealed.value) return            // live video is up; the poster can rest
   snapError.value   = false
   snapshotUrl.value = buildUrl()
 }
+// When live video drops (tile scrolled away, stream failed), bring the poster
+// back up to date right away instead of waiting for the next tick.
+watch(revealed, (on) => { if (!on) refresh() })
 
 let intervalId = null
 let timeoutId  = null
 let resizeObs  = null
 let resizeDebounce = null
+let viewObs    = null
 
 onMounted(() => {
   recomputeRequestSize()
@@ -94,6 +119,17 @@ onMounted(() => {
     })
     resizeObs.observe(snapshotWrap.value)
   }
+  if (snapshotWrap.value && typeof IntersectionObserver !== 'undefined') {
+    viewObs = new IntersectionObserver((entries) => {
+      onScreen = entries.some((e) => e.isIntersecting)
+      syncLive()
+    }, { threshold: 0.25 })
+    viewObs.observe(snapshotWrap.value)
+  } else {
+    onScreen = true
+    syncLive()
+  }
+  document.addEventListener('visibilitychange', onVisibility)
 })
 
 onUnmounted(() => {
@@ -101,6 +137,9 @@ onUnmounted(() => {
   clearInterval(intervalId)
   clearTimeout(resizeDebounce)
   if (resizeObs) resizeObs.disconnect()
+  if (viewObs) viewObs.disconnect()
+  document.removeEventListener('visibilitychange', onVisibility)
+  stopLive()
 })
 </script>
 
@@ -130,6 +169,20 @@ onUnmounted(() => {
   object-fit: contain;
   display: block;
 }
+
+/* Same box and fit as the poster so the handoff is invisible. */
+.live {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms linear;
+}
+.live.revealed { opacity: 1; }
 
 .no-snapshot {
   position: absolute;

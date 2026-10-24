@@ -2,11 +2,12 @@
   <div class="timeline">
     <div class="controls">
       <div class="left">
-        <button class="ctrl-btn" @click="shiftBack" :disabled="exporting">&#8592;</button>
+        <button class="ctrl-btn" @click="shiftBack" :disabled="exporting || atOldest">&#8592;</button>
         <button class="ctrl-btn" @click="shiftForward" :disabled="exporting">&#8594;</button>
-        <span class="time-label">{{ fmtTime(playheadTime) }}</span>
+        <span class="time-label">{{ fmtPlayhead(playheadTime) }}</span>
       </div>
       <div class="right">
+        <span v-if="exportError && !exporting" class="export-error" @click="exportError = ''" title="Dismiss">{{ exportError }}</span>
         <span v-if="exporting" class="exporting-label">Exporting {{ exportPercent }}%</span>
 
         <template v-else-if="exportMode">
@@ -15,11 +16,23 @@
         </template>
 
         <template v-else>
+          <input
+            type="datetime-local"
+            class="goto-input"
+            step="1"
+            title="Go to date/time"
+            :value="toLocalInput(playheadTime)"
+            :min="oldestTs !== null ? toLocalInput(new Date(oldestTs)) : undefined"
+            :max="toLocalInput(new Date())"
+            @change="onGoto"
+          />
           <select class="zoom-sel" v-model="rangeMinutes" @change="onZoomChange">
             <option :value="10">10m</option>
             <option :value="20">20m</option>
             <option :value="60">1h</option>
             <option :value="120">2h</option>
+            <option :value="240">4h</option>
+            <option :value="480">8h</option>
           </select>
           <button class="ctrl-btn" @click="startExport">Export</button>
           <button class="ctrl-btn" :class="{ active: isLive }" @click="goLive">Live</button>
@@ -29,16 +42,33 @@
     <canvas
       ref="canvas"
       class="canvas"
-      @mousedown="onMouseDown"
-      @mousemove="onMouseMove"
-      @mouseup="onMouseUp"
-      @mouseleave="onMouseLeave"
+      @pointerdown="onPointerDown"
+      @pointermove="onPointerMove"
+      @pointerup="onPointerUp"
+      @pointercancel="onPointerUp"
+      @lostpointercapture="onPointerUp"
+      @pointerleave="hideHover"
     />
+    <!-- Hover preview: a small /jpg of the hovered instant plus its time label.
+         Shown only for mouse/pen hover (not touch, not while scrubbing). -->
+    <div
+      v-if="hover.visible"
+      class="hover-tip"
+      :style="{ left: hover.left + 'px', bottom: hover.bottom + 'px', width: hoverTipWidth + 'px' }"
+    >
+      <div v-if="hover.hasSegment" class="hover-thumb" :style="{ height: hoverThumbH + 'px' }">
+        <img v-if="hover.imgUrl" :src="hover.imgUrl" alt="" draggable="false" />
+        <span v-else-if="hover.error" class="hover-msg">No frame</span>
+        <span v-else class="hover-msg">Loading…</span>
+      </div>
+      <div class="hover-label">{{ fmtPlayhead(new Date(hover.ms)) }}</div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { apiFetch } from '../api.js'
 
 const props = defineProps({
   cameraId:   String,
@@ -48,7 +78,10 @@ const props = defineProps({
   playheadIso: { type: String, default: null },
   // True when the parent is in live mode (vs seeked playback). While live, the
   // timeline keeps following "now" and the live video drives the playhead.
-  live: { type: Boolean, default: false }
+  live: { type: Boolean, default: false },
+  // Camera frame size when known; sizes the hover preview's aspect ratio.
+  cameraWidth:  { type: Number, default: 0 },
+  cameraHeight: { type: Number, default: 0 }
 })
 const emit  = defineEmits(['seek', 'live'])
 
@@ -62,6 +95,11 @@ const segments        = ref([])
 const motionEvents    = ref([])
 const analyticsEvents = ref([])
 const dragging        = ref(false)
+// Oldest recorded timestamp (ms) for this camera, from /contents first_ts (camera-wide,
+// not range-bound). Null until the first successful /contents. Bounds backward pan
+// and the go-to picker, like vision's scrollback_limit.
+const oldestTs        = ref(null)
+const atOldest        = computed(() => oldestTs.value !== null && rangeStart.value.getTime() <= oldestTs.value)
 
 // Export selection state. When exportMode is true, the user is positioning
 // the end marker; the original playhead is frozen as the start. Once they
@@ -72,6 +110,7 @@ const exportStart   = ref(null)  // Date — frozen start marker (was playheadTi
 const exportEnd     = ref(null)  // Date — user-positioned end marker
 const exporting     = ref(false) // server-side export running (between Finish Export and download)
 const exportPercent = ref(0)
+const exportError   = ref('')    // inline failure message; cleared on next Export click / dismiss
 
 // --- icon preload ---
 const ICON_NAMES = ['airplane','backpack','bicycle','bird','boat','bus','car','cat',
@@ -100,15 +139,36 @@ function fmtTime(d) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+function fmtDate(d) {
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+// Playhead readout: "Oct 23, 2026  09:41:12" (local) so the day is visible after panning back.
+function fmtPlayhead(d) {
+  return `${fmtDate(d)}  ${fmtTime(d)}`
+}
+
 function fmtLabel(ms) {
-  return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const d = new Date(ms)
+  const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  // Prefix the date on the tick where the local day rolls over within the visible range.
+  if (d.getHours() === 0 && d.getMinutes() === 0)
+    return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${hm}`
+  return hm
+}
+
+// Local-time "YYYY-MM-DDTHH:MM:SS" for <input type="datetime-local">.
+function toLocalInput(d) {
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
 function tickIntervals(rangeMs) {
   if (rangeMs <=  10 * 60000) return [  60000,  120000]
   if (rangeMs <=  20 * 60000) return [  60000,  300000]
   if (rangeMs <=  60 * 60000) return [ 300000,  900000]
-  return                              [ 600000, 1800000]
+  if (rangeMs <= 240 * 60000) return [ 600000, 1800000]
+  return                              [ 900000, 3600000]
 }
 
 // --- data ---
@@ -125,6 +185,10 @@ async function loadData() {
     ])
     if (segRes.ok) {
       const d = await segRes.json()
+      if (d.first_ts) {
+        const ft = new Date(d.first_ts).getTime()
+        if (!isNaN(ft)) oldestTs.value = ft
+      }
       segments.value = (d.segments || []).map(s => ({
         start: new Date(s.start_time).getTime(),
         end:   new Date(s.end_time).getTime()
@@ -175,11 +239,46 @@ function onZoomChange() {
 }
 
 function shiftBack() {
+  const d       = rangeMinutes.value * 60000 * 0.2
+  const rangeMs = rangeEnd.value.getTime() - rangeStart.value.getTime()
+  // Clamp so the range never starts before the oldest recording.
+  let newStart = rangeStart.value.getTime() - d
+  if (oldestTs.value !== null) newStart = Math.max(newStart, oldestTs.value)
+  if (newStart >= rangeStart.value.getTime()) return
   isLive.value = false
-  const d = rangeMinutes.value * 60000 * 0.2
-  rangeStart.value = new Date(rangeStart.value.getTime() - d)
-  rangeEnd.value   = new Date(rangeEnd.value.getTime()   - d)
+  rangeStart.value = new Date(newStart)
+  rangeEnd.value   = new Date(newStart + rangeMs)
   loadData()
+}
+
+// Go-to date/time: recenter the range on the chosen local time (clamped to
+// [oldest recording, now]) and seek there via the same 'seek' path as a scrub.
+function onGoto(e) {
+  if (exporting.value || exportMode.value) return
+  const v = e.target.value
+  if (!v) return
+  let ms = new Date(v).getTime()   // datetime-local strings parse as local time
+  if (isNaN(ms)) return
+  const now = Date.now()
+  if (ms >= now) { goLive(); return }
+  if (oldestTs.value !== null) ms = Math.max(ms, oldestTs.value)
+
+  const rangeMs = rangeMinutes.value * 60000
+  let start = ms - rangeMs / 2
+  let end   = start + rangeMs
+  if (end > now) { end = now; start = end - rangeMs }                        // keep the window ending at/before now
+  if (oldestTs.value !== null && start < oldestTs.value) {                   // ...but never starting before oldest
+    start = oldestTs.value
+    end   = Math.min(start + rangeMs, now)
+  }
+  rangeStart.value = new Date(start)
+  rangeEnd.value   = new Date(end)
+
+  isLive.value       = false
+  playheadTime.value = new Date(ms)
+  loadData()
+  clearTimeout(seekTimer)
+  emit('seek', playheadTime.value.toISOString())
 }
 
 function shiftForward() {
@@ -337,10 +436,149 @@ function handleSeek(e) {
   seekTimer = setTimeout(() => emit('seek', playheadTime.value.toISOString()), 100)
 }
 
-function onMouseDown(e) { if (exporting.value) return; dragging.value = true;  handleSeek(e) }
-function onMouseMove(e) { if (dragging.value)  handleSeek(e) }
-function onMouseUp()    { dragging.value = false }
-function onMouseLeave() { dragging.value = false }
+// Pointer events cover mouse, touch and pen with one code path. Capturing the
+// pointer on down keeps move/up flowing to the canvas even when the finger or
+// cursor leaves it mid-drag (so no separate "leave" handler is needed).
+function onPointerDown(e) {
+  if (exporting.value) return
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  hideHover()
+  dragging.value = true
+  try { canvas.value.setPointerCapture(e.pointerId) } catch (_) {}
+  handleSeek(e)
+}
+function onPointerMove(e) {
+  if (dragging.value) { handleSeek(e); return }
+  onHoverMove(e)
+}
+function onPointerUp()    { dragging.value = false }
+
+// --- hover preview ----------------------------------------------------------
+// Moving the mouse over the canvas shows a tooltip with the /jpg frame at the
+// hovered instant. The fetch is debounced until the pointer rests (~120 ms),
+// only one request is in flight at a time (older ones are aborted), and the
+// last HOVER_CACHE_MAX frames are kept by rounded second so re-hovering the
+// same spot is instant. Spans without a recorded segment show the time only.
+const HOVER_DEBOUNCE_MS = 120
+const HOVER_CACHE_MAX   = 30
+const HOVER_THUMB_W     = 192
+const HOVER_PAD         = 4
+
+const hover = reactive({
+  visible:    false,
+  ms:         0,
+  key:        0,       // rounded second of `ms` (cache key / staleness token)
+  hasSegment: false,
+  imgUrl:     null,    // blob: URL of the preview (owned by hoverCache)
+  error:      false,
+  left:       0,       // viewport px (position: fixed)
+  bottom:     0
+})
+
+// Thumbnail height from the camera's aspect when known, else 16:9.
+const hoverThumbH = computed(() => {
+  const w = Number(props.cameraWidth)  || 0
+  const h = Number(props.cameraHeight) || 0
+  if (w > 0 && h > 0) return Math.max(32, Math.round(HOVER_THUMB_W * h / w))
+  return Math.round(HOVER_THUMB_W * 9 / 16)
+})
+const hoverTipWidth = HOVER_THUMB_W + HOVER_PAD * 2
+
+const hoverCache = new Map()   // key(second) -> blob: URL, insertion-ordered (LRU)
+let hoverTimer   = null
+let hoverAbort   = null
+
+function hoverCacheGet(key) {
+  const url = hoverCache.get(key)
+  if (url === undefined) return undefined
+  hoverCache.delete(key); hoverCache.set(key, url)   // refresh recency
+  return url
+}
+
+function hoverCachePut(key, url) {
+  if (hoverCache.has(key)) URL.revokeObjectURL(hoverCache.get(key))
+  hoverCache.set(key, url)
+  while (hoverCache.size > HOVER_CACHE_MAX) {
+    const [oldKey, oldUrl] = hoverCache.entries().next().value
+    hoverCache.delete(oldKey)
+    URL.revokeObjectURL(oldUrl)
+  }
+}
+
+function hoverCacheClear() {
+  for (const url of hoverCache.values()) URL.revokeObjectURL(url)
+  hoverCache.clear()
+}
+
+function hasSegmentAt(ms) {
+  for (const seg of segments.value)
+    if (ms >= seg.start && ms <= seg.end) return true
+  return false
+}
+
+function hideHover() {
+  hover.visible = false
+  hover.imgUrl  = null
+  hover.error   = false
+  hover.key     = 0
+  clearTimeout(hoverTimer); hoverTimer = null
+  if (hoverAbort) { hoverAbort.abort(); hoverAbort = null }
+}
+
+function onHoverMove(e) {
+  if (e.pointerType === 'touch' || exporting.value || !canvas.value) { hideHover(); return }
+  const rect = canvas.value.getBoundingClientRect()
+  if (rect.width === 0 || canvas.value.width === 0) return
+  const x  = (e.clientX - rect.left) * (canvas.value.width / rect.width)
+  const ms = Math.min(xToMs(x), Date.now())
+  if (ms < rangeStart.value.getTime()) { hideHover(); return }
+
+  // Position: centred on the pointer, clamped inside the viewport, just above the canvas.
+  const half = hoverTipWidth / 2
+  hover.left   = Math.round(Math.min(Math.max(e.clientX - half, 4), window.innerWidth - hoverTipWidth - 4))
+  hover.bottom = Math.round(window.innerHeight - rect.top + 6)
+
+  const key = Math.floor(ms / 1000)
+  hover.ms         = ms
+  hover.visible    = true
+  hover.hasSegment = hasSegmentAt(ms)
+
+  if (key === hover.key) return          // same second: label updated, nothing new to fetch
+  hover.key   = key
+  hover.error = false
+  clearTimeout(hoverTimer); hoverTimer = null
+  if (hoverAbort) { hoverAbort.abort(); hoverAbort = null }
+
+  if (!hover.hasSegment) { hover.imgUrl = null; return }
+
+  const cached = hoverCacheGet(key)
+  if (cached) { hover.imgUrl = cached; return }
+
+  hover.imgUrl = null
+  hoverTimer = setTimeout(() => { hoverTimer = null; fetchHoverPreview(key, ms) }, HOVER_DEBOUNCE_MS)
+}
+
+async function fetchHoverPreview(key, ms) {
+  if (!props.cameraId) return
+  const ctrl = new AbortController()
+  hoverAbort = ctrl
+  const url = `/jpg?camera_id=${props.cameraId}`
+            + `&start_time=${encodeURIComponent(new Date(ms).toISOString())}`
+            + `&width=${HOVER_THUMB_W}&height=${hoverThumbH.value}`
+  try {
+    const res  = await apiFetch(url, { signal: ctrl.signal })
+    const blob = await res.blob()
+    if (ctrl.signal.aborted) return
+    const objUrl = URL.createObjectURL(blob)
+    hoverCachePut(key, objUrl)
+    if (hover.visible && hover.key === key) hover.imgUrl = objUrl
+  } catch (err) {
+    if (ctrl.signal.aborted || (err && err.name === 'AbortError')) return
+    if (hover.visible && hover.key === key) hover.error = true
+  } finally {
+    if (hoverAbort === ctrl) hoverAbort = null
+  }
+}
 
 // Follow playback: advance the playhead marker as CameraPlayer reports progress.
 // Ignored while the user is dragging or selecting an export range so we don't
@@ -376,6 +614,7 @@ watch(() => props.playheadIso, (iso) => {
 
 // --- export ---
 function startExport() {
+  exportError.value = ''
   // Freeze current playhead as start, default end one minute later (clamped
   // to now in case the user is already near-live).
   const startMs = playheadTime.value.getTime()
@@ -404,6 +643,18 @@ function fmtForFile(d) {
 
 let exportPoll = null
 
+// Stop polling and drop back to the normal (non-export) controls, showing
+// `message` inline where the "Exporting N%" label was.
+function failExport(message) {
+  if (exportPoll) { clearInterval(exportPoll); exportPoll = null }
+  exportError.value = message
+  exporting.value   = false
+  exportMode.value  = false
+  exportStart.value = null
+  exportEnd.value   = null
+  draw()
+}
+
 async function finishExport() {
   if (!exportStart.value || !exportEnd.value) return
   const s = exportStart.value.toISOString()
@@ -426,16 +677,31 @@ async function finishExport() {
     if (!res.ok) throw new Error(`server returned ${res.status}`)
     id = (await res.json()).id
   } catch (err) {
-    alert('Failed to start export: ' + err.message)
-    exporting.value = false
+    failExport('Export failed: ' + err.message)
     return
   }
 
+  // /export_progress replies 404 when the id is unknown (e.g. revere restarted
+  // or the finished job was already pruned) and 500 on other failures; error
+  // responses carry no body. A few consecutive network errors also give up,
+  // otherwise a dead server would leave "Exporting N%" on screen forever.
+  let pollFailures = 0
   exportPoll = setInterval(async () => {
     try {
       const r = await fetch('/export_progress?id=' + encodeURIComponent(id))
-      if (!r.ok) return
+      if (!r.ok) {
+        failExport(r.status === 404 ? 'Export failed: export not found on server'
+                                    : `Export failed: server returned ${r.status}`)
+        return
+      }
+      pollFailures = 0
       const j = await r.json()
+      // The worker reports 100% even when it threw (so the entry is pruned);
+      // `failed` tells us the file was never written.
+      if (j.failed) {
+        failExport('Export failed on the server (see the revere log)')
+        return
+      }
       exportPercent.value = j.percent_complete | 0
       if (exportPercent.value >= 100) {
         clearInterval(exportPoll)
@@ -450,9 +716,14 @@ async function finishExport() {
         exportEnd.value   = null
         draw()
       }
-    } catch (_) { /* keep polling */ }
+    } catch (err) {
+      if (++pollFailures >= 5) failExport('Export failed: ' + (err.message || 'cannot reach server'))
+    }
   }, 1000)
 }
+
+// A different camera means the cached previews are for the wrong source.
+watch(() => props.cameraId, () => { hideHover(); hoverCacheClear() })
 
 // --- resize ---
 let ro = null
@@ -498,6 +769,16 @@ onUnmounted(() => {
   clearTimeout(seekTimer)
   if (exportPoll) clearInterval(exportPoll)
   if (ro) ro.disconnect()
+  hideHover()
+  hoverCacheClear()
+})
+
+// --- host API (keyboard shortcuts in CameraView) ---------------------------
+// Same guard as the on-screen buttons: no panning / going live mid-export.
+defineExpose({
+  shiftBack:    () => { if (!exporting.value) shiftBack() },
+  shiftForward: () => { if (!exporting.value) shiftForward() },
+  goLive:       () => { if (!exporting.value) goLive() },
 })
 </script>
 
@@ -558,12 +839,31 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
+.export-error {
+  font-size: 0.8rem;
+  color: #e57373;
+  cursor: pointer;
+}
+
 .time-label {
   font-size: 0.8rem;
   color: #aaa;
   font-variant-numeric: tabular-nums;
-  min-width: 5.5rem;
+  min-width: 11rem;
   padding-left: 0.25rem;
+  white-space: pre;
+}
+
+.goto-input {
+  background: #1e1e1e;
+  border: 1px solid #3a3a3a;
+  color: #ccc;
+  padding: 0.1rem 0.25rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  color-scheme: dark;
+  cursor: pointer;
 }
 
 .zoom-sel {
@@ -582,5 +882,49 @@ onUnmounted(() => {
   display: block;
   cursor: crosshair;
   min-height: 0;
+  touch-action: none;   /* scrubbing by touch must not scroll/zoom the page */
+}
+
+.hover-tip {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  box-sizing: border-box;
+  padding: 4px;
+  background: #1e1e1e;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+}
+
+.hover-thumb {
+  width: 100%;
+  background: #000;
+  border-radius: 2px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hover-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.hover-msg {
+  font-size: 0.7rem;
+  color: #777;
+}
+
+.hover-label {
+  margin-top: 3px;
+  text-align: center;
+  font-size: 0.75rem;
+  color: #ccc;
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
 }
 </style>
