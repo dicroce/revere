@@ -845,6 +845,37 @@ void pipeline_host::sync_live_cb()
     }
 }
 
+void pipeline_host::sync_pause_cb()
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    for(auto& [name, pipe] : _pipes)
+        _pause_pipe(name, pipe);
+}
+
+void pipeline_host::_pause_pipe(const std::string& name, const std::shared_ptr<pipeline_state>& pipe)
+{
+    if(!pipe->running())
+        return;
+
+    // The frame on screen is the one to hold: its display pts is already an
+    // absolute time (ms since epoch; see post_video_frame), so resuming from
+    // it continues exactly where the picture stopped. If nothing has been
+    // presented yet, resume from where this play started.
+    auto resume_pos = pipe->get_last_control_bar_pos();
+    auto rc_it = _render_contexts.find(name);
+    if(rc_it != end(_render_contexts) && rc_it->second->pts > 0)
+        resume_pos = system_clock::time_point(milliseconds(rc_it->second->pts));
+
+    pipe->stop();
+
+    _playback_start_positions.erase(name);
+    _playback_start_pts.erase(name);
+    // Frames still queued must not present past the held one.
+    _reset_presentation(name);
+
+    pipe->set_last_control_bar_pos(resume_pos);
+}
+
 void pipeline_host::control_bar_button_cb(const string& name, control_bar_button_type type)
 {
     lock_guard<mutex> pipes_lock(_internals_lok);
@@ -874,6 +905,10 @@ void pipeline_host::control_bar_button_cb(const string& name, control_bar_button
                 _reset_presentation(name);
                 pipe->play();
             }
+        }
+        else if(type == CONTROL_BAR_BUTTON_PAUSE)
+        {
+            _pause_pipe(name, pipe);
         }
     }
 }

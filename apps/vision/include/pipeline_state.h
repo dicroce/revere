@@ -95,6 +95,13 @@ public:
         return _last_control_bar_pos;
     }
 
+    // Where the next play() starts from. Pause sets this to the time of the
+    // frame left on screen so Resume (Play) continues from exactly there.
+    inline void set_last_control_bar_pos(const std::chrono::system_clock::time_point& pos)
+    {
+        _last_control_bar_pos = pos;
+    }
+
 private:
     void _entry_point();
 

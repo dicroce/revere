@@ -168,6 +168,7 @@ public:
     void sync_control_bar_cb(const std::chrono::system_clock::time_point& pos);
     void sync_play_cb(const std::chrono::system_clock::time_point& range_end);
     void sync_live_cb();
+    void sync_pause_cb();
     void control_bar_button_cb(const std::string& name, control_bar_button_type type);
     void control_bar_update_data_cb(const std::string& stream_name, control_bar_state& cbs);
     void control_bar_export_cb(const std::string& stream_name, const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end, control_bar_state& cbs);
@@ -238,6 +239,15 @@ private:
     std::map<std::string, timeline_result> _timeline_results;  // latest completed per stream
     std::thread _timeline_th;
     bool _timeline_running {false};
+
+    // Pause a playing pipe: tear the playback pipeline down, leave the last
+    // presented frame on its texture and remember that frame's time as the
+    // pipe's control bar position so the next play() resumes from it. Pause is
+    // done this way rather than with an RTSP PAUSE because neither r_gst_source
+    // nor the restream server handle a paused client (the server keeps fetching
+    // into a drop-oldest queue, so a resume would jump). Caller must hold
+    // _internals_lok.
+    void _pause_pipe(const std::string& name, const std::shared_ptr<pipeline_state>& pipe);
 
     // Drop queued frames and force a re-anchor; call on seek/play/live
     // transitions so stale frames can't present. Caller must hold _internals_lok.
