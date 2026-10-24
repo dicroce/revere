@@ -371,6 +371,11 @@ void r_gst_source::set_args(const vector<r_arg>& args)
     _password = _args["password"];
 }
 
+void r_pipeline::rtsp_set_jitterbuffer_latency(GstElement* rtspsrc)
+{
+    g_object_set(G_OBJECT(rtspsrc), "latency", (guint)RTSP_JITTERBUFFER_LATENCY_MS, NULL);
+}
+
 uint32_t r_pipeline::rtsp_protocol_flags(const string& protocols_str)
 {
     uint32_t flags = 0;
@@ -421,7 +426,9 @@ void r_gst_source::play()
         // RTP timestamps pass through unmodified and deterministically.
         if(!_buffer_mode.is_null())
             g_object_set(G_OBJECT(rtspsrc), "buffer-mode", r_string_utils::s_to_int(_buffer_mode.value()), NULL);
-        R_LOG_INFO("RTSP protocols set to %s (0x%08x), buffer-mode %s", protocols_str.c_str(), protocol_flags, _buffer_mode.is_null() ? "default" : _buffer_mode.value().c_str());
+        rtsp_set_jitterbuffer_latency(rtspsrc);
+        R_LOG_INFO("RTSP protocols set to %s (0x%08x), buffer-mode %s, latency %d ms", protocols_str.c_str(), protocol_flags,
+                   _buffer_mode.is_null() ? "default" : _buffer_mode.value().c_str(), RTSP_JITTERBUFFER_LATENCY_MS);
     }
 
     g_object_set(G_OBJECT(rtspsrc), "do-rtsp-keep-alive", true, NULL);
