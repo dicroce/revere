@@ -27,6 +27,21 @@
 
     <div v-if="stillError && !revealed" class="msg">No image available</div>
 
+    <!-- Stream status overlay (issue #95): retry / unavailable / codec states.
+         Hidden (status === null) while playback is healthy. -->
+    <div v-if="status" class="status-overlay" :class="status">
+      <template v-if="status === 'reconnecting'">
+        <span class="spinner"></span><span>Reconnecting…</span>
+      </template>
+      <template v-else-if="status === 'unavailable'">
+        <span>Stream unavailable</span>
+        <button class="retry-btn" @click="retry">Retry</button>
+      </template>
+      <template v-else-if="status === 'codec'">
+        <span>This browser can't play this codec</span>
+      </template>
+    </div>
+
     <!-- Play / pause overlay (hidden in live mode). -->
     <button
       v-if="!isLive"
@@ -44,7 +59,9 @@
         <svg v-if="volume === 0" viewBox="0 0 24 24" width="22" height="22"><path d="M7 9v6h4l5 5V4l-5 5H7z" fill="currentColor"/><path d="M19 5 5 19" stroke="currentColor" stroke-width="2"/></svg>
         <svg v-else viewBox="0 0 24 24" width="22" height="22"><path d="M7 9v6h4l5 5V4l-5 5H7z" fill="currentColor"/><path d="M17 7a6 6 0 0 1 0 10" fill="none" stroke="currentColor" stroke-width="2"/></svg>
       </button>
-      <input class="vol-slider" type="range" min="0" max="1" step="0.05" v-model.number="volume" />
+      <!-- 0–4x like vision; >1 is applied via a WebAudio GainNode (see applyVolume). -->
+      <input class="vol-slider" type="range" min="0" max="4" step="0.05" v-model.number="volume"
+             :title="Math.round(volume * 100) + '%'" />
     </div>
   </div>
 </template>
@@ -86,6 +103,15 @@ const MIN_LIVE_FETCH_MS = 2000
 // Fallback MSE codec string if the server doesn't send X-Revere-Codecs (h264
 // Main@4.1, video only). Normally the first window's header supplies the real one.
 const FALLBACK_CODECS = 'avc1.4d4029'
+// Live auto-recovery (issue #95): if nothing new has been appended for this long
+// (or the <video> errors), tear the live session down and re-enter live. Restarts
+// back off exponentially up to LIVE_RESTART_MAX_MS, and after LIVE_MAX_RESTARTS
+// consecutive failures we stop and show "Stream unavailable" + Retry.
+const LIVE_STALL_MS        = 10000
+const LIVE_WATCHDOG_MS     = 2000
+const LIVE_RESTART_BASE_MS = 1000
+const LIVE_RESTART_MAX_MS  = 30000
+const LIVE_MAX_RESTARTS    = 8
 
 // --- refs / reactive state -------------------------------------------------
 const wrap       = ref(null)
@@ -99,11 +125,47 @@ const reqH       = ref(720)
 const volume     = ref(0)       // starts silent every load; user opts into sound
 let lastVolume   = 0.6          // level restored when un-muting via the speaker icon
 
+// Gain above unity (issue #95): the native element volume is clamped to [0,1], so
+// for > 1 we route the element through a WebAudio GainNode. The graph is built
+// lazily on the first > 1 request — which comes from the slider, i.e. a user
+// gesture, so the AudioContext is allowed to start. createMediaElementSource may
+// only be called once per element; the <video> persists across play sessions, so
+// one graph serves all of them. Once built, the element's audio flows through the
+// context exclusively (we keep gain=1 and use the native volume for <= 1).
+let audioCtx = null, gainNode = null
+function ensureGainGraph() {
+  if (gainNode) return true
+  const v = video.value
+  const AC = window.AudioContext || window.webkitAudioContext
+  if (!v || !AC) return false
+  try {
+    audioCtx = new AC()
+    const src = audioCtx.createMediaElementSource(v)
+    gainNode = audioCtx.createGain()
+    src.connect(gainNode)
+    gainNode.connect(audioCtx.destination)
+    return true
+  } catch (e) {
+    console.warn('CameraPlayer: WebAudio gain unavailable, volume capped at 1', e)
+    audioCtx = null; gainNode = null
+    return false
+  }
+}
+
 function applyVolume() {
   const v = video.value
   if (!v) return
-  v.volume = volume.value
-  v.muted  = volume.value === 0   // muted at 0 → true silence + autoplay allowed
+  const vol = volume.value
+  v.muted = vol === 0             // muted at 0 → true silence + autoplay allowed
+  if (vol > 1 && ensureGainGraph()) {
+    v.volume = 1
+    gainNode.gain.value = vol
+  } else {
+    v.volume = Math.min(vol, 1)
+    if (gainNode) gainNode.gain.value = 1
+  }
+  if (audioCtx && vol > 0 && audioCtx.state === 'suspended')
+    audioCtx.resume().catch(() => {})
 }
 function toggleMute() {
   if (volume.value > 0) { lastVolume = volume.value; volume.value = 0 }
@@ -132,6 +194,100 @@ let presentationMs = 0          // next window's position on the (gap-free) MSE 
 let timeline      = []          // [{presMs,wallMs,durMs}] maps presentation → wall-clock
 let liveMode      = false       // chasing the live write-head (vs seeked playback)
 let waitingForData = false      // live: caught up to the head, polling for more
+
+// --- stream status + live auto-recovery (issue #95) ------------------------
+// status: null (healthy) | 'reconnecting' | 'unavailable' | 'codec'
+const status = ref(null)
+let session        = 0          // startPlayback generation; stale awaits bail out
+let lastAppendMs   = 0          // wall-clock of the last window queued for append
+let liveRestarts   = 0          // consecutive live restarts without fresh data
+let liveRestartAt  = 0          // wall-clock of the last live restart
+let liveRestartTimer = null
+let liveWatchdog   = null
+let segmentsFailing = false     // live: /contents poll failing (server unreachable)
+
+// Note fresh media. Clears a "Reconnecting…" banner and, in live, resets the
+// restart backoff once we've received footage newer than the last restart.
+function noteAppend(winEndMs) {
+  lastAppendMs = Date.now()
+  if (status.value === 'reconnecting') status.value = null
+  if (liveMode && winEndMs > liveRestartAt) liveRestarts = 0
+}
+
+// The feed died (retries exhausted / hard HTTP error / <video> error). Live
+// streams recover on their own with backoff; seeked playback asks the user.
+function onFeedFailed() {
+  feeding = false
+  if (liveMode && props.isoTime === null) scheduleLiveRestart()
+  else status.value = 'unavailable'
+}
+
+function scheduleLiveRestart() {
+  if (liveRestartTimer) return
+  stopVideo()                              // also stops the watchdog
+  playing.value = false                    // lets the JPEG fallback refresh meanwhile
+  if (liveRestarts >= LIVE_MAX_RESTARTS) { status.value = 'unavailable'; return }
+  const wait = Math.min(LIVE_RESTART_MAX_MS, LIVE_RESTART_BASE_MS * 2 ** liveRestarts)
+  liveRestarts++
+  status.value = 'reconnecting'
+  liveRestartTimer = setTimeout(() => {
+    liveRestartTimer = null
+    if (props.isoTime !== null) return     // user left live meanwhile
+    liveRestartAt = Date.now()
+    enterLive()
+  }, wait)
+}
+function cancelLiveRestart() {
+  if (liveRestartTimer) { clearTimeout(liveRestartTimer); liveRestartTimer = null }
+}
+
+// Live stall check. "No new media for LIVE_STALL_MS" alone isn't a fault — a
+// motion-only / idle camera legitimately writes nothing — so we refresh the
+// segment list and only restart if the server holds footage we failed to pull.
+let stallChecking = false
+async function checkLiveStall(minIdleMs) {
+  if (!liveMode || !mediaSource || stallChecking) return
+  if (Date.now() - lastAppendMs < minIdleMs) return
+  stallChecking = true
+  const mySession = session
+  try { await loadSegments(windowStartMs) } finally { stallChecking = false }
+  if (mySession !== session || !liveMode) return
+  if (liveHeadMs() - windowStartMs > LIVE_STALL_MS / 2) {
+    console.warn('CameraPlayer: live stream stalled, restarting')
+    onFeedFailed()
+  }
+}
+function startLiveWatchdog() {
+  stopLiveWatchdog()
+  lastAppendMs = Date.now()
+  liveWatchdog = setInterval(() => checkLiveStall(LIVE_STALL_MS), LIVE_WATCHDOG_MS)
+}
+function stopLiveWatchdog() {
+  if (liveWatchdog) { clearInterval(liveWatchdog); liveWatchdog = null }
+}
+
+// <video> element errors: a MediaError is fatal to the current MSE session.
+function onVideoError() {
+  if (video.value && video.value.error)
+    console.error('CameraPlayer: video error', video.value.error.code, video.value.error.message)
+  if (liveMode) onFeedFailed()
+  else { stopVideo(); playing.value = false; status.value = 'unavailable' }
+}
+// 'stalled' is normal in small doses; treat it as persistent once we've also
+// gone half the stall window without new media (same server-side check applies).
+function onVideoStalled() { checkLiveStall(LIVE_STALL_MS / 2) }
+
+// Retry button: reset the backoff and start over from the current mode.
+function retry() {
+  status.value = null
+  liveRestarts = 0
+  cancelLiveRestart()
+  if (props.isoTime === null) { liveRestartAt = Date.now(); enterLive() }
+  // Resume an established feed in place; if nothing was ever appended the
+  // SourceBuffer may carry the fallback codec string, so rebuild from scratch.
+  else if (mediaSource && sourceBuffer && !firstSegment) { feeding = true; fetchNextWindow() }
+  else startPlayback()
+}
 
 // --- still (jpg) -----------------------------------------------------------
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
@@ -194,6 +350,9 @@ const once = (t, ev) => new Promise(r => t.addEventListener(ev, r, { once: true 
 async function startPlayback(live = false) {
   if (!live && props.isoTime === null) return
   stopVideo()                              // clean slate
+  const mySession = ++session              // a newer start/stop invalidates our awaits
+
+  if (typeof MediaSource === 'undefined') { status.value = 'codec'; return }
 
   const sz = computeVideoSize()
   vidW = sz.w; vidH = sz.h
@@ -208,6 +367,7 @@ async function startPlayback(live = false) {
 
   // Seek to the requested instant, or (live) to just behind the committed head.
   await loadSegments(live ? (Date.now() - 60000) : Date.parse(props.isoTime))
+  if (mySession !== session) return        // torn down while we awaited
   if (live) {
     const head = liveHeadMs()
     ptsBaseMs = (head > 0 ? head : Date.now()) - LIVE_MARGIN_MS
@@ -219,24 +379,32 @@ async function startPlayback(live = false) {
   mediaSource = new MediaSource()
   video.value.src = URL.createObjectURL(mediaSource)
   await once(mediaSource, 'sourceopen')
-  if (!mediaSource) return                 // torn down while we awaited
+  if (!mediaSource || mySession !== session) return   // torn down while we awaited
 
   playing.value = true
   feeding = true
+  if (live) startLiveWatchdog()
 
   // Fetch the first window before creating the SourceBuffer: the server reports
   // the exact codec string (including whether audio is present) in a response
   // header, and addSourceBuffer must be told the right codecs up front. pump()
   // no-ops until sourceBuffer exists, so the bytes just queue.
   await fetchNextWindow()
-  if (!mediaSource) return                 // torn down mid-fetch
+  if (!mediaSource || mySession !== session) return   // torn down mid-fetch
 
   const mime = `video/mp4; codecs="${negotiatedCodecs || FALLBACK_CODECS}"`
+  if (!MediaSource.isTypeSupported(mime)) {
+    console.error('CameraPlayer: codec not supported by this browser', mime)
+    stopVideo()
+    status.value = 'codec'
+    return
+  }
   try {
     sourceBuffer = mediaSource.addSourceBuffer(mime)
   } catch (e) {
     console.error('CameraPlayer: addSourceBuffer failed', mime, e)
     stopVideo()
+    status.value = 'codec'
     return
   }
   sourceBuffer.addEventListener('updateend', pump)
@@ -244,6 +412,8 @@ async function startPlayback(live = false) {
   // The reveal — hide the still the moment the video can paint.
   video.value.addEventListener('canplay', onCanPlay, { once: true })
   video.value.addEventListener('timeupdate', onVideoTime)
+  video.value.addEventListener('error', onVideoError)
+  video.value.addEventListener('stalled', onVideoStalled)
 
   applyVolume()                            // a fresh <video> defaults to full/un-muted
   pump()                                   // drain the queued first window
@@ -252,6 +422,7 @@ async function startPlayback(live = false) {
 
 function onCanPlay() {
   revealed.value = true
+  if (status.value === 'reconnecting') status.value = null
   stopLiveRefresh()   // live video took over from the JPEG fallback
 }
 
@@ -291,7 +462,19 @@ async function loadSegments(fromMs) {
       .map(x => ({ startMs: Date.parse(x.start_time), endMs: Date.parse(x.end_time) }))
       .filter(x => x.endMs > fromMs)
       .sort((a, b) => a.startMs - b.startMs)
-  } catch (_) { /* teardown or transient — leave list as-is */ }
+    if (segmentsFailing) {                 // server reachable again
+      segmentsFailing = false
+      if (status.value === 'reconnecting') status.value = null
+    }
+  } catch (_) {
+    /* teardown or transient — leave list as-is */
+    // Live: the segment poll is our only heartbeat while caught up, so a failing
+    // /contents (server unreachable) is surfaced as "Reconnecting…" (issue #95).
+    if (liveMode && abort && !abort.signal.aborted) {
+      segmentsFailing = true
+      status.value = 'reconnecting'
+    }
+  }
 }
 
 // First segment whose data extends past ms (the one containing ms, or the next
@@ -339,15 +522,21 @@ async function fetchWindow(winStart, winEnd) {
     try {
       const res = await fetch(url, { signal: ctl.signal })
       clearTimeout(to); abort.signal.removeEventListener('abort', onAbort)
-      if (res.status === 503) { await delay(RETRY_BASE_MS * (attempt + 1)); continue }
+      if (res.status === 503) {
+        status.value = 'reconnecting'
+        await delay(RETRY_BASE_MS * (attempt + 1)); continue
+      }
       return res
     } catch (_) {
       clearTimeout(to); abort.signal.removeEventListener('abort', onAbort)
       if (abort && abort.signal.aborted) return null   // real teardown, don't retry
+      status.value = 'reconnecting'
       await delay(RETRY_BASE_MS * (attempt + 1))        // timeout / network — retry
     }
   }
-  feeding = false                                       // retries exhausted
+  if (!feeding || !abort || abort.signal.aborted) return null
+  console.warn('CameraPlayer: window fetch retries exhausted', s, e)
+  onFeedFailed()                                        // retries exhausted
   return null
 }
 
@@ -385,7 +574,11 @@ async function fetchNextWindow() {
 
     const res = await fetchWindow(winStart, winEnd)
     if (!res) return                                   // teardown / retries exhausted
-    if (!res.ok) { feeding = false; return }
+    if (!res.ok) {
+      console.warn('CameraPlayer: window fetch failed', res.status)
+      onFeedFailed()
+      return
+    }
 
     const codecs = res.headers.get('X-Revere-Codecs')
     if (codecs) negotiatedCodecs = codecs
@@ -403,6 +596,7 @@ async function fetchNextWindow() {
       timeline.push({ presMs: presentationMs, wallMs: winStart, durMs })
       presentationMs += durMs
       windowStartMs = winEnd
+      noteAppend(winEnd)
     } else {
       // Segment list said there's data here but there isn't — treat as a gap and
       // jump to the segment end so the next pass snaps to the following segment.
@@ -478,12 +672,18 @@ function stopVideo() {
   liveMode = false
   waitingForData = false
   if (abort) { try { abort.abort() } catch (_) {} abort = null }
+  session++                                // invalidate any in-flight startPlayback
+  stopLiveWatchdog()
+  cancelLiveRestart()
+  segmentsFailing = false
 
   const v = video.value
   if (v) {
     v.pause()
     v.removeEventListener('timeupdate', onVideoTime)
     v.removeEventListener('canplay', onCanPlay)
+    v.removeEventListener('error', onVideoError)
+    v.removeEventListener('stalled', onVideoStalled)
     v.removeAttribute('src')
     try { v.load() } catch (_) {}
   }
@@ -524,6 +724,8 @@ function enterLive() {
 watch(() => props.isoTime, (iso) => {
   stopVideo()
   playing.value = false
+  status.value = null                      // a seek/live switch starts fresh
+  liveRestarts = 0
   if (iso === null) enterLive()
   else { stopLiveRefresh(); loadStill(iso) }
 })
@@ -594,6 +796,46 @@ onUnmounted(() => {
   color: #555;
   font-size: 0.95rem;
 }
+
+/* Stream status overlay (issue #95): small pill, top-center, above the layers. */
+.status-overlay {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-radius: 16px;
+  background: rgba(0,0,0,0.6);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: #eee;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.status-overlay.unavailable, .status-overlay.codec { color: #ffb4a8; }
+.status-overlay .retry-btn {
+  pointer-events: auto;
+  padding: 2px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.35);
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.status-overlay .retry-btn:hover { background: rgba(255,255,255,0.22); }
+.status-overlay .spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.25);
+  border-top-color: #fff;
+  animation: status-spin 0.9s linear infinite;
+}
+@keyframes status-spin { to { transform: rotate(360deg); } }
 
 .play-overlay {
   position: absolute;
