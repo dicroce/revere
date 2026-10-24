@@ -294,6 +294,18 @@ bool r_ssl_socket::wait_till_recv_wont_block(uint64_t& millis) const
     return _sok.wait_till_recv_wont_block(millis);
 }
 
+bool r_ssl_socket::peer_closed() const
+{
+    if (!_valid)
+        return true;
+
+    // Decrypted-but-unread data counts as "still talking".
+    if (mbedtls_ssl_get_bytes_avail(&_ssl) > 0)
+        return false;
+
+    return _sok.peer_closed();
+}
+
 bool r_ssl_socket::wait_till_send_wont_block(uint64_t& millis) const 
 {
     if (!_valid)

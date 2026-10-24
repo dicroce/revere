@@ -21,6 +21,10 @@ public:
     R_API virtual int recv(void* buf, size_t len) = 0;
     R_API virtual bool wait_till_recv_wont_block(uint64_t& millis) const = 0;
     R_API virtual bool wait_till_send_wont_block(uint64_t& millis) const = 0;
+    // True once the peer has closed (or the connection has failed), without
+    // blocking or consuming data; lets a handler stop working for a client
+    // that has gone away.
+    R_API virtual bool peer_closed() const = 0;
 };
 
 }

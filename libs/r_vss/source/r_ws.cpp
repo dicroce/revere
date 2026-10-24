@@ -10,6 +10,7 @@
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_file.h"
+#include "r_utils/r_ssl_server_socket.h"
 #include "r_utils/r_blob_tree.h"
 #include "r_utils/r_qr_code.h"
 #include "r_utils/3rdparty/json/json.h"
@@ -24,6 +25,9 @@
 #include "r_av/r_audio_decoder.h"
 #include "r_av/r_audio_encoder.h"
 #include <functional>
+#ifndef IS_WINDOWS
+#include <sys/stat.h>
+#endif
 #include <array>
 #include <fstream>
 #include <filesystem>
@@ -42,6 +46,7 @@ using namespace std::placeholders;
 using json = nlohmann::json;
 
 const int WEB_SERVER_PORT = 8088;
+const int WEB_SERVER_TLS_PORT = 8443;
 
 namespace {
 
@@ -105,71 +110,108 @@ camera_source_info _camera_source_info(const std::string& top_dir, const r_disco
 
 } // namespace
 
+template<class SOK_T>
+void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
+{
+    // Handlers are transport-agnostic (they take r_socket_base&); this adapts
+    // them to whichever socket type the server is instantiated with, so the
+    // same table serves plain HTTP and HTTPS.
+    using handler = r_http::r_server_response (r_ws::*)(r_utils::r_socket_base&, const r_http::r_server_request&);
+    auto route = [this, &server](int method, const char* path, handler fn)
+    {
+        server.add_route(method, path,
+            [this, fn](const r_http::r_web_server<SOK_T>&, SOK_T& conn, const r_http::r_server_request& request)
+            {
+                return (this->*fn)(conn, request);
+            });
+    };
+
+    route(METHOD_GET, "/version", &r_ws::_get_version);
+    route(METHOD_GET, "/cameras", &r_ws::_get_cameras);
+    route(METHOD_GET, "/contents", &r_ws::_get_contents);
+    route(METHOD_GET, "/motion_events", &r_ws::_get_motion_events);
+    route(METHOD_GET, "/camera_events", &r_ws::_get_camera_events);
+    route(METHOD_GET, "/analytics", &r_ws::_get_analytics);
+
+    route(METHOD_GET, "/key_frame", &r_ws::_get_key_frame);
+    route(METHOD_GET, "/video", &r_ws::_get_video);
+    route(METHOD_GET, "/jpg", &r_ws::_get_jpg);
+    route(METHOD_GET, "/webp", &r_ws::_get_webp);
+
+    route(METHOD_GET, "/create_transcode_stream", &r_ws::_get_create_transcode_stream);
+    route(METHOD_GET, "/transcode", &r_ws::_get_transcode);
+    route(METHOD_GET, "/transcode_fmp4", &r_ws::_get_transcode_fmp4);
+    route(METHOD_GET, "/finalize_transcode_stream", &r_ws::_get_finalize_transcode_stream);
+
+    route(METHOD_GET, "/export", &r_ws::_get_export);
+    route(METHOD_GET, "/transcode_export", &r_ws::_get_transcode_export);
+    route(METHOD_GET, "/export_progress", &r_ws::_get_export_progress);
+    route(METHOD_GET, "/export_download", &r_ws::_get_export_download);
+
+    route(METHOD_POST, "/mcp", &r_ws::_post_mcp);
+
+    // "Record" web flow: discover profiles, measure bitrate + snapshot, then
+    // configure the camera for recording.
+    route(METHOD_GET, "/camera_profiles", &r_ws::_get_camera_profiles);
+    route(METHOD_GET, "/measure_camera", &r_ws::_get_measure_camera);
+    route(METHOD_GET, "/measure_progress", &r_ws::_get_measure_progress);
+    route(METHOD_GET, "/measure_result", &r_ws::_get_measure_result);
+    route(METHOD_POST, "/configure_camera", &r_ws::_post_configure_camera);
+    route(METHOD_POST, "/remove_camera", &r_ws::_post_remove_camera);
+    route(METHOD_POST, "/update_camera_properties", &r_ws::_post_update_camera_properties);
+    route(METHOD_POST, "/forget_camera", &r_ws::_post_forget_camera);
+    route(METHOD_POST, "/add_rtsp_camera", &r_ws::_post_add_rtsp_camera);
+    route(METHOD_GET, "/storage_info", &r_ws::_get_storage_info);
+    route(METHOD_POST, "/storage_move", &r_ws::_post_storage_move);
+    route(METHOD_POST, "/storage_change_retention", &r_ws::_post_storage_change_retention);
+    route(METHOD_GET, "/storage_op", &r_ws::_get_storage_op);
+    route(METHOD_POST, "/storage_op_cancel", &r_ws::_post_storage_op_cancel);
+    route(METHOD_GET, "/system_plugins", &r_ws::_get_system_plugins);
+    route(METHOD_POST, "/system_plugin_enabled", &r_ws::_post_system_plugin_enabled);
+    route(METHOD_GET, "/keep_awake", &r_ws::_get_keep_awake);
+    route(METHOD_POST, "/keep_awake", &r_ws::_post_keep_awake);
+
+    route(METHOD_GET, "/auth_status", &r_ws::_get_auth_status);
+    route(METHOD_POST, "/login", &r_ws::_post_login);
+    route(METHOD_POST, "/set_password", &r_ws::_post_set_password);
+}
+
 r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_keeper& stream_keeper) :
     _top_dir(top_dir),
     _devices(devices),
     _agent(agent),
     _stream_keeper(stream_keeper),
-    // Bind to loopback only. All intended consumers are local — the cloud plugin
-    // (127.0.0.1:8088), the desktop web UI, and local MCP clients — and most
-    // endpoints (footage, export, MCP) are unauthenticated, so binding to
-    // 0.0.0.0 would expose all surveillance data to every host on the LAN.
-    _server(WEB_SERVER_PORT, "127.0.0.1")
+    // Both listeners bind to loopback only for now. All current consumers are
+    // local — the cloud plugin (127.0.0.1:8088), the desktop web UI, vision and
+    // local MCP clients — and most endpoints are still unauthenticated, so
+    // binding to 0.0.0.0 would expose all surveillance data to every host on
+    // the LAN. The HTTPS listener is what will be opened to remote clients once
+    // every endpoint requires a token.
+    _http(WEB_SERVER_PORT, "127.0.0.1"),
+    _https(WEB_SERVER_TLS_PORT, "127.0.0.1")
 {
-    _server.add_route(METHOD_GET, "/version", std::bind(&r_ws::_get_version, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/cameras", std::bind(&r_ws::_get_cameras, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/contents", std::bind(&r_ws::_get_contents, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/motion_events", std::bind(&r_ws::_get_motion_events, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/camera_events", std::bind(&r_ws::_get_camera_events, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/analytics", std::bind(&r_ws::_get_analytics, this, _1, _2, _3));
-
-    _server.add_route(METHOD_GET, "/key_frame", std::bind(&r_ws::_get_key_frame, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/video", std::bind(&r_ws::_get_video, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/jpg", std::bind(&r_ws::_get_jpg, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/webp", std::bind(&r_ws::_get_webp, this, _1, _2, _3));
-
-    _server.add_route(METHOD_GET, "/create_transcode_stream", std::bind(&r_ws::_get_create_transcode_stream, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/transcode", std::bind(&r_ws::_get_transcode, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/transcode_fmp4", std::bind(&r_ws::_get_transcode_fmp4, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/finalize_transcode_stream", std::bind(&r_ws::_get_finalize_transcode_stream, this, _1, _2, _3));
-
-    _server.add_route(METHOD_GET, "/export", std::bind(&r_ws::_get_export, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/transcode_export", std::bind(&r_ws::_get_transcode_export, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/export_progress", std::bind(&r_ws::_get_export_progress, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/export_download", std::bind(&r_ws::_get_export_download, this, _1, _2, _3));
-
-    _server.add_route(METHOD_POST, "/mcp", std::bind(&r_ws::_post_mcp, this, _1, _2, _3));
-
-    // "Record" web flow: discover profiles, measure bitrate + snapshot, then
-    // configure the camera for recording.
-    _server.add_route(METHOD_GET, "/camera_profiles", std::bind(&r_ws::_get_camera_profiles, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/measure_camera", std::bind(&r_ws::_get_measure_camera, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/measure_progress", std::bind(&r_ws::_get_measure_progress, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/measure_result", std::bind(&r_ws::_get_measure_result, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/configure_camera", std::bind(&r_ws::_post_configure_camera, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/remove_camera", std::bind(&r_ws::_post_remove_camera, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/update_camera_properties", std::bind(&r_ws::_post_update_camera_properties, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/forget_camera", std::bind(&r_ws::_post_forget_camera, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/add_rtsp_camera", std::bind(&r_ws::_post_add_rtsp_camera, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/storage_info", std::bind(&r_ws::_get_storage_info, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/storage_move", std::bind(&r_ws::_post_storage_move, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/storage_change_retention", std::bind(&r_ws::_post_storage_change_retention, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/storage_op", std::bind(&r_ws::_get_storage_op, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/storage_op_cancel", std::bind(&r_ws::_post_storage_op_cancel, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/system_plugins", std::bind(&r_ws::_get_system_plugins, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/system_plugin_enabled", std::bind(&r_ws::_post_system_plugin_enabled, this, _1, _2, _3));
-    _server.add_route(METHOD_GET, "/keep_awake", std::bind(&r_ws::_get_keep_awake, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/keep_awake", std::bind(&r_ws::_post_keep_awake, this, _1, _2, _3));
-
-    _server.add_route(METHOD_GET, "/auth_status", std::bind(&r_ws::_get_auth_status, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/login", std::bind(&r_ws::_post_login, this, _1, _2, _3));
-    _server.add_route(METHOD_POST, "/set_password", std::bind(&r_ws::_post_set_password, this, _1, _2, _3));
+    _add_routes(_http);
+    _add_routes(_https);
 
     // Cache the OS-protected master key once (used to encrypt/decrypt the system
     // password). Best-effort: if secure storage is unavailable the auth helpers
     // will fail closed (no token can be issued).
     try { _master_key = r_secure_store().get_master_key(); }
     catch(const exception& ex) { R_LOG_WARNING("r_ws: secure store unavailable, auth disabled: %s", ex.what()); }
+
+    // TLS identity for the HTTPS listener: a self-signed certificate persisted
+    // under <top_dir>/tls so its fingerprint stays stable for clients that pin
+    // it. If this fails only the plain-HTTP listener comes up.
+    try
+    {
+        _load_or_create_tls();
+        _https.get_socket().set_config(_tls);
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_ERROR("r_ws: TLS setup failed, HTTPS listener disabled: %s", ex.what());
+        _tls.reset();
+    }
 
     // Load the web UI bundle if present alongside the binary (CWD is set to
     // the binary directory by _set_working_dir() before this is constructed).
@@ -181,8 +223,9 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
             vector<uint8_t> buf((istreambuf_iterator<char>(f)), {});
             uint32_t version = 0;
             auto bundle = r_blob_tree::deserialize(buf.data(), buf.size(), version);
-            _server.serve_bundle("/", std::move(bundle));
-            R_LOG_INFO("Web UI available at http://localhost:%d/", WEB_SERVER_PORT);
+            _http.serve_bundle("/", bundle);
+            _https.serve_bundle("/", std::move(bundle));
+            R_LOG_INFO("Web UI available at http://localhost:%d/ and https://localhost:%d/", WEB_SERVER_PORT, WEB_SERVER_TLS_PORT);
         }
         catch(const exception& ex)
         {
@@ -190,7 +233,12 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
         }
     }
 
-    _server.start();
+    _http.start();
+    if(_tls)
+    {
+        _https.start();
+        R_LOG_INFO("r_ws: TLS certificate fingerprint (SHA-256) %s", _tls->fingerprint_sha256().c_str());
+    }
 
     _export_running = true;
     _export_th = thread(&r_ws::_export_entry_point, this);
@@ -222,7 +270,57 @@ void r_ws::stop()
     _storage_op.cancel_requested = true;
     if(_storage_th.joinable())
         _storage_th.join();
-    _server.stop();
+    _http.stop();
+    _https.stop();
+}
+
+bool r_ws::_stopping() const
+{
+    return _http.stopping() || _https.stopping();
+}
+
+void r_ws::_load_or_create_tls()
+{
+    auto dir = _top_dir + PATH_SLASH + "tls";
+    auto crt_path = dir + PATH_SLASH + "server.crt";
+    auto key_path = dir + PATH_SLASH + "server.key";
+
+    if(r_fs::file_exists(crt_path) && r_fs::file_exists(key_path))
+    {
+        try
+        {
+            auto crt = r_fs::read_file(crt_path);
+            auto key = r_fs::read_file(key_path);
+            _tls = make_shared<r_ssl_server_config>(string(crt.begin(), crt.end()), string(key.begin(), key.end()));
+            return;
+        }
+        catch(const exception& ex)
+        {
+            // Regenerate rather than refuse to start; clients that pinned the
+            // old fingerprint will be asked to trust the new one.
+            R_LOG_ERROR("r_ws: stored TLS certificate unusable (%s); generating a new one.", ex.what());
+        }
+    }
+
+    auto pems = r_ssl_server_config::generate_self_signed("revere");
+    r_fs::mkdir_p(dir);
+    r_fs::atomic_write_file((const uint8_t*)pems.first.data(), pems.first.size(), crt_path);
+    r_fs::atomic_write_file((const uint8_t*)pems.second.data(), pems.second.size(), key_path);
+#ifndef IS_WINDOWS
+    ::chmod(key_path.c_str(), S_IRUSR | S_IWUSR);
+#endif
+    _tls = make_shared<r_ssl_server_config>(pems.first, pems.second);
+    R_LOG_INFO("r_ws: generated new TLS certificate, fingerprint %s", _tls->fingerprint_sha256().c_str());
+}
+
+string r_ws::get_tls_fingerprint() const
+{
+    return _tls ? _tls->fingerprint_sha256() : string();
+}
+
+string r_ws::get_tls_cert_pem() const
+{
+    return _tls ? _tls->cert_pem() : string();
 }
 
 // Clamp a caller-supplied snapshot dimension into something the decode/encode
@@ -249,9 +347,7 @@ static uint16_t _clamp_snapshot_dim(uint16_t v, uint16_t fallback)
 // /jpg calls at least this slow are logged with their time.
 static constexpr long long SLOW_JPG_MS = 2000;
 
-r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_socket>&,
-                                         r_utils::r_socket&,
-                                         const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_jpg(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -313,9 +409,7 @@ r_http::r_server_response r_ws::_get_jpg(const r_http::r_web_server<r_utils::r_s
     R_STHROW(r_http_500_exception, ("Failed to create jpg."));
 }
 
-r_http::r_server_response r_ws::_get_webp(const r_http::r_web_server<r_utils::r_socket>&,
-                                          r_utils::r_socket&,
-                                          const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_webp(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -371,9 +465,7 @@ r_http::r_server_response r_ws::_get_webp(const r_http::r_web_server<r_utils::r_
     R_STHROW(r_http_500_exception, ("Failed to create webp."));
 }
 
-r_http::r_server_response r_ws::_get_key_frame(const r_http::r_web_server<r_utils::r_socket>&,
-                                               r_utils::r_socket&,
-                                               const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_key_frame(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -409,9 +501,7 @@ r_http::r_server_response r_ws::_get_key_frame(const r_http::r_web_server<r_util
     R_STHROW(r_http_500_exception, ("Failed to fetch key frame."));
 }
 
-r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils::r_socket>&,
-                                            r_utils::r_socket&,
-                                            const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_contents(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -467,9 +557,7 @@ r_http::r_server_response r_ws::_get_contents(const r_http::r_web_server<r_utils
 //    "git_revision": "abc1234", "plugins": [{"name": "...", "version": "0.9.2"}]}
 // A plugin that doesn't report its version has "version": null. No secrets,
 // so no auth, like /auth_status.
-r_http::r_server_response r_ws::_get_version(const r_http::r_web_server<r_utils::r_socket>&,
-                                           r_utils::r_socket&,
-                                           const r_http::r_server_request&)
+r_http::r_server_response r_ws::_get_version(r_utils::r_socket_base&, const r_http::r_server_request&)
 {
     try
     {
@@ -501,9 +589,7 @@ r_http::r_server_response r_ws::_get_version(const r_http::r_web_server<r_utils:
     R_STHROW(r_http_500_exception, ("Failed to get version."));
 }
 
-r_http::r_server_response r_ws::_get_cameras(const r_http::r_web_server<r_utils::r_socket>&,
-                                           r_utils::r_socket&,
-                                           const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     // Optional auth: if the client supplies a bearer token it must be valid.
     // Lets the web UI verify a stored token (and gate the page on it) while
@@ -772,9 +858,7 @@ void r_ws::_export_entry_point()
     }
 }
 
-r_http::r_server_response r_ws::_get_export(const r_http::r_web_server<r_utils::r_socket>&,
-                                            r_utils::r_socket&,
-                                            const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_export(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -1039,9 +1123,7 @@ void r_ws::_export(export_job& job)
     }
 }
 
-r_http::r_server_response r_ws::_get_analytics(const r_http::r_web_server<r_utils::r_socket>&,
-                                               r_utils::r_socket&,
-                                               const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_analytics(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -1104,9 +1186,7 @@ r_http::r_server_response r_ws::_get_analytics(const r_http::r_web_server<r_util
 // event spans (motion, person, vehicle, ...) on Revere's clock, as its ONVIF
 // subscription reported them (shadow mode, kept in memory, newest 500). For
 // comparing with /motion_events.
-r_http::r_server_response r_ws::_get_camera_events(const r_http::r_web_server<r_utils::r_socket>&,
-                                                  r_utils::r_socket&,
-                                                  const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_camera_events(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -1157,9 +1237,7 @@ r_http::r_server_response r_ws::_get_camera_events(const r_http::r_web_server<r_
     R_STHROW(r_http_500_exception, ("Failed to get ONVIF events."));
 }
 
-r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_utils::r_socket>&,
-                                                   r_utils::r_socket&,
-                                                   const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_motion_events(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -1212,9 +1290,7 @@ r_http::r_server_response r_ws::_get_motion_events(const r_http::r_web_server<r_
     R_STHROW(r_http_500_exception, ("Failed to query motions."));
 }
 
-r_http::r_server_response r_ws::_get_video(const r_http::r_web_server<r_utils::r_socket>&,
-                                           r_utils::r_socket&,
-                                           const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_video(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -1267,9 +1343,7 @@ void r_ws::_evict_oldest_transcode_session()
     _sessions.erase(oldest);
 }
 
-r_http::r_server_response r_ws::_get_create_transcode_stream(const r_http::r_web_server<r_utils::r_socket>&,
-                                                              r_utils::r_socket&,
-                                                              const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_create_transcode_stream(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -1376,9 +1450,7 @@ static vector<uint8_t> _extract_annexb_nalu(const uint8_t* data, size_t size, ui
     return {};
 }
 
-r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_utils::r_socket>& ws,
-                                               r_utils::r_socket& conn,
-                                               const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, const r_http::r_server_request& request)
 {
     try
     {
@@ -1571,7 +1643,7 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
             // Cooperative shutdown: abandon a long decode/encode rather than
             // making teardown wait for the whole clip. The connection is being
             // torn down, so the unwound 500 never has to reach the client.
-            if(ws.stopping())
+            if(_stopping())
                 R_THROW(("Transcode aborted: server shutting down."));
             // Likewise once the client has gone (timed out): nobody will read it.
             if(conn.peer_closed())
@@ -1946,16 +2018,14 @@ static bool _fmp4_has_audio(r_blob_tree& bt)
            && bt.has_key("audio_codec_name") && bt.has_key("audio_codec_parameters");
 }
 
-r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r_utils::r_socket>& ws,
-                                                    r_utils::r_socket& conn,
-                                                    const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_transcode_fmp4(r_utils::r_socket_base& conn, const r_http::r_server_request& request)
 {
     // passthrough=1 selects the remux-only mode (separate budget, no codecs).
     {
         const auto& pre_args = request.get_uri().get_get_args();
         auto pit = pre_args.find("passthrough");
         if(pit != pre_args.end() && (pit->second == "1" || pit->second == "true"))
-            return _get_passthrough_fmp4(ws, conn, pre_args);
+            return _get_passthrough_fmp4(conn, pre_args);
     }
 
     // Concurrency ceiling: reserve a slot, or 503 so the client backs off and
@@ -2053,7 +2123,7 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
             {
                 // Cooperative shutdown: don't make teardown wait for the whole
                 // window to transcode.
-                if(ws.stopping())
+                if(_stopping())
                     R_THROW(("fMP4 transcode aborted: server shutting down."));
                 if(conn.peer_closed())
                     R_THROW(("fMP4 transcode aborted: client disconnected."));
@@ -2202,9 +2272,7 @@ static string _h265_mse_codec_string(uint8_t profile_idc, uint8_t level_idc)
 // X-Revere-Frame-Duration-Ms carries the mean real frame period of the emitted
 // video frames (measured from the stored timestamps, not the SPS, which cameras
 // routinely get wrong), for the client's frame step.
-r_http::r_server_response r_ws::_get_passthrough_fmp4(const r_http::r_web_server<r_utils::r_socket>& ws,
-                                                      r_utils::r_socket& conn,
-                                                      std::map<std::string, std::string> args)
+r_http::r_server_response r_ws::_get_passthrough_fmp4(r_utils::r_socket_base& conn, std::map<std::string, std::string> args)
 {
     if(_fmp4_passthrough_active.fetch_add(1) >= MAX_FMP4_PASSTHROUGH)
     {
@@ -2431,7 +2499,7 @@ r_http::r_server_response r_ws::_get_passthrough_fmp4(const r_http::r_web_server
         // streams carry no B-frames, exactly as the export remux assumes).
         for(size_t fi = 0; fi < n_frames; ++fi)
         {
-            if(ws.stopping())
+            if(_stopping())
                 R_THROW(("fMP4 passthrough aborted: server shutting down."));
             if(conn.peer_closed())
                 R_THROW(("fMP4 passthrough aborted: client disconnected."));
@@ -2482,9 +2550,7 @@ r_http::r_server_response r_ws::_get_passthrough_fmp4(const r_http::r_web_server
     R_STHROW(r_http_500_exception, ("Failed to remux passthrough fmp4."));
 }
 
-r_http::r_server_response r_ws::_get_finalize_transcode_stream(const r_http::r_web_server<r_utils::r_socket>&,
-                                                                r_utils::r_socket&,
-                                                                const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_finalize_transcode_stream(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -2513,9 +2579,7 @@ r_http::r_server_response r_ws::_get_finalize_transcode_stream(const r_http::r_w
     R_STHROW(r_http_500_exception, ("Failed to finalize transcode stream."));
 }
 
-r_http::r_server_response r_ws::_get_transcode_export(const r_http::r_web_server<r_utils::r_socket>&,
-                                                       r_utils::r_socket&,
-                                                       const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_transcode_export(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -2816,9 +2880,7 @@ void r_ws::_transcode_export(export_job& job)
     }
 }
 
-r_http::r_server_response r_ws::_get_export_progress(const r_http::r_web_server<r_utils::r_socket>&,
-                                                       r_utils::r_socket&,
-                                                       const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_export_progress(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -2855,9 +2917,7 @@ r_http::r_server_response r_ws::_get_export_progress(const r_http::r_web_server<
     R_STHROW(r_http_500_exception, ("Failed to get export progress."));
 }
 
-r_http::r_server_response r_ws::_get_export_download(const r_http::r_web_server<r_utils::r_socket>&,
-                                                       r_utils::r_socket&,
-                                                       const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_export_download(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -2913,9 +2973,7 @@ r_http::r_server_response r_ws::_get_export_download(const r_http::r_web_server<
     R_STHROW(r_http_500_exception, ("Failed to download export."));
 }
 
-r_http::r_server_response r_ws::_get_camera_profiles(const r_http::r_web_server<r_utils::r_socket>&,
-                                                     r_utils::r_socket&,
-                                                     const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_camera_profiles(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -2967,9 +3025,7 @@ r_http::r_server_response r_ws::_get_camera_profiles(const r_http::r_web_server<
     R_STHROW(r_http_500_exception, ("Failed to get camera profiles."));
 }
 
-r_http::r_server_response r_ws::_get_measure_camera(const r_http::r_web_server<r_utils::r_socket>&,
-                                                    r_utils::r_socket&,
-                                                    const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_measure_camera(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3122,9 +3178,7 @@ void r_ws::_measure(const std::string& job_id)
     }
 }
 
-r_http::r_server_response r_ws::_get_measure_progress(const r_http::r_web_server<r_utils::r_socket>&,
-                                                      r_utils::r_socket&,
-                                                      const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_measure_progress(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3159,9 +3213,7 @@ r_http::r_server_response r_ws::_get_measure_progress(const r_http::r_web_server
     R_STHROW(r_http_500_exception, ("Failed to get measure progress."));
 }
 
-r_http::r_server_response r_ws::_get_measure_result(const r_http::r_web_server<r_utils::r_socket>&,
-                                                    r_utils::r_socket&,
-                                                    const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_measure_result(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3206,9 +3258,7 @@ r_http::r_server_response r_ws::_get_measure_result(const r_http::r_web_server<r
     R_STHROW(r_http_500_exception, ("Failed to get measure result."));
 }
 
-r_http::r_server_response r_ws::_post_configure_camera(const r_http::r_web_server<r_utils::r_socket>&,
-                                                       r_utils::r_socket&,
-                                                       const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_configure_camera(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3251,9 +3301,7 @@ r_http::r_server_response r_ws::_post_configure_camera(const r_http::r_web_serve
     R_STHROW(r_http_500_exception, ("Failed to configure camera."));
 }
 
-r_http::r_server_response r_ws::_post_remove_camera(const r_http::r_web_server<r_utils::r_socket>&,
-                                                    r_utils::r_socket&,
-                                                    const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_remove_camera(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3286,9 +3334,7 @@ r_http::r_server_response r_ws::_post_remove_camera(const r_http::r_web_server<r
     R_STHROW(r_http_500_exception, ("Failed to remove camera."));
 }
 
-r_http::r_server_response r_ws::_post_update_camera_properties(const r_http::r_web_server<r_utils::r_socket>&,
-                                                               r_utils::r_socket&,
-                                                               const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_update_camera_properties(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3329,9 +3375,7 @@ r_http::r_server_response r_ws::_post_update_camera_properties(const r_http::r_w
     R_STHROW(r_http_500_exception, ("Failed to update camera properties."));
 }
 
-r_http::r_server_response r_ws::_post_forget_camera(const r_http::r_web_server<r_utils::r_socket>&,
-                                                    r_utils::r_socket&,
-                                                    const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_forget_camera(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3371,9 +3415,7 @@ r_http::r_server_response r_ws::_post_forget_camera(const r_http::r_web_server<r
     R_STHROW(r_http_500_exception, ("Failed to forget camera."));
 }
 
-r_http::r_server_response r_ws::_post_add_rtsp_camera(const r_http::r_web_server<r_utils::r_socket>&,
-                                                      r_utils::r_socket&,
-                                                      const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_add_rtsp_camera(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3468,9 +3510,7 @@ bool r_ws::_start_storage_op(const string& kind, const r_camera& camera, functio
     return true;
 }
 
-r_http::r_server_response r_ws::_get_storage_info(const r_http::r_web_server<r_utils::r_socket>&,
-                                                  r_utils::r_socket&,
-                                                  const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_storage_info(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3519,9 +3559,7 @@ r_http::r_server_response r_ws::_get_storage_info(const r_http::r_web_server<r_u
     R_STHROW(r_http_500_exception, ("Failed to get storage info."));
 }
 
-r_http::r_server_response r_ws::_post_storage_move(const r_http::r_web_server<r_utils::r_socket>&,
-                                                   r_utils::r_socket&,
-                                                   const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_storage_move(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3574,9 +3612,7 @@ r_http::r_server_response r_ws::_post_storage_move(const r_http::r_web_server<r_
     R_STHROW(r_http_500_exception, ("Failed to start moving storage."));
 }
 
-r_http::r_server_response r_ws::_post_storage_change_retention(const r_http::r_web_server<r_utils::r_socket>&,
-                                                               r_utils::r_socket&,
-                                                               const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_storage_change_retention(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3621,9 +3657,7 @@ r_http::r_server_response r_ws::_post_storage_change_retention(const r_http::r_w
     R_STHROW(r_http_500_exception, ("Failed to start changing retention."));
 }
 
-r_http::r_server_response r_ws::_get_storage_op(const r_http::r_web_server<r_utils::r_socket>&,
-                                                r_utils::r_socket&,
-                                                const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_storage_op(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3704,9 +3738,7 @@ static string _qr_svg(const string& text)
 // lines are the plugin's status message lines as it gives them (text, with url
 // or copy; tiles; qr), a qr line also carrying its code drawn as "qr_svg".
 // Authenticated, unlike /version: a plugin's lines can hold a pairing code.
-r_http::r_server_response r_ws::_get_system_plugins(const r_http::r_web_server<r_utils::r_socket>&,
-                                                    r_utils::r_socket&,
-                                                    const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_system_plugins(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3765,9 +3797,7 @@ r_http::r_server_response r_ws::_get_system_plugins(const r_http::r_web_server<r
     R_STHROW(r_http_500_exception, ("Failed to get system plugins."));
 }
 
-r_http::r_server_response r_ws::_post_system_plugin_enabled(const r_http::r_web_server<r_utils::r_socket>&,
-                                                            r_utils::r_socket&,
-                                                            const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_system_plugin_enabled(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3812,9 +3842,7 @@ static json _keep_awake_json(const r_keep_awake_status& s)
 // {"enabled", "on_battery", "power": "ac"|"battery"|"unknown", "wanted",
 // "held", "problem", "unavailable", "events": [{"what", "start_ms", "end_ms"}]
 // newest first}.
-r_http::r_server_response r_ws::_get_keep_awake(const r_http::r_web_server<r_utils::r_socket>&,
-                                                r_utils::r_socket&,
-                                                const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_get_keep_awake(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3830,9 +3858,7 @@ r_http::r_server_response r_ws::_get_keep_awake(const r_http::r_web_server<r_uti
 }
 
 // Either or both of {"enabled": bool, "on_battery": bool}; replies as GET.
-r_http::r_server_response r_ws::_post_keep_awake(const r_http::r_web_server<r_utils::r_socket>&,
-                                                 r_utils::r_socket&,
-                                                 const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_keep_awake(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3860,9 +3886,7 @@ r_http::r_server_response r_ws::_post_keep_awake(const r_http::r_web_server<r_ut
     R_STHROW(r_http_500_exception, ("Failed to change the keep awake setting."));
 }
 
-r_http::r_server_response r_ws::_post_storage_op_cancel(const r_http::r_web_server<r_utils::r_socket>&,
-                                                        r_utils::r_socket&,
-                                                        const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_storage_op_cancel(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
 
@@ -3971,9 +3995,7 @@ void r_ws::_require_auth(const r_http::r_server_request& request)
         R_STHROW(r_http_401_exception, ("Unauthorized."));
 }
 
-r_http::r_server_response r_ws::_get_auth_status(const r_http::r_web_server<r_utils::r_socket>&,
-                                                 r_utils::r_socket&,
-                                                 const r_http::r_server_request&)
+r_http::r_server_response r_ws::_get_auth_status(r_utils::r_socket_base&, const r_http::r_server_request&)
 {
     // Unauthenticated on purpose: lets the web UI decide between a first-run
     // "create password" screen and a "login" screen. Only leaks whether a
@@ -3987,9 +4009,7 @@ r_http::r_server_response r_ws::_get_auth_status(const r_http::r_web_server<r_ut
     return response;
 }
 
-r_http::r_server_response r_ws::_post_login(const r_http::r_web_server<r_utils::r_socket>&,
-                                            r_utils::r_socket&,
-                                            const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_login(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -4044,9 +4064,7 @@ r_http::r_server_response r_ws::_post_login(const r_http::r_web_server<r_utils::
     R_STHROW(r_http_500_exception, ("Login failed."));
 }
 
-r_http::r_server_response r_ws::_post_set_password(const r_http::r_web_server<r_utils::r_socket>&,
-                                                   r_utils::r_socket&,
-                                                   const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_set_password(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     try
     {
@@ -4095,9 +4113,7 @@ r_http::r_server_response r_ws::_post_set_password(const r_http::r_web_server<r_
     R_STHROW(r_http_500_exception, ("Failed to set the local web password."));
 }
 
-r_server_response r_ws::_post_mcp(const r_web_server<r_socket>&,
-                                   r_socket&,
-                                   const r_server_request& request)
+r_server_response r_ws::_post_mcp(r_socket_base&, const r_server_request& request)
 {
     json id = nullptr;
     try

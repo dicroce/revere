@@ -37,6 +37,7 @@ public:
 
     R_API virtual bool wait_till_recv_wont_block(uint64_t& millis) const override;
     R_API virtual bool wait_till_send_wont_block(uint64_t& millis) const override;
+    R_API virtual bool peer_closed() const override;
 
     R_API void set_io_timeout( uint64_t ioTimeOut ) { _ioTimeOut = ioTimeOut; }
 
