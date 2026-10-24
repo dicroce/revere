@@ -4,10 +4,13 @@ all of Vision's icons, in the same style.
 
 The style is build-icons.sh's desktop tile: a square, full-bleed tile with the mark
 (revere-mark-compact.svg: outline 12->52 with a 3.5 stroke, stamp 27->37 on the 64
-grid) spanning half the tile. 16/32/48 are drawn on the pixel grid with the same
-coordinates build-icons.sh uses; 256 is rendered from the geometry. Revere is the
-white mark on ink; Vision is the inverse (ink mark on paper) so the two apps are
-told apart in the taskbar.
+grid) spanning half the tile, white on ink. 16/32/48 are drawn on the pixel grid with
+the same coordinates build-icons.sh uses; 256 is rendered from the geometry.
+
+Vision has the same tile and outline with a play triangle as its stamp, so the two
+apps are told apart by shape: (27.5, 24.5), (41.5, 32), (27.5, 39.5) on the 64 grid,
+nudged right of centre so it looks centred. At 16/32/48 the triangle is placed by
+hand on the pixel grid (PLAY_STAMPS) so its edges step cleanly.
 
 Pure Python (no rsvg/ImageMagick needed). Writes:
   apps/revere/include/R_32x32.h      Revere window (title bar) icon
@@ -32,6 +35,17 @@ PIXEL_TILES = {
     32: (8, 23, 2, 14, 17),
     48: (12, 35, 2, 21, 26),
 }
+# size -> (first row, first column, run length per row): Vision's play stamp on the
+# pixel grid. Each row is a run of pixels from the first column; the runs grow by
+# 2 per row to the middle (a clean 1:2 stair edge, close to the geometry's slope),
+# centred vertically like the square stamp and, at 32 and 48, pushed right like the
+# geometry (16 has no room to spare).
+PLAY_STAMPS = {
+    16: (6, 7, (1, 2, 2, 1)),
+    32: (13, 14, (1, 3, 5, 5, 3, 1)),
+    48: (20, 22, (1, 3, 5, 7, 7, 5, 3, 1)),
+}
+PLAY_TRIANGLE = ((27.5, 24.5), (41.5, 32.0), (27.5, 39.5))  # on the 64 grid
 SMOOTH_SIZE = 256
 SS = 8  # supersamples per axis for the smooth size
 
@@ -39,21 +53,34 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 
 
-def pixel_tile(size, tile, mark):
+def in_play_stamp(size, x, y):
+    top, left, runs = PLAY_STAMPS[size]
+    return 0 <= y - top < len(runs) and left <= x < left + runs[y - top]
+
+
+def pixel_tile(size, tile, mark, play=False):
     a, b, w, c, d = PIXEL_TILES[size]
     rows = []
     for y in range(size):
         row = bytearray()
         for x in range(size):
             in_outline = a <= x <= b and a <= y <= b and not (a + w <= x <= b - w and a + w <= y <= b - w)
-            in_stamp = c <= x <= d and c <= y <= d
+            in_stamp = in_play_stamp(size, x, y) if play else (c <= x <= d and c <= y <= d)
             rgb = mark if (in_outline or in_stamp) else tile
             row += bytes((*rgb, 255))
         rows.append(bytes(row))
     return rows
 
 
-def smooth_tile(size, tile, mark):
+def in_triangle(points, x, y):
+    (x0, y0), (x1, y1), (x2, y2) = points
+    d0 = (x1 - x0) * (y - y0) - (y1 - y0) * (x - x0)
+    d1 = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)
+    d2 = (x0 - x2) * (y - y2) - (y0 - y2) * (x - x2)
+    return (d0 >= 0 and d1 >= 0 and d2 >= 0) or (d0 <= 0 and d1 <= 0 and d2 <= 0)
+
+
+def smooth_tile(size, tile, mark, play=False):
     # build-icons.sh: the outline's outer edge (10.25 -> 53.75, 43.5 units) spans half the tile.
     s = 0.5 * size / 43.5
     t = size / 2.0 - 32.0 * s
@@ -64,6 +91,7 @@ def smooth_tile(size, tile, mark):
     o0, o1 = g(10.25), g(53.75)
     i0, i1 = g(13.75), g(50.25)
     s0, s1 = g(27.0), g(37.0)
+    tri = tuple((g(x), g(y)) for x, y in PLAY_TRIANGLE)
     rows = []
     for py in range(size):
         row = bytearray()
@@ -74,7 +102,8 @@ def smooth_tile(size, tile, mark):
                 for sx in range(SS):
                     x = px + (sx + 0.5) / SS
                     in_outline = o0 <= x <= o1 and o0 <= y <= o1 and not (i0 <= x <= i1 and i0 <= y <= i1)
-                    if in_outline or (s0 <= x <= s1 and s0 <= y <= s1):
+                    in_stamp = in_triangle(tri, x, y) if play else (s0 <= x <= s1 and s0 <= y <= s1)
+                    if in_outline or in_stamp:
                         hits += 1
             m = hits / (SS * SS)
             row += bytes((*(round(tile[i] * (1 - m) + mark[i] * m) for i in range(3)), 255))
@@ -125,20 +154,20 @@ def c_array(name, data):
     return "\n".join(lines) + "\n"
 
 
-def write_header(path, name, size, tile, mark):
+def write_header(path, name, size, tile, mark, play=False):
     with open(path, "w", newline="\n") as f:
-        f.write(c_array(name, png_bytes(size, pixel_tile(size, tile, mark))))
+        f.write(c_array(name, png_bytes(size, pixel_tile(size, tile, mark, play))))
     print("wrote", os.path.relpath(path, ROOT))
 
 
 if __name__ == "__main__":
     write_header(os.path.join(ROOT, "apps/revere/include/R_32x32.h"), "R_32x32_png", 32, INK, PAPER)
 
-    images = [(s, pixel_tile(s, PAPER, INK)) for s in sorted(PIXEL_TILES)]
-    images.append((SMOOTH_SIZE, smooth_tile(SMOOTH_SIZE, PAPER, INK)))
+    images = [(s, pixel_tile(s, INK, PAPER, play=True)) for s in sorted(PIXEL_TILES)]
+    images.append((SMOOTH_SIZE, smooth_tile(SMOOTH_SIZE, INK, PAPER, play=True)))
     with open(os.path.join(ROOT, "apps/vision/V.ico"), "wb") as f:
         f.write(ico_bytes(images))
     with open(os.path.join(ROOT, "apps/vision/V.png"), "wb") as f:
         f.write(png_bytes(SMOOTH_SIZE, images[-1][1]))
     print("wrote apps/vision/V.ico, apps/vision/V.png")
-    write_header(os.path.join(ROOT, "apps/vision/include/V_32x32.h"), "V_32x32_png", 32, PAPER, INK)
+    write_header(os.path.join(ROOT, "apps/vision/include/V_32x32.h"), "V_32x32_png", 32, INK, PAPER, play=True)
