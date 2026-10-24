@@ -4,6 +4,7 @@
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
+#include <cstdlib>
 #include <filesystem>
 
 using namespace r_vss;
@@ -29,6 +30,33 @@ void r_system_plugin_host::_api_result_bridge(const char* name, const char* json
     reinterpret_cast<r_system_plugin_host*>(user_data)->_on_api_result(name, json);
 }
 
+r_system_plugin_dirs r_vss::system_plugin_dirs(const std::string& exe_dir,
+                                                const std::string& top_dir,
+                                                const char* snap,
+                                                const char* snap_user_common)
+{
+    r_system_plugin_dirs dirs;
+
+    // Primary location: alongside the executable (inside $SNAP under the Snap).
+    dirs.load.push_back(exe_dir + PATH_SLASH + "system_plugins");
+
+    const std::string user_dir = top_dir + PATH_SLASH + "system_plugins";
+    if(snap != nullptr && snap_user_common != nullptr && snap_user_common[0] != '\0')
+    {
+        // Under the Snap: plugins installed for this user, where the Snap may map code.
+        dirs.load.push_back(std::string(snap_user_common) + PATH_SLASH + "system_plugins");
+        dirs.unloadable = user_dir;
+    }
+    else
+    {
+        // User data directory for downloaded plugins
+        // (Documents/revere/revere on Linux/macOS, LocalAppData/Revere on Windows)
+        dirs.load.push_back(user_dir);
+    }
+
+    return dirs;
+}
+
 r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
     : _top_dir(top_dir)
 {
@@ -45,15 +73,24 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
         const std::string plugin_ext = ".so";
 #endif
 
-        // Build list of plugin directories to search
-        std::vector<std::string> plugin_dirs;
+        auto dirs = system_plugin_dirs(r_fs::working_directory(), _top_dir, getenv("SNAP"), getenv("SNAP_USER_COMMON"));
+        const auto& plugin_dirs = dirs.load;
 
-        // Primary location: alongside the executable
-        plugin_dirs.push_back(r_fs::working_directory() + PATH_SLASH + "system_plugins");
-
-        // Also check user data directory for downloaded plugins
-        // (Documents/revere/revere on Linux/macOS, LocalAppData/Revere on Windows)
-        plugin_dirs.push_back(_top_dir + PATH_SLASH + "system_plugins");
+        // A plugin left where this install can't load it (installed for the
+        // Snap before it had a folder of its own): say where it belongs.
+        if (!dirs.unloadable.empty() && r_fs::is_dir(dirs.unloadable))
+        {
+            for (const auto& entry : fs::directory_iterator(dirs.unloadable))
+            {
+                std::string filename = entry.path().filename().string();
+                if (entry.is_regular_file() && filename.size() > plugin_ext.size() &&
+                    filename.substr(filename.size() - plugin_ext.size()) == plugin_ext)
+                {
+                    R_LOG_ERROR("System plugin %s is in %s, where the Snap can't load it. Run its installer again, or move it to %s.",
+                        filename.c_str(), dirs.unloadable.c_str(), dirs.load.back().c_str());
+                }
+            }
+        }
 
         for (const auto& plugin_dir : plugin_dirs)
         {

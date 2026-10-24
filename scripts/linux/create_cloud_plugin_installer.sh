@@ -54,18 +54,37 @@ cat > "$OUTPUT_FILE" << 'INSTALLER_HEADER'
 # This is a self-extracting installer - the .so is appended after the __PAYLOAD__ marker
 #
 # Usage: ./revere-<version>-linux-cloud.run [data-dir]
-#   data-dir defaults to ~/Documents/revere/revere (the desktop app's). For
-#   Revere running as a service: sudo ./revere-<version>-linux-cloud.run /var/lib/revere
+#   With no data-dir it installs for the desktop app: into the Revere Snap's
+#   own folder (~/snap/revere/common/system_plugins) when Revere is installed
+#   as a Snap, else into ~/Documents/revere/revere. For Revere running as a
+#   service: sudo ./revere-<version>-linux-cloud.run /var/lib/revere
 
 set -e
 
-DATA_DIR="${1:-$HOME/Documents/revere/revere}"
-PLUGIN_DIR="$DATA_DIR/system_plugins"
 PLUGIN_NAME="revere_cloud_system_plugin.so"
+DESKTOP_DATA_DIR="$HOME/Documents/revere/revere"
+SNAP_INSTALL=0
+
+if [ -n "${1:-}" ]; then
+    DATA_DIR="$1"
+elif snap list revere >/dev/null 2>&1 || [ -d "$HOME/snap/revere" ]; then
+    # The Snap can read ~/Documents but may only load code from its own
+    # folders under ~/snap/revere, so its plugins live there.
+    SNAP_INSTALL=1
+    DATA_DIR="$HOME/snap/revere/common"
+else
+    DATA_DIR="$DESKTOP_DATA_DIR"
+fi
+PLUGIN_DIR="$DATA_DIR/system_plugins"
 
 echo "Revere Cloud Plugin Installer"
 echo "=============================="
 echo ""
+if [ "$SNAP_INSTALL" -eq 1 ]; then
+    echo "Revere is installed as a Snap: installing into the Snap's plugin folder."
+    echo "(To install somewhere else, pass the data folder: $0 <data-dir>)"
+    echo ""
+fi
 
 # Check if revere directory exists
 if [ ! -d "$DATA_DIR" ]; then
@@ -85,6 +104,13 @@ tail -n +"$ARCHIVE_START" "$0" > "$PLUGIN_DIR/$PLUGIN_NAME"
 chmod 755 "$PLUGIN_DIR/$PLUGIN_NAME"
 # Installed as root into a service's data dir: give it to the service's user.
 chown --reference="$DATA_DIR" "$PLUGIN_DIR" "$PLUGIN_DIR/$PLUGIN_NAME" 2>/dev/null || true
+
+# A copy from an earlier installer, which the Snap can't load: say it can go.
+if [ "$SNAP_INSTALL" -eq 1 ] && [ -f "$DESKTOP_DATA_DIR/system_plugins/$PLUGIN_NAME" ]; then
+    echo ""
+    echo "Note: $DESKTOP_DATA_DIR/system_plugins/$PLUGIN_NAME is an older copy"
+    echo "the Snap can't load. You can delete it."
+fi
 
 echo ""
 echo "Installation complete!"

@@ -41,59 +41,9 @@ cd "$BUILD_DIR"
 cmake -DCMAKE_BUILD_TYPE=Release -DEXTERNAL_PLUGIN_REPOS=../../revere_cloud ..
 cmake --build . -j"$(nproc)"
 
-PLUGIN_PATH="$BUILD_DIR/system_plugins/revere_cloud_system_plugin.so"
-INSTALLER_FILE="$BUILD_DIR/revere-${VERSION}-linux-cloud.run"
-
-if [ ! -f "$PLUGIN_PATH" ]; then
-    echo "Error: Plugin not found at $PLUGIN_PATH" >&2
-    exit 1
-fi
-
-echo ""
-echo "Creating cloud plugin installer for version: $VERSION"
-echo "Plugin: $PLUGIN_PATH"
-echo "Output: $INSTALLER_FILE"
-
-cat > "$INSTALLER_FILE" << 'INSTALLER_HEADER'
-#!/bin/bash
-# Revere Cloud Plugin Installer
-# This is a self-extracting installer - the .so is appended after the __PAYLOAD__ marker
-
-set -e
-
-PLUGIN_DIR="$HOME/Documents/revere/revere/system_plugins"
-PLUGIN_NAME="revere_cloud_system_plugin.so"
-
-echo "Revere Cloud Plugin Installer"
-echo "=============================="
-echo ""
-
-if [ ! -d "$HOME/Documents/revere/revere" ]; then
-    echo "Error: Revere does not appear to be installed."
-    echo "Please run Revere at least once before installing the plugin."
-    exit 1
-fi
-
-mkdir -p "$PLUGIN_DIR"
-
-ARCHIVE_START=$(awk '/^__PAYLOAD__$/{print NR + 1; exit 0; }' "$0")
-
-echo "Installing plugin to: $PLUGIN_DIR/$PLUGIN_NAME"
-tail -n +"$ARCHIVE_START" "$0" > "$PLUGIN_DIR/$PLUGIN_NAME"
-chmod 755 "$PLUGIN_DIR/$PLUGIN_NAME"
-
-echo ""
-echo "Installation complete!"
-echo "Restart Revere to load the cloud plugin."
-
-exit 0
-
-__PAYLOAD__
-INSTALLER_HEADER
-
-cat "$PLUGIN_PATH" >> "$INSTALLER_FILE"
-chmod +x "$INSTALLER_FILE"
-
-echo ""
-echo "Installer created: $INSTALLER_FILE"
-echo "Size: $(du -h "$INSTALLER_FILE" | cut -f1)"
+# The cloud plugin installer, the same one the release workflow builds (it
+# installs into the Snap's own plugin folder when Revere is a Snap).
+VERSION="$VERSION" \
+REVERE_BUILD_DIR="$BUILD_DIR" \
+REVERE_RELEASES_DIR="$BUILD_DIR" \
+bash "$SCRIPT_DIR/create_cloud_plugin_installer.sh"
