@@ -57,6 +57,10 @@ struct control_bar_state
     int export_percent_complete {0};
     r_utils::r_nullable<std::chrono::system_clock::time_point> scrollback_limit;
 
+    // Set by the Snap button (and the S key); the main loop saves the selected
+    // tile's frame and clears it.
+    bool snapshot_requested {false};
+
     // Set the number of minutes in the timerange.
     // This is centered around the current playhead position.
     // Get the current playhead position in time, and set the playhead to it after the range is set if it is within the new range.

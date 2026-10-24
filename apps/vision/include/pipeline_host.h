@@ -6,6 +6,7 @@
 #include <string>
 #include <map>
 #include <deque>
+#include <set>
 #include <vector>
 #include <memory>
 #include <mutex>
@@ -123,6 +124,14 @@ struct stream_presentation final
 
 class pipeline_state;
 
+// What a tile should say about its stream when no picture is moving.
+enum class stream_status
+{
+    none,        // no stream assigned, or frames flowing normally
+    connecting,  // stream assigned, no frame has arrived yet
+    offline      // the dead check saw timestamps stop; reconnect pending
+};
+
 class pipeline_host final
 {
 public:
@@ -181,6 +190,13 @@ public:
 
     bool playing(const std::string& stream_name) const;
     std::chrono::system_clock::time_point last_control_bar_pos(const std::string& stream_name) const;
+
+    // Badge state for a tile (see stream_status). Cheap; called per tile per frame.
+    stream_status get_stream_status(const std::string& name) const;
+
+    // The pixels most recently uploaded to this stream's texture (for snapshots).
+    // UI thread only. False when the stream has shown no frame yet.
+    bool get_last_frame(const std::string& name, std::shared_ptr<std::vector<uint8_t>>& buffer, bool& nv12, uint16_t& w, uint16_t& h, uint16_t& original_h) const;
 
     // Returns true if new frames have arrived since last call (and clears the flag)
     bool consume_new_frames_flag()
@@ -246,6 +262,10 @@ private:
     std::map<std::string, std::shared_ptr<render_context>> _render_contexts;
     std::map<std::string, stream_presentation> _presentations;
     std::map<std::string, std::string> _name_remap; // pipeline's internal name → current layout name
+
+    // Layout names whose pipeline the dead check tore down for a stall and
+    // which haven't posted a frame since (drives the "Offline" tile badge).
+    std::set<std::string> _stalled;
 
     // Playback tracking for relative timestamp calculation
     std::map<std::string, std::chrono::system_clock::time_point> _playback_start_positions;

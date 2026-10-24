@@ -716,6 +716,57 @@ int main(int argc, char** argv)
         r_ui_utils::texture_loader tl;
         tl.set_renderer(renderer);
 
+        // Borderless fullscreen (F11 / F / View menu). While on, the menu bar
+        // and camera sidebar are hidden so the video gets the whole display.
+        bool fullscreen = false;
+        auto toggle_fullscreen = [&]() {
+            bool want = !fullscreen;
+            if(SDL_SetWindowFullscreen(window, want ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) != 0)
+            {
+                R_LOG_ERROR("SDL_SetWindowFullscreen failed: %s", SDL_GetError());
+                return;
+            }
+            fullscreen = want;
+        };
+
+        // Mute (M) remembers the level it replaced, so unmute goes back to it.
+        float unmuted_volume = 1.0f;
+        auto toggle_mute = [&]() {
+            if(ui_state.mcs.obos.cbs.volume_gain > 0.0f)
+            {
+                unmuted_volume = ui_state.mcs.obos.cbs.volume_gain;
+                ui_state.mcs.obos.cbs.volume_gain = 0.0f;
+            }
+            else
+                ui_state.mcs.obos.cbs.volume_gain = unmuted_volume;
+        };
+
+        // Short-lived status bar message (e.g. "Saved <snapshot path>"); it
+        // overrides the connection status text until it expires.
+        std::string transient_status;
+        auto transient_status_until = chrono::steady_clock::time_point{};
+        auto set_transient_status = [&](const std::string& msg) {
+            transient_status = msg;
+            transient_status_until = chrono::steady_clock::now() + chrono::seconds(5);
+        };
+
+        // Control bar callbacks, hoisted so the keyboard shortcuts can invoke
+        // exactly what the buttons do.
+        auto control_bar_slider_cb = [&ph, &ui_state](const std::string& name, const std::chrono::system_clock::time_point& pos) {
+            if(ui_state.mcs.sync_scrub)
+                ph.sync_control_bar_cb(pos);
+            else
+                ph.control_bar_cb(name, pos);
+        };
+        auto control_bar_button_cb = [&ph, &ui_state](const std::string& name, control_bar_button_type type) {
+            if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_PLAY)
+                ph.sync_play_cb(ui_state.mcs.obos.cbs.get_range().second);
+            else if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_LIVE)
+                ph.sync_live_cb();
+            else
+                ph.control_bar_button_cb(name, type);
+        };
+
         // Main loop
         while(!close_requested)
         {
@@ -820,17 +871,81 @@ int main(int argc, char** argv)
 
             ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_24].inter_tight_regular);
 
-            auto client_top = vision::main_menu(
-                [&close_requested](){
-                    close_requested = true;
-                },
-                [&configure_wizard](){
-                    configure_wizard.next("configure");
-                },
-                [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_ONE_BY_ONE);},
-                [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_TWO_BY_TWO);},
-                [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_FOUR_BY_FOUR);}
-            );
+            // Keyboard shortcuts for the main window. Skipped while a text field
+            // has focus or a modal/popup is open, so typing never drives playback.
+            {
+                bool popup_open = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+                if(!ImGui::GetIO().WantTextInput && !popup_open)
+                {
+                    auto& cbs = ui_state.mcs.obos.cbs;
+                    const auto sel = ui_state.mcs.selected_stream_name;
+
+                    if(ImGui::IsKeyPressed(ImGuiKey_F11, false) || ImGui::IsKeyPressed(ImGuiKey_F, false))
+                        toggle_fullscreen();
+                    else if(fullscreen && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                        toggle_fullscreen();
+
+                    if(ImGui::IsKeyPressed(ImGuiKey_S, false))
+                        cbs.snapshot_requested = true;
+
+                    if(ImGui::IsKeyPressed(ImGuiKey_M, false))
+                        toggle_mute();
+
+                    if(ImGui::IsKeyPressed(ImGuiKey_L, false))
+                    {
+                        // Same as the Go live button.
+                        cbs.live();
+                        control_bar_button_cb(sel, CONTROL_BAR_BUTTON_LIVE);
+                        ph.control_bar_update_data_cb(sel, cbs);
+                    }
+
+                    if(ImGui::IsKeyPressed(ImGuiKey_Space, false))
+                    {
+                        // Same as the Play button, which only exists when the
+                        // playhead is in the past and the stream is stopped.
+                        // While playing, Space is a no-op here (no pause yet).
+                        bool is_at_live = (cbs.playhead_pos >= timeline_constants::PLAYHEAD_MAX_POSITION);
+                        if(!is_at_live && !ph.playing(sel))
+                            control_bar_button_cb(sel, CONTROL_BAR_BUTTON_PLAY);
+                    }
+
+                    // Left/Right pan the timeline like the < > buttons.
+                    auto jump_minutes = std::chrono::minutes((std::max)(1u, (unsigned)cbs.get_timerange_minutes() / 5));
+                    if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
+                    {
+                        cbs.backward(jump_minutes);
+                        ph.control_bar_update_data_cb(sel, cbs);
+                    }
+                    if(ImGui::IsKeyPressed(ImGuiKey_RightArrow))
+                    {
+                        cbs.forward(jump_minutes);
+                        ph.control_bar_update_data_cb(sel, cbs);
+                    }
+                }
+            }
+
+            // No menu bar in fullscreen; F11 / F / Esc get back out.
+            uint16_t client_top = 0;
+            if(!fullscreen)
+            {
+                client_top = vision::main_menu(
+                    [&close_requested](){
+                        close_requested = true;
+                    },
+                    [&configure_wizard](){
+                        configure_wizard.next("configure");
+                    },
+                    [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_ONE_BY_ONE);},
+                    [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_TWO_BY_TWO);},
+                    [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_FOUR_BY_FOUR);},
+                    toggle_fullscreen,
+                    fullscreen
+                );
+            }
+
+            auto status_text = ui_state.current_revere_update.status_text;
+            if(chrono::steady_clock::now() < transient_status_until)
+                status_text.set_value(transient_status);
 
             auto window_size = ImGui::GetIO().DisplaySize;
             auto window_width = (uint16_t)window_size.x;
@@ -1074,7 +1189,11 @@ int main(int argc, char** argv)
                                 ImGui::EndDragDropTarget();
                             }
 
-                            if(maybe_rc.is_null())
+                            auto status = ph.get_stream_status(name);
+
+                            // Empty slot (nothing assigned): invite a drop. A slot
+                            // that is assigned but silent gets the badge below instead.
+                            if(maybe_rc.is_null() && status == stream_status::none)
                             {
                                 auto label_size = ImGui::CalcTextSize("Drag camera here...");
                                 ImGui::PushStyleColor(ImGuiCol_Text, timeline_constants::colors::PLACEHOLDER_TEXT);
@@ -1082,30 +1201,85 @@ int main(int argc, char** argv)
                                 ImGui::Text("Drag camera here...");
                                 ImGui::PopStyleColor();
                             }
+
+                            // Per-tile status badge, top-left corner: "Connecting..."
+                            // before the first frame, "Offline" once the dead check
+                            // has seen the stream stall. Gone while frames flow.
+                            if(status != stream_status::none)
+                            {
+                                const bool offline = (status == stream_status::offline);
+                                const char* badge = offline ? "Offline" : "Connecting...";
+                                ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_16].inter_tight_semibold);
+                                auto badge_size = ImGui::CalcTextSize(badge);
+                                ImVec2 wp = ImGui::GetWindowPos();
+                                ImVec2 p0(wp.x + 10.0f, wp.y + 10.0f);
+                                ImVec2 p1(p0.x + badge_size.x + 16.0f, p0.y + badge_size.y + 8.0f);
+                                ImDrawList* badge_dl = ImGui::GetWindowDrawList();
+                                badge_dl->AddRectFilled(p0, p1, ImGui::GetColorU32(r_ui_utils::theme::surface_overlay), 4.0f);
+                                badge_dl->AddCircleFilled(ImVec2(p0.x + 8.0f, (p0.y + p1.y) * 0.5f), 3.0f,
+                                    ImGui::GetColorU32(offline ? r_ui_utils::theme::status_danger_dot : r_ui_utils::theme::status_warning_dot));
+                                badge_dl->AddText(ImVec2(p0.x + 16.0f, p0.y + 4.0f),
+                                    ImGui::GetColorU32(offline ? r_ui_utils::theme::status_danger_text : r_ui_utils::theme::status_warning_text), badge);
+                                ImGui::PopFont();
+                            }
                         },
-                        [&ph, &ui_state](const std::string& name, const std::chrono::system_clock::time_point& pos) {
-                            if(ui_state.mcs.sync_scrub)
-                                ph.sync_control_bar_cb(pos);
-                            else
-                                ph.control_bar_cb(name, pos);
-                        },
-                        [&ph, &ui_state](const std::string& name, control_bar_button_type type) {
-                            if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_PLAY)
-                                ph.sync_play_cb(ui_state.mcs.obos.cbs.get_range().second);
-                            else if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_LIVE)
-                                ph.sync_live_cb();
-                            else
-                                ph.control_bar_button_cb(name, type);
-                        },
+                        control_bar_slider_cb,
+                        control_bar_button_cb,
                         std::bind(&pipeline_host::control_bar_update_data_cb, &ph, std::placeholders::_1, std::placeholders::_2),
                         std::bind(&pipeline_host::control_bar_export_cb, &ph, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4),
                         ph.playing(ui_state.mcs.selected_stream_name)
                     );
                 },
-                ui_state.current_revere_update.status_text
+                status_text,
+                fullscreen
             );
 
             ph.load_video_textures();
+
+            // Snapshot (Snap button or S): save the selected tile's last presented
+            // frame as PNG under <data>/snapshots and say where it went.
+            if(ui_state.mcs.obos.cbs.snapshot_requested)
+            {
+                ui_state.mcs.obos.cbs.snapshot_requested = false;
+
+                const auto& sel = ui_state.mcs.selected_stream_name;
+                std::shared_ptr<std::vector<uint8_t>> frame_buf;
+                bool frame_nv12 = false;
+                uint16_t frame_w = 0, frame_h = 0, frame_orig_h = 0;
+
+                if(!ph.get_last_frame(sel, frame_buf, frame_nv12, frame_w, frame_h, frame_orig_h))
+                    set_transient_status("Snapshot: the selected camera has no frame yet.");
+                else
+                {
+                    // Name the file after the camera's label (fall back to its id).
+                    std::string camera_label = sel;
+                    auto sel_si = cfg_state.get_stream_info(sel);
+                    if(!sel_si.is_null())
+                    {
+                        camera_label = sel_si.value().camera_id;
+                        for(const auto& c : ui_state.current_revere_update.cameras)
+                        {
+                            if(c.camera_id == sel_si.value().camera_id)
+                            {
+                                camera_label = c.label;
+                                break;
+                            }
+                        }
+                    }
+
+                    try
+                    {
+                        auto path = vision::save_snapshot_png(camera_label, frame_buf->data(), frame_nv12, frame_w, frame_h, frame_orig_h);
+                        R_LOG_INFO("Snapshot saved: %s", path.c_str());
+                        set_transient_status("Saved " + path);
+                    }
+                    catch(const std::exception& e)
+                    {
+                        R_LOG_ERROR("Snapshot failed: %s", e.what());
+                        set_transient_status(std::string("Snapshot failed: ") + e.what());
+                    }
+                }
+            }
 
             {
                 static string last_audio_stream;

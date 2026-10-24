@@ -158,6 +158,8 @@ void pipeline_host::change_layout(int window, layout l)
         for(auto& si : sis)
             _stream_infos[si.name] = si;
 
+        _stalled.clear();  // keyed by old layout names; tiles show Connecting until frames flow
+
         _pipes = std::move(new_pipes);
         _render_contexts = std::move(new_rc);
         _presentations = std::move(new_pres);
@@ -225,6 +227,7 @@ void pipeline_host::disconnect_stream(int window, const string& name)
 
         _presentations.erase(name);
         _stream_infos.erase(name);
+        _stalled.erase(name);
     }  // Lock is released here
 
     // Destroy the old pipeline outside the critical section
@@ -299,6 +302,9 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
     // Translate the pipeline's internal name to the current layout name if it was reused.
     auto remap_it = _name_remap.find(name);
     const string& effective_name = (remap_it != end(_name_remap)) ? remap_it->second : name;
+
+    // A frame means the stream is back (or up for the first time): drop the Offline badge.
+    _stalled.erase(effective_name);
 
     // Debug: Log frame reception with pixel sample
     static int frame_log_count = 0;
@@ -740,6 +746,11 @@ bool pipeline_host::load_video_textures()
             rc->h = u.f.h;
             rc->nv12 = u.f.nv12;
             rc->pts = u.f.pts;
+            rc->last_frame = u.f.buffer;
+            rc->last_frame_nv12 = u.f.nv12;
+            rc->last_frame_w = u.f.w;
+            rc->last_frame_h = u.f.h;
+            rc->last_frame_original_h = u.f.original_h;
             new_rcs.emplace_back(u.name, rc);
         }
         else if(u.rc->tex)
@@ -749,6 +760,11 @@ bool pipeline_host::load_video_textures()
             else
                 u.rc->tex->update_rgb(u.f.buffer->data(), u.f.w, u.f.h);
             u.rc->pts = u.f.pts;
+            u.rc->last_frame = u.f.buffer;
+            u.rc->last_frame_nv12 = u.f.nv12;
+            u.rc->last_frame_w = u.f.w;
+            u.rc->last_frame_h = u.f.h;
+            u.rc->last_frame_original_h = u.f.original_h;
         }
     }
 
@@ -1048,6 +1064,46 @@ std::chrono::system_clock::time_point pipeline_host::last_control_bar_pos(const 
     return std::chrono::system_clock::time_point{};
 }
 
+stream_status pipeline_host::get_stream_status(const std::string& name) const
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+
+    if(_stream_infos.find(name) == end(_stream_infos))
+        return stream_status::none;
+
+    if(_stalled.count(name) > 0)
+        return stream_status::offline;
+
+    // No render context yet means no frame has ever been presented for this tile.
+    if(_render_contexts.find(name) == end(_render_contexts))
+        return stream_status::connecting;
+
+    return stream_status::none;
+}
+
+bool pipeline_host::get_last_frame(const std::string& name, std::shared_ptr<std::vector<uint8_t>>& buffer, bool& nv12, uint16_t& w, uint16_t& h, uint16_t& original_h) const
+{
+    std::shared_ptr<render_context> rc;
+    {
+        lock_guard<mutex> pipes_lock(_internals_lok);
+        auto found_rc = _render_contexts.find(name);
+        if(found_rc == end(_render_contexts))
+            return false;
+        rc = found_rc->second;
+    }
+
+    // last_frame is written only by load_video_textures on this (UI) thread.
+    if(!rc->last_frame)
+        return false;
+
+    buffer = rc->last_frame;
+    nv12 = rc->last_frame_nv12;
+    w = rc->last_frame_w;
+    h = rc->last_frame_h;
+    original_h = rc->last_frame_original_h;
+    return true;
+}
+
 void pipeline_host::_entry_point()
 {
     _running = true;
@@ -1108,6 +1164,7 @@ void pipeline_host::_entry_point()
                     if(found_dead)
                     {
                         R_LOG_ERROR("Dead stream detected");
+                        _stalled.insert(curr->first);  // tile shows "Offline" until a frame arrives
                         dead_pipes.push_back(curr->second);
                         curr = _pipes.erase(curr);
                     }
