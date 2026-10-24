@@ -10,6 +10,14 @@
     • play  (the user hit Play on a scrubbed position) — real video via Media
       Source Extensions, appended from the server's /transcode_fmp4 endpoint.
 
+  Both video modes prefer the server's remux-only `passthrough=1` variant of
+  /transcode_fmp4 (issue #105): the camera's native H.264/H.265 at native
+  resolution and bitrate, no transcode slot. The first window of a camera is a
+  probe — if MediaSource.isTypeSupported rejects the codec the server reports
+  (e.g. H.265 without a hardware decoder), or the server can't remux the
+  stream, the session restarts transparently through the transcoder and the
+  choice is remembered for the page session.
+
   The still <img> and the <video> are stacked in the same box with identical
   object-fit, so the same frame lands on the same pixels. The still stays on top
   until the <video> can paint a frame (`canplay`), then the video is revealed —
@@ -112,6 +120,21 @@ const MIN_LIVE_FETCH_MS = 2000
 // Fallback MSE codec string if the server doesn't send X-Revere-Codecs (h264
 // Main@4.1, video only). Normally the first window's header supplies the real one.
 const FALLBACK_CODECS = 'avc1.4d4029'
+// Passthrough (issue #105). Windows there are GOP-aligned (see r_ws.cpp
+// _get_passthrough_fmp4): a reply holds whole GOPs only, starting at the key
+// frame at/before start_time (X-Revere-First-Ts) and stopping before the last
+// key frame in range (X-Revere-Next-Start, where the next window must begin);
+// an empty body means the window held no whole GOP yet. A seeked window must
+// therefore span at least one GOP: we don't know the GOP length up front, so
+// start at PT_WINDOW_MIN_MS and double on an empty reply up to PT_WINDOW_MAX_MS.
+// Live passthrough asks for everything up to the head and starts a little
+// further back than transcode so the first reply is likely to hold a whole GOP.
+const PT_WINDOW_MIN_MS   = 4000
+const PT_WINDOW_MAX_MS   = 60000
+const PT_LIVE_MARGIN_MS  = 5000
+// Stream mode per camera, remembered for the page session so later seeks don't
+// re-probe: 'passthrough' | 'transcode'. Unset = probe on the next start.
+const streamModeByCamera = new Map()
 // Live auto-recovery (issue #95): if nothing new has been appended for this long
 // (or the <video> errors), tear the live session down and re-enter live. Restarts
 // back off exponentially up to LIVE_RESTART_MAX_MS, and after LIVE_MAX_RESTARTS
@@ -217,6 +240,14 @@ let ptsBaseMs    = 0            // wall-clock of the play-start seek point
 let windowStartMs = 0          // wall-clock start of the next window to fetch
 let vidW = 0, vidH = 0
 let abort        = null
+// Passthrough (issue #105) session state.
+let passthrough     = false     // this session uses the remux-only passthrough protocol
+let ptProbing       = false     // passthrough not yet confirmed for this camera (first window)
+let ptWindowMs      = PT_WINDOW_MIN_MS   // seeked passthrough window length (grows to ≥ 1 GOP)
+let ptGopMs         = 0         // duration of the last passthrough window (≥ 1 GOP)
+let ptFrameMs       = 0         // camera frame period from X-Revere-Frame-Duration-Ms
+let pendingSeekSec  = -1        // first passthrough window began a GOP early; jump here once buffered
+let fallbackPending = false     // passthrough rejected mid-start; a transcode restart is scheduled
 
 // Gap-skipping: recordings are full of holes (motion-only, offline). We play only
 // within recorded segments and compress gaps out of the MSE timeline, so
@@ -284,7 +315,11 @@ async function checkLiveStall(minIdleMs) {
   const mySession = session
   try { await loadSegments(windowStartMs) } finally { stallChecking = false }
   if (mySession !== session || !liveMode) return
-  if (liveHeadMs() - windowStartMs > LIVE_STALL_MS / 2) {
+  // Passthrough can't emit the GOP in progress, so a long-GOP camera is
+  // legitimately up to a GOP or two behind the head without being stalled.
+  const slack = passthrough ? 2 * ptGopMs : 0
+  if (Date.now() - lastAppendMs < minIdleMs + slack) return
+  if (liveHeadMs() - windowStartMs > LIVE_STALL_MS / 2 + slack) {
     console.warn('CameraPlayer: live stream stalled, restarting')
     onFeedFailed()
   }
@@ -397,12 +432,21 @@ async function startPlayback(live = false) {
   waitingForData  = false
   abort           = new AbortController()
 
+  // Passthrough unless this camera is already known to need the transcoder.
+  const mode = streamModeByCamera.get(props.camera.id)
+  passthrough     = mode !== 'transcode'
+  ptProbing       = passthrough && mode !== 'passthrough'
+  ptWindowMs      = PT_WINDOW_MIN_MS
+  ptGopMs         = 0
+  pendingSeekSec  = -1
+  fallbackPending = false
+
   // Seek to the requested instant, or (live) to just behind the committed head.
   await loadSegments(live ? (Date.now() - 60000) : Date.parse(props.isoTime))
   if (mySession !== session) return        // torn down while we awaited
   if (live) {
     const head = liveHeadMs()
-    ptsBaseMs = (head > 0 ? head : Date.now()) - LIVE_MARGIN_MS
+    ptsBaseMs = (head > 0 ? head : Date.now()) - (passthrough ? PT_LIVE_MARGIN_MS : LIVE_MARGIN_MS)
   } else {
     ptsBaseMs = Date.parse(props.isoTime)
   }
@@ -417,39 +461,68 @@ async function startPlayback(live = false) {
   feeding = true
   if (live) startLiveWatchdog()
 
-  // Fetch the first window before creating the SourceBuffer: the server reports
-  // the exact codec string (including whether audio is present) in a response
-  // header, and addSourceBuffer must be told the right codecs up front. pump()
-  // no-ops until sourceBuffer exists, so the bytes just queue.
-  await fetchNextWindow()
-  if (!mediaSource || mySession !== session) return   // torn down mid-fetch
-
-  const mime = `video/mp4; codecs="${negotiatedCodecs || FALLBACK_CODECS}"`
-  if (!MediaSource.isTypeSupported(mime)) {
-    console.error('CameraPlayer: codec not supported by this browser', mime)
-    stopVideo()
-    status.value = 'codec'
-    return
-  }
-  try {
-    sourceBuffer = mediaSource.addSourceBuffer(mime)
-  } catch (e) {
-    console.error('CameraPlayer: addSourceBuffer failed', mime, e)
-    stopVideo()
-    status.value = 'codec'
-    return
-  }
-  sourceBuffer.addEventListener('updateend', pump)
-
   // The reveal — hide the still the moment the video can paint.
   video.value.addEventListener('canplay', onCanPlay, { once: true })
   video.value.addEventListener('timeupdate', onVideoTime)
   video.value.addEventListener('error', onVideoError)
   video.value.addEventListener('stalled', onVideoStalled)
-
   applyRate()                              // load() resets playbackRate; also applies volume/mute
-  pump()                                   // drain the queued first window
+
+  // The SourceBuffer is created by fetchNextWindow (ensureSourceBuffer) when the
+  // first window with media arrives: the server reports the exact codec string
+  // (including whether audio is present) in a response header, and
+  // addSourceBuffer must be told the right codecs up front. In live the first
+  // reply may be empty (a GOP still being committed), so creation can't be tied
+  // to this first fetch. In passthrough the first window is also the probe: a
+  // rejected codec, or a server that can't remux this stream, schedules a
+  // transparent restart through the transcoder (fallbackToTranscode).
+  await fetchNextWindow()
+  if (!mediaSource || mySession !== session || fallbackPending) return
   video.value.play().catch(() => {})
+}
+
+// Create the SourceBuffer once the first window has told us the exact codec
+// string. Returns false (having dealt with it) if the browser can't play it: in
+// passthrough that means "use the transcoder for this camera" and the session
+// restarts in transcode mode; in transcode mode it is the terminal 'codec' state.
+function ensureSourceBuffer() {
+  if (sourceBuffer) return true
+  if (!mediaSource || mediaSource.readyState !== 'open') return false
+  const mime = `video/mp4; codecs="${negotiatedCodecs || FALLBACK_CODECS}"`
+  let ok = MediaSource.isTypeSupported(mime)
+  if (!ok) console.error('CameraPlayer: codec not supported by this browser', mime)
+  else {
+    try { sourceBuffer = mediaSource.addSourceBuffer(mime) }
+    catch (e) { console.error('CameraPlayer: addSourceBuffer failed', mime, e); ok = false }
+  }
+  if (!ok) {
+    if (passthrough) { fallbackToTranscode(mime); return false }
+    stopVideo()
+    playing.value = false
+    status.value = 'codec'
+    return false
+  }
+  sourceBuffer.addEventListener('updateend', pump)
+  if (ptProbing) { ptProbing = false; streamModeByCamera.set(props.camera.id, 'passthrough') }
+  return true
+}
+
+// Passthrough can't serve this camera (codec rejected by MSE, or the server
+// can't remux the stream). Remember that for the page session and restart the
+// current mode through the transcoder. Deferred a tick so the in-flight
+// fetchNextWindow unwinds first (its finally clears `fetching`); a seek or
+// teardown in between bumps `session` and cancels the restart.
+function fallbackToTranscode(reason) {
+  if (fallbackPending) return
+  fallbackPending = true
+  console.warn('CameraPlayer: passthrough unavailable, using transcode:', reason)
+  streamModeByCamera.set(props.camera.id, 'transcode')
+  const live = liveMode, mySession = session
+  setTimeout(() => {
+    if (session !== mySession) return
+    if (live ? props.isoTime !== null : props.isoTime === null) return
+    startPlayback(live)
+  }, 0)
 }
 
 function onCanPlay() {
@@ -537,13 +610,16 @@ function scheduleLivePoll() {
 // Fetch one window with a timeout and retries (503 = server at capacity, plus
 // transient timeouts/blips). Returns the Response, or null on teardown / exhausted
 // retries (in which case feeding is cleared).
-async function fetchWindow(winStart, winEnd) {
+async function fetchWindow(winStart, winEnd, throughEnd = false) {
   const s = new Date(winStart).toISOString()
   const e = new Date(winEnd).toISOString()
-  const url = `/transcode_fmp4?camera_id=${props.camera.id}`
+  let url = `/transcode_fmp4?camera_id=${props.camera.id}`
     + `&start_time=${encodeURIComponent(s)}&end_time=${encodeURIComponent(e)}`
-    + `&width=${vidW}&height=${vidH}&bitrate=${BITRATE}`
-    + `&framerate_num=${FPS_NUM}&framerate_den=${FPS_DEN}&codec=h264`
+  if (passthrough)
+    url += '&passthrough=1' + (throughEnd ? '&through_end=1' : '')   // audio on (default)
+  else
+    url += `&width=${vidW}&height=${vidH}&bitrate=${BITRATE}`
+      + `&framerate_num=${FPS_NUM}&framerate_den=${FPS_DEN}&codec=h264`
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (!feeding || !abort || abort.signal.aborted) return null
@@ -575,6 +651,7 @@ async function fetchWindow(winStart, winEnd) {
 async function fetchNextWindow() {
   if (!feeding || fetching || waitingForData) return
   fetching = true
+  let refetch = false                      // passthrough: window was too short, widened
   try {
     // Find the segment to read from, snapping across any gap. Refresh the list
     // in case more has been recorded since we last looked.
@@ -592,7 +669,15 @@ async function fetchNextWindow() {
     }
 
     const winStart = Math.max(windowStartMs, seg.startMs)  // snap into the segment
-    const winEnd   = Math.min(winStart + WINDOW_MS * rateScale(), seg.endMs)
+    // Passthrough windows must hold at least one whole GOP (ptWindowMs grows on
+    // an empty reply); live passthrough simply asks for everything up to the head.
+    const wantMs = passthrough
+      ? (liveMode ? Infinity : Math.max(WINDOW_MS * rateScale(), ptWindowMs))
+      : WINDOW_MS * rateScale()
+    const winEnd   = Math.min(winStart + wantMs, seg.endMs)
+    // Seeked passthrough reaching the end of a recorded segment: ask for the
+    // final (partial) GOP too, otherwise it is never emitted.
+    const throughEnd = passthrough && !liveMode && winEnd === seg.endMs
 
     // Live: if this window is only short because it's clamped at the write-head
     // (not a real segment boundary), wait for more data rather than churning a
@@ -604,9 +689,12 @@ async function fetchNextWindow() {
     }
     if (winEnd <= winStart) { windowStartMs = seg.endMs; return }
 
-    const res = await fetchWindow(winStart, winEnd)
+    const res = await fetchWindow(winStart, winEnd, throughEnd)
     if (!res) return                                   // teardown / retries exhausted
     if (!res.ok) {
+      // Probing passthrough: the server can't remux this stream (unsupported
+      // codec, no parameter sets, ...) — use the transcoder for this camera.
+      if (passthrough && ptProbing) { fallbackToTranscode('HTTP ' + res.status); return }
       console.warn('CameraPlayer: window fetch failed', res.status)
       onFeedFailed()
       return
@@ -614,21 +702,60 @@ async function fetchNextWindow() {
 
     const codecs = res.headers.get('X-Revere-Codecs')
     if (codecs) negotiatedCodecs = codecs
+    const frameDur = Number(res.headers.get('X-Revere-Frame-Duration-Ms'))
+    if (frameDur > 0) ptFrameMs = frameDur
     const buf = await res.arrayBuffer()
 
     if (buf && buf.byteLength) {
+      if (!ensureSourceBuffer()) return                // codec rejected: fallback / 'codec'
       // 0-based self-contained fMP4. Keep the init on the first window, strip it
       // (append from first moof) on the rest. offsetSec places it on the gap-free
       // presentation timeline; timeline records the wall-clock mapping.
       let bytes = new Uint8Array(buf)
       if (firstSegment) firstSegment = false
       else              bytes = stripToFirstMoof(bytes)
-      const durMs = winEnd - winStart
-      appendQueue.push({ bytes, offsetSec: presentationMs / 1000 })
-      timeline.push({ presMs: presentationMs, wallMs: winStart, durMs })
-      presentationMs += durMs
-      windowStartMs = winEnd
-      noteAppend(winEnd)
+      // Where this window really sits on the wall clock. A transcode window covers
+      // exactly [winStart, winEnd). A passthrough window is GOP-aligned: it starts
+      // at the key frame at/before winStart (X-Revere-First-Ts — only the first
+      // window of a session can land early) and ends before the key frame at
+      // X-Revere-Next-Start, which is where the next window must begin.
+      let wallMs = winStart, nextMs = winEnd, presMs = presentationMs
+      if (passthrough) {
+        const firstTs   = Number(res.headers.get('X-Revere-First-Ts'))
+        const nextStart = Number(res.headers.get('X-Revere-Next-Start'))
+        if (firstTs > 0) wallMs = firstTs
+        if (nextStart > wallMs) nextMs = nextStart
+        ptGopMs = nextMs - wallMs
+        if (timeline.length === 0) {
+          // First window began a GOP before the requested instant: land on the
+          // instant once it's buffered (pump) rather than showing the GOP head.
+          if (ptsBaseMs > wallMs && ptsBaseMs < nextMs)
+            pendingSeekSec = (ptsBaseMs - wallMs) / 1000
+        } else if (wallMs < winStart) {
+          // A later window landed before where we asked. Either we asked mid-GOP
+          // (after a through_end tail at the live head) and its early frames are
+          // ones we already appended, or the storage query backed up across a
+          // gap into the previous segment. Either way, align winStart with the
+          // presentation position it already has: the early frames re-cover the
+          // same media (MSE replaces overlapping frames) instead of being played
+          // twice, and the gap stays compressed out.
+          presMs = Math.max(0, presentationMs - (winStart - wallMs))
+        }
+      }
+      const durMs = nextMs - wallMs
+      appendQueue.push({ bytes, offsetSec: presMs / 1000 })
+      timeline.push({ presMs, wallMs, durMs })
+      presentationMs = presMs + durMs
+      windowStartMs = nextMs
+      noteAppend(nextMs)
+    } else if (passthrough && liveMode) {
+      // No whole GOP committed past windowStartMs yet; poll for more.
+      scheduleLivePoll()
+      return
+    } else if (passthrough && !throughEnd && ptWindowMs < PT_WINDOW_MAX_MS) {
+      // Window shorter than a GOP: widen and ask again right away.
+      ptWindowMs = Math.min(PT_WINDOW_MAX_MS, ptWindowMs * 2)
+      refetch = true
     } else {
       // Segment list said there's data here but there isn't — treat as a gap and
       // jump to the segment end so the next pass snaps to the following segment.
@@ -639,7 +766,13 @@ async function fetchNextWindow() {
   } finally {
     fetching = false
   }
-  pump()
+  // Until the SourceBuffer exists pump() can't drive the fetch loop (it keys off
+  // bufferedAhead), so keep pulling from here: a widened passthrough window, or
+  // a first window that turned out to be a gap. Every branch above either
+  // advances windowStartMs, parks us (waitingForData / fallbackPending) or
+  // clears feeding, so this can't spin.
+  if (refetch || (!sourceBuffer && feeding && !waitingForData && !fallbackPending)) fetchNextWindow()
+  else pump()
 }
 
 // Return the slice of a fragmented-mp4 buffer starting at the first `moof` box,
@@ -690,18 +823,39 @@ function pump() {
     return
   }
 
+  // Passthrough: the first window started at the key frame before the requested
+  // instant; now that it's buffered, move the playhead onto the instant itself.
+  if (pendingSeekSec > 0 && video.value && bufferedContains(pendingSeekSec)) {
+    try { video.value.currentTime = pendingSeekSec } catch (_) {}
+    pendingSeekSec = -1
+  }
+
+  // Fetch-ahead: keep AHEAD_S (scaled by rate, see rateScale) of media buffered.
+  // Passthrough windows are GOP-aligned and never shorter than a GOP, so at 4x
+  // (~40 s wanted) the loop simply pulls a few more windows per pass; the
+  // threshold needs no mode-specific tuning.
   if (feeding && bufferedAhead() < AHEAD_S * rateScale()) fetchNextWindow()
 }
 
 // --- frame step (issue #101) -----------------------------------------------
-// Step one frame back (dir = -1) or forward (+1) in seeked playback. The
-// transcode runs at a fixed FPS_NUM/FPS_DEN, so one frame is exactly 1/fps of
-// presentation time. Playing video is paused first (stepping implies pausing).
-// If the target lies inside the MSE buffer we just move currentTime — the paused
-// <video> paints the new frame instantly and timeupdate keeps the timeline in
-// sync. Otherwise (no video session, or stepped off the buffered edge) we fall
-// back to the host's normal seek path, which shows a /jpg still at the new time.
-const FRAME_MS = 1000 * FPS_DEN / FPS_NUM
+// Step one frame back (dir = -1) or forward (+1) in seeked playback. One frame
+// is frameMs() of presentation time. Playing video is paused first (stepping
+// implies pausing). If the target lies inside the MSE buffer we just move
+// currentTime — the paused <video> paints the new frame instantly and
+// timeupdate keeps the timeline in sync. Otherwise (no video session, or stepped
+// off the buffered edge) we fall back to the host's normal seek path, which
+// shows a /jpg still at the new time.
+//
+// Frame period: the transcoder runs at a fixed FPS_NUM/FPS_DEN. In passthrough
+// the frames are the camera's own, so we use the server's measured period
+// (X-Revere-Frame-Duration-Ms: mean real timestamp delta of the frames in the
+// last window — cameras' SPS timing is often wrong, so it is not used) and fall
+// back to 1/30 s until a window has arrived.
+function frameMs() {
+  const pt = mediaSource ? passthrough : streamModeByCamera.get(props.camera.id) !== 'transcode'
+  if (pt) return ptFrameMs > 0 ? ptFrameMs : 1000 / 30
+  return 1000 * FPS_DEN / FPS_NUM
+}
 
 function bufferedContains(presSec) {
   const b = sourceBuffer && sourceBuffer.buffered
@@ -719,20 +873,20 @@ function stepFrame(dir) {
   if (playing.value && v) { v.pause(); playing.value = false }
 
   if (mediaSource && sourceBuffer && v && revealed.value) {
-    const target = v.currentTime + d * FRAME_MS / 1000
+    const target = v.currentTime + d * frameMs() / 1000
     if (target >= 0 && bufferedContains(target)) {
       v.currentTime = target
       emit('timeupdate', new Date(presentationToWallMs(target)).toISOString())
       return
     }
     // Outside the buffer: seek by wall-clock from the frame on screen.
-    emit('seek', new Date(presentationToWallMs(v.currentTime) + d * FRAME_MS).toISOString())
+    emit('seek', new Date(presentationToWallMs(v.currentTime) + d * frameMs()).toISOString())
     return
   }
 
   // Scrub still (no video session): nudge the seeked instant by one frame.
   const base = Date.parse(props.isoTime)
-  if (Number.isFinite(base)) emit('seek', new Date(base + d * FRAME_MS).toISOString())
+  if (Number.isFinite(base)) emit('seek', new Date(base + d * frameMs()).toISOString())
 }
 
 function stopVideo() {
@@ -745,6 +899,7 @@ function stopVideo() {
   presentationMs = 0
   liveMode = false
   waitingForData = false
+  pendingSeekSec = -1
   if (abort) { try { abort.abort() } catch (_) {} abort = null }
   session++                                // invalidate any in-flight startPlayback
   stopLiveWatchdog()
