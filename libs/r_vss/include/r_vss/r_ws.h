@@ -182,7 +182,8 @@ private:
                                                   r_utils::r_socket& conn,
                                                   const r_http::r_server_request& request);
 
-    // /transcode_fmp4?passthrough=1 — remux-only variant (no decode/encode).
+    // /transcode_fmp4?passthrough=1 — remux-only variant (video is never
+    // decoded/encoded; G.711 audio is transcoded to AAC unless audio=0).
     r_http::r_server_response _get_passthrough_fmp4(const r_http::r_web_server<r_utils::r_socket>& ws,
                                                     r_utils::r_socket& conn,
                                                     std::map<std::string, std::string> args);

@@ -11,7 +11,8 @@
 // ms) and which ends just before the key frame at X-Revere-Next-Start. We ask
 // for [nextStart, now) each time, so consecutive windows tile exactly on the
 // real-time axis: timestampOffset = (firstTs - origin). An empty body means a
-// whole GOP hasn't been committed yet — poll again shortly.
+// whole GOP hasn't been committed yet — poll again shortly. Tiles are muted, so
+// they ask for audio=0 (the server would otherwise AAC-encode G.711 for them).
 //
 // Returned refs:
 //   revealed — the video has painted a frame (hide the poster)
@@ -60,7 +61,7 @@ export function useLiveMse(videoRef, getCameraId, opts = {}) {
     const e = new Date(endMs).toISOString()
     return `/transcode_fmp4?camera_id=${encodeURIComponent(getCameraId())}`
       + `&start_time=${encodeURIComponent(s)}&end_time=${encodeURIComponent(e)}`
-      + (passthrough ? '&passthrough=1' : '')
+      + (passthrough ? '&passthrough=1&audio=0' : '')
   }
 
   async function fetchOnce(url) {

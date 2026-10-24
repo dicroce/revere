@@ -1820,8 +1820,130 @@ r_http::r_server_response r_ws::_get_transcode(const r_http::r_web_server<r_util
 // With contiguous windows sharing one pts_base, the fragments tile seamlessly and
 // the client appends them back-to-back with no timestampOffset juggling.
 //
-// v1 is video-only; AAC audio (see the audio-transcode path in _get_transcode) is
-// a follow-up.
+// Audio is AAC, see _fmp4_aac_audio.
+
+// Audio for the fMP4 window endpoints: decodes the stored audio (AAC or G.711
+// mulaw/alaw) and re-encodes it as AAC into the window's muxer. Output is
+// 0-based within the window and aligned to base_ms (via offset_samples) so it
+// stays in sync with the video. Shared by the transcode path (which always
+// uses it) and the passthrough path (which uses it only for G.711 — AAC is
+// remuxed straight through there).
+struct _fmp4_aac_audio
+{
+    unique_ptr<r_audio_decoder> decoder;
+    unique_ptr<r_audio_encoder> encoder;
+    vector<vector<float>>       channel_buffers;
+    int     channels       = 0;
+    int     sample_rate    = 0;
+    int64_t pts            = 0;    // running sample position fed to the encoder
+    int64_t first_ts       = -1;   // ts of the first in-window audio packet
+    int64_t offset_samples = 0;    // (first_ts - base_ms) in samples
+
+    bool ready() const { return (bool)encoder; }
+
+    // Adds the AAC audio stream to `muxer` (call before muxer.open()). Returns
+    // false when the stored audio can't be described (no sample rate).
+    bool init(r_blob_tree& bt, r_muxer& muxer)
+    {
+        auto a_name   = bt["audio_codec_name"].get_string();
+        auto a_params = bt["audio_codec_parameters"].get_string();
+        auto a_id     = r_av::encoding_to_av_codec_id(a_name);
+
+        r_nullable<int> a_rate, a_chans;
+        for(auto& part : r_string_utils::split(a_params, ","))
+        {
+            auto kv = r_string_utils::split(part, "=");
+            if(kv.size() != 2) continue;
+            if(r_string_utils::strip(kv[0]) == "sc_audio_rate")     a_rate.set_value(r_string_utils::s_to_int(kv[1]));
+            if(r_string_utils::strip(kv[0]) == "sc_audio_channels") a_chans.set_value(r_string_utils::s_to_int(kv[1]));
+        }
+        if(a_chans.is_null()) a_chans.set_value(1);
+        if(a_rate.is_null() && (a_id == AV_CODEC_ID_PCM_MULAW || a_id == AV_CODEC_ID_PCM_ALAW))
+            a_rate.set_value(8000);
+        if(a_rate.is_null())
+            return false;
+
+        channels    = a_chans.value();
+        sample_rate = a_rate.value();
+
+        decoder = make_unique<r_audio_decoder>(a_id);
+        auto a_asc = r_pipeline::get_audio_codec_extradata(a_params);
+        if(!a_asc.empty()) decoder->set_extradata(a_asc);
+        if(a_id == AV_CODEC_ID_PCM_MULAW || a_id == AV_CODEC_ID_PCM_ALAW)
+            decoder->set_pcm_params(sample_rate, channels);
+
+        encoder = make_unique<r_audio_encoder>(
+            AV_CODEC_ID_AAC, (uint32_t)(64000 * channels),
+            sample_rate, channels, AV_SAMPLE_FMT_FLTP);
+        channel_buffers.assign(channels, {});
+
+        muxer.add_audio_stream(AV_CODEC_ID_AAC, (uint8_t)channels, (uint32_t)sample_rate);
+        muxer.set_audio_extradata(encoder->get_extradata());
+        return true;
+    }
+
+    // One stored audio packet with real timestamp `ts` (epoch ms). `base_ms` is
+    // the window's PTS-0 instant; the caller has already dropped packets before it.
+    void feed(r_muxer& muxer, int64_t ts, int64_t base_ms, const uint8_t* data, size_t size)
+    {
+        if(first_ts == -1)
+        {
+            first_ts = ts;
+            offset_samples = ((ts - base_ms) * (int64_t)sample_rate + 500LL) / 1000LL;
+        }
+
+        decoder->attach_buffer(data, size);
+        auto a_dec = decoder->decode();
+        if(a_dec != R_CODEC_STATE_HAS_OUTPUT && a_dec != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+            return;
+
+        auto adecoded = decoder->get(AV_SAMPLE_FMT_FLTP, sample_rate, channels);
+        int nb = (int)(adecoded->size() / (channels * sizeof(float)));
+        const float* src = reinterpret_cast<const float*>(adecoded->data());
+        for(int ch = 0; ch < channels; ++ch)
+            channel_buffers[ch].insert(channel_buffers[ch].end(), src + ch*nb, src + ch*nb + nb);
+
+        // Encode a full AAC frame for every frame_size samples accumulated.
+        int fsz = encoder->get_frame_size();
+        while((int)channel_buffers[0].size() >= fsz)
+        {
+            vector<uint8_t> ebuf(channels * fsz * sizeof(float));
+            float* dst = reinterpret_cast<float*>(ebuf.data());
+            for(int ch = 0; ch < channels; ++ch)
+            {
+                memcpy(dst + ch*fsz, channel_buffers[ch].data(), fsz*sizeof(float));
+                channel_buffers[ch].erase(channel_buffers[ch].begin(), channel_buffers[ch].begin() + fsz);
+            }
+            encoder->attach_buffer(ebuf.data(), ebuf.size(), pts);
+            pts += fsz;
+            if(encoder->encode() == R_CODEC_STATE_HAS_OUTPUT)
+            {
+                auto api = encoder->get();
+                muxer.write_audio_frame(api.data, api.size, offset_samples + api.pts, AVRational{1, sample_rate});
+            }
+        }
+    }
+
+    // Drain the encoder's buffered frame(s) so the window's audio isn't clipped
+    // at its tail.
+    void flush(r_muxer& muxer)
+    {
+        auto a_flush = encoder->flush();
+        while(a_flush == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto api = encoder->get();
+            muxer.write_audio_frame(api.data, api.size, offset_samples + api.pts, AVRational{1, sample_rate});
+            a_flush = encoder->flush();
+        }
+    }
+};
+
+static bool _fmp4_has_audio(r_blob_tree& bt)
+{
+    return bt.has_key("has_audio") && bt["has_audio"].get_string() == "true"
+           && bt.has_key("audio_codec_name") && bt.has_key("audio_codec_parameters");
+}
+
 r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r_utils::r_socket>& ws,
                                                     r_utils::r_socket& conn,
                                                     const r_http::r_server_request& request)
@@ -1912,60 +2034,11 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
         muxer.add_video_stream(framerate, out_codec_id, output_width, output_height, profile, level);
         muxer.set_video_extradata(encoder.get_extradata());
 
-        // --- audio (AAC), only if the source stream carries it. Ported from the
-        // _get_transcode audio path; output is 0-based per window and aligned to
-        // start_ms (via audio_offset_samples) so it stays in sync with the video.
-        unique_ptr<r_audio_decoder>  audio_decoder;
-        unique_ptr<r_audio_encoder>  audio_encoder;
-        vector<vector<float>>        audio_channel_buffers;
-        bool    audio_initialized    = false;
-        int     audio_channels       = 0;
-        int     audio_sample_rate    = 0;
-        int64_t audio_pts            = 0;   // running sample position fed to the encoder
-        int64_t audio_first_ts       = -1;  // ts of the first in-window audio packet
-        int64_t audio_offset_samples = 0;   // (audio_first_ts - start_ms) in samples
-
-        bool has_audio = bt.has_key("has_audio") && bt["has_audio"].get_string() == "true"
-                         && bt.has_key("audio_codec_name") && bt.has_key("audio_codec_parameters");
-        if(has_audio)
-        {
-            auto a_name   = bt["audio_codec_name"].get_string();
-            auto a_params = bt["audio_codec_parameters"].get_string();
-            auto a_id     = r_av::encoding_to_av_codec_id(a_name);
-
-            r_nullable<int> a_rate, a_chans;
-            for(auto& part : r_string_utils::split(a_params, ","))
-            {
-                auto kv = r_string_utils::split(part, "=");
-                if(kv.size() != 2) continue;
-                if(r_string_utils::strip(kv[0]) == "sc_audio_rate")     a_rate.set_value(r_string_utils::s_to_int(kv[1]));
-                if(r_string_utils::strip(kv[0]) == "sc_audio_channels") a_chans.set_value(r_string_utils::s_to_int(kv[1]));
-            }
-            if(a_chans.is_null()) a_chans.set_value(1);
-            if(a_rate.is_null() && (a_id == AV_CODEC_ID_PCM_MULAW || a_id == AV_CODEC_ID_PCM_ALAW))
-                a_rate.set_value(8000);
-
-            if(!a_rate.is_null())
-            {
-                audio_channels    = a_chans.value();
-                audio_sample_rate = a_rate.value();
-
-                audio_decoder = make_unique<r_audio_decoder>(a_id);
-                auto a_asc = r_pipeline::get_audio_codec_extradata(a_params);
-                if(!a_asc.empty()) audio_decoder->set_extradata(a_asc);
-                if(a_id == AV_CODEC_ID_PCM_MULAW || a_id == AV_CODEC_ID_PCM_ALAW)
-                    audio_decoder->set_pcm_params(audio_sample_rate, audio_channels);
-
-                audio_encoder = make_unique<r_audio_encoder>(
-                    AV_CODEC_ID_AAC, (uint32_t)(64000 * audio_channels),
-                    audio_sample_rate, audio_channels, AV_SAMPLE_FMT_FLTP);
-                audio_channel_buffers.assign(audio_channels, {});
-
-                muxer.add_audio_stream(AV_CODEC_ID_AAC, (uint8_t)audio_channels, (uint32_t)audio_sample_rate);
-                muxer.set_audio_extradata(audio_encoder->get_extradata());
-                audio_initialized = true;
-            }
-        }
+        // --- audio (AAC), only if the source stream carries it; 0-based per
+        // window and aligned to start_ms so it stays in sync with the video.
+        _fmp4_aac_audio audio;
+        if(_fmp4_has_audio(bt))
+            audio.init(bt, muxer);
 
         muxer.open();
 
@@ -2030,47 +2103,9 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
                         muxer.write_video_frame(pi.data, pi.size, pi.pts, out_dts, pi.time_base, pi.key);
                     }
                 }
-                else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO && audio_initialized && ts >= start_ms)
+                else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO && audio.ready() && ts >= start_ms)
                 {
-                    if(audio_first_ts == -1)
-                    {
-                        audio_first_ts = ts;
-                        audio_offset_samples = ((ts - start_ms) * (int64_t)audio_sample_rate + 500LL) / 1000LL;
-                    }
-
-                    audio_decoder->attach_buffer(frame_data.data(), frame_data.size());
-                    auto a_dec = audio_decoder->decode();
-                    if(a_dec != R_CODEC_STATE_HAS_OUTPUT && a_dec != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
-                        continue;
-
-                    auto adecoded = audio_decoder->get(AV_SAMPLE_FMT_FLTP, audio_sample_rate, audio_channels);
-                    int nb = (int)(adecoded->size() / (audio_channels * sizeof(float)));
-                    const float* src = reinterpret_cast<const float*>(adecoded->data());
-                    for(int ch = 0; ch < audio_channels; ++ch)
-                        audio_channel_buffers[ch].insert(audio_channel_buffers[ch].end(),
-                                                         src + ch*nb, src + ch*nb + nb);
-
-                    // Encode a full AAC frame for every frame_size samples accumulated.
-                    int fsz = audio_encoder->get_frame_size();
-                    while((int)audio_channel_buffers[0].size() >= fsz)
-                    {
-                        vector<uint8_t> ebuf(audio_channels * fsz * sizeof(float));
-                        float* dst = reinterpret_cast<float*>(ebuf.data());
-                        for(int ch = 0; ch < audio_channels; ++ch)
-                        {
-                            memcpy(dst + ch*fsz, audio_channel_buffers[ch].data(), fsz*sizeof(float));
-                            audio_channel_buffers[ch].erase(audio_channel_buffers[ch].begin(),
-                                                            audio_channel_buffers[ch].begin() + fsz);
-                        }
-                        audio_encoder->attach_buffer(ebuf.data(), ebuf.size(), audio_pts);
-                        audio_pts += fsz;
-                        if(audio_encoder->encode() == R_CODEC_STATE_HAS_OUTPUT)
-                        {
-                            auto api = audio_encoder->get();
-                            muxer.write_audio_frame(api.data, api.size,
-                                audio_offset_samples + api.pts, AVRational{1, audio_sample_rate});
-                        }
-                    }
+                    audio.feed(muxer, ts, start_ms, frame_data.data(), frame_data.size());
                 }
             }
         }
@@ -2085,26 +2120,15 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
             flush_state = encoder.flush();
         }
 
-        // Drain the AAC encoder's buffered frame(s) so the window's audio isn't
-        // clipped at its tail.
-        if(audio_initialized)
-        {
-            auto a_flush = audio_encoder->flush();
-            while(a_flush == R_CODEC_STATE_HAS_OUTPUT)
-            {
-                auto api = audio_encoder->get();
-                muxer.write_audio_frame(api.data, api.size,
-                    audio_offset_samples + api.pts, AVRational{1, audio_sample_rate});
-                a_flush = audio_encoder->flush();
-            }
-        }
+        if(audio.ready())
+            audio.flush(muxer);
 
         muxer.finalize();
 
         // Tell the client the exact MSE codec string so it can create a matching
         // SourceBuffer (it can't know audio presence up front). h264 Main@4.1 here.
         string mse_codecs = is_h265 ? "hvc1.1.6.L120.90" : "avc1.4d4029";
-        if(audio_initialized) mse_codecs += ",mp4a.40.2";
+        if(audio.ready()) mse_codecs += ",mp4a.40.2";
 
         r_server_response response;
         response.set_content_type("video/mp4");
@@ -2162,9 +2186,20 @@ static string _h265_mse_codec_string(uint8_t profile_idc, uint8_t level_idc)
 //     again once more footage has been committed.
 //
 // Audio: AAC is passed through (X-Revere-Codecs gains ",mp4a.40.2"); G.711
-// (mulaw/alaw) can't go in an MSE-playable MP4 without encoding, so it is
-// dropped — tiles are muted anyway. Only camera_id/start_time/end_time are
-// required; width/height are optional fallbacks when the SPS can't be parsed.
+// (mulaw/alaw) can't go in an MSE-playable MP4 as-is, so only the audio is
+// transcoded to AAC (cheap; the video stays a pure remux). `audio=0` drops
+// audio entirely — the muted Live-tab tiles use it. Only camera_id/start_time/
+// end_time are required; width/height are optional fallbacks when the SPS
+// can't be parsed.
+//
+// `through_end=1` (seeked playback at the end of a recorded segment): emit
+// every frame in the window, including the final partial GOP, so the last
+// seconds before a recording gap aren't lost; X-Revere-Next-Start is then one
+// frame period past the last emitted frame.
+//
+// X-Revere-Frame-Duration-Ms carries the mean real frame period of the emitted
+// video frames (measured from the stored timestamps, not the SPS, which cameras
+// routinely get wrong), for the client's frame step.
 r_http::r_server_response r_ws::_get_passthrough_fmp4(const r_http::r_web_server<r_utils::r_socket>& ws,
                                                       r_utils::r_socket& conn,
                                                       std::map<std::string, std::string> args)
@@ -2189,6 +2224,14 @@ r_http::r_server_response r_ws::_get_passthrough_fmp4(const r_http::r_web_server
         auto start_tp  = r_time_utils::iso_8601_to_tp(args["start_time"]);
         auto end_tp    = r_time_utils::iso_8601_to_tp(args["end_time"]);
         int64_t start_ms = r_time_utils::tp_to_epoch_millis(start_tp);
+
+        auto flag = [&](const char* k) {
+            auto it = args.find(k);
+            return it != args.end() && (it->second == "1" || it->second == "true");
+        };
+        bool want_audio  = !(args.find("audio") != args.end()
+                             && (args["audio"] == "0" || args["audio"] == "false"));
+        bool through_end = flag("through_end");
 
         auto qr_buffer = query_get_video(_top_dir, _devices, camera_id, start_tp, end_tp);
 
@@ -2220,17 +2263,25 @@ r_http::r_server_response r_ws::_get_passthrough_fmp4(const r_http::r_web_server
                                bt["frames"][fi].has_key("key") && bt["frames"][fi]["key"].get_string() == "true"});
         }
 
-        // First key frame (the query backs up to one, so this is normally [0]),
-        // and the last key frame after it, which is where this window stops.
-        size_t first_i = 0;
-        while(first_i < vframes.size() && !vframes[first_i].key) ++first_i;
+        // The last key frame at or before start_ms (the query backs up to one, so
+        // this is normally [0]; if start_ms itself is a key frame — a window that
+        // begins at a recorded segment's first frame — prefer it over an earlier
+        // one the storage query may have backed up to across the gap), falling
+        // back to the first key frame; then the last key frame after it, which
+        // is where this window stops.
+        size_t first_i = vframes.size();
+        for(size_t i = 0; i < vframes.size(); ++i)
+            if(vframes[i].key && (first_i == vframes.size() || vframes[i].ts <= start_ms))
+                first_i = i;
         size_t cut_i = vframes.size();
-        for(size_t i = vframes.size(); i > first_i + 1 && cut_i == vframes.size(); --i)
-            if(vframes[i-1].key) cut_i = i - 1;
+        if(!through_end)
+            for(size_t i = vframes.size(); i > first_i + 1 && cut_i == vframes.size(); --i)
+                if(vframes[i-1].key) cut_i = i - 1;
 
-        if(first_i >= vframes.size() || cut_i == vframes.size())
+        if(first_i >= vframes.size() || (!through_end && cut_i == vframes.size()))
         {
-            // Not a whole GOP in the window yet: nothing to emit, come back later.
+            // Not a whole GOP in the window yet (or, with through_end, no frames
+            // at all): nothing to emit, come back later.
             r_server_response empty;
             empty.set_content_type("video/mp4");
             empty.add_additional_header("X-Revere-Next-Start", r_string_utils::int64_to_s(start_ms));
@@ -2238,17 +2289,27 @@ r_http::r_server_response r_ws::_get_passthrough_fmp4(const r_http::r_web_server
         }
 
         int64_t first_ts = vframes[first_i].ts;
-        int64_t cut_ts   = vframes[cut_i].ts;
 
         // --- stream description from the stored parameter sets.
         r_nullable<float> fr = r_pipeline::get_video_codec_framerate(codec_params);
-        if(fr.is_null())
+
+        // Mean real frame period of the emitted frames [first_i, cut_i): n frames
+        // span n-1 periods. One frame: fall back to the SPS rate, then 30 fps.
+        size_t n_emit = cut_i - first_i;
+        double frame_ms = (!fr.is_null() && fr.value() > 0.f) ? 1000.0 / fr.value() : 1000.0 / 30.0;
+        if(n_emit >= 2)
         {
-            // n frames are emitted over [first_ts, cut_ts): n frame periods.
-            int64_t span = cut_ts - first_ts;
-            size_t n = cut_i - first_i;
-            fr.set_value((span > 0 && n > 0) ? (float)n * 1000.f / (float)span : 30.f);
+            int64_t span = vframes[cut_i-1].ts - first_ts;
+            if(span > 0) frame_ms = (double)span / (double)(n_emit - 1);
         }
+
+        // Normal: stop before the last key frame. through_end: everything, and
+        // the next window starts one frame period after the last frame.
+        int64_t cut_ts = through_end ? vframes[cut_i-1].ts + max((int64_t)1, (int64_t)llround(frame_ms))
+                                     : vframes[cut_i].ts;
+
+        if(fr.is_null())
+            fr.set_value((float)(1000.0 / frame_ms));
 
         uint16_t width = 0, height = 0;
         int profile = 0, level = 0;
@@ -2325,16 +2386,20 @@ r_http::r_server_response r_ws::_get_passthrough_fmp4(const r_http::r_web_server
         muxer.add_video_stream(av_d2q(fr.value(), 10000), codec_id, width, height, profile, level);
         muxer.set_video_extradata(extradata);
 
-        // --- audio: AAC straight through; anything else is dropped.
+        // --- audio: AAC straight through; G.711 transcoded to AAC; anything
+        // else (or audio=0) dropped.
         bool audio_passthrough = false;
-        bool has_audio = bt.has_key("has_audio") && bt["has_audio"].get_string() == "true"
-                         && bt.has_key("audio_codec_name") && bt.has_key("audio_codec_parameters");
-        if(has_audio)
+        _fmp4_aac_audio audio_aac;
+        if(want_audio && _fmp4_has_audio(bt))
         {
             auto a_name   = bt["audio_codec_name"].get_string();
             auto a_params = bt["audio_codec_parameters"].get_string();
             auto a_id     = r_av::encoding_to_av_codec_id(a_name);
-            if(a_id == AV_CODEC_ID_AAC)
+            if(a_id == AV_CODEC_ID_PCM_MULAW || a_id == AV_CODEC_ID_PCM_ALAW)
+            {
+                audio_aac.init(bt, muxer);
+            }
+            else if(a_id == AV_CODEC_ID_AAC)
             {
                 r_nullable<int> a_rate, a_chans;
                 for(auto& part : r_string_utils::split(a_params, ","))
@@ -2386,17 +2451,25 @@ r_http::r_server_response r_ws::_get_passthrough_fmp4(const r_http::r_web_server
             {
                 muxer.write_audio_frame(frame.data(), frame.size(), ts - first_ts, {1, 1000});
             }
+            else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO && audio_aac.ready())
+            {
+                audio_aac.feed(muxer, ts, first_ts, frame.data(), frame.size());
+            }
         }
+
+        if(audio_aac.ready())
+            audio_aac.flush(muxer);
 
         muxer.finalize();
 
-        if(audio_passthrough) mse_codecs += ",mp4a.40.2";
+        if(audio_passthrough || audio_aac.ready()) mse_codecs += ",mp4a.40.2";
 
         r_server_response response;
         response.set_content_type("video/mp4");
         response.add_additional_header("X-Revere-Codecs", mse_codecs);
         response.add_additional_header("X-Revere-First-Ts", r_string_utils::int64_to_s(first_ts));
         response.add_additional_header("X-Revere-Next-Start", r_string_utils::int64_to_s(cut_ts));
+        response.add_additional_header("X-Revere-Frame-Duration-Ms", r_string_utils::format("%.3f", frame_ms));
         response.set_body(muxer.buffer_size(), muxer.buffer());
         return response;
     }
