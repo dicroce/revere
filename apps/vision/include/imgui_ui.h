@@ -21,6 +21,7 @@
 #include <chrono>
 #include "gl_utils.h"
 #include "configure_state.h"
+#include "revere_api.h"
 #include "layouts.h"
 #include "control_bar.h"
 #include "control_bar_renderer.h"
@@ -87,7 +88,10 @@ void configure_modal(
     CANCEL_CB cancel_cb
 )
 {
-    ImGui::SetNextWindowSize(ImVec2(500, 150));
+    // A remote Revere's pinned certificate (revere_api.h) is shown with a way to
+    // forget it: after a reinstall, or to stop trusting that machine.
+    auto pinned = vision::is_remote(ip_storage) ? vision::trusted_fingerprint(ip_storage) : r_utils::r_nullable<std::string>();
+    ImGui::SetNextWindowSize(ImVec2(500, pinned.is_null() ? 150.0f : 230.0f));
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
         //ImGuiContext& g = *GImGui;
@@ -120,6 +124,19 @@ void configure_modal(
         {
             ImGui::CloseCurrentPopup();
             ok_cb();
+        }
+
+        if(!pinned.is_null())
+        {
+            ImGui::SetCursorPos(ImVec2(250 - (430/2), 135));
+            ImGui::TextUnformatted("Trusted certificate (SHA-256):");
+            ImGui::SetCursorPos(ImVec2(250 - (430/2), 155));
+            ImGui::PushTextWrapPos(470);
+            ImGui::TextWrapped("%s", pinned.value().c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::SetCursorPos(ImVec2(250 - (430/2), 192));
+            if(ImGui::Button("Forget certificate and sign-in", ImVec2(250, 28)))
+                vision::forget_server(ip_storage);
         }
 
         ImGui::EndPopup();

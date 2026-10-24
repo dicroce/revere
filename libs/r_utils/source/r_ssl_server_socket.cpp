@@ -2,6 +2,7 @@
 #include "r_utils/r_socket_address.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_logger.h"
+#include "r_utils/r_tls_fingerprint.h"
 
 extern "C" {
 #include <mbedtls/error.h>
@@ -127,22 +128,7 @@ r_ssl_server_config::~r_ssl_server_config()
 
 string r_ssl_server_config::fingerprint_sha256() const
 {
-    unsigned char hash[32];
-    int ret = mbedtls_sha256(_crt.raw.p, _crt.raw.len, hash, 0);
-    if(ret != 0)
-        R_THROW(("mbedtls_sha256() failed: %s", _mbedtls_err(ret).c_str()));
-
-    static const char* hex = "0123456789ABCDEF";
-    string out;
-    out.reserve(32 * 3);
-    for(size_t i = 0; i < 32; ++i)
-    {
-        if(i > 0)
-            out.push_back(':');
-        out.push_back(hex[hash[i] >> 4]);
-        out.push_back(hex[hash[i] & 0x0f]);
-    }
-    return out;
+    return tls_fingerprint_sha256(_crt.raw.p, _crt.raw.len);
 }
 
 static void _format_x509_time(time_t t, char out[15])

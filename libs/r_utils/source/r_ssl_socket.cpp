@@ -1,6 +1,7 @@
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_socket_address.h"
 #include "r_utils/r_exception.h"
+#include "r_utils/r_tls_fingerprint.h"
 #include <stdexcept>
 #include <cstring>
 
@@ -292,6 +293,16 @@ bool r_ssl_socket::wait_till_recv_wont_block(uint64_t& millis) const
 
     // Otherwise wait for underlying socket to have data
     return _sok.wait_till_recv_wont_block(millis);
+}
+
+std::string r_ssl_socket::peer_cert_fingerprint_sha256() const
+{
+    if (!_valid)
+        return std::string();
+    const mbedtls_x509_crt* crt = mbedtls_ssl_get_peer_cert(&_ssl);
+    if (!crt || !crt->raw.p || crt->raw.len == 0)
+        return std::string();
+    return tls_fingerprint_sha256(crt->raw.p, crt->raw.len);
 }
 
 bool r_ssl_socket::peer_closed() const

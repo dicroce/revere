@@ -1073,6 +1073,7 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
 
         r_http::r_client_response res;
         res.read_response(*sok);
+        note_status(revere_ip, res.get_status());
 
         if(res.is_success())
         {

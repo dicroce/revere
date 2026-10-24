@@ -49,6 +49,7 @@ public:
       TEST(test_r_utils::test_ssl_server_socket_roundtrip);
       TEST(test_r_utils::test_ssl_server_socket_rejects_plaintext_client);
       TEST(test_r_utils::test_ssl_server_socket_threaded_server);
+      TEST(test_r_utils::test_ssl_client_sees_server_fingerprint);
       TEST(test_r_utils::test_local_api_token_roundtrip);
       TEST(test_r_utils::test_local_api_token_loopback_hosts);
       TEST(test_r_utils::test_udp_send);
@@ -148,6 +149,7 @@ public:
     void test_ssl_server_socket_roundtrip();
     void test_ssl_server_socket_rejects_plaintext_client();
     void test_ssl_server_socket_threaded_server();
+    void test_ssl_client_sees_server_fingerprint();
     void test_local_api_token_roundtrip();
     void test_local_api_token_loopback_hosts();
     void test_udp_send();

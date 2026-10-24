@@ -124,6 +124,7 @@ namespace network_safe
 
                 r_http::r_client_response response;
                 response.read_response(*sok);
+                vision::note_status(host, response.get_status());
 
                 result.status_code = response.is_success() ? 200 : 500; // Simplified status handling
                 auto body_maybe = response.get_body_as_string();

@@ -28,6 +28,7 @@ vector<sidebar_list_ui_item> vision::query_cameras(const string& ip_address)
 
     r_client_response resp;
     resp.read_response(*sok);
+    note_status(ip_address, resp.get_status());
 
     auto response_txt = resp.get_body_as_string();
 
@@ -63,6 +64,7 @@ vector<uint8_t> vision::query_key(const string& ip_address, const string& camera
 
     r_client_response response;
     response.read_response(*sok);
+    note_status(ip_address, response.get_status());
 
     sok->close();
 
@@ -85,6 +87,7 @@ contents_result vision::query_segments(const configure_state& cs, const std::str
 
     r_client_response resp;
     resp.read_response(*sok);
+    note_status(maybe_revere_ipv4.value(), resp.get_status());
     sok->close();
 
     if(resp.get_status() != 200)
@@ -128,6 +131,7 @@ vector<motion_event> vision::query_motion_events(const configure_state& cs, cons
 
     r_client_response resp;
     resp.read_response(*sok);
+    note_status(maybe_revere_ipv4.value(), resp.get_status());
     sok->close();
 
     if(resp.get_status() != 200)
@@ -184,6 +188,7 @@ vector<analytics_event> vision::query_analytics(const configure_state& cs, const
 
     r_client_response resp;
     resp.read_response(*sok);
+    note_status(maybe_revere_ipv4.value(), resp.get_status());
 
     sok->close();
 
@@ -241,6 +246,7 @@ int vision::query_export_progress(const configure_state& cs, const string& expor
 
         r_client_response resp;
         resp.read_response(*sok);
+        note_status(ip, resp.get_status());
         sok->close();
 
         if(resp.get_status() == 404)

@@ -16,6 +16,7 @@
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_ssl_server_socket.h"
 #include "r_utils/r_local_api_token.h"
+#include "r_utils/r_tls_fingerprint.h"
 #include "r_utils/r_udp_receiver.h"
 #include "r_utils/r_udp_sender.h"
 #include "r_utils/r_udp_socket.h"
@@ -2782,4 +2783,47 @@ void test_r_utils::test_local_api_token_loopback_hosts()
     RTF_ASSERT(!r_local_api_token::is_loopback_host(""));
 
     RTF_ASSERT(r_local_api_token::bearer("abc") == "Bearer abc");
+}
+
+
+// What a pinning client sees is exactly what the server reports (and so what
+// Revere's UI shows the user to compare against).
+void test_r_utils::test_ssl_client_sees_server_fingerprint()
+{
+    auto pems = r_ssl_server_config::generate_self_signed();
+    auto cfg = make_shared<r_ssl_server_config>(pems.first, pems.second);
+
+    int port = RTF_NEXT_PORT();
+    r_ssl_server_socket listener(cfg);
+    listener.bind(port, "127.0.0.1");
+    listener.listen();
+
+    thread t([&](){
+        try
+        {
+            auto conn = listener.accept();
+            uint8_t b = 0;
+            r_networking::r_recv(conn, &b, 1);
+            r_networking::r_send(conn, &b, 1);
+        }
+        catch(...) {}
+    });
+
+    r_ssl_socket client(false);
+    RTF_ASSERT(client.peer_cert_fingerprint_sha256().empty());   // not connected yet
+    client.connect("127.0.0.1", port);
+    auto seen = client.peer_cert_fingerprint_sha256();
+    RTF_ASSERT(seen == cfg->fingerprint_sha256());
+    RTF_ASSERT(seen.size() == 95);
+
+    uint8_t b = 7;
+    r_networking::r_send(client, &b, 1);
+    r_networking::r_recv(client, &b, 1);
+    client.close();
+    t.join();
+
+    // Hashing helper agrees on known input: SHA-256("abc").
+    auto abc = tls_fingerprint_sha256((const uint8_t*)"abc", 3);
+    RTF_ASSERT(abc.substr(0, 11) == "BA:78:16:BF");
+    RTF_ASSERT(abc.substr(abc.size() - 11) == "F2:00:15:AD");
 }

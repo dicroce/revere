@@ -32,6 +32,7 @@
 #include "r_ui_utils/font_catalog.h"
 #include "r_ui_utils/theme.h"
 #include "r_ui_utils/wizard.h"
+#include "revere_api.h"
 #include "r_ui_utils/texture_loader.h"
 
 // Define the fonts global variable for this app
@@ -306,8 +307,30 @@ std::thread system_info_thread(
                 auto maybe_ip = cfg.get_revere_ipv4();
                 if(update_ui && !maybe_ip.is_null())
                 {
+                    auto host = maybe_ip.value();
 
-                    auto result = query_cameras(cfg.get_revere_ipv4().value());
+                    // A remote Revere needs its certificate confirmed and a
+                    // sign-in first; the UI thread asks the user (see
+                    // _remote_auth_ui). Until then, say so instead of failing.
+                    auto problem = pending_identity_problem();
+                    if(!problem.is_null() && problem.value().host == host)
+                    {
+                        ru.cameras.clear();
+                        ru.status_text = "Confirm the certificate of Revere at " + host + ".";
+                        update_q.post(ru);
+                        this_thread::sleep_for(chrono::milliseconds(500));
+                        continue;
+                    }
+                    if(session_needed(host))
+                    {
+                        ru.cameras.clear();
+                        ru.status_text = "Sign in to Revere at " + host + ".";
+                        update_q.post(ru);
+                        this_thread::sleep_for(chrono::milliseconds(500));
+                        continue;
+                    }
+
+                    auto result = query_cameras(host);
 
                     {
                         ru.cameras = result;
@@ -317,6 +340,12 @@ std::thread system_info_thread(
                         update_ui = false;
                     }
                 }
+            }
+            catch(const untrusted_server& e)
+            {
+                // Recorded for the UI (pending_identity_problem); the next pass
+                // shows the "confirm the certificate" status.
+                R_LOG_WARNING("%s", e.what());
             }
             catch(const std::exception& e)
             {
@@ -363,6 +392,190 @@ void _pop_export_folder()
     if (result != 0)
         R_LOG_ERROR("open failed for exports folder: %s (exit code: %d)", export_dir.c_str(), result);
 #endif
+}
+
+// Trust and sign-in for a remote Revere (revere_api.h). Drawn every frame while
+// no other wizard dialog is up. Network work (signing in) runs on a worker
+// thread so the UI never blocks on it.
+struct remote_auth_ui
+{
+    char password[256] {0};
+    string error;
+    // Host whose sign-in the user cancelled: don't nag again until they change
+    // the address or reopen Configure.
+    string dismissed_host;
+
+    mutex lock;
+    thread worker;
+    bool busy {false};
+    bool done {false};
+    string result_error;
+
+    ~remote_auth_ui()
+    {
+        if(worker.joinable())
+            worker.join();
+    }
+};
+
+static void _wipe(char* buf, size_t len)
+{
+    volatile char* p = buf;
+    for(size_t i = 0; i < len; ++i)
+        p[i] = 0;
+}
+
+static void _remote_auth_ui(configure_state& cfg, remote_auth_ui& st, bool& update_ui)
+{
+    auto maybe_ip = cfg.get_revere_ipv4();
+    if(maybe_ip.is_null() || !is_remote(maybe_ip.value()))
+        return;
+    auto host = maybe_ip.value();
+
+    // 1. Certificate trust.
+    auto problem = pending_identity_problem();
+    if(!problem.is_null() && problem.value().host == host)
+    {
+        auto p = problem.value();
+        bool first = p.pinned.empty();
+        const char* title = first ? "Confirm Revere's identity" : "Revere's certificate changed";
+        ImGui::OpenPopup(title);
+        ImGui::SetNextWindowSize(ImVec2(620, 0));
+        if(ImGui::BeginPopupModal(title, NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::PushTextWrapPos(600);
+            if(first)
+            {
+                ImGui::TextWrapped("This is the first connection to Revere at %s. Check that this fingerprint matches the one Revere shows on that computer before trusting it:", host.c_str());
+            }
+            else
+            {
+                ImGui::TextWrapped("Revere at %s presented a different certificate than before. If Revere wasn't reinstalled or its certificate regenerated, someone may be intercepting the connection: don't trust it.", host.c_str());
+                ImGui::Spacing();
+                ImGui::TextUnformatted("Previously trusted:");
+                ImGui::TextWrapped("%s", p.pinned.c_str());
+            }
+            ImGui::Spacing();
+            ImGui::TextUnformatted(first ? "Fingerprint (SHA-256):" : "Now presented:");
+            ImGui::TextWrapped("%s", p.presented.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::Spacing();
+
+            if(ImGui::Button(first ? "Trust" : "Trust the new certificate", ImVec2(first ? 90.0f : 220.0f, 30)))
+            {
+                try
+                {
+                    trust_server(host, p.presented);
+                    st.dismissed_host.clear();
+                    update_ui = true;
+                }
+                catch(const std::exception& ex)
+                {
+                    R_LOG_ERROR("vision: could not save trusted certificate: %s", ex.what());
+                }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel", ImVec2(90, 30)))
+            {
+                dismiss_identity_problem();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        return;
+    }
+
+    // 2. Sign-in.
+    {
+        lock_guard<mutex> g(st.lock);
+        if(st.done)
+        {
+            st.done = false;
+            st.busy = false;
+            if(st.worker.joinable())
+                st.worker.join();
+            if(st.result_error.empty())
+            {
+                st.error.clear();
+                update_ui = true;
+            }
+            else st.error = st.result_error;
+        }
+    }
+
+    if(!session_needed(host) || st.dismissed_host == host)
+        return;
+
+    const char* title = "Sign in to Revere";
+    ImGui::OpenPopup(title);
+    ImGui::SetNextWindowSize(ImVec2(460, 0));
+    if(ImGui::BeginPopupModal(title, NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        bool busy;
+        {
+            lock_guard<mutex> g(st.lock);
+            busy = st.busy;
+        }
+
+        ImGui::TextWrapped("Revere at %s requires its password.", host.c_str());
+        ImGui::Spacing();
+        if(ImGui::IsWindowAppearing())
+            ImGui::SetKeyboardFocusHere();
+        bool submit = ImGui::InputText("##revere_password", st.password, sizeof(st.password),
+                                       ImGuiInputTextFlags_Password | ImGuiInputTextFlags_EnterReturnsTrue);
+        if(!st.error.empty())
+        {
+            ImGui::PushTextWrapPos(440);
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.45f, 1.0f), "%s", st.error.c_str());
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::Spacing();
+
+        if(busy)
+            ImGui::TextUnformatted("Signing in...");
+        else
+        {
+            if((ImGui::Button("Sign in", ImVec2(90, 30)) || submit) && st.password[0] != 0)
+            {
+                string password(st.password);
+                _wipe(st.password, sizeof(st.password));
+                if(st.worker.joinable())
+                    st.worker.join();
+                {
+                    lock_guard<mutex> g(st.lock);
+                    st.busy = true;
+                    st.done = false;
+                    st.result_error.clear();
+                }
+                st.worker = thread([&st, host, password]() mutable {
+                    string err;
+                    try
+                    {
+                        login(host, password);
+                    }
+                    catch(const std::exception& ex)
+                    {
+                        err = ex.what();
+                    }
+                    for(auto& c : password)
+                        c = 0;
+                    lock_guard<mutex> g(st.lock);
+                    st.result_error = err;
+                    st.done = true;
+                });
+            }
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel", ImVec2(90, 30)))
+            {
+                _wipe(st.password, sizeof(st.password));
+                st.error.clear();
+                st.dismissed_host = host;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
 }
 
 bool _revere_is_loopback(const configure_state& cfg)
@@ -702,6 +915,8 @@ int main(int argc, char** argv)
         r_ui_utils::wizard configure_wizard;
         configure_configure_wizard(configure_wizard, cfg_state, window, ui_state);
 
+        remote_auth_ui remote_auth;
+
         pipeline_host ph(cfg_state, renderer);
         ph.start();
 
@@ -943,7 +1158,9 @@ int main(int argc, char** argv)
                     [&close_requested](){
                         close_requested = true;
                     },
-                    [&configure_wizard](){
+                    [&configure_wizard, &remote_auth](){
+                        // Reopening Configure brings back a cancelled sign-in.
+                        remote_auth.dismissed_host.clear();
                         configure_wizard.next("configure");
                     },
                     [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_ONE_BY_ONE);},
@@ -1346,6 +1563,8 @@ int main(int argc, char** argv)
             //ImGui::ShowDemoWindow();
 
             configure_wizard();
+            if(!configure_wizard.active())
+                _remote_auth_ui(cfg_state, remote_auth, update_ui);
             
             if(ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_IN_PROGRESS ||
                ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_FINISHED_SUCCESS)
