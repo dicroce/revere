@@ -1187,6 +1187,9 @@ static void _playback_entry_point(shared_ptr<playback_restreaming_state> prs)
                         auto frame = bt["frames"][fi]["data"].get_blob();
                         auto ts = bt["frames"][fi]["ts"].get_value<int64_t>();
 
+                        if(ts < prs->min_ts)
+                            continue;
+
                         if(prs->first_ts.is_null())
                             prs->first_ts.set_value(ts);
 
@@ -1249,6 +1252,15 @@ void r_recording_context::_playback_restream_media_configure(GstRTSPMediaFactory
 
     tie(prs->con, prs->playback_duration) = 
         _fetch_contents(_top_dir, _sk->get_devices(), _camera.id, prs->start_time, prs->end_time);
+
+    for(auto& s : prs->con.segments)
+    {
+        if(s.end >= prs->start_time)
+        {
+            prs->min_ts = r_time_utils::tp_to_epoch_millis(s.start);
+            break;
+        }
+    }
 
     tie(prs->has_audio, prs->video_codec_name, prs->video_codec_parameters, prs->audio_codec_name, prs->audio_codec_parameters, prs->video_encoding, prs->maybe_audio_encoding) =
         _fetch_stream_info(prs, _camera.id);
