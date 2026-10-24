@@ -26,6 +26,7 @@
 #include "r_utils/r_algorithms.h"
 #include "r_utils/r_ring_buffer.h"
 #include "r_utils/r_qr_code.h"
+#include "r_utils/r_startup.h"
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -2377,4 +2378,42 @@ void test_r_utils::test_instance_lock_notify()
     r_instance_lock::notify(path);
     RTF_ASSERT(!other.notified());
     _remove_instance_files(path);
+}
+
+// The Exec= of the Linux autostart entry. Run from an AppImage, the executable
+// is inside its temporary mount, which is gone after a reboot: the entry must
+// launch the AppImage file ($APPIMAGE) instead.
+void test_r_utils::test_linux_autostart_exec()
+{
+    using r_utils::r_startup::linux_launch_env;
+    using r_utils::r_startup::linux_autostart_exec;
+    const string mounted = "/tmp/.mount_Revere1a2B3c/usr/bin/revere";
+
+    linux_launch_env appimage;
+    appimage.appimage = "/home/pat/Apps/Revere-x86_64.AppImage";
+    RTF_ASSERT(linux_autostart_exec(appimage, mounted, "--start_minimized") == "/home/pat/Apps/Revere-x86_64.AppImage --start_minimized");
+
+    // Quoted for the Exec key when the path needs it.
+    appimage.appimage = "/home/pat/My Apps/Revere.AppImage";
+    RTF_ASSERT(linux_autostart_exec(appimage, mounted, "--start_minimized") == "\"/home/pat/My Apps/Revere.AppImage\" --start_minimized");
+    appimage.appimage = "/home/pat/a$b\"c";
+    RTF_ASSERT(linux_autostart_exec(appimage, mounted, "") == R"("/home/pat/a\\$b\\"c")");
+
+    // A .deb or other install: the executable's own path.
+    RTF_ASSERT(linux_autostart_exec(linux_launch_env(), "/usr/bin/revere", "--start_minimized") == "/usr/bin/revere --start_minimized");
+    RTF_ASSERT(linux_autostart_exec(linux_launch_env(), "/usr/bin/revere", "") == "/usr/bin/revere");
+
+    // Snap: its stable command, whatever else is set.
+    linux_launch_env snap;
+    snap.snap = "/snap/revere/12";
+    snap.snap_name = "revere";
+    snap.appimage = "/home/pat/Apps/Revere-x86_64.AppImage";
+    RTF_ASSERT(linux_autostart_exec(snap, "/snap/revere/12/bin/revere", "--start_minimized") == "/snap/bin/revere --start_minimized");
+    snap.snap_name.clear();
+    RTF_ASSERT(linux_autostart_exec(snap, "/snap/revere/12/bin/revere", "") == "/snap/bin/revere");
+
+    // Flatpak: its app id, as before.
+    linux_launch_env flatpak;
+    flatpak.flatpak_id = "io.github.dicroce.Revere";
+    RTF_ASSERT(linux_autostart_exec(flatpak, mounted, "--start_minimized") == "io.github.dicroce.Revere --start_minimized");
 }

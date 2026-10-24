@@ -22,6 +22,47 @@
 using namespace r_utils;
 using namespace std;
 
+// One argument of a Desktop Entry Exec key: quoted when it holds a reserved
+// character, with ", `, $ and \ escaped inside the quotes, then \ escaped again
+// for the key's string value (Desktop Entry Specification, "The Exec key").
+static string _desktop_exec_arg(const string& arg)
+{
+    static const string reserved = " \t\n\"'\\><~|&;$*?#()`";
+    if(!arg.empty() && arg.find_first_of(reserved) == string::npos)
+        return arg;
+    string quoted = "\"";
+    for(char c : arg)
+    {
+        if(c == '"' || c == '`' || c == '$' || c == '\\')
+            quoted += '\\';
+        quoted += c;
+    }
+    quoted += "\"";
+    string escaped;
+    for(char c : quoted)
+    {
+        if(c == '\\')
+            escaped += '\\';
+        escaped += c;
+    }
+    return escaped;
+}
+
+string r_utils::r_startup::linux_autostart_exec(const linux_launch_env& env, const string& exe_path, const string& args)
+{
+    string command;
+    if(!env.snap.empty())
+        command = "/snap/bin/" + (env.snap_name.empty() ? string("revere") : env.snap_name);
+    else if(!env.flatpak_id.empty())
+        command = env.flatpak_id;
+    else if(!env.appimage.empty())
+        command = _desktop_exec_arg(env.appimage);
+    else command = _desktop_exec_arg(exe_path);
+    if(!args.empty())
+        command += " " + args;
+    return command;
+}
+
 #ifdef IS_WINDOWS
 
 bool r_utils::r_startup::set_autostart(bool enable, const string& app_name, const string& exe_path, const string& args)
@@ -281,43 +322,22 @@ bool r_utils::r_startup::set_autostart(bool enable, const string& app_name, cons
             }
         }
 
-        string exec_line;
-        string icon_name;
+        const auto env_or_empty = [](const char* name) { const char* v = getenv(name); return v ? string(v) : string(); };
+        r_startup::linux_launch_env env;
+        env.snap = env_or_empty("SNAP");
+        env.snap_name = env_or_empty("SNAP_NAME");
+        env.flatpak_id = env_or_empty("FLATPAK_ID");
+        env.appimage = env_or_empty("APPIMAGE");
+        string exec_line = r_startup::linux_autostart_exec(env, exe_path, args);
 
+        string icon_name = "revere";
         if (snap != nullptr)
-        {
-            // Snap: use /snap/bin/<snapname> as the stable command path
-            const char* snap_name = getenv("SNAP_NAME");
-            exec_line = string("/snap/bin/") + (snap_name ? snap_name : "revere");
-            if (!args.empty())
-                exec_line += " " + args;
-
             icon_name = "snap.revere.revere";
-
-            R_LOG_INFO("Configuring autostart for snap installation");
-        }
         else if (flatpak_id != nullptr)
-        {
-            // Flatpak uses reverse-DNS app ID (e.g., io.github.dicroce.Revere)
-            exec_line = string(flatpak_id);
-            if (!args.empty())
-                exec_line += " " + args;
-
             icon_name = flatpak_id;
 
-            R_LOG_INFO("Configuring autostart for flatpak installation");
-        }
-        else
-        {
-            // Native installation - use full executable path
-            exec_line = exe_path;
-            if (!args.empty())
-                exec_line += " " + args;
-
-            icon_name = "revere";
-
-            R_LOG_INFO("Configuring autostart for native installation");
-        }
+        R_LOG_INFO("Configuring autostart (%s): Exec=%s", snap ? "snap" : flatpak_id ? "flatpak" : !env.appimage.empty() ? "AppImage" : "native",
+                   exec_line.c_str());
 
         // Create .desktop file
         string content =
