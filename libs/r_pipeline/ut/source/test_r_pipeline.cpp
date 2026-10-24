@@ -141,6 +141,20 @@ void test_r_pipeline::test_rtsp_protocol_flags()
     RTF_ASSERT(rtsp_protocol_flags("bogus") == 0);
 }
 
+void test_r_pipeline::test_rtsp_jitterbuffer_latency()
+{
+    gst_init(nullptr, nullptr);
+    GstElement* rtspsrc = gst_element_factory_make("rtspsrc", nullptr);
+    RTF_ASSERT(rtspsrc != nullptr);
+    guint latency = 0;
+    g_object_get(G_OBJECT(rtspsrc), "latency", &latency, NULL);
+    RTF_ASSERT(latency == 2000); // GStreamer's default, what every camera had
+    rtsp_set_jitterbuffer_latency(rtspsrc);
+    g_object_get(G_OBJECT(rtspsrc), "latency", &latency, NULL);
+    RTF_ASSERT(latency == (guint)RTSP_JITTERBUFFER_LATENCY_MS && latency == 200);
+    gst_object_unref(rtspsrc);
+}
+
 void test_r_pipeline::test_rtsp_probe_retry_over_udp()
 {
     // Answered over TCP but no video: the camera won't stream over TCP
