@@ -36,14 +36,16 @@ PIXEL_TILES = {
     48: (12, 35, 2, 21, 26),
 }
 # size -> (first row, first column, run length per row): Vision's play stamp on the
-# pixel grid. Each row is a run of pixels from the first column; the runs grow by
-# 2 per row to the middle (a clean 1:2 stair edge, close to the geometry's slope),
-# centred vertically like the square stamp and, at 32 and 48, pushed right like the
-# geometry (16 has no room to spare).
+# pixel grid. Each row is a run of pixels from the first column. At 32 and 48 the
+# runs start at 2 and grow by 2 per row to the middle, so the columns come in equal
+# pairs and each slanted edge steps 2 across for every 1 down, like the geometry; a
+# lone first column would read as an arrow's stem. The triangle is square (6x6,
+# 8x8), centred vertically and 1 px right of centre, as the geometry is. 16 has a
+# 6 px interior, so it gets the smallest triangle that keeps a gap to the outline.
 PLAY_STAMPS = {
     16: (6, 7, (1, 2, 2, 1)),
-    32: (13, 14, (1, 3, 5, 5, 3, 1)),
-    48: (20, 22, (1, 3, 5, 7, 7, 5, 3, 1)),
+    32: (13, 14, (2, 4, 6, 6, 4, 2)),
+    48: (20, 21, (2, 4, 6, 8, 8, 6, 4, 2)),
 }
 PLAY_TRIANGLE = ((27.5, 24.5), (41.5, 32.0), (27.5, 39.5))  # on the 64 grid
 SMOOTH_SIZE = 256
