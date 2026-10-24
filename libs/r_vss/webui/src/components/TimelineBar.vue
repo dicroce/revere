@@ -2,9 +2,9 @@
   <div class="timeline">
     <div class="controls">
       <div class="left">
-        <button class="ctrl-btn" @click="shiftBack" :disabled="exporting">&#8592;</button>
+        <button class="ctrl-btn" @click="shiftBack" :disabled="exporting || atOldest">&#8592;</button>
         <button class="ctrl-btn" @click="shiftForward" :disabled="exporting">&#8594;</button>
-        <span class="time-label">{{ fmtTime(playheadTime) }}</span>
+        <span class="time-label">{{ fmtPlayhead(playheadTime) }}</span>
       </div>
       <div class="right">
         <span v-if="exportError && !exporting" class="export-error" @click="exportError = ''" title="Dismiss">{{ exportError }}</span>
@@ -16,11 +16,23 @@
         </template>
 
         <template v-else>
+          <input
+            type="datetime-local"
+            class="goto-input"
+            step="1"
+            title="Go to date/time"
+            :value="toLocalInput(playheadTime)"
+            :min="oldestTs !== null ? toLocalInput(new Date(oldestTs)) : undefined"
+            :max="toLocalInput(new Date())"
+            @change="onGoto"
+          />
           <select class="zoom-sel" v-model="rangeMinutes" @change="onZoomChange">
             <option :value="10">10m</option>
             <option :value="20">20m</option>
             <option :value="60">1h</option>
             <option :value="120">2h</option>
+            <option :value="240">4h</option>
+            <option :value="480">8h</option>
           </select>
           <button class="ctrl-btn" @click="startExport">Export</button>
           <button class="ctrl-btn" :class="{ active: isLive }" @click="goLive">Live</button>
@@ -39,7 +51,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
   cameraId:   String,
@@ -63,6 +75,11 @@ const segments        = ref([])
 const motionEvents    = ref([])
 const analyticsEvents = ref([])
 const dragging        = ref(false)
+// Oldest recorded timestamp (ms) for this camera, from /contents first_ts (camera-wide,
+// not range-bound). Null until the first successful /contents. Bounds backward pan
+// and the go-to picker, like vision's scrollback_limit.
+const oldestTs        = ref(null)
+const atOldest        = computed(() => oldestTs.value !== null && rangeStart.value.getTime() <= oldestTs.value)
 
 // Export selection state. When exportMode is true, the user is positioning
 // the end marker; the original playhead is frozen as the start. Once they
@@ -102,15 +119,36 @@ function fmtTime(d) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+function fmtDate(d) {
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+// Playhead readout: "Oct 23, 2026  09:41:12" (local) so the day is visible after panning back.
+function fmtPlayhead(d) {
+  return `${fmtDate(d)}  ${fmtTime(d)}`
+}
+
 function fmtLabel(ms) {
-  return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const d = new Date(ms)
+  const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  // Prefix the date on the tick where the local day rolls over within the visible range.
+  if (d.getHours() === 0 && d.getMinutes() === 0)
+    return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${hm}`
+  return hm
+}
+
+// Local-time "YYYY-MM-DDTHH:MM:SS" for <input type="datetime-local">.
+function toLocalInput(d) {
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
 function tickIntervals(rangeMs) {
   if (rangeMs <=  10 * 60000) return [  60000,  120000]
   if (rangeMs <=  20 * 60000) return [  60000,  300000]
   if (rangeMs <=  60 * 60000) return [ 300000,  900000]
-  return                              [ 600000, 1800000]
+  if (rangeMs <= 240 * 60000) return [ 600000, 1800000]
+  return                              [ 900000, 3600000]
 }
 
 // --- data ---
@@ -127,6 +165,10 @@ async function loadData() {
     ])
     if (segRes.ok) {
       const d = await segRes.json()
+      if (d.first_ts) {
+        const ft = new Date(d.first_ts).getTime()
+        if (!isNaN(ft)) oldestTs.value = ft
+      }
       segments.value = (d.segments || []).map(s => ({
         start: new Date(s.start_time).getTime(),
         end:   new Date(s.end_time).getTime()
@@ -177,11 +219,46 @@ function onZoomChange() {
 }
 
 function shiftBack() {
+  const d       = rangeMinutes.value * 60000 * 0.2
+  const rangeMs = rangeEnd.value.getTime() - rangeStart.value.getTime()
+  // Clamp so the range never starts before the oldest recording.
+  let newStart = rangeStart.value.getTime() - d
+  if (oldestTs.value !== null) newStart = Math.max(newStart, oldestTs.value)
+  if (newStart >= rangeStart.value.getTime()) return
   isLive.value = false
-  const d = rangeMinutes.value * 60000 * 0.2
-  rangeStart.value = new Date(rangeStart.value.getTime() - d)
-  rangeEnd.value   = new Date(rangeEnd.value.getTime()   - d)
+  rangeStart.value = new Date(newStart)
+  rangeEnd.value   = new Date(newStart + rangeMs)
   loadData()
+}
+
+// Go-to date/time: recenter the range on the chosen local time (clamped to
+// [oldest recording, now]) and seek there via the same 'seek' path as a scrub.
+function onGoto(e) {
+  if (exporting.value || exportMode.value) return
+  const v = e.target.value
+  if (!v) return
+  let ms = new Date(v).getTime()   // datetime-local strings parse as local time
+  if (isNaN(ms)) return
+  const now = Date.now()
+  if (ms >= now) { goLive(); return }
+  if (oldestTs.value !== null) ms = Math.max(ms, oldestTs.value)
+
+  const rangeMs = rangeMinutes.value * 60000
+  let start = ms - rangeMs / 2
+  let end   = start + rangeMs
+  if (end > now) { end = now; start = end - rangeMs }                        // keep the window ending at/before now
+  if (oldestTs.value !== null && start < oldestTs.value) {                   // ...but never starting before oldest
+    start = oldestTs.value
+    end   = Math.min(start + rangeMs, now)
+  }
+  rangeStart.value = new Date(start)
+  rangeEnd.value   = new Date(end)
+
+  isLive.value       = false
+  playheadTime.value = new Date(ms)
+  loadData()
+  clearTimeout(seekTimer)
+  emit('seek', playheadTime.value.toISOString())
 }
 
 function shiftForward() {
@@ -600,8 +677,21 @@ onUnmounted(() => {
   font-size: 0.8rem;
   color: #aaa;
   font-variant-numeric: tabular-nums;
-  min-width: 5.5rem;
+  min-width: 11rem;
   padding-left: 0.25rem;
+  white-space: pre;
+}
+
+.goto-input {
+  background: #1e1e1e;
+  border: 1px solid #3a3a3a;
+  color: #ccc;
+  padding: 0.1rem 0.25rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  color-scheme: dark;
+  cursor: pointer;
 }
 
 .zoom-sel {
