@@ -86,6 +86,7 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 
 [InstallDelete]
 Type: files; Name: "{app}\motion_plugins\yolov8_person_plugin.dll"
+Type: files; Name: "{app}\motion_plugins\test_plugin.dll"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\gstreamer_plugins"
