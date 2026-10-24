@@ -1094,6 +1094,8 @@ int main(int argc, char** argv)
                                 ph.sync_play_cb(ui_state.mcs.obos.cbs.get_range().second);
                             else if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_LIVE)
                                 ph.sync_live_cb();
+                            else if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_PAUSE)
+                                ph.sync_pause_cb();
                             else
                                 ph.control_bar_button_cb(name, type);
                         },
