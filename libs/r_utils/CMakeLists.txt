@@ -41,6 +41,16 @@ endif()
 
 FetchContent_MakeAvailable(mbedtls)
 
+# Every consumer of the mbedtls headers (not just r_utils: libdatachannel in
+# revere_cloud includes them too) must find threading_alt.h, so attach the
+# directory to the mbedtls targets themselves and let it propagate.
+if(WIN32)
+    foreach(_mbed_target mbedcrypto mbedx509 mbedtls)
+        target_include_directories(${_mbed_target} PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls>)
+    endforeach()
+endif()
+
 file(GLOB R_UTILS_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/r_utils/*.h
 )
