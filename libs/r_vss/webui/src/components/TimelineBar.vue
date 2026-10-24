@@ -29,10 +29,11 @@
     <canvas
       ref="canvas"
       class="canvas"
-      @mousedown="onMouseDown"
-      @mousemove="onMouseMove"
-      @mouseup="onMouseUp"
-      @mouseleave="onMouseLeave"
+      @pointerdown="onPointerDown"
+      @pointermove="onPointerMove"
+      @pointerup="onPointerUp"
+      @pointercancel="onPointerUp"
+      @lostpointercapture="onPointerUp"
     />
   </div>
 </template>
@@ -337,10 +338,18 @@ function handleSeek(e) {
   seekTimer = setTimeout(() => emit('seek', playheadTime.value.toISOString()), 100)
 }
 
-function onMouseDown(e) { if (exporting.value) return; dragging.value = true;  handleSeek(e) }
-function onMouseMove(e) { if (dragging.value)  handleSeek(e) }
-function onMouseUp()    { dragging.value = false }
-function onMouseLeave() { dragging.value = false }
+// Pointer events cover mouse, touch and pen with one code path. Capturing the
+// pointer on down keeps move/up flowing to the canvas even when the finger or
+// cursor leaves it mid-drag (so no separate "leave" handler is needed).
+function onPointerDown(e) {
+  if (exporting.value) return
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  dragging.value = true
+  try { canvas.value.setPointerCapture(e.pointerId) } catch (_) {}
+  handleSeek(e)
+}
+function onPointerMove(e) { if (dragging.value) handleSeek(e) }
+function onPointerUp()    { dragging.value = false }
 
 // Follow playback: advance the playhead marker as CameraPlayer reports progress.
 // Ignored while the user is dragging or selecting an export range so we don't
@@ -499,6 +508,14 @@ onUnmounted(() => {
   if (exportPoll) clearInterval(exportPoll)
   if (ro) ro.disconnect()
 })
+
+// --- host API (keyboard shortcuts in CameraView) ---------------------------
+// Same guard as the on-screen buttons: no panning / going live mid-export.
+defineExpose({
+  shiftBack:    () => { if (!exporting.value) shiftBack() },
+  shiftForward: () => { if (!exporting.value) shiftForward() },
+  goLive:       () => { if (!exporting.value) goLive() },
+})
 </script>
 
 <style scoped>
@@ -582,5 +599,6 @@ onUnmounted(() => {
   display: block;
   cursor: crosshair;
   min-height: 0;
+  touch-action: none;   /* scrubbing by touch must not scroll/zoom the page */
 }
 </style>

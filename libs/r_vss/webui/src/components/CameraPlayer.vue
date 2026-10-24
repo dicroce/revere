@@ -557,6 +557,9 @@ onUnmounted(() => {
   clearTimeout(resizeDebounce)
   if (resizeObs) resizeObs.disconnect()
 })
+
+// --- host API (keyboard shortcuts in CameraView) ---------------------------
+defineExpose({ togglePlay, toggleMute })
 </script>
 
 <style scoped>
