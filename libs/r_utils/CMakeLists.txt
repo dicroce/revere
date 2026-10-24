@@ -31,6 +31,14 @@ if(C_HAS_ZERO_INIT_PADDING_BITS)
     add_compile_options($<$<COMPILE_LANGUAGE:C>:-fzero-init-padding-bits=unions>)
 endif()
 
+# Windows builds mbedtls with MBEDTLS_THREADING_ALT (see include/mbedtls/
+# user_config.h); mbedtls/threading.h then does #include "threading_alt.h",
+# which lives next to our config. Directory-scoped so the mbedtls targets
+# created by FetchContent_MakeAvailable below pick it up.
+if(WIN32)
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls)
+endif()
+
 FetchContent_MakeAvailable(mbedtls)
 
 file(GLOB R_UTILS_HEADERS
@@ -53,6 +61,16 @@ target_include_directories(
     $<BUILD_INTERFACE:${mbedtls_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+
+# Consumers of r_utils headers reach mbedtls/threading.h transitively and need
+# threading_alt.h too (Windows only, see above).
+if(WIN32)
+    target_include_directories(
+        r_utils PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls>
+        $<INSTALL_INTERFACE:include/mbedtls>
+    )
+endif()
 
 target_link_libraries(
     r_utils PUBLIC

@@ -21,3 +21,19 @@
 // mbedtls_ssl_config/mbedtls_ssl_context, so it lives here, where everything
 // built against these headers sees it.
 #define MBEDTLS_SSL_DTLS_SRTP
+
+/*
+ * Thread safety. TLS 1.3 is enabled above, which routes handshake key
+ * operations through the process-wide PSA key store; that store is only
+ * thread-safe with MBEDTLS_THREADING_C. Concurrent handshakes (several ONVIF
+ * sessions, or the TLS web server's worker pool) otherwise corrupt each other
+ * and fail with MBEDTLS_ERR_ERROR_GENERIC_ERROR / CORRUPTION_DETECTED.
+ * POSIX uses mbedTLS's pthread mutexes; Windows uses our CRITICAL_SECTION shim
+ * (include/mbedtls/threading_alt.h, installed by source/r_mbedtls_threading.cpp).
+ */
+#define MBEDTLS_THREADING_C
+#if defined(_WIN32)
+#define MBEDTLS_THREADING_ALT
+#else
+#define MBEDTLS_THREADING_PTHREAD
+#endif
