@@ -6,7 +6,7 @@
  *
  * mbedTLS ships a pthread implementation but nothing for Win32, so on Windows
  * we supply our own mutex built on a CRITICAL_SECTION. The function pointers
- * are installed by r_utils at load time (see source/r_mbedtls_threading.cpp)
+ * are installed at load time by mbedtls_threading/r_mbedtls_threading.cpp,
  * via mbedtls_threading_set_alt(), before any other mbedTLS call.
  *
  * Why threading is on at all: this build enables TLS 1.3 (and PSA crypto), and
@@ -30,6 +30,19 @@ typedef struct mbedtls_threading_mutex_t
     CRITICAL_SECTION cs;
     char is_valid;
 } mbedtls_threading_mutex_t;
+
+/*
+ * Every object that includes this header (every mbedTLS source using its
+ * threading layer) asks the linker to include the installer in
+ * mbedtls_threading/r_mbedtls_threading.cpp, which is compiled into the
+ * mbedcrypto library. So any DLL that ends up with a copy of mbedTLS's
+ * threading code also gets the static initializer that sets its mutex
+ * functions; without it that copy's locks all fail (mbedTLS is static, and
+ * each DLL linking it has its own copy of these globals).
+ */
+#if defined(_MSC_VER)
+#pragma comment(linker, "/include:r_mbedtls_threading_anchor")
+#endif
 
 #else
 #error "threading_alt.h is only used on Windows; other platforms use MBEDTLS_THREADING_PTHREAD."

@@ -6,6 +6,7 @@
 #include "r_http/r_http_exception.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_ssl_server_socket.h"
+#include "r_vss/r_ws_auth.h"
 #include "r_utils/r_macro.h"
 #include "r_disco/r_devices.h"
 #include "r_disco/r_agent.h"
@@ -138,6 +139,21 @@ private:
     void _add_routes(r_http::r_web_server<SOK_T>& server);
     // True once either server has begun shutting down (they stop together).
     bool _stopping() const;
+
+    // Session endpoints: /session turns a bearer token into the browser's
+    // session cookie (for a web UI restoring a stored token); /logout ends the
+    // session and clears the cookie.
+    r_http::r_server_response _post_session(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _post_logout(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+
+    // The bearer token or (for GET/HEAD) session cookie a request carries.
+    static r_utils::r_nullable<std::string> _request_token(const r_http::r_server_request& request);
+    // The client's address, or "" if it can't be read.
+    static std::string _peer_ip(r_utils::r_socket_base& conn);
+    // True when conn is the HTTPS listener's.
+    static bool _is_tls(r_utils::r_socket_base& conn);
+    // Mints the local API token and publishes it to <top_dir>/local_api_token.
+    void _publish_local_token();
     // Loads <top_dir>/tls/server.{crt,key}, generating and persisting a
     // self-signed pair on first run.
     void _load_or_create_tls();
@@ -321,18 +337,12 @@ private:
     std::mutex _storage_mutex;
     std::mutex _measure_mutex;
 
-    // Auth state for the camera-management endpoints. The system password is
-    // stored encrypted-at-rest with the OS-protected master key (same scheme as
-    // camera credentials). Login issues a bearer token held only in memory.
+    // Auth state (r_ws_auth.h): session tokens from /login, the per-run local
+    // token for same-user processes, and the per-address login throttle. The
+    // system password itself is stored encrypted-at-rest with the OS-protected
+    // master key (same scheme as camera credentials).
     std::vector<uint8_t> _master_key;
-    std::map<std::string, std::chrono::steady_clock::time_point> _tokens;  // token -> expiry
-    std::mutex _auth_mutex;
-
-    // Brute-force throttle for _post_login. After too many consecutive failures
-    // logins are refused until a cooldown elapses, regardless of correctness.
-    // Guarded by _auth_mutex.
-    int _failed_logins {0};
-    std::chrono::steady_clock::time_point _login_lock_until {};
+    r_ws_auth _auth;
 };
 
 }

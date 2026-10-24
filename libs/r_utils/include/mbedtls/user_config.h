@@ -29,7 +29,8 @@
  * sessions, or the TLS web server's worker pool) otherwise corrupt each other
  * and fail with MBEDTLS_ERR_ERROR_GENERIC_ERROR / CORRUPTION_DETECTED.
  * POSIX uses mbedTLS's pthread mutexes; Windows uses our CRITICAL_SECTION shim
- * (include/mbedtls/threading_alt.h, installed by source/r_mbedtls_threading.cpp).
+ * (include/mbedtls/threading_alt.h, installed by mbedtls_threading/r_mbedtls_threading.cpp,
+ * which is compiled into mbedcrypto so every static copy of mbedTLS gets it).
  */
 #define MBEDTLS_THREADING_C
 #if defined(_WIN32)

@@ -1,14 +1,23 @@
 // Installs the Windows mutex implementation mbedTLS uses when built with
-// MBEDTLS_THREADING_ALT (see include/mbedtls/threading_alt.h). It runs as a
-// static initializer when r_utils loads, which satisfies mbedTLS's requirement
-// that mbedtls_threading_set_alt() be called before any other mbedTLS function.
-// On POSIX mbedTLS uses its own pthread implementation and this file is empty.
+// MBEDTLS_THREADING_ALT (see include/mbedtls/threading_alt.h).
+//
+// mbedTLS is a static library, so every DLL that links its code (r_utils,
+// r_vss, the cloud plugin's libdatachannel, ...) carries a private copy with
+// its own mutex function pointers, which start out as stubs that fail every
+// lock. This file is compiled INTO the mbedcrypto library, and threading_alt.h
+// (included by every mbedTLS source that uses threading) makes the linker pull
+// it in wherever such code is linked. So each copy runs this static
+// initializer when its DLL loads, before anything in that DLL can call into
+// mbedTLS: mbedTLS requires mbedtls_threading_set_alt() before any other call.
 
 extern "C" {
 #include <mbedtls/threading.h>
 }
 
 #if defined(MBEDTLS_THREADING_ALT)
+
+// Referenced by the /include linker directive in threading_alt.h.
+extern "C" int r_mbedtls_threading_anchor = 1;
 
 namespace
 {
@@ -52,8 +61,8 @@ struct _installer
         mbedtls_threading_set_alt(_mutex_init, _mutex_free, _mutex_lock, _mutex_unlock);
     }
     // No mbedtls_threading_free_alt() on teardown: other static objects in the
-    // process may still be using mbedTLS while r_utils unloads, and leaking a
-    // few critical sections at exit is harmless.
+    // module may still be using mbedTLS while it unloads, and leaking a few
+    // critical sections at exit is harmless.
 };
 
 const _installer _install_mbedtls_threading;

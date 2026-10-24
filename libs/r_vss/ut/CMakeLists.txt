@@ -29,6 +29,8 @@ add_executable(
     source/test_r_lag_watchdog.cpp
     include/test_r_keep_awake.h
     source/test_r_keep_awake.cpp
+    include/test_r_ws_auth.h
+    source/test_r_ws_auth.cpp
 )
 
 # What r_vss/r_build_info.h should report, from the root CMakeLists.

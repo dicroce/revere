@@ -49,6 +49,10 @@ if(WIN32)
         target_include_directories(${_mbed_target} PUBLIC
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls>)
     endforeach()
+    # The Windows mutex installer lives inside mbedcrypto itself, so every DLL
+    # that links a copy of mbedTLS also gets it (see threading_alt.h).
+    target_sources(mbedcrypto PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/mbedtls_threading/r_mbedtls_threading.cpp)
 endif()
 
 file(GLOB R_UTILS_HEADERS
@@ -93,7 +97,7 @@ target_link_libraries(
 
 if(WIN32)
     # Windows-specific libraries for r_secure_store (DPAPI and SHGetFolderPath)
-    target_link_libraries(r_utils PUBLIC crypt32 shell32)
+    target_link_libraries(r_utils PUBLIC crypt32 shell32 ole32)
 elseif(APPLE)
     # macOS-specific frameworks for r_startup (Login Items)
     find_package(Threads REQUIRED)

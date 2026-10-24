@@ -15,6 +15,7 @@
 #include "r_utils/r_server_threaded.h"
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_ssl_server_socket.h"
+#include "r_utils/r_local_api_token.h"
 #include "r_utils/r_udp_receiver.h"
 #include "r_utils/r_udp_sender.h"
 #include "r_utils/r_udp_socket.h"
@@ -43,6 +44,7 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 using namespace std;
@@ -2718,4 +2720,66 @@ void test_r_utils::test_ssl_server_socket_threaded_server()
     RTF_ASSERT(errors.empty());
     RTF_ASSERT(ok == N);
     RTF_ASSERT(served == N);
+}
+
+
+// ---------------------------------------------------------------------------
+// r_local_api_token
+// ---------------------------------------------------------------------------
+
+void test_r_utils::test_local_api_token_roundtrip()
+{
+    auto dir = r_fs::temp_file_name(r_fs::working_directory(), "local_token_ut_");
+    r_fs::mkdir_p(dir);
+
+    // Nothing there yet.
+    RTF_ASSERT(r_local_api_token::read(dir).is_null());
+    RTF_ASSERT(r_local_api_token::read("").is_null());
+
+    r_local_api_token::write(dir, "first-token");
+    RTF_ASSERT(r_local_api_token::read(dir).value() == "first-token");
+
+    // Rewritten in place (a Revere restart), surrounding whitespace ignored.
+    r_local_api_token::write(dir, "  second-token\n");
+    RTF_ASSERT(r_local_api_token::read(dir).value() == "second-token");
+
+#ifndef IS_WINDOWS
+    // Owner-only.
+    struct stat st;
+    RTF_ASSERT(::stat(r_local_api_token::path(dir).c_str(), &st) == 0);
+    RTF_ASSERT((st.st_mode & 0777) == 0600);
+#endif
+
+    r_local_api_token::remove(dir);
+    RTF_ASSERT(r_local_api_token::read(dir).is_null());
+    // Removing what isn't there is fine.
+    r_local_api_token::remove(dir);
+
+    // An empty file isn't a token.
+    r_fs::atomic_write_private_file((const uint8_t*)"", 0, r_local_api_token::path(dir));
+    RTF_ASSERT(r_local_api_token::read(dir).is_null());
+    r_local_api_token::remove(dir);
+
+    r_fs::rmdir(dir);
+
+    // Where Revere keeps it by default is knowable.
+    auto top = r_local_api_token::default_top_dir();
+    RTF_ASSERT(!top.empty());
+    RTF_ASSERT(r_string_utils::contains(r_string_utils::to_lower(top), "revere"));
+}
+
+void test_r_utils::test_local_api_token_loopback_hosts()
+{
+    RTF_ASSERT(r_local_api_token::is_loopback_host("127.0.0.1"));
+    RTF_ASSERT(r_local_api_token::is_loopback_host("127.1.2.3"));
+    RTF_ASSERT(r_local_api_token::is_loopback_host("localhost"));
+    RTF_ASSERT(r_local_api_token::is_loopback_host("LocalHost"));
+    RTF_ASSERT(r_local_api_token::is_loopback_host("::1"));
+    RTF_ASSERT(r_local_api_token::is_loopback_host("[::1]"));
+    RTF_ASSERT(!r_local_api_token::is_loopback_host("192.168.1.10"));
+    RTF_ASSERT(!r_local_api_token::is_loopback_host("10.127.0.1"));
+    RTF_ASSERT(!r_local_api_token::is_loopback_host("localhost.evil.com"));
+    RTF_ASSERT(!r_local_api_token::is_loopback_host(""));
+
+    RTF_ASSERT(r_local_api_token::bearer("abc") == "Bearer abc");
 }

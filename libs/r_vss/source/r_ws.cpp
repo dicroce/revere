@@ -11,6 +11,7 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_ssl_server_socket.h"
+#include "r_utils/r_local_api_token.h"
 #include "r_utils/r_blob_tree.h"
 #include "r_utils/r_qr_code.h"
 #include "r_utils/3rdparty/json/json.h"
@@ -25,9 +26,6 @@
 #include "r_av/r_audio_decoder.h"
 #include "r_av/r_audio_encoder.h"
 #include <functional>
-#ifndef IS_WINDOWS
-#include <sys/stat.h>
-#endif
 #include <array>
 #include <fstream>
 #include <filesystem>
@@ -89,10 +87,6 @@ bool is_safe_export_filename(const std::string& name)
 // enqueued jobs is a CPU/disk exhaustion vector.
 constexpr size_t MAX_INFLIGHT_EXPORTS = 8;
 
-// _post_login brute-force throttle parameters.
-constexpr int MAX_FAILED_LOGINS = 5;
-constexpr int LOGIN_LOCKOUT_SECONDS = 30;
-
 // The camera's resolution and framerate from its last recorded key frame
 // (r_vss/r_camera_source_info.h). Empty for a camera that has no recording.
 camera_source_info _camera_source_info(const std::string& top_dir, const r_disco::r_camera& c)
@@ -116,17 +110,26 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     // Handlers are transport-agnostic (they take r_socket_base&); this adapts
     // them to whichever socket type the server is instantiated with, so the
     // same table serves plain HTTP and HTTPS.
+    //
+    // Every route requires a valid token (r_ws_auth.h) except the handful
+    // registered with open_route: what a client needs before it has one.
+    // (The web UI's static files are served by the server's bundle route,
+    // which is open too.)
     using handler = r_http::r_server_response (r_ws::*)(r_utils::r_socket_base&, const r_http::r_server_request&);
-    auto route = [this, &server](int method, const char* path, handler fn)
+    auto add = [this, &server](int method, const char* path, handler fn, bool requires_auth)
     {
         server.add_route(method, path,
-            [this, fn](const r_http::r_web_server<SOK_T>&, SOK_T& conn, const r_http::r_server_request& request)
+            [this, fn, requires_auth](const r_http::r_web_server<SOK_T>&, SOK_T& conn, const r_http::r_server_request& request)
             {
+                if(requires_auth)
+                    _require_auth(request);
                 return (this->*fn)(conn, request);
             });
     };
+    auto route = [&add](int method, const char* path, handler fn) { add(method, path, fn, true); };
+    auto open_route = [&add](int method, const char* path, handler fn) { add(method, path, fn, false); };
 
-    route(METHOD_GET, "/version", &r_ws::_get_version);
+    open_route(METHOD_GET, "/version", &r_ws::_get_version);
     route(METHOD_GET, "/cameras", &r_ws::_get_cameras);
     route(METHOD_GET, "/contents", &r_ws::_get_contents);
     route(METHOD_GET, "/motion_events", &r_ws::_get_motion_events);
@@ -171,9 +174,13 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_GET, "/keep_awake", &r_ws::_get_keep_awake);
     route(METHOD_POST, "/keep_awake", &r_ws::_post_keep_awake);
 
-    route(METHOD_GET, "/auth_status", &r_ws::_get_auth_status);
-    route(METHOD_POST, "/login", &r_ws::_post_login);
-    route(METHOD_POST, "/set_password", &r_ws::_post_set_password);
+    open_route(METHOD_GET, "/auth_status", &r_ws::_get_auth_status);
+    open_route(METHOD_POST, "/login", &r_ws::_post_login);
+    open_route(METHOD_POST, "/logout", &r_ws::_post_logout);
+    // Authenticates itself: the first password may be set without a token
+    // (from this machine only), a change needs a token or the current one.
+    open_route(METHOD_POST, "/set_password", &r_ws::_post_set_password);
+    route(METHOD_POST, "/session", &r_ws::_post_session);
 }
 
 r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_keeper& stream_keeper) :
@@ -211,6 +218,17 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     {
         R_LOG_ERROR("r_ws: TLS setup failed, HTTPS listener disabled: %s", ex.what());
         _tls.reset();
+    }
+
+    // Before the servers start (and before system plugins, which the stream
+    // keeper starts after constructing us): local clients find it at once.
+    try
+    {
+        _publish_local_token();
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_ERROR("r_ws: could not publish the local API token; local clients (vision, MCP, plugins) will be refused: %s", ex.what());
     }
 
     // Load the web UI bundle if present alongside the binary (CWD is set to
@@ -272,11 +290,49 @@ void r_ws::stop()
         _storage_th.join();
     _http.stop();
     _https.stop();
+
+    // Withdraw the local token, but only if the file is still ours.
+    auto ours = _auth.local_token();
+    auto published = r_local_api_token::read(_top_dir);
+    if(!ours.empty() && !published.is_null() && published.value() == ours)
+        r_local_api_token::remove(_top_dir);
 }
 
 bool r_ws::_stopping() const
 {
     return _http.stopping() || _https.stopping();
+}
+
+void r_ws::_publish_local_token()
+{
+    auto token = r_ws_auth::generate_token();
+    _auth.set_local_token(token);
+    r_local_api_token::write(_top_dir, token);
+    R_LOG_INFO("r_ws: published local API token to %s", r_local_api_token::path(_top_dir).c_str());
+}
+
+r_nullable<string> r_ws::_request_token(const r_server_request& request)
+{
+    auto method = request.get_method();
+    bool safe = (method == METHOD_GET || method == METHOD_HEAD);
+    return r_ws_auth::extract_token(request.get_header("authorization"), request.get_header("cookie"), safe);
+}
+
+string r_ws::_peer_ip(r_socket_base& conn)
+{
+    try
+    {
+        return conn.get_peer_ip();
+    }
+    catch(...)
+    {
+        return string();
+    }
+}
+
+bool r_ws::_is_tls(r_socket_base& conn)
+{
+    return dynamic_cast<r_ssl_server_socket*>(&conn) != nullptr;
 }
 
 void r_ws::_load_or_create_tls()
@@ -305,10 +361,7 @@ void r_ws::_load_or_create_tls()
     auto pems = r_ssl_server_config::generate_self_signed("revere");
     r_fs::mkdir_p(dir);
     r_fs::atomic_write_file((const uint8_t*)pems.first.data(), pems.first.size(), crt_path);
-    r_fs::atomic_write_file((const uint8_t*)pems.second.data(), pems.second.size(), key_path);
-#ifndef IS_WINDOWS
-    ::chmod(key_path.c_str(), S_IRUSR | S_IWUSR);
-#endif
+    r_fs::atomic_write_private_file((const uint8_t*)pems.second.data(), pems.second.size(), key_path);
     _tls = make_shared<r_ssl_server_config>(pems.first, pems.second);
     R_LOG_INFO("r_ws: generated new TLS certificate, fingerprint %s", _tls->fingerprint_sha256().c_str());
 }
@@ -591,15 +644,6 @@ r_http::r_server_response r_ws::_get_version(r_utils::r_socket_base&, const r_ht
 
 r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
-    // Optional auth: if the client supplies a bearer token it must be valid.
-    // Lets the web UI verify a stored token (and gate the page on it) while
-    // still allowing unauthenticated API clients to read camera info.
-    {
-        auto auth_hdr = request.get_header("authorization");
-        if(!auth_hdr.is_null() && !_token_valid(request))
-            R_STHROW(r_http_401_exception, ("Unauthorized."));
-    }
-
     try
     {
         auto cameras = query_get_cameras(_devices);
@@ -3935,8 +3979,7 @@ void r_ws::set_system_password(const std::string& password)
         R_THROW(("The local web password must not be empty."));
     _store_system_password(password);
     // Existing web sessions must re-authenticate against the new password.
-    lock_guard<mutex> lock(_auth_mutex);
-    _tokens.clear();
+    _auth.revoke_all_sessions();
 }
 
 bool r_ws::system_password_set() const
@@ -3950,43 +3993,13 @@ void r_ws::clear_system_password()
     if(r_fs::file_exists(path))
         r_fs::remove_file(path);
     // Invalidate any outstanding web sessions.
-    lock_guard<mutex> lock(_auth_mutex);
-    _tokens.clear();
-}
-
-// Constant-time string compare to avoid leaking the password via timing.
-static bool _ct_equal(const std::string& a, const std::string& b)
-{
-    if(a.size() != b.size())
-        return false;
-    unsigned char acc = 0;
-    for(size_t i = 0; i < a.size(); ++i)
-        acc |= (unsigned char)(a[i] ^ b[i]);
-    return acc == 0;
+    _auth.revoke_all_sessions();
 }
 
 bool r_ws::_token_valid(const r_http::r_server_request& request)
 {
-    auto auth = request.get_header("authorization");
-    if(auth.is_null())
-        return false;
-
-    const string prefix = "Bearer ";
-    auto val = auth.value();
-    if(val.size() <= prefix.size() || val.compare(0, prefix.size(), prefix) != 0)
-        return false;
-    auto token = val.substr(prefix.size());
-
-    lock_guard<mutex> lock(_auth_mutex);
-    auto it = _tokens.find(token);
-    if(it == _tokens.end())
-        return false;
-    if(steady_clock::now() > it->second)
-    {
-        _tokens.erase(it);
-        return false;
-    }
-    return true;
+    auto token = _request_token(request);
+    return !token.is_null() && _auth.valid(token.value());
 }
 
 void r_ws::_require_auth(const r_http::r_server_request& request)
@@ -4009,44 +4022,33 @@ r_http::r_server_response r_ws::_get_auth_status(r_utils::r_socket_base&, const 
     return response;
 }
 
-r_http::r_server_response r_ws::_post_login(r_utils::r_socket_base&, const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_login(r_utils::r_socket_base& conn, const r_http::r_server_request& request)
 {
+    auto address = _peer_ip(conn);
     try
     {
         auto req = json::parse(request.get_body_as_string());
-        if(!req.contains("password"))
-            R_THROW(("Missing password."));
+        if(!req.contains("password") || !req["password"].is_string())
+            R_STHROW(r_http_400_exception, ("Missing password."));
 
-        // Refuse while locked out — bounds password-guessing to a few attempts
-        // per cooldown window regardless of the password's correctness.
-        {
-            lock_guard<mutex> lock(_auth_mutex);
-            if(steady_clock::now() < _login_lock_until)
-                R_STHROW(r_http_401_exception, ("Too many failed attempts; try again later."));
-        }
+        // Refuse while this address is locked out, whatever it sends: bounds
+        // guessing to a few attempts per cooldown.
+        if(_auth.locked_out(address))
+            R_STHROW(r_http_401_exception, ("Too many failed attempts; try again later."));
 
         auto stored = _load_system_password();
         if(stored.is_null())
             R_STHROW(r_http_401_exception, ("No local web password is set."));
 
-        if(!_ct_equal(req["password"].get<string>(), stored.value()))
+        if(!r_ws_auth::constant_time_equal(req["password"].get<string>(), stored.value()))
         {
-            lock_guard<mutex> lock(_auth_mutex);
-            if(++_failed_logins >= MAX_FAILED_LOGINS)
-            {
-                _login_lock_until = steady_clock::now() + seconds(LOGIN_LOCKOUT_SECONDS);
-                _failed_logins = 0;
-            }
+            _auth.record_failure(address);
+            R_LOG_WARNING("r_ws: failed login from %s", address.empty() ? "?" : address.c_str());
             R_STHROW(r_http_401_exception, ("Invalid password."));
         }
 
-        auto token = r_uuid::generate();
-        {
-            lock_guard<mutex> lock(_auth_mutex);
-            _failed_logins = 0;
-            _login_lock_until = {};
-            _tokens[token] = steady_clock::now() + hours(24);
-        }
+        _auth.record_success(address);
+        auto token = _auth.issue_session();
 
         json j;
         j["token"] = token;
@@ -4054,9 +4056,17 @@ r_http::r_server_response r_ws::_post_login(r_utils::r_socket_base&, const r_htt
         r_server_response response;
         response.set_content_type("text/json");
         response.set_body(j.dump());
+        // Browsers also get it as a cookie, which their <img>/<video> loads and
+        // downloads send automatically (they can't set a bearer header).
+        response.add_additional_header("Set-Cookie", r_ws_auth::session_cookie(token, _is_tls(conn)));
         return response;
     }
+    catch(const r_http_400_exception&) { throw; }
     catch(const r_http_401_exception&) { throw; }
+    catch(const json::exception&)
+    {
+        R_STHROW(r_http_400_exception, ("Malformed login request."));
+    }
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -4064,26 +4074,73 @@ r_http::r_server_response r_ws::_post_login(r_utils::r_socket_base&, const r_htt
     R_STHROW(r_http_500_exception, ("Login failed."));
 }
 
-r_http::r_server_response r_ws::_post_set_password(r_utils::r_socket_base&, const r_http::r_server_request& request)
+r_http::r_server_response r_ws::_post_session(r_utils::r_socket_base& conn, const r_http::r_server_request& request)
 {
+    // Reached only with a valid token (the route requires one). Only a bearer
+    // token is accepted here (POST never honours the cookie), and only a
+    // session token is turned into a cookie: the local token stays out of
+    // browsers.
+    auto token = _request_token(request);
+    if(token.is_null() || r_ws_auth::constant_time_equal(token.value(), _auth.local_token()))
+        R_STHROW(r_http_400_exception, ("A session token is required."));
+
+    r_server_response response(response_no_content);
+    response.add_additional_header("Set-Cookie", r_ws_auth::session_cookie(token.value(), _is_tls(conn)));
+    return response;
+}
+
+r_http::r_server_response r_ws::_post_logout(r_utils::r_socket_base& conn, const r_http::r_server_request& request)
+{
+    // Open route: logging out with an expired or missing token still clears
+    // the cookie. The cookie is read here even though this is a POST: ending a
+    // session is harmless to forge.
+    auto token = r_ws_auth::extract_token(request.get_header("authorization"), request.get_header("cookie"), true);
+    if(!token.is_null())
+        _auth.revoke(token.value());
+
+    r_server_response response(response_no_content);
+    response.add_additional_header("Set-Cookie", r_ws_auth::clear_session_cookie(_is_tls(conn)));
+    return response;
+}
+
+r_http::r_server_response r_ws::_post_set_password(r_utils::r_socket_base& conn, const r_http::r_server_request& request)
+{
+    auto address = _peer_ip(conn);
     try
     {
         auto req = json::parse(request.get_body_as_string());
-        if(!req.contains("new_password"))
-            R_THROW(("Missing new_password."));
+        if(!req.contains("new_password") || !req["new_password"].is_string())
+            R_STHROW(r_http_400_exception, ("Missing new_password."));
         auto new_password = req["new_password"].get<string>();
         if(new_password.empty())
-            R_THROW(("Password must not be empty."));
+            R_STHROW(r_http_400_exception, ("Password must not be empty."));
 
-        // Bootstrap: the first password can be set without auth. Once a password
-        // exists, changing it requires either a valid token or the current one.
-        if(_system_password_set())
+        if(!_system_password_set())
         {
+            // Bootstrap: the first password needs no credentials, but only
+            // from this machine. Otherwise anyone who could reach the HTTPS
+            // port of an unconfigured install could claim it.
+            if(!r_local_api_token::is_loopback_host(address))
+                R_STHROW(r_http_403_exception, ("The first password must be set on the Revere machine itself."));
+        }
+        else
+        {
+            // A change needs a valid token or the current password. The
+            // current-password path counts toward the same per-address
+            // lockout as /login, so it can't be used to guess around it.
             bool authorized = _token_valid(request);
-            if(!authorized && req.contains("current_password"))
+            if(!authorized)
             {
-                auto stored = _load_system_password();
-                authorized = !stored.is_null() && _ct_equal(req["current_password"].get<string>(), stored.value());
+                if(_auth.locked_out(address))
+                    R_STHROW(r_http_401_exception, ("Too many failed attempts; try again later."));
+                if(req.contains("current_password") && req["current_password"].is_string())
+                {
+                    auto stored = _load_system_password();
+                    authorized = !stored.is_null() && r_ws_auth::constant_time_equal(req["current_password"].get<string>(), stored.value());
+                    if(authorized)
+                        _auth.record_success(address);
+                    else _auth.record_failure(address);
+                }
             }
             if(!authorized)
                 R_STHROW(r_http_401_exception, ("Provide a valid token or current_password to change the local web password."));
@@ -4091,11 +4148,8 @@ r_http::r_server_response r_ws::_post_set_password(r_utils::r_socket_base&, cons
 
         _store_system_password(new_password);
 
-        // Invalidate all outstanding tokens on a password change.
-        {
-            lock_guard<mutex> lock(_auth_mutex);
-            _tokens.clear();
-        }
+        // Every outstanding session must sign in again with the new password.
+        _auth.revoke_all_sessions();
 
         json j;
         j["status"] = "ok";
@@ -4103,9 +4157,17 @@ r_http::r_server_response r_ws::_post_set_password(r_utils::r_socket_base&, cons
         r_server_response response;
         response.set_content_type("text/json");
         response.set_body(j.dump());
+        // The caller's own cookie (if any) died with its session.
+        response.add_additional_header("Set-Cookie", r_ws_auth::clear_session_cookie(_is_tls(conn)));
         return response;
     }
+    catch(const r_http_400_exception&) { throw; }
     catch(const r_http_401_exception&) { throw; }
+    catch(const r_http_403_exception&) { throw; }
+    catch(const json::exception&)
+    {
+        R_STHROW(r_http_400_exception, ("Malformed set_password request."));
+    }
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);

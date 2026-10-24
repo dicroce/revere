@@ -4,6 +4,7 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_http/r_client_request.h"
+#include "revere_api.h"
 #include "r_http/r_client_response.h"
 #include <SDL.h>
 #include <cctype>
@@ -1055,10 +1056,9 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
             fmt_for_file(end).c_str()
         );
 
-        r_socket sok;
-        sok.connect(revere_ip, 8088);
+        auto sok = revere_connect(revere_ip);
 
-        r_http::r_client_request req(revere_ip, 8088);
+        r_http::r_client_request req(revere_ip, revere_port(revere_ip));
         req.set_uri(
             r_string_utils::format(
                 "/export?camera_id=%s&start_time=%s&end_time=%s&file_name=%s",
@@ -1068,10 +1068,11 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
                 file_name.c_str()
             )
         );
-        req.write_request(sok);
+        authorize(req, revere_ip);
+        req.write_request(*sok);
 
         r_http::r_client_response res;
-        res.read_response(sok);
+        res.read_response(*sok);
 
         if(res.is_success())
         {

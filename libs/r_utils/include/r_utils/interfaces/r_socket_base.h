@@ -25,6 +25,8 @@ public:
     // blocking or consuming data; lets a handler stop working for a client
     // that has gone away.
     R_API virtual bool peer_closed() const = 0;
+    // The remote address as text ("192.168.1.20", "::1"); throws if not connected.
+    R_API virtual std::string get_peer_ip() const = 0;
 };
 
 }
