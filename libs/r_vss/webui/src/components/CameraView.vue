@@ -23,20 +23,29 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import TimelineBar from './TimelineBar.vue'
 import CameraPlayer from './CameraPlayer.vue'
 
-defineProps({ camera: Object })
+const props = defineProps({
+  camera: Object,
+  // Optional: open seeked to this ISO time instead of live (the Timeline tab
+  // passes its shared playhead). null keeps the historical live-on-open.
+  initialIso: { type: String, default: null },
+})
 defineEmits(['close'])
 
 // null = live; an ISO string = a seeked recorded position. CameraPlayer reads
 // this directly to switch between live refresh, scrub still, and video playback.
-const seekedTime = ref(null)
+const seekedTime = ref(props.initialIso)
 
 // Absolute ISO of the frame currently being played, emitted by CameraPlayer; the
 // timeline uses it to advance the playhead marker during playback.
 const playheadIso = ref(null)
+
+// TimelineBar mounts in live mode; nudging playheadIso after mount moves its
+// marker (and recenters its range) onto the initial time via its existing watcher.
+onMounted(() => { if (props.initialIso) playheadIso.value = props.initialIso })
 
 function onSeek(isoString) { seekedTime.value = isoString }
 function onLive()          { seekedTime.value = null; playheadIso.value = null }
