@@ -72,6 +72,14 @@ vector<bool> r_vss::cap_event_detections(const vector<r_capped_detection>& detec
             most_people = fi;
     }
     must.insert(most_confident);
+
+    // The best-scoring frames (the earlier on a tie).
+    vector<size_t> by_score(frames.size());
+    for(size_t fi = 0; fi < frames.size(); ++fi)
+        by_score[fi] = fi;
+    stable_sort(by_score.begin(), by_score.end(), [&](size_t a, size_t b){ return frames[a].score > frames[b].score; });
+    for(size_t i = 0; i < min(by_score.size(), EVENT_DETECTIONS_BEST_FRAMES); ++i)
+        must.insert(by_score[i]);
     if(frames[most_people].persons > 0)
         must.insert(most_people);
     for(auto& [cls, best] : best_of_class)
@@ -85,14 +93,12 @@ vector<bool> r_vss::cap_event_detections(const vector<r_capped_detection>& detec
         kept += frames[fi].members.size();
     }
 
-    // The rest, best first (the earlier on a tie), while they fit.
-    vector<size_t> rest;
-    for(size_t fi = 0; fi < frames.size(); ++fi)
-        if(!kept_frame[fi])
-            rest.push_back(fi);
-    stable_sort(rest.begin(), rest.end(), [&](size_t a, size_t b){ return frames[a].score > frames[b].score; });
-    for(auto fi : rest)
+    // The rest, best first, each that still fits: a big frame that doesn't
+    // fit is skipped and smaller ones after it can still go in.
+    for(auto fi : by_score)
     {
+        if(kept_frame[fi])
+            continue;
         if(kept + frames[fi].members.size() > max_detections)
             continue;
         kept_frame[fi] = true;

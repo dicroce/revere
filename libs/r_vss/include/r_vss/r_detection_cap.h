@@ -28,14 +28,19 @@ static constexpr size_t MAX_EVENT_DETECTIONS = 300;
 // images are taken from its earliest distinct detection timestamps.
 static constexpr size_t EVENT_DETECTIONS_FIRST_FRAMES = 6;
 
+// The best-scoring frames that are always kept, whatever their size: frames
+// for image analysis are chosen as the best few by the same score.
+static constexpr size_t EVENT_DETECTIONS_BEST_FRAMES = 6;
+
 // Which detections to keep when an event has more than max_detections, as one
 // flag per detection. Frames (detections sharing a ts) are kept or dropped
-// whole, so per-frame counts stay exact. Always kept: the first
-// EVENT_DETECTIONS_FIRST_FRAMES frames, the last frame, the frame of the most
+// whole, so per-frame counts stay exact. A frame scores as its best detection:
+// area x confidence, or confidence without an area. Always kept: the first
+// EVENT_DETECTIONS_FIRST_FRAMES frames, the last frame, the
+// EVENT_DETECTIONS_BEST_FRAMES best-scoring frames, the frame of the most
 // confident detection, each class's best-scoring frame and the frame with the
-// most people. Then the best-scoring frames (a frame scores as its best
-// detection, area x confidence, or confidence without an area) until the next
-// would go over max_detections. All true when nothing needs dropping.
+// most people. Then the best-scoring of the rest, each that still fits within
+// max_detections. All true when nothing needs dropping.
 R_API std::vector<bool> cap_event_detections(const std::vector<r_capped_detection>& detections,
                                              size_t max_detections = MAX_EVENT_DETECTIONS);
 

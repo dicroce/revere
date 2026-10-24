@@ -98,31 +98,88 @@ void test_r_detection_cap::test_long_busy_event()
     RTF_ASSERT(max_dropped <= min_kept);
 }
 
-// Frames of two detections against a budget of 9: whole frames only, so 8 are
-// kept; the frame that would make 10 is skipped.
+// Frames of two detections, later frames scoring higher. Forced: the 6 first
+// frames and the 6 best (the last 6, which include the last and the most
+// confident): 24 detections, over a budget of 9, and nothing else is added.
 void test_r_detection_cap::test_whole_frames_within_budget()
 {
     vector<r_capped_detection> dets;
     for(int i = 0; i < 20; ++i)
     {
-        float conf = 0.5f + 0.01f * (float)i;   // later frames score higher
+        float conf = 0.5f + 0.01f * (float)i;
         dets.push_back({T0 + i * 1000, "person", conf, 0.f});
         dets.push_back({T0 + i * 1000, "person", conf, 0.f});
     }
     auto keep = cap_event_detections(dets, 9);
     RTF_ASSERT(frames_whole(dets, keep));
-    // The 6 first frames, the last (also the most confident and the best), are
-    // already 14 detections: forced frames can go over a tiny budget, and
-    // nothing else is added.
-    RTF_ASSERT(count(keep.begin(), keep.end(), true) == 14);
+    RTF_ASSERT(count(keep.begin(), keep.end(), true) == 24);
     for(int i = 0; i < 6; ++i)
         RTF_ASSERT(frame_kept(dets, keep, T0 + i * 1000));
-    RTF_ASSERT(frame_kept(dets, keep, T0 + 19 * 1000));
-    RTF_ASSERT(!frame_kept(dets, keep, T0 + 18 * 1000));
+    for(int i = 14; i < 20; ++i)
+        RTF_ASSERT(frame_kept(dets, keep, T0 + i * 1000));
+    RTF_ASSERT(!frame_kept(dets, keep, T0 + 13 * 1000));
 
     // With room for two more frames, the two best-scoring others are added.
-    keep = cap_event_detections(dets, 18);
-    RTF_ASSERT(count(keep.begin(), keep.end(), true) == 18);
-    RTF_ASSERT(frame_kept(dets, keep, T0 + 18 * 1000) && frame_kept(dets, keep, T0 + 17 * 1000));
-    RTF_ASSERT(!frame_kept(dets, keep, T0 + 16 * 1000));
+    keep = cap_event_detections(dets, 28);
+    RTF_ASSERT(count(keep.begin(), keep.end(), true) == 28);
+    RTF_ASSERT(frame_kept(dets, keep, T0 + 13 * 1000) && frame_kept(dets, keep, T0 + 12 * 1000));
+    RTF_ASSERT(!frame_kept(dets, keep, T0 + 11 * 1000));
+}
+
+// Budget 20. Forced: 6 first frames, 6 best (score 0.9) and the last, 13
+// detections. Next best is a 10-detection frame at 0.8 that doesn't fit; the
+// 1-detection frames at 0.5 after it still go in until the budget is full.
+void test_r_detection_cap::test_smaller_frames_fill_past_a_big_one()
+{
+    vector<r_capped_detection> dets;
+    int64_t t = T0;
+    for(int i = 0; i < 6; ++i, t += 1000)
+        dets.push_back({t, "bicycle", 0.1f, 0.f});
+    for(int i = 0; i < 6; ++i, t += 1000)
+        dets.push_back({t, "bicycle", 0.9f, 0.f});
+    const int64_t big = t;
+    for(int i = 0; i < 10; ++i)
+        dets.push_back({big, "bicycle", 0.8f, 0.f});
+    t += 1000;
+    vector<int64_t> small;
+    for(int i = 0; i < 10; ++i, t += 1000)
+    {
+        small.push_back(t);
+        dets.push_back({t, "bicycle", 0.5f, 0.f});
+    }
+    dets.push_back({t, "bicycle", 0.1f, 0.f});
+
+    auto keep = cap_event_detections(dets, 20);
+    RTF_ASSERT(frames_whole(dets, keep));
+    RTF_ASSERT(count(keep.begin(), keep.end(), true) == 20);
+    RTF_ASSERT(!frame_kept(dets, keep, big));
+    for(int i = 0; i < 7; ++i)
+        RTF_ASSERT(frame_kept(dets, keep, small[i]));
+    RTF_ASSERT(!frame_kept(dets, keep, small[7]));
+}
+
+// The 6 best-scoring frames are kept even when they alone are over budget.
+void test_r_detection_cap::test_best_frames_kept_whatever_their_size()
+{
+    vector<r_capped_detection> dets;
+    int64_t t = T0;
+    for(int i = 0; i < 6; ++i, t += 1000)
+        dets.push_back({t, "bicycle", 0.1f, 0.f});
+    vector<int64_t> best;
+    for(int i = 0; i < 8; ++i, t += 1000)
+    {
+        const float conf = (i < 6) ? 0.9f - 0.01f * (float)i : 0.5f;
+        if(i < 6)
+            best.push_back(t);
+        for(int j = 0; j < 3; ++j)
+            dets.push_back({t, "bicycle", conf, 0.f});
+    }
+    dets.push_back({t, "bicycle", 0.1f, 0.f});
+
+    auto keep = cap_event_detections(dets, 10);
+    RTF_ASSERT(frames_whole(dets, keep));
+    for(auto ts : best)
+        RTF_ASSERT(frame_kept(dets, keep, ts));
+    // 6 first + 6 best x 3 + the last; nothing else fits.
+    RTF_ASSERT(count(keep.begin(), keep.end(), true) == 6 + 18 + 1);
 }
