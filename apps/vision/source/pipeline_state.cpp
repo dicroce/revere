@@ -238,7 +238,7 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
                 tie(video_codec_name, h264_codec_parameters, video_timebase) = sdp_media_to_s(media);
 
                 auto h264_sps_b = get_h264_sps(h264_codec_parameters);
-                auto h264_pps_b = get_h264_sps(h264_codec_parameters);
+                auto h264_pps_b = get_h264_pps(h264_codec_parameters);
 
                 this->_video_decoder.raw().set_extradata(make_h264_extradata(h264_sps_b, h264_pps_b));
             }
@@ -266,6 +266,8 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
         s.pts = sc.stream_start_ts() + pts;
         this->_last_v_pts = s.pts;
         this->_received_first_frame = true;
+        this->_last_v_arrival_ms.store(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+        this->_frames_since_play.fetch_add(1);
 
         // Pre-decode arrival stats (vision_net): jitter measured here comes from
         // upstream of vision (camera, revere restreamer, network); jitter that
@@ -386,6 +388,9 @@ void pipeline_state::resize(uint16_t w, uint16_t h)
 void pipeline_state::play_live()
 {
     _last_play_time = steady_clock::now();
+    _playback = false;
+    _play_generation++;
+    _frames_since_play.store(0);
 
     vector<r_arg> arguments;
     add_argument(arguments, "url", _si.rtsp_url);
@@ -417,13 +422,23 @@ void pipeline_state::play()
     // add bar duration to playhead position and convert to iso 8601 and append to url.
     // set url on source and call play()
 
-    auto playback_duration = _range_end - _last_control_bar_pos;
+    play(_last_control_bar_pos, _range_end);
+}
+
+void pipeline_state::play(const system_clock::time_point& start, const system_clock::time_point& end)
+{
+    _last_control_bar_pos = start;
+    _play_start = start;
+    _play_end = end;
+    _playback = true;
+    _play_generation++;
+    _frames_since_play.store(0);
 
     string url = r_string_utils::format(
         "%s_%s_%s",
         _si.rtsp_url.c_str(),
-        r_time_utils::tp_to_iso_8601(_last_control_bar_pos, false).c_str(),
-        r_time_utils::tp_to_iso_8601(_range_end, false).c_str()
+        r_time_utils::tp_to_iso_8601(start, false).c_str(),
+        r_time_utils::tp_to_iso_8601(end, false).c_str()
     );
     R_LOG_INFO("  Playback URL: %s", url.c_str());
 
@@ -439,6 +454,7 @@ void pipeline_state::play()
 
 void pipeline_state::stop()
 {
+    _play_generation++;
     _source.stop();
 }
 

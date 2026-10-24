@@ -207,8 +207,17 @@ void control_bar_renderer::render_play_live_button(const control_bar_layout& lay
     }
     else if (!is_at_live && playing)
     {
-        // Show only Go Live button when playing in the past (same position in both modes)
+        // Playing recorded video: Pause takes Play's slot, next to Go Live
+        // (same positions in both modes). Pausing stops the pipe, so on the
+        // next frame playing is false and this slot shows Play (= Resume).
+        play_button_x = right_edge - 180;
         live_button_x = right_edge - 90;
+
+        ImGui::SetCursorScreenPos(ImVec2(play_button_x, (float)top_line_top));
+        if(ImGui::Button("Pause", ImVec2(80, 0)))
+        {
+            control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_PAUSE);
+        }
 
         ImGui::SetCursorScreenPos(ImVec2(live_button_x, (float)top_line_top));
         if(ImGui::Button("Go live", ImVec2(80, 0)))
