@@ -67,7 +67,10 @@ SNAP_INSTALL=0
 
 if [ -n "${1:-}" ]; then
     DATA_DIR="$1"
-elif snap list revere >/dev/null 2>&1 || [ -d "$HOME/snap/revere" ]; then
+elif { command -v snap >/dev/null 2>&1 && snap list revere >/dev/null 2>&1; } ||
+     { ! command -v snap >/dev/null 2>&1 && [ -d "$HOME/snap/revere" ]; }; then
+    # snapd's own answer when it's on the PATH; a left-over ~/snap/revere
+    # only counts when it isn't.
     # The Snap can read ~/Documents but may only load code from its own
     # folders under ~/snap/revere, so its plugins live there.
     SNAP_INSTALL=1

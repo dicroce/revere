@@ -77,19 +77,26 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
         const auto& plugin_dirs = dirs.load;
 
         // A plugin left where this install can't load it (installed for the
-        // Snap before it had a folder of its own): say where it belongs.
-        if (!dirs.unloadable.empty() && r_fs::is_dir(dirs.unloadable))
+        // Snap before it had a folder of its own): say where it belongs. Only a
+        // hint, so nothing here may stop the real plugins loading: error_code
+        // overloads throughout (a folder can stat but not list).
+        if (!dirs.unloadable.empty())
         {
-            for (const auto& entry : fs::directory_iterator(dirs.unloadable))
+            std::error_code ec;
+            fs::directory_iterator it(dirs.unloadable, ec), end;
+            for (; !ec && it != end; it.increment(ec))
             {
-                std::string filename = entry.path().filename().string();
-                if (entry.is_regular_file() && filename.size() > plugin_ext.size() &&
+                std::error_code fec;
+                std::string filename = it->path().filename().string();
+                if (it->is_regular_file(fec) && filename.size() > plugin_ext.size() &&
                     filename.substr(filename.size() - plugin_ext.size()) == plugin_ext)
                 {
                     R_LOG_ERROR("System plugin %s is in %s, where the Snap can't load it. Run its installer again, or move it to %s.",
                         filename.c_str(), dirs.unloadable.c_str(), dirs.load.back().c_str());
                 }
             }
+            if (ec && ec != std::errc::no_such_file_or_directory)
+                R_LOG_WARNING("Could not check %s for left-over system plugins: %s", dirs.unloadable.c_str(), ec.message().c_str());
         }
 
         for (const auto& plugin_dir : plugin_dirs)
