@@ -7,6 +7,7 @@ public:
     RTF_FIXTURE(test_r_storage);
       TEST(test_r_storage::test_r_storage_file_ts_wobble_clamp);
       TEST(test_r_storage::test_r_storage_file_ts_discontinuity_reanchor);
+      TEST(test_r_storage::test_r_storage_file_write_returns_stored_ts);
       TEST(test_r_storage::test_r_storage_file_query_key);
       TEST(test_r_storage::test_r_storage_file_query_key_across_blocks);
       TEST(test_r_storage::test_r_storage_file_query_key_empty);
@@ -45,6 +46,7 @@ public:
 
     void test_r_storage_file_ts_wobble_clamp();
     void test_r_storage_file_ts_discontinuity_reanchor();
+    void test_r_storage_file_write_returns_stored_ts();
     void test_r_storage_file_query_key();
     void test_r_storage_file_query_key_across_blocks();
     void test_r_storage_file_query_key_empty();

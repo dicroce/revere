@@ -199,6 +199,17 @@ vector<uint8_t> r_storage_file_reader::query_key(r_storage_media_type media_type
             found = iterator.seek_end() && iterator->timestamp >= ts - five_minutes_ms;
         }
 
+        // find() lands on the first frame at or after ts. When that frame is
+        // later than ts, the frame showing at ts is the one before it: step
+        // back to it, so a ts just before a key frame gets the key frame
+        // before ts rather than the next one. Before the first frame there is
+        // nothing earlier, so that case keeps the first frame.
+        if (found && iterator.valid() && iterator->timestamp > ts) {
+            --iterator;
+            if (!iterator.valid())
+                found = iterator.find(ts);
+        }
+
         // Back up to find the closest previous key frame
         while (found && iterator.valid() && iterator->flags == 0) {
             --iterator;

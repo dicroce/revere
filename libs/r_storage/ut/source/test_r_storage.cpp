@@ -205,11 +205,71 @@ void test_r_storage::test_r_storage_file_query_key()
     // Within the recording: the key frame that starts ts's GOP.
     RTF_ASSERT(key_at(base + 45 * 33 + 10) == 30);
     RTF_ASSERT(key_at(base + 60 * 33) == 60);
+    // Between the last delta frame of a GOP and the next key frame: still the
+    // GOP showing at ts, not the next key frame.
+    RTF_ASSERT(key_at(base + 59 * 33 + 10) == 30);
+    RTF_ASSERT(key_at(base + 60 * 33 - 1) == 30);
+    // Before the first frame: the first key frame.
+    RTF_ASSERT(key_at(base - 1000) == 0);
     // At the newest frame, and past it by a minute: the newest key frame.
     RTF_ASSERT(key_at(newest) == 90);
     RTF_ASSERT(key_at(newest + 60000) == 90);
     // More than 5 minutes past the newest frame: nothing, as before.
     RTF_ASSERT(key_at(newest + 6 * 60000) == -1);
+}
+
+// write_frame returns the ts the frame was stored at, which is what anything
+// referring to the frame by time (motion events, detections) must use: after
+// a re-anchor the source ts points at video recorded before the jump.
+void test_r_storage::test_r_storage_file_write_returns_stored_ts()
+{
+    r_storage_file::allocate("stored_ts_test.nts", 65536, 10);
+    r_storage_file sf("stored_ts_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    // Each frame's first byte is its index; a key every 5th.
+    auto write = [&](int i, int64_t ts) {
+        vector<uint8_t> frame(64, (uint8_t)i);
+        return sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), (i % 5) == 0, ts, i * 33);
+    };
+
+    int64_t base = _wall_now_ms() - 120000;
+
+    // In order: stored as given.
+    for(int i = 0; i < 10; ++i)
+        RTF_ASSERT(write(i, base + i * 33) == base + i * 33);
+
+    // Backward jitter: clamped to last + 1, and that is what's returned.
+    RTF_ASSERT(write(10, base + 8 * 33) == base + 9 * 33 + 1);
+
+    // A 60 s backward jump: re-anchored at the wall clock, and every later
+    // frame carries the same correction.
+    int64_t jumped = base - 60000;
+    auto anchored = write(11, jumped);
+    RTF_ASSERT(anchored > base + 9 * 33 + 1);
+    RTF_ASSERT((_wall_now_ms() - anchored) < 10000);
+    for(int i = 12; i < 20; ++i)
+        RTF_ASSERT(write(i, jumped + (i - 11) * 33) == anchored + (i - 11) * 33);
+    auto key15_stored = anchored + 4 * 33;
+
+    r_storage_file_reader sfr("stored_ts_test.nts");
+    auto key_at = [&](int64_t ts) {
+        auto buf = sfr.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, ts);
+        uint32_t version = 0;
+        auto bt = r_blob_tree::deserialize(buf.data(), buf.size(), version);
+        if(bt["frames"].size() != 1)
+            return -1;
+        return (int)bt["frames"][0]["data"].get_blob()[0];
+    };
+
+    // Key frame 15 by the ts write_frame returned: that very frame.
+    RTF_ASSERT(key_at(key15_stored) == 15);
+    // By its source ts it is lost: that points before the recording began, at
+    // frame 0's GOP, 60 s and a discontinuity away.
+    RTF_ASSERT(key_at(jumped + 4 * 33) == 0);
 }
 
 // Frames big enough that a block holds at most 8: backing up from the newest
