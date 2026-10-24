@@ -182,6 +182,11 @@ private:
                                                   r_utils::r_socket& conn,
                                                   const r_http::r_server_request& request);
 
+    // /transcode_fmp4?passthrough=1 — remux-only variant (no decode/encode).
+    r_http::r_server_response _get_passthrough_fmp4(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                    r_utils::r_socket& conn,
+                                                    std::map<std::string, std::string> args);
+
     r_http::r_server_response _get_finalize_transcode_stream(const r_http::r_web_server<r_utils::r_socket>& ws,
                                                              r_utils::r_socket& conn,
                                                              const r_http::r_server_request& request);
@@ -318,6 +323,12 @@ private:
     // 503 and the client retries.
     static constexpr int MAX_FMP4_TRANSCODES = 4;
     std::atomic<int> _fmp4_active {0};
+
+    // Separate, higher ceiling for the remux-only passthrough mode: no codec is
+    // involved, each request is a storage read plus an in-memory mux, so a grid
+    // of live tiles can run many at once without touching the transcode budget.
+    static constexpr int MAX_FMP4_PASSTHROUGH = 24;
+    std::atomic<int> _fmp4_passthrough_active {0};
 
     std::thread _export_th;
     std::atomic<bool> _export_running {false};

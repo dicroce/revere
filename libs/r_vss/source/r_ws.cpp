@@ -1826,6 +1826,14 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
                                                     r_utils::r_socket& conn,
                                                     const r_http::r_server_request& request)
 {
+    // passthrough=1 selects the remux-only mode (separate budget, no codecs).
+    {
+        const auto& pre_args = request.get_uri().get_get_args();
+        auto pit = pre_args.find("passthrough");
+        if(pit != pre_args.end() && (pit->second == "1" || pit->second == "true"))
+            return _get_passthrough_fmp4(ws, conn, pre_args);
+    }
+
     // Concurrency ceiling: reserve a slot, or 503 so the client backs off and
     // retries. The guard releases the slot on every exit path below.
     if(_fmp4_active.fetch_add(1) >= MAX_FMP4_TRANSCODES)
@@ -2109,6 +2117,294 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(const r_http::r_web_server<r
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to transcode fmp4."));
+}
+
+// MSE codec strings derived from the stored parameter sets. `sps` is in the
+// get_h264_sps/get_h265_sps form: [00 00 00 01][NAL header][payload...].
+static string _h264_mse_codec_string(const vector<uint8_t>& sps)
+{
+    // avc1.PPCCLL = profile_idc, constraint_set flags, level_idc, straight
+    // from the first three SPS payload bytes.
+    if(sps.size() < 8)
+        return "avc1.4d4029";
+    return r_string_utils::format("avc1.%02x%02x%02x", sps[5], sps[6], sps[7]);
+}
+
+static string _h265_mse_codec_string(uint8_t profile_idc, uint8_t level_idc)
+{
+    // hvc1.<profile>.<compat flags, bit-reversed hex>.<tier><level>.<constraints>
+    // Compatibility flags: the profile's own bit, plus Main for Main10 streams
+    // (Main10 decoders accept Main). B0 = progressive + frame-only, which is
+    // what IP cameras emit. Tier is always Main.
+    uint32_t compat = (profile_idc < 32) ? (1u << profile_idc) : 1u;
+    if(profile_idc == 1) compat |= (1u << 2);
+    return r_string_utils::format("hvc1.%u.%X.L%u.B0", (unsigned)profile_idc, compat, (unsigned)level_idc);
+}
+
+// Remux-only sibling of _get_transcode_fmp4 (selected with passthrough=1). The
+// stored H.264/H.265 access units are written straight into a fragmented MP4
+// with their real timestamps; no decoder or encoder is involved, so a request
+// costs a storage read and a mux. This is what the Live-tab tiles use.
+//
+// Because frames are not re-encoded, a window can only start on a stored key
+// frame, and a fragment must not end mid-GOP (the next request would have to
+// re-send the GOP head). So the window is GOP-aligned, stateless, and gapless:
+//
+//   * emission starts at the key frame at or before start_time (the storage
+//     query already backs up to it) — header X-Revere-First-Ts gives its real
+//     epoch-ms, and that frame is PTS 0;
+//   * emission stops *before* the last key frame inside [start,end) — header
+//     X-Revere-Next-Start gives that key frame's epoch-ms. The client asks for
+//     the next window starting exactly there, which lands on that key frame
+//     with no pre-roll and no overlap;
+//   * if the window holds only one key frame (not a whole GOP yet), the body is
+//     empty and X-Revere-Next-Start repeats the window start: the client polls
+//     again once more footage has been committed.
+//
+// Audio: AAC is passed through (X-Revere-Codecs gains ",mp4a.40.2"); G.711
+// (mulaw/alaw) can't go in an MSE-playable MP4 without encoding, so it is
+// dropped — tiles are muted anyway. Only camera_id/start_time/end_time are
+// required; width/height are optional fallbacks when the SPS can't be parsed.
+r_http::r_server_response r_ws::_get_passthrough_fmp4(const r_http::r_web_server<r_utils::r_socket>& ws,
+                                                      r_utils::r_socket& conn,
+                                                      std::map<std::string, std::string> args)
+{
+    if(_fmp4_passthrough_active.fetch_add(1) >= MAX_FMP4_PASSTHROUGH)
+    {
+        _fmp4_passthrough_active.fetch_sub(1);
+        r_server_response busy(r_http::response_service_unavailable, "text/plain");
+        busy.add_additional_header("Retry-After", "1");
+        busy.set_body(string("Too many concurrent passthrough streams."));
+        return busy;
+    }
+    struct slot_guard { std::atomic<int>& c; ~slot_guard() { c.fetch_sub(1); } } guard{_fmp4_passthrough_active};
+
+    try
+    {
+        for(auto k : {"camera_id", "start_time", "end_time"})
+            if(args.find(k) == args.end())
+                R_THROW(("Missing %s.", k));
+
+        auto camera_id = args["camera_id"];
+        auto start_tp  = r_time_utils::iso_8601_to_tp(args["start_time"]);
+        auto end_tp    = r_time_utils::iso_8601_to_tp(args["end_time"]);
+        int64_t start_ms = r_time_utils::tp_to_epoch_millis(start_tp);
+
+        auto qr_buffer = query_get_video(_top_dir, _devices, camera_id, start_tp, end_tp);
+
+        uint32_t version = 0;
+        auto bt = r_blob_tree::deserialize(qr_buffer.data(), qr_buffer.size(), version);
+
+        if(!bt.has_key("video_codec_name") || !bt.has_key("video_codec_parameters"))
+            R_THROW(("Blob tree missing video codec info."));
+
+        auto codec_name   = bt["video_codec_name"].get_string();
+        auto codec_params = bt["video_codec_parameters"].get_string();
+        auto codec_id     = r_av::encoding_to_av_codec_id(codec_name);
+        bool is_h265      = (codec_id == AV_CODEC_ID_HEVC);
+
+        if(codec_id != AV_CODEC_ID_H264 && codec_id != AV_CODEC_ID_HEVC)
+            R_THROW(("Passthrough fmp4 supports only H.264/H.265 (got %s).", codec_name.c_str()));
+
+        // --- pass 1: index the video frames so the GOP boundaries are known
+        // before anything is muxed.
+        struct vf { size_t idx; int64_t ts; bool key; };
+        vector<vf> vframes;
+        size_t n_frames = bt.has_key("frames") ? bt["frames"].size() : 0;
+        for(size_t fi = 0; fi < n_frames; ++fi)
+        {
+            if(!bt["frames"].has_index(fi)) continue;
+            if(bt["frames"][fi]["stream_id"].get_value<int>() != R_STORAGE_MEDIA_TYPE_VIDEO) continue;
+            vframes.push_back({fi,
+                               bt["frames"][fi]["ts"].get_value<int64_t>(),
+                               bt["frames"][fi].has_key("key") && bt["frames"][fi]["key"].get_string() == "true"});
+        }
+
+        // First key frame (the query backs up to one, so this is normally [0]),
+        // and the last key frame after it, which is where this window stops.
+        size_t first_i = 0;
+        while(first_i < vframes.size() && !vframes[first_i].key) ++first_i;
+        size_t cut_i = vframes.size();
+        for(size_t i = vframes.size(); i > first_i + 1 && cut_i == vframes.size(); --i)
+            if(vframes[i-1].key) cut_i = i - 1;
+
+        if(first_i >= vframes.size() || cut_i == vframes.size())
+        {
+            // Not a whole GOP in the window yet: nothing to emit, come back later.
+            r_server_response empty;
+            empty.set_content_type("video/mp4");
+            empty.add_additional_header("X-Revere-Next-Start", r_string_utils::int64_to_s(start_ms));
+            return empty;
+        }
+
+        int64_t first_ts = vframes[first_i].ts;
+        int64_t cut_ts   = vframes[cut_i].ts;
+
+        // --- stream description from the stored parameter sets.
+        r_nullable<float> fr = r_pipeline::get_video_codec_framerate(codec_params);
+        if(fr.is_null())
+        {
+            // n frames are emitted over [first_ts, cut_ts): n frame periods.
+            int64_t span = cut_ts - first_ts;
+            size_t n = cut_i - first_i;
+            fr.set_value((span > 0 && n > 0) ? (float)n * 1000.f / (float)span : 30.f);
+        }
+
+        uint16_t width = 0, height = 0;
+        int profile = 0, level = 0;
+        string mse_codecs;
+        // Annex-B extradata, as the export remux uses: libavformat's mov muxer
+        // builds the avcC/hvcC itself from it and, seeing Annex-B extradata,
+        // converts the Annex-B access units to length-prefixed samples.
+        vector<uint8_t> extradata;
+        if(is_h265)
+        {
+            auto sps = r_pipeline::get_h265_sps(codec_params);
+            if(!sps.is_null())
+            {
+                auto info = r_pipeline::parse_h265_sps(sps.value());
+                width = info.width; height = info.height;
+                profile = info.profile_idc; level = info.level_idc;
+                mse_codecs = _h265_mse_codec_string(info.profile_idc, info.level_idc);
+            }
+            else mse_codecs = "hvc1.1.6.L120.B0";
+            extradata = r_pipeline::get_video_codec_extradata(codec_name, codec_params);
+        }
+        else
+        {
+            auto sps = r_pipeline::get_h264_sps(codec_params);
+            auto pps = r_pipeline::get_h264_pps(codec_params);
+            if(sps.is_null())
+            {
+                // Stored codec params without sprop-parameter-sets: the camera
+                // sends SPS/PPS inline in its IDR frames instead. Lift them from
+                // the first key frame (in the start-code-prefixed form the
+                // get_h264_* helpers return) so the init segment is still valid.
+                auto& kf = bt["frames"][vframes[first_i].idx]["data"].get_blob();
+                auto raw_sps = _extract_annexb_nalu(kf.data(), kf.size(), 7);
+                auto raw_pps = _extract_annexb_nalu(kf.data(), kf.size(), 8);
+                if(!raw_sps.empty())
+                {
+                    vector<uint8_t> v{0, 0, 0, 1}; v.insert(v.end(), raw_sps.begin(), raw_sps.end());
+                    sps.set_value(v);
+                }
+                if(!raw_pps.empty())
+                {
+                    vector<uint8_t> v{0, 0, 0, 1}; v.insert(v.end(), raw_pps.begin(), raw_pps.end());
+                    pps.set_value(v);
+                }
+            }
+            if(!sps.is_null())
+            {
+                auto info = r_pipeline::parse_h264_sps(sps.value());
+                width = info.width; height = info.height;
+                profile = info.profile_idc; level = info.level_idc;
+                mse_codecs = _h264_mse_codec_string(sps.value());
+                extradata  = r_pipeline::make_h264_extradata(sps, pps);
+            }
+            else mse_codecs = "avc1.4d4029";
+        }
+        if(width == 0 || height == 0)
+        {
+            if(args.find("width") != args.end() && args.find("height") != args.end())
+            {
+                width  = r_string_utils::s_to_uint16(args["width"]);
+                height = r_string_utils::s_to_uint16(args["height"]);
+            }
+            else R_THROW(("Passthrough fmp4: no SPS in stored codec parameters and no width/height given."));
+        }
+
+        // Without parameter sets the init segment can't describe the stream and
+        // the mov muxer wouldn't convert the Annex-B samples; let the client fall
+        // back to stills rather than hand it an unplayable fragment.
+        if(extradata.empty())
+            R_THROW(("Passthrough fmp4: no SPS/PPS available for %s stream.", codec_name.c_str()));
+
+        r_muxer muxer("", /*output_to_buffer=*/true, "mp4");
+        muxer.enable_fragmented_mp4();
+        muxer.add_video_stream(av_d2q(fr.value(), 10000), codec_id, width, height, profile, level);
+        muxer.set_video_extradata(extradata);
+
+        // --- audio: AAC straight through; anything else is dropped.
+        bool audio_passthrough = false;
+        bool has_audio = bt.has_key("has_audio") && bt["has_audio"].get_string() == "true"
+                         && bt.has_key("audio_codec_name") && bt.has_key("audio_codec_parameters");
+        if(has_audio)
+        {
+            auto a_name   = bt["audio_codec_name"].get_string();
+            auto a_params = bt["audio_codec_parameters"].get_string();
+            auto a_id     = r_av::encoding_to_av_codec_id(a_name);
+            if(a_id == AV_CODEC_ID_AAC)
+            {
+                r_nullable<int> a_rate, a_chans;
+                for(auto& part : r_string_utils::split(a_params, ","))
+                {
+                    auto kv = r_string_utils::split(part, "=");
+                    if(kv.size() != 2) continue;
+                    if(r_string_utils::strip(kv[0]) == "sc_audio_rate")     a_rate.set_value(r_string_utils::s_to_int(kv[1]));
+                    if(r_string_utils::strip(kv[0]) == "sc_audio_channels") a_chans.set_value(r_string_utils::s_to_int(kv[1]));
+                }
+                if(a_chans.is_null()) a_chans.set_value(1);
+                if(!a_rate.is_null())
+                {
+                    muxer.add_audio_stream(AV_CODEC_ID_AAC, (uint8_t)a_chans.value(), (uint32_t)a_rate.value());
+                    auto asc = r_pipeline::get_audio_codec_extradata(a_params);
+                    if(!asc.empty())
+                        muxer.set_audio_extradata(asc);
+                    audio_passthrough = true;
+                }
+            }
+        }
+
+        muxer.open();
+
+        // --- pass 2: write every frame with ts in [first_ts, cut_ts) — selected
+        // by timestamp, not index, since the query may list audio after video.
+        // PTS is 0-based at first_ts in a 1/1000 timebase; DTS == PTS (IP camera
+        // streams carry no B-frames, exactly as the export remux assumes).
+        for(size_t fi = 0; fi < n_frames; ++fi)
+        {
+            if(ws.stopping())
+                R_THROW(("fMP4 passthrough aborted: server shutting down."));
+            if(conn.peer_closed())
+                R_THROW(("fMP4 passthrough aborted: client disconnected."));
+
+            if(!bt["frames"].has_index(fi)) continue;
+
+            auto sid = bt["frames"][fi]["stream_id"].get_value<int>();
+            auto ts  = bt["frames"][fi]["ts"].get_value<int64_t>();
+            if(ts < first_ts || ts >= cut_ts) continue;
+
+            auto frame = bt["frames"][fi]["data"].get_blob();
+
+            if(sid == R_STORAGE_MEDIA_TYPE_VIDEO)
+            {
+                bool key = bt["frames"][fi].has_key("key") && bt["frames"][fi]["key"].get_string() == "true";
+                muxer.write_video_frame(frame.data(), frame.size(), ts - first_ts, ts - first_ts, {1, 1000}, key);
+            }
+            else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO && audio_passthrough)
+            {
+                muxer.write_audio_frame(frame.data(), frame.size(), ts - first_ts, {1, 1000});
+            }
+        }
+
+        muxer.finalize();
+
+        if(audio_passthrough) mse_codecs += ",mp4a.40.2";
+
+        r_server_response response;
+        response.set_content_type("video/mp4");
+        response.add_additional_header("X-Revere-Codecs", mse_codecs);
+        response.add_additional_header("X-Revere-First-Ts", r_string_utils::int64_to_s(first_ts));
+        response.add_additional_header("X-Revere-Next-Start", r_string_utils::int64_to_s(cut_ts));
+        response.set_body(muxer.buffer_size(), muxer.buffer());
+        return response;
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to remux passthrough fmp4."));
 }
 
 r_http::r_server_response r_ws::_get_finalize_transcode_stream(const r_http::r_web_server<r_utils::r_socket>&,
