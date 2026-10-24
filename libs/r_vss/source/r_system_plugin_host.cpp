@@ -21,7 +21,6 @@ typedef void (*system_plugin_set_enabled_func)(r_system_plugin_handle, bool);
 typedef const char* (*system_plugin_get_status_func)(r_system_plugin_handle);
 typedef const char* (*system_plugin_get_status_message_func)(r_system_plugin_handle);
 typedef const char* (*get_system_plugin_version_func)();
-typedef void (*system_plugin_post_detection_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float);
 typedef void (*system_plugin_set_api_result_cb_func)(r_system_plugin_handle, system_plugin_api_result_cb, void*);
 
 void r_system_plugin_host::_api_result_bridge(const char* name, const char* json, void* user_data)
@@ -135,6 +134,12 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                     if (pd_symbol)
                                         post_detection_func = reinterpret_cast<system_plugin_post_detection_func>(pd_symbol);
                                 } catch (...) {}
+                                system_plugin_post_detection_v2_func post_detection_v2_func = nullptr;
+                                try {
+                                    void* sym = lib->resolve_symbol("system_plugin_post_detection_v2");
+                                    if (sym)
+                                        post_detection_v2_func = reinterpret_cast<system_plugin_post_detection_v2_func>(sym);
+                                } catch (...) {}
 
                                 system_plugin_set_api_result_cb_func set_api_result_cb_func = nullptr;
                                 try {
@@ -189,6 +194,7 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         status_func,
                                         status_message_func,
                                         post_detection_func,
+                                        post_detection_v2_func,
                                         set_api_result_cb_func,
                                         plugin_name,
                                         plugin_guid,
@@ -390,8 +396,8 @@ std::string r_system_plugin_host::get_plugin_status_message(const std::string& p
 void r_system_plugin_host::connect_detection_bus(r_motion_event_plugin_host& meph)
 {
     meph.register_detection_consumer(
-        [](void* userdata, const r_detection& det) {
-            reinterpret_cast<r_system_plugin_host*>(userdata)->_dispatch_detection(det);
+        [](void* userdata, const r_detection& det, int64_t posted_at_ms) {
+            reinterpret_cast<r_system_plugin_host*>(userdata)->_dispatch_detection(det, posted_at_ms);
         },
         this
     );
@@ -413,27 +419,30 @@ void r_system_plugin_host::_on_api_result(const char* name, const char* json)
         _api_result_fn(name ? name : "", json ? json : "");
 }
 
-void r_system_plugin_host::_dispatch_detection(const r_detection& det)
+void r_vss::post_detection_to_plugin(r_system_plugin_handle plugin, system_plugin_post_detection_func v1,
+                                     system_plugin_post_detection_v2_func v2, const r_detection& det, int64_t posted_at_ms)
+{
+    if (!plugin)
+        return;
+    if (v2)
+        v2(plugin, det.camera_id.c_str(), det.ts, det.class_name.c_str(), det.confidence,
+           det.x1, det.y1, det.x2, det.y2, posted_at_ms);
+    else if (v1)
+        v1(plugin, det.camera_id.c_str(), det.ts, det.class_name.c_str(), det.confidence,
+           det.x1, det.y1, det.x2, det.y2);
+}
+
+void r_system_plugin_host::_dispatch_detection(const r_detection& det, int64_t posted_at_ms)
 {
     for (auto& p : _plugins)
     {
-        if (p.plugin_handle && p.post_detection_func)
+        try
         {
-            try
-            {
-                p.post_detection_func(
-                    p.plugin_handle,
-                    det.camera_id.c_str(),
-                    det.ts,
-                    det.class_name.c_str(),
-                    det.confidence,
-                    det.x1, det.y1, det.x2, det.y2
-                );
-            }
-            catch (const std::exception& e)
-            {
-                R_LOG_ERROR("Error dispatching detection to system plugin %s: %s", p.name.c_str(), e.what());
-            }
+            post_detection_to_plugin(p.plugin_handle, p.post_detection_func, p.post_detection_v2_func, det, posted_at_ms);
+        }
+        catch (const std::exception& e)
+        {
+            R_LOG_ERROR("Error dispatching detection to system plugin %s: %s", p.name.c_str(), e.what());
         }
     }
 }
