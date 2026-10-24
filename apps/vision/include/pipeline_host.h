@@ -44,6 +44,17 @@ constexpr double PRESENTATION_DRAIN_GAIN = 0.05;        // proportional drain of
 constexpr double PRESENTATION_DRAIN_MAX_MS = 2.0;       // max drain per present
 constexpr int64_t STATS_WINDOW_SECONDS = 10;            // smoothness stats logging interval
 
+// Playback gap skipping (see pipeline_host::_check_playback_advance)
+constexpr int64_t PLAYBACK_END_STALL_MS = 2000;         // playback pipe quiet this long after frames
+                                                        // flowed = its range has ended
+constexpr int64_t PLAYBACK_EMPTY_RANGE_MS = 5000;       // no frame at all this long after play() =
+                                                        // the range held no footage
+constexpr int PLAYBACK_MAX_ADVANCE_STREAK = 3;          // consecutive no-progress advances before
+                                                        // giving up (avoids a restart loop)
+constexpr int64_t PLAYBACK_PROGRESS_RESET_S = 5;        // this much footage played resets the streak
+constexpr int64_t PLAYBACK_LIVE_EDGE_SLACK_S = 5;       // a next start this close to now goes live
+constexpr int64_t PLAYBACK_SEGMENT_LOOKAHEAD_H = 6;     // first /contents lookahead (web UI uses 6h)
+
 // Log-only smoothness instrumentation, accumulated per stream and emitted as
 // one log line per stats window. Interpretation:
 //   pts_d   — delta between consecutive frame timestamps. Uneven values mean
@@ -190,6 +201,8 @@ public:
     bool load_video_textures();
 
     bool playing(const std::string& stream_name) const;
+    // True while the stream is playing a recorded range (not live, not paused).
+    bool playback_active(const std::string& stream_name) const;
     std::chrono::system_clock::time_point last_control_bar_pos(const std::string& stream_name) const;
 
     // Badge state for a tile (see stream_status). Cheap; called per tile per frame.
@@ -248,6 +261,16 @@ private:
     // into a drop-oldest queue, so a resume would jump). Caller must hold
     // _internals_lok.
     void _pause_pipe(const std::string& name, const std::shared_ptr<pipeline_state>& pipe);
+
+    // Gap skipping. A playback pipe plays one RTSP range and then just goes
+    // quiet (r_gst_source surfaces no EOS). Once a second, on the worker
+    // thread: find playback pipes that have gone quiet, look up the camera's
+    // recorded segments at/after where they stopped (/contents, outside the
+    // lock), and either restart them on the next segment, switch to live if
+    // that segment is the live edge, or stop them if nothing follows. A paused
+    // pipe isn't running and is never touched. Each tile advances on its own,
+    // including in Sync mode.
+    void _check_playback_advance();
 
     // Drop queued frames and force a re-anchor; call on seek/play/live
     // transitions so stale frames can't present. Caller must hold _internals_lok.

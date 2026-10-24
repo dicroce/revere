@@ -196,6 +196,18 @@ struct control_bar_state
         playhead_pos = 1000;  // Ensure playhead goes to the right edge when going live
     }
 
+    // Playback has moved past the visible range (gap skip, or just reaching the
+    // right edge): pan the range so the playhead lands a quarter of the way in
+    // and has room to keep moving right.
+    void follow_playhead(const std::chrono::system_clock::time_point& t)
+    {
+        set_range(t + (std::chrono::minutes(timerange_minutes) * 3) / 4);
+        if(tr.time_is_in_range(t))
+            playhead_pos = (std::max)(0, (std::min)(1000, tr.time_to_range(t, 0, 1000)));
+        else
+            playhead_pos = 1000;
+    }
+
     std::pair<std::chrono::system_clock::time_point, std::chrono::system_clock::time_point> get_range() const
     {
         return tr.get();

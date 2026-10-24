@@ -826,6 +826,7 @@ void pipeline_host::sync_play_cb(const std::chrono::system_clock::time_point& ra
             _playback_start_positions[name] = pipe->get_last_control_bar_pos();
             _playback_start_pts[name] = 0;
             _reset_presentation(name);
+            pipe->set_auto_advance_streak(0);
             pipe->play();
         }
     }
@@ -903,6 +904,7 @@ void pipeline_host::control_bar_button_cb(const string& name, control_bar_button
                 _playback_start_positions[name] = pipe->get_last_control_bar_pos();
                 _playback_start_pts[name] = 0; // Will be set when first frame arrives
                 _reset_presentation(name);
+                pipe->set_auto_advance_streak(0);
                 pipe->play();
             }
         }
@@ -1112,6 +1114,190 @@ bool pipeline_host::playing(const std::string& stream_name) const
     return false;
 }
 
+bool pipeline_host::playback_active(const std::string& stream_name) const
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    auto found_pipe = _pipes.find(stream_name);
+    if(found_pipe != end(_pipes))
+        return found_pipe->second->running() && found_pipe->second->is_playback();
+    return false;
+}
+
+void pipeline_host::_check_playback_advance()
+{
+    // First segment whose footage extends past `from` (the one containing it,
+    // or the next one after a gap), as CameraPlayer.vue's segFor(). With
+    // skip_containing, a segment that already contains `from` is passed over:
+    // used when a previous advance into it produced nothing.
+    auto pick_segment = [](const std::vector<segment>& segs, const system_clock::time_point& from, bool skip_containing) -> r_nullable<segment>
+    {
+        r_nullable<segment> best;
+        for(const auto& s : segs)
+        {
+            if(s.end <= from + seconds(1))
+                continue;
+            if(skip_containing && s.start <= from)
+                continue;
+            if(best.is_null() || s.start < best.value().start)
+                best.set_value(s);
+        }
+        return best;
+    };
+
+    struct candidate
+    {
+        std::string name;
+        std::string camera_id;
+        std::shared_ptr<pipeline_state> pipe;
+        uint32_t gen {0};
+        system_clock::time_point pos;         // where playback stopped
+        system_clock::time_point search_from; // where to look for footage
+        bool skip_containing {false};
+    };
+    std::vector<candidate> cands;
+
+    {
+        lock_guard<mutex> g(_internals_lok);
+        for(auto& [name, pipe] : _pipes)
+        {
+            if(!pipe->running() || !pipe->is_playback())
+                continue;
+
+            bool got_frames = pipe->received_frame_since_play();
+            auto quiet = pipe->since_last_video_frame();
+            if(quiet.count() < (got_frames ? PLAYBACK_END_STALL_MS : PLAYBACK_EMPTY_RANGE_MS))
+            {
+                // Playing fine. Enough footage shown since this play started
+                // means the last advance worked: forget the no-progress streak.
+                auto rc_it = _render_contexts.find(name);
+                if(got_frames && rc_it != end(_render_contexts) && rc_it->second->pts > 0)
+                {
+                    auto shown = system_clock::time_point(milliseconds(rc_it->second->pts));
+                    if(shown - pipe->play_start() > seconds(PLAYBACK_PROGRESS_RESET_S))
+                        pipe->set_auto_advance_streak(0);
+                }
+                continue;
+            }
+
+            // The frame on screen is where playback stopped (display pts is
+            // absolute ms since epoch; see post_video_frame).
+            auto pos = pipe->play_start();
+            auto rc_it = _render_contexts.find(name);
+            if(got_frames && rc_it != end(_render_contexts) && rc_it->second->pts > 0)
+                pos = system_clock::time_point(milliseconds(rc_it->second->pts));
+
+            if(pipe->auto_advance_streak() >= PLAYBACK_MAX_ADVANCE_STREAK)
+            {
+                R_LOG_WARNING("playback[%s]: %d advances without progress, stopping", name.c_str(), pipe->auto_advance_streak());
+                _pause_pipe(name, pipe);
+                pipe->set_auto_advance_streak(0);
+                continue;
+            }
+
+            candidate c;
+            c.name = name;
+            c.camera_id = _stream_infos.count(name) ? _stream_infos[name].camera_id : std::string();
+            c.pipe = pipe;
+            c.gen = pipe->play_generation();
+            c.pos = pos;
+            // Reached the end of the range: continue from the range end. Quiet
+            // mid-range (a gap the server paused on, or an empty range): continue
+            // from the last shown frame, or the range start if there was none.
+            bool clean_end = got_frames && pos >= pipe->play_end() - seconds(2);
+            c.search_from = clean_end ? pipe->play_end() : pos;
+            // No progress since the last auto-advance: the segment list said
+            // there was footage here but the server had none (cf. CameraPlayer
+            // "jump to the segment end"), so pass over the containing segment.
+            c.skip_containing = pipe->auto_advance_streak() > 0 &&
+                c.search_from <= pipe->last_auto_advance_pos() + seconds(1);
+            if(c.camera_id.empty())
+                continue;
+            cands.push_back(std::move(c));
+        }
+    }
+
+    for(auto& c : cands)
+    {
+        // Blocking HTTP, outside the lock (this is the worker thread). Look a
+        // few hours ahead first, as the web UI does, then the rest of the way
+        // to now so a long outage doesn't read as end-of-recording.
+        auto now = system_clock::now();
+        r_nullable<segment> next;
+        try
+        {
+            auto first_end = (std::min)(now, c.search_from + hours(PLAYBACK_SEGMENT_LOOKAHEAD_H));
+            auto cr = query_segments(_cfg, c.camera_id, c.search_from - seconds(2), first_end);
+            next = pick_segment(cr.segments, c.search_from, c.skip_containing);
+            if(next.is_null() && first_end < now)
+            {
+                cr = query_segments(_cfg, c.camera_id, first_end, now);
+                next = pick_segment(cr.segments, c.search_from, c.skip_containing);
+            }
+        }
+        catch(const std::exception& e)
+        {
+            // revere unreachable: leave the pipe alone; the dead check handles it.
+            R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+            continue;
+        }
+
+        lock_guard<mutex> g(_internals_lok);
+
+        // Still the same pipe, still in the play we inspected? Pause/scrub/
+        // layout changes in the meantime win.
+        auto it = _pipes.find(c.name);
+        if(it == end(_pipes) || it->second != c.pipe || !c.pipe->running() || c.pipe->play_generation() != c.gen)
+            continue;
+
+        auto& pipe = c.pipe;
+
+        if(next.is_null())
+        {
+            R_LOG_INFO("playback[%s]: no recording after %s, stopping", c.name.c_str(), r_time_utils::tp_to_iso_8601(c.search_from, false).c_str());
+            _pause_pipe(c.name, pipe);
+            pipe->set_last_control_bar_pos(c.pos);
+            continue;
+        }
+
+        auto next_start = (std::max)(c.search_from, next.value().start);
+
+        if(next_start >= now - seconds(PLAYBACK_LIVE_EDGE_SLACK_S))
+        {
+            R_LOG_INFO("playback[%s]: reached the live edge, going live", c.name.c_str());
+            pipe->stop();
+            _playback_start_positions.erase(c.name);
+            _playback_start_pts.erase(c.name);
+            _reset_presentation(c.name);
+            pipe->set_auto_advance_streak(0);
+            pipe->play_live();
+            continue;
+        }
+
+        // End of that segment, or one visible-range width on, whichever is
+        // sooner (the UI pans its range along as the playhead moves).
+        auto width = pipe->range_width();
+        if(width <= seconds(1))
+            width = minutes(20);
+        auto next_end = (std::min)(next.value().end, next_start + width);
+        if(next_end <= next_start + seconds(1))
+            next_end = next_start + seconds(1);
+
+        R_LOG_INFO("playback[%s]: advancing to %s - %s (streak %d)",
+            c.name.c_str(),
+            r_time_utils::tp_to_iso_8601(next_start, false).c_str(),
+            r_time_utils::tp_to_iso_8601(next_end, false).c_str(),
+            pipe->auto_advance_streak() + 1);
+
+        pipe->stop();
+        _playback_start_positions[c.name] = next_start;
+        _playback_start_pts[c.name] = 0;
+        _reset_presentation(c.name);
+        pipe->set_auto_advance_streak(pipe->auto_advance_streak() + 1);
+        pipe->set_last_auto_advance_pos(next_start);
+        pipe->play(next_start, next_end);
+    }
+}
+
 std::chrono::system_clock::time_point pipeline_host::last_control_bar_pos(const std::string& stream_name) const
 {
     lock_guard<mutex> pipes_lock(_internals_lok);
@@ -1170,6 +1356,8 @@ void pipeline_host::_entry_point()
 
         if(!_running)
             continue;
+
+        _check_playback_advance();
 
         auto now = steady_clock::now();
 

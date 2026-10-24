@@ -1068,6 +1068,14 @@ int main(int argc, char** argv)
                                                 }
                                             }
                                         }
+                                        else if(!ui_state.mcs.obos.cbs.dragging &&
+                                                frame_time > ui_state.mcs.obos.cbs.tr.get_end() &&
+                                                ph.playback_active(name))
+                                        {
+                                            // Playback ran off the right edge (range end, or a gap
+                                            // skip into a later segment): pan the range after it.
+                                            ui_state.mcs.obos.cbs.follow_playhead(frame_time);
+                                        }
                                     }
                                 }
                                 
@@ -1952,6 +1960,11 @@ int run_overlay(const overlay_opts& opts)
                         else
                             mcs.obos.cbs.playhead_pos = new_playhead_pos;
                     }
+                }
+                else if(!mcs.obos.cbs.dragging && frame_time > mcs.obos.cbs.tr.get_end() && ph.playback_active(si.name))
+                {
+                    // Playback ran off the right edge (range end or gap skip): pan after it.
+                    mcs.obos.cbs.follow_playhead(frame_time);
                 }
             }
 
