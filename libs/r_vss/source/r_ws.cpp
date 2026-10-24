@@ -188,15 +188,15 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     _devices(devices),
     _agent(agent),
     _stream_keeper(stream_keeper),
-    // Both listeners bind to loopback only for now. All current consumers are
-    // local — the cloud plugin (127.0.0.1:8088), the desktop web UI, vision and
-    // local MCP clients — and most endpoints are still unauthenticated, so
-    // binding to 0.0.0.0 would expose all surveillance data to every host on
-    // the LAN. The HTTPS listener is what will be opened to remote clients once
-    // every endpoint requires a token.
+    // Plain HTTP is always loopback only: this machine's web UI, vision, the
+    // MCP bridge and plugins. HTTPS is loopback only too unless the user has
+    // turned on remote access, in which case it listens on every interface so
+    // vision and browsers elsewhere on the network can connect (every endpoint
+    // requires a token; see r_ws_auth.h).
     _http(WEB_SERVER_PORT, "127.0.0.1"),
-    _https(WEB_SERVER_TLS_PORT, "127.0.0.1")
+    _https(WEB_SERVER_TLS_PORT, _read_remote_access(top_dir) ? string() : string("127.0.0.1"))
 {
+    _remote_access_active = _read_remote_access(top_dir);
     _add_routes(_http);
     _add_routes(_https);
 
@@ -256,6 +256,8 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     {
         _https.start();
         R_LOG_INFO("r_ws: TLS certificate fingerprint (SHA-256) %s", _tls->fingerprint_sha256().c_str());
+        if(_remote_access_active)
+            R_LOG_INFO("r_ws: remote access ON: HTTPS listening on all interfaces, port %d", WEB_SERVER_TLS_PORT);
     }
 
     _export_running = true;
@@ -374,6 +376,55 @@ string r_ws::get_tls_fingerprint() const
 string r_ws::get_tls_cert_pem() const
 {
     return _tls ? _tls->cert_pem() : string();
+}
+
+bool r_ws::_read_remote_access(const string& top_dir)
+{
+    auto path = top_dir + PATH_SLASH + "web_settings.json";
+    try
+    {
+        if(!r_fs::file_exists(path))
+            return false;
+        auto bytes = r_fs::read_file(path);
+        auto j = json::parse(string(bytes.begin(), bytes.end()));
+        return j.is_object() && j.value("remote_access", false);
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_WARNING("r_ws: ignoring unreadable %s (remote access stays off): %s", path.c_str(), ex.what());
+        return false;
+    }
+}
+
+bool r_ws::remote_access_configured() const
+{
+    return _read_remote_access(_top_dir);
+}
+
+bool r_ws::remote_access_active() const
+{
+    return _remote_access_active;
+}
+
+void r_ws::set_remote_access(bool enabled)
+{
+    auto path = _top_dir + PATH_SLASH + "web_settings.json";
+    json j = json::object();
+    try
+    {
+        if(r_fs::file_exists(path))
+        {
+            auto bytes = r_fs::read_file(path);
+            auto existing = json::parse(string(bytes.begin(), bytes.end()));
+            if(existing.is_object())
+                j = existing;
+        }
+    }
+    catch(...) {}
+    j["remote_access"] = enabled;
+    auto text = j.dump(2);
+    r_fs::atomic_write_file((const uint8_t*)text.data(), text.size(), path);
+    R_LOG_INFO("r_ws: remote access set %s (applies when Revere restarts)", enabled ? "on" : "off");
 }
 
 // Clamp a caller-supplied snapshot dimension into something the decode/encode

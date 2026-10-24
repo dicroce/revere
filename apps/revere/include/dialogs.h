@@ -372,6 +372,79 @@ void web_password_modal(const char* popup_name, bool password_is_set, OK_CB ok_c
     }
 }
 
+// ---- Remote access ----
+
+// Whether the HTTPS listener accepts other computers (applied at the next
+// start), plus the certificate fingerprint those computers will ask the user
+// to confirm. configured is the stored choice, active what this run does.
+// ok_cb(enabled) on Save.
+template<typename OK_CB, typename CANCEL_CB>
+void remote_access_modal(const char* popup_name, bool configured, bool active, const std::string& fingerprint, bool password_set, OK_CB ok_cb, CANCEL_CB cancel_cb)
+{
+    namespace txt = remote_access_text;
+    dialog_frame d(popup_name, 480.0f);
+    if(!d)
+        return;
+
+    static bool enabled = false;
+    static bool copied = false;
+    if(d.appearing())
+    {
+        enabled = configured;
+        copied = false;
+    }
+
+    d.body(txt::description);
+    d.gap(6.0f);
+    d.toggle("##remote_access", txt::toggle_label, txt::toggle_description, &enabled);
+    if(enabled != active)
+    {
+        d.gap(2.0f);
+        d.body(txt::restart_note, r_ui_utils::theme::text_primary);
+    }
+    if(enabled && !password_set)
+    {
+        d.gap(2.0f);
+        d.error(txt::no_password);
+    }
+
+    d.gap(8.0f);
+    d.label(txt::fingerprint_label);
+    d.gap(2.0f);
+    if(fingerprint.empty())
+        d.error(txt::no_tls);
+    else
+    {
+        d.body(fingerprint, r_ui_utils::theme::text_primary);
+        d.gap(2.0f);
+        d.body(copied ? txt::copied : txt::fingerprint_help);
+    }
+
+    if(enabled)
+    {
+        d.gap(6.0f);
+        d.body(txt::video_note);
+    }
+
+    dialog_frame::button copy {txt::copy, button_kind::ghost};
+    int a = d.actions({{txt::cancel}, {txt::save, button_kind::primary}}, fingerprint.empty() ? nullptr : &copy);
+    if(a == dialog_frame::left)
+    {
+        ImGui::SetClipboardText(fingerprint.c_str());
+        copied = true;
+    }
+    else if(a == 0 || d.escape())
+    {
+        d.close();
+        cancel_cb();
+    }
+    else if(a == 1 || d.enter())
+    {
+        d.close();
+        ok_cb(enabled);
+    }
+}
+
 // ---- RTSP transport ----
 
 // How Revere receives the camera's video: TCP (the default) or UDP, as two

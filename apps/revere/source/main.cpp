@@ -966,6 +966,32 @@ void configure_camera_setup_wizard(
         }
     );
     camera_setup_wizard.add_step(
+        "remote_access",
+        [&as, &camera_setup_wizard, &stream_keeper](){
+            ImGui::OpenPopup(revere::remote_access_text::name);
+            revere::remote_access_modal(
+                revere::remote_access_text::name,
+                stream_keeper.remote_access_configured(),
+                stream_keeper.remote_access_active(),
+                stream_keeper.tls_fingerprint(),
+                stream_keeper.system_password_set(),
+                [&](bool enabled){
+                    try
+                    {
+                        stream_keeper.set_remote_access(enabled);
+                        camera_setup_wizard.cancel();
+                    }
+                    catch(const std::exception& e)
+                    {
+                        as.error_message = e.what();
+                        camera_setup_wizard.next("error_modal");
+                    }
+                },
+                [&](){ camera_setup_wizard.cancel(); }
+            );
+        }
+    );
+    camera_setup_wizard.add_step(
         "camera_credentials",
         [&](){
             as.wizard_step = 1;
@@ -3541,6 +3567,9 @@ int main(int argc, char** argv)
             },
             [&](){
                 camera_setup_wizard.next("set_system_password");
+            },
+            [&](){
+                camera_setup_wizard.next("remote_access");
             },
             [&](){
                 camera_setup_wizard.next("about_revere");

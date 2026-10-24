@@ -133,6 +133,14 @@ public:
     // if TLS setup failed.
     R_API std::string get_tls_fingerprint() const;
     R_API std::string get_tls_cert_pem() const;
+
+    // Remote access: whether the HTTPS listener accepts connections from other
+    // machines; off, it binds loopback only. Stored in <top_dir>/web_settings.json
+    // and applied when Revere starts (configured = the stored choice, active =
+    // what this run's listener is doing).
+    R_API bool remote_access_configured() const;
+    R_API bool remote_access_active() const;
+    R_API void set_remote_access(bool enabled);
 private:
     // Route table, registered on both the HTTP and HTTPS servers.
     template<class SOK_T>
@@ -157,6 +165,8 @@ private:
     // Loads <top_dir>/tls/server.{crt,key}, generating and persisting a
     // self-signed pair on first run.
     void _load_or_create_tls();
+    // The remote_access setting from <top_dir>/web_settings.json (false if absent).
+    static bool _read_remote_access(const std::string& top_dir);
     r_http::r_server_response _get_jpg(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _get_webp(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
@@ -273,6 +283,7 @@ private:
     r_http::r_web_server<r_utils::r_socket> _http;
     r_http::r_web_server<r_utils::r_ssl_server_socket> _https;
     std::shared_ptr<r_utils::r_ssl_server_config> _tls;
+    bool _remote_access_active {false};
     // Sessions are shared so a /transcode keeps its own alive while finalize or
     // eviction drops it from the map. _sessions_mutex guards only the map (and
     // last_used); it is never held across a transcode.

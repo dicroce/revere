@@ -885,6 +885,26 @@ void r_stream_keeper::clear_system_password()
     _ws.clear_system_password();
 }
 
+bool r_stream_keeper::remote_access_configured() const
+{
+    return _ws.remote_access_configured();
+}
+
+bool r_stream_keeper::remote_access_active() const
+{
+    return _ws.remote_access_active();
+}
+
+void r_stream_keeper::set_remote_access(bool enabled)
+{
+    _ws.set_remote_access(enabled);
+}
+
+string r_stream_keeper::tls_fingerprint() const
+{
+    return _ws.get_tls_fingerprint();
+}
+
 void r_stream_keeper::write_metadata(const string& camera_id, const string& stream_tag, const string& json_data, int64_t timestamp_ms)
 {
     std::shared_ptr<r_recording_context> rc;

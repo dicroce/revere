@@ -72,6 +72,25 @@ inline constexpr const char* remove_confirm_yes = "Remove";
 inline constexpr const char* remove_confirm_no = "Keep password";
 }
 
+namespace remote_access_text
+{
+inline constexpr const char* name = "Remote access";
+inline constexpr const char* menu_item = "Remote access...";
+inline constexpr const char* description = "Let Vision and web browsers on other computers on your network connect to this Revere. The connection is encrypted, and signing in needs the local web password.";
+inline constexpr const char* toggle_label = "Allow connections from other computers";
+inline constexpr const char* toggle_description = "Revere listens for encrypted connections on port 8443.";
+inline constexpr const char* restart_note = "This takes effect the next time Revere starts.";
+inline constexpr const char* no_password = "Set a local web password too (Settings > Local web password): other computers sign in with it.";
+inline constexpr const char* fingerprint_label = "Certificate fingerprint (SHA-256)";
+inline constexpr const char* fingerprint_help = "The first time Vision or a browser on another computer connects, check that it shows this same fingerprint before trusting it.";
+inline constexpr const char* no_tls = "Encrypted connections are unavailable (see Revere's log).";
+inline constexpr const char* video_note = "Live video for Vision is still sent unencrypted and without a password (RTSP, port 8554).";
+inline constexpr const char* copy = "Copy fingerprint";
+inline constexpr const char* copied = "Fingerprint copied.";
+inline constexpr const char* save = "Save";
+inline constexpr const char* cancel = "Cancel";
+}
+
 // BeginPopupModal with a taller title bar. ImGui sizes the title bar from
 // FramePadding at Begin, so it's raised just for that call; the dialog's
 // own content keeps the normal padding.
@@ -100,8 +119,8 @@ inline void pop_menu_bar_style()
     ImGui::PopStyleVar(4);
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename GET_KEEP_AWAKE_CB, typename SET_KEEP_AWAKE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB, typename ABOUT_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, GET_KEEP_AWAKE_CB get_keep_awake_cb, SET_KEEP_AWAKE_CB set_keep_awake_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb, ABOUT_CB about_cb)
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename GET_KEEP_AWAKE_CB, typename SET_KEEP_AWAKE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB, typename REMOTE_ACCESS_CB, typename ABOUT_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, GET_KEEP_AWAKE_CB get_keep_awake_cb, SET_KEEP_AWAKE_CB set_keep_awake_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb, REMOTE_ACCESS_CB remote_access_cb, ABOUT_CB about_cb)
 {
     push_menu_bar_style();
     ImGui::BeginMainMenuBar();
@@ -155,6 +174,9 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
 
         if (ImGui::MenuItem(web_password_text::menu_item))
             set_system_password_cb();
+
+        if (ImGui::MenuItem(remote_access_text::menu_item))
+            remote_access_cb();
 
         ImGui::EndMenu();
     }

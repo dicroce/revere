@@ -247,6 +247,13 @@ public:
     R_API bool system_password_set() const;
     R_API void clear_system_password();
 
+    // Remote access to the web API over HTTPS (see r_ws.h).
+    R_API bool remote_access_configured() const;
+    R_API bool remote_access_active() const;
+    R_API void set_remote_access(bool enabled);
+    // SHA-256 of the HTTPS certificate, "AB:CD:..." ("" if TLS is unavailable).
+    R_API std::string tls_fingerprint() const;
+
     R_API void write_metadata(const std::string& camera_id, const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);
 
     R_API std::vector<std::string> get_loaded_system_plugins() const;
