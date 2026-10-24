@@ -74,10 +74,15 @@ const props = defineProps({
   camera:  { type: Object, required: true },
   // null => live (still refresh); ISO string => a seeked recorded position.
   isoTime: { type: String, default: null },
+  // Playback speed for seeked playback (issue #101): 0.5 / 1 / 2 / 4. Ignored in
+  // live mode (always 1x). Applied via video.playbackRate on the MSE element.
+  rate:    { type: Number, default: 1 },
 })
-// Absolute ISO of the currently displayed video frame, so the host can follow
-// the playhead on the timeline. Emitted while playing.
-const emit = defineEmits(['timeupdate'])
+// timeupdate: absolute ISO of the currently displayed video frame, so the host
+// can follow the playhead on the timeline. Emitted while playing (and after a
+// frame step). seek: a frame step landed outside the MSE buffer (or there is no
+// video session); the host should seek to this ISO via the normal scrub path.
+const emit = defineEmits(['timeupdate', 'seek'])
 
 const isLive = computed(() => props.isoTime === null)
 
@@ -87,7 +92,11 @@ const FPS_NUM      = 30
 const FPS_DEN      = 1
 const WINDOW_MS    = 3000   // fMP4 window pulled per request
 const AHEAD_S      = 10     // keep this many seconds buffered ahead of playhead
+                            // (WINDOW_MS and AHEAD_S are media seconds; both are
+                            // scaled by the playback rate so a 4x session still
+                            // has ~10 real seconds in hand — see rateScale())
 const BEHIND_S     = 30     // evict buffered media older than this behind playhead
+const MAX_AUDIO_RATE = 2    // mute above this: browsers mute/garble audio past ~2x
 const MAX_W        = 1280   // cap transcode at 720p for v1 (within avc1 4.1, lighter)
 const MAX_H        = 720
 const MAX_RETRIES      = 3          // per-window fetch retries (503 / timeout / blip)
@@ -156,7 +165,9 @@ function applyVolume() {
   const v = video.value
   if (!v) return
   const vol = volume.value
-  v.muted = vol === 0             // muted at 0 → true silence + autoplay allowed
+  // Muted at 0 → true silence + autoplay allowed. Also muted above MAX_AUDIO_RATE
+  // (issue #101): fast playback is a visual tool and sped-up audio is useless.
+  v.muted = vol === 0 || effectiveRate() > MAX_AUDIO_RATE
   if (vol > 1 && ensureGainGraph()) {
     v.volume = 1
     gainNode.gain.value = vol
@@ -172,6 +183,27 @@ function toggleMute() {
   else volume.value = lastVolume || 0.6
 }
 watch(volume, applyVolume)
+
+// --- playback speed (issue #101) -------------------------------------------
+// Live always runs at 1x; seeked playback follows the `rate` prop.
+function effectiveRate() {
+  if (liveMode) return 1
+  const r = Number(props.rate)
+  return r > 0 && Number.isFinite(r) ? r : 1
+}
+// Fetch-ahead scale: at 4x the playhead eats media 4x faster, so keep 4x as much
+// media buffered and pull 4x longer windows. Never shrink below 1 (0.5x gains
+// nothing from smaller windows).
+function rateScale() { return Math.max(1, effectiveRate()) }
+
+function applyRate() {
+  const v = video.value
+  if (!v) return
+  const r = effectiveRate()
+  if (v.playbackRate !== r) { try { v.playbackRate = r } catch (_) {} }
+  applyVolume()                            // mute/un-mute around MAX_AUDIO_RATE
+}
+watch(() => props.rate, () => { applyRate(); pump() })   // pump: new threshold may want a fetch
 
 // --- MSE driver state (plain locals; not reactive) -------------------------
 let mediaSource  = null
@@ -415,7 +447,7 @@ async function startPlayback(live = false) {
   video.value.addEventListener('error', onVideoError)
   video.value.addEventListener('stalled', onVideoStalled)
 
-  applyVolume()                            // a fresh <video> defaults to full/un-muted
+  applyRate()                              // load() resets playbackRate; also applies volume/mute
   pump()                                   // drain the queued first window
   video.value.play().catch(() => {})
 }
@@ -560,7 +592,7 @@ async function fetchNextWindow() {
     }
 
     const winStart = Math.max(windowStartMs, seg.startMs)  // snap into the segment
-    const winEnd   = Math.min(winStart + WINDOW_MS, seg.endMs)
+    const winEnd   = Math.min(winStart + WINDOW_MS * rateScale(), seg.endMs)
 
     // Live: if this window is only short because it's clamped at the write-head
     // (not a real segment boundary), wait for more data rather than churning a
@@ -658,7 +690,49 @@ function pump() {
     return
   }
 
-  if (feeding && bufferedAhead() < AHEAD_S) fetchNextWindow()
+  if (feeding && bufferedAhead() < AHEAD_S * rateScale()) fetchNextWindow()
+}
+
+// --- frame step (issue #101) -----------------------------------------------
+// Step one frame back (dir = -1) or forward (+1) in seeked playback. The
+// transcode runs at a fixed FPS_NUM/FPS_DEN, so one frame is exactly 1/fps of
+// presentation time. Playing video is paused first (stepping implies pausing).
+// If the target lies inside the MSE buffer we just move currentTime — the paused
+// <video> paints the new frame instantly and timeupdate keeps the timeline in
+// sync. Otherwise (no video session, or stepped off the buffered edge) we fall
+// back to the host's normal seek path, which shows a /jpg still at the new time.
+const FRAME_MS = 1000 * FPS_DEN / FPS_NUM
+
+function bufferedContains(presSec) {
+  const b = sourceBuffer && sourceBuffer.buffered
+  if (!b) return false
+  for (let i = 0; i < b.length; i++)
+    if (presSec >= b.start(i) && presSec <= b.end(i)) return true
+  return false
+}
+
+function stepFrame(dir) {
+  if (props.isoTime === null || liveMode) return      // live: no stepping
+  const d = dir < 0 ? -1 : 1
+  const v = video.value
+
+  if (playing.value && v) { v.pause(); playing.value = false }
+
+  if (mediaSource && sourceBuffer && v && revealed.value) {
+    const target = v.currentTime + d * FRAME_MS / 1000
+    if (target >= 0 && bufferedContains(target)) {
+      v.currentTime = target
+      emit('timeupdate', new Date(presentationToWallMs(target)).toISOString())
+      return
+    }
+    // Outside the buffer: seek by wall-clock from the frame on screen.
+    emit('seek', new Date(presentationToWallMs(v.currentTime) + d * FRAME_MS).toISOString())
+    return
+  }
+
+  // Scrub still (no video session): nudge the seeked instant by one frame.
+  const base = Date.parse(props.isoTime)
+  if (Number.isFinite(base)) emit('seek', new Date(base + d * FRAME_MS).toISOString())
 }
 
 function stopVideo() {
@@ -761,7 +835,7 @@ onUnmounted(() => {
 })
 
 // --- host API (keyboard shortcuts in CameraView) ---------------------------
-defineExpose({ togglePlay, toggleMute })
+defineExpose({ togglePlay, toggleMute, stepFrame })
 </script>
 
 <style scoped>

@@ -6,6 +6,25 @@
 
       <!-- Viewing actions (snapshot / fullscreen / shortcut hint). -->
       <div class="actions">
+        <!-- Playback speed + frame step (issue #101): seeked playback only. -->
+        <template v-if="seekedTime !== null">
+          <div class="speed-group" role="group" aria-label="Playback speed">
+            <button
+              v-for="r in SPEEDS" :key="r"
+              class="act-btn speed-btn"
+              :class="{ active: speed === r }"
+              :title="`Play at ${fmtSpeed(r)} ([ slower, ] faster)`"
+              @click="setSpeed(r)"
+            >{{ fmtSpeed(r) }}</button>
+          </div>
+          <button class="act-btn" title="Previous frame (,)" @click="stepFrame(-1)">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path d="M6 5v14M18 5l-9 7 9 7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="act-btn" title="Next frame (.)" @click="stepFrame(1)">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path d="M18 5v14M6 5l9 7-9 7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+          </button>
+          <span class="act-sep"></span>
+        </template>
         <button class="act-btn" title="Save snapshot (S)" :disabled="snapshotBusy" @click="takeSnapshot">
           <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 7h3l2-2h6l2 2h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
         </button>
@@ -18,6 +37,8 @@
 
       <div v-if="showHelp" class="help" @click="showHelp = false">
         <div class="help-row"><kbd>Space</kbd><span>Play / pause</span></div>
+        <div class="help-row"><kbd>[</kbd> <kbd>]</kbd><span>Slower / faster</span></div>
+        <div class="help-row"><kbd>,</kbd> <kbd>.</kbd><span>Previous / next frame</span></div>
         <div class="help-row"><kbd>&#8592;</kbd> <kbd>&#8594;</kbd><span>Pan timeline</span></div>
         <div class="help-row"><kbd>L</kbd><span>Go live</span></div>
         <div class="help-row"><kbd>M</kbd><span>Mute / unmute</span></div>
@@ -27,7 +48,8 @@
     </header>
 
     <div class="player-wrap">
-      <CameraPlayer ref="player" :camera="camera" :iso-time="seekedTime" @timeupdate="onPlayerTime" />
+      <CameraPlayer ref="player" :camera="camera" :iso-time="seekedTime" :rate="speed"
+                    @timeupdate="onPlayerTime" @seek="onPlayerSeek" />
     </div>
 
     <div class="timeline-bar">
@@ -73,8 +95,29 @@ const playheadIso = ref(null)
 onMounted(() => { if (props.initialIso) playheadIso.value = props.initialIso })
 
 function onSeek(isoString) { seekedTime.value = isoString }
-function onLive()          { seekedTime.value = null; playheadIso.value = null }
+function onLive()          { seekedTime.value = null; playheadIso.value = null; speed.value = 1 }
 function onPlayerTime(iso) { playheadIso.value = iso }
+// A frame step that left the MSE buffer: seek there the normal way (still at the
+// new instant) and move the timeline's playhead marker along with it.
+function onPlayerSeek(iso) { seekedTime.value = iso; playheadIso.value = iso }
+
+// --- playback speed / frame step (issue #101) -------------------------------
+// Speed lives here (not in CameraPlayer) so the header control, the keyboard
+// shortcuts and the go-live reset all share one source of truth; CameraPlayer
+// applies it via video.playbackRate. Live is always 1x, so the control is hidden.
+const SPEEDS = [0.5, 1, 2, 4]
+const speed  = ref(1)
+function fmtSpeed(r) { return `${r}x` }
+function setSpeed(r) { if (seekedTime.value !== null && SPEEDS.includes(r)) speed.value = r }
+function stepSpeed(dir) {
+  if (seekedTime.value === null) return
+  const i = SPEEDS.indexOf(speed.value)
+  const j = Math.max(0, Math.min(SPEEDS.length - 1, (i < 0 ? SPEEDS.indexOf(1) : i) + dir))
+  speed.value = SPEEDS[j]
+}
+function stepFrame(dir) {
+  if (seekedTime.value !== null && player.value) player.value.stepFrame(dir)
+}
 
 // --- snapshot / fullscreen / keyboard --------------------------------------
 const viewRoot    = ref(null)   // fullscreen target: player + timeline together
@@ -165,6 +208,10 @@ function onKeyDown(e) {
       // Mirrors the on-screen play overlay, which only exists in seeked playback.
       if (seekedTime.value !== null && player.value) player.value.togglePlay()
       break
+    case '[':          stepSpeed(-1);                                   break
+    case ']':          stepSpeed(1);                                    break
+    case ',':          stepFrame(-1);                                   break
+    case '.':          stepFrame(1);                                    break
     case 'ArrowLeft':  timeline.value && timeline.value.shiftBack();    break
     case 'ArrowRight': timeline.value && timeline.value.shiftForward(); break
     case 'l': case 'L': timeline.value && timeline.value.goLive();      break
@@ -260,6 +307,14 @@ onUnmounted(() => {
 .act-btn:hover { background: #363636; color: #fff; }
 .act-btn:disabled { opacity: 0.4; cursor: default; }
 .act-btn.active { border-color: #4caf50; color: #4caf50; }
+
+/* Speed buttons (issue #101): one segmented pill of act-btns. */
+.speed-group { display: flex; align-items: center; }
+.speed-btn { min-width: 36px; padding: 0 0.3rem; font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.speed-btn:not(:first-child) { border-left: none; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.speed-btn:not(:last-child)  { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.speed-btn.active { position: relative; z-index: 1; border-left: 1px solid #4caf50; }
+.act-sep { width: 1px; height: 18px; background: #3a3a3a; margin: 0 0.25rem; }
 
 .help {
   position: absolute;
