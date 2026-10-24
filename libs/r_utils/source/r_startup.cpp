@@ -22,14 +22,28 @@
 using namespace r_utils;
 using namespace std;
 
+// A literal % in an Exec value is %% (a lone % starts a field code).
+static string _escape_percent(const string& s)
+{
+    string out;
+    for(char c : s)
+    {
+        if(c == '%')
+            out += '%';
+        out += c;
+    }
+    return out;
+}
+
 // One argument of a Desktop Entry Exec key: quoted when it holds a reserved
 // character, with ", `, $ and \ escaped inside the quotes, then \ escaped again
-// for the key's string value (Desktop Entry Specification, "The Exec key").
+// for the key's string value; and % doubled (Desktop Entry Specification, "The
+// Exec key").
 static string _desktop_exec_arg(const string& arg)
 {
     static const string reserved = " \t\n\"'\\><~|&;$*?#()`";
     if(!arg.empty() && arg.find_first_of(reserved) == string::npos)
-        return arg;
+        return _escape_percent(arg);
     string quoted = "\"";
     for(char c : arg)
     {
@@ -45,8 +59,33 @@ static string _desktop_exec_arg(const string& arg)
             escaped += '\\';
         escaped += c;
     }
-    return escaped;
+    return _escape_percent(escaped);
 }
+
+string r_utils::r_startup::desktop_entry_exec(const string& contents)
+{
+    size_t pos = 0;
+    while(pos < contents.size())
+    {
+        auto eol = contents.find('\n', pos);
+        auto line = contents.substr(pos, (eol == string::npos ? contents.size() : eol) - pos);
+        if(!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if(line.compare(0, 5, "Exec=") == 0)
+            return line.substr(5);
+        if(eol == string::npos)
+            break;
+        pos = eol + 1;
+    }
+    return string();
+}
+
+#ifndef IS_LINUX
+bool r_utils::r_startup::refresh_autostart(const string&, const string&, const string&)
+{
+    return false;
+}
+#endif
 
 string r_utils::r_startup::linux_autostart_exec(const linux_launch_env& env, const string& exe_path, const string& args)
 {
@@ -273,6 +312,49 @@ bool r_utils::r_startup::is_autostart_enabled(const string& app_name)
 
 #ifdef IS_LINUX
 
+static r_startup::linux_launch_env _launch_env()
+{
+    const auto env_or_empty = [](const char* name) { const char* v = getenv(name); return v ? string(v) : string(); };
+    r_startup::linux_launch_env env;
+    env.snap = env_or_empty("SNAP");
+    env.snap_name = env_or_empty("SNAP_NAME");
+    env.flatpak_id = env_or_empty("FLATPAK_ID");
+    env.appimage = env_or_empty("APPIMAGE");
+    return env;
+}
+
+static string _autostart_desktop_file(const string& app_name)
+{
+    if(const char* snap_user_data = (getenv("SNAP") ? getenv("SNAP_USER_DATA") : nullptr))
+        return string(snap_user_data) + "/.config/autostart/revere-autostart.desktop";
+    const char* home = getenv("HOME");
+    return home ? string(home) + "/.config/autostart/" + app_name + ".desktop" : string();
+}
+
+bool r_utils::r_startup::refresh_autostart(const string& app_name, const string& exe_path, const string& args)
+{
+    if(!is_autostart_enabled(app_name))
+        return false;
+    auto path = _autostart_desktop_file(app_name);
+    if(path.empty())
+        return false;
+    string current;
+    try
+    {
+        auto bytes = r_fs::read_file(path);
+        current = string(bytes.begin(), bytes.end());
+    }
+    catch(const exception&)
+    {
+        return false;
+    }
+    auto want = linux_autostart_exec(_launch_env(), exe_path, args);
+    if(desktop_entry_exec(current) == want)
+        return false;
+    R_LOG_INFO("Autostart entry launched \"%s\"; updating it to \"%s\"", desktop_entry_exec(current).c_str(), want.c_str());
+    return set_autostart(true, app_name, exe_path, args);
+}
+
 bool r_utils::r_startup::set_autostart(bool enable, const string& app_name, const string& exe_path, const string& args)
 {
     const char* snap = getenv("SNAP");
@@ -322,12 +404,7 @@ bool r_utils::r_startup::set_autostart(bool enable, const string& app_name, cons
             }
         }
 
-        const auto env_or_empty = [](const char* name) { const char* v = getenv(name); return v ? string(v) : string(); };
-        r_startup::linux_launch_env env;
-        env.snap = env_or_empty("SNAP");
-        env.snap_name = env_or_empty("SNAP_NAME");
-        env.flatpak_id = env_or_empty("FLATPAK_ID");
-        env.appimage = env_or_empty("APPIMAGE");
+        auto env = _launch_env();
         string exec_line = r_startup::linux_autostart_exec(env, exe_path, args);
 
         string icon_name = "revere";

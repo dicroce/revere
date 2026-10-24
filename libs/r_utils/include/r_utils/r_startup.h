@@ -41,6 +41,15 @@ struct linux_launch_env
 /// The path is quoted for the Exec key when it needs to be.
 R_API std::string linux_autostart_exec(const linux_launch_env& env, const std::string& exe_path, const std::string& args);
 
+/// @brief The Exec= value in a .desktop file's contents (its first Exec= line), empty if it has none
+R_API std::string desktop_entry_exec(const std::string& contents);
+
+/// @brief Linux: when autostart is on and its entry's Exec= isn't what set_autostart would write
+/// now, writes it again. An entry from before $APPIMAGE was used points into an AppImage mount
+/// that's gone after a reboot. Call once at startup. Other platforms: does nothing.
+/// @return true if it rewrote the entry
+R_API bool refresh_autostart(const std::string& app_name, const std::string& exe_path, const std::string& args = "");
+
 }
 
 }

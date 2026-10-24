@@ -2416,4 +2416,29 @@ void test_r_utils::test_linux_autostart_exec()
     linux_launch_env flatpak;
     flatpak.flatpak_id = "io.github.dicroce.Revere";
     RTF_ASSERT(linux_autostart_exec(flatpak, mounted, "--start_minimized") == "io.github.dicroce.Revere --start_minimized");
+
+    // A literal % is %%, quoted or not.
+    appimage.appimage = "/home/pat/100%/Revere.AppImage";
+    RTF_ASSERT(linux_autostart_exec(appimage, mounted, "") == "/home/pat/100%%/Revere.AppImage");
+    appimage.appimage = "/home/pat/100% sure/Revere.AppImage";
+    RTF_ASSERT(linux_autostart_exec(appimage, mounted, "") == "\"/home/pat/100%% sure/Revere.AppImage\"");
+
+    // At startup an existing entry is rewritten when its Exec= isn't today's:
+    // one written by an older revere from an AppImage launches the mount.
+    using r_utils::r_startup::desktop_entry_exec;
+    const string old_entry =
+        "[Desktop Entry]\r\nType=Application\r\nName=Revere\r\n"
+        "Exec=/tmp/.mount_Revere9z8Y7x/usr/bin/revere --start_minimized\r\nIcon=revere\r\n";
+    RTF_ASSERT(desktop_entry_exec(old_entry) == "/tmp/.mount_Revere9z8Y7x/usr/bin/revere --start_minimized");
+    appimage.appimage = "/home/pat/Apps/Revere-x86_64.AppImage";
+    const auto want = linux_autostart_exec(appimage, mounted, "--start_minimized");
+    RTF_ASSERT(desktop_entry_exec(old_entry) != want);
+    const string current_entry = "[Desktop Entry]\nType=Application\nName=Revere\nExec=" + want + "\nIcon=revere\n";
+    RTF_ASSERT(desktop_entry_exec(current_entry) == want);
+    RTF_ASSERT(desktop_entry_exec("[Desktop Entry]\nName=Revere\n").empty());
+    RTF_ASSERT(desktop_entry_exec("Exec=/usr/bin/revere") == "/usr/bin/revere");
+
+#ifndef IS_LINUX
+    RTF_ASSERT(!r_utils::r_startup::refresh_autostart("Revere", mounted, "--start_minimized"));
+#endif
 }
