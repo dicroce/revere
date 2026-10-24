@@ -158,6 +158,8 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     _server.add_route(METHOD_POST, "/storage_op_cancel", std::bind(&r_ws::_post_storage_op_cancel, this, _1, _2, _3));
     _server.add_route(METHOD_GET, "/system_plugins", std::bind(&r_ws::_get_system_plugins, this, _1, _2, _3));
     _server.add_route(METHOD_POST, "/system_plugin_enabled", std::bind(&r_ws::_post_system_plugin_enabled, this, _1, _2, _3));
+    _server.add_route(METHOD_GET, "/keep_awake", std::bind(&r_ws::_get_keep_awake, this, _1, _2, _3));
+    _server.add_route(METHOD_POST, "/keep_awake", std::bind(&r_ws::_post_keep_awake, this, _1, _2, _3));
 
     _server.add_route(METHOD_GET, "/auth_status", std::bind(&r_ws::_get_auth_status, this, _1, _2, _3));
     _server.add_route(METHOD_POST, "/login", std::bind(&r_ws::_post_login, this, _1, _2, _3));
@@ -3788,6 +3790,72 @@ r_http::r_server_response r_ws::_post_system_plugin_enabled(const r_http::r_web_
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to set the plugin's enabled state."));
+}
+
+static json _keep_awake_json(const r_keep_awake_status& s)
+{
+    json events = json::array();
+    for(const auto& e : s.events)
+        events.push_back({{"what", e.what}, {"start_ms", e.start_ms}, {"end_ms", e.end_ms}});
+    return json{
+        {"enabled", s.settings.enabled},
+        {"on_battery", s.settings.on_battery},
+        {"power", power_source_name(s.power)},
+        {"wanted", s.wanted},
+        {"held", s.held},
+        {"problem", s.problem},
+        {"events", events}
+    };
+}
+
+// {"enabled", "on_battery", "power": "ac"|"battery"|"unknown", "wanted",
+// "held", "problem", "events": [{"what", "start_ms", "end_ms"}] newest first}.
+r_http::r_server_response r_ws::_get_keep_awake(const r_http::r_web_server<r_utils::r_socket>&,
+                                                r_utils::r_socket&,
+                                                const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        return _json_reply(_keep_awake_json(_stream_keeper.keep_awake().get_status()));
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to read the keep awake setting."));
+}
+
+// Either or both of {"enabled": bool, "on_battery": bool}; replies as GET.
+r_http::r_server_response r_ws::_post_keep_awake(const r_http::r_web_server<r_utils::r_socket>&,
+                                                 r_utils::r_socket&,
+                                                 const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        auto req = json::parse(request.get_body_as_string(), nullptr, false);
+        auto is_bool = [&](const char* k) { return req.contains(k) && req[k].is_boolean(); };
+        if(!req.is_object() || (!is_bool("enabled") && !is_bool("on_battery")) ||
+           (req.contains("enabled") && !is_bool("enabled")) || (req.contains("on_battery") && !is_bool("on_battery")))
+            return _json_error(response_bad_request, "Expected {\"enabled\": true|false, \"on_battery\": true|false}.");
+
+        auto& ka = _stream_keeper.keep_awake();
+        auto settings = ka.get_settings();
+        if(is_bool("enabled"))
+            settings.enabled = req["enabled"].get<bool>();
+        if(is_bool("on_battery"))
+            settings.on_battery = req["on_battery"].get<bool>();
+        ka.set_settings(settings);
+        return _json_reply(_keep_awake_json(ka.get_status()));
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to change the keep awake setting."));
 }
 
 r_http::r_server_response r_ws::_post_storage_op_cancel(const r_http::r_web_server<r_utils::r_socket>&,

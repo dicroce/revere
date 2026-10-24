@@ -16,6 +16,7 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
   - [Installation](#installation)
   - [Run Headless Service](#run-headless-service)
   - [Adding Your First Camera](#adding-your-first-camera)
+  - [Keeping the Computer Awake](#keeping-the-computer-awake)
 - [Documentation](#documentation)
 - [Building from Source](#building-from-source-quick-reference)
 - [Platform Support](#platform-support)
@@ -180,6 +181,19 @@ Run `revere --help` to see all command line options.
 ONVIF-discoverable cameras on your LAN appear in the Discovered list. Click Record next to a camera and follow the instructions: Revere streams briefly from the camera to measure its bitrate, then lets you pick a storage file size (with retention estimates) for that stream. During setup you'll be asked whether to enable motion detection for the camera — say yes if you want motion events in the timeline bar (in Vision and the web UI). YOLOv8 object detection only runs on frames containing motion, so it requires motion detection too.
 
 Cameras that don't support ONVIF discovery can still be added manually by entering their RTSP URL (Cameras menu in the desktop app, or "Add RTSP Camera" in the web UI Config tab).
+
+### Keeping the Computer Awake
+
+A computer that goes to sleep stops recording. While it's plugged in, Revere keeps the computer from going to sleep on its own; a laptop on battery sleeps as usual. The display still turns off. Change this with **Keep this computer awake** and **Also on battery** in the desktop app's Settings menu or the web UI's Config tab (or in `config/keep_awake.json` in the data directory: `{"enabled": true, "on_battery": false}`).
+
+Revere holds the request under the name "Revere is recording cameras". You can see it with `pmset -g assertions` on macOS, `powercfg /requests` (as administrator) on Windows, and `systemd-inhibit --list` on Linux. On Linux the headless service needs a polkit rule for this, which `--install-service` writes; the Snap uses the desktop's own inhibitor through the `screen-inhibit-control` interface.
+
+If the computer sleeps anyway, Revere logs it when it wakes, and the web UI lists recent sleeps under Keep this computer awake.
+
+**Recording with the lid closed.** Closing a laptop's lid puts it to sleep whatever this setting says. To keep recording with it closed:
+- **macOS:** connect power, an external display and a keyboard or mouse. A Mac then stays awake with its lid closed.
+- **Windows:** Control Panel → Power Options → *Choose what closing the lid does* → *When plugged in*: **Do nothing**.
+- **Linux:** set `HandleLidSwitchExternalPower=ignore` in `/etc/systemd/logind.conf` and restart. Some desktops (GNOME, KDE) have their own lid setting too.
 
 ## Documentation
 
