@@ -31,7 +31,9 @@ public:
 
     // The key frame of the GOP showing at ts: the key frame at or before ts.
     // Past the newest frame (by up to 5 minutes), the newest key frame; before
-    // the first frame, the first key frame.
+    // the first frame, the first key frame. In a recording gap, the key frame
+    // before it if the gap began at most 5 minutes before ts, else the first
+    // key frame after it.
     R_API std::vector<uint8_t> query_key(r_storage_media_type media_type, int64_t ts);
 
     R_API std::vector<std::pair<int64_t, int64_t>> query_segments(int64_t start_ts = 0, int64_t end_ts = LLONG_MAX);

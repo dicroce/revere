@@ -9,6 +9,7 @@ public:
       TEST(test_r_storage::test_r_storage_file_ts_discontinuity_reanchor);
       TEST(test_r_storage::test_r_storage_file_write_returns_stored_ts);
       TEST(test_r_storage::test_r_storage_file_query_key);
+      TEST(test_r_storage::test_r_storage_file_query_key_gap);
       TEST(test_r_storage::test_r_storage_file_query_key_across_blocks);
       TEST(test_r_storage::test_r_storage_file_query_key_empty);
 #if 0
@@ -48,6 +49,7 @@ public:
     void test_r_storage_file_ts_discontinuity_reanchor();
     void test_r_storage_file_write_returns_stored_ts();
     void test_r_storage_file_query_key();
+    void test_r_storage_file_query_key_gap();
     void test_r_storage_file_query_key_across_blocks();
     void test_r_storage_file_query_key_empty();
 

@@ -272,6 +272,52 @@ void test_r_storage::test_r_storage_file_write_returns_stored_ts()
     RTF_ASSERT(key_at(jumped + 4 * 33) == 0);
 }
 
+// A recording gap (the camera was off for hours): a ts just after the gap
+// began gets the key frame before it, as anywhere else, but a ts more than 5
+// minutes into the gap gets the first key frame after it, not one from hours
+// earlier.
+void test_r_storage::test_r_storage_file_query_key_gap()
+{
+    r_storage_file::allocate("key_gap_test.nts", 65536, 10);
+    r_storage_file sf("key_gap_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    // Frames 0..29 three hours ago, then 30..59 a minute ago; a key every
+    // 10th; each frame's first byte is its index.
+    int64_t now = _wall_now_ms();
+    int64_t before = now - 3LL * 60 * 60 * 1000, after = now - 60000;
+    for(int i = 0; i < 60; ++i)
+    {
+        vector<uint8_t> frame(64, (uint8_t)i);
+        int64_t ts = (i < 30) ? before + i * 33 : after + (i - 30) * 33;
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), (i % 10) == 0, ts, i * 33);
+    }
+    const int64_t last_before = before + 29 * 33;
+
+    r_storage_file_reader sfr("key_gap_test.nts");
+    auto key_at = [&](int64_t ts) {
+        auto buf = sfr.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, ts);
+        uint32_t version = 0;
+        auto bt = r_blob_tree::deserialize(buf.data(), buf.size(), version);
+        if(bt["frames"].size() != 1)
+            return -1;
+        return (int)bt["frames"][0]["data"].get_blob()[0];
+    };
+
+    // Within 5 minutes of the gap's start: the last key frame before it.
+    RTF_ASSERT(key_at(last_before + 2 * 60000) == 20);
+    RTF_ASSERT(key_at(last_before + 5 * 60000) == 20);
+    // Further into the gap: the first key frame after it.
+    RTF_ASSERT(key_at(last_before + 5 * 60000 + 1) == 30);
+    RTF_ASSERT(key_at(before + 90 * 60000) == 30);
+    RTF_ASSERT(key_at(after - 1) == 30);
+    // After the gap, as usual.
+    RTF_ASSERT(key_at(after + 15 * 33) == 40);
+}
+
 // Frames big enough that a block holds at most 8: backing up from the newest
 // frame (99) to its key frame (90) has to step into an earlier block.
 void test_r_storage::test_r_storage_file_query_key_across_blocks()
