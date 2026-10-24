@@ -26,6 +26,7 @@
 #include "r_utils/r_algorithms.h"
 #include "r_utils/r_ring_buffer.h"
 #include "r_utils/r_qr_code.h"
+#include "r_utils/r_logger.h"
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -2378,3 +2379,76 @@ void test_r_utils::test_instance_lock_notify()
     RTF_ASSERT(!other.notified());
     _remove_instance_files(path);
 }
+
+#ifndef IS_WINDOWS
+#include <fcntl.h>
+
+// On macOS every log line also goes to stdout. A terminal that stops reading
+// used to block the logging thread inside the write, holding stdout's lock, so
+// every thread that logged after it blocked too and the process froze until
+// the terminal read again. Here stdout is a pipe nobody reads: logging must
+// still return promptly, and once the pipe is read the lines that didn't fit
+// are reported as dropped.
+void test_r_utils::test_logger_console_never_blocks()
+{
+#ifdef IS_MACOS
+    fflush(stdout);
+    int saved = dup(1);
+    int p[2];
+    RTF_ASSERT(saved >= 0 && pipe(p) == 0);
+    dup2(p[1], 1);
+    fcntl(p[0], F_SETFL, fcntl(p[0], F_GETFL) | O_NONBLOCK);
+
+    // Reads whatever the pipe holds into out, for up to ms, stopping early when
+    // until (if given) has appeared.
+    string out;
+    auto read_pipe = [&](int ms, const char* until) {
+        auto deadline = chrono::steady_clock::now() + chrono::milliseconds(ms);
+        char buf[65536];
+        while(chrono::steady_clock::now() < deadline)
+        {
+            auto n = read(p[0], buf, sizeof(buf));
+            if(n > 0)
+                out.append(buf, (size_t)n);
+            else this_thread::sleep_for(chrono::milliseconds(10));
+            if(until && out.find(until) != string::npos)
+                return;
+        }
+    };
+
+    // Far more than the pipe and the console queue hold together.
+    atomic<bool> done {false};
+    thread logger([&](){
+        const string pad(180, 'x');
+        for(int i = 0; i < 4000; ++i)
+            R_LOG_INFO("console-test line %d %s", i, pad.c_str());
+        done = true;
+    });
+
+    auto deadline = chrono::steady_clock::now() + chrono::seconds(5);
+    while(!done && chrono::steady_clock::now() < deadline)
+        this_thread::sleep_for(chrono::milliseconds(10));
+    bool returned = done;
+
+    // Read the pipe: the queued lines and the dropped count come through (and
+    // on failure, the blocked logger gets to finish).
+    read_pipe(5000, "log line(s) not shown here");
+    while(!done)
+        read_pipe(100, nullptr);
+    logger.join();
+    read_pipe(300, nullptr);
+
+    fflush(stdout);
+    dup2(saved, 1);
+    close(saved);
+    close(p[0]);
+    close(p[1]);
+
+    RTF_ASSERT(returned);
+    RTF_ASSERT(out.find("console-test line 0 ") != string::npos);
+    RTF_ASSERT(out.find("log line(s) not shown here") != string::npos);
+#endif
+}
+#else
+void test_r_utils::test_logger_console_never_blocks() {}
+#endif
