@@ -13,6 +13,7 @@ public:
       TEST(test_r_utils::test_string_utils_base64_decode);
       TEST(test_r_utils::test_stack_trace);
       TEST(test_r_utils::test_logger_console_never_blocks);
+      TEST(test_r_utils::test_terminate_with_stalled_console);
       TEST(test_r_utils::test_stack_trace_exception);
       TEST(test_r_utils::test_stack_trace_is_cheap);
       TEST(test_r_utils::test_stack_trace_concurrent);
@@ -97,6 +98,7 @@ public:
     void test_string_utils_split();
     void test_stack_trace();
     void test_logger_console_never_blocks();
+    void test_terminate_with_stalled_console();
     void test_stack_trace_exception();
     void test_stack_trace_is_cheap();
     void test_stack_trace_concurrent();

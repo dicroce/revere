@@ -352,8 +352,9 @@ void r_utils::r_logger::write(LOG_LEVEL level,
 
 void r_utils_terminate()
 {
+    // Not printf: with a terminal that isn't reading, stdout can be blocked
+    // (and its lock held by the console thread), and the abort must happen.
     R_LOG_CRITICAL("r_utils terminate handler called!");
-    printf("r_utils terminate handler called!\n");
 
     // Capture a dump before we log-and-abort. An unhandled C++ exception
     // unwinds nothing useful by the time abort() runs, so without this the log
@@ -380,9 +381,10 @@ void r_utils_terminate()
     }
 
     // The last lines on their way to the terminal, briefly: the log file has
-    // them anyway, and a terminal that isn't reading mustn't hold up the abort.
-    console_writer::get().drain(chrono::milliseconds(100));
-    fflush(stdout);
+    // them anyway, and a terminal that isn't reading mustn't hold up the abort
+    // (so no fflush(stdout) unless the console thread got through).
+    if(console_writer::get().drain(chrono::milliseconds(100)))
+        fflush(stdout);
 
     std::abort();
 }

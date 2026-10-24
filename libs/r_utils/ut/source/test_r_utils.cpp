@@ -2449,6 +2449,80 @@ void test_r_utils::test_logger_console_never_blocks()
     RTF_ASSERT(out.find("log line(s) not shown here") != string::npos);
 #endif
 }
+
+#ifdef IS_MACOS
+#include <spawn.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <mach-o/dyld.h>
+extern char** environ;
+#endif
+
+// The terminate handler must still abort when stdout is stuck: a thread
+// blocked writing to a terminal that isn't reading holds stdout's lock. The
+// scenario runs in a child (this test binary, this test, with an environment
+// variable set), since it ends in abort(); the child must die of SIGABRT.
+void test_r_utils::test_terminate_with_stalled_console()
+{
+#ifdef IS_MACOS
+    if(getenv("R_UT_TERMINATE_CHILD"))
+    {
+        int p[2];
+        if(pipe(p) != 0)
+            _exit(3);
+        dup2(p[1], 1);
+        // Stuck in a write to an unread pipe, holding stdout's lock.
+        thread([](){
+            string big(1024 * 1024, 'x');
+            fputs(big.c_str(), stdout);
+            fflush(stdout);
+        }).detach();
+        this_thread::sleep_for(chrono::milliseconds(300));
+        r_logger::install_terminate();
+        std::terminate();
+    }
+
+    char exe[4096];
+    uint32_t size = sizeof(exe);
+    RTF_ASSERT(_NSGetExecutablePath(exe, &size) == 0);
+
+    vector<string> env_s;
+    for(char** e = environ; *e; ++e)
+        env_s.push_back(*e);
+    env_s.push_back("R_UT_TERMINATE_CHILD=1");
+    vector<char*> envp;
+    for(auto& e : env_s)
+        envp.push_back(e.data());
+    envp.push_back(nullptr);
+
+    string test_name = "test_r_utils::test_terminate_with_stalled_console";
+    char* argv[] = {exe, test_name.data(), nullptr};
+
+    // The child's own stdout goes to the unread pipe it makes; quiet the rest.
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    pid_t child = 0;
+    int rc = posix_spawn(&child, exe, &fa, nullptr, argv, envp.data());
+    posix_spawn_file_actions_destroy(&fa);
+    RTF_ASSERT(rc == 0);
+
+    int status = 0;
+    pid_t done = 0;
+    auto deadline = chrono::steady_clock::now() + chrono::seconds(10);
+    while((done = waitpid(child, &status, WNOHANG)) == 0 && chrono::steady_clock::now() < deadline)
+        this_thread::sleep_for(chrono::milliseconds(20));
+    if(done == 0)
+    {
+        kill(child, SIGKILL);
+        waitpid(child, &status, 0);
+    }
+
+    RTF_ASSERT(done == child);
+    RTF_ASSERT(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+#endif
+}
 #else
 void test_r_utils::test_logger_console_never_blocks() {}
+void test_r_utils::test_terminate_with_stalled_console() {}
 #endif
