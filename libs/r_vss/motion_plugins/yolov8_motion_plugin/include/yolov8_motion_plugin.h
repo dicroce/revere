@@ -5,6 +5,7 @@
 #include "r_utils/r_macro.h"
 #include "r_utils/r_blocking_q.h"
 #include "r_vss/r_early_alerts.h"
+#include "r_vss/r_event_timing.h"
 #include <memory>
 #include <vector>
 #include <thread>
@@ -41,6 +42,7 @@ public:
         uint16_t height;
         r_vss::motion_region motion_bbox;
         std::vector<r_vss::motion_region> motion_regions;
+        int64_t handed_at {0}; // wall clock when the host handed it to this plugin
     };
 
     R_API yolov8_motion_plugin(r_vss::r_motion_event_plugin_host* host);
@@ -74,11 +76,14 @@ private:
     std::map<std::string, std::vector<Detection>> _camera_start_frame_detections;
     std::map<std::string, std::vector<Detection>> _camera_end_frame_detections;
     r_vss::r_early_alerts _early;
+    std::map<std::string, r_vss::r_event_timing> _camera_timing; // Wall-clock stage times per camera's current event
 
     void _entry_point();
     void _process_motion_event(const MotionEventMessage& msg);
     std::vector<Detection> detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions, std::vector<Detection>* unfiltered_detections = nullptr);
     void _analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms);
+    // Notes a key frame YOLO just ran on for the camera's event, and how many detections it added.
+    void _record_look(const std::string& camera_id, int64_t ts, size_t n_dets);
     // Puts the first person, vehicle or animal of each class in an event on
     // the detection bus as soon as YOLO sees it (r_vss::r_early_alerts), and logs each decision.
     void _early_alerts_for(const std::string& camera_id, const std::vector<Detection>& detections);

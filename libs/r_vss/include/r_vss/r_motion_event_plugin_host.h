@@ -31,7 +31,8 @@ struct r_detection
     float       x1, y1, x2, y2;  // 640x640 letterbox space
 };
 
-typedef void (*r_detection_callback)(void* userdata, const r_detection& det);
+// posted_at_ms: gateway wall clock (epoch ms) when the detection was put on the bus.
+typedef void (*r_detection_callback)(void* userdata, const r_detection& det, int64_t posted_at_ms);
 
 class r_motion_event_plugin_host : public r_motion_event_sink
 {

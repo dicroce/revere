@@ -121,6 +121,7 @@ void yolov8_motion_plugin::post_motion_event(r_vss::r_motion_event evt, const st
     msg.height = height;
     msg.motion_bbox = motion_bbox;
     msg.motion_regions = motion_regions;
+    msg.handed_at = r_vss::wall_clock_ms();
 
     if (evt == r_vss::motion_event_update) {
         // UPDATE frames: buffer them, and queue periodic frames: every second
@@ -204,6 +205,8 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             // Record motion start time
             _camera_motion_start_time[msg.camera_id] = msg.ts;
             _early.event_started(msg.camera_id);
+            _camera_timing[msg.camera_id] = r_vss::r_event_timing();
+            _camera_timing[msg.camera_id].confirmed_at = msg.handed_at;
 
             // Process START frame immediately
             size_t expected_size = msg.width * msg.height * 3;
@@ -211,7 +214,9 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
                 std::vector<Detection> endpoint_detections;
                 auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox, msg.motion_regions, &endpoint_detections);
                 _camera_start_frame_detections[msg.camera_id] = std::move(endpoint_detections);
-                if(r_vss::has_valid_motion_evidence(msg.motion_bbox, msg.motion_regions))
+                const bool kept = r_vss::has_valid_motion_evidence(msg.motion_bbox, msg.motion_regions);
+                _record_look(msg.camera_id, msg.ts, kept ? detections.size() : 0);
+                if(kept)
                 {
                     _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
                     _early_alerts_for(msg.camera_id, detections);
@@ -225,6 +230,7 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             size_t expected_size = msg.width * msg.height * 3;
             if (msg.frame_data.size() == expected_size) {
                 auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox, msg.motion_regions);
+                _record_look(msg.camera_id, msg.ts, detections.size());
                 _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
                 _camera_last_processed_ts[msg.camera_id] = msg.ts;
                 _early_alerts_for(msg.camera_id, detections);
@@ -232,6 +238,8 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
         }
 
         if (msg.evt == r_vss::motion_event_end) {
+            _camera_timing[msg.camera_id].ended_at = msg.handed_at;
+
             // Grab the buffered UPDATE frame (if any) under lock, and clear periodic tracking
             MotionEventMessage buffered;
             bool have_buffered = false;
@@ -257,6 +265,7 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
                     size_t expected_size = buffered.width * buffered.height * 3;
                     if (buffered.frame_data.size() == expected_size) {
                         auto detections = detect_persons(buffered.frame_data.data(), buffered.width, buffered.height, buffered.camera_id, buffered.ts, buffered.motion_bbox, buffered.motion_regions);
+                        _record_look(msg.camera_id, buffered.ts, detections.size());
                         _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
                     }
                 }
@@ -271,7 +280,9 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
                 // Endpoint inference is also used to identify static objects. Do not
                 // promote an unfiltered END-frame recognition when the frame itself
                 // contains no current motion evidence.
-                if(r_vss::has_valid_motion_evidence(msg.motion_bbox, msg.motion_regions))
+                const bool kept = r_vss::has_valid_motion_evidence(msg.motion_bbox, msg.motion_regions);
+                _record_look(msg.camera_id, msg.ts, kept ? detections.size() : 0);
+                if(kept)
                     _camera_detections[msg.camera_id].insert(_camera_detections[msg.camera_id].end(), detections.begin(), detections.end());
             }
 
@@ -294,6 +305,7 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             _camera_last_processed_ts.erase(msg.camera_id);
             _camera_start_frame_detections.erase(msg.camera_id);
             _camera_end_frame_detections.erase(msg.camera_id);
+            _camera_timing.erase(msg.camera_id);
         }
 
     } catch (const std::exception& e) {
@@ -497,6 +509,11 @@ std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_object
     return detect_persons(rgb_data, width, height, std::string(), 0, none, {});
 }
 
+void yolov8_motion_plugin::_record_look(const std::string& camera_id, int64_t ts, size_t n_dets)
+{
+    r_vss::add_look(_camera_timing[camera_id], {ts, r_vss::wall_clock_ms(), (int)n_dets});
+}
+
 void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms)
 {
     auto& devices = _host->get_devices();
@@ -647,10 +664,16 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
                         R"(, "y2": )" + y2_buf + "}";
     }
 
-    json_metadata += R"(], "total_detections": )" + std::to_string(valid_detection_count) + "}}";
+    json_metadata += R"(], "total_detections": )" + std::to_string(valid_detection_count);
 
     // Only write metadata and emit detections if we have valid detections
     if (valid_detection_count > 0) {
+        // When each stage happened, by the wall clock (frame ts can't say when work ran).
+        auto timing_it = _camera_timing.find(camera_id);
+        json_metadata += r_vss::event_timing_json_members(
+            timing_it != _camera_timing.end() ? timing_it->second : r_vss::r_event_timing(), r_vss::wall_clock_ms());
+        json_metadata += "}}";
+
         auto& stream_keeper = _host->get_stream_keeper();
         stream_keeper.write_metadata(camera_id, "yolov8_motion_plugin", json_metadata, first_detection_ts);
 
