@@ -26,6 +26,7 @@
 #include "r_utils/r_algorithms.h"
 #include "r_utils/r_ring_buffer.h"
 #include "r_utils/r_qr_code.h"
+#include "r_utils/r_logger.h"
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -2378,3 +2379,150 @@ void test_r_utils::test_instance_lock_notify()
     RTF_ASSERT(!other.notified());
     _remove_instance_files(path);
 }
+
+#ifndef IS_WINDOWS
+#include <fcntl.h>
+
+// On macOS every log line also goes to stdout. A terminal that stops reading
+// used to block the logging thread inside the write, holding stdout's lock, so
+// every thread that logged after it blocked too and the process froze until
+// the terminal read again. Here stdout is a pipe nobody reads: logging must
+// still return promptly, and once the pipe is read the lines that didn't fit
+// are reported as dropped.
+void test_r_utils::test_logger_console_never_blocks()
+{
+#ifdef IS_MACOS
+    fflush(stdout);
+    int saved = dup(1);
+    int p[2];
+    RTF_ASSERT(saved >= 0 && pipe(p) == 0);
+    dup2(p[1], 1);
+    fcntl(p[0], F_SETFL, fcntl(p[0], F_GETFL) | O_NONBLOCK);
+
+    // Reads whatever the pipe holds into out, for up to ms, stopping early when
+    // until (if given) has appeared.
+    string out;
+    auto read_pipe = [&](int ms, const char* until) {
+        auto deadline = chrono::steady_clock::now() + chrono::milliseconds(ms);
+        char buf[65536];
+        while(chrono::steady_clock::now() < deadline)
+        {
+            auto n = read(p[0], buf, sizeof(buf));
+            if(n > 0)
+                out.append(buf, (size_t)n);
+            else this_thread::sleep_for(chrono::milliseconds(10));
+            if(until && out.find(until) != string::npos)
+                return;
+        }
+    };
+
+    // Far more than the pipe and the console queue hold together.
+    atomic<bool> done {false};
+    thread logger([&](){
+        const string pad(180, 'x');
+        for(int i = 0; i < 4000; ++i)
+            R_LOG_INFO("console-test line %d %s", i, pad.c_str());
+        done = true;
+    });
+
+    auto deadline = chrono::steady_clock::now() + chrono::seconds(5);
+    while(!done && chrono::steady_clock::now() < deadline)
+        this_thread::sleep_for(chrono::milliseconds(10));
+    bool returned = done;
+
+    // Read the pipe: the queued lines and the dropped count come through (and
+    // on failure, the blocked logger gets to finish).
+    read_pipe(5000, "log line(s) not shown here");
+    while(!done)
+        read_pipe(100, nullptr);
+    logger.join();
+    read_pipe(300, nullptr);
+
+    fflush(stdout);
+    dup2(saved, 1);
+    close(saved);
+    close(p[0]);
+    close(p[1]);
+
+    RTF_ASSERT(returned);
+    RTF_ASSERT(out.find("console-test line 0 ") != string::npos);
+    RTF_ASSERT(out.find("log line(s) not shown here") != string::npos);
+#endif
+}
+
+#ifdef IS_MACOS
+#include <spawn.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <mach-o/dyld.h>
+extern char** environ;
+#endif
+
+// The terminate handler must still abort when stdout is stuck: a thread
+// blocked writing to a terminal that isn't reading holds stdout's lock. The
+// scenario runs in a child (this test binary, this test, with an environment
+// variable set), since it ends in abort(); the child must die of SIGABRT.
+void test_r_utils::test_terminate_with_stalled_console()
+{
+#ifdef IS_MACOS
+    if(getenv("R_UT_TERMINATE_CHILD"))
+    {
+        int p[2];
+        if(pipe(p) != 0)
+            _exit(3);
+        dup2(p[1], 1);
+        // Stuck in a write to an unread pipe, holding stdout's lock.
+        thread([](){
+            string big(1024 * 1024, 'x');
+            fputs(big.c_str(), stdout);
+            fflush(stdout);
+        }).detach();
+        this_thread::sleep_for(chrono::milliseconds(300));
+        r_logger::install_terminate();
+        std::terminate();
+    }
+
+    char exe[4096];
+    uint32_t size = sizeof(exe);
+    RTF_ASSERT(_NSGetExecutablePath(exe, &size) == 0);
+
+    vector<string> env_s;
+    for(char** e = environ; *e; ++e)
+        env_s.push_back(*e);
+    env_s.push_back("R_UT_TERMINATE_CHILD=1");
+    vector<char*> envp;
+    for(auto& e : env_s)
+        envp.push_back(e.data());
+    envp.push_back(nullptr);
+
+    string test_name = "test_r_utils::test_terminate_with_stalled_console";
+    char* argv[] = {exe, test_name.data(), nullptr};
+
+    // The child's own stdout goes to the unread pipe it makes; quiet the rest.
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    pid_t child = 0;
+    int rc = posix_spawn(&child, exe, &fa, nullptr, argv, envp.data());
+    posix_spawn_file_actions_destroy(&fa);
+    RTF_ASSERT(rc == 0);
+
+    int status = 0;
+    pid_t done = 0;
+    auto deadline = chrono::steady_clock::now() + chrono::seconds(10);
+    while((done = waitpid(child, &status, WNOHANG)) == 0 && chrono::steady_clock::now() < deadline)
+        this_thread::sleep_for(chrono::milliseconds(20));
+    if(done == 0)
+    {
+        kill(child, SIGKILL);
+        waitpid(child, &status, 0);
+    }
+
+    RTF_ASSERT(done == child);
+    RTF_ASSERT(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+#endif
+}
+#else
+void test_r_utils::test_logger_console_never_blocks() {}
+void test_r_utils::test_terminate_with_stalled_console() {}
+#endif
