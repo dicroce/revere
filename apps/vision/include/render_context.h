@@ -5,6 +5,7 @@
 #include <SDL.h>
 #include <cstdint>
 #include <memory>
+#include <vector>
 #include "r_ui_utils/texture.h"
 
 namespace vision
@@ -29,6 +30,16 @@ struct render_context final
     bool done;
     bool nv12;    // tex is an NV12 texture
     int64_t pts;  // Presentation timestamp of current frame
+
+    // Pixels of the frame currently on the texture, kept for snapshots. Only
+    // the UI thread (load_video_textures) writes these, and only the UI thread
+    // reads them, so no lock is needed. The dims are the frame's own: rc->w/h
+    // may already hold a pending resize the texture hasn't caught up with.
+    std::shared_ptr<std::vector<uint8_t>> last_frame;
+    bool last_frame_nv12 {false};
+    uint16_t last_frame_w {0};
+    uint16_t last_frame_h {0};
+    uint16_t last_frame_original_h {0};  // camera height, picks the YUV colour matrix
 };
 
 }

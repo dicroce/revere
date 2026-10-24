@@ -44,8 +44,8 @@ struct main_client_state
     bool sync_scrub {false};
 };
 
-template<typename EXIT_CB, typename SETTINGS_CB, typename ONE_BY_ONE_CB, typename TWO_BY_TWO_CB, typename FOUR_BY_FOUR_CB>
-uint16_t main_menu(EXIT_CB exit_cb, SETTINGS_CB settings_cb, ONE_BY_ONE_CB one_by_one_cb, TWO_BY_TWO_CB two_by_two_cb, FOUR_BY_FOUR_CB four_by_four_cb)
+template<typename EXIT_CB, typename SETTINGS_CB, typename ONE_BY_ONE_CB, typename TWO_BY_TWO_CB, typename FOUR_BY_FOUR_CB, typename FULLSCREEN_CB>
+uint16_t main_menu(EXIT_CB exit_cb, SETTINGS_CB settings_cb, ONE_BY_ONE_CB one_by_one_cb, TWO_BY_TWO_CB two_by_two_cb, FOUR_BY_FOUR_CB four_by_four_cb, FULLSCREEN_CB fullscreen_cb, bool fullscreen)
 {
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("File"))
@@ -65,6 +65,10 @@ uint16_t main_menu(EXIT_CB exit_cb, SETTINGS_CB settings_cb, ONE_BY_ONE_CB one_b
             two_by_two_cb();
         if (ImGui::MenuItem("4x4"))
             four_by_four_cb();
+
+        ImGui::Separator();
+        if (ImGui::MenuItem("Fullscreen", "F11", fullscreen))
+            fullscreen_cb();
 
         ImGui::EndMenu();
     }
@@ -202,17 +206,21 @@ void main_layout(
     SIDEBAR_CB sidebar_cb,
     const std::string& main_label,
     MAIN_CB main_cb,
-    r_utils::r_nullable<std::string> status_text
+    r_utils::r_nullable<std::string> status_text,
+    bool hide_sidebar = false   // fullscreen: video takes the full width
 )
 {
     bool open = true;
 
-    uint16_t panel_width = window_width / 6;
-    ImGui::SetNextWindowPos(ImVec2(0, client_top));
-    ImGui::SetNextWindowSize(ImVec2(panel_width, window_height - (ImGui::GetTextLineHeightWithSpacing()*2)));
-    ImGui::Begin(sidebar_label.c_str(), &open, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
-    sidebar_cb(panel_width);
-    ImGui::End();
+    uint16_t panel_width = hide_sidebar ? 0 : window_width / 6;
+    if(!hide_sidebar)
+    {
+        ImGui::SetNextWindowPos(ImVec2(0, client_top));
+        ImGui::SetNextWindowSize(ImVec2(panel_width, window_height - (ImGui::GetTextLineHeightWithSpacing()*2)));
+        ImGui::Begin(sidebar_label.c_str(), &open, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+        sidebar_cb(panel_width);
+        ImGui::End();
+    }
 
     uint16_t main_width = window_width - panel_width;
     uint16_t main_height = window_height - ((uint16_t)(ImGui::GetTextLineHeightWithSpacing()*2));
@@ -381,6 +389,19 @@ void control_bar(
     // Render export controls
     if(show_export)
         renderer.render_export_controls(render_layout, cbs, calc, stream_name, export_cb);
+
+    // Snapshot button — top row, left of the volume slider (which starts at
+    // right_edge - 560). Shown wherever Export is; the main loop does the save.
+    if(show_export)
+    {
+        auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
+        auto right_edge = calc.center_box_left + calc.center_box_width;
+        ImGui::SetCursorScreenPos(ImVec2(right_edge - 650.0f, top_line_top));
+        if(ImGui::Button("Snap", ImVec2(80, 0)))
+            cbs.snapshot_requested = true;
+        if(ImGui::IsItemHovered())
+            ImGui::SetTooltip("Save a snapshot of the selected camera (S)");
+    }
 
     // Render play/live button
     renderer.render_play_live_button(render_layout, cbs, calc, stream_name, control_bar_button_cb, update_data_cb, playing);
