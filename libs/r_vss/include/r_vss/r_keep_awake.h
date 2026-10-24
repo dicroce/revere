@@ -28,11 +28,14 @@ namespace r_vss
 // The request, named KEEP_AWAKE_REASON so the user can see who holds it:
 //  - macOS: a PreventUserIdleSystemSleep power assertion.
 //  - Windows: a PowerRequestSystemRequired power request.
-//  - Linux: a logind "sleep" block inhibitor, plus GNOME's suspend inhibit
-//    (flag 4) when there's a desktop session. A system service needs a polkit
-//    rule for the logind one: --install-service writes it. Under the Snap,
-//    which can't reach logind, GNOME's inhibit or the freedesktop
-//    PowerManagement one (both allowed by screen-inhibit-control).
+//  - Linux with a desktop session (the Snap too): the desktop's own
+//    inhibitor, GNOME's SessionManager (flag 4, suspend) or else freedesktop
+//    PowerManagement (KDE, Xfce). It stops automatic suspend, not the user
+//    choosing Suspend; under the Snap, screen-inhibit-control allows both.
+//  - Linux with no session (the headless service): a logind "sleep" block
+//    inhibitor, which needs the polkit rule --install-service writes. It
+//    also blocks a Suspend asked for over logind, but there's nobody at the
+//    keyboard to ask.
 //
 // Sleeps are noticed two ways. The OS says it's going to sleep (macOS
 // IORegisterForSystemPower, Windows PowerRegisterSuspendResumeNotification,
@@ -110,6 +113,11 @@ public:
     // before the gap, else "paused" from that last tick. The clock stepping
     // back is never a gap.
     R_API std::optional<r_power_event> tick(int64_t wall_ms);
+
+    // Time Revere spent on its own work since the last tick (the steady
+    // clock's, which stops while the computer sleeps): moves that tick on, so
+    // a slow D-Bus call isn't a gap.
+    R_API void skip(int64_t busy_ms);
 
 private:
     int64_t _last_tick_ms {-1};

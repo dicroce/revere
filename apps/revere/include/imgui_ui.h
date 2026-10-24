@@ -30,9 +30,6 @@
 namespace revere
 {
 
-// What the desktop app calls the password for revere's local web interface
-// (stored as the "system password"; the stored name doesn't change). One place,
-// so the wording can change without hunting for strings.
 // "Keep this computer awake" (the Settings menu, the camera wizard's
 // retention step and the status bar). The web UI says the same.
 namespace keep_awake_text
@@ -55,6 +52,9 @@ inline void wrapped_tooltip(const char* text)
 }
 }
 
+// What the desktop app calls the password for revere's local web interface
+// (stored as the "system password"; the stored name doesn't change). One place,
+// so the wording can change without hunting for strings.
 namespace web_password_text
 {
 inline constexpr const char* name = "Local web password";

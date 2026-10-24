@@ -11,9 +11,11 @@ public:
       TEST(test_r_keep_awake::test_gap_without_sleep_is_paused);
       TEST(test_r_keep_awake::test_gap_after_sleep_is_asleep);
       TEST(test_r_keep_awake::test_called_off_sleep_is_forgotten);
+      TEST(test_r_keep_awake::test_busy_time_is_no_gap);
       TEST(test_r_keep_awake::test_clock_back_is_no_gap);
       TEST(test_r_keep_awake::test_settings_and_events_persist);
       TEST(test_r_keep_awake::test_blocker_holds_and_releases);
+      TEST(test_r_keep_awake::test_session_inhibit_survives);
     RTF_FIXTURE_END();
 
     virtual ~test_r_keep_awake() throw() {}
@@ -28,7 +30,9 @@ public:
     void test_gap_without_sleep_is_paused();
     void test_gap_after_sleep_is_asleep();
     void test_called_off_sleep_is_forgotten();
+    void test_busy_time_is_no_gap();
     void test_clock_back_is_no_gap();
     void test_settings_and_events_persist();
     void test_blocker_holds_and_releases();
+    void test_session_inhibit_survives();
 };

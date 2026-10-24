@@ -86,6 +86,12 @@ void r_sleep_gap_detector::on_sleep(int64_t wall_ms)
     _sleep_ms = wall_ms;
 }
 
+void r_sleep_gap_detector::skip(int64_t busy_ms)
+{
+    if(_last_tick_ms >= 0 && busy_ms > 0)
+        _last_tick_ms += busy_ms;
+}
+
 optional<r_power_event> r_sleep_gap_detector::tick(int64_t wall_ms)
 {
     auto last = _last_tick_ms;
@@ -288,8 +294,11 @@ void r_keep_awake::_entry_point()
             _add_event(*e);
         }
 
+        auto busy_from = _steady_ms();
         _apply(changed);
+        auto busy_ms = _steady_ms() - busy_from;
         g.lock();
+        _gaps.skip(busy_ms);
     }
 }
 

@@ -1,7 +1,6 @@
 #ifdef IS_LINUX
 
 #include "r_vss/r_keep_awake.h"
-#include "r_utils/r_logger.h"
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
 #include <cstdlib>
@@ -75,15 +74,37 @@ static int _logind_inhibit(const string& reason, string& problem)
 }
 
 // A session-bus inhibitor that returns a cookie: GNOME's SessionManager
-// (flags 4: suspend) or freedesktop PowerManagement (KDE and others).
+// (flags 4: suspend) or freedesktop PowerManagement (KDE, Xfce). Both drop the
+// inhibitor when the caller's bus name goes away, so the connection that made
+// the call is kept until Uninhibit: GLib's bus singleton is only weakly held,
+// and the last unref closes it.
 struct session_inhibit
 {
+    GDBusConnection* bus {nullptr};
     string service;
     string path;
     string iface;
     string uninhibit;
     guint32 cookie {0};
 };
+
+static bool _session_call(GDBusConnection* bus, const char* service, const char* path, const char* iface,
+                          GVariant* params, guint32& cookie, string& problem)
+{
+    GError* err = nullptr;
+    GVariant* reply = g_dbus_connection_call_sync(
+        bus, service, path, iface, "Inhibit", params, G_VARIANT_TYPE("(u)"),
+        G_DBUS_CALL_FLAGS_NONE, 5000, nullptr, &err
+    );
+    if(!reply)
+    {
+        problem = _gerror_text(err);
+        return false;
+    }
+    g_variant_get(reply, "(u)", &cookie);
+    g_variant_unref(reply);
+    return true;
+}
 
 static bool _session_inhibit(const string& reason, session_inhibit& out, string& problem)
 {
@@ -96,73 +117,47 @@ static bool _session_inhibit(const string& reason, session_inhibit& out, string&
     }
 
     // GNOME first: its idle suspend only checks its own inhibitors.
-    GVariant* reply = g_dbus_connection_call_sync(
-        bus,
-        "org.gnome.SessionManager",
-        "/org/gnome/SessionManager",
-        "org.gnome.SessionManager",
-        "Inhibit",
-        g_variant_new("(susu)", "revere", (guint32)0, reason.c_str(), (guint32)4),
-        G_VARIANT_TYPE("(u)"),
-        G_DBUS_CALL_FLAGS_NONE,
-        5000,
-        nullptr,
-        &err
-    );
-    if(reply)
+    string gnome_problem;
+    if(_session_call(bus, "org.gnome.SessionManager", "/org/gnome/SessionManager", "org.gnome.SessionManager",
+                     g_variant_new("(susu)", "revere", (guint32)0, reason.c_str(), (guint32)4), out.cookie, gnome_problem))
     {
-        g_variant_get(reply, "(u)", &out.cookie);
-        g_variant_unref(reply);
+        out.bus = bus;
         out.service = "org.gnome.SessionManager";
         out.path = "/org/gnome/SessionManager";
         out.iface = "org.gnome.SessionManager";
         out.uninhibit = "Uninhibit";
-        g_object_unref(bus);
         return true;
     }
-    auto gnome_problem = _gerror_text(err);
-    err = nullptr;
 
-    reply = g_dbus_connection_call_sync(
-        bus,
-        "org.freedesktop.PowerManagement",
-        "/org/freedesktop/PowerManagement/Inhibit",
-        "org.freedesktop.PowerManagement.Inhibit",
-        "Inhibit",
-        g_variant_new("(ss)", "Revere", reason.c_str()),
-        G_VARIANT_TYPE("(u)"),
-        G_DBUS_CALL_FLAGS_NONE,
-        5000,
-        nullptr,
-        &err
-    );
-    g_object_unref(bus);
-    if(reply)
+    string pm_problem;
+    if(_session_call(bus, "org.freedesktop.PowerManagement", "/org/freedesktop/PowerManagement/Inhibit", "org.freedesktop.PowerManagement.Inhibit",
+                     g_variant_new("(ss)", "Revere", reason.c_str()), out.cookie, pm_problem))
     {
-        g_variant_get(reply, "(u)", &out.cookie);
-        g_variant_unref(reply);
+        out.bus = bus;
         out.service = "org.freedesktop.PowerManagement";
         out.path = "/org/freedesktop/PowerManagement/Inhibit";
         out.iface = "org.freedesktop.PowerManagement.Inhibit";
         out.uninhibit = "UnInhibit";
         return true;
     }
-    problem = "the desktop refused (GNOME: " + gnome_problem + "; PowerManagement: " + _gerror_text(err) + ")";
+
+    g_object_unref(bus);
+    problem = "the desktop refused (GNOME: " + gnome_problem + "; PowerManagement: " + pm_problem + ")";
     return false;
 }
 
-static void _session_uninhibit(const session_inhibit& s)
+static void _session_uninhibit(session_inhibit& s)
 {
-    GDBusConnection* bus = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr);
-    if(!bus)
+    if(!s.bus)
         return;
     GVariant* reply = g_dbus_connection_call_sync(
-        bus, s.service.c_str(), s.path.c_str(), s.iface.c_str(), s.uninhibit.c_str(),
+        s.bus, s.service.c_str(), s.path.c_str(), s.iface.c_str(), s.uninhibit.c_str(),
         g_variant_new("(u)", s.cookie), nullptr, G_DBUS_CALL_FLAGS_NONE, 5000, nullptr, nullptr
     );
     if(reply)
         g_variant_unref(reply);
-    g_object_unref(bus);
+    g_object_unref(s.bus);
+    s.bus = nullptr;
 }
 
 // A desktop session's bus: named in the environment, or systemd's per-user
@@ -179,7 +174,6 @@ static bool _has_session_bus()
 struct r_sleep_blocker::impl
 {
     int logind_fd {-1};
-    bool has_session {false};
     session_inhibit session;
 };
 
@@ -193,42 +187,30 @@ r_sleep_blocker::~r_sleep_blocker() noexcept
     release();
 }
 
+// A desktop session (the Snap included) takes only the desktop's inhibitor:
+// it stops automatic suspend but not the user choosing Suspend. A logind
+// "sleep" block would make that Suspend ask for an admin password, and the
+// Snap can't reach logind anyway. A service, with no session and nobody at
+// the keyboard, takes logind's "sleep" block, allowed by the polkit rule that
+// --install-service writes.
 string r_sleep_blocker::hold(const string& reason)
 {
     if(held())
         return string();
 
-    // The Snap can't reach logind (that needs the shutdown interface, which
-    // isn't granted to store snaps): only the session inhibitors.
     const bool snap = getenv("SNAP") != nullptr;
-
-    string logind_problem;
-    if(!snap)
-        _impl->logind_fd = _logind_inhibit(reason, logind_problem);
-
-    // A desktop also gets the session inhibitor, so its own idle suspend
-    // doesn't try (GNOME's checks its inhibitors, not logind's). A service has
-    // no session bus: logind alone.
-    string session_problem;
-    const bool want_session = snap || _has_session_bus();
-    if(want_session)
-        _impl->has_session = _session_inhibit(reason, _impl->session, session_problem);
-
-    if(held())
+    string problem;
+    if(snap || _has_session_bus())
     {
-        if(!logind_problem.empty())
-            R_LOG_WARNING("Keep awake: %s (holding the desktop's inhibitor only).", logind_problem.c_str());
-        else if(want_session && !_impl->has_session)
-            R_LOG_INFO("Keep awake: %s (holding logind's inhibitor only).", session_problem.c_str());
+        if(!_session_inhibit(reason, _impl->session, problem))
+            return problem;
         return string();
     }
 
-    string problem;
-    if(!logind_problem.empty())
-        problem = logind_problem;
-    if(!session_problem.empty())
-        problem += (problem.empty() ? "" : "; ") + session_problem;
-    if(!snap && getuid() != 0 && !want_session)
+    _impl->logind_fd = _logind_inhibit(reason, problem);
+    if(_impl->logind_fd >= 0)
+        return string();
+    if(getuid() != 0)
         problem += " (a service needs the polkit rule that revere --install-service writes)";
     return problem;
 }
@@ -240,16 +222,12 @@ void r_sleep_blocker::release()
         close(_impl->logind_fd);
         _impl->logind_fd = -1;
     }
-    if(_impl->has_session)
-    {
-        _session_uninhibit(_impl->session);
-        _impl->has_session = false;
-    }
+    _session_uninhibit(_impl->session);
 }
 
 bool r_sleep_blocker::held() const
 {
-    return _impl->logind_fd >= 0 || _impl->has_session;
+    return _impl->logind_fd >= 0 || _impl->session.bus != nullptr;
 }
 
 static string _read_line(const string& path)
