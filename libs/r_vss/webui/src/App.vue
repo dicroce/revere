@@ -10,6 +10,7 @@
   <CameraView
     v-else-if="selectedCamera"
     :camera="selectedCamera"
+    :initial-iso="selectedCameraIso"
     @close="closeCamera"
   />
 
@@ -19,6 +20,7 @@
       <nav class="tabs">
         <button :class="{ active: tab === 'manage' }" @click="tab = 'manage'">Config</button>
         <button :class="{ active: tab === 'live' }" @click="tab = 'live'">Live</button>
+        <button :class="{ active: tab === 'timeline' }" @click="tab = 'timeline'">Timeline</button>
       </nav>
       <span class="spacer"></span>
       <button class="signout" @click="signOut">Sign out</button>
@@ -32,6 +34,7 @@
         <div v-else-if="liveCameras.length === 0" class="empty">
           No cameras are recording yet. Add one from the Config tab.
         </div>
+        <TimelineView v-else-if="tab === 'timeline'" :cameras="liveCameras" @open="openCameraAt" />
         <div v-else class="camera-grid">
           <CameraCard
             v-for="(camera, index) in liveCameras"
@@ -55,6 +58,7 @@ import { isAuthed, getAuthStatus, getCameras, getVersion, logout } from './api.j
 import CameraCard from './components/CameraCard.vue'
 import CameraView from './components/CameraView.vue'
 import ManageTab from './components/ManageTab.vue'
+import TimelineView from './components/TimelineView.vue'
 import LoginView from './components/LoginView.vue'
 
 const authChecked = ref(false)
@@ -65,6 +69,9 @@ const tab = ref('manage')
 const liveCameras = ref([])
 const error = ref(null)
 const selectedCamera = ref(null)
+// ISO time the single-camera view should open at (null = live). Set by the
+// Timeline tab so a tile click lands on the shared playhead.
+const selectedCameraIso = ref(null)
 
 // ?camera=<id> opens that camera once the camera list has loaded (the desktop
 // app's "Open in web UI"). Closing the camera view drops the parameter, so a
@@ -86,8 +93,14 @@ function openPendingCamera() {
   else clearCameraParam() // not a recording camera: stay on the grid
 }
 
+function openCameraAt(camera, iso) {
+  selectedCameraIso.value = iso ?? null
+  selectedCamera.value = camera
+}
+
 function closeCamera() {
   selectedCamera.value = null
+  selectedCameraIso.value = null
   clearCameraParam()
 }
 
@@ -126,6 +139,7 @@ function onAuthenticated() {
 function signOut() {
   logout()
   selectedCamera.value = null
+  selectedCameraIso.value = null
   clearCameraParam()
   liveCameras.value = []
   tab.value = 'manage'
