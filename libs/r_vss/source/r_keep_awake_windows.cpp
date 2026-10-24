@@ -76,6 +76,11 @@ bool r_sleep_blocker::held() const
     return _impl->request != INVALID_HANDLE_VALUE;
 }
 
+bool r_sleep_blocker::unavailable() const
+{
+    return false;
+}
+
 r_power_source r_vss::current_power_source()
 {
     SYSTEM_POWER_STATUS s {};

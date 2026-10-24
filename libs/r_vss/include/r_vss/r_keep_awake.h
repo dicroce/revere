@@ -137,7 +137,13 @@ public:
     // again while held does nothing.
     R_API std::string hold(const std::string& reason);
     R_API void release();
+    // False again once the OS drops a request (on Linux, when the bus that
+    // carried it goes away), so the caller asks again.
     R_API bool held() const;
+    // The last hold() found nothing to ask rather than a refusal: a Linux
+    // desktop with neither GNOME's nor freedesktop PowerManagement's
+    // inhibitor. Always false on macOS and Windows.
+    R_API bool unavailable() const;
 
 private:
     struct impl;
@@ -169,6 +175,9 @@ struct r_keep_awake_status
     bool held {false};
     // Why the OS refused the request; empty when held or not wanted.
     std::string problem;
+    // This desktop has no inhibitor to ask (see r_sleep_blocker::unavailable):
+    // not held, and not a failure either.
+    bool unavailable {false};
     // Newest first.
     std::vector<r_power_event> events;
 };
@@ -223,6 +232,7 @@ private:
     // Whether _blocker holds the request, for other threads: only the ticker
     // thread calls the blocker.
     bool _held {false};
+    bool _unavailable {false};
     std::string _problem;
     int64_t _last_try_ms {0};
     std::deque<r_power_event> _events;

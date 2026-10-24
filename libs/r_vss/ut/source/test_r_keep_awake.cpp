@@ -391,48 +391,67 @@ struct fake_session_manager
     }
 };
 
+
+// A dbus-daemon of the test's own, made the process's session bus. Stopped,
+// and the environment put back, when it goes out of scope, even when an
+// assert throws.
+struct private_bus
+{
+    GSubprocess* daemon {nullptr};
+    std::string address;
+
+    // False where there's no dbus-daemon: the test is skipped.
+    bool start()
+    {
+        auto listen = "--address=unix:tmpdir=" + std::filesystem::temp_directory_path().string();
+        const gchar* argv[] = {"dbus-daemon", "--session", "--nofork", "--print-address=1", listen.c_str(), nullptr};
+        daemon = g_subprocess_newv(argv, G_SUBPROCESS_FLAGS_STDOUT_PIPE, nullptr);
+        if(!daemon)
+            return false;
+        GDataInputStream* out = g_data_input_stream_new(g_subprocess_get_stdout_pipe(daemon));
+        gchar* line = g_data_input_stream_read_line(out, nullptr, nullptr, nullptr);
+        address = line ? line : "";
+        g_free(line);
+        g_object_unref(out);
+        // The process's session bus singleton is made on first use, from this.
+        setenv("DBUS_SESSION_BUS_ADDRESS", address.c_str(), 1);
+        return true;
+    }
+
+    void stop()
+    {
+        if(!daemon)
+            return;
+        g_subprocess_send_signal(daemon, SIGTERM);
+        g_subprocess_wait(daemon, nullptr, nullptr);
+        g_object_unref(daemon);
+        daemon = nullptr;
+    }
+
+    ~private_bus()
+    {
+        unsetenv("DBUS_SESSION_BUS_ADDRESS");
+        stop();
+    }
+};
 }
 #endif
 
 void test_r_keep_awake::test_session_inhibit_survives()
 {
 #ifdef IS_LINUX
-    // A private session bus, so the desktop path runs without a desktop.
-    // Skipped where there's no dbus-daemon.
-    auto listen = "--address=unix:tmpdir=" + filesystem::temp_directory_path().string();
-    const gchar* argv[] = {"dbus-daemon", "--session", "--nofork", "--print-address=1", listen.c_str(), nullptr};
-    GSubprocess* daemon = g_subprocess_newv(argv, G_SUBPROCESS_FLAGS_STDOUT_PIPE, nullptr);
-    if(!daemon)
+    private_bus bus;
+    if(!bus.start())
         return;
-    // Stopped, and the environment put back, even when an assert throws.
-    struct cleanup
-    {
-        GSubprocess* daemon;
-        ~cleanup()
-        {
-            unsetenv("DBUS_SESSION_BUS_ADDRESS");
-            g_subprocess_send_signal(daemon, SIGTERM);
-            g_subprocess_wait(daemon, nullptr, nullptr);
-            g_object_unref(daemon);
-        }
-    } stop_daemon {daemon};
-
-    GDataInputStream* out = g_data_input_stream_new(g_subprocess_get_stdout_pipe(daemon));
-    gchar* line = g_data_input_stream_read_line(out, nullptr, nullptr, nullptr);
-    std::string address = line ? line : "";
-    g_free(line);
-    g_object_unref(out);
-    RTF_ASSERT(!address.empty());
+    RTF_ASSERT(!bus.address.empty());
 
     fake_session_manager fake;
-    RTF_ASSERT(fake.start(address));
-
-    // The process's session bus singleton is made on first use, from this.
-    setenv("DBUS_SESSION_BUS_ADDRESS", address.c_str(), 1);
+    RTF_ASSERT(fake.start(bus.address));
 
     r_sleep_blocker b;
     RTF_ASSERT_EQUAL(b.hold(KEEP_AWAKE_REASON), string());
     RTF_ASSERT(b.held());
+    RTF_ASSERT(!b.unavailable());
     RTF_ASSERT_EQUAL(fake.inhibits.load(), 1);
     RTF_ASSERT_EQUAL(fake.flags.load(), (uint32_t)4);
 
@@ -443,5 +462,52 @@ void test_r_keep_awake::test_session_inhibit_survives()
     b.release();
     RTF_ASSERT(!b.held());
     RTF_ASSERT_EQUAL(fake.uninhibits.load(), 1);
+#endif
+}
+
+void test_r_keep_awake::test_session_bus_going_away()
+{
+#ifdef IS_LINUX
+    private_bus bus;
+    if(!bus.start())
+        return;
+
+    {
+        fake_session_manager fake;
+        RTF_ASSERT(fake.start(bus.address));
+
+        r_sleep_blocker b;
+        RTF_ASSERT_EQUAL(b.hold(KEEP_AWAKE_REASON), string());
+        RTF_ASSERT(b.held());
+
+        // A logout or a D-Bus restart. GLib's default would SIGTERM this
+        // process here; instead the hold is lost and can be asked for again.
+        bus.stop();
+        for(int i = 0; i < 50 && b.held(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        RTF_ASSERT(!b.held());
+
+        // Asking again with no bus is a problem, not a crash.
+        RTF_ASSERT(!b.hold(KEEP_AWAKE_REASON).empty());
+        RTF_ASSERT(!b.held());
+        b.release();
+    }
+#endif
+}
+
+void test_r_keep_awake::test_no_desktop_inhibitor_is_unavailable()
+{
+#ifdef IS_LINUX
+    // A session bus with neither GNOME's nor PowerManagement's inhibitor on it
+    // (sway, i3): nothing to ask, which isn't a refusal.
+    private_bus bus;
+    if(!bus.start())
+        return;
+
+    r_sleep_blocker b;
+    auto problem = b.hold(KEEP_AWAKE_REASON);
+    RTF_ASSERT(!problem.empty());
+    RTF_ASSERT(!b.held());
+    RTF_ASSERT(b.unavailable());
 #endif
 }

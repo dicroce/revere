@@ -262,6 +262,7 @@ r_keep_awake_status r_keep_awake::get_status() const
     s.power = _power;
     s.wanted = _wanted;
     s.held = _held;
+    s.unavailable = _unavailable;
     s.problem = _problem;
     s.events.assign(_events.begin(), _events.end());
     return s;
@@ -309,11 +310,19 @@ void r_keep_awake::_entry_point()
 void r_keep_awake::_apply(bool force_retry)
 {
     auto power = current_power_source();
+    // The OS can drop a request on its own (a Linux desktop's bus going away).
+    const bool still_held = _blocker.held();
 
     bool wanted = false;
     bool enabled = false;
     {
         lock_guard<mutex> g(_mutex);
+        if(_held && !still_held)
+        {
+            R_LOG_WARNING("Keep awake: the request was dropped (the desktop's bus went away); asking again.");
+            _held = false;
+            force_retry = true;
+        }
         if(power != _power)
         {
             if(_power != r_power_source::unknown || power != r_power_source::unknown)
@@ -327,6 +336,7 @@ void r_keep_awake::_apply(bool force_retry)
         if(!wanted)
         {
             _problem.clear();
+            _unavailable = false;
             if(!_held)
                 return;
         }
@@ -335,7 +345,7 @@ void r_keep_awake::_apply(bool force_retry)
             if(_held)
                 return;
             auto now = _steady_ms();
-            if(!force_retry && !_problem.empty() && now - _last_try_ms < RETRY_MS)
+            if(!force_retry && (!_problem.empty() || _unavailable) && now - _last_try_ms < RETRY_MS)
                 return;
             _last_try_ms = now;
         }
@@ -358,9 +368,19 @@ void r_keep_awake::_apply(bool force_retry)
     {
         R_LOG_INFO("Keep awake: holding \"%s\".", KEEP_AWAKE_REASON);
         _problem.clear();
+        _unavailable = false;
+    }
+    else if(_blocker.unavailable())
+    {
+        // Not a failure: that desktop's own settings decide when it sleeps.
+        if(!_unavailable)
+            R_LOG_INFO("Keep awake: not available here: %s.", problem.c_str());
+        _unavailable = true;
+        _problem.clear();
     }
     else
     {
+        _unavailable = false;
         if(problem != _problem)
             R_LOG_WARNING("Keep awake: the computer may still sleep: %s", problem.c_str());
         _problem = problem;

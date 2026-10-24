@@ -212,7 +212,7 @@ export async function setSystemPluginEnabled(name, enabled) {
 
 // "Keep this computer awake":
 // { enabled, on_battery, power: 'ac'|'battery'|'unknown', wanted, held,
-//   problem, events: [{ what: 'asleep'|'paused', start_ms, end_ms }] newest first }
+//   problem, unavailable, events: [{ what: 'asleep'|'paused', start_ms, end_ms }] newest first }
 export async function getKeepAwake() {
   const res = await apiFetch('/keep_awake')
   return res.json()

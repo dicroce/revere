@@ -16,6 +16,8 @@ public:
       TEST(test_r_keep_awake::test_settings_and_events_persist);
       TEST(test_r_keep_awake::test_blocker_holds_and_releases);
       TEST(test_r_keep_awake::test_session_inhibit_survives);
+      TEST(test_r_keep_awake::test_session_bus_going_away);
+      TEST(test_r_keep_awake::test_no_desktop_inhibitor_is_unavailable);
     RTF_FIXTURE_END();
 
     virtual ~test_r_keep_awake() throw() {}
@@ -35,4 +37,6 @@ public:
     void test_settings_and_events_persist();
     void test_blocker_holds_and_releases();
     void test_session_inhibit_survives();
+    void test_session_bus_going_away();
+    void test_no_desktop_inhibitor_is_unavailable();
 };

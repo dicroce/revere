@@ -3804,12 +3804,14 @@ static json _keep_awake_json(const r_keep_awake_status& s)
         {"wanted", s.wanted},
         {"held", s.held},
         {"problem", s.problem},
+        {"unavailable", s.unavailable},
         {"events", events}
     };
 }
 
 // {"enabled", "on_battery", "power": "ac"|"battery"|"unknown", "wanted",
-// "held", "problem", "events": [{"what", "start_ms", "end_ms"}] newest first}.
+// "held", "problem", "unavailable", "events": [{"what", "start_ms", "end_ms"}]
+// newest first}.
 r_http::r_server_response r_ws::_get_keep_awake(const r_http::r_web_server<r_utils::r_socket>&,
                                                 r_utils::r_socket&,
                                                 const r_http::r_server_request& request)

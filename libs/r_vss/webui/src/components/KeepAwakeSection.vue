@@ -82,6 +82,7 @@ const status = computed(() => {
   const s = state.value
   if (!s.enabled) return { tone: 'neutral', text: 'Off: the computer sleeps as usual.' }
   if (s.problem) return { tone: 'error', text: `The computer may still go to sleep: ${s.problem}` }
+  if (s.unavailable) return { tone: 'neutral', text: "Not available on this desktop: it has no suspend inhibitor to ask, so its own power settings decide when it sleeps." }
   if (s.held) return { tone: 'ok', text: "On: the computer won't go to sleep on its own." }
   if (s.power === 'battery') return { tone: 'neutral', text: 'On battery: the computer sleeps as usual.' }
   return { tone: 'neutral', text: 'Starting…' }

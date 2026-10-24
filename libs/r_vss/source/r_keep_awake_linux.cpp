@@ -20,12 +20,42 @@ static string _gerror_text(GError* err)
     return s;
 }
 
+// A connection of Revere's own, not GLib's shared singleton for the bus. The
+// singleton raises SIGTERM when the bus closes it (a logout, a D-Bus
+// restart), which Revere takes as "quit", and once closed it's handed back
+// closed. A private one does neither: a closed one counts as lost, and the
+// next attempt opens a new one. It also keeps its own bus name for as long
+// as Revere holds it, which a desktop inhibitor is tied to.
+static GDBusConnection* _bus_open(GBusType type, GError** err)
+{
+    gchar* address = g_dbus_address_get_for_bus_sync(type, nullptr, err);
+    if(!address)
+        return nullptr;
+    GDBusConnection* bus = g_dbus_connection_new_for_address_sync(
+        address,
+        (GDBusConnectionFlags)(G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT | G_DBUS_CONNECTION_FLAGS_MESSAGE_BUS_CONNECTION),
+        nullptr, nullptr, err
+    );
+    g_free(address);
+    if(bus)
+        g_dbus_connection_set_exit_on_close(bus, FALSE);
+    return bus;
+}
+
+static void _bus_close(GDBusConnection* bus)
+{
+    if(!bus)
+        return;
+    g_dbus_connection_close_sync(bus, nullptr, nullptr);
+    g_object_unref(bus);
+}
+
 // logind's "sleep" block inhibitor: held while the fd it returns is open.
 // Shows in "systemd-inhibit --list".
 static int _logind_inhibit(const string& reason, string& problem)
 {
     GError* err = nullptr;
-    GDBusConnection* bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, nullptr, &err);
+    GDBusConnection* bus = _bus_open(G_BUS_TYPE_SYSTEM, &err);
     if(!bus)
     {
         problem = "no system bus: " + _gerror_text(err);
@@ -48,7 +78,7 @@ static int _logind_inhibit(const string& reason, string& problem)
         nullptr,
         &err
     );
-    g_object_unref(bus);
+    _bus_close(bus);
 
     if(!reply)
     {
@@ -76,8 +106,7 @@ static int _logind_inhibit(const string& reason, string& problem)
 // A session-bus inhibitor that returns a cookie: GNOME's SessionManager
 // (flags 4: suspend) or freedesktop PowerManagement (KDE, Xfce). Both drop the
 // inhibitor when the caller's bus name goes away, so the connection that made
-// the call is kept until Uninhibit: GLib's bus singleton is only weakly held,
-// and the last unref closes it.
+// the call is kept until Uninhibit.
 struct session_inhibit
 {
     GDBusConnection* bus {nullptr};
@@ -89,7 +118,7 @@ struct session_inhibit
 };
 
 static bool _session_call(GDBusConnection* bus, const char* service, const char* path, const char* iface,
-                          GVariant* params, guint32& cookie, string& problem)
+                          GVariant* params, guint32& cookie, string& problem, bool& missing)
 {
     GError* err = nullptr;
     GVariant* reply = g_dbus_connection_call_sync(
@@ -98,18 +127,22 @@ static bool _session_call(GDBusConnection* bus, const char* service, const char*
     );
     if(!reply)
     {
+        // Nothing on the bus by that name: not this desktop's inhibitor.
+        missing = err && (g_error_matches(err, G_DBUS_ERROR, G_DBUS_ERROR_SERVICE_UNKNOWN) ||
+                          g_error_matches(err, G_DBUS_ERROR, G_DBUS_ERROR_NAME_HAS_NO_OWNER));
         problem = _gerror_text(err);
         return false;
     }
+    missing = false;
     g_variant_get(reply, "(u)", &cookie);
     g_variant_unref(reply);
     return true;
 }
 
-static bool _session_inhibit(const string& reason, session_inhibit& out, string& problem)
+static bool _session_inhibit(const string& reason, session_inhibit& out, string& problem, bool& unavailable)
 {
     GError* err = nullptr;
-    GDBusConnection* bus = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &err);
+    GDBusConnection* bus = _bus_open(G_BUS_TYPE_SESSION, &err);
     if(!bus)
     {
         problem = "no desktop session bus: " + _gerror_text(err);
@@ -118,8 +151,9 @@ static bool _session_inhibit(const string& reason, session_inhibit& out, string&
 
     // GNOME first: its idle suspend only checks its own inhibitors.
     string gnome_problem;
+    bool gnome_missing = false;
     if(_session_call(bus, "org.gnome.SessionManager", "/org/gnome/SessionManager", "org.gnome.SessionManager",
-                     g_variant_new("(susu)", "revere", (guint32)0, reason.c_str(), (guint32)4), out.cookie, gnome_problem))
+                     g_variant_new("(susu)", "revere", (guint32)0, reason.c_str(), (guint32)4), out.cookie, gnome_problem, gnome_missing))
     {
         out.bus = bus;
         out.service = "org.gnome.SessionManager";
@@ -130,8 +164,9 @@ static bool _session_inhibit(const string& reason, session_inhibit& out, string&
     }
 
     string pm_problem;
+    bool pm_missing = false;
     if(_session_call(bus, "org.freedesktop.PowerManagement", "/org/freedesktop/PowerManagement/Inhibit", "org.freedesktop.PowerManagement.Inhibit",
-                     g_variant_new("(ss)", "Revere", reason.c_str()), out.cookie, pm_problem))
+                     g_variant_new("(ss)", "Revere", reason.c_str()), out.cookie, pm_problem, pm_missing))
     {
         out.bus = bus;
         out.service = "org.freedesktop.PowerManagement";
@@ -141,8 +176,14 @@ static bool _session_inhibit(const string& reason, session_inhibit& out, string&
         return true;
     }
 
-    g_object_unref(bus);
-    problem = "the desktop refused (GNOME: " + gnome_problem + "; PowerManagement: " + pm_problem + ")";
+    _bus_close(bus);
+    // Neither is running (sway, i3, a bare X session): nothing refused, there's
+    // just nobody to ask. That desktop's own settings decide when it sleeps.
+    unavailable = gnome_missing && pm_missing;
+    if(unavailable)
+        problem = "this desktop has no suspend inhibitor to ask";
+    else
+        problem = "the desktop refused (GNOME: " + gnome_problem + "; PowerManagement: " + pm_problem + ")";
     return false;
 }
 
@@ -156,7 +197,7 @@ static void _session_uninhibit(session_inhibit& s)
     );
     if(reply)
         g_variant_unref(reply);
-    g_object_unref(s.bus);
+    _bus_close(s.bus);
     s.bus = nullptr;
 }
 
@@ -175,6 +216,7 @@ struct r_sleep_blocker::impl
 {
     int logind_fd {-1};
     session_inhibit session;
+    bool unavailable {false};
 };
 
 r_sleep_blocker::r_sleep_blocker() :
@@ -198,11 +240,15 @@ string r_sleep_blocker::hold(const string& reason)
     if(held())
         return string();
 
+    // A hold the bus took away (see held()): tidy it up before asking again.
+    release();
+
     const bool snap = getenv("SNAP") != nullptr;
     string problem;
+    _impl->unavailable = false;
     if(snap || _has_session_bus())
     {
-        if(!_session_inhibit(reason, _impl->session, problem))
+        if(!_session_inhibit(reason, _impl->session, problem, _impl->unavailable))
             return problem;
         return string();
     }
@@ -225,9 +271,16 @@ void r_sleep_blocker::release()
     _session_uninhibit(_impl->session);
 }
 
+// A session inhibitor is lost with its connection: the desktop drops it when
+// Revere's name leaves the bus. Not held then, so the ticker asks again.
 bool r_sleep_blocker::held() const
 {
-    return _impl->logind_fd >= 0 || _impl->session.bus != nullptr;
+    return _impl->logind_fd >= 0 || (_impl->session.bus && !g_dbus_connection_is_closed(_impl->session.bus));
+}
+
+bool r_sleep_blocker::unavailable() const
+{
+    return _impl->unavailable;
 }
 
 static string _read_line(const string& path)
@@ -289,7 +342,7 @@ r_sleep_watcher::r_sleep_watcher(function<void(bool)> cb) :
     _impl->cb = std::move(cb);
 
     GError* err = nullptr;
-    _impl->bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, nullptr, &err);
+    _impl->bus = _bus_open(G_BUS_TYPE_SYSTEM, &err);
     if(!_impl->bus)
         throw runtime_error("no system bus: " + _gerror_text(err));
 
@@ -340,7 +393,7 @@ r_sleep_watcher::~r_sleep_watcher() noexcept
     if(_impl->context)
         g_main_context_unref(_impl->context);
     if(_impl->bus)
-        g_object_unref(_impl->bus);
+        _bus_close(_impl->bus);
 }
 
 #endif

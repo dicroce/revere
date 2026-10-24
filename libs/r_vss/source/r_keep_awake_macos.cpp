@@ -63,6 +63,11 @@ bool r_sleep_blocker::held() const
     return _impl->id != kIOPMNullAssertionID;
 }
 
+bool r_sleep_blocker::unavailable() const
+{
+    return false;
+}
+
 r_power_source r_vss::current_power_source()
 {
     CFTypeRef info = IOPSCopyPowerSourcesInfo();
