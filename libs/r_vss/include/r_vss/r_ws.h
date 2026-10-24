@@ -153,6 +153,8 @@ private:
     // session and clears the cookie.
     r_http::r_server_response _post_session(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
     r_http::r_server_response _post_logout(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    // The RTSP restream's credential (r_rtsp_auth.h), for clients that play video.
+    r_http::r_server_response _get_rtsp_credentials(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     // The bearer token or (for GET/HEAD) session cookie a request carries.
     static r_utils::r_nullable<std::string> _request_token(const r_http::r_server_request& request);

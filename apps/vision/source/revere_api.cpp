@@ -12,6 +12,7 @@
 #include "r_http/r_client_request.h"
 #include "r_http/r_client_response.h"
 #include "r_http/r_methods.h"
+#include <map>
 #include <mutex>
 
 using namespace vision;
@@ -28,9 +29,11 @@ const int REVERE_HTTPS_PORT = 8443;
 const char* TRUSTED_FILE = "vision_trusted_servers.json";   // host -> fingerprint (not secret)
 const char* SESSIONS_FILE = "vision_sessions.json";         // host -> session token (owner-only)
 
-// Guards the two files (read-modify-write) and the pending problem.
+// Guards the two files (read-modify-write), the pending problem and the
+// RTSP credential cache.
 mutex _lock;
 r_nullable<identity_problem> _pending;
+map<string, rtsp_credentials> _rtsp_cache;   // keyed by _key(host)
 
 string _dir()
 {
@@ -209,6 +212,7 @@ void vision::forget_server(const string& host)
     _set(TRUSTED_FILE, host, string(), false);
     _set(SESSIONS_FILE, host, string(), true);
     lock_guard<mutex> g(_lock);
+    _rtsp_cache.erase(_key(host));
     if(!_pending.is_null() && _key(_pending.value().host) == _key(host))
         _pending.clear();
 }
@@ -254,4 +258,77 @@ void vision::login(const string& host, const string& password)
 
     _set(SESSIONS_FILE, host, token, true);
     R_LOG_INFO("vision: signed in to Revere at %s", host.c_str());
+}
+
+r_nullable<rtsp_credentials> vision::get_rtsp_credentials(const string& host)
+{
+    r_nullable<rtsp_credentials> out;
+    if(host.empty())
+        return out;
+
+    {
+        lock_guard<mutex> g(_lock);
+        auto it = _rtsp_cache.find(_key(host));
+        if(it != _rtsp_cache.end())
+        {
+            out.set_value(it->second);
+            return out;
+        }
+    }
+
+    try
+    {
+        auto sok = revere_connect(host, 5000);
+        r_client_request req(host, revere_port(host));
+        req.set_uri("/rtsp_credentials");
+        authorize(req, host);
+        req.write_request(*sok);
+        r_client_response resp;
+        resp.read_response(*sok, 5000);
+        sok->close();
+        note_status(host, resp.get_status());
+        if(resp.get_status() != 200)
+        {
+            R_LOG_WARNING("vision: no RTSP credential from %s (HTTP %d)", host.c_str(), resp.get_status());
+            return out;
+        }
+        auto body = resp.get_body_as_string();
+        if(body.is_null())
+            return out;
+        auto j = json::parse(body.value());
+        rtsp_credentials c;
+        c.username = j.value("username", string());
+        c.password = j.value("password", string());
+        if(c.username.empty() || c.password.empty())
+            return out;
+        {
+            lock_guard<mutex> g(_lock);
+            _rtsp_cache[_key(host)] = c;
+        }
+        out.set_value(c);
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_WARNING("vision: couldn't get the RTSP credential from %s: %s", host.c_str(), ex.what());
+    }
+    return out;
+}
+
+string vision::host_of_url(const string& url)
+{
+    const string scheme = "rtsp://";
+    if(url.compare(0, scheme.size(), scheme) != 0)
+        return string();
+    auto rest = url.substr(scheme.size());
+    auto at = rest.find('@');
+    auto slash = rest.find('/');
+    if(at != string::npos && (slash == string::npos || at < slash))
+        rest = rest.substr(at + 1);
+    if(!rest.empty() && rest.front() == '[')
+    {
+        auto close = rest.find(']');
+        return close == string::npos ? string() : rest.substr(1, close - 1);
+    }
+    auto end = rest.find_first_of(":/");
+    return end == string::npos ? rest : rest.substr(0, end);
 }

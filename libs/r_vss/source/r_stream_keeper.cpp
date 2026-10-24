@@ -1,5 +1,6 @@
 
 #include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_rtsp_auth.h"
 #include "r_vss/r_early_alerts.h"
 #include "r_vss/r_motion_storage_sink.h"
 #include "r_av/r_muxer.h"
@@ -22,7 +23,7 @@ using namespace r_utils::r_std_utils;
 using namespace r_disco;
 using namespace std;
 
-r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const string& top_dir) :
+r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const string& top_dir, int rtsp_port) :
     _devices(devices),
     _agent(agent),
     _top_dir(top_dir),
@@ -75,9 +76,16 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
 
     gst_rtsp_server_set_address(_server, "0.0.0.0");
 
-    gst_rtsp_server_set_service(_server, "8554");
+    gst_rtsp_server_set_service(_server, to_string(rtsp_port).c_str());
 
     _mounts = gst_rtsp_server_get_mount_points(_server);
+
+    // Every stream needs the RTSP credential (r_rtsp_auth.h): Digest, user
+    // "revere", a password persisted in the data directory and handed out by
+    // the web API to authenticated clients.
+    _rtsp_password = r_rtsp_auth::load_or_create_password(top_dir);
+    _rtsp_auth = r_rtsp_auth::make_auth(_rtsp_password);
+    gst_rtsp_server_set_auth(_server, _rtsp_auth);
 
     // A person on a camera's first significant key frame starts its event at
     // once, rather than after MOG2's confirmation (see r_motion_engine).
@@ -129,6 +137,12 @@ r_stream_keeper::~r_stream_keeper() noexcept
     {
         g_object_unref(_server);
         _server = nullptr;
+    }
+
+    if(_rtsp_auth)
+    {
+        g_object_unref(_rtsp_auth);
+        _rtsp_auth = nullptr;
     }
 
     if(_loop)
@@ -711,6 +725,8 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
     gst_rtsp_media_factory_set_launch(factory, launch_str.c_str());
 
     gst_rtsp_media_factory_set_shared(factory, FALSE);
+
+    r_rtsp_auth::allow_viewer(factory);
 
     g_signal_connect(factory, "media-configure", (GCallback)_live_restream_media_configure, rc);
 

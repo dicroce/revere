@@ -1,6 +1,7 @@
 
 #include "r_vss/r_ws.h"
 #include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_rtsp_auth.h"
 #include "r_vss/r_query.h"
 #include "r_vss/r_vss_utils.h"
 #include "r_vss/r_camera_source_info.h"
@@ -181,6 +182,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     // (from this machine only), a change needs a token or the current one.
     open_route(METHOD_POST, "/set_password", &r_ws::_post_set_password);
     route(METHOD_POST, "/session", &r_ws::_post_session);
+    route(METHOD_GET, "/rtsp_credentials", &r_ws::_get_rtsp_credentials);
 }
 
 r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_keeper& stream_keeper) :
@@ -4137,6 +4139,20 @@ r_http::r_server_response r_ws::_post_session(r_utils::r_socket_base& conn, cons
 
     r_server_response response(response_no_content);
     response.add_additional_header("Set-Cookie", r_ws_auth::session_cookie(token.value(), _is_tls(conn)));
+    return response;
+}
+
+r_http::r_server_response r_ws::_get_rtsp_credentials(r_utils::r_socket_base&, const r_http::r_server_request&)
+{
+    json j;
+    j["username"] = r_rtsp_auth::RTSP_USER;
+    j["password"] = _stream_keeper.rtsp_password();
+    j["port"] = 8554;
+
+    r_server_response response;
+    response.set_content_type("text/json");
+    response.set_body(j.dump());
+    response.add_additional_header("Cache-Control", "no-store");
     return response;
 }
 

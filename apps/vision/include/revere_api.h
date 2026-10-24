@@ -89,6 +89,22 @@ bool session_needed(const std::string& host);
 // std::runtime_error with a message fit to show the user, or untrusted_server.
 void login(const std::string& host, const std::string& password);
 
+// --- video (RTSP) ---
+
+// The credential for host's RTSP restream (r_vss/r_rtsp_auth.h), fetched from
+// its API (GET /rtsp_credentials) on first use and then cached for this
+// process. Null if it can't be had right now (not trusted / signed in yet,
+// unreachable, or an older Revere without RTSP authentication); never throws.
+struct rtsp_credentials
+{
+    std::string username;
+    std::string password;
+};
+r_utils::r_nullable<rtsp_credentials> get_rtsp_credentials(const std::string& host);
+
+// "host" from "rtsp://host:port/path" ("" if it isn't one).
+std::string host_of_url(const std::string& url);
+
 }
 
 #endif

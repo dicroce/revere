@@ -196,7 +196,8 @@ class r_recording_context;
 class r_stream_keeper final
 {
 public:
-    R_API r_stream_keeper(r_disco::r_devices& devices, r_disco::r_agent& agent, const std::string& top_dir);
+    // rtsp_port: where the restream (live and playback video) is served.
+    R_API r_stream_keeper(r_disco::r_devices& devices, r_disco::r_agent& agent, const std::string& top_dir, int rtsp_port = 8554);
     R_API ~r_stream_keeper() noexcept;
 
     R_API void start();
@@ -253,6 +254,10 @@ public:
     R_API void set_remote_access(bool enabled);
     // SHA-256 of the HTTPS certificate, "AB:CD:..." ("" if TLS is unavailable).
     R_API std::string tls_fingerprint() const;
+
+    // The restream's RTSP credential (r_vss/r_rtsp_auth.h): user
+    // r_rtsp_auth::RTSP_USER with this password, by Digest.
+    R_API std::string rtsp_password() const { return _rtsp_password; }
 
     R_API void write_metadata(const std::string& camera_id, const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);
 
@@ -345,6 +350,8 @@ private:
     std::thread _rtsp_server_th;
     GMainLoop* _loop;
     GstRTSPServer* _server;
+    GstRTSPAuth* _rtsp_auth {nullptr};
+    std::string _rtsp_password;
     GstRTSPMountPoints* _mounts;
     std::vector<GstRTSPMediaFactory*> _factories;
     r_motion_tuning_fn _motion_tuning_fn;

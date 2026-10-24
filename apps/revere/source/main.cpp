@@ -68,6 +68,7 @@
 #include "r_utils/3rdparty/json/json.h"
 #include "r_ui_utils/texture_loader.h"
 #include "r_ui_utils/wizard.h"
+#include "r_vss/r_rtsp_auth.h"
 
 // Define the fonts global variable for this app
 std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
@@ -3492,7 +3493,9 @@ int main(int argc, char** argv)
                     {
                         ui_state.friendly_name = status.camera.friendly_name.value();
                         ui_state.ipv4 = status.camera.ipv4.value();
-                        ui_state.restream_url = r_string_utils::format("rtsp://127.0.0.1:8554/%s",ui_state.friendly_name.c_str());
+                        // With the credential, so the URL works as copied (e.g. into VLC).
+                        ui_state.restream_url = r_string_utils::format("rtsp://%s:%s@127.0.0.1:8554/%s",
+                            r_vss::r_rtsp_auth::RTSP_USER, streamKeeper.rtsp_password().c_str(), ui_state.friendly_name.c_str());
                         ui_state.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
                         auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
                         ui_state.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
