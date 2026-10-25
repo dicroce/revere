@@ -42,9 +42,9 @@ struct measured_camera
     std::vector<uint8_t> jpeg;  // small snapshot for the friendly-name dialog
 };
 
-// frame_ts, if given, gets the epoch-ms ts of the key frame decoded: that of the
-// first frame at or after ts (usually the key frame before ts, but the next one
-// when ts falls just before it), or the newest when ts is past every frame.
+// frame_ts, if given, gets the epoch-ms ts of the key frame decoded: the one
+// r_storage_file_reader::query_key picks for ts. That isn't always at or before
+// ts: before the first frame it's the first key frame.
 R_API std::vector<uint8_t> query_get_jpg(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h, int64_t* frame_ts = nullptr);
 
 // frame_ts as for query_get_jpg.
