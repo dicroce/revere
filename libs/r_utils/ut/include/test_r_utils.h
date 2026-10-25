@@ -50,6 +50,7 @@ public:
       TEST(test_r_utils::test_udp_test_shutdown_closed_while_blocked);
       TEST(test_r_utils::test_udp_raw_recv);
       TEST(test_r_utils::test_udp_shutdown_close_while_blocked_in_raw_recv);
+      TEST(test_r_utils::test_udp_close_releases_socket);
       TEST(test_r_utils::test_8601_to_tp);
       TEST(test_r_utils::test_tp_to_8601);
       TEST(test_r_utils::test_uuid_generate);
@@ -141,6 +142,7 @@ public:
     void test_udp_test_shutdown_closed_while_blocked();
     void test_udp_raw_recv();
     void test_udp_shutdown_close_while_blocked_in_raw_recv();
+    void test_udp_close_releases_socket();
     void test_8601_to_tp();
     void test_tp_to_8601();
     void test_uuid_generate();
