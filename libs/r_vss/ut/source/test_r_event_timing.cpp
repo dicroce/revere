@@ -191,10 +191,9 @@ void test_r_event_timing::test_post_detection_prefers_v2()
 }
 
 // /jpg and /webp send X-Frame-Ts from the frame_ts these return: the key frame
-// actually decoded. That is the key frame of the first frame at or after the
-// time asked for, so usually the one before it, but the next one when the time
-// falls between a key frame and the frame before it; the newest when the time
-// is past every frame.
+// actually decoded, which isn't always the time asked for: the key frame before
+// it, the first key frame when the time is before the first frame, and the
+// newest when it's past every frame.
 void test_r_event_timing::test_snapshot_reports_key_frame_ts()
 {
     using namespace r_utils;
@@ -252,10 +251,11 @@ void test_r_event_timing::test_snapshot_reports_key_frame_ts()
     jpg = query_get_jpg(SNAP_TOP, devices, "cam-snap", at(base), 320, 240, &frame_ts);
     RTF_ASSERT(frame_ts == base);
 
-    // Between the last delta frame and the next key frame: that later key frame.
+    // Before the first frame: the first key frame, later than the time asked for.
     frame_ts = 0;
-    jpg = query_get_jpg(SNAP_TOP, devices, "cam-snap", at(base + 3700), 320, 240, &frame_ts);
-    RTF_ASSERT(frame_ts == base + 4000);
+    jpg = query_get_jpg(SNAP_TOP, devices, "cam-snap", at(base - 1000), 320, 240, &frame_ts);
+    RTF_ASSERT(jpg.size() > 2 && jpg[0] == 0xFF && jpg[1] == 0xD8);
+    RTF_ASSERT(frame_ts == base);
 
     // Past the newest frame: the newest key frame.
     frame_ts = 0;
