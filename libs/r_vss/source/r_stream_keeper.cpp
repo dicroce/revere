@@ -1421,8 +1421,19 @@ void r_stream_keeper::_options_cbs(GstRTSPClient* client, GstRTSPContext* ctx, r
 
 void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
 {
+    // gst-rtsp-server leaves ctx->uri NULL when the request URI doesn't parse
+    // as an RTSP URL, e.g. "OPTIONS * RTSP/1.0" (curl sends that). This runs
+    // before any authentication and the port listens on every interface, so
+    // without these checks one unauthenticated request crashed Revere.
+    if(!ctx || !ctx->uri)
+        return;
+
     GstRTSPClientClass* klass = GST_RTSP_CLIENT_GET_CLASS(client);
+    if(!klass || !klass->make_path_from_uri)
+        return;
     shared_ptr<gchar> raw_path(klass->make_path_from_uri(client, ctx->uri), [](gchar* p){if(p) g_free(p);});
+    if(!raw_path)
+        return;
     auto path = string(raw_path.get());
 
     if(r_string_utils::starts_with(path, "/"))
