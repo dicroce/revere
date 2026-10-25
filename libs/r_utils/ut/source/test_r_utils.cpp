@@ -16,6 +16,7 @@
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_udp_receiver.h"
 #include "r_utils/r_udp_sender.h"
+#include "r_utils/r_udp_socket.h"
 #include "r_utils/r_byte_ptr.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_uuid.h"
@@ -1073,6 +1074,51 @@ void test_r_utils::test_ssl_socket_multiple_close()
     uint8_t buffer[100];
     RTF_ASSERT(sock.send(buffer, sizeof(buffer)) < 0);
     RTF_ASSERT(sock.recv(buffer, sizeof(buffer)) < 0);
+}
+
+// r_udp_socket has no bind of its own: bind the receiver through fd().
+void test_r_utils::test_udp_socket_send_recv()
+{
+    r_udp_socket rx, tx;
+    r_socket_address rx_addr(9393, "127.0.0.1");
+    RTF_ASSERT(::bind(rx.fd(), rx_addr.get_sock_addr(), rx_addr.sock_addr_size()) == 0);
+
+    // Fail rather than hang if nothing arrives.
+#ifdef IS_WINDOWS
+    DWORD timeout = 2000;
+#else
+    struct timeval timeout = {2, 0};
+#endif
+    setsockopt(rx.fd(), SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+
+    const uint8_t out[4] = {1, 2, 3, 4};
+    RTF_ASSERT(tx.sendto(out, sizeof(out), rx_addr) == 4);
+
+    uint8_t in[16] = {};
+    r_socket_address from(0, "127.0.0.1");
+    RTF_ASSERT(rx.recvfrom(in, sizeof(in), from) == 4);
+    RTF_ASSERT(memcmp(in, out, sizeof(out)) == 0);
+    RTF_ASSERT(((struct sockaddr_in*)from.get_sock_addr())->sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+}
+
+// A destroyed r_udp_socket gives its descriptor back: the next one opened is
+// the same as before it. (Measured after a first one, in case first use opens
+// a descriptor that stays open.)
+void test_r_utils::test_udp_socket_releases_fd()
+{
+#ifndef IS_WINDOWS
+    auto next_fd = [](){
+        int fd = dup(1);
+        close(fd);
+        return fd;
+    };
+
+    { r_udp_socket first; }
+
+    const int before = next_fd();
+    { r_udp_socket s; }
+    RTF_ASSERT(next_fd() == before);
+#endif
 }
 
 void test_r_utils::test_udp_send()
