@@ -1026,6 +1026,8 @@ void retention_modal(
     as.storage_file_block_size.set_value(sz_info.second);
     auto human = r_storage::human_readable_file_size((double)(as.num_storage_file_blocks.value() * as.storage_file_block_size.value()));
     d.body("Needs " + human + " of disk space.");
+    d.gap(4.0f);
+    d.body(keep_awake_text::wizard_line);
 
     const bool ok = as.continuous_retention_days > 0.0;
     int a = d.actions({{"Cancel"}, {"Next", button_kind::primary, ok}});

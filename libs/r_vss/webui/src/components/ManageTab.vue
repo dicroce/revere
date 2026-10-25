@@ -65,6 +65,8 @@
 
     <PluginsSection :authed="authed" />
 
+    <KeepAwakeSection :authed="authed" />
+
     <RecordWizard
       v-if="wizardCamera"
       :camera="wizardCamera"
@@ -207,6 +209,7 @@ import {
   isAuthed, getCameras,
   removeCamera, updateCameraProperties, forgetCamera, addRtspCamera,
 } from '../api.js'
+import KeepAwakeSection from './KeepAwakeSection.vue'
 import RecordWizard from './RecordWizard.vue'
 import StorageDialog from './StorageDialog.vue'
 import PluginsSection from './PluginsSection.vue'

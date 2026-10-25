@@ -33,6 +33,8 @@ add_executable(
     source/test_r_key_frame_reply.cpp
     include/test_r_system_plugin_dirs.h
     source/test_r_system_plugin_dirs.cpp
+    include/test_r_keep_awake.h
+    source/test_r_keep_awake.cpp
 )
 
 # What r_vss/r_build_info.h should report, from the root CMakeLists.
@@ -66,3 +68,12 @@ target_link_libraries(
     ffmpeg::ffmpeg
     platform::platform
 )
+
+# test_r_keep_awake drives the Linux session inhibitor over a private D-Bus.
+if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+    find_package(PkgConfig REQUIRED)
+    pkg_search_module(GIO REQUIRED gio-2.0)
+    target_include_directories(r_vss_ut PRIVATE ${GIO_INCLUDE_DIRS})
+    target_link_directories(r_vss_ut PRIVATE ${GIO_LIBRARY_DIRS})
+    target_link_libraries(r_vss_ut LINK_PUBLIC ${GIO_LIBRARIES})
+endif()

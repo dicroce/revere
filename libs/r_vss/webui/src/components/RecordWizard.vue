@@ -49,6 +49,7 @@
             <input type="number" min="1" max="365" v-model.number="retentionDays" />
           </label>
           <p class="muted">≈ {{ estStorage }} at {{ kbps }} kbps</p>
+          <p class="muted">Revere keeps this computer awake while it's plugged in, so recording doesn't stop when it would sleep. You can change this in the Config tab.</p>
         </div>
 
         <!-- 6. configuring -->

@@ -2198,6 +2198,89 @@ static void _headless_wait_for_shutdown()
 static const char* REVERE_SERVICE_USER = "revere";
 static const char* REVERE_SERVICE_UNIT = "/etc/systemd/system/revere.service";
 
+// Lets the service user hold logind's "sleep" inhibitor, so Revere can keep
+// the computer awake while it records: polkit's default for a user with no
+// session is to ask for an admin password, which a service can't give. polkit
+// 0.106+ reads JavaScript rules; 0.105 (Ubuntu 22.04) reads .pkla files. Each
+// is written where its directory exists.
+static const char* REVERE_POLKIT_RULES = "/etc/polkit-1/rules.d/50-revere-keep-awake.rules";
+static const char* REVERE_POLKIT_PKLA = "/etc/polkit-1/localauthority/50-local.d/50-revere-keep-awake.pkla";
+
+static bool _dir_exists(const std::string& path)
+{
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static int _install_keep_awake_rule()
+{
+    if(geteuid() != 0)
+    {
+        fprintf(stderr, "revere --install-keep-awake-rule must be run as root.\n");
+        return 1;
+    }
+
+    const std::string rules =
+        "// Written by revere --install-service: lets the Revere service keep this\n"
+        "// computer from sleeping while it records cameras.\n"
+        "polkit.addRule(function(action, subject) {\n"
+        "    if (action.id == \"org.freedesktop.login1.inhibit-block-sleep\" &&\n"
+        "        subject.user == \"" + std::string(REVERE_SERVICE_USER) + "\") {\n"
+        "        return polkit.Result.YES;\n"
+        "    }\n"
+        "});\n";
+    const std::string pkla =
+        "# Written by revere --install-service: lets the Revere service keep this\n"
+        "# computer from sleeping while it records cameras.\n"
+        "[Revere keep this computer awake]\n"
+        "Identity=unix-user:" + std::string(REVERE_SERVICE_USER) + "\n"
+        "Action=org.freedesktop.login1.inhibit-block-sleep\n"
+        "ResultAny=yes\n"
+        "ResultInactive=yes\n"
+        "ResultActive=yes\n";
+
+    bool wrote = false;
+    auto write = [&](const char* path, const std::string& text) {
+        try
+        {
+            r_fs::write_file(reinterpret_cast<const uint8_t*>(text.data()), text.size(), path);
+            chmod(path, 0644);
+            printf("Wrote %s\n", path);
+            wrote = true;
+        }
+        catch(const std::exception& e)
+        {
+            fprintf(stderr, "Warning: could not write %s: %s\n", path, e.what());
+        }
+    };
+    if(_dir_exists("/etc/polkit-1/rules.d"))
+        write(REVERE_POLKIT_RULES, rules);
+    if(_dir_exists("/etc/polkit-1/localauthority/50-local.d"))
+        write(REVERE_POLKIT_PKLA, pkla);
+
+    if(!wrote)
+        printf("No polkit rules directory found: the service may not be able to keep this computer awake.\n");
+    return 0;
+}
+
+static void _uninstall_keep_awake_rule()
+{
+    for(auto path : {REVERE_POLKIT_RULES, REVERE_POLKIT_PKLA})
+    {
+        if(!r_fs::file_exists(path))
+            continue;
+        try
+        {
+            r_fs::remove_file(path);
+            printf("Removed %s\n", path);
+        }
+        catch(const std::exception& e)
+        {
+            fprintf(stderr, "Failed to remove %s: %s\n", path, e.what());
+        }
+    }
+}
+
 static int _install_systemd_service(const std::string& data_dir_arg, const std::string& secret_dir_arg)
 {
     if(geteuid() != 0)
@@ -2274,7 +2357,10 @@ static int _install_systemd_service(const std::string& data_dir_arg, const std::
     }
     printf("Wrote %s\n", REVERE_SERVICE_UNIT);
 
-    // 4. Reload, enable and start.
+    // 4. Let it keep the computer awake while it records.
+    _install_keep_awake_rule();
+
+    // 5. Reload, enable and start.
     if(system("systemctl daemon-reload") != 0)
         fprintf(stderr, "Warning: 'systemctl daemon-reload' failed.\n");
     if(system("systemctl enable --now revere.service") != 0)
@@ -2317,6 +2403,8 @@ static int _uninstall_systemd_service()
     }
     system("systemctl daemon-reload");
 
+    _uninstall_keep_awake_rule();
+
     printf("\nRevere service removed. The '%s' user and its data dir were left intact.\n", REVERE_SERVICE_USER);
     printf("  Remove recordings + credentials:  sudo rm -rf /var/lib/revere\n");
     printf("  Remove the service user:          sudo userdel %s\n", REVERE_SERVICE_USER);
@@ -2353,6 +2441,9 @@ static std::string _help_text()
         "                           runs Revere headless on boot, then enable + start.\n"
         "  --uninstall-service      Stop and remove the systemd unit (keeps the data\n"
         "                           directory and the 'revere' user).\n"
+        "  --install-keep-awake-rule\n"
+        "                           Write the polkit rule that lets the service keep\n"
+        "                           the computer awake (--install-service does this).\n"
         "\n"
         "Diagnostics:\n"
         "  --sim_mttf_seconds <n>   Simulate random stream failures ~every n seconds\n"
@@ -2448,6 +2539,12 @@ int main(int argc, char** argv)
         return _uninstall_systemd_service();
 #endif
     }
+
+#ifdef IS_LINUX
+    // For the .deb's postinst: a service installed before the rule existed.
+    if(r_args::check_argument(args, "--install-keep-awake-rule"))
+        return _install_keep_awake_rule();
+#endif
 
     // Compute top_dir early for lock file path
     auto top_dir = revere::top_dir();
@@ -3433,6 +3530,12 @@ int main(int argc, char** argv)
                 if (enabled && success)
                     main_window_state.show_toast("Revere will start when you log in, minimized to the system tray.");
             },
+            [&]() -> r_vss::r_keep_awake_settings {
+                return streamKeeper.keep_awake().get_settings();
+            },
+            [&](const r_vss::r_keep_awake_settings& settings){
+                streamKeeper.keep_awake().set_settings(settings);
+            },
             [&](){
                 revere::open_url_in_browser("http://localhost:8088");
             },
@@ -3461,7 +3564,12 @@ int main(int argc, char** argv)
         }
         else
         {
-            main_status.set_value(string("Revere running"));
+            // Said once the OS has refused, until it's held (retried each minute).
+            auto keep_awake_problem = streamKeeper.keep_awake().get_status().problem;
+            if(!keep_awake_problem.empty())
+                main_status.set_value(string(revere::keep_awake_text::refused) + keep_awake_problem);
+            else
+                main_status.set_value(string("Revere running"));
         }
 
         std::vector<revere::plugin_view> plugin_views;
