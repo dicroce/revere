@@ -7,6 +7,9 @@ add_executable(
     include/test_configure_state.h
     source/test_configure_state.cpp
     ../source/configure_state.cpp
+    include/test_tray_status.h
+    source/test_tray_status.cpp
+    ../source/tray_status.cpp
 )
 
 target_include_directories(
