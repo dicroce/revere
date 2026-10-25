@@ -1300,6 +1300,38 @@ void test_r_utils::test_udp_shutdown_close_while_blocked_in_raw_recv()
     }
 }
 
+// A closed receiver and a destroyed sender give their socket back: the next
+// descriptor opened is the same one as before them. (The first use opens a
+// descriptor that stays open, so measure after one of each.)
+void test_r_utils::test_udp_close_releases_socket()
+{
+#ifndef IS_WINDOWS
+    auto next_fd = [](){
+        int fd = dup(1);
+        close(fd);
+        return fd;
+    };
+
+    {
+        r_udp_receiver receiver( 9293, DEFAULT_UDP_RECV_BUF_SIZE, "127.0.0.1" );
+        receiver.close();
+        r_udp_sender sender( "127.0.0.1", 9293 );
+    }
+
+    const int before = next_fd();
+    {
+        r_udp_receiver receiver( 9292, DEFAULT_UDP_RECV_BUF_SIZE, "127.0.0.1" );
+        receiver.close();
+    }
+    RTF_ASSERT( next_fd() == before );
+
+    {
+        r_udp_sender sender( "127.0.0.1", 9292 );
+    }
+    RTF_ASSERT( next_fd() == before );
+#endif
+}
+
 void test_r_utils::test_8601_to_tp()
 {
     string pts = "2021-03-13T20:00:00.000"; 
