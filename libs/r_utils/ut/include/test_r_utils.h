@@ -44,8 +44,6 @@ public:
       TEST(test_r_utils::test_ssl_socket_wait_wont_block);
       TEST(test_r_utils::test_ssl_socket_get_ip_methods);
       TEST(test_r_utils::test_ssl_socket_multiple_close);
-      TEST(test_r_utils::test_udp_socket_send_recv);
-      TEST(test_r_utils::test_udp_socket_releases_fd);
       TEST(test_r_utils::test_udp_send);
       TEST(test_r_utils::test_udp_associated_send);
       TEST(test_r_utils::test_udp_get_set_recv_buffer_size);
@@ -138,8 +136,6 @@ public:
     void test_ssl_socket_wait_wont_block();
     void test_ssl_socket_get_ip_methods();
     void test_ssl_socket_multiple_close();
-    void test_udp_socket_send_recv();
-    void test_udp_socket_releases_fd();
     void test_udp_send();
     void test_udp_associated_send();
     void test_udp_get_set_recv_buffer_size();

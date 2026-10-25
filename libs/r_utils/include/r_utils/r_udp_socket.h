@@ -1,6 +1,6 @@
 
-#ifndef r_utils_r_udp_socket_h
-#define r_utils_r_udp_socket_h
+#ifndef r_utils_r_timer_h
+#define r_utils_r_timer_h
 
 #include "r_utils/r_socket_address.h"
 #include "r_utils/r_socket.h"

@@ -38,7 +38,7 @@ int r_udp_socket::sendto(const uint8_t* buffer, size_t size, r_socket_address& a
 #ifdef IS_WINDOWS
     return ::sendto((sock_t)_sok, (char*)buffer, (int)size, 0, address.get_sock_addr(), (int)address.sock_addr_size());
 #endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
+#ifdef IS_LINUX
     return ::sendto((sock_t)_sok, buffer, size, 0, address.get_sock_addr(), address.sock_addr_size());
 #endif
 }
@@ -49,7 +49,7 @@ int r_udp_socket::recvfrom(uint8_t* buffer, size_t size, r_socket_address& addre
     socklen_t addr_len = address.sock_addr_size();
     return ::recvfrom((sock_t)_sok, (char*)buffer, (int)size, 0, address.get_sock_addr(), &addr_len);
 #endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
+#ifdef IS_LINUX
     socklen_t addr_len = address.sock_addr_size();
     return ::recvfrom((sock_t)_sok, buffer, size, 0, address.get_sock_addr(), &addr_len);
 #endif
@@ -59,7 +59,7 @@ void r_udp_socket::_clear() noexcept
 {
     if(_sok != kInvalidSock)
     {
-#if defined(IS_LINUX) || defined(IS_MACOS)
+#ifdef IS_LINUX
         ::shutdown(_sok, SHUT_RDWR);
         ::close(_sok);
 #endif
