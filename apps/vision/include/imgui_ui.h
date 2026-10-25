@@ -99,7 +99,7 @@ void configure_modal(
         //ImVec2 pos_before = window->DC.CursorPos;
 
         ImGui::SetCursorPos(ImVec2(250 - (430/2), 30));
-        ImGui::Text("Revere IPV4 Address");
+        ImGui::Text("Address of the computer running Revere");
 
         ImGui::SetCursorPos(ImVec2(250 - (430/2), 55));
 

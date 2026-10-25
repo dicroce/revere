@@ -33,6 +33,7 @@
 #include "r_ui_utils/theme.h"
 #include "r_ui_utils/wizard.h"
 #include "revere_api.h"
+#include "r_utils/r_local_api_token.h"
 #include "r_ui_utils/texture_loader.h"
 
 // Define the fonts global variable for this app
@@ -578,6 +579,26 @@ static void _remote_auth_ui(configure_state& cfg, remote_auth_ui& st, bool& upda
     }
 }
 
+// Whether a Revere lives on this machine: one is running (it publishes the
+// local API token in the data directory vision shares with it), or the
+// recorder is installed next to vision (a "Revere and Vision" install). A
+// Vision-only install has neither.
+static bool _local_revere_present()
+{
+    try
+    {
+        if(!r_local_api_token::read(top_dir()).is_null())
+            return true;
+    }
+    catch(...) {}
+#ifdef IS_WINDOWS
+    const char* exe = "revere.exe";
+#else
+    const char* exe = "revere";
+#endif
+    return r_fs::file_exists(r_fs::path_join(r_fs::working_directory(), exe));
+}
+
 bool _revere_is_loopback(const configure_state& cfg)
 {
     auto maybe_ip = cfg.get_revere_ipv4();
@@ -912,6 +933,25 @@ int main(int argc, char** argv)
         vision::configure_state cfg_state;
         cfg_state.load();
 
+        // First run: with a Revere on this machine, connect to it; with none
+        // (a Vision-only install), ask where it is rather than sit empty. Also
+        // ask when the saved address is this machine but no Revere is here.
+        bool open_configure_at_start = false;
+        {
+            bool local_revere = _local_revere_present();
+            if(cfg_state.get_revere_ipv4().is_null())
+            {
+                if(local_revere)
+                {
+                    cfg_state.set_revere_ipv4("127.0.0.1");
+                    cfg_state.save();
+                }
+                else open_configure_at_start = true;
+            }
+            else if(!local_revere && _revere_is_loopback(cfg_state))
+                open_configure_at_start = true;
+        }
+
         r_ui_utils::wizard configure_wizard;
         configure_configure_wizard(configure_wizard, cfg_state, window, ui_state);
 
@@ -1094,6 +1134,13 @@ int main(int argc, char** argv)
             ImGui_ImplSDLRenderer_NewFrame();
             ImGui_ImplSDL2_NewFrame();
             ImGui::NewFrame();
+
+            // Opened inside a frame: the wizard's next() closes popups.
+            if(open_configure_at_start)
+            {
+                open_configure_at_start = false;
+                configure_wizard.next("configure");
+            }
 
             ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_24].inter_tight_regular);
 
