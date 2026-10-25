@@ -215,9 +215,11 @@ string _snapshot_key(const char* format, const string& camera_id, int64_t key_ts
 
 }
 
-vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h)
+vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h, int64_t* frame_ts)
 {
     auto kf = _find_key_frame(top_dir, devices, camera_id, ts);
+    if(frame_ts)
+        *frame_ts = kf.ts;
 
     return _snapshots().get(_snapshot_key("jpg", camera_id, kf.ts, w, h), [&]() {
         // Treat w/h as a bounding box; _decode_single_frame rewrites them with the
@@ -475,9 +477,11 @@ void r_vss::query_update_camera_properties(const string& top_dir, r_devices& dev
     devices.save_camera(camera);
 }
 
-vector<uint8_t> r_vss::query_get_webp(const string& top_dir, r_devices& devices, const string& camera_id, chrono::system_clock::time_point ts, uint16_t w, uint16_t h)
+vector<uint8_t> r_vss::query_get_webp(const string& top_dir, r_devices& devices, const string& camera_id, chrono::system_clock::time_point ts, uint16_t w, uint16_t h, int64_t* frame_ts)
 {
     auto kf = _find_key_frame(top_dir, devices, camera_id, ts);
+    if(frame_ts)
+        *frame_ts = kf.ts;
 
     return _snapshots().get(_snapshot_key("webp", camera_id, kf.ts, w, h), [&]() {
         // Treat w/h as a bounding box; _decode_single_frame rewrites them with the

@@ -42,9 +42,13 @@ struct measured_camera
     std::vector<uint8_t> jpeg;  // small snapshot for the friendly-name dialog
 };
 
-R_API std::vector<uint8_t> query_get_jpg(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h);
+// frame_ts, if given, gets the epoch-ms ts of the key frame decoded: that of the
+// first frame at or after ts (usually the key frame before ts, but the next one
+// when ts falls just before it), or the newest when ts is past every frame.
+R_API std::vector<uint8_t> query_get_jpg(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h, int64_t* frame_ts = nullptr);
 
-R_API std::vector<uint8_t> query_get_webp(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h);
+// frame_ts as for query_get_jpg.
+R_API std::vector<uint8_t> query_get_webp(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h, int64_t* frame_ts = nullptr);
 
 R_API std::chrono::hours query_get_retention_hours(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id);
 

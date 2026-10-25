@@ -1,5 +1,6 @@
 
 #include "r_vss/r_motion_event_plugin_host.h"
+#include "r_vss/r_event_timing.h"
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
@@ -221,9 +222,10 @@ void r_motion_event_plugin_host::stop()
 
 void r_motion_event_plugin_host::emit_detection(const r_detection& det)
 {
+    const auto posted_at_ms = wall_clock_ms();
     std::lock_guard<std::mutex> lock(_detection_consumers_mutex);
     for(auto& [cb, ud] : _detection_consumers)
-        cb(ud, det);
+        cb(ud, det, posted_at_ms);
 }
 
 void r_motion_event_plugin_host::register_detection_consumer(r_detection_callback callback, void* userdata)

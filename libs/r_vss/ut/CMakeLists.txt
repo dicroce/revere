@@ -19,6 +19,8 @@ add_executable(
     source/test_r_tier_controller.cpp
     include/test_r_early_alerts.h
     source/test_r_early_alerts.cpp
+    include/test_r_event_timing.h
+    source/test_r_event_timing.cpp
     include/test_r_recording_context.h
     source/test_r_recording_context.cpp
     include/test_r_rtsp_transport.h
