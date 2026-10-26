@@ -210,6 +210,24 @@ export async function setSystemPluginEnabled(name, enabled) {
   return res.json()
 }
 
+// "Keep this computer awake":
+// { enabled, on_battery, power: 'ac'|'battery'|'unknown', wanted, held,
+//   problem, unavailable, events: [{ what: 'asleep'|'paused', start_ms, end_ms }] newest first }
+export async function getKeepAwake() {
+  const res = await apiFetch('/keep_awake')
+  return res.json()
+}
+
+// Either or both of { enabled, on_battery }; returns the same as getKeepAwake.
+export async function setKeepAwake(changes) {
+  const res = await apiFetch('/keep_awake', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(changes),
+  })
+  return res.json()
+}
+
 // --- storage operations (the desktop's Move storage / Change retention) ---
 
 // { record_file_path, byte_rate, file_size_text, retention_days }, plus

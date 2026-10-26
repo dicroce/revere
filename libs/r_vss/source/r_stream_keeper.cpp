@@ -62,6 +62,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
         _motion_tee
     ),
     _system_plugin_host(top_dir),
+    _keep_awake(top_dir),
     _ws(top_dir, _devices, _agent, *this),
     _prune(_top_dir, _devices)
 {
@@ -201,12 +202,17 @@ void r_stream_keeper::start()
     _th = thread(&r_stream_keeper::_entry_point, this);
 
     _prune.start();
+
+    _keep_awake.start();
 }
 
 void r_stream_keeper::stop()
 {
     if(!_running)
         R_THROW(("Cannot stop stream keeper if its not running!"));
+
+    // Recording is stopping: let the computer sleep again.
+    _keep_awake.stop();
 
     R_LOG_INFO("Stopping prune...");
     _prune.stop();
