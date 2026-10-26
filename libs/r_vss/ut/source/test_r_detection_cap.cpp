@@ -67,8 +67,8 @@ void test_r_detection_cap::test_long_busy_event()
     dets[3000].area = 50000.f;
 
     auto keep = cap_event_detections(dets);
-    const long kept = count(keep.begin(), keep.end(), true);
-    RTF_ASSERT(kept <= (long)MAX_EVENT_DETECTIONS && kept >= (long)MAX_EVENT_DETECTIONS - 3);
+    const ptrdiff_t kept = count(keep.begin(), keep.end(), true);
+    RTF_ASSERT(kept <= (ptrdiff_t)MAX_EVENT_DETECTIONS && kept >= (ptrdiff_t)MAX_EVENT_DETECTIONS - 3);
     RTF_ASSERT(frames_whole(dets, keep));
 
     // Always kept.
@@ -141,10 +141,10 @@ void test_r_detection_cap::test_smaller_frames_fill_past_a_big_one()
     for(int i = 0; i < 10; ++i)
         dets.push_back({big, "bicycle", 0.8f, 0.f});
     t += 1000;
-    vector<int64_t> small;
+    vector<int64_t> small_frames;
     for(int i = 0; i < 10; ++i, t += 1000)
     {
-        small.push_back(t);
+        small_frames.push_back(t);
         dets.push_back({t, "bicycle", 0.5f, 0.f});
     }
     dets.push_back({t, "bicycle", 0.1f, 0.f});
@@ -154,8 +154,8 @@ void test_r_detection_cap::test_smaller_frames_fill_past_a_big_one()
     RTF_ASSERT(count(keep.begin(), keep.end(), true) == 20);
     RTF_ASSERT(!frame_kept(dets, keep, big));
     for(int i = 0; i < 7; ++i)
-        RTF_ASSERT(frame_kept(dets, keep, small[i]));
-    RTF_ASSERT(!frame_kept(dets, keep, small[7]));
+        RTF_ASSERT(frame_kept(dets, keep, small_frames[i]));
+    RTF_ASSERT(!frame_kept(dets, keep, small_frames[7]));
 }
 
 // The 6 best-scoring frames are kept even when they alone are over budget.
