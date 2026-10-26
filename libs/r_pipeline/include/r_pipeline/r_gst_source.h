@@ -39,6 +39,16 @@ const char* const RTSP_DEFAULT_PROTOCOLS = "TCP";
 // "TCP,UDP,TLS" style list -> GstRTSPLowerTrans flags (unknown names ignored)
 R_API uint32_t rtsp_protocol_flags(const std::string& protocols);
 
+// rtspsrc's jitterbuffer latency. Frames in sequence pass straight through
+// (the appsinks don't sync), so this only matters when an RTP packet is
+// missing: everything behind the gap waits up to this long for it. Lost UDP
+// packets, and sequence gaps a camera leaves when it drops packets itself (over
+// TCP too), each stalled the stream for up to GStreamer's 2 s default.
+const int RTSP_JITTERBUFFER_LATENCY_MS = 200;
+
+// Sets an rtspsrc's latency to RTSP_JITTERBUFFER_LATENCY_MS.
+R_API void rtsp_set_jitterbuffer_latency(GstElement* rtspsrc);
+
 R_API void gstreamer_init();
 R_API void gstreamer_deinit();
 
