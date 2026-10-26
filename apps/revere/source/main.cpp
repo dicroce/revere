@@ -2706,6 +2706,10 @@ int main(int argc, char** argv)
     revere::sub_dir("config");  // Ensure config dir exists for plugins
 
     r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
+
+    // "Start at login" written by an older revere may launch a path that's
+    // gone (an AppImage's temporary mount); bring it up to date.
+    r_startup::refresh_autostart("Revere", r_fs::current_exe_path(), "--start_minimized");
     r_logger::set_log_callback([](r_logger::LOG_LEVEL, const std::string& line) { s_log_tail.add(line); });
 
     // After the logger, so a settings file that can't be read is in the log.
