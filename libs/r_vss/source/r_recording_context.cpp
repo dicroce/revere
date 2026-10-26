@@ -19,6 +19,7 @@
 
 #include "r_vss/r_recording_context.h"
 #include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_rtsp_auth.h"
 #include "r_vss/r_ws.h"
 #include "r_vss/r_query.h"
 #include "r_pipeline/r_arg.h"
@@ -978,6 +979,8 @@ void r_recording_context::create_playback_mount(GstRTSPServer*, GstRTSPMountPoin
     gst_rtsp_media_factory_set_launch(factory, launch_str.c_str());
 
     gst_rtsp_media_factory_set_shared(factory, FALSE);
+
+    r_rtsp_auth::allow_viewer(factory);
 
     g_signal_connect(factory, "media-configure", (GCallback)_playback_restream_media_configure_cbs, this);
 

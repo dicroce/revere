@@ -137,6 +137,8 @@ public:
     }
 
 private:
+    // Adds Revere's RTSP credential for url's host (revere_api.h), if available.
+    void _add_rtsp_credentials(std::vector<r_pipeline::r_arg>& arguments, const std::string& url);
     void _entry_point();
 
     stream_info _si;

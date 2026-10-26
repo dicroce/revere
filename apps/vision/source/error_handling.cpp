@@ -1,6 +1,7 @@
 #include "error_handling.h"
 #include "imgui/imgui.h"
 #include "r_http/r_client_request.h"
+#include "revere_api.h"
 #include "r_http/r_client_response.h"
 #include "r_utils/r_socket.h"
 #include "r_ui_utils/texture.h"
@@ -101,7 +102,6 @@ namespace network_safe
         // Parse URL to extract host, port, and path
         // Simple parsing for http://host:port/path format
         std::string host = "127.0.0.1";
-        int port = 8088;
         std::string path = "/";
 
         // Extract path from URL for now (basic implementation)
@@ -115,15 +115,16 @@ namespace network_safe
         {
             try
             {
-                r_utils::r_socket sok;
-                sok.connect(host, port);
+                auto sok = vision::revere_connect(host, (uint64_t)timeout_ms);
 
-                r_http::r_client_request req(host, port);
+                r_http::r_client_request req(host, vision::revere_port(host));
                 req.set_uri(path);
-                req.write_request(sok);
+                vision::authorize(req, host);
+                req.write_request(*sok);
 
                 r_http::r_client_response response;
-                response.read_response(sok);
+                response.read_response(*sok);
+                vision::note_status(host, response.get_status());
 
                 result.status_code = response.is_success() ? 200 : 500; // Simplified status handling
                 auto body_maybe = response.get_body_as_string();

@@ -14,6 +14,9 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/r_server_threaded.h"
 #include "r_utils/r_ssl_socket.h"
+#include "r_utils/r_ssl_server_socket.h"
+#include "r_utils/r_local_api_token.h"
+#include "r_utils/r_tls_fingerprint.h"
 #include "r_utils/r_udp_receiver.h"
 #include "r_utils/r_udp_sender.h"
 #include "r_utils/r_udp_socket.h"
@@ -42,6 +45,7 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 using namespace std;
@@ -2519,4 +2523,307 @@ void test_r_utils::test_linux_autostart_exec()
 #ifndef IS_LINUX
     RTF_ASSERT(!r_utils::r_startup::refresh_autostart("Revere", mounted, "--start_minimized"));
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// r_ssl_server_socket
+// ---------------------------------------------------------------------------
+
+
+void test_r_utils::test_ssl_server_config_generate()
+{
+    auto pems = r_ssl_server_config::generate_self_signed("revere-test", 30);
+    RTF_ASSERT(r_string_utils::contains(pems.first, "-----BEGIN CERTIFICATE-----"));
+    RTF_ASSERT(r_string_utils::contains(pems.second, "PRIVATE KEY-----"));
+
+    auto cfg = make_shared<r_ssl_server_config>(pems.first, pems.second);
+    RTF_ASSERT(cfg->cert_pem() == pems.first);
+
+    // 32 bytes as "AB:CD:...": 32*2 hex chars + 31 colons.
+    auto fp = cfg->fingerprint_sha256();
+    RTF_ASSERT(fp.size() == 95);
+    RTF_ASSERT(fp[2] == ':');
+    for(size_t i = 0; i < fp.size(); ++i)
+    {
+        if(i % 3 == 2)
+            RTF_ASSERT(fp[i] == ':');
+        else RTF_ASSERT(isxdigit((unsigned char)fp[i]));
+    }
+
+    // Same PEM → same fingerprint; a fresh cert → a different one.
+    auto cfg2 = make_shared<r_ssl_server_config>(pems.first, pems.second);
+    RTF_ASSERT(cfg2->fingerprint_sha256() == fp);
+    auto other = r_ssl_server_config::generate_self_signed("revere-test", 30);
+    r_ssl_server_config cfg3(other.first, other.second);
+    RTF_ASSERT(cfg3.fingerprint_sha256() != fp);
+}
+
+void test_r_utils::test_ssl_server_config_rejects_mismatched_key()
+{
+    auto a = r_ssl_server_config::generate_self_signed("a", 30);
+    auto b = r_ssl_server_config::generate_self_signed("b", 30);
+    RTF_ASSERT_THROWS(r_ssl_server_config(a.first, b.second), r_exception);
+    RTF_ASSERT_THROWS(r_ssl_server_config("not a cert", a.second), r_exception);
+    RTF_ASSERT_THROWS(r_ssl_server_config(a.first, "not a key"), r_exception);
+}
+
+void test_r_utils::test_ssl_server_socket_roundtrip()
+{
+    auto pems = r_ssl_server_config::generate_self_signed();
+    auto cfg = make_shared<r_ssl_server_config>(pems.first, pems.second);
+
+    int port = RTF_NEXT_PORT();
+
+    r_ssl_server_socket listener;
+    // bind() without a config must fail loudly.
+    RTF_ASSERT_THROWS(listener.bind(port, "127.0.0.1"), r_exception);
+    listener.set_config(cfg);
+    listener.bind(port, "127.0.0.1");
+    listener.listen();
+
+    string server_error;
+    thread t([&](){
+        try
+        {
+            auto conn = listener.accept();
+            RTF_ASSERT(!conn.handshake_done());   // deferred until first I/O
+            RTF_ASSERT(conn.valid());
+
+            // Accepted sockets are movable (r_server_threaded queues them).
+            r_ssl_server_socket moved(std::move(conn));
+            RTF_ASSERT(!conn.valid());
+
+            uint32_t val = 0;
+            uint64_t ms = 5000;
+            RTF_ASSERT(moved.wait_till_recv_wont_block(ms));
+            RTF_ASSERT(moved.handshake_done());
+            r_networking::r_recv(moved, &val, 4);
+            RTF_ASSERT(moved.get_peer_ip() == "127.0.0.1");
+            val += 1;
+            r_networking::r_send(moved, &val, 4);
+        }
+        catch(const std::exception& ex)
+        {
+            server_error = ex.what();
+        }
+    });
+
+    r_ssl_socket client(false);   // encrypted, unauthenticated: what vision will do
+    client.connect("127.0.0.1", port);
+    RTF_ASSERT(client.valid());
+
+    uint32_t val = 41;
+    r_networking::r_send(client, &val, 4);
+    r_networking::r_recv(client, &val, 4);
+    RTF_ASSERT(val == 42);
+
+    client.close();
+    t.join();
+    RTF_ASSERT(server_error.empty());
+}
+
+void test_r_utils::test_ssl_server_socket_rejects_plaintext_client()
+{
+    auto pems = r_ssl_server_config::generate_self_signed();
+    auto cfg = make_shared<r_ssl_server_config>(pems.first, pems.second);
+
+    int port = RTF_NEXT_PORT();
+
+    r_ssl_server_socket listener(cfg);
+    listener.bind(port, "127.0.0.1");
+    listener.listen();
+
+    int server_rc = 0;
+    bool server_valid_after = true;
+    thread t([&](){
+        auto conn = listener.accept();
+        char buf[64];
+        server_rc = conn.recv(buf, sizeof(buf));
+        server_valid_after = conn.valid();
+    });
+
+    r_socket client;
+    client.connect("127.0.0.1", port);
+    string junk = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+    client.send(junk.c_str(), junk.size());
+
+    t.join();
+    RTF_ASSERT(server_rc < 0);
+    RTF_ASSERT(!server_valid_after);
+}
+
+void test_r_utils::test_ssl_server_socket_threaded_server()
+{
+    auto pems = r_ssl_server_config::generate_self_signed();
+    auto cfg = make_shared<r_ssl_server_config>(pems.first, pems.second);
+
+    int port = RTF_NEXT_PORT();
+
+    atomic<int> served {0};
+    r_server_threaded<r_ssl_server_socket> server(port, [&](r_ssl_server_socket& conn){
+        uint32_t val = 0;
+        r_networking::r_recv(conn, &val, 4);
+        val *= 2;
+        r_networking::r_send(conn, &val, 4);
+        ++served;
+    }, "127.0.0.1", 4);
+
+    // The template default-constructs its listener; the config goes in here.
+    server.get_socket().set_config(cfg);
+
+    thread st(&r_server_threaded<r_ssl_server_socket>::start, &server);
+    while(!server.started())
+        this_thread::sleep_for(chrono::milliseconds(10));
+
+    // Several clients at once: concurrent handshakes on the worker pool.
+    const int N = 6;
+    vector<thread> clients;
+    atomic<int> ok {0};
+    mutex errors_lock;
+    vector<string> errors;
+    for(int i = 0; i < N; ++i)
+    {
+        clients.emplace_back([&, i](){
+            try
+            {
+                r_ssl_socket c(false);
+                c.connect("127.0.0.1", port);
+                uint32_t v = (uint32_t)(i + 1);
+                r_networking::r_send(c, &v, 4);
+                int got = r_networking::r_recv(c, &v, 4);
+                if(got == 4 && v == (uint32_t)((i + 1) * 2))
+                    ++ok;
+                else
+                {
+                    lock_guard<mutex> g(errors_lock);
+                    errors.push_back(r_string_utils::format("client %d: got %d bytes, value %u", i, got, v));
+                }
+            }
+            catch(const std::exception& ex)
+            {
+                lock_guard<mutex> g(errors_lock);
+                errors.push_back(r_string_utils::format("client %d: %s", i, ex.what()));
+            }
+        });
+    }
+    for(auto& c : clients)
+        c.join();
+
+    // stop() wakes accept() with a plain TCP connect; that must not hang.
+    // Tear down before asserting: a joinable thread outliving a failed assert
+    // would std::terminate() and hide the message.
+    server.stop();
+    st.join();
+    server.join_all();
+
+    for(auto& e : errors)
+        printf("  %s\n", e.c_str());
+    RTF_ASSERT(errors.empty());
+    RTF_ASSERT(ok == N);
+    RTF_ASSERT(served == N);
+}
+
+
+// ---------------------------------------------------------------------------
+// r_local_api_token
+// ---------------------------------------------------------------------------
+
+void test_r_utils::test_local_api_token_roundtrip()
+{
+    auto dir = r_fs::temp_file_name(r_fs::working_directory(), "local_token_ut_");
+    r_fs::mkdir_p(dir);
+
+    // Nothing there yet.
+    RTF_ASSERT(r_local_api_token::read(dir).is_null());
+    RTF_ASSERT(r_local_api_token::read("").is_null());
+
+    r_local_api_token::write(dir, "first-token");
+    RTF_ASSERT(r_local_api_token::read(dir).value() == "first-token");
+
+    // Rewritten in place (a Revere restart), surrounding whitespace ignored.
+    r_local_api_token::write(dir, "  second-token\n");
+    RTF_ASSERT(r_local_api_token::read(dir).value() == "second-token");
+
+#ifndef IS_WINDOWS
+    // Owner-only.
+    struct stat st;
+    RTF_ASSERT(::stat(r_local_api_token::path(dir).c_str(), &st) == 0);
+    RTF_ASSERT((st.st_mode & 0777) == 0600);
+#endif
+
+    r_local_api_token::remove(dir);
+    RTF_ASSERT(r_local_api_token::read(dir).is_null());
+    // Removing what isn't there is fine.
+    r_local_api_token::remove(dir);
+
+    // An empty file isn't a token.
+    r_fs::atomic_write_private_file((const uint8_t*)"", 0, r_local_api_token::path(dir));
+    RTF_ASSERT(r_local_api_token::read(dir).is_null());
+    r_local_api_token::remove(dir);
+
+    r_fs::rmdir(dir);
+
+    // Where Revere keeps it by default is knowable.
+    auto top = r_local_api_token::default_top_dir();
+    RTF_ASSERT(!top.empty());
+    RTF_ASSERT(r_string_utils::contains(r_string_utils::to_lower(top), "revere"));
+}
+
+void test_r_utils::test_local_api_token_loopback_hosts()
+{
+    RTF_ASSERT(r_local_api_token::is_loopback_host("127.0.0.1"));
+    RTF_ASSERT(r_local_api_token::is_loopback_host("127.1.2.3"));
+    RTF_ASSERT(r_local_api_token::is_loopback_host("localhost"));
+    RTF_ASSERT(r_local_api_token::is_loopback_host("LocalHost"));
+    RTF_ASSERT(r_local_api_token::is_loopback_host("::1"));
+    RTF_ASSERT(r_local_api_token::is_loopback_host("[::1]"));
+    RTF_ASSERT(!r_local_api_token::is_loopback_host("192.168.1.10"));
+    RTF_ASSERT(!r_local_api_token::is_loopback_host("10.127.0.1"));
+    RTF_ASSERT(!r_local_api_token::is_loopback_host("localhost.evil.com"));
+    RTF_ASSERT(!r_local_api_token::is_loopback_host(""));
+
+    RTF_ASSERT(r_local_api_token::bearer("abc") == "Bearer abc");
+}
+
+
+// What a pinning client sees is exactly what the server reports (and so what
+// Revere's UI shows the user to compare against).
+void test_r_utils::test_ssl_client_sees_server_fingerprint()
+{
+    auto pems = r_ssl_server_config::generate_self_signed();
+    auto cfg = make_shared<r_ssl_server_config>(pems.first, pems.second);
+
+    int port = RTF_NEXT_PORT();
+    r_ssl_server_socket listener(cfg);
+    listener.bind(port, "127.0.0.1");
+    listener.listen();
+
+    thread t([&](){
+        try
+        {
+            auto conn = listener.accept();
+            uint8_t b = 0;
+            r_networking::r_recv(conn, &b, 1);
+            r_networking::r_send(conn, &b, 1);
+        }
+        catch(...) {}
+    });
+
+    r_ssl_socket client(false);
+    RTF_ASSERT(client.peer_cert_fingerprint_sha256().empty());   // not connected yet
+    client.connect("127.0.0.1", port);
+    auto seen = client.peer_cert_fingerprint_sha256();
+    RTF_ASSERT(seen == cfg->fingerprint_sha256());
+    RTF_ASSERT(seen.size() == 95);
+
+    uint8_t b = 7;
+    r_networking::r_send(client, &b, 1);
+    r_networking::r_recv(client, &b, 1);
+    client.close();
+    t.join();
+
+    // Hashing helper agrees on known input: SHA-256("abc").
+    auto abc = tls_fingerprint_sha256((const uint8_t*)"abc", 3);
+    RTF_ASSERT(abc.substr(0, 11) == "BA:78:16:BF");
+    RTF_ASSERT(abc.substr(abc.size() - 11) == "F2:00:15:AD");
 }

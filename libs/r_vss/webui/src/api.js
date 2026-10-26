@@ -1,9 +1,16 @@
 // Small API helper for the Revere web UI.
 //
-// Read endpoints (/cameras, /jpg, ...) are unauthenticated. The camera-
-// management endpoints (the "Record" flow) require a bearer token obtained from
-// /login. The token is held in memory and mirrored to localStorage so a page
-// reload keeps you signed in until it expires server-side (24h).
+// Every endpoint except /version, /auth_status, /login, /logout and
+// /set_password requires a session from /login. The session reaches the server
+// two ways:
+//   - as a bearer token, which apiFetch() attaches. It is held in memory and
+//     mirrored to localStorage so a reload keeps you signed in until it expires
+//     server-side (24h);
+//   - as the HttpOnly session cookie the server sets on /login (and on
+//     /session), which the browser sends by itself with same-origin GETs: the
+//     <img> snapshots, the MSE video fetches, the export download, and the
+//     plain fetch() calls for timelines. The server honours the cookie only on
+//     GET/HEAD, so every write goes through apiFetch().
 
 import { ref } from 'vue'
 
@@ -66,6 +73,18 @@ export async function getAuthStatus() {
   return res.json() // { password_set: bool }
 }
 
+// A token restored from localStorage has no cookie yet (or an expired one):
+// have the server set it, so cookie-borne requests work again. Clears the
+// token if the server no longer accepts it.
+export async function ensureSessionCookie() {
+  if (!token.value) return
+  const res = await fetch('/session', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token.value}` },
+  })
+  if (res.status === 401) setToken(null)
+}
+
 export async function login(password) {
   const res = await fetch('/login', {
     method: 'POST',
@@ -79,8 +98,17 @@ export async function login(password) {
   return j
 }
 
-export function logout() {
+// Ends the session server-side and clears its cookie. The local state is
+// dropped first so the UI signs out even if the server can't be reached.
+export async function logout() {
+  const t = token.value
   setToken(null)
+  try {
+    await fetch('/logout', {
+      method: 'POST',
+      headers: t ? { Authorization: `Bearer ${t}` } : {},
+    })
+  } catch { /* offline: the session just expires */ }
 }
 
 // Set or change the system password. On first run (no password set) this needs
@@ -97,6 +125,9 @@ export async function setSystemPassword(newPassword, currentPassword) {
     headers,
     body: JSON.stringify(body),
   })
+  if (res.status === 403) {
+    throw new Error('The first password has to be set on the Revere machine itself (open the web UI there, or use the desktop app).')
+  }
   if (!res.ok) {
     let msg = `Could not set password (${res.status}).`
     try { const b = await res.json(); if (b && b.error) msg = b.error } catch {}

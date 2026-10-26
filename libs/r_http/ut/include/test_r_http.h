@@ -24,6 +24,8 @@ public:
       TEST(test_r_http::test_web_server_immediate_start_stop);
       TEST(test_r_http::test_web_server_port_taken);
       TEST(test_r_http::test_web_server_destroyed_with_request_in_flight);
+      TEST(test_r_http::test_web_server_https);
+      TEST(test_r_http::test_web_server_https_survives_plaintext_probe);
     RTF_FIXTURE_END();
 
     virtual ~test_r_http() throw() {}
@@ -50,4 +52,6 @@ public:
     void test_web_server_immediate_start_stop();
     void test_web_server_port_taken();
     void test_web_server_destroyed_with_request_in_flight();
+    void test_web_server_https();
+    void test_web_server_https_survives_plaintext_probe();
 };

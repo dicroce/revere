@@ -2,6 +2,7 @@
 #include "r_pipeline/r_stream_info.h"
 #include "r_pipeline/r_sample_context.h"
 #include "r_http/r_client_request.h"
+#include "revere_api.h"
 #include "r_http/r_client_response.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_time_utils.h"
@@ -407,9 +408,21 @@ void pipeline_state::play_live()
     // keyframe. The restream is revere's own (usually on this machine), so
     // TCP costs nothing.
     add_argument(arguments, "protocols", string("TCP"));
+    _add_rtsp_credentials(arguments, _si.rtsp_url);
     _source.set_args(arguments);
 
     _source.play();
+}
+
+// Revere's restream requires its RTSP credential (fetched once per host from
+// the web API; see revere_api.h).
+void pipeline_state::_add_rtsp_credentials(vector<r_arg>& arguments, const string& url)
+{
+    auto creds = get_rtsp_credentials(host_of_url(url));
+    if(creds.is_null())
+        return;
+    add_argument(arguments, "username", creds.value().username);
+    add_argument(arguments, "password", creds.value().password);
 }
 
 void pipeline_state::play()
@@ -447,6 +460,7 @@ void pipeline_state::play(const system_clock::time_point& start, const system_cl
     vector<r_arg> arguments;
     add_argument(arguments, "url", url);
     add_argument(arguments, "protocols", string("TCP"));
+    _add_rtsp_credentials(arguments, url);
     _source.set_args(arguments);
 
     _source.play();

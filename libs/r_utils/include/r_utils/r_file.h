@@ -101,6 +101,11 @@ R_API void atomic_rename_file(const std::string& oldPath, const std::string& new
 // temp file in the same directory, flushed to disk, then renamed over path. A
 // crash or power cut mid-write leaves the old file in place.
 R_API void atomic_write_file(const uint8_t* bytes, size_t len, const std::string& path);
+// As atomic_write_file(), but the file is readable and writable by its owner
+// only (0600 on POSIX, set before any data is written). For secrets: keys,
+// tokens. On Windows it relies on the destination's ACL (use it under the
+// per-user profile).
+R_API void atomic_write_private_file(const uint8_t* bytes, size_t len, const std::string& path);
 // Moves a file that couldn't be read out of the way, to path + ".bad-<time>"
 // (with a counter if that's taken), and returns where it went. Nothing is
 // deleted, so whatever it held can still be recovered by hand.

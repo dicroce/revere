@@ -54,7 +54,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { isAuthed, getAuthStatus, getCameras, getVersion, logout } from './api.js'
+import { isAuthed, getAuthStatus, getCameras, getVersion, logout, ensureSessionCookie } from './api.js'
 import CameraCard from './components/CameraCard.vue'
 import CameraView from './components/CameraView.vue'
 import ManageTab from './components/ManageTab.vue'
@@ -151,9 +151,13 @@ onMounted(async () => {
   } catch {
     passwordSet.value = true
   }
-  // Verify a stored token (if any) before showing the app.
+  // Verify a stored token (if any) before showing the app, and make sure the
+  // browser holds its session cookie (snapshots and video rely on it).
   if (authed.value) {
     try { await getCameras() } catch { /* invalid token cleared by api.js */ }
+  }
+  if (authed.value) {
+    try { await ensureSessionCookie() } catch { /* offline: the grid shows the error */ }
   }
   authChecked.value = true
   getVersion().then((v) => { version.value = v }).catch(() => { /* older Revere: no footer */ })

@@ -1,6 +1,8 @@
 
 #include "test_r_http.h"
 #include "r_utils/r_socket.h"
+#include "r_utils/r_ssl_socket.h"
+#include "r_utils/r_ssl_server_socket.h"
 #include "r_http/r_client_request.h"
 #include "r_http/r_server_request.h"
 #include "r_http/r_client_response.h"
@@ -880,4 +882,129 @@ void test_r_http::test_web_server_busy_503_trickling_client()
 
     RTF_ASSERT(busy.get_status() == 503);
     RTF_ASSERT(took < std::chrono::milliseconds(500));
+}
+
+
+// ---------------------------------------------------------------------------
+// HTTPS: r_web_server over r_ssl_server_socket (what r_ws's TLS listener is)
+// ---------------------------------------------------------------------------
+
+static std::shared_ptr<r_utils::r_ssl_server_config> _test_tls_config()
+{
+    auto pems = r_utils::r_ssl_server_config::generate_self_signed("r_http_ut");
+    return std::make_shared<r_utils::r_ssl_server_config>(pems.first, pems.second);
+}
+
+// The same route table served over TLS: the request is read through
+// r_socket_base (handshake completes on the first read), the handler runs on a
+// worker, and the response goes back encrypted. Client is the existing
+// r_ssl_socket in its no-verify mode, as vision will use.
+void test_r_http::test_web_server_https()
+{
+    int port = RTF_NEXT_PORT();
+    auto cfg = _test_tls_config();
+
+    r_web_server<r_utils::r_ssl_server_socket> ws(port, "127.0.0.1", 2);
+    ws.get_socket().set_config(cfg);
+    std::atomic<int> hits {0};
+    ws.add_route(METHOD_GET, "/hello", [&](const r_web_server<r_utils::r_ssl_server_socket>&, r_utils::r_ssl_server_socket& conn, const r_server_request& req){
+        ++hits;
+        RTF_ASSERT(conn.handshake_done());
+        RTF_ASSERT(conn.get_peer_ip() == "127.0.0.1");
+        r_server_response response;
+        response.set_content_type("text/plain");
+        auto who = req.get_header("x-who");
+        response.set_body("hello " + (who.is_null() ? std::string("?") : who.value()));
+        return response;
+    });
+    ws.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Sequential requests, then a burst of concurrent ones.
+    for(int i = 0; i < 3; ++i)
+    {
+        r_utils::r_ssl_socket sok(false);
+        sok.connect("127.0.0.1", port);
+        r_client_request request("127.0.0.1", port);
+        request.set_uri("/hello");
+        request.add_header("x-who", "seq" + std::to_string(i));
+        request.write_request(sok);
+        r_client_response response;
+        response.read_response(sok);
+        RTF_ASSERT(response.is_success());
+        RTF_ASSERT(response.get_body_as_string().value() == "hello seq" + std::to_string(i));
+    }
+
+    const int N = 5;
+    std::atomic<int> ok {0};
+    std::vector<std::thread> clients;
+    for(int i = 0; i < N; ++i)
+    {
+        clients.emplace_back([&, i](){
+            try
+            {
+                r_utils::r_ssl_socket sok(false);
+                sok.connect("127.0.0.1", port);
+                r_client_request request("127.0.0.1", port);
+                request.set_uri("/hello");
+                request.add_header("x-who", "par" + std::to_string(i));
+                request.write_request(sok);
+                r_client_response response;
+                response.read_response(sok);
+                if(response.is_success() && response.get_body_as_string().value() == "hello par" + std::to_string(i))
+                    ++ok;
+            }
+            catch(...) {}
+        });
+    }
+    for(auto& c : clients)
+        c.join();
+
+    ws.stop();
+    RTF_ASSERT(ok == N);
+    RTF_ASSERT(hits == 3 + N);
+}
+
+// A client that speaks plaintext HTTP to the TLS port is dropped without
+// taking a worker down or wedging the server: a TLS client right after it is
+// still served.
+void test_r_http::test_web_server_https_survives_plaintext_probe()
+{
+    int port = RTF_NEXT_PORT();
+    auto cfg = _test_tls_config();
+
+    r_web_server<r_utils::r_ssl_server_socket> ws(port, "127.0.0.1", 1);   // one worker: a wedge would show
+    ws.get_socket().set_config(cfg);
+    ws.add_route(METHOD_GET, "/ping", [&](const r_web_server<r_utils::r_ssl_server_socket>&, r_utils::r_ssl_server_socket&, const r_server_request&){
+        r_server_response response;
+        response.set_body("pong");
+        return response;
+    });
+    ws.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    {
+        r_socket plain;
+        plain.connect("127.0.0.1", port);
+        std::string junk = "GET /ping HTTP/1.1\r\nHost: x\r\n\r\n";
+        plain.send(junk.c_str(), junk.size());
+        // The server fails the handshake and closes; we should see EOF (or a
+        // reset), never a plaintext reply.
+        uint64_t ms = 3000;
+        char buf[64];
+        int got = plain.wait_till_recv_wont_block(ms) ? plain.recv(buf, sizeof(buf)) : 0;
+        RTF_ASSERT(got <= 0);
+    }
+
+    r_utils::r_ssl_socket sok(false);
+    sok.connect("127.0.0.1", port);
+    r_client_request request("127.0.0.1", port);
+    request.set_uri("/ping");
+    request.write_request(sok);
+    r_client_response response;
+    response.read_response(sok);
+    RTF_ASSERT(response.is_success());
+    RTF_ASSERT(response.get_body_as_string().value() == "pong");
+
+    ws.stop();
 }
