@@ -68,7 +68,7 @@ static int64_t _now_epoch_ms()
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-void r_storage_file::write_frame(const r_storage_write_context& ctx, r_storage_media_type media_type, const uint8_t* p, size_t size, bool key, int64_t ts, int64_t pts)
+int64_t r_storage_file::write_frame(const r_storage_write_context& ctx, r_storage_media_type media_type, const uint8_t* p, size_t size, bool key, int64_t ts, int64_t pts)
 {
     if(media_type >= R_STORAGE_MEDIA_TYPE_ALL)
         R_THROW(("Invalid storage media type."));
@@ -142,6 +142,8 @@ void r_storage_file::write_frame(const r_storage_write_context& ctx, r_storage_m
     auto write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - write_start).count();
     if(write_ms > 50)
         R_LOG_WARNING("slow nanots write: %lld ms (media_type=%d, ts=%lld) — likely block acquisition waiting on readers", (long long)write_ms, (int)media_type, (long long)corrected);
+
+    return corrected;
 }
 
 size_t r_storage_file::remove_blocks(const std::string& file_name, int64_t start_ts, int64_t end_ts)

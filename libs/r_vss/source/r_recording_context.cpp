@@ -358,18 +358,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             // on every key so the cache always starts with a keyframe (until the
             // safety cap kicks in for a misbehaving source).
             if(key)
-            {
                 _video_gop_cache.clear();
-                if(!_maybe_video_storage_write_context.is_null())
-                {
-                    std::lock_guard<std::mutex> g(_latest_key_lock);
-                    _has_latest_key = true;
-                    _latest_key_ts = ts;
-                    _latest_key_buffer = buffer;
-                    _latest_key_codec_name = _maybe_video_storage_write_context.value().codec_name;
-                    _latest_key_codec_parameters = _maybe_video_storage_write_context.value().codec_parameters;
-                }
-            }
             _video_gop_cache.push_back({pts, key, buffer});
             while(_video_gop_cache.size() > GOP_CACHE_MAX_FRAMES)
                 _video_gop_cache.pop_front();
@@ -479,7 +468,12 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 }
             });
 
-            this->_storage_file.write_frame(
+            // The ts the frame is stored at. It differs from ts once storage has
+            // re-anchored a backward source jump (and for a clamped frame), and
+            // everything that refers to this frame by time must use it: motion
+            // events, detections and analytics are looked up in the recording
+            // by their ts (/jpg at a detection's time, event frames, vision).
+            const auto stored_ts = this->_storage_file.write_frame(
                 this->_maybe_video_storage_write_context.value(),
                 R_STORAGE_MEDIA_TYPE_VIDEO,
                 mi.data(),
@@ -493,6 +487,16 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             // frame actually reached storage (see storage_write_lag_ms()).
             _last_v_write_time = system_clock::now();
 
+            if(key)
+            {
+                std::lock_guard<std::mutex> g(_latest_key_lock);
+                _has_latest_key = true;
+                _latest_key_ts = stored_ts;
+                _latest_key_buffer = buffer;
+                _latest_key_codec_name = _maybe_video_storage_write_context.value().codec_name;
+                _latest_key_codec_parameters = _maybe_video_storage_write_context.value().codec_parameters;
+            }
+
             bool do_motion = (!this->_camera.do_motion_detection.is_null())?this->_camera.do_motion_detection.value():false;
 
             if(do_motion)
@@ -503,7 +507,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                     _close_camera_motion_ring();
                     this->_sk->post_frame_to_motion_engine(
                         buffer,
-                        ts,
+                        stored_ts,
                         this->_maybe_video_storage_write_context.value().codec_name,
                         this->_maybe_video_storage_write_context.value().codec_parameters,
                         this->_camera.id,
@@ -512,7 +516,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                     );
                 }
                 else if(key)
-                    _camera_motion_tick(ts);
+                    _camera_motion_tick(stored_ts);
             }
         }
         catch(exception& e)
