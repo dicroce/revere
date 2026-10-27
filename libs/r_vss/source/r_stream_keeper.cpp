@@ -1097,6 +1097,22 @@ void r_stream_keeper::_entry_point()
                     _add_recording_contexts(_devices.get_assigned_cameras_added(_get_current_cameras()));
             }
 
+            // If the set of assigned cameras changed (one added or forgotten),
+            // notify the system plugins so e.g. the cloud plugin pushes the
+            // device list up right away instead of waiting for its periodic
+            // poll. A stream reconnect leaves the assigned set unchanged, so it
+            // won't trigger this.
+            {
+                std::set<std::string> assigned_ids;
+                for(const auto& c : _devices.get_assigned_cameras())
+                    assigned_ids.insert(c.id);
+                if(assigned_ids != _last_assigned_camera_ids)
+                {
+                    _last_assigned_camera_ids = std::move(assigned_ids);
+                    _system_plugin_host.notify_cameras_changed();
+                }
+            }
+
             _tier_tick();
 
             auto c = _cmd_q.poll(std::chrono::seconds(2));

@@ -56,6 +56,12 @@ public:
     // result_type identifies the payload; json is the raw result.
     R_API void set_api_result_fn(std::function<void(const std::string&, const std::string&)> fn);
 
+    // Notify every plugin that implements system_plugin_cameras_changed that the
+    // camera set changed (added / removed / re-assigned), so it can sync right
+    // away instead of waiting for its next poll. Safe to call from the stream
+    // keeper's reconciliation thread; plugins that don't implement it are skipped.
+    R_API void notify_cameras_changed();
+
 private:
     void _dispatch_detection(const r_detection& det);
     void _on_api_result(const char* name, const char* json);
@@ -73,6 +79,7 @@ private:
         const char* (*status_message_func)(r_system_plugin_handle);  // Optional - nullptr if not supported
         void (*post_detection_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float);  // Optional - nullptr if not supported
         void (*set_api_result_cb_func)(r_system_plugin_handle, system_plugin_api_result_cb, void*);                   // Optional - nullptr if not supported
+        void (*cameras_changed_func)(r_system_plugin_handle);        // Optional - nullptr if not supported
         std::string name;
         std::string guid;
         std::string version;   // Empty if the plugin doesn't report one

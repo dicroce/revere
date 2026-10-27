@@ -316,6 +316,11 @@ private:
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
     std::set<std::string> _suspended_cameras;
 
+    // Last-seen set of assigned camera ids, to notify system plugins only when
+    // the assignment actually changes (a camera added or forgotten) — not on the
+    // stream reconnects that leave the assigned set intact.
+    std::set<std::string> _last_assigned_camera_ids;
+
     // Per-camera backoff state for cameras whose r_recording_context construction
     // throws (e.g. legacy nanots v1 .nts files that the v2 lib can't open).
     // Without this, the main loop retries every iteration with no sleep, flooding
