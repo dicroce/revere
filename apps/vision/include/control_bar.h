@@ -40,6 +40,7 @@ struct control_bar_state
 {
     bool has_audio {false};
     float volume_gain {0.0f};
+    bool denoise {false};
     int playhead_pos {1000};
     uint16_t playhead_x {4};
     uint16_t playhead_width {3};

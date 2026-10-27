@@ -253,6 +253,14 @@ void pipeline_host::set_stream_volume(const string& name, float gain)
         it->second->set_volume_gain(gain);
 }
 
+void pipeline_host::set_stream_denoise(const string& name, bool on)
+{
+    lock_guard<mutex> g(_internals_lok);
+    auto it = _pipes.find(name);
+    if(it != end(_pipes))
+        it->second->set_denoise(on);
+}
+
 bool pipeline_host::has_audio(const string& name) const
 {
     lock_guard<mutex> g(_internals_lok);

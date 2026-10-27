@@ -68,6 +68,7 @@ target_link_libraries(
     r_utils
     r_vss
     imgui
+    rnnoise
     gstreamer::gstreamer
     ffmpeg::ffmpeg
     SDL2::SDL2
