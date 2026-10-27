@@ -50,7 +50,9 @@ control_bar_calculated_layout control_bar_renderer::calculate_layout(const contr
     calc.center_box_left = layout.left + (layout.width * timeline_constants::LEFT_PANEL_WIDTH_RATIO);
     calc.center_box_width = layout.width * timeline_constants::CENTER_PANEL_WIDTH_RATIO;
     calc.center_box_top = layout.top;
-    calc.slider_top = calc.center_box_top + (calc.text_line_height * 2.0f) + timeline_constants::TIMELINE_CONTENT_MARGIN;
+    calc.row_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
+    calc.row_height = ImGui::GetFrameHeight();
+    calc.slider_top = calc.row_top + calc.row_height + timeline_constants::ROW_GAP;
     calc.slider_height = timeline_constants::TIMELINE_HEIGHT_MULTIPLIER * calc.text_line_height;
     calc.contents_top = calc.slider_top + timeline_constants::TIMELINE_CONTENT_MARGIN;
     calc.contents_bottom = (calc.slider_top + calc.slider_height) - timeline_constants::TIMELINE_CONTENT_MARGIN;
@@ -384,7 +386,8 @@ bool control_bar_renderer::render_analytics_events(ImDrawList* draw_list, const 
                     continue;
 
                 float center_y = (calc.contents_top + calc.contents_bottom) / 2.0f;
-                float icon_size = 48.0f * layout.icon_scale;
+                // Shrink to the strip rather than be clipped by it.
+                float icon_size = (std::min)(icon_width, calc.contents_bottom - calc.contents_top);
                 float icon_x = x - icon_size / 2.0f;
                 float icon_y = center_y - icon_size / 2.0f;
 
@@ -472,24 +475,7 @@ bool control_bar_renderer::render_playhead(ImDrawList* draw_list, const control_
                 ImVec2((float)(playhead_x + cbs.playhead_width), (float)(playhead_top + calc.slider_height)),
                 ImColor(timeline_constants::colors::PLAYHEAD)
             );
-            
-            // Draw playhead text
-            ImGui::PushFont(r_ui_utils::fonts[timeline_constants::fonts::CONTROLS].inter_tight_regular);
-            auto playhead_pos_s = cbs.playhead_pos_s();
-            auto text_size = ImGui::CalcTextSize(playhead_pos_s.c_str());
-            auto playhead_text_x = playhead_x - (text_size.x / 2);
-            
-            if(playhead_text_x < calc.center_box_left)
-                playhead_text_x = calc.center_box_left;
-                
-            auto center_box_right = calc.center_box_left + calc.center_box_width;
-            if(playhead_x > (center_box_right - text_size.x))
-                playhead_text_x = (center_box_right - text_size.x);
-                
-            auto playhead_text_y = (playhead_top + (calc.text_line_height * 3));
-            ImGui::SetCursorScreenPos(ImVec2((float)playhead_text_x, (float)playhead_text_y));
-            ImGui::Text("%s", playhead_pos_s.c_str());
-            ImGui::PopFont();
+            // The playhead's time is drawn in the control row (render_playhead_time).
         },
         "rendering playhead"
     );
@@ -578,19 +564,17 @@ bool control_bar_renderer::render_tick_marks(ImDrawList* draw_list, const contro
 
 void control_bar_renderer::render_timerange_text(const control_bar_layout& layout, const control_bar_state& cbs, const control_bar_calculated_layout& calc)
 {
-    auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-
     ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].inter_tight_regular);
-    ImGui::SetCursorScreenPos(ImVec2(calc.center_box_left, (float)top_line_top));
+    // Vertically centered in the row, whose height follows the bar's (larger) font.
+    float y = calc.row_top + (calc.row_height - ImGui::GetTextLineHeight()) / 2.0f;
+    ImGui::SetCursorScreenPos(ImVec2(calc.center_box_left, y));
     auto timerange_s = r_utils::r_string_utils::format("%u minute time range", cbs.get_timerange_minutes());
     ImGui::Text("%s", timerange_s.c_str());
     ImGui::PopFont();
 }
 
-void control_bar_renderer::render_zoom_buttons(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc)
+float control_bar_renderer::render_zoom_buttons(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc)
 {
-    auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-
     ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].inter_tight_regular);
 
     auto timerange_s = r_utils::r_string_utils::format("%u minute time range", cbs.get_timerange_minutes());
@@ -599,6 +583,7 @@ void control_bar_renderer::render_zoom_buttons(const control_bar_layout& layout,
     const float gap = 6.0f;
     const float btn_w = calc.text_line_height;
     float x = calc.center_box_left + text_size.x + gap;
+    float top_line_top = calc.row_top + (calc.row_height - ImGui::GetFrameHeight()) / 2.0f;
 
     ImGui::PushID("zoom_shrink");
     ImGui::SetCursorScreenPos(ImVec2(x, (float)top_line_top));
@@ -622,6 +607,86 @@ void control_bar_renderer::render_zoom_buttons(const control_bar_layout& layout,
     }
     ImGui::PopID();
 
+    ImGui::PopFont();
+
+    return x + btn_w + gap + btn_w;
+}
+
+void control_bar_renderer::render_playhead_time(const control_bar_state& cbs, const control_bar_calculated_layout& calc, float left_x, float right_x, bool live)
+{
+    const float pad = 12.0f;
+    left_x += pad;
+    right_x -= pad;
+    if(right_x <= left_x)
+        return;
+
+    auto tp = cbs.playhead_time();
+    auto now = system_clock::now();
+    std::tm bdt = safe_localtime(system_clock::to_time_t(tp));
+    std::tm now_bdt = safe_localtime(system_clock::to_time_t(now));
+
+    char date_buf[32], time_buf[32];
+    std::strftime(date_buf, sizeof(date_buf), "%b %d, %Y", &bdt);
+    std::strftime(time_buf, sizeof(time_buf), "%I:%M:%S %p", &bdt);
+    std::string date_s = date_buf;
+    std::string time_s = time_buf;
+    std::string date_time_s = date_s + "  " + time_s;
+
+    // How far behind live, when scrubbed into the past.
+    std::string behind_s;
+    if(!live)
+    {
+        auto behind = duration_cast<seconds>(now - tp).count();
+        if(behind > 0)
+        {
+            auto h = behind / 3600, m = (behind / 60) % 60, s = behind % 60;
+            behind_s = (h > 0) ? r_utils::r_string_utils::format("-%lld:%02lld:%02lld", (long long)h, (long long)m, (long long)s)
+                               : r_utils::r_string_utils::format("-%lld:%02lld", (long long)m, (long long)s);
+        }
+    }
+
+    bool same_day = bdt.tm_year == now_bdt.tm_year && bdt.tm_yday == now_bdt.tm_yday;
+
+    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].inter_tight_regular);
+    const float behind_gap = 8.0f;
+    float behind_w = behind_s.empty() ? 0.0f : ImGui::CalcTextSize(behind_s.c_str()).x + behind_gap;
+
+    // Longest form that fits: date + time + behind, date + time, time + behind, time.
+    // On a narrow bar today's date is the first thing to go; it's the least informative.
+    struct candidate { const std::string* main; bool with_behind; };
+    std::vector<candidate> candidates;
+    if(same_day)
+    {
+        candidates = {{&date_time_s, true}, {&time_s, true}, {&date_time_s, false}, {&time_s, false}};
+    }
+    else
+    {
+        candidates = {{&date_time_s, true}, {&date_time_s, false}, {&time_s, true}, {&time_s, false}};
+    }
+
+    for(const auto& c : candidates)
+    {
+        float main_w = ImGui::CalcTextSize(c.main->c_str()).x;
+        float w = main_w + (c.with_behind ? behind_w : 0.0f);
+        if(w > (right_x - left_x))
+            continue;
+
+        float x = left_x + ((right_x - left_x) - w) / 2.0f;
+        float y = calc.row_top + (calc.row_height - ImGui::GetTextLineHeight()) / 2.0f;
+        // Live reads as normal text; scrubbed into the past turns amber.
+        ImGui::PushStyleColor(ImGuiCol_Text, live ? r_ui_utils::theme::text_primary : r_ui_utils::theme::status_warning_text);
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        ImGui::TextUnformatted(c.main->c_str());
+        ImGui::PopStyleColor();
+        if(c.with_behind && !behind_s.empty())
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, r_ui_utils::theme::text_tertiary);
+            ImGui::SetCursorScreenPos(ImVec2(x + main_w + behind_gap, y));
+            ImGui::TextUnformatted(behind_s.c_str());
+            ImGui::PopStyleColor();
+        }
+        break;
+    }
     ImGui::PopFont();
 }
 

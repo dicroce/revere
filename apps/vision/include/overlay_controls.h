@@ -151,7 +151,7 @@ inline overlay_controls_result overlay_corner_controls(float win_w, float alpha,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings);
 
-    const float level = std::min(volume / 4.0f, 1.0f);
+    const float level = (std::min)(volume / 4.0f, 1.0f);
     if(icon_button("##mute", false, alpha, volume > 0.0f ? "Mute (M)" : "Unmute (M)",
         [&](ImDrawList* dl, ImVec2 c, ImU32 cl) { draw_speaker(dl, c, cl, level); }))
         r.toggle_mute = true;

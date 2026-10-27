@@ -25,11 +25,14 @@ namespace timeline_constants
     // Layout constants
     constexpr float LEFT_PANEL_WIDTH_RATIO = 0.04f;  // 4% for left button area
     constexpr float CENTER_PANEL_WIDTH_RATIO = 0.92f;  // 92% for timeline
-    constexpr float TIMELINE_HEIGHT_MULTIPLIER = 3.0f;
+    constexpr float TIMELINE_HEIGHT_MULTIPLIER = 2.0f;
     constexpr float TIMELINE_CONTENT_MARGIN = 5.0f;
     constexpr float EVENT_TOP_RATIO = 0.25f;
     constexpr float EVENT_BOTTOM_RATIO = 0.75f;
-    constexpr float TOP_BUTTON_OFFSET = 10.0f;  // Offset for top row buttons
+    constexpr float TOP_BUTTON_OFFSET = 6.0f;   // bar top to the control row
+    constexpr float ROW_GAP = 6.0f;             // control row to the timeline strip
+    constexpr float BOTTOM_MARGIN = 6.0f;       // timeline strip to the bar bottom
+    constexpr float ROW_BUTTON_GAP = 10.0f;     // between buttons in the control row
     
     // Export overlay
     constexpr float EXPORT_TICK_WIDTH = 4.0f; // 2 pixels on each side

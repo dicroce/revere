@@ -2275,12 +2275,12 @@ int run_overlay(const overlay_opts& opts)
         {
             // Render the whole control block under a compact font. The app's
             // default font is 24pt (the first size loaded), which makes the
-            // control bar — sized as 6x the line height — about twice as tall as
+            // control bar (sized from the line height) about twice as tall as
             // it should be for this small overlay window. 14pt keeps it slim.
             ImFont* block_font = r_ui_utils::fonts[get_font_key_14()].inter_tight_regular;
             if(block_font) ImGui::PushFont(block_font);
 
-            uint16_t cb_h = (uint16_t)(6.0f * ImGui::GetTextLineHeightWithSpacing());
+            uint16_t cb_h = (uint16_t)std::ceil(control_bar_preferred_height());
             float block_top = (float)win_h - (float)cb_h;
 
             // Once the time bar's height is known (it follows the font): never
