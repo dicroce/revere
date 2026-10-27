@@ -116,6 +116,8 @@ int revere::run_tray_companion(const string& icon_path)
     // desktop app; a second entry would overwrite it.
     const bool can_autostart = getenv("SNAP") == nullptr;
     auto exe_path = r_fs::current_exe_path();
+    if(can_autostart)
+        r_startup::refresh_autostart(TRAY_APP_NAME, exe_path, TRAY_ARGS);
 
     unique_ptr<Tray::Tray> tray;
     try
