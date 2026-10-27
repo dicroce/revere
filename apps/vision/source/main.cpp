@@ -1572,6 +1572,7 @@ int main(int argc, char** argv)
                     ph.set_active_audio_stream(last_audio_stream);
                 }
                 ph.set_stream_volume(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs.volume_gain);
+                ph.set_stream_denoise(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs.denoise);
                 ui_state.mcs.obos.cbs.has_audio = ph.has_audio(ui_state.mcs.selected_stream_name);
 
                 // Sync the control bar to the newly-selected camera. Keyed on

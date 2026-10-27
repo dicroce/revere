@@ -387,13 +387,22 @@ void control_bar(
     renderer.render_timerange_text(render_layout, cbs, calc);
     renderer.render_zoom_buttons(render_layout, cbs, calc);
 
-    // Volume slider — top row, left of Export button
+    // Denoise toggle + volume slider — top row, left of Export button. The
+    // checkbox is sized from its label, so it's placed right-to-left from Vol.
+    const float vol_x = calc.center_box_left + calc.center_box_width - 560.0f;
+    float top_row_audio_left = vol_x;
     if(cbs.has_audio && playing)
     {
         auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-        auto right_edge = calc.center_box_left + calc.center_box_width;
+        const auto& style = ImGui::GetStyle();
+        float denoise_w = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Denoise").x;
+        top_row_audio_left = vol_x - 16.0f - denoise_w;
+        ImGui::SetCursorScreenPos(ImVec2(top_row_audio_left, top_line_top));
+        ImGui::Checkbox("Denoise", &cbs.denoise);
+        if(ImGui::IsItemHovered())
+            ImGui::SetTooltip("Suppress background noise to make voices clearer.\nAlso quiets non-speech sounds (barking, glass, engines).");
         ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_14()].inter_tight_regular);
-        ImGui::SetCursorScreenPos(ImVec2(right_edge - 560.0f, top_line_top + 7.0f));
+        ImGui::SetCursorScreenPos(ImVec2(vol_x, top_line_top + 7.0f));
         ImGui::Text("Vol");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(100.0f);
@@ -407,13 +416,12 @@ void control_bar(
     if(show_export)
         renderer.render_export_controls(render_layout, cbs, calc, stream_name, export_cb);
 
-    // Snapshot button — top row, left of the volume slider (which starts at
-    // right_edge - 560). Shown wherever Export is; the main loop does the save.
+    // Snapshot button — top row, just left of the audio controls (or of where
+    // the volume slider would be). Shown wherever Export is; the main loop does the save.
     if(show_export)
     {
         auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-        auto right_edge = calc.center_box_left + calc.center_box_width;
-        ImGui::SetCursorScreenPos(ImVec2(right_edge - 650.0f, top_line_top));
+        ImGui::SetCursorScreenPos(ImVec2(top_row_audio_left - 90.0f, top_line_top));
         if(ImGui::Button("Snap", ImVec2(80, 0)))
             cbs.snapshot_requested = true;
         if(ImGui::IsItemHovered())
