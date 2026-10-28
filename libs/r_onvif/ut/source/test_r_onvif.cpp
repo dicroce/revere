@@ -149,3 +149,49 @@ void test_r_onvif::test_r_onvif_probes_stop_at_once()
     RTF_ASSERT(multicast.empty());
     RTF_ASSERT(multicast_ms < 500);
 }
+
+namespace
+{
+std::string probe_match(const std::string& xaddrs, const std::string& address = "urn:uuid:11111111-2222-3333-4444-555555555555")
+{
+    return
+        "<?xml version=\"1.0\"?>"
+        "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:a=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\""
+        " xmlns:d=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\"><s:Body><d:ProbeMatches><d:ProbeMatch>"
+        "<a:EndpointReference><a:Address>" + address + "</a:Address></a:EndpointReference>"
+        "<d:Scopes>onvif://www.onvif.org/name/Porch</d:Scopes>"
+        "<d:XAddrs>" + xaddrs + "</d:XAddrs>"
+        "</d:ProbeMatch></d:ProbeMatches></s:Body></s:Envelope>";
+}
+}
+
+// A reply is used only for services on the host that sent it: one naming
+// another host's address is dropped.
+void test_r_onvif::test_discovery_uses_only_the_senders_services()
+{
+    auto own = filter_discovered({{"10.0.0.5", probe_match("http://10.0.0.5/onvif/device_service")}});
+    RTF_ASSERT(own.size() == 1);
+    RTF_ASSERT(own[0].host == "10.0.0.5");
+
+    auto other = filter_discovered({{"10.0.0.66", probe_match("http://10.0.0.5/onvif/device_service")}});
+    RTF_ASSERT(other.empty());
+
+    // Of several addresses, only the sender's.
+    auto mixed = filter_discovered({{"10.0.0.5", probe_match("http://10.0.0.99/onvif/device_service http://10.0.0.5:8000/onvif/device_service")}});
+    RTF_ASSERT(mixed.size() == 1);
+    RTF_ASSERT(mixed[0].host == "10.0.0.5" && mixed[0].port == 8000);
+
+    auto unknown_sender = filter_discovered({{"", probe_match("http://10.0.0.5/onvif/device_service")}});
+    RTF_ASSERT(unknown_sender.empty());
+}
+
+void test_r_onvif::test_redirects_stay_on_host()
+{
+    RTF_ASSERT(redirect_stays_on_host("10.0.0.5", "/onvif/device_service"));
+    RTF_ASSERT(redirect_stays_on_host("10.0.0.5", "device_service"));
+    RTF_ASSERT(redirect_stays_on_host("10.0.0.5", "http://10.0.0.5:8080/onvif/device_service"));
+    RTF_ASSERT(redirect_stays_on_host("Camera.local", "https://camera.LOCAL/onvif/device_service"));
+    RTF_ASSERT(!redirect_stays_on_host("10.0.0.5", "http://10.0.0.66/onvif/device_service"));
+    RTF_ASSERT(!redirect_stays_on_host("10.0.0.5", "http://10.0.0.5.example.com/x"));
+    RTF_ASSERT(!redirect_stays_on_host("10.0.0.5", "http:///x"));
+}

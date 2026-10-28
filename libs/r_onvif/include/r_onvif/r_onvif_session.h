@@ -16,7 +16,14 @@ namespace r_onvif
 // should_continue, if set, is polled between (and during) per-interface probes;
 // returning false aborts discovery early. Used so a shutting-down caller isn't
 // forced to wait out the full multi-interface sweep. Empty = run to completion.
-R_API std::vector<std::string> discover(const std::string& uuid, const std::function<bool()>& should_continue = {});
+// One ProbeMatch reply and the IPv4 address it came from.
+struct discovery_reply
+{
+    std::string sender;
+    std::string envelope;
+};
+
+R_API std::vector<discovery_reply> discover(const std::string& uuid, const std::function<bool()>& should_continue = {});
 
 // Unicast variant of discover(): sends the same WS-Discovery Probe directly to
 // each target IP (UDP port 3702) instead of to the multicast group. Cheap ONVIF
@@ -24,7 +31,12 @@ R_API std::vector<std::string> discover(const std::string& uuid, const std::func
 // at boot), so multicast discovery can miss a camera that is up and reachable.
 // The raw responses are in the same ProbeMatch format as discover(), so the
 // result feeds through filter_discovered() identically.
-R_API std::vector<std::string> discover_unicast(const std::string& uuid, const std::vector<std::string>& target_ips, const std::function<bool()>& should_continue = {});
+R_API std::vector<discovery_reply> discover_unicast(const std::string& uuid, const std::vector<std::string>& target_ips, const std::function<bool()>& should_continue = {});
+
+// Whether an HTTP redirect's Location stays on original_host: a path, or an
+// absolute URL to the same host (any port). ONVIF calls refuse any other
+// redirect rather than send their credentials to another host.
+R_API bool redirect_stays_on_host(const std::string& original_host, const std::string& location);
 
 struct discovered_info
 {
@@ -36,7 +48,11 @@ struct discovered_info
     std::string camera_name;
 };
 
-R_API std::vector<discovered_info> filter_discovered(const std::vector<std::string>& discovered);
+// The cameras in a set of ProbeMatch replies. Only service addresses (XAddrs)
+// on the host that sent the reply are used: a reply naming another host's
+// services is dropped, so a device can't direct revere's calls (and a camera's
+// credentials) to an address other than its own.
+R_API std::vector<discovered_info> filter_discovered(const std::vector<discovery_reply>& discovered);
 
 // Where a camera's ONVIF device service answers. Revere stores only the
 // service's path (xaddrs), and the port varies: 80 on many cameras, 8000 on
@@ -141,7 +157,7 @@ enum class soap_version
 enum class auth_mode
 {
     digest,     // PasswordDigest (SHA-1, default)
-    text,       // PasswordText (plaintext, fallback for buggy cameras)
+    text,       // PasswordText (plaintext): only when a caller asks for it; never a fallback
     unknown     // Not yet determined
 };
 

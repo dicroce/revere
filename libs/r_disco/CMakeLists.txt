@@ -40,3 +40,5 @@ if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         ARCHIVE DESTINATION ${REVERE_INSTALL_LIBDIR}
     )
 endif()
+
+add_subdirectory(ut)

@@ -4,6 +4,7 @@
 
 #include "r_disco/r_camera.h"
 #include "r_disco/r_stream_config.h"
+#include "r_disco/r_camera_move.h"
 #include "r_db/r_sqlite_conn.h"
 #include "r_utils/r_work_q.h"
 #include "r_utils/r_macro.h"
@@ -87,6 +88,14 @@ public:
     R_API void clear_camera_alert(const std::string& camera_id);
     R_API r_utils::r_nullable<std::string> get_camera_alert(const std::string& camera_id) const;
 
+    // In-memory per-camera moves waiting for the user (see r_camera_move.h),
+    // set and cleared by r_agent. Unlike an alert, a move doesn't stop the
+    // camera's recording: it keeps its stored address until the move is
+    // confirmed. Not persisted: discovery raises it again after a restart.
+    R_API void set_camera_move(const std::string& camera_id, const r_camera_move& move);
+    R_API void clear_camera_move(const std::string& camera_id);
+    R_API r_utils::r_nullable<r_camera_move> get_camera_move(const std::string& camera_id) const;
+
 private:
     void _entry_point();
 
@@ -135,6 +144,10 @@ private:
     // In-memory per-camera alert messages — see set_camera_alert() above.
     mutable std::mutex _camera_alerts_mutex;
     std::map<std::string, std::string> _camera_alerts;
+
+    // Moves waiting for the user — see set_camera_move() above.
+    mutable std::mutex _camera_moves_mutex;
+    std::map<std::string, r_camera_move> _camera_moves;
 };
 
 }

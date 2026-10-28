@@ -6,6 +6,7 @@
 #include "r_utils/r_functional.h"
 #include "r_utils/r_secure_store.h"
 #include "r_utils/r_credential_crypto.h"
+#include "r_utils/r_socket.h"
 #include <thread>
 #include <algorithm>
 #include <iterator>
@@ -199,6 +200,28 @@ void r_devices::set_camera_alert(const std::string& camera_id, const std::string
 {
     lock_guard<mutex> g(_camera_alerts_mutex);
     _camera_alerts[camera_id] = message;
+}
+
+void r_devices::set_camera_move(const std::string& camera_id, const r_camera_move& move)
+{
+    lock_guard<mutex> g(_camera_moves_mutex);
+    _camera_moves[camera_id] = move;
+}
+
+void r_devices::clear_camera_move(const std::string& camera_id)
+{
+    lock_guard<mutex> g(_camera_moves_mutex);
+    _camera_moves.erase(camera_id);
+}
+
+r_nullable<r_camera_move> r_devices::get_camera_move(const std::string& camera_id) const
+{
+    lock_guard<mutex> g(_camera_moves_mutex);
+    auto it = _camera_moves.find(camera_id);
+    r_nullable<r_camera_move> result;
+    if(it != _camera_moves.end())
+        result.set_value(it->second);
+    return result;
 }
 
 void r_devices::clear_camera_alert(const std::string& camera_id)
@@ -538,6 +561,17 @@ void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
             });
         }
         [[fallthrough]];
+        case 7:
+        {
+            // The camera's MAC address, filled in when it's next seen at its address.
+            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
+                conn.exec(
+                    "ALTER TABLE cameras ADD COLUMN mac TEXT;"
+                );
+                _set_db_version(conn, 8);
+            });
+        }
+        [[fallthrough]];
         default:
             break;
     };
@@ -726,6 +760,8 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
         camera.motion_tier_verified = s_to_int(row.at("motion_tier_verified").value());
     if(row.count("rtsp_transport") && !row.at("rtsp_transport").is_null())
         camera.rtsp_transport = row.at("rtsp_transport").value();
+    if(row.count("mac") && !row.at("mac").is_null())
+        camera.mac = row.at("mac").value();
 
     camera.stream_config_hash = row.at("stream_config_hash").value();
     return camera;
@@ -807,6 +843,11 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
     if(!camera.rtsp_transport.is_null())
         rtsp_transport.set_value(camera.rtsp_transport.value() == "UDP" ? string("UDP") : string("TCP"));
 
+    // Only a well-formed MAC reaches the SQL below (formatted, not bound).
+    r_nullable<string> mac;
+    if(!camera.mac.is_null())
+        mac = r_utils::r_networking::r_normalize_mac(camera.mac.value());
+
     r_camera encrypted_camera = camera;
     if(!encrypted_camera.rtsp_username.is_null())
     {
@@ -829,8 +870,9 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
 
     auto query = r_string_utils::format(
             "REPLACE INTO cameras("
-                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%s%s%s%slast_update_time, stream_config_hash) "
+                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%s%s%s%s%slast_update_time, stream_config_hash) "
             "VALUES("
+                "%s"
                 "%s"
                 "%s"
                 "%s"
@@ -890,6 +932,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.motion_tier.is_null())?"motion_tier, ":"",
             (!camera.motion_tier_verified.is_null())?"motion_tier_verified, ":"",
             (!rtsp_transport.is_null())?"rtsp_transport, ":"",
+            (!mac.is_null())?"mac, ":"",
 
             r_string_utils::format("'%s', ", camera.id.c_str()).c_str(),
             (!camera.camera_name.is_null())?r_string_utils::format("'%s', ", camera.camera_name.value().c_str()).c_str():"",
@@ -920,6 +963,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.motion_tier.is_null())?r_string_utils::format("'%s', ", camera.motion_tier.value().c_str()).c_str():"",
             (!camera.motion_tier_verified.is_null())?r_string_utils::format("%d, ", camera.motion_tier_verified.value()).c_str():"",
             (!rtsp_transport.is_null())?r_string_utils::format("'%s', ", rtsp_transport.value().c_str()).c_str():"",
+            (!mac.is_null())?r_string_utils::format("'%s', ", mac.value().c_str()).c_str():"",
 
             "unixepoch(), ",
             r_string_utils::format("'%s'", hash.c_str()).c_str()

@@ -63,6 +63,24 @@ using namespace std;
 
 static const int MAX_REDIRECTS = 5;
 
+// A redirect to another host is refused, not followed: the request body (an
+// ONVIF call's UsernameToken among it) would go to that host.
+struct redirect_refused : std::runtime_error
+{
+    using std::runtime_error::runtime_error;
+};
+
+bool r_onvif::redirect_stays_on_host(const string& original_host, const string& location)
+{
+    if (location.find("://") == string::npos)
+        return true;  // a path on the same host
+    string host, protocol, uri;
+    int port = 0;
+    try { r_http::parse_url_parts(location, host, port, protocol, uri); }
+    catch (const std::exception&) { return false; }
+    return !host.empty() && r_string_utils::to_lower(host) == r_string_utils::to_lower(original_host);
+}
+
 static pair<int, string> _http_interact(
     string host,
     int port,
@@ -138,6 +156,9 @@ retry_redirect:
                 if(location.empty())
                     throw std::runtime_error("Redirect response but no Location header");
 
+                if (!redirect_stays_on_host(host, location))
+                    throw redirect_refused("Refused a redirect to another host");
+
                 if (location.find("://") != string::npos)
                 {
                     string protocol, new_uri;
@@ -164,6 +185,10 @@ retry_redirect:
             if(maybe_body.is_null())
                 return make_pair(response.get_status(), string());
             return make_pair(response.get_status(), maybe_body.value());
+        }
+        catch (const redirect_refused&)
+        {
+            throw;  // not a network failure: asking again gets the same redirect
         }
         catch (const std::exception& ex)
         {
@@ -483,9 +508,18 @@ static void _set_probe_send_timeout(int sock)
 #endif
 
 // Helper function to discover ONVIF devices on a specific interface
-static vector<string> _discover_on_interface(const string& interface_ip, const string& broadcast_message, const std::function<bool()>& should_continue)
+// The IPv4 address a datagram came from ("" if it can't be read).
+static string _sender_ip(const struct sockaddr_in& from)
 {
-    vector<string> discovered;
+    char ip[INET_ADDRSTRLEN] = {0};
+    if (inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip)) == nullptr)
+        return string();
+    return string(ip);
+}
+
+static vector<r_onvif::discovery_reply> _discover_on_interface(const string& interface_ip, const string& broadcast_message, const std::function<bool()>& should_continue)
+{
+    vector<r_onvif::discovery_reply> discovered;
 
 #ifdef IS_WINDOWS
     SOCKET sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -576,7 +610,7 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
         }
         else if (len > 0) {
             buf[len] = '\0';
-            discovered.push_back(string(buf, len));
+            discovered.push_back({_sender_ip(fromAddr), string(buf, len)});
         }
     }
 
@@ -673,7 +707,7 @@ static vector<string> _discover_on_interface(const string& interface_ip, const s
         }
         else if (len > 0) {
             buf[len] = '\0';
-            discovered.push_back(string(buf, len));
+            discovered.push_back({_sender_ip(fromAddr), string(buf, len)});
         }
     }
 
@@ -934,11 +968,11 @@ static string _make_probe_message(const string& uuid)
     "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:a=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\"><SOAP-ENV:Header><a:Action SOAP-ENV:mustUnderstand=\"1\">http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action><a:MessageID>" + id + "</a:MessageID><a:ReplyTo><a:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</a:Address></a:ReplyTo><a:To SOAP-ENV:mustUnderstand=\"1\">urn:schemas-xmlsoap-org:ws:2005:04:discovery</a:To></SOAP-ENV:Header><SOAP-ENV:Body><p:Probe xmlns:p=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\"><d:Types xmlns:d=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\" xmlns:dp0=\"http://www.onvif.org/ver10/network/wsdl\">dp0:NetworkVideoTransmitter</d:Types></p:Probe></SOAP-ENV:Body></SOAP-ENV:Envelope>";
 }
 
-vector<string> r_onvif::discover(const string& uuid, const std::function<bool()>& should_continue)
+vector<r_onvif::discovery_reply> r_onvif::discover(const string& uuid, const std::function<bool()>& should_continue)
 {
     string broadcast_message = _make_probe_message(uuid);
 
-    vector<string> all_discovered;
+    vector<discovery_reply> all_discovered;
 
     // Get all available network adapters (UP, not loopback, multicast capable, with IPv4)
     auto adapters = r_utils::r_networking::r_get_adapters();
@@ -960,9 +994,9 @@ vector<string> r_onvif::discover(const string& uuid, const std::function<bool()>
 // Send the Probe directly (unicast UDP) to each target on port 3702 and collect
 // any ProbeMatch responses. One socket: blast all probes, then read replies until
 // the receive window goes quiet. Same response format as the multicast path.
-static vector<string> _probe_unicast(const vector<string>& targets, const string& broadcast_message, const std::function<bool()>& should_continue)
+static vector<r_onvif::discovery_reply> _probe_unicast(const vector<string>& targets, const string& broadcast_message, const std::function<bool()>& should_continue)
 {
-    vector<string> discovered;
+    vector<r_onvif::discovery_reply> discovered;
     if (targets.empty())
         return discovered;
 
@@ -1019,7 +1053,7 @@ static vector<string> _probe_unicast(const vector<string>& targets, const string
         }
         else if (len > 0) {
             buf[len] = '\0';
-            discovered.push_back(string(buf, len));
+            discovered.push_back({_sender_ip(fromAddr), string(buf, len)});
         }
     }
     closesocket(sock);
@@ -1079,7 +1113,7 @@ static vector<string> _probe_unicast(const vector<string>& targets, const string
         }
         else if (len > 0) {
             buf[len] = '\0';
-            discovered.push_back(string(buf, len));
+            discovered.push_back({_sender_ip(fromAddr), string(buf, len)});
         }
     }
     close(sock);
@@ -1088,23 +1122,23 @@ static vector<string> _probe_unicast(const vector<string>& targets, const string
     return discovered;
 }
 
-vector<string> r_onvif::discover_unicast(const string& uuid, const vector<string>& target_ips, const std::function<bool()>& should_continue)
+vector<r_onvif::discovery_reply> r_onvif::discover_unicast(const string& uuid, const vector<string>& target_ips, const std::function<bool()>& should_continue)
 {
     if (target_ips.empty())
         return {};
     return _probe_unicast(target_ips, _make_probe_message(uuid), should_continue);
 }
 
-std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::string>& discovered)
+std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<discovery_reply>& discovered)
 {
     std::vector<discovered_info> filtered;
     std::map<std::string, bool> hosts_seen;
-    for( auto d : discovered)
+    for( const auto& reply : discovered)
     {
         try
         {
             pugi::xml_document doc;
-            pugi::xml_parse_result result = doc.load_string(d.c_str());
+            pugi::xml_parse_result result = doc.load_string(reply.envelope.c_str());
             if (!result)
                 throw std::runtime_error("Failed to parse XML: " + std::string(result.description()));
             
@@ -1160,6 +1194,28 @@ std::vector<discovered_info> r_onvif::filter_discovered(const std::vector<std::s
             }
             if (xaddrs_services.empty())
                 throw std::runtime_error("No ONVIF services found1.");
+
+            // Only services on the host that answered. A reply naming another
+            // host's address is dropped whole.
+            {
+                std::vector<std::string> own;
+                for (auto& service : xaddrs_services)
+                {
+                    string host, protocol, uri;
+                    int port = 0;
+                    try { r_http::parse_url_parts(service, host, port, protocol, uri); }
+                    catch (const std::exception&) { continue; }
+                    if (!reply.sender.empty() && host == reply.sender)
+                        own.push_back(service);
+                }
+                if (own.empty())
+                {
+                    R_LOG_WARNING("ONVIF discovery: ignored a reply from %s whose service addresses are on another host",
+                                  reply.sender.empty() ? "an unknown address" : reply.sender.c_str());
+                    continue;
+                }
+                xaddrs_services = own;
+            }
 
             // Find first http/https service, preferring non-link-local addresses
             int first_valid_index = -1;
@@ -1452,8 +1508,10 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
 
     // Determine which auth mode(s) to try
     vector<auth_mode> auth_modes_to_try;
+    // PasswordDigest only, unless the caller asked for PasswordText outright:
+    // a camera that rejects the digest never gets the password in plain text.
     if (_auth_mode == auth_mode::unknown)
-        auth_modes_to_try = {auth_mode::digest, auth_mode::text};
+        auth_modes_to_try = {auth_mode::digest};
     else
         auth_modes_to_try = {_auth_mode};
 
@@ -1486,7 +1544,7 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
             // Check if this is an auth error - try next auth mode
             if (_is_auth_error(result.first, result.second))
             {
-                R_LOG_INFO("Auth mode %s rejected, trying fallback...",
+                R_LOG_INFO("Auth mode %s rejected.",
                            auth == auth_mode::digest ? "Digest" : "Text");
                 continue;
             }

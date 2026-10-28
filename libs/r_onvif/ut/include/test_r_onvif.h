@@ -7,6 +7,8 @@ public:
     RTF_FIXTURE(test_r_onvif);
       TEST(test_r_onvif::test_r_onvif_session_basic);
       TEST(test_r_onvif::test_r_onvif_probes_stop_at_once);
+      TEST(test_r_onvif::test_discovery_uses_only_the_senders_services);
+      TEST(test_r_onvif::test_redirects_stay_on_host);
     RTF_FIXTURE_END();
 
     virtual ~test_r_onvif() throw() {}
@@ -16,4 +18,6 @@ public:
 
     void test_r_onvif_session_basic();
     void test_r_onvif_probes_stop_at_once();
+    void test_discovery_uses_only_the_senders_services();
+    void test_redirects_stay_on_host();
 };

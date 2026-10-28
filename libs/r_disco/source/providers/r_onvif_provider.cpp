@@ -413,11 +413,13 @@ vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir, 
     std::vector<r_stream_config> configs;
     std::set<std::string> seen_ids;
 
-    // Turn raw ProbeMatch envelopes into stream_configs, de-duplicated by the
+    // Turn ProbeMatch replies into stream_configs, de-duplicated by the
     // device's stable id (MD5 of its ONVIF EndpointReference). First responder
     // for an id wins, so multicast results take precedence over unicast ones.
-    auto ingest = [&](const std::vector<std::string>& envelopes) {
-        for(auto& di : r_onvif::filter_discovered(envelopes))
+    // filter_discovered keeps only replies whose service address is their
+    // sender's own.
+    auto ingest = [&](const std::vector<r_onvif::discovery_reply>& replies) {
+        for(auto& di : r_onvif::filter_discovered(replies))
         {
             try
             {

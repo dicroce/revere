@@ -51,6 +51,11 @@ struct r_camera
     // With TCP, a camera that answers but won't stream over it falls back to
     // UDP automatically (see r_vss::r_rtsp_transport); UDP is used as is.
     r_utils::r_nullable<std::string> rtsp_transport;
+    // The camera's hardware (MAC) address, "aa:bb:cc:dd:ee:ff", from the
+    // network's neighbour table while it answered at its stored address. Used
+    // to tell a camera that moved from another device at its new address (see
+    // r_camera_move.h). Null until first seen.
+    r_utils::r_nullable<std::string> mac;
 
     std::string stream_config_hash;
 };

@@ -389,6 +389,14 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
             item.stats = ui_state.camera_stats->get(c.first);
         item.reconnects_24h = streamKeeper.reconnects().count_since(c.first, now_wall - chrono::hours(24));
         item.reconnects_counted_since = streamKeeper.reconnects().started_at();
+        auto move_n = devices.get_camera_move(c.first);
+        if(!move_n.is_null())
+        {
+            item.move_notice = r_disco::camera_move_message(move_n.value());
+            item.move_held = move_n.value().status == "held";
+            if(item.move_held)
+                item.sub_label += " \xC2\xB7 moved?";
+        }
 
         // Populate kbps, retention, and health if stream status is available
         if(status_by_id.find(c.first) != status_by_id.end())
@@ -2838,6 +2846,15 @@ int main(int argc, char** argv)
         else
             devices.set_camera_alert(id, msg);
     });
+    // An assigned camera found at a new address (see r_disco/r_camera_move.h):
+    // held until it can be followed, or followed. Kept on r_devices for the
+    // UI and for /cameras (the cloud plugin reads it there).
+    agent.set_camera_move_cb([&devices](const std::string& id, const r_utils::r_nullable<r_disco::r_camera_move>& move){
+        if(move.is_null())
+            devices.clear_camera_move(id);
+        else
+            devices.set_camera_move(id, move.value());
+    });
     // Lets the ONVIF provider unicast-probe assigned cameras (and sweep the
     // subnet) to relocate any that changed IP and don't answer multicast Probe.
     agent.set_assigned_cameras_cb(bind(&r_disco::r_devices::get_assigned_cameras_cached, &devices));
@@ -3278,6 +3295,23 @@ int main(int argc, char** argv)
 #else
         _launch_detached(vision_cmd + " --camera " + cid + " --overlay --revere-ip 127.0.0.1");
 #endif
+    };
+    // A held camera move: use the new address, or keep the current one. A
+    // followed move's notice: seen. See r_disco/r_camera_move.h.
+    main_window_actions.move_use = [&](int i){
+        if(i >= 0 && i < (int)ui_state.recording_items.size())
+            agent.confirm_camera_move(ui_state.recording_items[i].camera_id);
+        force_ui_update = true;
+    };
+    main_window_actions.move_keep = [&](int i){
+        if(i >= 0 && i < (int)ui_state.recording_items.size())
+            agent.dismiss_camera_move(ui_state.recording_items[i].camera_id);
+        force_ui_update = true;
+    };
+    main_window_actions.move_ok = [&](int i){
+        if(i >= 0 && i < (int)ui_state.recording_items.size())
+            agent.clear_followed_move(ui_state.recording_items[i].camera_id);
+        force_ui_update = true;
     };
     main_window_actions.repair = [&](int i){
         // "Repair" on a camera whose recording file is missing.
