@@ -71,6 +71,14 @@ struct onvif_profile_info
     uint16_t height;
 };
 
+// A PTZ preset (a saved pan/tilt/zoom position). token is what GotoPreset needs;
+// name is the camera's human label (may be empty).
+struct onvif_ptz_preset
+{
+    std::string token;
+    std::string name;
+};
+
 // ONVIF events (Event service, WS-BaseNotification pull point).
 //
 // A pull point is created on the events service and then polled at its own
@@ -131,6 +139,10 @@ struct onvif_cell_motion_rule
 // Each tt:CellMotionDetector rule in a GetVideoAnalyticsConfigurations response.
 R_API std::vector<onvif_cell_motion_rule> parse_cell_motion_rules(const std::string& xml);
 
+// Every tptz:Preset in a GetPresetsResponse (token from the @token attribute,
+// name from the tt:Name child). Separate so it can be tested without a camera.
+R_API std::vector<onvif_ptz_preset> parse_ptz_presets(const std::string& xml);
+
 enum class soap_version
 {
     soap_1_2,   // SOAP 1.2 (default, modern)
@@ -188,6 +200,27 @@ public:
     // Nothing for a camera without analytics (Reolinks have none over ONVIF).
     // Throws if the camera rejects the change or doesn't keep it.
     R_API std::vector<std::string> fill_empty_cell_motion_regions(const onvif_capabilities& capabilities);
+
+    // PTZ. The PTZ service's XAddr from GetCapabilities, null if the camera has
+    // none. The rest act on the PTZ service; each throws on a SOAP fault.
+    R_API r_utils::r_nullable<std::string> get_ptz_service(const onvif_capabilities& capabilities) const;
+
+    // GetPresets for a media profile (the saved positions the camera holds).
+    R_API std::vector<onvif_ptz_preset> get_ptz_presets(const std::string& ptz_service, const onvif_profile_token& profile_token);
+
+    // ContinuousMove: pan/tilt/zoom velocities, each normalized to [-1,1] (0 =
+    // no motion on that axis). The camera keeps moving until Stop or, if given,
+    // the timeout elapses (an xs:duration such as "PT1S"; empty = none sent).
+    R_API void ptz_continuous_move(const std::string& ptz_service, const onvif_profile_token& profile_token,
+                                   float pan, float tilt, float zoom, const std::string& timeout = "");
+
+    // Stop PanTilt and/or Zoom motion.
+    R_API void ptz_stop(const std::string& ptz_service, const onvif_profile_token& profile_token,
+                        bool pan_tilt = true, bool zoom = true);
+
+    // GotoPreset: move to a saved position by its token.
+    R_API void ptz_goto_preset(const std::string& ptz_service, const onvif_profile_token& profile_token,
+                              const std::string& preset_token);
 
     // CreatePullPointSubscription with an InitialTerminationTime of termination_seconds.
     R_API onvif_pull_point create_pull_point_subscription(const std::string& events_service, int termination_seconds);

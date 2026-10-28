@@ -16,6 +16,20 @@ namespace r_disco
 
 class r_agent;
 
+// A PTZ action a client asked for. op picks the operation; the rest carry its
+// parameters. Velocities are normalized to [-1,1] (0 = no motion on that axis).
+struct r_ptz_command
+{
+    enum class op_t { move, stop, goto_preset, list_presets };
+    op_t op {op_t::stop};
+    float pan {0.f};
+    float tilt {0.f};
+    float zoom {0.f};
+    std::string timeout;          // move: optional xs:duration ("PT1S"); empty = none
+    std::string preset_token;     // goto_preset
+    std::string profile_token;    // optional; empty = the camera's first media profile
+};
+
 class r_onvif_provider
 {
 public:
@@ -35,6 +49,19 @@ public:
         const std::string& xaddrs,
         r_utils::r_nullable<std::string> username,
         r_utils::r_nullable<std::string> password,
+        r_utils::r_nullable<int> onvif_port = r_utils::r_nullable<int>(),
+        r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
+    );
+
+    // Perform a PTZ action against the camera's ONVIF PTZ service. Returns the
+    // camera's presets (only for op == list_presets; empty otherwise). Throws if
+    // the camera has no PTZ service or rejects the command.
+    R_API std::vector<r_onvif::onvif_ptz_preset> ptz_control(
+        const std::string& ipv4,
+        const std::string& xaddrs,
+        r_utils::r_nullable<std::string> username,
+        r_utils::r_nullable<std::string> password,
+        const r_ptz_command& cmd,
         r_utils::r_nullable<int> onvif_port = r_utils::r_nullable<int>(),
         r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
     );

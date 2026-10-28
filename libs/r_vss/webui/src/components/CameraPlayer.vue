@@ -61,6 +61,39 @@
       <svg v-else          viewBox="0 0 24 24" width="34" height="34"><path d="M6 5h4v14H6zM14 5h4v14h-4z" fill="currentColor"/></svg>
     </button>
 
+    <!-- PTZ controls (issue #309): live mode, PTZ-capable cameras only. The
+         arrows pan/tilt while held; presets jump to saved positions. -->
+    <div v-if="isLive && ptzCapable" class="ptz-ctrl" @contextmenu.prevent>
+      <div class="ptz-pad">
+        <button class="ptz-btn up"    title="Tilt up"
+                @pointerdown.prevent="ptzStartMove(0, TILT_SPEED)"
+                @pointerup="ptzStopMove" @pointerleave="ptzStopMove" @pointercancel="ptzStopMove">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 8l-6 8h12z" fill="currentColor"/></svg>
+        </button>
+        <button class="ptz-btn left"  title="Pan left"
+                @pointerdown.prevent="ptzStartMove(-PAN_SPEED, 0)"
+                @pointerup="ptzStopMove" @pointerleave="ptzStopMove" @pointercancel="ptzStopMove">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M8 12l8-6v12z" fill="currentColor"/></svg>
+        </button>
+        <span class="ptz-hub"></span>
+        <button class="ptz-btn right" title="Pan right"
+                @pointerdown.prevent="ptzStartMove(PAN_SPEED, 0)"
+                @pointerup="ptzStopMove" @pointerleave="ptzStopMove" @pointercancel="ptzStopMove">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M16 12L8 6v12z" fill="currentColor"/></svg>
+        </button>
+        <button class="ptz-btn down"  title="Tilt down"
+                @pointerdown.prevent="ptzStartMove(0, -TILT_SPEED)"
+                @pointerup="ptzStopMove" @pointerleave="ptzStopMove" @pointercancel="ptzStopMove">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 16l6-8H6z" fill="currentColor"/></svg>
+        </button>
+      </div>
+      <select v-if="ptzPresets.length" class="ptz-presets"
+              @change="ptzGoto($event.target.value); $event.target.selectedIndex = 0">
+        <option value="">Presets…</option>
+        <option v-for="p in ptzPresets" :key="p.token" :value="p.token">{{ p.name || p.token }}</option>
+      </select>
+    </div>
+
     <!-- Volume control (bottom-right), shown once video is on screen. -->
     <div v-if="revealed" class="volume-ctrl">
       <button class="vol-btn" :title="volume === 0 ? 'Unmute' : 'Mute'" @click="toggleMute">
@@ -77,6 +110,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { fitAspect } from '../utils/aspect.js'
+import { ptzMove, ptzStop, ptzGotoPreset, ptzListPresets } from '../api.js'
 
 const props = defineProps({
   camera:  { type: Object, required: true },
@@ -967,6 +1001,8 @@ onMounted(() => {
   if (props.isoTime === null) enterLive()
   else loadStill(props.isoTime)
 
+  probePtz()
+
   if (wrap.value && typeof ResizeObserver !== 'undefined') {
     resizeObs = new ResizeObserver(() => {
       clearTimeout(resizeDebounce)
@@ -985,9 +1021,58 @@ onMounted(() => {
 onUnmounted(() => {
   stopLiveRefresh()
   stopVideo()
+  ptzStopMove()                            // never leave the camera panning
   clearTimeout(resizeDebounce)
   if (resizeObs) resizeObs.disconnect()
 })
+
+// --- PTZ (issue #309) ------------------------------------------------------
+// Shown only in live mode and only once the camera is confirmed to expose an
+// ONVIF PTZ service. We discover that lazily by asking for its presets: a
+// camera with no PTZ service answers with an error, so a resolved call (even
+// with an empty list) means "PTZ-capable". The arrow buttons drive
+// ContinuousMove while held and Stop on release; a client-side safety timeout
+// also stops, so a missed pointerup can't leave the camera panning forever.
+const PAN_SPEED  = 0.6
+const TILT_SPEED = 0.6
+const PTZ_SAFETY_MS = 6000
+const ptzCapable = ref(false)
+const ptzPresets = ref([])
+const ptzBusy    = ref(false)
+let ptzSafetyTimer = null
+let ptzProbed = false
+
+async function probePtz() {
+  if (ptzProbed) return
+  if (props.camera.ipv4 == null || props.camera.xaddrs == null) return
+  ptzProbed = true
+  try {
+    ptzPresets.value = await ptzListPresets(props.camera.id)
+    ptzCapable.value = true
+  } catch (_) {
+    ptzCapable.value = false         // no PTZ service (or the camera was busy)
+  }
+}
+
+function clearPtzSafety() {
+  if (ptzSafetyTimer) { clearTimeout(ptzSafetyTimer); ptzSafetyTimer = null }
+}
+
+function ptzStartMove(pan, tilt) {
+  ptzBusy.value = true
+  ptzMove(props.camera.id, pan, tilt, 0, '').catch(() => {})
+  clearPtzSafety()
+  ptzSafetyTimer = setTimeout(ptzStopMove, PTZ_SAFETY_MS)
+}
+function ptzStopMove() {
+  clearPtzSafety()
+  if (!ptzBusy.value) return
+  ptzBusy.value = false
+  ptzStop(props.camera.id).catch(() => {})
+}
+function ptzGoto(token) {
+  if (token) ptzGotoPreset(props.camera.id, token).catch(() => {})
+}
 
 // --- host API (keyboard shortcuts in CameraView) ---------------------------
 defineExpose({ togglePlay, toggleMute, stepFrame })
@@ -1121,4 +1206,61 @@ defineExpose({ togglePlay, toggleMute, stepFrame })
   accent-color: #4caf50;
   cursor: pointer;
 }
+
+/* PTZ cluster (issue #309), bottom-left, same pill treatment as the volume
+   control. A 3x3 grid holds the four arrows around a dead center. */
+.ptz-ctrl {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 16px;
+  background: rgba(0,0,0,0.45);
+  border: 1px solid rgba(255,255,255,0.2);
+  opacity: 0.85;
+  transition: opacity 120ms;
+  touch-action: none;                 /* let pointerdown drive PTZ, not scroll */
+}
+.ptz-ctrl:hover { opacity: 1; }
+
+.ptz-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 26px);
+  grid-template-rows: repeat(3, 26px);
+  gap: 2px;
+}
+.ptz-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+  user-select: none;
+}
+.ptz-btn:hover  { background: rgba(255,255,255,0.2); }
+.ptz-btn:active { background: rgba(76,175,80,0.6); }
+.ptz-btn.up    { grid-column: 2; grid-row: 1; }
+.ptz-btn.left  { grid-column: 1; grid-row: 2; }
+.ptz-btn.right { grid-column: 3; grid-row: 2; }
+.ptz-btn.down  { grid-column: 2; grid-row: 3; }
+.ptz-hub { grid-column: 2; grid-row: 2; }
+
+.ptz-presets {
+  background: rgba(0,0,0,0.4);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 10px;
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  max-width: 130px;
+}
+.ptz-presets option { color: #000; }
 </style>

@@ -1379,6 +1379,7 @@ static string _build_soap_envelope(
     envelope.append_attribute("xmlns:wsnt") = "http://docs.oasis-open.org/wsn/b-2";
     envelope.append_attribute("xmlns:tev") = "http://www.onvif.org/ver10/events/wsdl";
     envelope.append_attribute("xmlns:tan") = "http://www.onvif.org/ver20/analytics/wsdl";
+    envelope.append_attribute("xmlns:tptz") = "http://www.onvif.org/ver20/ptz/wsdl";
 
     // Add authentication header if credentials are provided
     if (username && password)
@@ -2248,6 +2249,122 @@ vector<string> r_onvif::r_onvif_cam::fill_empty_cell_motion_regions(const onvif_
         changed.push_back(r.configuration_token + "/" + r.rule_name);
     }
     return changed;
+}
+
+r_nullable<string> r_onvif::r_onvif_cam::get_ptz_service(const onvif_capabilities& capabilities) const
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(capabilities.c_str()))
+        throw std::runtime_error("Failed to parse capabilities XML");
+    string xp = "//" + _xpath_local("PTZ") + "/" + _xpath_local("XAddr");
+    auto node = doc.select_node(xp.c_str());
+    if (!node || string(node.node().child_value()).empty())
+        return r_nullable<string>();
+    return string(node.node().child_value());
+}
+
+vector<r_onvif::onvif_ptz_preset> r_onvif::parse_ptz_presets(const string& xml)
+{
+    vector<onvif_ptz_preset> out;
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetPresetsResponse XML");
+    // Each tptz:Preset carries its id in the @token attribute and (optionally) a
+    // tt:Name child. Match by local name so a camera's prefix choice can't hide it.
+    auto nodes = doc.select_nodes("//*[local-name()='Preset']");
+    for (auto& n : nodes)
+    {
+        auto p = n.node();
+        onvif_ptz_preset preset;
+        preset.token = p.attribute("token").value();
+        auto name = p.select_node("./*[local-name()='Name']");
+        if (name)
+            preset.name = name.node().child_value();
+        if (!preset.token.empty())
+            out.push_back(preset);
+    }
+    return out;
+}
+
+vector<r_onvif::onvif_ptz_preset> r_onvif::r_onvif_cam::get_ptz_presets(const string& ptz_service, const onvif_profile_token& profile_token)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(ptz_service, host, port, protocol, uri);
+    auto result = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver20/ptz/wsdl/GetPresets",
+        [&](pugi::xml_node& body) {
+            auto req = body.append_child("tptz:GetPresets");
+            req.append_child("tptz:ProfileToken").text().set(profile_token.c_str());
+        },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("GetPresets failed", result);
+    return parse_ptz_presets(result.second);
+}
+
+void r_onvif::r_onvif_cam::ptz_continuous_move(const string& ptz_service, const onvif_profile_token& profile_token,
+                                               float pan, float tilt, float zoom, const string& timeout)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(ptz_service, host, port, protocol, uri);
+    auto result = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver20/ptz/wsdl/ContinuousMove",
+        [&](pugi::xml_node& body) {
+            auto req = body.append_child("tptz:ContinuousMove");
+            req.append_child("tptz:ProfileToken").text().set(profile_token.c_str());
+            auto vel = req.append_child("tptz:Velocity");
+            auto pt = vel.append_child("tt:PanTilt");
+            pt.append_attribute("x") = (double)pan;
+            pt.append_attribute("y") = (double)tilt;
+            auto z = vel.append_child("tt:Zoom");
+            z.append_attribute("x") = (double)zoom;
+            if (!timeout.empty())
+                req.append_child("tptz:Timeout").text().set(timeout.c_str());
+        },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("ContinuousMove failed", result);
+}
+
+void r_onvif::r_onvif_cam::ptz_stop(const string& ptz_service, const onvif_profile_token& profile_token, bool pan_tilt, bool zoom)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(ptz_service, host, port, protocol, uri);
+    auto result = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver20/ptz/wsdl/Stop",
+        [&](pugi::xml_node& body) {
+            auto req = body.append_child("tptz:Stop");
+            req.append_child("tptz:ProfileToken").text().set(profile_token.c_str());
+            req.append_child("tptz:PanTilt").text().set(pan_tilt ? "true" : "false");
+            req.append_child("tptz:Zoom").text().set(zoom ? "true" : "false");
+        },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("Stop failed", result);
+}
+
+void r_onvif::r_onvif_cam::ptz_goto_preset(const string& ptz_service, const onvif_profile_token& profile_token, const string& preset_token)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(ptz_service, host, port, protocol, uri);
+    auto result = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver20/ptz/wsdl/GotoPreset",
+        [&](pugi::xml_node& body) {
+            auto req = body.append_child("tptz:GotoPreset");
+            req.append_child("tptz:ProfileToken").text().set(profile_token.c_str());
+            req.append_child("tptz:PresetToken").text().set(preset_token.c_str());
+        },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("GotoPreset failed", result);
 }
 
 r_onvif::onvif_pull_point r_onvif::r_onvif_cam::create_pull_point_subscription(const string& events_service, int termination_seconds)

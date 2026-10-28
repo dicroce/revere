@@ -59,6 +59,56 @@ vector<r_onvif::onvif_profile_info> r_onvif_provider::get_camera_profiles(
     return cam.get_profile_tokens(oms);
 }
 
+vector<r_onvif::onvif_ptz_preset> r_onvif_provider::ptz_control(
+    const string& ipv4,
+    const string& xaddrs,
+    r_nullable<string> username,
+    r_nullable<string> password,
+    const r_ptz_command& cmd,
+    r_nullable<int> onvif_port,
+    r_nullable<string> onvif_protocol
+)
+{
+    auto ep = r_onvif::find_device_service(ipv4, xaddrs, onvif_port, onvif_protocol);
+    if(ep.is_null())
+        R_THROW(("No ONVIF device service answers at %s. Check that ONVIF is enabled on the camera.", ipv4.c_str()));
+    r_onvif::r_onvif_cam cam(ep.value().host, ep.value().port, ep.value().protocol, ep.value().uri, username, password);
+    auto caps = cam.get_camera_capabilities();
+
+    auto ptz = cam.get_ptz_service(caps);
+    if(ptz.is_null())
+        R_THROW(("Camera at %s has no ONVIF PTZ service.", ipv4.c_str()));
+
+    // ContinuousMove/GotoPreset take a *media* profile token (the one that
+    // references the camera's PTZ configuration). Use the caller's if given,
+    // else the camera's first profile (single-sensor PTZ cams have just one).
+    string profile_token = cmd.profile_token;
+    if(profile_token.empty())
+    {
+        auto oms = cam.get_media_service(caps);
+        auto profiles = cam.get_profile_tokens(oms);
+        if(profiles.empty())
+            R_THROW(("Camera at %s exposes no media profiles for PTZ.", ipv4.c_str()));
+        profile_token = profiles.front().token;
+    }
+
+    switch(cmd.op)
+    {
+        case r_ptz_command::op_t::move:
+            cam.ptz_continuous_move(ptz.value(), profile_token, cmd.pan, cmd.tilt, cmd.zoom, cmd.timeout);
+            break;
+        case r_ptz_command::op_t::stop:
+            cam.ptz_stop(ptz.value(), profile_token);
+            break;
+        case r_ptz_command::op_t::goto_preset:
+            cam.ptz_goto_preset(ptz.value(), profile_token, cmd.preset_token);
+            break;
+        case r_ptz_command::op_t::list_presets:
+            return cam.get_ptz_presets(ptz.value(), profile_token);
+    }
+    return {};
+}
+
 void r_onvif_provider::interrogate_camera(
     r_stream_config& sc,
     r_utils::r_nullable<std::string> username,
