@@ -562,54 +562,58 @@ bool control_bar_renderer::render_tick_marks(ImDrawList* draw_list, const contro
     );
 }
 
-void control_bar_renderer::render_timerange_text(const control_bar_layout& layout, const control_bar_state& cbs, const control_bar_calculated_layout& calc)
+float control_bar_renderer::render_timerange_picker(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc)
 {
-    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].inter_tight_regular);
-    // Vertically centered in the row, whose height follows the bar's (larger) font.
-    float y = calc.row_top + (calc.row_height - ImGui::GetTextLineHeight()) / 2.0f;
-    ImGui::SetCursorScreenPos(ImVec2(calc.center_box_left, y));
-    auto timerange_s = r_utils::r_string_utils::format("%u minute time range", cbs.get_timerange_minutes());
-    ImGui::Text("%s", timerange_s.c_str());
-    ImGui::PopFont();
-}
+    using timeline_constants::TIMERANGE_CHOICES;
 
-float control_bar_renderer::render_zoom_buttons(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc)
-{
-    ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].inter_tight_regular);
+    auto current = cbs.get_timerange_minutes();
+    std::string label = r_utils::r_string_utils::format("%u min", current);
+    for(const auto& c : TIMERANGE_CHOICES)
+        if(c.minutes == current)
+            label = c.label;
 
-    auto timerange_s = r_utils::r_string_utils::format("%u minute time range", cbs.get_timerange_minutes());
-    auto text_size = ImGui::CalcTextSize(timerange_s.c_str());
+    // Sized for the widest choice so the row doesn't shift when it changes.
+    float text_w = 0.0f;
+    for(const auto& c : TIMERANGE_CHOICES)
+        text_w = (std::max)(text_w, ImGui::CalcTextSize(c.label).x);
+    const float pad = 12.0f;      // inside the box, both ends
+    const float caret_w = 20.0f;  // caret column on the right
+    const float btn_w = pad + text_w + caret_w + pad;
 
-    const float gap = 6.0f;
-    const float btn_w = calc.text_line_height;
-    float x = calc.center_box_left + text_size.x + gap;
-    float top_line_top = calc.row_top + (calc.row_height - ImGui::GetFrameHeight()) / 2.0f;
+    ImVec2 p(calc.center_box_left, calc.row_top);
+    ImGui::SetCursorScreenPos(p);
+    bool clicked = ImGui::Button("##timerange", ImVec2(btn_w, calc.row_height));
+    if(clicked)
+        ImGui::OpenPopup("##timerange_popover");
+    if(ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##timerange_popover"))
+        ImGui::SetTooltip("Time range shown on the timeline");
 
-    ImGui::PushID("zoom_shrink");
-    ImGui::SetCursorScreenPos(ImVec2(x, (float)top_line_top));
-    if (ImGui::Button("-", ImVec2(btn_w, 0)))
+    // Label centered in the space left of the caret column.
+    auto* dl = ImGui::GetWindowDrawList();
+    auto label_size = ImGui::CalcTextSize(label.c_str());
+    float text_x = p.x + pad + (text_w - label_size.x) / 2.0f;
+    float text_y = p.y + (calc.row_height - label_size.y) / 2.0f;
+    dl->AddText(ImVec2(text_x, text_y), ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
+
+    float cy = p.y + calc.row_height / 2.0f;
+    float caret_x = p.x + pad + text_w + caret_w / 2.0f + 2.0f;
+    dl->AddTriangleFilled(
+        ImVec2(caret_x - 4.0f, cy - 2.0f), ImVec2(caret_x + 4.0f, cy - 2.0f), ImVec2(caret_x, cy + 3.0f),
+        ImGui::GetColorU32(r_ui_utils::theme::text_secondary));
+
+    // Opens upward, above the button: there's no room below the bar.
+    ImGui::SetNextWindowPos(ImVec2(p.x, p.y - 6.0f), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+    if(ImGui::BeginPopup("##timerange_popover"))
     {
-        uint16_t m = cbs.get_timerange_minutes();
-        uint16_t new_m = (uint16_t)(std::max)((int)(m / 2), (int)timeline_constants::TIMERANGE_MIN_MINUTES);
-        if (new_m != m)
-            cbs.set_timerange_minutes(new_m);
+        for(const auto& c : TIMERANGE_CHOICES)
+        {
+            if(ImGui::Selectable(c.label, c.minutes == current, 0, ImVec2(btn_w, 0)) && c.minutes != current)
+                cbs.set_timerange_minutes((uint16_t)c.minutes);
+        }
+        ImGui::EndPopup();
     }
-    ImGui::PopID();
 
-    ImGui::PushID("zoom_grow");
-    ImGui::SetCursorScreenPos(ImVec2(x + btn_w + gap, (float)top_line_top));
-    if (ImGui::Button("+", ImVec2(btn_w, 0)))
-    {
-        uint16_t m = cbs.get_timerange_minutes();
-        uint16_t new_m = (uint16_t)(std::min)((int)(m * 2), (int)timeline_constants::TIMERANGE_MAX_MINUTES);
-        if (new_m != m)
-            cbs.set_timerange_minutes(new_m);
-    }
-    ImGui::PopID();
-
-    ImGui::PopFont();
-
-    return x + btn_w + gap + btn_w;
+    return p.x + btn_w;
 }
 
 void control_bar_renderer::render_playhead_time(const control_bar_state& cbs, const control_bar_calculated_layout& calc, float left_x, float right_x, bool live)

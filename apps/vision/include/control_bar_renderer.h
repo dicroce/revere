@@ -87,10 +87,10 @@ public:
     bool render_tick_marks(ImDrawList* draw_list, const control_bar_state& cbs, const control_bar_layout& layout);
     
     // UI control rendering methods. The control row's left side flows
-    // rightward (range text, zoom buttons) and its right side flows leftward
+    // rightward (time range dropdown, audio) and its right side flows leftward
     // (Go live, Play, Export, ...); each takes the running x and advances it.
-    void render_timerange_text(const control_bar_layout& layout, const control_bar_state& cbs, const control_bar_calculated_layout& calc);
-    float render_zoom_buttons(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc);
+    // Returns the time range dropdown's right edge.
+    float render_timerange_picker(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc);
 
     // The playhead's time in the space between the row's left and right
     // groups: the longest form that fits, or nothing.

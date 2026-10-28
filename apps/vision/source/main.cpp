@@ -2038,6 +2038,7 @@ int run_overlay(const overlay_opts& opts)
     auto last_raise_check = chrono::steady_clock::now();
     SDL_GetGlobalMouseState(&last_mouse_x, &last_mouse_y);
     float bar_alpha = 1.0f;   // visible at launch so the controls are discoverable
+    bool popup_open = false;  // a control bar popup (time range) was open last frame
     bool audio_activated = false;  // one-shot: make this stream's audio active
 
     // Placement/pin persistence: `persisted` mirrors what's on disk (seeded
@@ -2171,8 +2172,9 @@ int run_overlay(const overlay_opts& opts)
             need_draw = true;
 
         // Auto-hiding controls: shown on mouse activity, faded out after 3 s
-        // idle. While fading, every frame is drawn.
-        bool bar_visible = (chrono::steady_clock::now() - last_mouse_activity) < chrono::milliseconds(3000);
+        // idle, but never while one of the bar's popups is open. While fading,
+        // every frame is drawn.
+        bool bar_visible = popup_open || (chrono::steady_clock::now() - last_mouse_activity) < chrono::milliseconds(3000);
         float target_alpha = bar_visible ? 1.0f : 0.0f;
         if(bar_alpha != target_alpha)
             need_draw = true;
@@ -2334,8 +2336,15 @@ int run_overlay(const overlay_opts& opts)
 
             if(block_font) ImGui::PopFont();
 
-            // The bottom block, and the corner strip, take clicks.
-            hit_ctx.interactive = SDL_Rect{ 0, (int)block_top, win_w, win_h - (int)block_top };
+            // The bottom block, and the corner strip, take clicks. A popup
+            // (the time range list) opens above the bar, over the video, so
+            // while one is open the whole window takes clicks instead of
+            // dragging; the bottom resize strip still wins.
+            popup_open = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+            if(popup_open)
+                hit_ctx.interactive = SDL_Rect{ 0, 0, win_w, win_h };
+            else
+                hit_ctx.interactive = SDL_Rect{ 0, (int)block_top, win_w, win_h - (int)block_top };
             hit_ctx.corner_strip = SDL_Rect{ (int)corner.x, (int)corner.y, (int)std::ceil(corner.w), (int)std::ceil(corner.h) };
             hit_ctx.interactive_visible = true;
         }

@@ -21,6 +21,13 @@ namespace timeline_constants
     constexpr int PLAYHEAD_DEFAULT_WIDTH = 3;
     constexpr int TIMERANGE_MIN_MINUTES = 10;
     constexpr int TIMERANGE_MAX_MINUTES = 480;
+
+    // The time range dropdown's choices.
+    struct timerange_choice { int minutes; const char* label; };
+    constexpr timerange_choice TIMERANGE_CHOICES[] = {
+        {10, "10 min"}, {20, "20 min"}, {30, "30 min"},
+        {60, "1 hour"}, {120, "2 hours"}, {240, "4 hours"}, {480, "8 hours"}
+    };
     
     // Layout constants
     constexpr float LEFT_PANEL_WIDTH_RATIO = 0.04f;  // 4% for left button area

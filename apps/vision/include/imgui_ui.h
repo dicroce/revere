@@ -386,11 +386,10 @@ void control_bar(
     auto calc = renderer.calculate_layout(render_layout);
     
     // One control row over the timeline strip. Left group, flowing right:
-    // range text, zoom buttons, audio. Right group, flowing left: Go live,
+    // time range dropdown, audio. Right group, flowing left: Go live,
     // Play/Pause, Export (or Finish export + Cancel), Snap, Sync. The
     // playhead's time is centered in whatever space is left between them.
-    renderer.render_timerange_text(render_layout, cbs, calc);
-    float left_x = renderer.render_zoom_buttons(render_layout, cbs, calc);
+    float left_x = renderer.render_timerange_picker(render_layout, cbs, calc);
 
     // Audio: one button that opens a popover with the volume slider and the
     // Denoise toggle. The button shows the level, and a dot when denoise is on.
