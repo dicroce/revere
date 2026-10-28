@@ -1560,6 +1560,44 @@ r_onvif::onvif_capabilities r_onvif::r_onvif_cam::get_camera_capabilities()
     return result.second;
 }
 
+r_onvif::onvif_device_information r_onvif::r_onvif_cam::get_device_information()
+{
+    auto result = _soap_request(
+        _service_host, _service_port, _service_uri,
+        "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation",
+        [](pugi::xml_node& body) {
+            body.append_child("tds:GetDeviceInformation");
+        },
+        _username,
+        _password
+    );
+
+    if (result.first != 200)
+        throw std::runtime_error("Failed to get device information: " + std::to_string(result.first));
+
+    pugi::xml_document doc;
+    if (!doc.load_string(result.second.c_str()))
+        throw std::runtime_error("Failed to parse GetDeviceInformationResponse XML");
+
+    // Fields are in the device namespace; _select_node_local_abs matches on the
+    // local name regardless of prefix, with a no-namespace fallback for cameras
+    // that omit it.
+    auto field = [&doc](const char* name) -> std::string {
+        auto n = _select_node_local_abs(doc, name, NS_DEVICE);
+        if (!n)
+            n = _select_node_local_abs(doc, name);
+        return n ? std::string(n.node().child_value()) : std::string();
+    };
+
+    onvif_device_information info;
+    info.manufacturer     = field("Manufacturer");
+    info.model            = field("Model");
+    info.firmware_version = field("FirmwareVersion");
+    info.serial_number    = field("SerialNumber");
+    info.hardware_id      = field("HardwareId");
+    return info;
+}
+
 r_onvif::onvif_media_service r_onvif::r_onvif_cam::get_media_service(const r_onvif::onvif_capabilities& capabilities) const
 {
     pugi::xml_document doc;

@@ -18,6 +18,11 @@ struct r_stream_config
     r_utils::r_nullable<std::string> protocol;  // ONVIF service protocol (http/https)
     r_utils::r_nullable<std::string> xaddrs;
     r_utils::r_nullable<std::string> address;
+    // ONVIF GetDeviceInformation (make/model/firmware), for display. Intentionally
+    // excluded from hash_stream_config — it doesn't change how the stream is consumed.
+    r_utils::r_nullable<std::string> manufacturer;
+    r_utils::r_nullable<std::string> model;
+    r_utils::r_nullable<std::string> firmware_version;
     r_utils::r_nullable<std::string> rtsp_url;
 
     // Streams can be video or audio only (or both) and they may not have any parameters
