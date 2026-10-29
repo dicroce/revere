@@ -9,6 +9,9 @@ public:
       TEST(test_r_onvif_profiles::test_profile_fields);
       TEST(test_r_onvif_profiles::test_other_prefixes_and_missing_fields);
       TEST(test_r_onvif_profiles::test_unparseable_response_throws);
+      TEST(test_r_onvif_profiles::test_profile_token_bounds);
+      TEST(test_r_onvif_profiles::test_source_token_bounds);
+      TEST(test_r_onvif_profiles::test_enum_bounds);
       TEST(test_r_onvif_profiles::test_substream_is_the_same_sensor);
       TEST(test_r_onvif_profiles::test_substream_codec_and_size);
       TEST(test_r_onvif_profiles::test_substream_rank);
@@ -23,6 +26,9 @@ public:
     void test_profile_fields();
     void test_other_prefixes_and_missing_fields();
     void test_unparseable_response_throws();
+    void test_profile_token_bounds();
+    void test_source_token_bounds();
+    void test_enum_bounds();
     void test_substream_is_the_same_sensor();
     void test_substream_codec_and_size();
     void test_substream_rank();

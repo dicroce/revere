@@ -2097,6 +2097,35 @@ static int _int_child(const pugi::xml_node& parent, const char* xpath)
     return (end == text || v < 0 || v > 1e9) ? 0 : (int)v;
 }
 
+// A ReferenceToken: not empty, at most ONVIF_TOKEN_MAX_CHARS characters (UTF-8 continuation bytes don't count),
+// no control characters.
+static bool _valid_token(const string& token)
+{
+    if (token.empty())
+        return false;
+    size_t chars = 0;
+    for (unsigned char c : token)
+    {
+        if (c < 0x20 || c == 0x7f)
+            return false;
+        if ((c & 0xc0) != 0x80)
+            ++chars;
+    }
+    return chars <= r_onvif::ONVIF_TOKEN_MAX_CHARS;
+}
+
+// Element text without the whitespace around it, at most ONVIF_ENUM_MAX_BYTES, not cut inside a UTF-8 character.
+static string _bounded_enum(const char* value)
+{
+    string s = r_string_utils::strip(value);
+    if (s.size() <= r_onvif::ONVIF_ENUM_MAX_BYTES)
+        return s;
+    size_t n = r_onvif::ONVIF_ENUM_MAX_BYTES;
+    while (n > 0 && ((unsigned char)s[n] & 0xc0) == 0x80)
+        --n;
+    return s.substr(0, n);
+}
+
 vector<r_onvif::onvif_profile_info> r_onvif::parse_profiles_response(const string& xml)
 {
     vector<onvif_profile_info> out;
@@ -2109,11 +2138,18 @@ vector<r_onvif::onvif_profile_info> r_onvif::parse_profiles_response(const strin
         auto profile = px.node();
         onvif_profile_info info;
         info.token = profile.attribute("token").value();
+        if (!_valid_token(info.token))
+            continue;
         info.encoding = "Unknown";
 
         auto vsc = profile.select_node("./*[local-name()='VideoSourceConfiguration']");
         if (vsc)
-            info.video_source_token = vsc.node().select_node("./*[local-name()='SourceToken']").node().child_value();
+        {
+            // Element text, so a pretty-printed response may wrap it in whitespace.
+            info.video_source_token = r_string_utils::strip(vsc.node().select_node("./*[local-name()='SourceToken']").node().child_value());
+            if (!_valid_token(info.video_source_token))
+                info.video_source_token.clear();
+        }
 
         auto vec = profile.select_node("./*[local-name()='VideoEncoderConfiguration']");
         if (vec)
@@ -2121,10 +2157,10 @@ vector<r_onvif::onvif_profile_info> r_onvif::parse_profiles_response(const strin
             auto enc = vec.node();
             auto encoding = enc.select_node("./*[local-name()='Encoding']");
             if (encoding)
-                info.encoding = encoding.node().child_value();
+                info.encoding = _bounded_enum(encoding.node().child_value());
             info.width = (uint16_t)std::min(_int_child(enc, "./*[local-name()='Resolution']/*[local-name()='Width']"), 65535);
             info.height = (uint16_t)std::min(_int_child(enc, "./*[local-name()='Resolution']/*[local-name()='Height']"), 65535);
-            info.h264_profile = enc.select_node("./*[local-name()='H264']/*[local-name()='H264Profile']").node().child_value();
+            info.h264_profile = _bounded_enum(enc.select_node("./*[local-name()='H264']/*[local-name()='H264Profile']").node().child_value());
             info.gov_length = _int_child(enc, "./*[local-name()='H264']/*[local-name()='GovLength']");
             info.fps_limit = _int_child(enc, "./*[local-name()='RateControl']/*[local-name()='FrameRateLimit']");
             info.bitrate_limit = _int_child(enc, "./*[local-name()='RateControl']/*[local-name()='BitrateLimit']");

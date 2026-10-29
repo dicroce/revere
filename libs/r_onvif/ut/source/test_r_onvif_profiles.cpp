@@ -153,6 +153,89 @@ static vector<string> tokens(const vector<onvif_profile_info>& profiles)
     return out;
 }
 
+// A GetProfilesResponse holding one profile per (token, source token, encoding, H.264 profile), written as given.
+struct raw_profile
+{
+    string token;
+    string source;
+    string encoding;
+    string h264_profile;
+};
+
+static string profiles_xml(const vector<raw_profile>& profiles)
+{
+    string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                 "<env:Envelope xmlns:env=\"http://www.w3.org/2003/05/soap-envelope\" "
+                 "xmlns:tt=\"http://www.onvif.org/ver10/schema\" xmlns:trt=\"http://www.onvif.org/ver10/media/wsdl\">"
+                 "<env:Body><trt:GetProfilesResponse>";
+    for (auto& p : profiles)
+    {
+        xml += "<trt:Profiles token=\"" + p.token + "\">"
+               "<tt:VideoSourceConfiguration token=\"vsc\"><tt:SourceToken>" + p.source + "</tt:SourceToken></tt:VideoSourceConfiguration>"
+               "<tt:VideoEncoderConfiguration token=\"enc\"><tt:Encoding>" + p.encoding + "</tt:Encoding>"
+               "<tt:Resolution><tt:Width>640</tt:Width><tt:Height>480</tt:Height></tt:Resolution>"
+               "<tt:H264><tt:H264Profile>" + p.h264_profile + "</tt:H264Profile></tt:H264>"
+               "</tt:VideoEncoderConfiguration></trt:Profiles>";
+    }
+    return xml + "</trt:GetProfilesResponse></env:Body></env:Envelope>";
+}
+
+void test_r_onvif_profiles::test_profile_token_bounds()
+{
+    string e_acute = "\xc3\xa9";  // one character, two bytes
+    string utf8_64;
+    for (int i = 0; i < 64; ++i)
+        utf8_64 += e_acute;
+
+    auto profiles = parse_profiles_response(profiles_xml({
+        {"", "src", "H264", "Main"},
+        {string(64, 'a'), "src", "H264", "Main"},
+        {string(65, 'b'), "src", "H264", "Main"},
+        {utf8_64, "src", "H264", "Main"},             // 64 characters in 128 bytes
+        {utf8_64 + e_acute, "src", "H264", "Main"},
+        {"ctl&#x1;", "src", "H264", "Main"},
+        {"del&#x7F;", "src", "H264", "Main"},
+        {"with space", "src", "H264", "Main"},       // a ReferenceToken may hold a space
+    }));
+    // The empty, too long and control-character tokens are left out; the rest keep their order.
+    RTF_ASSERT(tokens(profiles) == vector<string>({string(64, 'a'), utf8_64, "with space"}));
+}
+
+void test_r_onvif_profiles::test_source_token_bounds()
+{
+    auto profiles = parse_profiles_response(profiles_xml({
+        {"ok", "src0", "H264", "Main"},
+        {"long", string(65, 's'), "H264", "Main"},
+        {"max", string(64, 's'), "H264", "Main"},
+        {"ctl", "src&#x1;0", "H264", "Main"},
+        {"wrapped", "\n    src0\n  ", "H264", "Main"},
+    }));
+    RTF_ASSERT_EQUAL(profiles.size(), (size_t)5);
+    RTF_ASSERT(profiles[0].video_source_token == "src0");
+    // A bad source token reads as empty; the profile is kept.
+    RTF_ASSERT(profiles[1].video_source_token.empty());
+    RTF_ASSERT(profiles[2].video_source_token == string(64, 's'));
+    RTF_ASSERT(profiles[3].video_source_token.empty());
+    // Whitespace around the element's text isn't part of the token, so it still matches main's.
+    RTF_ASSERT(profiles[4].video_source_token == "src0");
+}
+
+void test_r_onvif_profiles::test_enum_bounds()
+{
+    auto profiles = parse_profiles_response(profiles_xml({
+        {"a", "s", string(16, 'E'), string(16, 'P')},
+        {"b", "s", string(40, 'E'), string(17, 'P')},
+        {"c", "s", " H264\n", string(15, 'P') + "\xc3\xa9"},  // the 16-byte cut would split the last character
+    }));
+    RTF_ASSERT_EQUAL(profiles.size(), (size_t)3);
+    RTF_ASSERT(profiles[0].encoding == string(16, 'E'));
+    RTF_ASSERT(profiles[0].h264_profile == string(16, 'P'));
+    RTF_ASSERT(profiles[1].encoding == string(16, 'E'));
+    RTF_ASSERT(profiles[1].h264_profile == string(16, 'P'));
+    RTF_ASSERT(profiles[2].encoding == "H264");
+    RTF_ASSERT(profiles[2].h264_profile == string(15, 'P'));
+}
+
 void test_r_onvif_profiles::test_substream_is_the_same_sensor()
 {
     auto profiles = parse_profiles_response(DUAL_LENS_PROFILES);

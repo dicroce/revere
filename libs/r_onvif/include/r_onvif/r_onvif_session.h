@@ -81,7 +81,11 @@ struct onvif_profile_info
 };
 
 // A Media1 GetProfilesResponse: one onvif_profile_info per Profiles, in the camera's order. Throws
-// std::runtime_error when the response isn't XML.
+// std::runtime_error when the response isn't XML. The camera's strings are bounded: a profile whose token is empty,
+// longer than ONVIF_TOKEN_MAX_CHARS or has a control character is left out; a source token like that reads as
+// empty; encoding and h264_profile are cut to ONVIF_ENUM_MAX_BYTES. Whitespace around element text is dropped.
+constexpr size_t ONVIF_TOKEN_MAX_CHARS = 64;  // ONVIF's ReferenceToken
+constexpr size_t ONVIF_ENUM_MAX_BYTES = 16;
 R_API std::vector<onvif_profile_info> parse_profiles_response(const std::string& xml);
 
 // A camera's substream (its second, smaller stream, for live view and analysis): no narrower than this.
