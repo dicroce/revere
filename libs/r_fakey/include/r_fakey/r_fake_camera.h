@@ -55,6 +55,9 @@ public:
     R_API void start() const;
     R_API void quit() const;
 
+    // The port it listens on: the one it was given, or the one the system chose for port 0. -1 before it's bound.
+    R_API int bound_port() const;
+
     R_API static std::string make_data_uri(const std::string& type, const uint8_t* p, size_t len);
 
 private:
