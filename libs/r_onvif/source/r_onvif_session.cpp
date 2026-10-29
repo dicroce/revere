@@ -2155,19 +2155,26 @@ vector<r_onvif::onvif_profile_info> r_onvif::substream_candidates(const vector<o
         out.push_back(p);
     }
 
-    // Closest to 640x480 (wider than 640 first between equals), then H.264 over H.265, then Baseline or Main over
-    // High (or not given), then the higher frame rate. Stable, so the camera's own order breaks any tie left.
-    auto rank = [](const onvif_profile_info& p) {
+    // Closest to 640x480 (640 wide or more first between equals), then H.264 over H.265, then Baseline or Main over
+    // High (or not given), then the higher frame rate, then the camera's own order.
+    auto rank = [](const onvif_profile_info& p, size_t camera_order) {
         const int64_t pixels = (int64_t)p.width * p.height;
         return std::make_tuple(
             pixels > SUBSTREAM_TARGET_PIXELS ? pixels - SUBSTREAM_TARGET_PIXELS : SUBSTREAM_TARGET_PIXELS - pixels,
             p.width >= 640 ? 0 : 1,
             r_string_utils::to_upper(p.encoding) == "H264" ? 0 : 1,
             (p.h264_profile == "Baseline" || p.h264_profile == "Main") ? 0 : 1,
-            -p.fps_limit);
+            -p.fps_limit,
+            camera_order);
     };
-    std::stable_sort(out.begin(), out.end(), [&](const onvif_profile_info& a, const onvif_profile_info& b) { return rank(a) < rank(b); });
-    return out;
+    vector<pair<decltype(rank(out.front(), 0)), size_t>> ranked;
+    for (size_t i = 0; i < out.size(); ++i)
+        ranked.push_back({rank(out[i], i), i});
+    std::sort(ranked.begin(), ranked.end());
+    vector<onvif_profile_info> sorted;
+    for (auto& r : ranked)
+        sorted.push_back(out[r.second]);
+    return sorted;
 }
 
 vector<string> r_onvif::r_onvif_cam::fill_empty_cell_motion_regions(const onvif_capabilities& capabilities)
