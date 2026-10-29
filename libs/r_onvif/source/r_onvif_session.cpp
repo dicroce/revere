@@ -5,6 +5,8 @@
 #include <thread>
 #include <sstream>
 #include <map>
+#include <algorithm>
+#include <tuple>
 #include "r_http/r_client_request.h"
 #include "r_http/r_methods.h"
 #include "r_utils/r_sha1.h"
@@ -1628,112 +1630,16 @@ std::vector<r_onvif::onvif_profile_info> r_onvif::r_onvif_cam::get_profile_token
     if(result.first != 200)
         throw std::runtime_error("Failed to get camera profiles");
 
-    vector<onvif_profile_info> profiles;
     try
     {
-        // Parse the response
-        pugi::xml_document response_doc;
-        pugi::xml_parse_result parse_result = response_doc.load_string(result.second.c_str());
-        if (!parse_result)
-            throw std::runtime_error("XML parsing failed: " + std::string(parse_result.description()));
-
-        // Use namespace-agnostic XPath to find Profiles elements
-        string profiles_xpath = "//" + _xpath_local("Profiles", NS_MEDIA);
-        pugi::xpath_node_set profileNodes = response_doc.select_nodes(profiles_xpath.c_str());
-
-        if (profileNodes.empty())
-        {
-            // Fallback without namespace constraint
-            profiles_xpath = "//" + _xpath_local("Profiles");
-            profileNodes = response_doc.select_nodes(profiles_xpath.c_str());
-        }
-
-        // Process each profile
-        for (const auto& profileNode : profileNodes)
-        {
-            pugi::xml_node profileElement = profileNode.node();
-            onvif_profile_info profile;
-
-            // Get profile token
-            profile.token = profileElement.attribute("token").value();
-
-            // Default values in case we can't find the data
-            profile.encoding = "Unknown";
-            profile.width = 0;
-            profile.height = 0;
-
-            // Get video encoder configuration using namespace-agnostic XPath
-            string vec_xpath = ".//" + _xpath_local("VideoEncoderConfiguration", NS_SCHEMA);
-            pugi::xpath_node videoEncoderConfigNode = profileElement.select_node(vec_xpath.c_str());
-
-            if (!videoEncoderConfigNode)
-            {
-                // Fallback without namespace
-                vec_xpath = ".//" + _xpath_local("VideoEncoderConfiguration");
-                videoEncoderConfigNode = profileElement.select_node(vec_xpath.c_str());
-            }
-
-            if (videoEncoderConfigNode)
-            {
-                pugi::xml_node videoEncoderConfigElement = videoEncoderConfigNode.node();
-
-                // Get encoding
-                string enc_xpath = ".//" + _xpath_local("Encoding", NS_SCHEMA);
-                pugi::xpath_node encodingNode = videoEncoderConfigElement.select_node(enc_xpath.c_str());
-                if (!encodingNode)
-                {
-                    enc_xpath = ".//" + _xpath_local("Encoding");
-                    encodingNode = videoEncoderConfigElement.select_node(enc_xpath.c_str());
-                }
-                if (encodingNode)
-                    profile.encoding = encodingNode.node().child_value();
-
-                // Get resolution
-                string res_xpath = ".//" + _xpath_local("Resolution", NS_SCHEMA);
-                pugi::xpath_node resolutionNode = videoEncoderConfigElement.select_node(res_xpath.c_str());
-                if (!resolutionNode)
-                {
-                    res_xpath = ".//" + _xpath_local("Resolution");
-                    resolutionNode = videoEncoderConfigElement.select_node(res_xpath.c_str());
-                }
-
-                if (resolutionNode)
-                {
-                    pugi::xml_node resolutionElement = resolutionNode.node();
-
-                    string w_xpath = ".//" + _xpath_local("Width", NS_SCHEMA);
-                    string h_xpath = ".//" + _xpath_local("Height", NS_SCHEMA);
-                    pugi::xpath_node widthNode = resolutionElement.select_node(w_xpath.c_str());
-                    pugi::xpath_node heightNode = resolutionElement.select_node(h_xpath.c_str());
-
-                    if (!widthNode)
-                    {
-                        w_xpath = ".//" + _xpath_local("Width");
-                        widthNode = resolutionElement.select_node(w_xpath.c_str());
-                    }
-                    if (!heightNode)
-                    {
-                        h_xpath = ".//" + _xpath_local("Height");
-                        heightNode = resolutionElement.select_node(h_xpath.c_str());
-                    }
-
-                    if (widthNode)
-                        profile.width = static_cast<uint16_t>(std::stoi(widthNode.node().child_value()));
-                    if (heightNode)
-                        profile.height = static_cast<uint16_t>(std::stoi(heightNode.node().child_value()));
-                }
-            }
-
-            // Add the profile to our list
-            profiles.push_back(profile);
-        }
+        return parse_profiles_response(result.second);
     }
     catch (const std::exception& exc)
     {
         printf("Error parsing profiles: %s\n", exc.what());
     }
 
-    return profiles;
+    return {};
 }
 
 string r_onvif::r_onvif_cam::get_stream_uri(onvif_media_service media_service, onvif_profile_token profile_token)
@@ -2175,6 +2081,92 @@ vector<r_onvif::onvif_cell_motion_rule> r_onvif::parse_cell_motion_rules(const s
             out.push_back(r);
         }
     }
+    return out;
+}
+
+// A number from an ONVIF element: 0 when it's missing or not a number. FrameRateLimit is an int in the schema, but
+// some cameras write "25.000000".
+static int _int_child(const pugi::xml_node& parent, const char* xpath)
+{
+    auto node = parent.select_node(xpath);
+    if (!node)
+        return 0;
+    char* end = nullptr;
+    const char* text = node.node().child_value();
+    double v = strtod(text, &end);
+    return (end == text || v < 0 || v > 1e9) ? 0 : (int)v;
+}
+
+vector<r_onvif::onvif_profile_info> r_onvif::parse_profiles_response(const string& xml)
+{
+    vector<onvif_profile_info> out;
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetProfiles response");
+
+    for (auto px : doc.select_nodes("//*[local-name()='Profiles']"))
+    {
+        auto profile = px.node();
+        onvif_profile_info info;
+        info.token = profile.attribute("token").value();
+        info.encoding = "Unknown";
+
+        auto vsc = profile.select_node("./*[local-name()='VideoSourceConfiguration']");
+        if (vsc)
+            info.video_source_token = vsc.node().select_node("./*[local-name()='SourceToken']").node().child_value();
+
+        auto vec = profile.select_node("./*[local-name()='VideoEncoderConfiguration']");
+        if (vec)
+        {
+            auto enc = vec.node();
+            auto encoding = enc.select_node("./*[local-name()='Encoding']");
+            if (encoding)
+                info.encoding = encoding.node().child_value();
+            info.width = (uint16_t)std::min(_int_child(enc, "./*[local-name()='Resolution']/*[local-name()='Width']"), 65535);
+            info.height = (uint16_t)std::min(_int_child(enc, "./*[local-name()='Resolution']/*[local-name()='Height']"), 65535);
+            info.h264_profile = enc.select_node("./*[local-name()='H264']/*[local-name()='H264Profile']").node().child_value();
+            info.gov_length = _int_child(enc, "./*[local-name()='H264']/*[local-name()='GovLength']");
+            info.fps_limit = _int_child(enc, "./*[local-name()='RateControl']/*[local-name()='FrameRateLimit']");
+            info.bitrate_limit = _int_child(enc, "./*[local-name()='RateControl']/*[local-name()='BitrateLimit']");
+        }
+        out.push_back(info);
+    }
+    return out;
+}
+
+static bool _is_h264_or_h265(const string& encoding)
+{
+    auto e = r_string_utils::to_upper(encoding);
+    return e == "H264" || e == "H265";
+}
+
+vector<r_onvif::onvif_profile_info> r_onvif::substream_candidates(const vector<onvif_profile_info>& profiles,
+                                                                   const onvif_profile_info& main)
+{
+    const int64_t main_pixels = (int64_t)main.width * main.height;
+    vector<onvif_profile_info> out;
+    for (const auto& p : profiles)
+    {
+        const int64_t pixels = (int64_t)p.width * p.height;
+        if (p.token == main.token || p.video_source_token != main.video_source_token || !_is_h264_or_h265(p.encoding))
+            continue;
+        if (pixels * 4 > main_pixels || p.width < SUBSTREAM_MIN_WIDTH)
+            continue;
+        out.push_back(p);
+    }
+
+    // Closest to 640x480 (wider than 640 first between equals), then H.264 over H.265, then Baseline or Main over
+    // High (or not given), then the higher frame rate. Stable, so the camera's own order breaks any tie left.
+    auto rank = [](const onvif_profile_info& p) {
+        const int64_t pixels = (int64_t)p.width * p.height;
+        return std::make_tuple(
+            pixels > SUBSTREAM_TARGET_PIXELS ? pixels - SUBSTREAM_TARGET_PIXELS : SUBSTREAM_TARGET_PIXELS - pixels,
+            p.width >= 640 ? 0 : 1,
+            r_string_utils::to_upper(p.encoding) == "H264" ? 0 : 1,
+            (p.h264_profile == "Baseline" || p.h264_profile == "Main") ? 0 : 1,
+            -p.fps_limit);
+    };
+    std::stable_sort(out.begin(), out.end(), [&](const onvif_profile_info& a, const onvif_profile_info& b) { return rank(a) < rank(b); });
     return out;
 }
 
