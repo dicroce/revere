@@ -136,12 +136,12 @@ void test_r_stream_probe::test_keyframe_interval_and_fps()
     RTF_ASSERT_EQUAL(r.key_interval_ms, (int64_t)(15 * 66));
     RTF_ASSERT(fabs(r.fps - 1000.0 / 66) < 0.01);
 
-    // The longest gap counts: keyframes at 0, 1 s and 4.5 s.
+    // The longest gap counts, not the last: keyframes at 0, 3.5 s and 4.5 s.
     auto aus = _access_units(sp_h264_cb_h264, sp_h264_cb_h264_len, false);
     r_stream_tally tally(H264_ENCODING);
     tally.add(aus[0].data.data(), aus[0].data.size(), true, 0);
     tally.add(aus[1].data.data(), aus[1].data.size(), false, 500);
-    tally.add(aus[15].data.data(), aus[15].data.size(), true, 1000);
+    tally.add(aus[15].data.data(), aus[15].data.size(), true, 3500);
     tally.add(aus[16].data.data(), aus[16].data.size(), false, 4000);
     tally.add(aus[0].data.data(), aus[0].data.size(), true, 4500);
     RTF_ASSERT_EQUAL(tally.result().key_interval_ms, (int64_t)3500);
@@ -296,7 +296,8 @@ void test_r_stream_probe::test_probe_stream()
     auto fc = _live_camera(0);
     if (!fc)
         return;
-    auto r = probe_stream(r_utils::r_string_utils::format("rtsp://127.0.0.1:%d/probe", fc->bound_port()), {}, {}, 2, 9);
+    // No minimum time: the probe runs until it has two keyframes.
+    auto r = probe_stream(r_utils::r_string_utils::format("rtsp://127.0.0.1:%d/probe", fc->bound_port()), {}, {}, 0, 9);
     fc->quit();
 
     RTF_ASSERT(r.answered);
