@@ -163,7 +163,7 @@ r_ptz_command _cmd(r_ptz_command::op_t op)
     return c;
 }
 
-vector<r_onvif::onvif_ptz_preset> _run(r_onvif_provider& p, fake_camera& cam, const r_ptz_command& cmd, const string& user = "admin")
+r_ptz_result _run(r_onvif_provider& p, fake_camera& cam, const r_ptz_command& cmd, const string& user = "admin")
 {
     return p.ptz_control("127.0.0.1", "/onvif/device_service", _s(user), _s("pw"), cmd, _i(cam.port), _s("http"));
 }
@@ -188,7 +188,7 @@ void test_r_ptz_session::test_session_kept_between_commands()
     fake_camera cam;
     r_onvif_provider p("", nullptr);
 
-    auto presets = _run(p, cam, _cmd(r_ptz_command::op_t::list_presets));
+    auto presets = _run(p, cam, _cmd(r_ptz_command::op_t::list_presets)).presets;
     RTF_ASSERT_EQUAL(presets.size(), (size_t)2);
     RTF_ASSERT(presets[0].token == "1" && presets[0].name == "Gate");
 

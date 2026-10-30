@@ -3233,7 +3233,7 @@ r_http::r_server_response r_ws::_post_ptz(r_utils::r_socket_base&, const r_http:
     try
     {
         // Creds come from the stored (decrypted) camera, like the events worker.
-        auto presets = _agent.ptz_control(
+        auto ptz_result = _agent.ptz_control(
             camera.ipv4.value(), camera.xaddrs.value(),
             camera.rtsp_username, camera.rtsp_password, cmd,
             camera.onvif_port, camera.onvif_protocol
@@ -3242,8 +3242,12 @@ r_http::r_server_response r_ws::_post_ptz(r_utils::r_socket_base&, const r_http:
         json j;
         j["status"] = "ok";
         j["presets"] = json::array();
-        for(auto& p : presets)
+        for(auto& p : ptz_result.presets)
             j["presets"].push_back({{"token", p.token}, {"name", p.name}});
+        // Which axes the camera can actually drive (meaningful on list_presets);
+        // a client offers zoom controls only when supports_zoom is true.
+        j["supports_pan_tilt"] = ptz_result.supports_pan_tilt;
+        j["supports_zoom"] = ptz_result.supports_zoom;
 
         r_server_response response;
         response.set_content_type("text/json");

@@ -137,6 +137,16 @@ constexpr int64_t SUBSTREAM_TARGET_PIXELS = 640 * 480;
 R_API std::vector<onvif_profile_info> substream_candidates(const std::vector<onvif_profile_info>& profiles,
                                                            const onvif_profile_info& main);
 
+// Which axes a camera's PTZ node can actually drive with ContinuousMove, read
+// from its SupportedPTZSpaces (GetNodes). A camera may advertise a PTZ service
+// yet have no zoom axis -- a continuous zoom command is then a silent no-op, so
+// a UI should hide zoom controls unless zoom is true.
+struct onvif_ptz_caps
+{
+    bool pan_tilt {false};   // has a ContinuousPanTiltVelocitySpace
+    bool zoom {false};       // has a ContinuousZoomVelocitySpace
+};
+
 // ONVIF events (Event service, WS-BaseNotification pull point).
 //
 // A pull point is created on the events service and then polled at its own
@@ -200,6 +210,10 @@ R_API std::vector<onvif_cell_motion_rule> parse_cell_motion_rules(const std::str
 // Every tptz:Preset in a GetPresetsResponse (token from the @token attribute,
 // name from the tt:Name child). Separate so it can be tested without a camera.
 R_API std::vector<onvif_ptz_preset> parse_ptz_presets(const std::string& xml);
+
+// Supported continuous-move axes from a GetNodesResponse (any PTZNode's
+// SupportedPTZSpaces). Separate so it can be tested without a camera.
+R_API onvif_ptz_caps parse_ptz_caps(const std::string& xml);
 
 enum class soap_version
 {
@@ -269,6 +283,11 @@ public:
 
     // GetPresets for a media profile (the saved positions the camera holds).
     R_API std::vector<onvif_ptz_preset> get_ptz_presets(const std::string& ptz_service, const onvif_profile_token& profile_token);
+
+    // GetNodes -> which continuous-move axes the camera's PTZ node supports.
+    // Used to decide whether to offer zoom controls. On a SOAP fault or a
+    // camera that omits SupportedPTZSpaces, the unknown axes stay false.
+    R_API onvif_ptz_caps get_ptz_caps(const std::string& ptz_service);
 
     // ContinuousMove: pan/tilt/zoom velocities, each normalized to [-1,1] (0 =
     // no motion on that axis). The camera keeps moving until Stop or, if given,

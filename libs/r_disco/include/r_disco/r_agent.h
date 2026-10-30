@@ -131,11 +131,12 @@ public:
         r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
     );
 
-    // Perform a PTZ action against a camera's ONVIF PTZ service. Returns the
-    // camera's presets (only for cmd.op == list_presets; empty otherwise).
-    // Throws r_ptz_error. One camera's commands run one at a time; they don't
-    // wait on interrogation (r_onvif_provider::ptz_control).
-    R_API std::vector<r_onvif::onvif_ptz_preset> ptz_control(
+    // Perform a PTZ action against a camera's ONVIF PTZ service. For
+    // cmd.op == list_presets the result carries presets and PTZ-axis
+    // capabilities; the other ops return an empty result. Throws r_ptz_error.
+    // One camera's commands run one at a time; they don't wait on interrogation
+    // (r_onvif_provider::ptz_control).
+    R_API r_ptz_result ptz_control(
         const std::string& ipv4,
         const std::string& xaddrs,
         r_utils::r_nullable<std::string> username,
