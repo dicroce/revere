@@ -37,6 +37,8 @@ struct control_bar_calculated_layout
     float center_box_left;
     float center_box_width;
     float center_box_top;
+    float row_top;      // the control row: range, audio, time, buttons
+    float row_height;
     float slider_top;
     float slider_height;
     float contents_top;
@@ -45,6 +47,17 @@ struct control_bar_calculated_layout
     float event_bottom;
     float text_line_height;
 };
+
+// The height the bar needs in the current font: one control row over the
+// timeline strip. Callers size the bar with this so it can't drift from what
+// calculate_layout() draws.
+inline float control_bar_preferred_height()
+{
+    return timeline_constants::TOP_BUTTON_OFFSET + ImGui::GetFrameHeight() +
+           timeline_constants::ROW_GAP +
+           (timeline_constants::TIMELINE_HEIGHT_MULTIPLIER * ImGui::GetTextLineHeight()) +
+           timeline_constants::BOTTOM_MARGIN;
+}
 
 class control_bar_renderer
 {
@@ -73,16 +86,22 @@ public:
     bool render_playhead(ImDrawList* draw_list, const control_bar_state& cbs, const control_bar_layout& layout, bool playing);
     bool render_tick_marks(ImDrawList* draw_list, const control_bar_state& cbs, const control_bar_layout& layout);
     
-    // UI control rendering methods
-    void render_timerange_text(const control_bar_layout& layout, const control_bar_state& cbs, const control_bar_calculated_layout& calc);
-    void render_zoom_buttons(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc);
-    
+    // UI control rendering methods. The control row's left side flows
+    // rightward (time range dropdown, audio) and its right side flows leftward
+    // (Go live, Play, Export, ...); each takes the running x and advances it.
+    // Returns the time range dropdown's right edge.
+    float render_timerange_picker(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc);
+
+    // The playhead's time in the space between the row's left and right
+    // groups: the longest form that fits, or nothing.
+    void render_playhead_time(const control_bar_state& cbs, const control_bar_calculated_layout& calc, float left_x, float right_x, bool live);
+
     template<typename EXPORT_CB>
-    void render_export_controls(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, const std::string& stream_name, EXPORT_CB export_cb);
-    
+    void render_export_controls(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, const std::string& stream_name, EXPORT_CB export_cb, float& right_x);
+
     template<typename CONTROL_BAR_BUTTON_CB, typename UPDATE_DATA_CB>
     void render_play_live_button(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc,
-                                const std::string& stream_name, CONTROL_BAR_BUTTON_CB control_bar_button_cb, UPDATE_DATA_CB update_data_cb, bool playing);
+                                const std::string& stream_name, CONTROL_BAR_BUTTON_CB control_bar_button_cb, UPDATE_DATA_CB update_data_cb, bool playing, float& right_x);
 
     template<typename CONTROL_BAR_SLIDER_CB>
     void handle_playhead_interaction(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc,
@@ -103,20 +122,24 @@ private:
 // Template method implementations (must be in header)
 
 template<typename EXPORT_CB>
-void control_bar_renderer::render_export_controls(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, const std::string& stream_name, EXPORT_CB export_cb)
+void control_bar_renderer::render_export_controls(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc, const std::string& stream_name, EXPORT_CB export_cb, float& right_x)
 {
-    auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-    auto right_edge = calc.center_box_left + calc.center_box_width;
+    const float gap = timeline_constants::ROW_BUTTON_GAP;
 
     bool export_clicked = false;
     bool finish_export_clicked = false;
 
     if(cbs.exp_state == EXPORT_STATE_CONFIGURING)
     {
-        // When configuring export: Finish Export | Cancel | Play | Go Live
-        // From right with 10px spacing: Go Live(80) @ -90, Play(80) @ -180, Cancel(90) @ -280, Finish Export(120) @ -410
-        auto finish_export_x = right_edge - 410;
-        ImGui::SetCursorScreenPos(ImVec2((float)finish_export_x, (float)top_line_top));
+        // When configuring export: Finish export | Cancel | (Play | Go live)
+        right_x -= 90.0f;
+        ImGui::SetCursorScreenPos(ImVec2(right_x, calc.row_top));
+        if(ImGui::Button("Cancel", ImVec2(90, 0)))
+            cbs.exp_state = EXPORT_STATE_NONE;
+        right_x -= gap;
+
+        right_x -= 120.0f;
+        ImGui::SetCursorScreenPos(ImVec2(right_x, calc.row_top));
         // The primary action: paper fill with ink text on dark.
         ImGui::PushStyleColor(ImGuiCol_Button, r_ui_utils::theme::action_primary);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, r_ui_utils::theme::action_primary_hover);
@@ -124,14 +147,14 @@ void control_bar_renderer::render_export_controls(const control_bar_layout& layo
         ImGui::PushStyleColor(ImGuiCol_Text, r_ui_utils::theme::text_on_primary);
         finish_export_clicked = ImGui::Button("Finish export", ImVec2(120, 0));
         ImGui::PopStyleColor(4);
+        right_x -= gap;
     }
     else
     {
-        // Normal export button: Export | Play | Go Live
-        // From right with 10px spacing: Go Live(80) @ -90, Play(80) @ -180, Export(80) @ -270
-        auto export_button_x = right_edge - 270;
-        ImGui::SetCursorScreenPos(ImVec2((float)export_button_x, (float)top_line_top));
+        right_x -= 80.0f;
+        ImGui::SetCursorScreenPos(ImVec2(right_x, calc.row_top));
         export_clicked = ImGui::Button("Export", ImVec2(80, 0));
+        right_x -= gap;
     }
 
     if(export_clicked)
@@ -148,77 +171,48 @@ void control_bar_renderer::render_export_controls(const control_bar_layout& layo
         cbs.exp_state = EXPORT_STATE_STARTED;
         export_cb(stream_name, cbs.export_start_time, cbs.tr.time_in_range(0, timeline_constants::PLAYHEAD_MAX_POSITION, cbs.playhead_pos), cbs);
     }
-
-    // Cancel button (shown during export configuration)
-    if(cbs.exp_state == EXPORT_STATE_CONFIGURING)
-    {
-        auto export_cancel_button_x = right_edge - 280;
-        ImGui::SetCursorScreenPos(ImVec2((float)export_cancel_button_x, (float)top_line_top));
-        if(ImGui::Button("Cancel", ImVec2(90, 0)))
-        {
-            cbs.exp_state = EXPORT_STATE_NONE;
-        }
-    }
 }
 
 template<typename CONTROL_BAR_BUTTON_CB, typename UPDATE_DATA_CB>
 void control_bar_renderer::render_play_live_button(const control_bar_layout& layout, control_bar_state& cbs, const control_bar_calculated_layout& calc,
-                                                   const std::string& stream_name, CONTROL_BAR_BUTTON_CB control_bar_button_cb, UPDATE_DATA_CB update_data_cb, bool playing)
+                                                   const std::string& stream_name, CONTROL_BAR_BUTTON_CB control_bar_button_cb, UPDATE_DATA_CB update_data_cb, bool playing, float& right_x)
 {
-    auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
     bool is_at_live = (cbs.playhead_pos >= timeline_constants::PLAYHEAD_MAX_POSITION);
 
-    // Calculate button positions based on how many buttons we need
-    auto right_edge = calc.center_box_left + calc.center_box_width;
-    float play_button_x, live_button_x;
+    // When at live position, show no buttons
+    if(is_at_live)
+        return;
 
-    // Adjust positions if export is configuring (need room for Finish Export and Cancel buttons)
-    bool export_active = (cbs.exp_state == EXPORT_STATE_CONFIGURING);
+    const float gap = timeline_constants::ROW_BUTTON_GAP;
 
-    if (!is_at_live && !playing)
+    // Placed right to left: Go live, then Play/Pause to its left.
+    right_x -= 80.0f;
+    float live_button_x = right_x;
+    right_x -= gap + 80.0f;
+    float play_button_x = right_x;
+    right_x -= gap;
+
+    // Playing recorded video: Pause takes Play's slot. Pausing stops the pipe,
+    // so on the next frame playing is false and this slot shows Play (= Resume).
+    ImGui::SetCursorScreenPos(ImVec2(play_button_x, calc.row_top));
+    if(playing)
     {
-        // Show both buttons: Play and Go Live
-        if (export_active)
-        {
-            // Export configuring mode: positions match export button layout
-            play_button_x = right_edge - 180;
-            live_button_x = right_edge - 90;
-        }
-        else
-        {
-            // Normal mode: positions match export button layout
-            play_button_x = right_edge - 180;
-            live_button_x = right_edge - 90;
-        }
-
-        ImGui::SetCursorScreenPos(ImVec2(play_button_x, (float)top_line_top));
+        if(ImGui::Button("Pause", ImVec2(80, 0)))
+            control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_PAUSE);
+    }
+    else
+    {
         if(ImGui::Button("Play", ImVec2(80, 0)))
-        {
             control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_PLAY);
-        }
-
-        ImGui::SetCursorScreenPos(ImVec2(live_button_x, (float)top_line_top));
-        if(ImGui::Button("Go live", ImVec2(80, 0)))
-        {
-            cbs.live();
-            control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_LIVE);
-            update_data_cb(stream_name, cbs);
-        }
     }
-    else if (!is_at_live && playing)
+
+    ImGui::SetCursorScreenPos(ImVec2(live_button_x, calc.row_top));
+    if(ImGui::Button("Go live", ImVec2(80, 0)))
     {
-        // Show only Go Live button when playing in the past (same position in both modes)
-        live_button_x = right_edge - 90;
-
-        ImGui::SetCursorScreenPos(ImVec2(live_button_x, (float)top_line_top));
-        if(ImGui::Button("Go live", ImVec2(80, 0)))
-        {
-            cbs.live();
-            control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_LIVE);
-            update_data_cb(stream_name, cbs);
-        }
+        cbs.live();
+        control_bar_button_cb(stream_name, CONTROL_BAR_BUTTON_LIVE);
+        update_data_cb(stream_name, cbs);
     }
-    // When at live position (is_at_live == true), show no buttons
 }
 
 template<typename CONTROL_BAR_SLIDER_CB>

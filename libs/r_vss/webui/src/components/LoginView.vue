@@ -5,7 +5,7 @@
 
       <!-- first run: no local web password yet (stored as the system password) -->
       <template v-if="passwordSet === false">
-        <p class="sub">Welcome. Create a local web password. Anyone opening Revere's web interface on your local network will need it.</p>
+        <p class="sub">Welcome. Create a local web password. Anyone opening Revere's web interface on this computer will need it.</p>
         <input
           type="password"
           v-model="password"

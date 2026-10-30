@@ -15,6 +15,8 @@
 #include "r_vss/r_tier_outputs.h"
 #include "r_vss/r_rtsp_transport.h"
 #include "r_vss/r_lag_watchdog.h"
+#include "r_vss/r_keep_awake.h"
+#include "r_vss/r_teardown_queue.h"
 #include <functional>
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
@@ -195,11 +197,15 @@ class r_recording_context;
 class r_stream_keeper final
 {
 public:
-    R_API r_stream_keeper(r_disco::r_devices& devices, r_disco::r_agent& agent, const std::string& top_dir);
+    // rtsp_port: where the restream (live and playback video) is served.
+    R_API r_stream_keeper(r_disco::r_devices& devices, r_disco::r_agent& agent, const std::string& top_dir, int rtsp_port = 8554);
     R_API ~r_stream_keeper() noexcept;
 
     R_API void start();
-    R_API void stop();
+    // False when a camera's teardown was still stuck at the bound and was left
+    // running (r_teardown_queue::finish): the caller should exit without
+    // freeing anything more.
+    R_API bool stop();
 
     R_API std::vector<r_stream_status> fetch_stream_status();
 
@@ -246,6 +252,17 @@ public:
     R_API bool system_password_set() const;
     R_API void clear_system_password();
 
+    // Remote access to the web API over HTTPS (see r_ws.h).
+    R_API bool remote_access_configured() const;
+    R_API bool remote_access_active() const;
+    R_API void set_remote_access(bool enabled);
+    // SHA-256 of the HTTPS certificate, "AB:CD:..." ("" if TLS is unavailable).
+    R_API std::string tls_fingerprint() const;
+
+    // The restream's RTSP credential (r_vss/r_rtsp_auth.h): user
+    // r_rtsp_auth::RTSP_USER with this password, by Digest.
+    R_API std::string rtsp_password() const { return _rtsp_password; }
+
     R_API void write_metadata(const std::string& camera_id, const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);
 
     R_API std::vector<std::string> get_loaded_system_plugins() const;
@@ -254,6 +271,9 @@ public:
     R_API std::string get_system_plugin_status(const std::string& plugin_name) const;
     R_API std::string get_system_plugin_status_message(const std::string& plugin_name) const;
     R_API std::string get_system_plugin_version(const std::string& plugin_name) const;
+
+    // "Keep this computer awake": the setting, the OS request and power events.
+    R_API r_keep_awake& keep_awake() { return _keep_awake; }
 
     // Live restreaming state management (owned by r_stream_keeper for safe cleanup)
     R_API void add_live_restreaming_state(GstRTSPMedia* media, std::shared_ptr<live_restreaming_state> lrs);
@@ -300,6 +320,13 @@ private:
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
     std::set<std::string> _suspended_cameras;
 
+    // Removed recording contexts are destroyed here, off the keeper's thread
+    // (see r_teardown_queue); a camera isn't started again while its old one
+    // is still pending. _stuck_warned: per camera, the 30 s steps of a stuck
+    // teardown already logged (keeper thread only).
+    r_teardown_queue _teardowns;
+    std::map<std::string, int64_t> _stuck_warned;
+
     // Per-camera backoff state for cameras whose r_recording_context construction
     // throws (e.g. legacy nanots v1 .nts files that the v2 lib can't open).
     // Without this, the main loop retries every iteration with no sleep, flooding
@@ -319,6 +346,8 @@ private:
     reconnect_log _reconnects;
     // Reconnects asked for by a camera's lag watchdog, with their backoff.
     r_lag_reconnects _lag_reconnects;
+    // Logs a teardown stuck past TEARDOWN_STUCK_MS, once per 30 s of it.
+    void _warn_stuck_teardowns();
     bool _lag_reconnect(const std::string& camera_id, const r_recording_context& rc);
     r_utils::r_work_q<r_stream_keeper_cmd, r_stream_keeper_result> _cmd_q;
 
@@ -334,6 +363,8 @@ private:
     std::thread _rtsp_server_th;
     GMainLoop* _loop;
     GstRTSPServer* _server;
+    GstRTSPAuth* _rtsp_auth {nullptr};
+    std::string _rtsp_password;
     GstRTSPMountPoints* _mounts;
     std::vector<GstRTSPMediaFactory*> _factories;
     r_motion_tuning_fn _motion_tuning_fn;
@@ -341,6 +372,7 @@ private:
     r_motion_event_tee _motion_tee;
     r_motion_engine _motionEngine;
     r_system_plugin_host _system_plugin_host;
+    r_keep_awake _keep_awake;
     r_ws _ws;
     r_prune _prune;
 

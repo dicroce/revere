@@ -32,6 +32,8 @@
 #include "r_ui_utils/font_catalog.h"
 #include "r_ui_utils/theme.h"
 #include "r_ui_utils/wizard.h"
+#include "revere_api.h"
+#include "r_utils/r_local_api_token.h"
 #include "r_ui_utils/texture_loader.h"
 
 // Define the fonts global variable for this app
@@ -306,8 +308,30 @@ std::thread system_info_thread(
                 auto maybe_ip = cfg.get_revere_ipv4();
                 if(update_ui && !maybe_ip.is_null())
                 {
+                    auto host = maybe_ip.value();
 
-                    auto result = query_cameras(cfg.get_revere_ipv4().value());
+                    // A remote Revere needs its certificate confirmed and a
+                    // sign-in first; the UI thread asks the user (see
+                    // _remote_auth_ui). Until then, say so instead of failing.
+                    auto problem = pending_identity_problem();
+                    if(!problem.is_null() && problem.value().host == host)
+                    {
+                        ru.cameras.clear();
+                        ru.status_text = "Confirm the certificate of Revere at " + host + ".";
+                        update_q.post(ru);
+                        this_thread::sleep_for(chrono::milliseconds(500));
+                        continue;
+                    }
+                    if(session_needed(host))
+                    {
+                        ru.cameras.clear();
+                        ru.status_text = "Sign in to Revere at " + host + ".";
+                        update_q.post(ru);
+                        this_thread::sleep_for(chrono::milliseconds(500));
+                        continue;
+                    }
+
+                    auto result = query_cameras(host);
 
                     {
                         ru.cameras = result;
@@ -317,6 +341,12 @@ std::thread system_info_thread(
                         update_ui = false;
                     }
                 }
+            }
+            catch(const untrusted_server& e)
+            {
+                // Recorded for the UI (pending_identity_problem); the next pass
+                // shows the "confirm the certificate" status.
+                R_LOG_WARNING("%s", e.what());
             }
             catch(const std::exception& e)
             {
@@ -363,6 +393,219 @@ void _pop_export_folder()
     if (result != 0)
         R_LOG_ERROR("open failed for exports folder: %s (exit code: %d)", export_dir.c_str(), result);
 #endif
+}
+
+// Trust and sign-in for a remote Revere (revere_api.h). Drawn every frame while
+// no other wizard dialog is up. Network work (signing in) runs on a worker
+// thread so the UI never blocks on it.
+struct remote_auth_ui
+{
+    char password[256] {0};
+    string error;
+    // Host whose sign-in the user cancelled: don't nag again until they change
+    // the address or reopen Configure.
+    string dismissed_host;
+
+    mutex lock;
+    thread worker;
+    bool busy {false};
+    bool done {false};
+    string result_error;
+
+    ~remote_auth_ui()
+    {
+        if(worker.joinable())
+            worker.join();
+    }
+};
+
+static void _wipe(char* buf, size_t len)
+{
+    volatile char* p = buf;
+    for(size_t i = 0; i < len; ++i)
+        p[i] = 0;
+}
+
+static void _remote_auth_ui(configure_state& cfg, remote_auth_ui& st, bool& update_ui)
+{
+    auto maybe_ip = cfg.get_revere_ipv4();
+    if(maybe_ip.is_null() || !is_remote(maybe_ip.value()))
+        return;
+    auto host = maybe_ip.value();
+
+    // 1. Certificate trust.
+    auto problem = pending_identity_problem();
+    if(!problem.is_null() && problem.value().host == host)
+    {
+        auto p = problem.value();
+        bool first = p.pinned.empty();
+        const char* title = first ? "Confirm Revere's identity" : "Revere's certificate changed";
+        ImGui::OpenPopup(title);
+        ImGui::SetNextWindowSize(ImVec2(620, 0));
+        if(ImGui::BeginPopupModal(title, NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::PushTextWrapPos(600);
+            if(first)
+            {
+                ImGui::TextWrapped("This is the first connection to Revere at %s. Check that this fingerprint matches the one Revere shows on that computer before trusting it:", host.c_str());
+            }
+            else
+            {
+                ImGui::TextWrapped("Revere at %s presented a different certificate than before. If Revere wasn't reinstalled or its certificate regenerated, someone may be intercepting the connection: don't trust it.", host.c_str());
+                ImGui::Spacing();
+                ImGui::TextUnformatted("Previously trusted:");
+                ImGui::TextWrapped("%s", p.pinned.c_str());
+            }
+            ImGui::Spacing();
+            ImGui::TextUnformatted(first ? "Fingerprint (SHA-256):" : "Now presented:");
+            ImGui::TextWrapped("%s", p.presented.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::Spacing();
+
+            if(ImGui::Button(first ? "Trust" : "Trust the new certificate", ImVec2(first ? 90.0f : 220.0f, 30)))
+            {
+                try
+                {
+                    trust_server(host, p.presented);
+                    st.dismissed_host.clear();
+                    update_ui = true;
+                }
+                catch(const std::exception& ex)
+                {
+                    R_LOG_ERROR("vision: could not save trusted certificate: %s", ex.what());
+                }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel", ImVec2(90, 30)))
+            {
+                dismiss_identity_problem();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        return;
+    }
+
+    // 2. Sign-in.
+    {
+        lock_guard<mutex> g(st.lock);
+        if(st.done)
+        {
+            st.done = false;
+            st.busy = false;
+            if(st.worker.joinable())
+                st.worker.join();
+            if(st.result_error.empty())
+            {
+                st.error.clear();
+                update_ui = true;
+            }
+            else st.error = st.result_error;
+        }
+    }
+
+    if(!session_needed(host) || st.dismissed_host == host)
+        return;
+
+    const char* title = "Sign in to Revere";
+    ImGui::OpenPopup(title);
+    ImGui::SetNextWindowSize(ImVec2(460, 0));
+    if(ImGui::BeginPopupModal(title, NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        bool busy;
+        {
+            lock_guard<mutex> g(st.lock);
+            busy = st.busy;
+        }
+
+        ImGui::TextWrapped("Revere at %s requires its password.", host.c_str());
+        ImGui::Spacing();
+        if(ImGui::IsWindowAppearing())
+            ImGui::SetKeyboardFocusHere();
+        bool submit = ImGui::InputText("##revere_password", st.password, sizeof(st.password),
+                                       ImGuiInputTextFlags_Password | ImGuiInputTextFlags_EnterReturnsTrue);
+        if(!st.error.empty())
+        {
+            ImGui::PushTextWrapPos(440);
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.45f, 1.0f), "%s", st.error.c_str());
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::Spacing();
+
+        if(busy)
+            ImGui::TextUnformatted("Signing in...");
+        else
+        {
+            if((ImGui::Button("Sign in", ImVec2(90, 30)) || submit) && st.password[0] != 0)
+            {
+                string password(st.password);
+                _wipe(st.password, sizeof(st.password));
+                if(st.worker.joinable())
+                    st.worker.join();
+                {
+                    lock_guard<mutex> g(st.lock);
+                    st.busy = true;
+                    st.done = false;
+                    st.result_error.clear();
+                }
+                st.worker = thread([&st, host, password]() mutable {
+                    string err;
+                    try
+                    {
+                        login(host, password);
+                    }
+                    catch(const std::exception& ex)
+                    {
+                        err = ex.what();
+                    }
+                    for(auto& c : password)
+                        c = 0;
+                    lock_guard<mutex> g(st.lock);
+                    st.result_error = err;
+                    st.done = true;
+                });
+            }
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel", ImVec2(90, 30)))
+            {
+                _wipe(st.password, sizeof(st.password));
+                st.error.clear();
+                st.dismissed_host = host;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
+}
+
+// Whether a Revere lives on this machine: one is running (it publishes the
+// local API token in the data directory vision shares with it), or the
+// recorder is installed next to vision (a "Revere and Vision" install). A
+// Vision-only install has neither.
+static bool _local_revere_present()
+{
+    try
+    {
+        if(!r_local_api_token::read(top_dir()).is_null())
+            return true;
+    }
+    catch(...) {}
+#ifdef IS_WINDOWS
+    const char* exe = "revere.exe";
+#else
+    const char* exe = "revere";
+#endif
+    return r_fs::file_exists(r_fs::path_join(r_fs::working_directory(), exe));
+}
+
+bool _revere_is_loopback(const configure_state& cfg)
+{
+    auto maybe_ip = cfg.get_revere_ipv4();
+    if(maybe_ip.is_null())
+        return true;
+    auto ip = maybe_ip.value();
+    return ip == "127.0.0.1" || ip == "localhost" || ip == "::1";
 }
 
 void _set_working_dir()
@@ -690,8 +933,29 @@ int main(int argc, char** argv)
         vision::configure_state cfg_state;
         cfg_state.load();
 
+        // First run: with a Revere on this machine, connect to it; with none
+        // (a Vision-only install), ask where it is rather than sit empty. Also
+        // ask when the saved address is this machine but no Revere is here.
+        bool open_configure_at_start = false;
+        {
+            bool local_revere = _local_revere_present();
+            if(cfg_state.get_revere_ipv4().is_null())
+            {
+                if(local_revere)
+                {
+                    cfg_state.set_revere_ipv4("127.0.0.1");
+                    cfg_state.save();
+                }
+                else open_configure_at_start = true;
+            }
+            else if(!local_revere && _revere_is_loopback(cfg_state))
+                open_configure_at_start = true;
+        }
+
         r_ui_utils::wizard configure_wizard;
         configure_configure_wizard(configure_wizard, cfg_state, window, ui_state);
+
+        remote_auth_ui remote_auth;
 
         pipeline_host ph(cfg_state, renderer);
         ph.start();
@@ -715,6 +979,59 @@ int main(int argc, char** argv)
 
         r_ui_utils::texture_loader tl;
         tl.set_renderer(renderer);
+
+        // Borderless fullscreen (F11 / F / View menu). While on, the menu bar
+        // and camera sidebar are hidden so the video gets the whole display.
+        bool fullscreen = false;
+        auto toggle_fullscreen = [&]() {
+            bool want = !fullscreen;
+            if(SDL_SetWindowFullscreen(window, want ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) != 0)
+            {
+                R_LOG_ERROR("SDL_SetWindowFullscreen failed: %s", SDL_GetError());
+                return;
+            }
+            fullscreen = want;
+        };
+
+        // Mute (M) remembers the level it replaced, so unmute goes back to it.
+        float unmuted_volume = 1.0f;
+        auto toggle_mute = [&]() {
+            if(ui_state.mcs.obos.cbs.volume_gain > 0.0f)
+            {
+                unmuted_volume = ui_state.mcs.obos.cbs.volume_gain;
+                ui_state.mcs.obos.cbs.volume_gain = 0.0f;
+            }
+            else
+                ui_state.mcs.obos.cbs.volume_gain = unmuted_volume;
+        };
+
+        // Short-lived status bar message (e.g. "Saved <snapshot path>"); it
+        // overrides the connection status text until it expires.
+        std::string transient_status;
+        auto transient_status_until = chrono::steady_clock::time_point{};
+        auto set_transient_status = [&](const std::string& msg) {
+            transient_status = msg;
+            transient_status_until = chrono::steady_clock::now() + chrono::seconds(5);
+        };
+
+        // Control bar callbacks, hoisted so the keyboard shortcuts can invoke
+        // exactly what the buttons do.
+        auto control_bar_slider_cb = [&ph, &ui_state](const std::string& name, const std::chrono::system_clock::time_point& pos) {
+            if(ui_state.mcs.sync_scrub)
+                ph.sync_control_bar_cb(pos);
+            else
+                ph.control_bar_cb(name, pos);
+        };
+        auto control_bar_button_cb = [&ph, &ui_state](const std::string& name, control_bar_button_type type) {
+            if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_PLAY)
+                ph.sync_play_cb(ui_state.mcs.obos.cbs.get_range().second);
+            else if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_LIVE)
+                ph.sync_live_cb();
+            else if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_PAUSE)
+                ph.sync_pause_cb();
+            else
+                ph.control_bar_button_cb(name, type);
+        };
 
         // Main loop
         while(!close_requested)
@@ -818,19 +1135,92 @@ int main(int argc, char** argv)
             ImGui_ImplSDL2_NewFrame();
             ImGui::NewFrame();
 
+            // Opened inside a frame: the wizard's next() closes popups.
+            if(open_configure_at_start)
+            {
+                open_configure_at_start = false;
+                configure_wizard.next("configure");
+            }
+
             ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_24].inter_tight_regular);
 
-            auto client_top = vision::main_menu(
-                [&close_requested](){
-                    close_requested = true;
-                },
-                [&configure_wizard](){
-                    configure_wizard.next("configure");
-                },
-                [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_ONE_BY_ONE);},
-                [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_TWO_BY_TWO);},
-                [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_FOUR_BY_FOUR);}
-            );
+            // Keyboard shortcuts for the main window. Skipped while a text field
+            // has focus or a modal/popup is open, so typing never drives playback.
+            {
+                bool popup_open = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+                if(!ImGui::GetIO().WantTextInput && !popup_open)
+                {
+                    auto& cbs = ui_state.mcs.obos.cbs;
+                    const auto sel = ui_state.mcs.selected_stream_name;
+
+                    if(ImGui::IsKeyPressed(ImGuiKey_F11, false) || ImGui::IsKeyPressed(ImGuiKey_F, false))
+                        toggle_fullscreen();
+                    else if(fullscreen && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                        toggle_fullscreen();
+
+                    if(ImGui::IsKeyPressed(ImGuiKey_S, false))
+                        cbs.snapshot_requested = true;
+
+                    if(ImGui::IsKeyPressed(ImGuiKey_M, false))
+                        toggle_mute();
+
+                    if(ImGui::IsKeyPressed(ImGuiKey_L, false))
+                    {
+                        // Same as the Go live button.
+                        cbs.live();
+                        control_bar_button_cb(sel, CONTROL_BAR_BUTTON_LIVE);
+                        ph.control_bar_update_data_cb(sel, cbs);
+                    }
+
+                    if(ImGui::IsKeyPressed(ImGuiKey_Space, false))
+                    {
+                        // Same as the Play button, which only exists when the
+                        // playhead is in the past and the stream is stopped.
+                        // While playing, Space is a no-op here (no pause yet).
+                        bool is_at_live = (cbs.playhead_pos >= timeline_constants::PLAYHEAD_MAX_POSITION);
+                        if(!is_at_live && !ph.playing(sel))
+                            control_bar_button_cb(sel, CONTROL_BAR_BUTTON_PLAY);
+                    }
+
+                    // Left/Right pan the timeline like the < > buttons.
+                    auto jump_minutes = std::chrono::minutes((std::max)(1u, (unsigned)cbs.get_timerange_minutes() / 5));
+                    if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
+                    {
+                        cbs.backward(jump_minutes);
+                        ph.control_bar_update_data_cb(sel, cbs);
+                    }
+                    if(ImGui::IsKeyPressed(ImGuiKey_RightArrow))
+                    {
+                        cbs.forward(jump_minutes);
+                        ph.control_bar_update_data_cb(sel, cbs);
+                    }
+                }
+            }
+
+            // No menu bar in fullscreen; F11 / F / Esc get back out.
+            uint16_t client_top = 0;
+            if(!fullscreen)
+            {
+                client_top = vision::main_menu(
+                    [&close_requested](){
+                        close_requested = true;
+                    },
+                    [&configure_wizard, &remote_auth](){
+                        // Reopening Configure brings back a cancelled sign-in.
+                        remote_auth.dismissed_host.clear();
+                        configure_wizard.next("configure");
+                    },
+                    [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_ONE_BY_ONE);},
+                    [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_TWO_BY_TWO);},
+                    [&cfg_state, &ph, &ui_state](){change_layout(cfg_state, ph, ui_state, LAYOUT_FOUR_BY_FOUR);},
+                    toggle_fullscreen,
+                    fullscreen
+                );
+            }
+
+            auto status_text = ui_state.current_revere_update.status_text;
+            if(chrono::steady_clock::now() < transient_status_until)
+                status_text.set_value(transient_status);
 
             auto window_size = ImGui::GetIO().DisplaySize;
             auto window_width = (uint16_t)window_size.x;
@@ -941,6 +1331,14 @@ int main(int argc, char** argv)
                                                     ui_state.mcs.obos.cbs.playhead_pos = new_playhead_pos;
                                                 }
                                             }
+                                        }
+                                        else if(!ui_state.mcs.obos.cbs.dragging &&
+                                                frame_time > ui_state.mcs.obos.cbs.tr.get_end() &&
+                                                ph.playback_active(name))
+                                        {
+                                            // Playback ran off the right edge (range end, or a gap
+                                            // skip into a later segment): pan the range after it.
+                                            ui_state.mcs.obos.cbs.follow_playhead(frame_time);
                                         }
                                     }
                                 }
@@ -1074,7 +1472,11 @@ int main(int argc, char** argv)
                                 ImGui::EndDragDropTarget();
                             }
 
-                            if(maybe_rc.is_null())
+                            auto status = ph.get_stream_status(name);
+
+                            // Empty slot (nothing assigned): invite a drop. A slot
+                            // that is assigned but silent gets the badge below instead.
+                            if(maybe_rc.is_null() && status == stream_status::none)
                             {
                                 auto label_size = ImGui::CalcTextSize("Drag camera here...");
                                 ImGui::PushStyleColor(ImGuiCol_Text, timeline_constants::colors::PLACEHOLDER_TEXT);
@@ -1082,30 +1484,85 @@ int main(int argc, char** argv)
                                 ImGui::Text("Drag camera here...");
                                 ImGui::PopStyleColor();
                             }
+
+                            // Per-tile status badge, top-left corner: "Connecting..."
+                            // before the first frame, "Offline" once the dead check
+                            // has seen the stream stall. Gone while frames flow.
+                            if(status != stream_status::none)
+                            {
+                                const bool offline = (status == stream_status::offline);
+                                const char* badge = offline ? "Offline" : "Connecting...";
+                                ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_16].inter_tight_semibold);
+                                auto badge_size = ImGui::CalcTextSize(badge);
+                                ImVec2 wp = ImGui::GetWindowPos();
+                                ImVec2 p0(wp.x + 10.0f, wp.y + 10.0f);
+                                ImVec2 p1(p0.x + badge_size.x + 16.0f, p0.y + badge_size.y + 8.0f);
+                                ImDrawList* badge_dl = ImGui::GetWindowDrawList();
+                                badge_dl->AddRectFilled(p0, p1, ImGui::GetColorU32(r_ui_utils::theme::surface_overlay), 4.0f);
+                                badge_dl->AddCircleFilled(ImVec2(p0.x + 8.0f, (p0.y + p1.y) * 0.5f), 3.0f,
+                                    ImGui::GetColorU32(offline ? r_ui_utils::theme::status_danger_dot : r_ui_utils::theme::status_warning_dot));
+                                badge_dl->AddText(ImVec2(p0.x + 16.0f, p0.y + 4.0f),
+                                    ImGui::GetColorU32(offline ? r_ui_utils::theme::status_danger_text : r_ui_utils::theme::status_warning_text), badge);
+                                ImGui::PopFont();
+                            }
                         },
-                        [&ph, &ui_state](const std::string& name, const std::chrono::system_clock::time_point& pos) {
-                            if(ui_state.mcs.sync_scrub)
-                                ph.sync_control_bar_cb(pos);
-                            else
-                                ph.control_bar_cb(name, pos);
-                        },
-                        [&ph, &ui_state](const std::string& name, control_bar_button_type type) {
-                            if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_PLAY)
-                                ph.sync_play_cb(ui_state.mcs.obos.cbs.get_range().second);
-                            else if(ui_state.mcs.sync_scrub && type == CONTROL_BAR_BUTTON_LIVE)
-                                ph.sync_live_cb();
-                            else
-                                ph.control_bar_button_cb(name, type);
-                        },
+                        control_bar_slider_cb,
+                        control_bar_button_cb,
                         std::bind(&pipeline_host::control_bar_update_data_cb, &ph, std::placeholders::_1, std::placeholders::_2),
                         std::bind(&pipeline_host::control_bar_export_cb, &ph, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4),
                         ph.playing(ui_state.mcs.selected_stream_name)
                     );
                 },
-                ui_state.current_revere_update.status_text
+                status_text,
+                fullscreen
             );
 
             ph.load_video_textures();
+
+            // Snapshot (Snap button or S): save the selected tile's last presented
+            // frame as PNG under <data>/snapshots and say where it went.
+            if(ui_state.mcs.obos.cbs.snapshot_requested)
+            {
+                ui_state.mcs.obos.cbs.snapshot_requested = false;
+
+                const auto& sel = ui_state.mcs.selected_stream_name;
+                std::shared_ptr<std::vector<uint8_t>> frame_buf;
+                bool frame_nv12 = false;
+                uint16_t frame_w = 0, frame_h = 0, frame_orig_h = 0;
+
+                if(!ph.get_last_frame(sel, frame_buf, frame_nv12, frame_w, frame_h, frame_orig_h))
+                    set_transient_status("Snapshot: the selected camera has no frame yet.");
+                else
+                {
+                    // Name the file after the camera's label (fall back to its id).
+                    std::string camera_label = sel;
+                    auto sel_si = cfg_state.get_stream_info(sel);
+                    if(!sel_si.is_null())
+                    {
+                        camera_label = sel_si.value().camera_id;
+                        for(const auto& c : ui_state.current_revere_update.cameras)
+                        {
+                            if(c.camera_id == sel_si.value().camera_id)
+                            {
+                                camera_label = c.label;
+                                break;
+                            }
+                        }
+                    }
+
+                    try
+                    {
+                        auto path = vision::save_snapshot_png(camera_label, frame_buf->data(), frame_nv12, frame_w, frame_h, frame_orig_h);
+                        R_LOG_INFO("Snapshot saved: %s", path.c_str());
+                        set_transient_status("Saved " + path);
+                    }
+                    catch(const std::exception& e)
+                    {
+                        R_LOG_ERROR("Snapshot failed: %s", e.what());
+                        set_transient_status(std::string("Snapshot failed: ") + e.what());
+                    }
+                }
+            }
 
             {
                 static string last_audio_stream;
@@ -1115,6 +1572,7 @@ int main(int argc, char** argv)
                     ph.set_active_audio_stream(last_audio_stream);
                 }
                 ph.set_stream_volume(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs.volume_gain);
+                ph.set_stream_denoise(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs.denoise);
                 ui_state.mcs.obos.cbs.has_audio = ph.has_audio(ui_state.mcs.selected_stream_name);
 
                 // Sync the control bar to the newly-selected camera. Keyed on
@@ -1153,6 +1611,8 @@ int main(int argc, char** argv)
             //ImGui::ShowDemoWindow();
 
             configure_wizard();
+            if(!configure_wizard.active())
+                _remote_auth_ui(cfg_state, remote_auth, update_ui);
             
             if(ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_IN_PROGRESS ||
                ui_state.mcs.obos.cbs.exp_state == EXPORT_STATE_FINISHED_SUCCESS)
@@ -1174,8 +1634,16 @@ int main(int argc, char** argv)
                     "Exporting...",
                     ui_state.mcs.obos.cbs.export_percent_complete,
                     [&](){
-                        _pop_export_folder();
-                        ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE;
+                        // The export lands in revere's exports folder. Only pop the
+                        // local folder when revere is on this machine; otherwise leave
+                        // the modal up showing completion until dismissed.
+                        if(_revere_is_loopback(cfg_state))
+                        {
+                            _pop_export_folder();
+                            ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE;
+                            return true;
+                        }
+                        return false;
                     },
                     [&](){ ui_state.mcs.obos.cbs.exp_state = EXPORT_STATE_NONE; }
                 );
@@ -1570,6 +2038,7 @@ int run_overlay(const overlay_opts& opts)
     auto last_raise_check = chrono::steady_clock::now();
     SDL_GetGlobalMouseState(&last_mouse_x, &last_mouse_y);
     float bar_alpha = 1.0f;   // visible at launch so the controls are discoverable
+    bool popup_open = false;  // a control bar popup (time range) was open last frame
     bool audio_activated = false;  // one-shot: make this stream's audio active
 
     // Placement/pin persistence: `persisted` mirrors what's on disk (seeded
@@ -1703,8 +2172,9 @@ int run_overlay(const overlay_opts& opts)
             need_draw = true;
 
         // Auto-hiding controls: shown on mouse activity, faded out after 3 s
-        // idle. While fading, every frame is drawn.
-        bool bar_visible = (chrono::steady_clock::now() - last_mouse_activity) < chrono::milliseconds(3000);
+        // idle, but never while one of the bar's popups is open. While fading,
+        // every frame is drawn.
+        bool bar_visible = popup_open || (chrono::steady_clock::now() - last_mouse_activity) < chrono::milliseconds(3000);
         float target_alpha = bar_visible ? 1.0f : 0.0f;
         if(bar_alpha != target_alpha)
             need_draw = true;
@@ -1760,6 +2230,11 @@ int run_overlay(const overlay_opts& opts)
                             mcs.obos.cbs.playhead_pos = new_playhead_pos;
                     }
                 }
+                else if(!mcs.obos.cbs.dragging && frame_time > mcs.obos.cbs.tr.get_end() && ph.playback_active(si.name))
+                {
+                    // Playback ran off the right edge (range end or gap skip): pan after it.
+                    mcs.obos.cbs.follow_playhead(frame_time);
+                }
             }
 
             if(rc->tex && rc->w > 0 && rc->h > 0)
@@ -1802,12 +2277,12 @@ int run_overlay(const overlay_opts& opts)
         {
             // Render the whole control block under a compact font. The app's
             // default font is 24pt (the first size loaded), which makes the
-            // control bar — sized as 6x the line height — about twice as tall as
+            // control bar (sized from the line height) about twice as tall as
             // it should be for this small overlay window. 14pt keeps it slim.
             ImFont* block_font = r_ui_utils::fonts[get_font_key_14()].inter_tight_regular;
             if(block_font) ImGui::PushFont(block_font);
 
-            uint16_t cb_h = (uint16_t)(6.0f * ImGui::GetTextLineHeightWithSpacing());
+            uint16_t cb_h = (uint16_t)std::ceil(control_bar_preferred_height());
             float block_top = (float)win_h - (float)cb_h;
 
             // Once the time bar's height is known (it follows the font): never
@@ -1861,8 +2336,15 @@ int run_overlay(const overlay_opts& opts)
 
             if(block_font) ImGui::PopFont();
 
-            // The bottom block, and the corner strip, take clicks.
-            hit_ctx.interactive = SDL_Rect{ 0, (int)block_top, win_w, win_h - (int)block_top };
+            // The bottom block, and the corner strip, take clicks. A popup
+            // (the time range list) opens above the bar, over the video, so
+            // while one is open the whole window takes clicks instead of
+            // dragging; the bottom resize strip still wins.
+            popup_open = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+            if(popup_open)
+                hit_ctx.interactive = SDL_Rect{ 0, 0, win_w, win_h };
+            else
+                hit_ctx.interactive = SDL_Rect{ 0, (int)block_top, win_w, win_h - (int)block_top };
             hit_ctx.corner_strip = SDL_Rect{ (int)corner.x, (int)corner.y, (int)std::ceil(corner.w), (int)std::ceil(corner.h) };
             hit_ctx.interactive_visible = true;
         }

@@ -22,7 +22,8 @@ namespace vision
 enum control_bar_button_type
 {
     CONTROL_BAR_BUTTON_LIVE,
-    CONTROL_BAR_BUTTON_PLAY
+    CONTROL_BAR_BUTTON_PLAY,
+    CONTROL_BAR_BUTTON_PAUSE
 };
 
 enum export_state
@@ -39,6 +40,7 @@ struct control_bar_state
 {
     bool has_audio {false};
     float volume_gain {0.0f};
+    bool denoise {false};
     int playhead_pos {1000};
     uint16_t playhead_x {4};
     uint16_t playhead_width {3};
@@ -56,6 +58,10 @@ struct control_bar_state
     std::string export_id;
     int export_percent_complete {0};
     r_utils::r_nullable<std::chrono::system_clock::time_point> scrollback_limit;
+
+    // Set by the Snap button (and the S key); the main loop saves the selected
+    // tile's frame and clears it.
+    bool snapshot_requested {false};
 
     // Set the number of minutes in the timerange.
     // This is centered around the current playhead position.
@@ -191,6 +197,18 @@ struct control_bar_state
         playhead_pos = 1000;  // Ensure playhead goes to the right edge when going live
     }
 
+    // Playback has moved past the visible range (gap skip, or just reaching the
+    // right edge): pan the range so the playhead lands a quarter of the way in
+    // and has room to keep moving right.
+    void follow_playhead(const std::chrono::system_clock::time_point& t)
+    {
+        set_range(t + (std::chrono::minutes(timerange_minutes) * 3) / 4);
+        if(tr.time_is_in_range(t))
+            playhead_pos = (std::max)(0, (std::min)(1000, tr.time_to_range(t, 0, 1000)));
+        else
+            playhead_pos = 1000;
+    }
+
     std::pair<std::chrono::system_clock::time_point, std::chrono::system_clock::time_point> get_range() const
     {
         return tr.get();
@@ -261,12 +279,13 @@ struct control_bar_state
         playhead_pos = (int)(new_time_frac * 1000);
     }
 
-    std::string playhead_pos_s() const
+    std::chrono::system_clock::time_point playhead_time() const
     {
         auto delta = std::chrono::duration_cast<std::chrono::seconds>(tr.get_end() - tr.get_start()).count();
-        auto pos = tr.get_start() + std::chrono::seconds((int)(delta * (playhead_pos / 1000.0)));
-        return _tp_to_s(pos);
+        return tr.get_start() + std::chrono::seconds((int)(delta * (playhead_pos / 1000.0)));
     }
+
+    std::string playhead_pos_s() const {return _tp_to_s(playhead_time());}
 
     std::string range_start_s() const {return _tp_to_s(tr.get_start());}
 

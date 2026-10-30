@@ -12,6 +12,7 @@
 #else
 #if defined(IS_LINUX) || defined(IS_MACOS)
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <fnmatch.h>
 #include <sys/types.h>
@@ -251,8 +252,11 @@ void r_utils::r_fs::atomic_rename_file(const string& oldPath, const string& newP
 #endif
 }
 
-void r_utils::r_fs::atomic_write_file(const uint8_t* bytes, size_t len, const string& path)
+static void _atomic_write_file(const uint8_t* bytes, size_t len, const string& path, bool owner_only)
 {
+    using namespace r_utils;
+    using namespace r_utils::r_fs;
+
     string dir, name;
     break_path(path, dir, name);
     auto tmp_path = temp_file_name(dir, name + ".tmp-");
@@ -261,6 +265,15 @@ void r_utils::r_fs::atomic_write_file(const uint8_t* bytes, size_t len, const st
     {
         {
             auto f = r_file::open(tmp_path, "wb");
+#ifndef IS_WINDOWS
+            // Restrict before any bytes land, so a secret is never readable by
+            // others even for an instant. (On Windows the per-user profile
+            // directories these files live in are already private.)
+            if(owner_only && fchmod(::fileno(f), S_IRUSR | S_IWUSR) != 0)
+                R_STHROW(r_io_exception, ("Unable to restrict permissions on: %s", tmp_path.c_str()));
+#else
+            (void)owner_only;
+#endif
             if(len > 0 && fwrite(bytes, 1, len, f) != len)
                 R_STHROW(r_io_exception, ("Unable to write file: %s", tmp_path.c_str()));
             if(fflush(f) != 0)
@@ -286,6 +299,16 @@ void r_utils::r_fs::atomic_write_file(const uint8_t* bytes, size_t len, const st
             remove_file(tmp_path);
         throw;
     }
+}
+
+void r_utils::r_fs::atomic_write_file(const uint8_t* bytes, size_t len, const string& path)
+{
+    _atomic_write_file(bytes, len, path, false);
+}
+
+void r_utils::r_fs::atomic_write_private_file(const uint8_t* bytes, size_t len, const string& path)
+{
+    _atomic_write_file(bytes, len, path, true);
 }
 
 string r_utils::r_fs::quarantine_file(const string& path)

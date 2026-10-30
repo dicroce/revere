@@ -37,10 +37,16 @@ public:
 
     R_API virtual bool wait_till_recv_wont_block(uint64_t& millis) const override;
     R_API virtual bool wait_till_send_wont_block(uint64_t& millis) const override;
+    R_API virtual bool peer_closed() const override;
 
     R_API void set_io_timeout( uint64_t ioTimeOut ) { _ioTimeOut = ioTimeOut; }
 
-    inline std::string get_peer_ip() const { return _sok.get_peer_ip(); }
+    inline std::string get_peer_ip() const override { return _sok.get_peer_ip(); }
+
+    // The SHA-256 fingerprint of the certificate the server presented
+    // (r_utils/r_tls_fingerprint.h form), for pinning when enable_auth is off.
+    // Empty before a successful connect().
+    R_API std::string peer_cert_fingerprint_sha256() const;
     inline std::string get_local_ip() const { return _sok.get_local_ip(); }
 
 private:

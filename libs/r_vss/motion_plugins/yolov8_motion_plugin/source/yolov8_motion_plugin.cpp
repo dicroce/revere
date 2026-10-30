@@ -5,6 +5,7 @@
 #include "r_utils/r_file.h"
 #include "r_disco/r_devices.h"
 #include "r_utils/r_time_utils.h"
+#include "r_vss/r_detection_cap.h"
 #include <memory>
 #include <vector>
 #include <algorithm>
@@ -627,19 +628,33 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
                                 R"(", "motion_end_time": ")" + end_time_str +
                                 R"(", "detections": [)";
 
-    bool first = true;
-    int valid_detection_count = 0;
-    int64_t first_detection_ts = start_time_ms;
+    // The event's detections, and the ones the record keeps: a long busy
+    // event is capped (whole frames, see r_vss::cap_event_detections) so the
+    // record fits its metadata block. total_detections stays the full count.
+    std::vector<const Detection*> valid;
+    std::vector<r_vss::r_capped_detection> for_cap;
     for (const auto& detection : it->second) {
         if (disproven.find(detection.class_id) != disproven.end()) continue;
         if (is_static_detection(detection)) continue;
+        valid.push_back(&detection);
+        for_cap.push_back({detection.timestamp, get_class_name(detection.class_id), detection.score,
+                           (detection.x2 - detection.x1) * (detection.y2 - detection.y1)});
+    }
+    const auto keep = r_vss::cap_event_detections(for_cap);
+    const int valid_detection_count = (int)valid.size();
+    const size_t dropped = (size_t)std::count(keep.begin(), keep.end(), false);
+
+    bool first = true;
+    int64_t first_detection_ts = start_time_ms;
+    for (size_t i = 0; i < valid.size(); ++i) {
+        if (!keep[i]) continue;
+        const auto& detection = *valid[i];
 
         if (!first) {
             json_metadata += ", ";
         }
         if (first) first_detection_ts = detection.timestamp;
         first = false;
-        valid_detection_count++;
 
         auto det_tp = r_time_utils::epoch_millis_to_tp(detection.timestamp);
         std::string det_time_str = r_time_utils::tp_to_iso_8601(det_tp, true);
@@ -665,6 +680,8 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
     }
 
     json_metadata += R"(], "total_detections": )" + std::to_string(valid_detection_count);
+    if (dropped > 0)
+        json_metadata += R"(, "detections_dropped": )" + std::to_string(dropped);
 
     // Only write metadata and emit detections if we have valid detections
     if (valid_detection_count > 0) {

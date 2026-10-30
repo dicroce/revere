@@ -19,11 +19,14 @@
 #include <cstdint>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include "gl_utils.h"
 #include "configure_state.h"
+#include "revere_api.h"
 #include "layouts.h"
 #include "control_bar.h"
 #include "control_bar_renderer.h"
+#include "overlay_controls.h"
 #include "timeline_constants.h"
 #include "error_handling.h"
 #include "font_keys.h"
@@ -44,8 +47,8 @@ struct main_client_state
     bool sync_scrub {false};
 };
 
-template<typename EXIT_CB, typename SETTINGS_CB, typename ONE_BY_ONE_CB, typename TWO_BY_TWO_CB, typename FOUR_BY_FOUR_CB>
-uint16_t main_menu(EXIT_CB exit_cb, SETTINGS_CB settings_cb, ONE_BY_ONE_CB one_by_one_cb, TWO_BY_TWO_CB two_by_two_cb, FOUR_BY_FOUR_CB four_by_four_cb)
+template<typename EXIT_CB, typename SETTINGS_CB, typename ONE_BY_ONE_CB, typename TWO_BY_TWO_CB, typename FOUR_BY_FOUR_CB, typename FULLSCREEN_CB>
+uint16_t main_menu(EXIT_CB exit_cb, SETTINGS_CB settings_cb, ONE_BY_ONE_CB one_by_one_cb, TWO_BY_TWO_CB two_by_two_cb, FOUR_BY_FOUR_CB four_by_four_cb, FULLSCREEN_CB fullscreen_cb, bool fullscreen)
 {
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("File"))
@@ -66,6 +69,10 @@ uint16_t main_menu(EXIT_CB exit_cb, SETTINGS_CB settings_cb, ONE_BY_ONE_CB one_b
         if (ImGui::MenuItem("4x4"))
             four_by_four_cb();
 
+        ImGui::Separator();
+        if (ImGui::MenuItem("Fullscreen", "F11", fullscreen))
+            fullscreen_cb();
+
         ImGui::EndMenu();
     }
     uint16_t h = (uint16_t)ImGui::GetWindowHeight();
@@ -83,7 +90,10 @@ void configure_modal(
     CANCEL_CB cancel_cb
 )
 {
-    ImGui::SetNextWindowSize(ImVec2(500, 150));
+    // A remote Revere's pinned certificate (revere_api.h) is shown with a way to
+    // forget it: after a reinstall, or to stop trusting that machine.
+    auto pinned = vision::is_remote(ip_storage) ? vision::trusted_fingerprint(ip_storage) : r_utils::r_nullable<std::string>();
+    ImGui::SetNextWindowSize(ImVec2(500, pinned.is_null() ? 150.0f : 230.0f));
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
         //ImGuiContext& g = *GImGui;
@@ -91,7 +101,7 @@ void configure_modal(
         //ImVec2 pos_before = window->DC.CursorPos;
 
         ImGui::SetCursorPos(ImVec2(250 - (430/2), 30));
-        ImGui::Text("Revere IPV4 Address");
+        ImGui::Text("Address of the computer running Revere");
 
         ImGui::SetCursorPos(ImVec2(250 - (430/2), 55));
 
@@ -116,6 +126,19 @@ void configure_modal(
         {
             ImGui::CloseCurrentPopup();
             ok_cb();
+        }
+
+        if(!pinned.is_null())
+        {
+            ImGui::SetCursorPos(ImVec2(250 - (430/2), 135));
+            ImGui::TextUnformatted("Trusted certificate (SHA-256):");
+            ImGui::SetCursorPos(ImVec2(250 - (430/2), 155));
+            ImGui::PushTextWrapPos(470);
+            ImGui::TextWrapped("%s", pinned.value().c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::SetCursorPos(ImVec2(250 - (430/2), 192));
+            if(ImGui::Button("Forget certificate and sign-in", ImVec2(250, 28)))
+                vision::forget_server(ip_storage);
         }
 
         ImGui::EndPopup();
@@ -160,17 +183,24 @@ void progress_modal(
     ImGui::SetNextWindowSize(ImVec2(400, 120));
     if (ImGui::BeginPopupModal(name.c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
     {
+        // done_cb returns true to close the modal immediately on completion, or
+        // false to leave it open showing completion until the user dismisses it.
         if(percent_complete >= 100)
         {
-            ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
-            done_cb();
-            return;
+            if(done_cb())
+            {
+                ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+                return;
+            }
+            ImGui::TextUnformatted("Export complete.");
         }
-
-        char overlay[16];
-        snprintf(overlay, sizeof(overlay), "%d%%", percent_complete);
-        ImGui::ProgressBar(percent_complete / 100.0f, ImVec2(-1, 0), overlay);
+        else
+        {
+            char overlay[16];
+            snprintf(overlay, sizeof(overlay), "%d%%", percent_complete);
+            ImGui::ProgressBar(percent_complete / 100.0f, ImVec2(-1, 0), overlay);
+        }
 
         float button_x = (400.0f - 90.0f) * 0.5f;
         ImGui::SetCursorPosX(button_x);
@@ -195,17 +225,21 @@ void main_layout(
     SIDEBAR_CB sidebar_cb,
     const std::string& main_label,
     MAIN_CB main_cb,
-    r_utils::r_nullable<std::string> status_text
+    r_utils::r_nullable<std::string> status_text,
+    bool hide_sidebar = false   // fullscreen: video takes the full width
 )
 {
     bool open = true;
 
-    uint16_t panel_width = window_width / 6;
-    ImGui::SetNextWindowPos(ImVec2(0, client_top));
-    ImGui::SetNextWindowSize(ImVec2(panel_width, window_height - (ImGui::GetTextLineHeightWithSpacing()*2)));
-    ImGui::Begin(sidebar_label.c_str(), &open, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
-    sidebar_cb(panel_width);
-    ImGui::End();
+    uint16_t panel_width = hide_sidebar ? 0 : window_width / 6;
+    if(!hide_sidebar)
+    {
+        ImGui::SetNextWindowPos(ImVec2(0, client_top));
+        ImGui::SetNextWindowSize(ImVec2(panel_width, window_height - (ImGui::GetTextLineHeightWithSpacing()*2)));
+        ImGui::Begin(sidebar_label.c_str(), &open, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+        sidebar_cb(panel_width);
+        ImGui::End();
+    }
 
     uint16_t main_width = window_width - panel_width;
     uint16_t main_height = window_height - ((uint16_t)(ImGui::GetTextLineHeightWithSpacing()*2));
@@ -351,51 +385,97 @@ void control_bar(
     // Use renderer for all UI components
     auto calc = renderer.calculate_layout(render_layout);
     
-    // Render timerange text and zoom buttons
-    renderer.render_timerange_text(render_layout, cbs, calc);
-    renderer.render_zoom_buttons(render_layout, cbs, calc);
+    // One control row over the timeline strip. Left group, flowing right:
+    // time range dropdown, audio. Right group, flowing left: Go live,
+    // Play/Pause, Export (or Finish export + Cancel), Snap, Sync. The
+    // playhead's time is centered in whatever space is left between them.
+    float left_x = renderer.render_timerange_picker(render_layout, cbs, calc);
 
-    // Volume slider — top row, left of Export button
+    // Audio: one button that opens a popover with the volume slider and the
+    // Denoise toggle. The button shows the level, and a dot when denoise is on.
     if(cbs.has_audio && playing)
     {
-        auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-        auto right_edge = calc.center_box_left + calc.center_box_width;
-        ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_14()].inter_tight_regular);
-        ImGui::SetCursorScreenPos(ImVec2(right_edge - 560.0f, top_line_top + 7.0f));
-        ImGui::Text("Vol");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(100.0f);
-        ImGui::PushID("volume_gain");
-        ImGui::SliderFloat("##vol", &cbs.volume_gain, 0.0f, 4.0f, "");
-        ImGui::PopID();
-        ImGui::PopFont();
+        left_x += 16.0f;
+        const float btn_h = calc.row_height;
+        const float btn_w = btn_h * 1.75f;
+        ImVec2 p(left_x, calc.row_top);
+        ImGui::SetCursorScreenPos(p);
+        if(ImGui::Button("##audio", ImVec2(btn_w, btn_h)))
+            ImGui::OpenPopup("##audio_popover");
+        if(ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##audio_popover"))
+            ImGui::SetTooltip(cbs.denoise ? "Audio (denoise on)" : "Audio");
+
+        auto* dl = ImGui::GetWindowDrawList();
+        ImU32 fg = ImGui::GetColorU32(r_ui_utils::theme::text_primary);
+        float cy = p.y + btn_h / 2.0f;
+        overlay_controls_detail::draw_speaker(dl, ImVec2(p.x + btn_h * 0.55f, cy), fg, (std::min)(cbs.volume_gain / 4.0f, 1.0f));
+        if(cbs.denoise)
+            dl->AddCircleFilled(ImVec2(p.x + btn_h * 1.05f, cy), 3.0f, ImGui::GetColorU32(r_ui_utils::theme::accent));
+        float caret_x = p.x + btn_w - btn_h * 0.35f;
+        dl->AddTriangleFilled(ImVec2(caret_x - 4.0f, cy - 2.0f), ImVec2(caret_x + 4.0f, cy - 2.0f), ImVec2(caret_x, cy + 3.0f),
+                              ImGui::GetColorU32(r_ui_utils::theme::text_secondary));
+
+        // Opens upward, above the button: there's no room below the bar.
+        ImGui::SetNextWindowPos(ImVec2(p.x, p.y - 6.0f), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+        if(ImGui::BeginPopup("##audio_popover"))
+        {
+            ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].inter_tight_regular);
+            ImGui::TextUnformatted("Volume");
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::PushID("volume_gain");
+            ImGui::SliderFloat("##vol", &cbs.volume_gain, 0.0f, 4.0f, "");
+            ImGui::PopID();
+            ImGui::Checkbox("Denoise", &cbs.denoise);
+            if(ImGui::IsItemHovered())
+                ImGui::SetTooltip("Suppress background noise to make voices clearer.\nAlso quiets non-speech sounds (barking, glass, engines).");
+            ImGui::PopFont();
+            ImGui::EndPopup();
+        }
+
+        left_x += btn_w;
     }
 
-    // Render export controls
-    if(show_export)
-        renderer.render_export_controls(render_layout, cbs, calc, stream_name, export_cb);
+    float right_x = calc.center_box_left + calc.center_box_width;
 
-    // Render play/live button
-    renderer.render_play_live_button(render_layout, cbs, calc, stream_name, control_bar_button_cb, update_data_cb, playing);
+    renderer.render_play_live_button(render_layout, cbs, calc, stream_name, control_bar_button_cb, update_data_cb, playing, right_x);
+
+    if(show_export)
+        renderer.render_export_controls(render_layout, cbs, calc, stream_name, export_cb, right_x);
+
+    // Snapshot button. Shown wherever Export is; the main loop does the save.
+    if(show_export)
+    {
+        right_x -= 80.0f;
+        ImGui::SetCursorScreenPos(ImVec2(right_x, calc.row_top));
+        if(ImGui::Button("Snap", ImVec2(80, 0)))
+            cbs.snapshot_requested = true;
+        if(ImGui::IsItemHovered())
+            ImGui::SetTooltip("Save a snapshot of the selected camera (S)");
+        right_x -= timeline_constants::ROW_BUTTON_GAP;
+    }
 
     if(is_multiview)
     {
         if(!is_at_live && cbs.exp_state != EXPORT_STATE_CONFIGURING)
         {
-            float right_edge = calc.center_box_left + calc.center_box_width;
-            float top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-            ImGui::SetCursorScreenPos(ImVec2(right_edge - 360.0f, top_line_top));
+            const auto& style = ImGui::GetStyle();
+            float sync_w = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Sync").x;
+            right_x -= sync_w;
+            ImGui::SetCursorScreenPos(ImVec2(right_x, calc.row_top));
             if(ImGui::Checkbox("Sync", &sync_scrub) && sync_scrub)
             {
                 auto current_time = cbs.tr.time_in_range(0, 1000, cbs.playhead_pos);
                 control_bar_slider_cb(stream_name, current_time);
             }
+            right_x -= timeline_constants::ROW_BUTTON_GAP;
         }
         else
         {
             sync_scrub = false;
         }
     }
+
+    renderer.render_playhead_time(cbs, calc, left_x, right_x, is_at_live && playing);
 
     // Playhead bounds check
     cbs.playhead_pos = (std::max)((std::min)(cbs.playhead_pos, 1000), 0);
@@ -629,7 +709,7 @@ void main_client(
     bool playing
 )
 {
-    uint16_t control_bar_height = (uint16_t)(6 * ImGui::GetTextLineHeightWithSpacing());
+    uint16_t control_bar_height = (uint16_t)std::ceil(control_bar_preferred_height());
     uint16_t video_pane_height = h - control_bar_height;
 
     // On layout transition, try to keep the user's previously-selected camera

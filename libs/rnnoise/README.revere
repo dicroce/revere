@@ -1,0 +1,29 @@
+rnnoise (vendored)
+==================
+
+Upstream:  https://github.com/xiph/rnnoise
+Version:   v0.2 release tarball (rnnoise-0.2.tar.gz from the GitHub release)
+License:   BSD-3-Clause (see LICENSE)
+
+The release tarball is used rather than a git checkout because it includes the
+generated model weights (source/rnnoise_data.c, ~5 MB); git checkouts fetch
+them separately with download_model.sh.
+
+What was taken
+--------------
+include/rnnoise.h, the 10 library .c files listed in CMakeLists.txt, their
+headers, and src/x86/x86_arch_macros.h (always included by vec.h). Left out:
+autotools files, examples, training tools (dump_features.c, write_weights.c),
+and the optional x86 runtime CPU dispatch (src/x86/*.c, RNN_ENABLE_X86_RTCD).
+
+Local changes
+-------------
+- source/os_support.h: added. vec.h (generic path) and vec_neon.h include it,
+  but the 0.2 tarball doesn't ship it, which breaks non-x86 builds. It only
+  provides OPUS_CLEAR.
+- CMakeLists.txt: ours (upstream uses autotools).
+
+Upgrading
+---------
+Download the new release tarball, copy over the same file set, and diff.
+Check whether os_support.h is still missing upstream.

@@ -6,6 +6,7 @@
 #include <string>
 #include <map>
 #include <deque>
+#include <set>
 #include <vector>
 #include <memory>
 #include <mutex>
@@ -42,6 +43,17 @@ constexpr double PRESENTATION_DESIRED_DECAY_MS = 0.02;  // buffer-target decay p
 constexpr double PRESENTATION_DRAIN_GAIN = 0.05;        // proportional drain of buffer above target
 constexpr double PRESENTATION_DRAIN_MAX_MS = 2.0;       // max drain per present
 constexpr int64_t STATS_WINDOW_SECONDS = 10;            // smoothness stats logging interval
+
+// Playback gap skipping (see pipeline_host::_check_playback_advance)
+constexpr int64_t PLAYBACK_END_STALL_MS = 2000;         // playback pipe quiet this long after frames
+                                                        // flowed = its range has ended
+constexpr int64_t PLAYBACK_EMPTY_RANGE_MS = 5000;       // no frame at all this long after play() =
+                                                        // the range held no footage
+constexpr int PLAYBACK_MAX_ADVANCE_STREAK = 3;          // consecutive no-progress advances before
+                                                        // giving up (avoids a restart loop)
+constexpr int64_t PLAYBACK_PROGRESS_RESET_S = 5;        // this much footage played resets the streak
+constexpr int64_t PLAYBACK_LIVE_EDGE_SLACK_S = 5;       // a next start this close to now goes live
+constexpr int64_t PLAYBACK_SEGMENT_LOOKAHEAD_H = 6;     // first /contents lookahead (web UI uses 6h)
 
 // Log-only smoothness instrumentation, accumulated per stream and emitted as
 // one log line per stats window. Interpretation:
@@ -123,6 +135,14 @@ struct stream_presentation final
 
 class pipeline_state;
 
+// What a tile should say about its stream when no picture is moving.
+enum class stream_status
+{
+    none,        // no stream assigned, or frames flowing normally
+    connecting,  // stream assigned, no frame has arrived yet
+    offline      // the dead check saw timestamps stop; reconnect pending
+};
+
 class pipeline_host final
 {
 public:
@@ -151,6 +171,7 @@ public:
 
     void set_active_audio_stream(const std::string& name);
     void set_stream_volume(const std::string& name, float gain);
+    void set_stream_denoise(const std::string& name, bool on);
     bool has_audio(const std::string& name) const;
 
     r_utils::r_nullable<std::shared_ptr<render_context>> lookup_render_context(const std::string& name, uint16_t w, uint16_t h);
@@ -159,6 +180,7 @@ public:
     void sync_control_bar_cb(const std::chrono::system_clock::time_point& pos);
     void sync_play_cb(const std::chrono::system_clock::time_point& range_end);
     void sync_live_cb();
+    void sync_pause_cb();
     void control_bar_button_cb(const std::string& name, control_bar_button_type type);
     void control_bar_update_data_cb(const std::string& stream_name, control_bar_state& cbs);
     void control_bar_export_cb(const std::string& stream_name, const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end, control_bar_state& cbs);
@@ -180,7 +202,16 @@ public:
     bool load_video_textures();
 
     bool playing(const std::string& stream_name) const;
+    // True while the stream is playing a recorded range (not live, not paused).
+    bool playback_active(const std::string& stream_name) const;
     std::chrono::system_clock::time_point last_control_bar_pos(const std::string& stream_name) const;
+
+    // Badge state for a tile (see stream_status). Cheap; called per tile per frame.
+    stream_status get_stream_status(const std::string& name) const;
+
+    // The pixels most recently uploaded to this stream's texture (for snapshots).
+    // UI thread only. False when the stream has shown no frame yet.
+    bool get_last_frame(const std::string& name, std::shared_ptr<std::vector<uint8_t>>& buffer, bool& nv12, uint16_t& w, uint16_t& h, uint16_t& original_h) const;
 
     // Returns true if new frames have arrived since last call (and clears the flag)
     bool consume_new_frames_flag()
@@ -223,6 +254,25 @@ private:
     std::thread _timeline_th;
     bool _timeline_running {false};
 
+    // Pause a playing pipe: tear the playback pipeline down, leave the last
+    // presented frame on its texture and remember that frame's time as the
+    // pipe's control bar position so the next play() resumes from it. Pause is
+    // done this way rather than with an RTSP PAUSE because neither r_gst_source
+    // nor the restream server handle a paused client (the server keeps fetching
+    // into a drop-oldest queue, so a resume would jump). Caller must hold
+    // _internals_lok.
+    void _pause_pipe(const std::string& name, const std::shared_ptr<pipeline_state>& pipe);
+
+    // Gap skipping. A playback pipe plays one RTSP range and then just goes
+    // quiet (r_gst_source surfaces no EOS). Once a second, on the worker
+    // thread: find playback pipes that have gone quiet, look up the camera's
+    // recorded segments at/after where they stopped (/contents, outside the
+    // lock), and either restart them on the next segment, switch to live if
+    // that segment is the live edge, or stop them if nothing follows. A paused
+    // pipe isn't running and is never touched. Each tile advances on its own,
+    // including in Sync mode.
+    void _check_playback_advance();
+
     // Drop queued frames and force a re-anchor; call on seek/play/live
     // transitions so stale frames can't present. Caller must hold _internals_lok.
     void _reset_presentation(const std::string& name)
@@ -246,6 +296,10 @@ private:
     std::map<std::string, std::shared_ptr<render_context>> _render_contexts;
     std::map<std::string, stream_presentation> _presentations;
     std::map<std::string, std::string> _name_remap; // pipeline's internal name → current layout name
+
+    // Layout names whose pipeline the dead check tore down for a stall and
+    // which haven't posted a frame since (drives the "Offline" tile badge).
+    std::set<std::string> _stalled;
 
     // Playback tracking for relative timestamp calculation
     std::map<std::string, std::chrono::system_clock::time_point> _playback_start_positions;

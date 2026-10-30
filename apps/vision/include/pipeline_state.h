@@ -12,10 +12,13 @@
 #include <thread>
 #include <chrono>
 #include <cstdint>
+#include <vector>
 #include "stream_info.h"
 #include "sample.h"
 #include "pipeline_host.h"
 #include "configure_state.h"
+
+struct DenoiseState; // rnnoise.h
 
 namespace vision
 {
@@ -30,8 +33,42 @@ public:
 
     void play_live();
     void play();
+    // Play the recorded range [start, end). Also used by the gap-skipping
+    // auto-advance in pipeline_host, which picks its own range from /contents.
+    void play(const std::chrono::system_clock::time_point& start, const std::chrono::system_clock::time_point& end);
     void stop();
     bool running() const {return _source.running();}
+
+    // True when the last play was a recorded range (play()), false for live.
+    inline bool is_playback() const {return _playback;}
+    inline std::chrono::system_clock::time_point play_start() const {return _play_start;}
+    inline std::chrono::system_clock::time_point play_end() const {return _play_end;}
+    inline std::chrono::system_clock::duration range_width() const {return _range_end - _range_start;}
+
+    // Bumped by every play()/play_live()/stop(), so a caller that released the
+    // lock can tell whether the pipe it inspected is still the one it sees.
+    inline uint32_t play_generation() const {return _play_generation;}
+
+    inline bool received_frame_since_play() const {return _frames_since_play.load() > 0;}
+
+    // Time since the last video frame arrived from the source, or since play()
+    // if none has yet. Used to detect the end of a playback range (no EOS is
+    // surfaced by r_gst_source, so the end shows up as the stream going quiet).
+    inline std::chrono::milliseconds since_last_video_frame() const
+    {
+        auto now = std::chrono::steady_clock::now();
+        if(_frames_since_play.load() == 0)
+            return std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_play_time);
+        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+        return std::chrono::milliseconds(now_ms - _last_v_arrival_ms.load());
+    }
+
+    // Gap-skip bookkeeping (pipeline_host, under its lock): consecutive
+    // auto-advances that made no progress, and where the last one started.
+    inline int auto_advance_streak() const {return _auto_advance_streak;}
+    inline void set_auto_advance_streak(int n) {_auto_advance_streak = n;}
+    inline std::chrono::system_clock::time_point last_auto_advance_pos() const {return _last_auto_advance_pos;}
+    inline void set_last_auto_advance_pos(const std::chrono::system_clock::time_point& p) {_last_auto_advance_pos = p;}
 
     void control_bar(const std::chrono::system_clock::time_point& pos);
 
@@ -89,13 +126,30 @@ public:
         if(_sdl_audio_device != 0 && prev != gain)
             SDL_ClearQueuedAudio(_sdl_audio_device);
     }
+
+    // Speech noise suppression (rnnoise) on the playing audio. Off by default:
+    // it's tuned to keep voices, so non-speech sounds (glass, barking, engines)
+    // get suppressed along with the noise.
+    void set_denoise(bool on)
+    {
+        _denoise.store(on);
+    }
     
     inline std::chrono::system_clock::time_point get_last_control_bar_pos() const 
     {
         return _last_control_bar_pos;
     }
 
+    // Where the next play() starts from. Pause sets this to the time of the
+    // frame left on screen so Resume (Play) continues from exactly there.
+    inline void set_last_control_bar_pos(const std::chrono::system_clock::time_point& pos)
+    {
+        _last_control_bar_pos = pos;
+    }
+
 private:
+    // Adds Revere's RTSP credential for url's host (revere_api.h), if available.
+    void _add_rtsp_credentials(std::vector<r_pipeline::r_arg>& arguments, const std::string& url);
     void _entry_point();
 
     stream_info _si;
@@ -112,6 +166,17 @@ private:
     SDL_AudioDeviceID _sdl_audio_device;
     std::atomic<float> _volume_gain;
     std::atomic<bool> _audio_active;
+
+    // Denoise state; everything but the two atomics is touched only on the
+    // audio callback thread (and the destructor, after the source stops).
+    void _denoise_and_queue(const std::vector<uint8_t>& pcm_flt_mono, float gain);
+    std::atomic<bool> _denoise {false};
+    std::atomic<bool> _denoise_reset {false}; // set on play/seek: don't smear old noise estimate into new position
+    bool _denoise_was_on {false};
+    DenoiseState* _denoise_state {nullptr};
+    std::vector<float> _denoise_in;   // 48 kHz mono, scaled to S16 range, awaiting a full rnnoise frame
+    std::vector<float> _denoise_frame;
+    std::vector<int16_t> _denoise_out; // S16 stereo for SDL
     bool _has_audio;
     std::atomic<bool> _received_first_frame;
     int64_t _last_v_pts;
@@ -126,6 +191,16 @@ private:
     std::chrono::system_clock::time_point _range_start;
     std::chrono::system_clock::time_point _range_end;
     std::chrono::steady_clock::time_point _last_play_time;
+
+    // Playback-range / gap-skip state (see is_playback() and friends).
+    bool _playback {false};
+    std::chrono::system_clock::time_point _play_start;
+    std::chrono::system_clock::time_point _play_end;
+    uint32_t _play_generation {0};
+    std::atomic<uint32_t> _frames_since_play {0};
+    std::atomic<int64_t> _last_v_arrival_ms {0}; // steady_clock ms, video callback thread
+    int _auto_advance_streak {0};
+    std::chrono::system_clock::time_point _last_auto_advance_pos;
 
     // Pre-decode arrival instrumentation (vision_net log line): measured in the
     // GStreamer video sample callback, before decode and before any vision

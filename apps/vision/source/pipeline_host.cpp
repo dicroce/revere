@@ -4,8 +4,10 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_http/r_client_request.h"
+#include "revere_api.h"
 #include "r_http/r_client_response.h"
 #include <SDL.h>
+#include <cctype>
 #include "pipeline_host.h"
 #include "pipeline_state.h"
 #include "utils.h"
@@ -158,6 +160,8 @@ void pipeline_host::change_layout(int window, layout l)
         for(auto& si : sis)
             _stream_infos[si.name] = si;
 
+        _stalled.clear();  // keyed by old layout names; tiles show Connecting until frames flow
+
         _pipes = std::move(new_pipes);
         _render_contexts = std::move(new_rc);
         _presentations = std::move(new_pres);
@@ -225,6 +229,7 @@ void pipeline_host::disconnect_stream(int window, const string& name)
 
         _presentations.erase(name);
         _stream_infos.erase(name);
+        _stalled.erase(name);
     }  // Lock is released here
 
     // Destroy the old pipeline outside the critical section
@@ -246,6 +251,14 @@ void pipeline_host::set_stream_volume(const string& name, float gain)
     auto it = _pipes.find(name);
     if(it != end(_pipes))
         it->second->set_volume_gain(gain);
+}
+
+void pipeline_host::set_stream_denoise(const string& name, bool on)
+{
+    lock_guard<mutex> g(_internals_lok);
+    auto it = _pipes.find(name);
+    if(it != end(_pipes))
+        it->second->set_denoise(on);
 }
 
 bool pipeline_host::has_audio(const string& name) const
@@ -299,6 +312,9 @@ void pipeline_host::post_video_frame(const string& name, shared_ptr<vector<uint8
     // Translate the pipeline's internal name to the current layout name if it was reused.
     auto remap_it = _name_remap.find(name);
     const string& effective_name = (remap_it != end(_name_remap)) ? remap_it->second : name;
+
+    // A frame means the stream is back (or up for the first time): drop the Offline badge.
+    _stalled.erase(effective_name);
 
     // Debug: Log frame reception with pixel sample
     static int frame_log_count = 0;
@@ -740,6 +756,11 @@ bool pipeline_host::load_video_textures()
             rc->h = u.f.h;
             rc->nv12 = u.f.nv12;
             rc->pts = u.f.pts;
+            rc->last_frame = u.f.buffer;
+            rc->last_frame_nv12 = u.f.nv12;
+            rc->last_frame_w = u.f.w;
+            rc->last_frame_h = u.f.h;
+            rc->last_frame_original_h = u.f.original_h;
             new_rcs.emplace_back(u.name, rc);
         }
         else if(u.rc->tex)
@@ -749,6 +770,11 @@ bool pipeline_host::load_video_textures()
             else
                 u.rc->tex->update_rgb(u.f.buffer->data(), u.f.w, u.f.h);
             u.rc->pts = u.f.pts;
+            u.rc->last_frame = u.f.buffer;
+            u.rc->last_frame_nv12 = u.f.nv12;
+            u.rc->last_frame_w = u.f.w;
+            u.rc->last_frame_h = u.f.h;
+            u.rc->last_frame_original_h = u.f.original_h;
         }
     }
 
@@ -809,6 +835,7 @@ void pipeline_host::sync_play_cb(const std::chrono::system_clock::time_point& ra
             _playback_start_positions[name] = pipe->get_last_control_bar_pos();
             _playback_start_pts[name] = 0;
             _reset_presentation(name);
+            pipe->set_auto_advance_streak(0);
             pipe->play();
         }
     }
@@ -826,6 +853,37 @@ void pipeline_host::sync_live_cb()
         _reset_presentation(name);
         pipe->play_live();
     }
+}
+
+void pipeline_host::sync_pause_cb()
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    for(auto& [name, pipe] : _pipes)
+        _pause_pipe(name, pipe);
+}
+
+void pipeline_host::_pause_pipe(const std::string& name, const std::shared_ptr<pipeline_state>& pipe)
+{
+    if(!pipe->running())
+        return;
+
+    // The frame on screen is the one to hold: its display pts is already an
+    // absolute time (ms since epoch; see post_video_frame), so resuming from
+    // it continues exactly where the picture stopped. If nothing has been
+    // presented yet, resume from where this play started.
+    auto resume_pos = pipe->get_last_control_bar_pos();
+    auto rc_it = _render_contexts.find(name);
+    if(rc_it != end(_render_contexts) && rc_it->second->pts > 0)
+        resume_pos = system_clock::time_point(milliseconds(rc_it->second->pts));
+
+    pipe->stop();
+
+    _playback_start_positions.erase(name);
+    _playback_start_pts.erase(name);
+    // Frames still queued must not present past the held one.
+    _reset_presentation(name);
+
+    pipe->set_last_control_bar_pos(resume_pos);
 }
 
 void pipeline_host::control_bar_button_cb(const string& name, control_bar_button_type type)
@@ -855,8 +913,13 @@ void pipeline_host::control_bar_button_cb(const string& name, control_bar_button
                 _playback_start_positions[name] = pipe->get_last_control_bar_pos();
                 _playback_start_pts[name] = 0; // Will be set when first frame arrives
                 _reset_presentation(name);
+                pipe->set_auto_advance_streak(0);
                 pipe->play();
             }
+        }
+        else if(type == CONTROL_BAR_BUTTON_PAUSE)
+        {
+            _pause_pipe(name, pipe);
         }
     }
 }
@@ -959,31 +1022,51 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
     auto found_si = _stream_infos.find(stream_name);
     if(found_si != std::end(_stream_infos))
     {
-        auto tmt = system_clock::to_time_t(start);
+        auto maybe_revere_ipv4 = _cfg.get_revere_ipv4();
+        if(maybe_revere_ipv4.is_null())
+        {
+            cbs.exp_state = EXPORT_STATE_FINISHED_ERROR;
+            R_LOG_ERROR("Export request failed: Revere IPv4 address not set.");
+            return;
+        }
+        auto revere_ip = maybe_revere_ipv4.value();
 
-#ifdef IS_WINDOWS
-        struct tm bdt;
-        struct tm* bdtp = nullptr;
-        localtime_s(&bdt, &tmt);
-        bdtp = &bdt;
-#else
-        struct tm* bdtp = localtime(&tmt);
-#endif
+        // Name exports like the web UI does: <camera>_<start>_<end>.mov, where the
+        // timestamps are filesystem-safe ISO 8601 (':' is illegal on Windows and
+        // rejected by the server's file_name check). The restream URL path is the
+        // camera's friendly name with spaces already replaced by '_'.
+        auto camera_name = found_si->second.rtsp_url;
+        auto slash = camera_name.rfind('/');
+        if(slash != string::npos)
+            camera_name = camera_name.substr(slash + 1);
+        for(auto& c : camera_name)
+            if(!isalnum((unsigned char)c) && c != '_' && c != '-')
+                c = '_';
+        if(camera_name.empty())
+            camera_name = "camera";
+
+        auto fmt_for_file = [](const system_clock::time_point& tp){
+            auto s = r_time_utils::tp_to_iso_8601(tp, true);
+            if(!s.empty() && s.back() == 'Z')
+                s.pop_back();
+            for(auto& c : s)
+            {
+                if(c == 'T') c = '_';
+                else if(c == ':' || c == '.') c = '-';
+            }
+            return s;
+        };
 
         auto file_name = r_string_utils::format(
-            "%04d-%02d-%02d_%02d-%02d-%02d.mov",
-            bdtp->tm_year + 1900,
-            bdtp->tm_mon + 1,
-            bdtp->tm_mday,
-            bdtp->tm_hour,
-            bdtp->tm_min,
-            bdtp->tm_sec
+            "%s_%s_%s.mov",
+            camera_name.c_str(),
+            fmt_for_file(start).c_str(),
+            fmt_for_file(end).c_str()
         );
 
-        r_socket sok;
-        sok.connect("127.0.0.1", 8088);
+        auto sok = revere_connect(revere_ip);
 
-        r_http::r_client_request req("127.0.0.1", 8088);
+        r_http::r_client_request req(revere_ip, revere_port(revere_ip));
         req.set_uri(
             r_string_utils::format(
                 "/export?camera_id=%s&start_time=%s&end_time=%s&file_name=%s",
@@ -993,10 +1076,12 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
                 file_name.c_str()
             )
         );
-        req.write_request(sok);
+        authorize(req, revere_ip);
+        req.write_request(*sok);
 
         r_http::r_client_response res;
-        res.read_response(sok);
+        res.read_response(*sok);
+        note_status(revere_ip, res.get_status());
 
         if(res.is_success())
         {
@@ -1039,6 +1124,190 @@ bool pipeline_host::playing(const std::string& stream_name) const
     return false;
 }
 
+bool pipeline_host::playback_active(const std::string& stream_name) const
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+    auto found_pipe = _pipes.find(stream_name);
+    if(found_pipe != end(_pipes))
+        return found_pipe->second->running() && found_pipe->second->is_playback();
+    return false;
+}
+
+void pipeline_host::_check_playback_advance()
+{
+    // First segment whose footage extends past `from` (the one containing it,
+    // or the next one after a gap), as CameraPlayer.vue's segFor(). With
+    // skip_containing, a segment that already contains `from` is passed over:
+    // used when a previous advance into it produced nothing.
+    auto pick_segment = [](const std::vector<segment>& segs, const system_clock::time_point& from, bool skip_containing) -> r_nullable<segment>
+    {
+        r_nullable<segment> best;
+        for(const auto& s : segs)
+        {
+            if(s.end <= from + seconds(1))
+                continue;
+            if(skip_containing && s.start <= from)
+                continue;
+            if(best.is_null() || s.start < best.value().start)
+                best.set_value(s);
+        }
+        return best;
+    };
+
+    struct candidate
+    {
+        std::string name;
+        std::string camera_id;
+        std::shared_ptr<pipeline_state> pipe;
+        uint32_t gen {0};
+        system_clock::time_point pos;         // where playback stopped
+        system_clock::time_point search_from; // where to look for footage
+        bool skip_containing {false};
+    };
+    std::vector<candidate> cands;
+
+    {
+        lock_guard<mutex> g(_internals_lok);
+        for(auto& [name, pipe] : _pipes)
+        {
+            if(!pipe->running() || !pipe->is_playback())
+                continue;
+
+            bool got_frames = pipe->received_frame_since_play();
+            auto quiet = pipe->since_last_video_frame();
+            if(quiet.count() < (got_frames ? PLAYBACK_END_STALL_MS : PLAYBACK_EMPTY_RANGE_MS))
+            {
+                // Playing fine. Enough footage shown since this play started
+                // means the last advance worked: forget the no-progress streak.
+                auto rc_it = _render_contexts.find(name);
+                if(got_frames && rc_it != end(_render_contexts) && rc_it->second->pts > 0)
+                {
+                    auto shown = system_clock::time_point(milliseconds(rc_it->second->pts));
+                    if(shown - pipe->play_start() > seconds(PLAYBACK_PROGRESS_RESET_S))
+                        pipe->set_auto_advance_streak(0);
+                }
+                continue;
+            }
+
+            // The frame on screen is where playback stopped (display pts is
+            // absolute ms since epoch; see post_video_frame).
+            auto pos = pipe->play_start();
+            auto rc_it = _render_contexts.find(name);
+            if(got_frames && rc_it != end(_render_contexts) && rc_it->second->pts > 0)
+                pos = system_clock::time_point(milliseconds(rc_it->second->pts));
+
+            if(pipe->auto_advance_streak() >= PLAYBACK_MAX_ADVANCE_STREAK)
+            {
+                R_LOG_WARNING("playback[%s]: %d advances without progress, stopping", name.c_str(), pipe->auto_advance_streak());
+                _pause_pipe(name, pipe);
+                pipe->set_auto_advance_streak(0);
+                continue;
+            }
+
+            candidate c;
+            c.name = name;
+            c.camera_id = _stream_infos.count(name) ? _stream_infos[name].camera_id : std::string();
+            c.pipe = pipe;
+            c.gen = pipe->play_generation();
+            c.pos = pos;
+            // Reached the end of the range: continue from the range end. Quiet
+            // mid-range (a gap the server paused on, or an empty range): continue
+            // from the last shown frame, or the range start if there was none.
+            bool clean_end = got_frames && pos >= pipe->play_end() - seconds(2);
+            c.search_from = clean_end ? pipe->play_end() : pos;
+            // No progress since the last auto-advance: the segment list said
+            // there was footage here but the server had none (cf. CameraPlayer
+            // "jump to the segment end"), so pass over the containing segment.
+            c.skip_containing = pipe->auto_advance_streak() > 0 &&
+                c.search_from <= pipe->last_auto_advance_pos() + seconds(1);
+            if(c.camera_id.empty())
+                continue;
+            cands.push_back(std::move(c));
+        }
+    }
+
+    for(auto& c : cands)
+    {
+        // Blocking HTTP, outside the lock (this is the worker thread). Look a
+        // few hours ahead first, as the web UI does, then the rest of the way
+        // to now so a long outage doesn't read as end-of-recording.
+        auto now = system_clock::now();
+        r_nullable<segment> next;
+        try
+        {
+            auto first_end = (std::min)(now, c.search_from + hours(PLAYBACK_SEGMENT_LOOKAHEAD_H));
+            auto cr = query_segments(_cfg, c.camera_id, c.search_from - seconds(2), first_end);
+            next = pick_segment(cr.segments, c.search_from, c.skip_containing);
+            if(next.is_null() && first_end < now)
+            {
+                cr = query_segments(_cfg, c.camera_id, first_end, now);
+                next = pick_segment(cr.segments, c.search_from, c.skip_containing);
+            }
+        }
+        catch(const std::exception& e)
+        {
+            // revere unreachable: leave the pipe alone; the dead check handles it.
+            R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+            continue;
+        }
+
+        lock_guard<mutex> g(_internals_lok);
+
+        // Still the same pipe, still in the play we inspected? Pause/scrub/
+        // layout changes in the meantime win.
+        auto it = _pipes.find(c.name);
+        if(it == end(_pipes) || it->second != c.pipe || !c.pipe->running() || c.pipe->play_generation() != c.gen)
+            continue;
+
+        auto& pipe = c.pipe;
+
+        if(next.is_null())
+        {
+            R_LOG_INFO("playback[%s]: no recording after %s, stopping", c.name.c_str(), r_time_utils::tp_to_iso_8601(c.search_from, false).c_str());
+            _pause_pipe(c.name, pipe);
+            pipe->set_last_control_bar_pos(c.pos);
+            continue;
+        }
+
+        auto next_start = (std::max)(c.search_from, next.value().start);
+
+        if(next_start >= now - seconds(PLAYBACK_LIVE_EDGE_SLACK_S))
+        {
+            R_LOG_INFO("playback[%s]: reached the live edge, going live", c.name.c_str());
+            pipe->stop();
+            _playback_start_positions.erase(c.name);
+            _playback_start_pts.erase(c.name);
+            _reset_presentation(c.name);
+            pipe->set_auto_advance_streak(0);
+            pipe->play_live();
+            continue;
+        }
+
+        // End of that segment, or one visible-range width on, whichever is
+        // sooner (the UI pans its range along as the playhead moves).
+        auto width = pipe->range_width();
+        if(width <= seconds(1))
+            width = minutes(20);
+        auto next_end = (std::min)(next.value().end, next_start + width);
+        if(next_end <= next_start + seconds(1))
+            next_end = next_start + seconds(1);
+
+        R_LOG_INFO("playback[%s]: advancing to %s - %s (streak %d)",
+            c.name.c_str(),
+            r_time_utils::tp_to_iso_8601(next_start, false).c_str(),
+            r_time_utils::tp_to_iso_8601(next_end, false).c_str(),
+            pipe->auto_advance_streak() + 1);
+
+        pipe->stop();
+        _playback_start_positions[c.name] = next_start;
+        _playback_start_pts[c.name] = 0;
+        _reset_presentation(c.name);
+        pipe->set_auto_advance_streak(pipe->auto_advance_streak() + 1);
+        pipe->set_last_auto_advance_pos(next_start);
+        pipe->play(next_start, next_end);
+    }
+}
+
 std::chrono::system_clock::time_point pipeline_host::last_control_bar_pos(const std::string& stream_name) const
 {
     lock_guard<mutex> pipes_lock(_internals_lok);
@@ -1046,6 +1315,46 @@ std::chrono::system_clock::time_point pipeline_host::last_control_bar_pos(const 
     if(found_pipe != end(_pipes))
         return found_pipe->second->get_last_control_bar_pos();
     return std::chrono::system_clock::time_point{};
+}
+
+stream_status pipeline_host::get_stream_status(const std::string& name) const
+{
+    lock_guard<mutex> pipes_lock(_internals_lok);
+
+    if(_stream_infos.find(name) == end(_stream_infos))
+        return stream_status::none;
+
+    if(_stalled.count(name) > 0)
+        return stream_status::offline;
+
+    // No render context yet means no frame has ever been presented for this tile.
+    if(_render_contexts.find(name) == end(_render_contexts))
+        return stream_status::connecting;
+
+    return stream_status::none;
+}
+
+bool pipeline_host::get_last_frame(const std::string& name, std::shared_ptr<std::vector<uint8_t>>& buffer, bool& nv12, uint16_t& w, uint16_t& h, uint16_t& original_h) const
+{
+    std::shared_ptr<render_context> rc;
+    {
+        lock_guard<mutex> pipes_lock(_internals_lok);
+        auto found_rc = _render_contexts.find(name);
+        if(found_rc == end(_render_contexts))
+            return false;
+        rc = found_rc->second;
+    }
+
+    // last_frame is written only by load_video_textures on this (UI) thread.
+    if(!rc->last_frame)
+        return false;
+
+    buffer = rc->last_frame;
+    nv12 = rc->last_frame_nv12;
+    w = rc->last_frame_w;
+    h = rc->last_frame_h;
+    original_h = rc->last_frame_original_h;
+    return true;
 }
 
 void pipeline_host::_entry_point()
@@ -1057,6 +1366,8 @@ void pipeline_host::_entry_point()
 
         if(!_running)
             continue;
+
+        _check_playback_advance();
 
         auto now = steady_clock::now();
 
@@ -1108,6 +1419,7 @@ void pipeline_host::_entry_point()
                     if(found_dead)
                     {
                         R_LOG_ERROR("Dead stream detected");
+                        _stalled.insert(curr->first);  // tile shows "Offline" until a frame arrives
                         dead_pipes.push_back(curr->second);
                         curr = _pipes.erase(curr);
                     }

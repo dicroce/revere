@@ -46,6 +46,10 @@
             <span class="cam-name">{{ c.friendly_name || c.camera_name || c.id }}</span>
             <span class="cam-ip">{{ c.ipv4 }}</span>
             <span class="cam-codec">{{ (c.video_codec || '').toUpperCase() }}</span>
+            <span
+              v-if="c.manufacturer || c.model || c.firmware_version"
+              class="cam-model"
+            >{{ [c.manufacturer, c.model].filter(Boolean).join(' ') }}{{ c.firmware_version ? ' · fw ' + c.firmware_version : '' }}</span>
             <button
               class="ghost small"
               :disabled="!authed"
@@ -64,6 +68,8 @@
     </div>
 
     <PluginsSection :authed="authed" />
+
+    <KeepAwakeSection :authed="authed" />
 
     <RecordWizard
       v-if="wizardCamera"
@@ -207,6 +213,7 @@ import {
   isAuthed, getCameras,
   removeCamera, updateCameraProperties, forgetCamera, addRtspCamera,
 } from '../api.js'
+import KeepAwakeSection from './KeepAwakeSection.vue'
 import RecordWizard from './RecordWizard.vue'
 import StorageDialog from './StorageDialog.vue'
 import PluginsSection from './PluginsSection.vue'
@@ -384,8 +391,9 @@ function askProperties(camera) {
   copied.value = false
 }
 
-// navigator.clipboard needs a secure context (https or localhost); the web UI
-// is often opened over plain http on the LAN, so fall back to execCommand.
+// navigator.clipboard needs a secure context (https or localhost). The web UI
+// is served over plain http on 127.0.0.1, which counts as secure, but keep the
+// execCommand fallback for browsers/contexts where it is still unavailable.
 async function copyPath(text) {
   try {
     await navigator.clipboard.writeText(text)
