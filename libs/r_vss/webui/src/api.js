@@ -168,6 +168,27 @@ export async function measureCamera(cameraId, username, password, profileToken, 
   return (await apiFetch('/measure_result?id=' + encodeURIComponent(id))).json()
 }
 
+// PTZ control. `cmd` is { action: 'move'|'stop'|'goto_preset'|'list_presets',
+// pan?, tilt?, zoom?, timeout?, preset_token? }. Resolves with the server's
+// JSON ({ status, presets }). Throws if the camera has no PTZ service.
+export async function ptz(cameraId, cmd) {
+  const res = await apiFetch('/ptz', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ camera_id: cameraId, ...cmd }),
+  })
+  return res.json()
+}
+
+// Convenience wrappers over ptz().
+export const ptzMove = (cameraId, pan, tilt, zoom = 0, timeout = '') =>
+  ptz(cameraId, { action: 'move', pan, tilt, zoom, timeout })
+export const ptzStop = (cameraId) => ptz(cameraId, { action: 'stop' })
+export const ptzGotoPreset = (cameraId, presetToken) =>
+  ptz(cameraId, { action: 'goto_preset', preset_token: presetToken })
+export const ptzListPresets = async (cameraId) =>
+  (await ptz(cameraId, { action: 'list_presets' })).presets ?? []
+
 export async function configureCamera(payload) {
   const res = await apiFetch('/configure_camera', {
     method: 'POST',

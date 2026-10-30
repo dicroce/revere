@@ -11,6 +11,9 @@
 #include <cstring>
 #include <chrono>
 #include <cstdlib>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
 
 #if defined(IS_LINUX) || defined(IS_MACOS)
 #include <fnmatch.h>
@@ -33,6 +36,96 @@ static r_logger::logger_state _owned_state;
 // Pointer to the active state (points to _owned_state by default,
 // but plugins will point this to the host's state)
 static r_logger::logger_state* _state = &_owned_state;
+
+// Console (stdout) output is written by a thread of its own. A terminal that
+// stops reading (a paused or stalled terminal window, a full pipe) blocks a
+// write to stdout, and while it's blocked so does every other write to stdout,
+// which share its lock. Written inline, the first logging thread to hit the
+// stall would block and then every thread that logs after it, which in revere
+// is most of them (recording, the HTTP workers): the process froze with the
+// terminal. Here only the console thread waits. Lines queue up to a bound and
+// past it are dropped and counted; the count is printed once the terminal
+// reads again. The log file isn't affected.
+class console_writer
+{
+public:
+    static const size_t MAX_QUEUED_BYTES = 256 * 1024;
+
+    // Never destroyed: logging can happen during static destruction, and the
+    // thread may be blocked in a write when the process exits.
+    static console_writer& get()
+    {
+        static console_writer* writer = new console_writer();
+        return *writer;
+    }
+
+    void post(string line)
+    {
+        {
+            lock_guard<mutex> g(_lock);
+            if(_queued_bytes + line.size() > MAX_QUEUED_BYTES)
+            {
+                ++_dropped;
+                return;
+            }
+            _queued_bytes += line.size();
+            _queue.push_back(std::move(line));
+        }
+        _cond.notify_one();
+    }
+
+    // Waits up to timeout for the queued lines to reach the terminal; false if
+    // they didn't (it isn't reading).
+    bool drain(chrono::milliseconds timeout)
+    {
+        unique_lock<mutex> g(_lock);
+        return _drained.wait_for(g, timeout, [this](){ return _queue.empty() && _dropped == 0 && !_writing; });
+    }
+
+private:
+    console_writer()
+    {
+        thread(&console_writer::_entry_point, this).detach();
+    }
+
+    void _entry_point()
+    {
+        while(true)
+        {
+            deque<string> lines;
+            size_t dropped = 0;
+            {
+                unique_lock<mutex> g(_lock);
+                _cond.wait(g, [this](){ return !_queue.empty() || _dropped > 0; });
+                lines.swap(_queue);
+                _queued_bytes = 0;
+                dropped = _dropped;
+                _dropped = 0;
+                _writing = true;
+            }
+
+            if(dropped > 0)
+                fprintf(stdout, "[%zu log line(s) not shown here: the terminal stopped reading. The log file has them.]\n", dropped);
+            for(auto& l : lines)
+                fputs(l.c_str(), stdout);
+            fflush(stdout);
+
+            {
+                lock_guard<mutex> g(_lock);
+                _writing = false;
+            }
+            _drained.notify_all();
+        }
+    }
+
+    mutex _lock;
+    condition_variable _cond;
+    condition_variable _drained;
+    bool _writing {false};
+    deque<string> _queue;
+    size_t _queued_bytes {0};
+    size_t _dropped {0};
+};
 
 static deque<string> _get_file_names(const std::string& log_dir)
 {
@@ -253,18 +346,15 @@ void r_utils::r_logger::write(LOG_LEVEL level,
 
 #ifdef IS_MACOS
     for(auto l : lines)
-    {
-        fprintf(stdout, "%s %s\n", timestamp.c_str(), l.c_str());
-    }
-    if(level <= LOG_LEVEL_ERROR)
-        fflush(stdout);
+        console_writer::get().post(timestamp + " " + l + "\n");
 #endif
 }
 
 void r_utils_terminate()
 {
+    // Not printf: with a terminal that isn't reading, stdout can be blocked
+    // (and its lock held by the console thread), and the abort must happen.
     R_LOG_CRITICAL("r_utils terminate handler called!");
-    printf("r_utils terminate handler called!\n");
 
     // Capture a dump before we log-and-abort. An unhandled C++ exception
     // unwinds nothing useful by the time abort() runs, so without this the log
@@ -290,7 +380,11 @@ void r_utils_terminate()
         }
     }
 
-    fflush(stdout);
+    // The last lines on their way to the terminal, briefly: the log file has
+    // them anyway, and a terminal that isn't reading mustn't hold up the abort
+    // (so no fflush(stdout) unless the console thread got through).
+    if(console_writer::get().drain(chrono::milliseconds(100)))
+        fflush(stdout);
 
     std::abort();
 }

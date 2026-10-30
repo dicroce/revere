@@ -75,6 +75,7 @@
 std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 
 #include "utils.h"
+#include "tray_companion.h"
 #include "r_utils/r_secure_store.h"
 #include "r_utils/r_platform.h"
 #include "r_utils/r_qr_code.h"
@@ -2463,6 +2464,9 @@ static std::string _help_text()
         "                           <path> (default: per-user data directory).\n"
         "  --secret-dir <path>      Store the master encryption key under <path>\n"
         "                           (default: per-user config directory).\n"
+        "  --tray                   Show only a tray icon for a Revere that is already\n"
+        "                           running (e.g. the headless service): its status and\n"
+        "                           a link to the web UI. Records nothing itself.\n"
         "\n"
         "Service management (Linux only, run with sudo):\n"
         "  --install-service        Create the 'revere' user and a systemd unit that\n"
@@ -2573,6 +2577,16 @@ int main(int argc, char** argv)
     if(r_args::check_argument(args, "--install-keep-awake-rule"))
         return _install_keep_awake_rule();
 #endif
+
+    // Tray companion for a Revere running elsewhere (usually the headless
+    // service). Before the single-instance lock, which that Revere holds.
+    if(r_args::check_argument(args, "--tray"))
+    {
+        r_logger::install_terminate();
+        r_logger::install_logger(r_fs::platform_path(revere::sub_dir("logs")), "revere_tray_log_");
+        _set_working_dir();
+        return revere::run_tray_companion(_get_icon_path());
+    }
 
     // Compute top_dir early for lock file path
     auto top_dir = revere::top_dir();

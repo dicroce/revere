@@ -320,6 +320,11 @@ private:
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
     std::set<std::string> _suspended_cameras;
 
+    // Last-seen set of assigned camera ids, to notify system plugins only when
+    // the assignment actually changes (a camera added or forgotten) — not on the
+    // stream reconnects that leave the assigned set intact.
+    std::set<std::string> _last_assigned_camera_ids;
+
     // Removed recording contexts are destroyed here, off the keeper's thread
     // (see r_teardown_queue); a camera isn't started again while its old one
     // is still pending. _stuck_warned: per camera, the 30 s steps of a stuck
