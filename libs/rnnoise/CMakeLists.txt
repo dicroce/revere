@@ -37,7 +37,10 @@ if(MSVC)
     target_compile_definitions(rnnoise PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_compile_options(rnnoise PRIVATE /W0)
 else()
-    target_compile_options(rnnoise PRIVATE -w)
+    # settings.cmake turns on -ffast-math for Release on Linux and macOS, and
+    # rnnoise refuses to build with it (arch.h: its NaN check needs real IEEE
+    # floats). Build it as upstream does; it comes after, so it wins.
+    target_compile_options(rnnoise PRIVATE -w -fno-fast-math)
 endif()
 
 target_include_directories(
