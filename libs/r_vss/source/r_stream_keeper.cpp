@@ -336,9 +336,13 @@ void r_stream_keeper::_warn_stuck_teardowns()
         auto it = _stuck_warned.find(t.key);
         if(it != _stuck_warned.end() && it->second >= step)
             continue;
-        R_LOG_WARNING("teardown %s (%s) hasn't finished after %lld s; the camera won't record until it does "
-                      "(the last \"teardown %s: ...\" line names the step it is stuck in)",
-                      t.key.c_str(), t.name.c_str(), (long long)(t.ms / 1000), t.key.substr(0, 8).c_str());
+        if(t.started)
+            R_LOG_WARNING("teardown %s (%s) hasn't finished after %lld s; the camera won't record until it does "
+                          "(the last \"teardown %s: ...\" line names the step it is stuck in)",
+                          t.key.c_str(), t.name.c_str(), (long long)(t.ms / 1000), t.key.substr(0, 8).c_str());
+        else
+            R_LOG_WARNING("teardown %s (%s) has waited %lld s behind other cameras' stuck teardowns; the camera won't record until it runs",
+                          t.key.c_str(), t.name.c_str(), (long long)(t.ms / 1000));
     }
     _stuck_warned = std::move(now_stuck);
 }
@@ -1434,7 +1438,8 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
         s.camera.id = t.key;
         s.camera.friendly_name.set_value(t.name);
         s.failed = true;
-        s.failure_message = "Stuck reconnecting for " + std::to_string(t.ms / 1000) + " s; restart Revere to record this camera again";
+        s.failure_message = (t.started ? "Stuck reconnecting for " : "Waiting behind another camera's reconnect for ") +
+                            std::to_string(t.ms / 1000) + " s; restart Revere to record this camera again";
         statuses.push_back(std::move(s));
     }
 
