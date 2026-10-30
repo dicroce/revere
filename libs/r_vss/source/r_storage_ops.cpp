@@ -140,6 +140,111 @@ static void _copy_file_chunked(const string& src, const string& dst, std::functi
     }
 }
 
+void r_vss::move_storage_files(
+    const vector<pair<string, string>>& moves,
+    r_storage_op& op,
+    const std::function<void()>& commit,
+    const std::function<bool(const string&, const string&)>& try_rename)
+{
+    struct done_move { string src; string dst; bool copied; };
+    vector<done_move> done;
+
+    // Put every file back where it was. Called before the commit has happened,
+    // so the originals are all still there: renames go back, copies go away.
+    auto roll_back = [&]() {
+        for(auto it = done.rbegin(); it != done.rend(); ++it)
+        {
+            std::error_code ec;
+            if(it->copied)
+                std::filesystem::remove(it->dst, ec);
+            else if(it->src != it->dst)
+                std::filesystem::rename(it->dst, it->src, ec);
+            if(ec)
+                R_LOG_ERROR("Storage move: couldn't put %s back as %s: %s", it->dst.c_str(), it->src.c_str(), ec.message().c_str());
+        }
+        done.clear();
+    };
+
+    uint64_t total_bytes = 0;
+    for(auto& [src, dst] : moves)
+    {
+        std::error_code ec;
+        auto sz = std::filesystem::file_size(src, ec);
+        total_bytes += ec ? 0 : sz;
+    }
+    if(total_bytes == 0) total_bytes = 1;
+
+    try
+    {
+        uint64_t bytes_done = 0;
+        for(auto& [src, dst] : moves)
+        {
+            if(op.cancel_requested) R_THROW(("Cancelled"));
+            op.set_status("Moving: " + std::filesystem::path(src).filename().string());
+
+            std::error_code ec;
+            uint64_t file_size = std::filesystem::file_size(src, ec);
+            if(ec) file_size = 0;
+
+            bool renamed = false;
+            if(try_rename)
+                renamed = try_rename(src, dst);
+            else
+            {
+                std::filesystem::rename(src, dst, ec);
+                renamed = !ec;
+            }
+
+            if(renamed)
+                done.push_back({src, dst, false});
+            else
+            {
+                // Another filesystem: copy in chunks so progress shows and a cancel
+                // stops it. The source stays until the camera has been saved.
+                uint64_t bytes_done_before = bytes_done;
+                try
+                {
+                    _copy_file_chunked(src, dst, [&](uint64_t copied, uint64_t) -> bool {
+                        op.progress = (float)(bytes_done_before + copied) / (float)total_bytes;
+                        return !op.cancel_requested.load();
+                    });
+                }
+                catch(...)
+                {
+                    // A partial copy is not a file anyone should find later.
+                    std::error_code rec;
+                    if(src != dst) std::filesystem::remove(dst, rec);
+                    throw;
+                }
+                if(op.cancel_requested) R_THROW(("Cancelled"));
+                done.push_back({src, dst, true});
+            }
+
+            bytes_done += file_size;
+            op.progress = (float)bytes_done / (float)total_bytes;
+        }
+
+        op.set_status("Updating database...");
+        commit();
+    }
+    catch(...)
+    {
+        roll_back();
+        throw;
+    }
+
+    // Saved: the new copies are the camera's files now, so the originals can go.
+    // A source that won't delete is left behind and logged; nothing is lost.
+    for(auto& m : done)
+    {
+        if(!m.copied || m.src == m.dst) continue;
+        std::error_code ec;
+        std::filesystem::remove(m.src, ec);
+        if(ec)
+            R_LOG_ERROR("Storage move: moved %s, but couldn't delete the original: %s", m.src.c_str(), ec.message().c_str());
+    }
+}
+
 void r_vss::storage_move(const string& top_dir, r_stream_keeper& stream_keeper, r_devices& devices, r_camera camera, const string& new_dir, r_storage_op& op)
 {
     bool suspended = false;
@@ -168,67 +273,27 @@ void r_vss::storage_move(const string& top_dir, r_stream_keeper& stream_keeper, 
             return;
         }
 
-        // Weight progress by file size so the big .nts drives the bar
-        uint64_t total_bytes = 0;
-        for(auto& [src, fn] : files)
-        {
-            std::error_code ec;
-            auto sz = std::filesystem::file_size(src, ec);
-            total_bytes += ec ? 0 : sz;
-        }
-        if(total_bytes == 0) total_bytes = 1;
-
+        // Where each file goes, and so where the camera will point once they're all there.
+        vector<pair<string, string>> moves;
         string new_nts_path;
         string new_mdb_path;
-        uint64_t bytes_done = 0;
-
         for(auto& [src, fn] : files)
         {
             auto dst = _join(new_dir, fn);
-            op.set_status("Moving: " + fn);
-
-            std::error_code ec;
-            std::filesystem::rename(src, dst, ec);
-            if(ec)
-            {
-                // Cross-device: chunked copy so we can report progress
-                uint64_t file_size = std::filesystem::file_size(src, ec);
-                if(ec) file_size = 0;
-                uint64_t bytes_done_before = bytes_done;
-
-                _copy_file_chunked(src, dst, [&](uint64_t copied, uint64_t) -> bool {
-                    op.progress = (float)(bytes_done_before + copied) / (float)total_bytes;
-                    return !op.cancel_requested.load();
-                });
-                if(op.cancel_requested) R_THROW(("Cancelled"));
-                std::filesystem::remove(src, ec);
-                bytes_done += file_size;
-            }
-            else
-            {
-                // rename was instant (same filesystem)
-                uint64_t sz = 0;
-                auto fsz = std::filesystem::file_size(dst, ec);
-                if(!ec) sz = fsz;
-                bytes_done += sz;
-            }
-
-            op.progress = (float)bytes_done / (float)total_bytes;
-
-            if(!camera.record_file_path.is_null())
-                if(src == storage_path(top_dir, camera.record_file_path.value()))
-                    new_nts_path = dst;
-            if(!camera.motion_detection_file_path.is_null())
-                if(src == storage_path(top_dir, camera.motion_detection_file_path.value()))
-                    new_mdb_path = dst;
+            moves.push_back({src, dst});
+            if(!camera.record_file_path.is_null() && src == storage_path(top_dir, camera.record_file_path.value()))
+                new_nts_path = dst;
+            if(!camera.motion_detection_file_path.is_null() && src == storage_path(top_dir, camera.motion_detection_file_path.value()))
+                new_mdb_path = dst;
         }
 
-        op.set_status("Updating database...");
-        if(!new_nts_path.empty())
-            camera.record_file_path.set_value(new_nts_path);
-        if(!new_mdb_path.empty())
-            camera.motion_detection_file_path.set_value(new_mdb_path);
-        devices.save_camera(camera);
+        move_storage_files(moves, op, [&]() {
+            if(!new_nts_path.empty())
+                camera.record_file_path.set_value(new_nts_path);
+            if(!new_mdb_path.empty())
+                camera.motion_detection_file_path.set_value(new_mdb_path);
+            devices.save_camera(camera);
+        });
 
         op.set_status("Move complete. Recording will resume.");
         op.progress = 1.f;
@@ -238,6 +303,8 @@ void r_vss::storage_move(const string& top_dir, r_stream_keeper& stream_keeper, 
     }
     catch(const std::exception& e)
     {
+        // move_storage_files has put back every file it moved (logging any it
+        // couldn't), so the camera's saved paths still name its files.
         if(op.cancel_requested)
         {
             op.set_status("Move cancelled. Recording will resume.");

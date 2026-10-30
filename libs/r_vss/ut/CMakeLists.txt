@@ -35,6 +35,8 @@ add_executable(
     source/test_r_ws_auth.cpp
     include/test_r_rtsp_auth.h
     source/test_r_rtsp_auth.cpp
+    include/test_r_storage_ops.h
+    source/test_r_storage_ops.cpp
     include/test_r_teardown_queue.h
     source/test_r_teardown_queue.cpp
 )
