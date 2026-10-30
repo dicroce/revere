@@ -5,6 +5,7 @@
 #include "r_utils/interfaces/r_socket_base.h"
 #include "r_utils/r_socket_address.h"
 #include "r_utils/r_exception.h"
+#include "r_utils/r_nullable.h"
 
 #ifdef IS_WINDOWS
 
@@ -246,6 +247,24 @@ R_API std::vector<r_adapter_info> r_get_adapters();
 // don't accidentally sweep a huge subnet). Used for unicast ONVIF discovery of
 // cameras that don't answer multicast probes.
 R_API std::vector<std::string> r_ipv4_subnet_hosts(const std::string& ipv4_addr, const std::string& netmask, size_t max_hosts);
+
+// A MAC address as "aa:bb:cc:dd:ee:ff" (lower case, colons, two digits each)
+// from any common spelling: colons or dashes, either case, single-digit groups
+// as macOS's arp prints them ("0:1b:2:..."). Null for anything else, and for
+// all-zero or broadcast addresses (an incomplete neighbour entry).
+R_API r_nullable<std::string> r_normalize_mac(const std::string& text);
+
+// The MAC address for ipv4 in Linux's /proc/net/arp text (its header line,
+// then "IP address  HW type  Flags  HW address  Mask  Device" rows). Null when
+// there's no complete entry for it.
+R_API r_nullable<std::string> r_parse_proc_net_arp(const std::string& text, const std::string& ipv4);
+
+// The MAC address the OS has for a host on a local network, from its
+// neighbour (ARP) table: /proc/net/arp on Linux, the routing table on macOS,
+// GetIpNetTable2 on Windows. The table only has hosts it has talked to
+// recently, so talk to the host first. Null when there's no entry, or on any
+// error; it never throws.
+R_API r_nullable<std::string> r_arp_lookup(const std::string& ipv4);
 
 }
 

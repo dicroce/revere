@@ -4,6 +4,8 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_md5.h"
+#include "r_utils/r_socket.h"
+#include <chrono>
 #include <algorithm>
 #include <iterator>
 #include <vector>
@@ -199,18 +201,322 @@ void r_agent::_process_new_or_changed_streams_configs()
             }
         );
 
-        if(_changed_streams_cb)
-            _changed_streams_cb(output);
-
-        // For every changed device, see if it's an already-assigned camera whose
-        // network details just shifted (e.g. router gave it a new DHCP lease).
-        // The ipv4/port get updated by _changed_streams_cb above, but the stored
-        // rtsp_url still has the OLD host baked in (rtsp_url is set only by
-        // interrogate_camera, never by the discovery poll). Schedule a background
-        // re-interrogation so the URL gets refreshed without user intervention.
-        for(const auto& sc : new_or_changed)
-            _maybe_schedule_reinterrogation(sc);
+        // Written, except an assigned camera's address change, which is held
+        // until it can be followed (see apply_discovered_changes).
+        apply_discovered_changes(output);
     }
+
+    recheck_held_moves();
+}
+
+namespace
+{
+int64_t _now_ms()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// The host and port of an rtsp:// URL (554 when it has none); false if it isn't one.
+bool _rtsp_host_port(const std::string& url, std::string& host, int& port)
+{
+    auto scheme = url.find("://");
+    if(scheme == std::string::npos)
+        return false;
+    auto rest = url.substr(scheme + 3);
+    rest = rest.substr(0, rest.find_first_of("/?#"));
+    auto at = rest.rfind('@');
+    if(at != std::string::npos)
+        rest = rest.substr(at + 1);
+    auto colon = rest.rfind(':');
+    host = colon == std::string::npos ? rest : rest.substr(0, colon);
+    port = 554;
+    if(colon != std::string::npos)
+    {
+        try { port = std::stoi(rest.substr(colon + 1)); } catch(...) { return false; }
+    }
+    return !host.empty();
+}
+
+// Whether a TCP connection to host:port opens within a couple of seconds.
+bool _tcp_answers(const std::string& host, int port)
+{
+    if(host.empty() || port <= 0)
+        return false;
+    try
+    {
+        r_utils::r_socket sok;
+        sok.set_io_timeout(2000);
+        sok.connect(host, port);
+        sok.close();
+        return true;
+    }
+    catch(...)
+    {
+        return false;
+    }
+}
+
+bool _default_address_alive(const r_disco::r_camera& stored)
+{
+    if(!stored.ipv4.is_null() && _tcp_answers(stored.ipv4.value(), stored.onvif_port.is_null() ? 80 : stored.onvif_port.value()))
+        return true;
+    std::string host;
+    int port = 0;
+    if(!stored.rtsp_url.is_null() && _rtsp_host_port(stored.rtsp_url.value(), host, port) && _tcp_answers(host, port))
+        return true;
+    return false;
+}
+
+r_utils::r_nullable<std::string> _default_mac_lookup(const std::string& ipv4, int port)
+{
+    // Talk to the host first, so the neighbour table has an entry for it.
+    _tcp_answers(ipv4, port > 0 ? port : 80);
+    return r_utils::r_networking::r_arp_lookup(ipv4);
+}
+
+std::string _move_key(const r_disco::r_camera_move& m)
+{
+    return m.new_ipv4 + "|" + std::to_string(m.new_port) + "|" + m.new_xaddrs;
+}
+}
+
+int64_t r_agent::_now() const
+{
+    return _clock_ms ? _clock_ms() : _now_ms();
+}
+
+void r_agent::_notify_move(const std::string& id, const r_nullable<r_camera_move>& move)
+{
+    if(_camera_move_cb)
+        _camera_move_cb(id, move);
+}
+
+void r_agent::apply_discovered_changes(const vector<pair<r_stream_config, string>>& changed)
+{
+    vector<pair<r_stream_config, string>> pass;
+    vector<string> backfill_mac;
+    for(const auto& [sc, hash] : changed)
+    {
+        auto stored_n = _camera_lookup_cb ? _camera_lookup_cb(sc.id) : r_nullable<r_camera>();
+        auto move_n = stored_n.is_null() ? r_nullable<r_camera_move>() : camera_move_from(stored_n.value(), sc);
+        if(move_n.is_null())
+        {
+            pass.push_back({sc, hash});
+            if(!stored_n.is_null() && stored_n.value().state == "assigned")
+            {
+                // Back at (or still at) its stored address: any held move is moot.
+                bool had_move = false;
+                {
+                    lock_guard<mutex> g(_moves_mutex);
+                    had_move = _held_moves.erase(sc.id) > 0;
+                }
+                if(had_move)
+                {
+                    R_LOG_INFO("Camera %s answers at its stored address again; its held move is dropped", sc.id.c_str());
+                    _notify_move(sc.id, r_nullable<r_camera_move>());
+                }
+                if(stored_n.value().mac.is_null())
+                    backfill_mac.push_back(sc.id);
+            }
+            continue;
+        }
+
+        auto move = move_n.value();
+        auto key = _move_key(move);
+        bool raise = false;
+        {
+            lock_guard<mutex> g(_moves_mutex);
+            auto dismissed = _dismissed_moves.find(sc.id);
+            if(dismissed != _dismissed_moves.end() && dismissed->second == key)
+                continue;  // the user kept the current address for this one
+            auto held = _held_moves.find(sc.id);
+            if(held != _held_moves.end() && _move_key(held->second.move) == key)
+            {
+                held->second.discovered = sc;  // same move, fresher details
+                held->second.hash = hash;
+                continue;
+            }
+            _held_moves[sc.id] = {sc, hash, move};
+            raise = true;
+        }
+        if(raise)
+        {
+            R_LOG_WARNING("Camera %s answers discovery at a new address (%s -> %s). Not followed yet: it is followed once the "
+                          "old address has been silent for %d minutes and the new one has the camera's MAC address, or "
+                          "when confirmed in the camera's properties. The camera stays at its current address meanwhile.",
+                          sc.id.c_str(), move.old_ipv4.c_str(), move.new_ipv4.c_str(), (int)MOVE_FOLLOW_AFTER.count());
+            _notify_move(sc.id, move_n);
+        }
+    }
+
+    if(!pass.empty() && _changed_streams_cb)
+        _changed_streams_cb(pass);
+
+    // For every changed device, see if it's an already-assigned camera whose
+    // stored rtsp_url no longer names its address (followed or confirmed moves
+    // write the new address; the rtsp_url still has the old host). Schedule a
+    // background re-interrogation so the URL gets refreshed.
+    for(const auto& p : pass)
+        _maybe_schedule_reinterrogation(p.first);
+
+    // A camera seen at its stored address without a MAC: note it now, so a
+    // later move can be checked against it.
+    for(const auto& id : backfill_mac)
+    {
+        if(!_camera_lookup_cb || !_save_camera_cb)
+            break;
+        auto cam_n = _camera_lookup_cb(id);
+        if(cam_n.is_null() || cam_n.value().ipv4.is_null() || !cam_n.value().mac.is_null())
+            continue;
+        auto cam = cam_n.value();
+        auto lookup = _mac_lookup ? _mac_lookup : mac_lookup(_default_mac_lookup);
+        auto mac = lookup(cam.ipv4.value(), cam.onvif_port.is_null() ? 80 : cam.onvif_port.value());
+        if(mac.is_null())
+            continue;
+        cam.mac = mac;
+        _save_camera_cb(cam);
+        R_LOG_INFO("Camera %s: noted its MAC address", id.c_str());
+    }
+}
+
+void r_agent::_follow(const std::string& id, _held_move held, const std::string& why)
+{
+    held.move.status = "followed";
+    held.move.followed_at_ms = _now();
+    {
+        lock_guard<mutex> g(_moves_mutex);
+        _held_moves.erase(id);
+        _dismissed_moves.erase(id);
+        _followed_moves[id] = held.move;
+    }
+    R_LOG_WARNING("Camera %s moved %s -> %s: followed (%s)", id.c_str(), held.move.old_ipv4.c_str(), held.move.new_ipv4.c_str(), why.c_str());
+    if(_changed_streams_cb)
+        _changed_streams_cb({{held.discovered, held.hash}});
+    r_nullable<r_camera_move> m;
+    m.set_value(held.move);
+    _notify_move(id, m);
+    _maybe_schedule_reinterrogation(held.discovered);
+}
+
+void r_agent::recheck_held_moves()
+{
+    auto now_ms = _now();
+    vector<pair<string, _held_move>> held;
+    vector<string> expired;
+    {
+        lock_guard<mutex> g(_moves_mutex);
+        for(auto& h : _held_moves)
+            held.push_back(h);
+        for(auto it = _followed_moves.begin(); it != _followed_moves.end();)
+        {
+            if(now_ms - it->second.followed_at_ms > 24LL * 3600 * 1000)
+            {
+                expired.push_back(it->first);
+                it = _followed_moves.erase(it);
+            }
+            else
+                ++it;
+        }
+    }
+    for(auto& id : expired)
+        _notify_move(id, r_nullable<r_camera_move>());
+
+    auto alive_probe = _address_alive ? _address_alive : address_alive_probe(_default_address_alive);
+    auto lookup = _mac_lookup ? _mac_lookup : mac_lookup(_default_mac_lookup);
+
+    for(auto& [id, h] : held)
+    {
+        auto stored_n = _camera_lookup_cb ? _camera_lookup_cb(id) : r_nullable<r_camera>();
+        if(stored_n.is_null() || stored_n.value().state != "assigned")
+        {
+            {
+                lock_guard<mutex> g(_moves_mutex);
+                _held_moves.erase(id);
+            }
+            _notify_move(id, r_nullable<r_camera_move>());
+            continue;
+        }
+        auto stored = stored_n.value();
+
+        bool alive = alive_probe(stored);
+        if(alive)
+            h.move.old_dead_since_ms = 0;
+        else if(h.move.old_dead_since_ms == 0)
+            h.move.old_dead_since_ms = now_ms;
+        auto dead_for = std::chrono::milliseconds(alive ? 0 : now_ms - h.move.old_dead_since_ms);
+
+        r_nullable<string> new_mac;
+        if(!alive && dead_for >= MOVE_FOLLOW_AFTER)
+            new_mac = lookup(h.move.new_ipv4, h.move.new_port);
+
+        if(decide_camera_move(alive, dead_for, stored.mac, new_mac) == move_outcome::follow)
+        {
+            _follow(id, h, "the old address stopped answering and the new one has the camera's MAC address");
+            continue;
+        }
+
+        if(!alive && dead_for >= MOVE_FOLLOW_AFTER)
+            R_LOG_WARNING("Camera %s: old address silent for %lld min, but the new address's MAC %s; the move stays held",
+                          id.c_str(), (long long)(dead_for.count() / 60000),
+                          stored.mac.is_null() ? "can't be checked (no MAC stored for the camera)"
+                                               : (new_mac.is_null() ? "couldn't be read" : "doesn't match"));
+
+        lock_guard<mutex> g(_moves_mutex);
+        auto it = _held_moves.find(id);
+        if(it != _held_moves.end())
+            it->second.move.old_dead_since_ms = h.move.old_dead_since_ms;
+    }
+}
+
+bool r_agent::confirm_camera_move(const std::string& camera_id)
+{
+    _held_move h;
+    {
+        lock_guard<mutex> g(_moves_mutex);
+        auto it = _held_moves.find(camera_id);
+        if(it == _held_moves.end())
+            return false;
+        h = it->second;
+    }
+    _follow(camera_id, h, "confirmed by the user");
+    return true;
+}
+
+bool r_agent::dismiss_camera_move(const std::string& camera_id)
+{
+    {
+        lock_guard<mutex> g(_moves_mutex);
+        auto it = _held_moves.find(camera_id);
+        if(it == _held_moves.end())
+            return false;
+        _dismissed_moves[camera_id] = _move_key(it->second.move);
+        _held_moves.erase(it);
+    }
+    R_LOG_INFO("Camera %s: the user kept its current address", camera_id.c_str());
+    _notify_move(camera_id, r_nullable<r_camera_move>());
+    return true;
+}
+
+void r_agent::clear_followed_move(const std::string& camera_id)
+{
+    bool had = false;
+    {
+        lock_guard<mutex> g(_moves_mutex);
+        had = _followed_moves.erase(camera_id) > 0;
+    }
+    if(had)
+        _notify_move(camera_id, r_nullable<r_camera_move>());
+}
+
+std::map<std::string, r_camera_move> r_agent::camera_moves() const
+{
+    lock_guard<mutex> g(_moves_mutex);
+    std::map<std::string, r_camera_move> out;
+    for(auto& f : _followed_moves)
+        out[f.first] = f.second;
+    for(auto& h : _held_moves)
+        out[h.first] = h.second.move;
+    return out;
 }
 
 // Helper: which fields, if changed, mean we can't silently swap the camera's

@@ -62,6 +62,12 @@
               :title="authed ? 'Stop recording and remove' : 'Sign in to manage'"
               @click="askRemove(c)"
             >Remove</button>
+            <!-- An address change: held (confirm on the recorder) or followed. -->
+            <p
+              v-if="c.camera_move"
+              class="cam-move"
+              :class="c.camera_move.status === 'held' ? 'held' : 'followed'"
+            >{{ c.camera_move.message }}<template v-if="c.camera_move.status === 'held'"> Choose in the Revere app on this computer.</template></p>
           </li>
         </ul>
       </section>
@@ -492,6 +498,7 @@ section h2 {
 .cam-list { list-style: none; display: flex; flex-direction: column; gap: 0.4rem; }
 .cam-list li {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem;
   padding: 0.55rem 0.75rem;
@@ -506,6 +513,9 @@ section h2 {
 .cam-name { font-weight: 500; }
 .cam-ip { color: #888; font-size: 0.85rem; }
 .cam-codec { color: #666; font-size: 0.75rem; }
+.cam-move { flex-basis: 100%; margin: 0.25rem 0 0; font-size: 0.85rem; line-height: 1.4; }
+.cam-move.held { color: #e0a84a; }
+.cam-move.followed { color: #999; }
 .cam-list li > .primary, .cam-list li > .cam-codec { margin-left: auto; }
 .cam-list li > .primary { margin-left: auto; }
 

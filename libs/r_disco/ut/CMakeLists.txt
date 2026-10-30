@@ -7,12 +7,12 @@ add_executable(
 
 target_include_directories(
     r_disco_ut PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
+    include
+    ../include
 )
 
 target_link_libraries(
-    r_disco_ut LINK_PUBLIC
+    r_disco_ut PRIVATE
     experimentum
     r_disco
     r_pipeline
@@ -20,5 +20,6 @@ target_link_libraries(
     r_onvif
     r_http
     r_utils
-    ${GST_LIBS}
+    gstreamer::gstreamer
+    platform::platform
 )

@@ -2974,3 +2974,30 @@ void test_r_utils::test_ssl_client_sees_server_fingerprint()
     RTF_ASSERT(abc.substr(0, 11) == "BA:78:16:BF");
     RTF_ASSERT(abc.substr(abc.size() - 11) == "F2:00:15:AD");
 }
+
+void test_r_utils::test_normalize_mac()
+{
+    using namespace r_utils::r_networking;
+    RTF_ASSERT(r_normalize_mac("00:1b:2c:3d:4e:5f").value() == "00:1b:2c:3d:4e:5f");
+    RTF_ASSERT(r_normalize_mac("00-1B-2C-3D-4E-5F").value() == "00:1b:2c:3d:4e:5f");
+    RTF_ASSERT(r_normalize_mac(" 0:1b:2:3d:4e:5f ").value() == "00:1b:02:3d:4e:5f");   // macOS arp's spelling
+    for(auto bad : {"", "00:1b:2c:3d:4e", "00:1b:2c:3d:4e:5f:60", "00:1b:2c:3d:4e:zz", "001b:2c:3d:4e:5f:", "000:1b:2c:3d:4e:5f",
+                    "00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff", "00:1b:2c:3d:4e:5f'; DROP TABLE cameras;--"})
+        RTF_ASSERT(r_normalize_mac(bad).is_null());
+}
+
+void test_r_utils::test_parse_proc_net_arp()
+{
+    using namespace r_utils::r_networking;
+    const std::string text =
+        "IP address       HW type     Flags       HW address            Mask     Device\n"
+        "192.168.1.20     0x1         0x2         00:1B:2C:3D:4E:5F     *        eth0\n"
+        "192.168.1.21     0x1         0x0         00:00:00:00:00:00     *        eth0\n"
+        "192.168.1.2      0x1         0x2         66:77:88:99:aa:bb     *        eth0\n";
+    RTF_ASSERT(r_parse_proc_net_arp(text, "192.168.1.20").value() == "00:1b:2c:3d:4e:5f");
+    RTF_ASSERT(r_parse_proc_net_arp(text, "192.168.1.2").value() == "66:77:88:99:aa:bb");
+    RTF_ASSERT(r_parse_proc_net_arp(text, "192.168.1.21").is_null());   // incomplete entry
+    RTF_ASSERT(r_parse_proc_net_arp(text, "192.168.1.22").is_null());
+    RTF_ASSERT(r_parse_proc_net_arp("", "192.168.1.20").is_null());
+    RTF_ASSERT(r_parse_proc_net_arp(text, "192.168.1.2 ").is_null());
+}

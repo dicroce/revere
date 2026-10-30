@@ -373,6 +373,11 @@ struct sidebar_list_ui_item
     // Optional per-card action button (e.g. "Repair" when the camera's
     // recording file is missing). Empty = no button.
     std::string action_label;
+    // The camera answers discovery at a new address (r_disco/r_camera_move.h):
+    // the notice, and whether it's held (waiting to be confirmed or kept) or
+    // was followed. Empty when there's none.
+    std::string move_notice;
+    bool move_held {false};
 
     // Shown in the main window's detail pane when known.
     std::string codec;

@@ -152,6 +152,9 @@ struct main_window_actions
     std::function<void(int)> properties;
     std::function<void(int)> remove;
     std::function<void(int)> repair;        // the card's action_label button
+    std::function<void(int)> move_use;      // a held move: use the new address
+    std::function<void(int)> move_keep;     // a held move: keep the current address
+    std::function<void(int)> move_ok;       // a followed move: notice seen
     std::function<void(int)> record;
     std::function<void(int)> forget;
     std::function<void(const std::string&, bool)> set_plugin_enabled;
@@ -1538,6 +1541,29 @@ inline void main_window(
                 ImGui::PushFont(font(fonts.key_18));
                 wrapped_text(status_danger_text, item.retention);
                 ImGui::PopFont();
+            }
+
+            if(!item.move_notice.empty())
+            {
+                // An address change (see r_disco/r_camera_move.h). Held: the
+                // camera stays at its current address until one is chosen.
+                ImGui::PushFont(font(fonts.key_18));
+                wrapped_text(item.move_held ? status_warning_text : text_secondary, item.move_notice);
+                ImGui::PopFont();
+                action_row m;
+                if(item.move_held)
+                {
+                    if(flow_button(m.row, "Use new address", button_kind::primary) && actions.move_use)
+                        actions.move_use(sel_index);
+                    if(ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Record from the new address, signing in there with this camera's credentials");
+                    if(flow_button(m.row, "Keep current") && actions.move_keep)
+                        actions.move_keep(sel_index);
+                    if(ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Stay at the current address; this new address won't be raised again");
+                }
+                else if(flow_button(m.row, "OK") && actions.move_ok)
+                    actions.move_ok(sel_index);
             }
 
             {

@@ -4,6 +4,7 @@
 
 #include "r_disco/r_stream_config.h"
 #include "r_disco/r_camera.h"
+#include "r_disco/r_camera_move.h"
 #include "r_utils/r_timer.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
@@ -56,6 +57,21 @@ typedef std::function<void(const std::string& camera_id, const std::string& mess
 // changed IP and doesn't answer multicast Probe still gets re-discovered.
 typedef std::function<std::vector<r_camera>()> assigned_cameras_cb;
 
+// Set (a move) or clear (null) an assigned camera's address change, held or
+// followed (see r_camera_move.h). The host app keeps it for its UI and API.
+typedef std::function<void(const std::string& camera_id, const r_utils::r_nullable<r_camera_move>& move)> camera_move_cb;
+
+// Whether a camera still answers at its stored address (its ONVIF service or
+// its RTSP port). Replaceable for tests.
+typedef std::function<bool(const r_camera& stored)> address_alive_probe;
+
+// The MAC address of the host at ipv4 (port: one to talk to first, so the
+// neighbour table has it), or null. Replaceable for tests.
+typedef std::function<r_utils::r_nullable<std::string>(const std::string& ipv4, int port)> mac_lookup;
+
+// Now, in milliseconds since the epoch. Replaceable for tests.
+typedef std::function<int64_t()> clock_ms;
+
 class r_agent
 {
     friend class r_onvif_provider;
@@ -71,6 +87,34 @@ public:
     R_API void set_save_camera_cb(save_camera_cb cb) {_save_camera_cb = cb;}
     R_API void set_camera_alert_cb(camera_alert_cb cb) {_camera_alert_cb = cb;}
     R_API void set_assigned_cameras_cb(assigned_cameras_cb cb) {_assigned_cameras_cb = cb;}
+    R_API void set_camera_move_cb(camera_move_cb cb) {_camera_move_cb = cb;}
+    R_API void set_address_alive_probe(address_alive_probe p) {_address_alive = p;}
+    R_API void set_mac_lookup(mac_lookup l) {_mac_lookup = l;}
+    R_API void set_clock_ms(clock_ms c) {_clock_ms = c;}
+
+    // Discovery's new or changed cameras (and each config's hash), after a
+    // poll. Each is written through the changed-streams callback, except an
+    // assigned camera now found at another address: that is held as a move
+    // (see r_camera_move.h) and not written. A camera found at its stored
+    // address without a stored MAC gets its MAC filled in.
+    R_API void apply_discovered_changes(const std::vector<std::pair<r_stream_config, std::string>>& changed);
+
+    // Called after each poll: probes each held move's old address and follows
+    // the move when decide_camera_move says so; drops followed entries after
+    // a day.
+    R_API void recheck_held_moves();
+
+    // The user's answer to a held move: confirm writes the new address and
+    // re-checks the camera there; dismiss keeps the current address, and the
+    // same new address isn't raised again (a different one is). False if the
+    // camera has no held move.
+    R_API bool confirm_camera_move(const std::string& camera_id);
+    R_API bool dismiss_camera_move(const std::string& camera_id);
+    // Clears a followed move's notice (the user has seen it).
+    R_API void clear_followed_move(const std::string& camera_id);
+
+    // The moves now held or followed, by camera id.
+    R_API std::map<std::string, r_camera_move> camera_moves() const;
 
     R_API void start();
     R_API void stop();
@@ -168,6 +212,26 @@ private:
     };
     std::mutex _reinterrogation_mutex;
     std::map<std::string, _reinterrogation_state> _reinterrogation_state_by_id;
+
+    // Address changes for assigned cameras (see r_camera_move.h).
+    struct _held_move
+    {
+        r_stream_config discovered;
+        std::string hash;
+        r_camera_move move;
+    };
+    camera_move_cb _camera_move_cb;
+    address_alive_probe _address_alive;
+    mac_lookup _mac_lookup;
+    clock_ms _clock_ms;
+    int64_t _now() const;
+    mutable std::mutex _moves_mutex;
+    std::map<std::string, _held_move> _held_moves;
+    std::map<std::string, r_camera_move> _followed_moves;
+    // A dismissed move's new address, per camera: not raised again.
+    std::map<std::string, std::string> _dismissed_moves;
+    void _notify_move(const std::string& id, const r_utils::r_nullable<r_camera_move>& move);
+    void _follow(const std::string& id, _held_move held, const std::string& why);
 };
 
 }

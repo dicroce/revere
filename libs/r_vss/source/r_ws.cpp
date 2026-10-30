@@ -769,6 +769,26 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                 };
             }
 
+            // An address change for this camera, held (waiting for the user, or
+            // to be followed) or followed; null when none.
+            json camera_move = nullptr;
+            auto move_n = _devices.get_camera_move(c.id);
+            if(!move_n.is_null())
+            {
+                const auto& mv = move_n.value();
+                camera_move = {
+                    {"status", mv.status},
+                    {"old_ipv4", mv.old_ipv4},
+                    {"new_ipv4", mv.new_ipv4},
+                    {"old_port", mv.old_port},
+                    {"new_port", mv.new_port},
+                    {"seen_at_ms", mv.seen_at_ms},
+                    {"old_dead_since_ms", mv.old_dead_since_ms},
+                    {"followed_at_ms", mv.followed_at_ms},
+                    {"message", r_disco::camera_move_message(mv)}
+                };
+            }
+
             j["cameras"].push_back(
                 {
                     {"id", c.id},
@@ -801,6 +821,8 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     {"onvif_protocol", (c.onvif_protocol.is_null())?"":c.onvif_protocol.value()},
                     // The camera's ONVIF event subscription; null when it has none.
                     {"camera_events", camera_events},
+                    // An address change (r_disco/r_camera_move.h): held or followed; null when none.
+                    {"camera_move", camera_move},
                     // "auto", "1", "2" or "3": where motion and object classes come from.
                     {"motion_tier_setting", (c.motion_tier.is_null())?"auto":c.motion_tier.value()},
                     // The tier in use now and why; null while not recording.
