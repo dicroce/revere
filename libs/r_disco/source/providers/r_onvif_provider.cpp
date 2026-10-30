@@ -250,6 +250,19 @@ void r_onvif_provider::interrogate_camera(
                 r_onvif::r_onvif_cam cam(sc.ipv4.value(), port, protocol, sc.xaddrs.value(), username, password, soap_hint, auth_hint);
 
                 auto caps = cam.get_camera_capabilities();
+
+                // Best-effort make/model/firmware (shown in the UI). A camera that
+                // doesn't answer GetDeviceInformation must not fail interrogation.
+                try {
+                    auto di = cam.get_device_information();
+                    if(!di.manufacturer.empty())     sc.manufacturer = di.manufacturer;
+                    if(!di.model.empty())            sc.model = di.model;
+                    if(!di.firmware_version.empty()) sc.firmware_version = di.firmware_version;
+                }
+                catch(const std::exception& e) {
+                    R_LOG_WARNING("ONVIF GetDeviceInformation failed: %s", e.what());
+                }
+
                 auto oms = cam.get_media_service(caps);
                 auto profile_tokens = cam.get_profile_tokens(oms);
 
@@ -407,6 +420,19 @@ r_utils::r_nullable<r_stream_config> r_onvif_provider::interrogate_camera(
                 r_onvif::r_onvif_cam cam(config.ipv4.value(), config.port.value(), config.protocol.value(), config.xaddrs.value(), username, password, soap_hint, auth_hint);
 
                 auto caps = cam.get_camera_capabilities();
+
+                // Best-effort make/model/firmware (shown in the UI). A camera that
+                // doesn't answer GetDeviceInformation must not fail interrogation.
+                try {
+                    auto di = cam.get_device_information();
+                    if(!di.manufacturer.empty())     config.manufacturer = di.manufacturer;
+                    if(!di.model.empty())            config.model = di.model;
+                    if(!di.firmware_version.empty()) config.firmware_version = di.firmware_version;
+                }
+                catch(const std::exception& e) {
+                    R_LOG_WARNING("ONVIF GetDeviceInformation failed: %s", e.what());
+                }
+
                 auto oms = cam.get_media_service(caps);
                 auto profile_tokens = cam.get_profile_tokens(oms);
 
