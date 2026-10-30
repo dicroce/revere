@@ -63,6 +63,17 @@ typedef std::string onvif_capabilities;
 typedef std::string onvif_media_service;
 typedef std::string onvif_profile_token;
 
+// What GetDeviceInformation reports, so revere can show make/model/firmware.
+// Any field may be empty if the camera omits it.
+struct onvif_device_information
+{
+    std::string manufacturer;
+    std::string model;
+    std::string firmware_version;
+    std::string serial_number;
+    std::string hardware_id;
+};
+
 struct onvif_profile_info
 {
     onvif_profile_token token;
@@ -190,6 +201,10 @@ public:
     );
 
     R_API onvif_capabilities get_camera_capabilities();
+
+    // GetDeviceInformation (device service): manufacturer, model, firmware
+    // version, serial number, hardware id. Throws on a non-200 / SOAP fault.
+    R_API onvif_device_information get_device_information();
 
     R_API onvif_media_service get_media_service(const onvif_capabilities& capabilities) const;
 
