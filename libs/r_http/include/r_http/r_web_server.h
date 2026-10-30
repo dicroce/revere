@@ -73,6 +73,14 @@ public:
         // Every worker busy and the queue full: say so, so the client can
         // back off and retry, rather than leave it waiting.
         _server.set_overload_cb([](SOK_T& conn){
+            // This runs on the accept thread, so nothing on this connection may
+            // wait longer than the 50 ms budget below. Over HTTPS the first wait,
+            // or the 503's send, runs the TLS handshake under the connection's
+            // I/O timeout (10 s by default): a client that never sends a
+            // ClientHello, or sends it slowly, stalled every accept that long.
+            // A client that can't finish the handshake in time is just closed.
+            conn.set_io_timeout(50);
+
             // Read what the client has sent first (briefly, without waiting
             // for a whole request): closing a socket with unread data makes
             // some stacks (Linux) reset the connection, and the client would

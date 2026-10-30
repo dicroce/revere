@@ -19,12 +19,14 @@
 #include <cstdint>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include "gl_utils.h"
 #include "configure_state.h"
 #include "revere_api.h"
 #include "layouts.h"
 #include "control_bar.h"
 #include "control_bar_renderer.h"
+#include "overlay_controls.h"
 #include "timeline_constants.h"
 #include "error_handling.h"
 #include "font_keys.h"
@@ -383,64 +385,97 @@ void control_bar(
     // Use renderer for all UI components
     auto calc = renderer.calculate_layout(render_layout);
     
-    // Render timerange text and zoom buttons
-    renderer.render_timerange_text(render_layout, cbs, calc);
-    renderer.render_zoom_buttons(render_layout, cbs, calc);
+    // One control row over the timeline strip. Left group, flowing right:
+    // time range dropdown, audio. Right group, flowing left: Go live,
+    // Play/Pause, Export (or Finish export + Cancel), Snap, Sync. The
+    // playhead's time is centered in whatever space is left between them.
+    float left_x = renderer.render_timerange_picker(render_layout, cbs, calc);
 
-    // Volume slider — top row, left of Export button
+    // Audio: one button that opens a popover with the volume slider and the
+    // Denoise toggle. The button shows the level, and a dot when denoise is on.
     if(cbs.has_audio && playing)
     {
-        auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-        auto right_edge = calc.center_box_left + calc.center_box_width;
-        ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_14()].inter_tight_regular);
-        ImGui::SetCursorScreenPos(ImVec2(right_edge - 560.0f, top_line_top + 7.0f));
-        ImGui::Text("Vol");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(100.0f);
-        ImGui::PushID("volume_gain");
-        ImGui::SliderFloat("##vol", &cbs.volume_gain, 0.0f, 4.0f, "");
-        ImGui::PopID();
-        ImGui::PopFont();
+        left_x += 16.0f;
+        const float btn_h = calc.row_height;
+        const float btn_w = btn_h * 1.75f;
+        ImVec2 p(left_x, calc.row_top);
+        ImGui::SetCursorScreenPos(p);
+        if(ImGui::Button("##audio", ImVec2(btn_w, btn_h)))
+            ImGui::OpenPopup("##audio_popover");
+        if(ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##audio_popover"))
+            ImGui::SetTooltip(cbs.denoise ? "Audio (denoise on)" : "Audio");
+
+        auto* dl = ImGui::GetWindowDrawList();
+        ImU32 fg = ImGui::GetColorU32(r_ui_utils::theme::text_primary);
+        float cy = p.y + btn_h / 2.0f;
+        overlay_controls_detail::draw_speaker(dl, ImVec2(p.x + btn_h * 0.55f, cy), fg, (std::min)(cbs.volume_gain / 4.0f, 1.0f));
+        if(cbs.denoise)
+            dl->AddCircleFilled(ImVec2(p.x + btn_h * 1.05f, cy), 3.0f, ImGui::GetColorU32(r_ui_utils::theme::accent));
+        float caret_x = p.x + btn_w - btn_h * 0.35f;
+        dl->AddTriangleFilled(ImVec2(caret_x - 4.0f, cy - 2.0f), ImVec2(caret_x + 4.0f, cy - 2.0f), ImVec2(caret_x, cy + 3.0f),
+                              ImGui::GetColorU32(r_ui_utils::theme::text_secondary));
+
+        // Opens upward, above the button: there's no room below the bar.
+        ImGui::SetNextWindowPos(ImVec2(p.x, p.y - 6.0f), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+        if(ImGui::BeginPopup("##audio_popover"))
+        {
+            ImGui::PushFont(r_ui_utils::fonts[vision::get_font_key_16()].inter_tight_regular);
+            ImGui::TextUnformatted("Volume");
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::PushID("volume_gain");
+            ImGui::SliderFloat("##vol", &cbs.volume_gain, 0.0f, 4.0f, "");
+            ImGui::PopID();
+            ImGui::Checkbox("Denoise", &cbs.denoise);
+            if(ImGui::IsItemHovered())
+                ImGui::SetTooltip("Suppress background noise to make voices clearer.\nAlso quiets non-speech sounds (barking, glass, engines).");
+            ImGui::PopFont();
+            ImGui::EndPopup();
+        }
+
+        left_x += btn_w;
     }
 
-    // Render export controls
-    if(show_export)
-        renderer.render_export_controls(render_layout, cbs, calc, stream_name, export_cb);
+    float right_x = calc.center_box_left + calc.center_box_width;
 
-    // Snapshot button — top row, left of the volume slider (which starts at
-    // right_edge - 560). Shown wherever Export is; the main loop does the save.
+    renderer.render_play_live_button(render_layout, cbs, calc, stream_name, control_bar_button_cb, update_data_cb, playing, right_x);
+
+    if(show_export)
+        renderer.render_export_controls(render_layout, cbs, calc, stream_name, export_cb, right_x);
+
+    // Snapshot button. Shown wherever Export is; the main loop does the save.
     if(show_export)
     {
-        auto top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-        auto right_edge = calc.center_box_left + calc.center_box_width;
-        ImGui::SetCursorScreenPos(ImVec2(right_edge - 650.0f, top_line_top));
+        right_x -= 80.0f;
+        ImGui::SetCursorScreenPos(ImVec2(right_x, calc.row_top));
         if(ImGui::Button("Snap", ImVec2(80, 0)))
             cbs.snapshot_requested = true;
         if(ImGui::IsItemHovered())
             ImGui::SetTooltip("Save a snapshot of the selected camera (S)");
+        right_x -= timeline_constants::ROW_BUTTON_GAP;
     }
-
-    // Render play/live button
-    renderer.render_play_live_button(render_layout, cbs, calc, stream_name, control_bar_button_cb, update_data_cb, playing);
 
     if(is_multiview)
     {
         if(!is_at_live && cbs.exp_state != EXPORT_STATE_CONFIGURING)
         {
-            float right_edge = calc.center_box_left + calc.center_box_width;
-            float top_line_top = calc.center_box_top + timeline_constants::TOP_BUTTON_OFFSET;
-            ImGui::SetCursorScreenPos(ImVec2(right_edge - 360.0f, top_line_top));
+            const auto& style = ImGui::GetStyle();
+            float sync_w = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Sync").x;
+            right_x -= sync_w;
+            ImGui::SetCursorScreenPos(ImVec2(right_x, calc.row_top));
             if(ImGui::Checkbox("Sync", &sync_scrub) && sync_scrub)
             {
                 auto current_time = cbs.tr.time_in_range(0, 1000, cbs.playhead_pos);
                 control_bar_slider_cb(stream_name, current_time);
             }
+            right_x -= timeline_constants::ROW_BUTTON_GAP;
         }
         else
         {
             sync_scrub = false;
         }
     }
+
+    renderer.render_playhead_time(cbs, calc, left_x, right_x, is_at_live && playing);
 
     // Playhead bounds check
     cbs.playhead_pos = (std::max)((std::min)(cbs.playhead_pos, 1000), 0);
@@ -674,7 +709,7 @@ void main_client(
     bool playing
 )
 {
-    uint16_t control_bar_height = (uint16_t)(6 * ImGui::GetTextLineHeightWithSpacing());
+    uint16_t control_bar_height = (uint16_t)std::ceil(control_bar_preferred_height());
     uint16_t video_pane_height = h - control_bar_height;
 
     // On layout transition, try to keep the user's previously-selected camera

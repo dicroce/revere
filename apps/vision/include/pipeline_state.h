@@ -12,10 +12,13 @@
 #include <thread>
 #include <chrono>
 #include <cstdint>
+#include <vector>
 #include "stream_info.h"
 #include "sample.h"
 #include "pipeline_host.h"
 #include "configure_state.h"
+
+struct DenoiseState; // rnnoise.h
 
 namespace vision
 {
@@ -123,6 +126,14 @@ public:
         if(_sdl_audio_device != 0 && prev != gain)
             SDL_ClearQueuedAudio(_sdl_audio_device);
     }
+
+    // Speech noise suppression (rnnoise) on the playing audio. Off by default:
+    // it's tuned to keep voices, so non-speech sounds (glass, barking, engines)
+    // get suppressed along with the noise.
+    void set_denoise(bool on)
+    {
+        _denoise.store(on);
+    }
     
     inline std::chrono::system_clock::time_point get_last_control_bar_pos() const 
     {
@@ -155,6 +166,17 @@ private:
     SDL_AudioDeviceID _sdl_audio_device;
     std::atomic<float> _volume_gain;
     std::atomic<bool> _audio_active;
+
+    // Denoise state; everything but the two atomics is touched only on the
+    // audio callback thread (and the destructor, after the source stops).
+    void _denoise_and_queue(const std::vector<uint8_t>& pcm_flt_mono, float gain);
+    std::atomic<bool> _denoise {false};
+    std::atomic<bool> _denoise_reset {false}; // set on play/seek: don't smear old noise estimate into new position
+    bool _denoise_was_on {false};
+    DenoiseState* _denoise_state {nullptr};
+    std::vector<float> _denoise_in;   // 48 kHz mono, scaled to S16 range, awaiting a full rnnoise frame
+    std::vector<float> _denoise_frame;
+    std::vector<int16_t> _denoise_out; // S16 stereo for SDL
     bool _has_audio;
     std::atomic<bool> _received_first_frame;
     int64_t _last_v_pts;

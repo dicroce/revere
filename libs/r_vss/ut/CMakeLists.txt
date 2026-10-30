@@ -33,6 +33,8 @@ add_executable(
     source/test_r_ws_auth.cpp
     include/test_r_rtsp_auth.h
     source/test_r_rtsp_auth.cpp
+    include/test_r_teardown_queue.h
+    source/test_r_teardown_queue.cpp
 )
 
 # What r_vss/r_build_info.h should report, from the root CMakeLists.

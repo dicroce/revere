@@ -328,6 +328,9 @@ void r_agent::_do_reinterrogation(const r_stream_config& discovered_sc, r_camera
             if(!sc.port.is_null())                      stored.onvif_port = sc.port;
             if(!sc.protocol.is_null())                  stored.onvif_protocol = sc.protocol;
             if(!sc.address.is_null())                   stored.address = sc.address;
+            if(!sc.manufacturer.is_null())              stored.manufacturer = sc.manufacturer;
+            if(!sc.model.is_null())                     stored.model = sc.model;
+            if(!sc.firmware_version.is_null())          stored.firmware_version = sc.firmware_version;
             if(!sc.rtsp_url.is_null())                  stored.rtsp_url = sc.rtsp_url;
             if(!sc.video_codec.is_null())               stored.video_codec = sc.video_codec;
             if(!sc.video_codec_parameters.is_null())    stored.video_codec_parameters = sc.video_codec_parameters;
