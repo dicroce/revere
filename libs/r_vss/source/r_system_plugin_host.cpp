@@ -23,6 +23,7 @@ typedef const char* (*system_plugin_get_status_message_func)(r_system_plugin_han
 typedef const char* (*get_system_plugin_version_func)();
 typedef void (*system_plugin_post_detection_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float);
 typedef void (*system_plugin_set_api_result_cb_func)(r_system_plugin_handle, system_plugin_api_result_cb, void*);
+typedef void (*system_plugin_cameras_changed_func)(r_system_plugin_handle);
 
 void r_system_plugin_host::_api_result_bridge(const char* name, const char* json, void* user_data)
 {
@@ -143,6 +144,13 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         set_api_result_cb_func = reinterpret_cast<system_plugin_set_api_result_cb_func>(sym);
                                 } catch (...) {}
 
+                                system_plugin_cameras_changed_func cameras_changed_func = nullptr;
+                                try {
+                                    void* sym = lib->resolve_symbol("system_plugin_cameras_changed");
+                                    if (sym)
+                                        cameras_changed_func = reinterpret_cast<system_plugin_cameras_changed_func>(sym);
+                                } catch (...) {}
+
                                 // Optional: the plugin's own version
                                 std::string plugin_version;
                                 try {
@@ -190,6 +198,7 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         status_message_func,
                                         post_detection_func,
                                         set_api_result_cb_func,
+                                        cameras_changed_func,
                                         plugin_name,
                                         plugin_guid,
                                         plugin_version
@@ -411,6 +420,18 @@ void r_system_plugin_host::_on_api_result(const char* name, const char* json)
 {
     if(_api_result_fn)
         _api_result_fn(name ? name : "", json ? json : "");
+}
+
+void r_system_plugin_host::notify_cameras_changed()
+{
+    for(auto& p : _plugins)
+    {
+        if(p.cameras_changed_func && p.plugin_handle)
+        {
+            try { p.cameras_changed_func(p.plugin_handle); }
+            catch(...) {}  // a plugin must never take the stream keeper down
+        }
+    }
 }
 
 void r_system_plugin_host::_dispatch_detection(const r_detection& det)
