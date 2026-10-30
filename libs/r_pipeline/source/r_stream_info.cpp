@@ -401,6 +401,19 @@ struct r_h264_sps r_pipeline::parse_h264_sps(const vector<uint8_t>& sps)
     result.level_idc = sps_info.level_idc;
     result.width = (uint16_t)sps_info.width;
     result.height = (uint16_t)sps_info.height;
+    result.constraint_flags = (uint8_t)((sps_info.constraint_set0_flag ? 0x80 : 0) | (sps_info.constraint_set1_flag ? 0x40 : 0) |
+                                        (sps_info.constraint_set2_flag ? 0x20 : 0) | (sps_info.constraint_set3_flag ? 0x10 : 0) |
+                                        (sps_info.constraint_set4_flag ? 0x08 : 0) | (sps_info.constraint_set5_flag ? 0x04 : 0));
+    if(sps_info.vui_parameters_present_flag)
+    {
+        if(sps_info.vui_parameters.aspect_ratio_info_present_flag)
+        {
+            result.sar_num = (uint16_t)sps_info.vui_parameters.par_n;
+            result.sar_den = (uint16_t)sps_info.vui_parameters.par_d;
+        }
+        if(sps_info.vui_parameters.bitstream_restriction_flag)
+            result.max_num_reorder_frames = (int)sps_info.vui_parameters.num_reorder_frames;
+    }
 
     return result;
 }
@@ -424,6 +437,11 @@ struct r_h265_sps r_pipeline::parse_h265_sps(const vector<uint8_t>& sps)
     result.level_idc = sps_info.profile_tier_level.level_idc;
     result.width = (uint16_t)sps_info.width;
     result.height = (uint16_t)sps_info.height;
+    if(sps_info.vui_parameters_present_flag && sps_info.vui_params.aspect_ratio_info_present_flag)
+    {
+        result.sar_num = (uint16_t)sps_info.vui_params.par_n;
+        result.sar_den = (uint16_t)sps_info.vui_params.par_d;
+    }
 
     return result;
 }

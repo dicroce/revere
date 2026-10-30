@@ -1,5 +1,6 @@
 
 #include "utils.h"
+#include "browser_url.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_file.h"
@@ -14,6 +15,10 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <pwd.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <errno.h>
+extern char** environ;
 #endif
 
 #include <deque>
@@ -119,8 +124,33 @@ std::string revere::join_path(const std::string& path, const std::string& fileNa
     return path + PATH_SLASH + fileName;
 }
 
+#if defined(IS_MACOS) || defined(IS_LINUX)
+// Runs the opener with the URL as its one argument, never through a shell, and
+// waits for it, as system() did.
+static int _run_opener(const char* opener, const std::string& url)
+{
+    char* argv[] = {const_cast<char*>(opener), const_cast<char*>(url.c_str()), nullptr};
+    pid_t pid;
+    int err = posix_spawnp(&pid, opener, nullptr, nullptr, argv, environ);
+    if(err != 0)
+        return -1;
+    int status = 0;
+    while(waitpid(pid, &status, 0) < 0)
+    {
+        if(errno != EINTR)
+            return -1;
+    }
+    return (WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+}
+#endif
+
 bool revere::open_url_in_browser(const std::string& url)
 {
+    if(!is_web_url(url))
+    {
+        R_LOG_ERROR("Not opening a link that isn't an http(s) URL");
+        return false;
+    }
 #ifdef IS_WINDOWS
     // Windows: Use ShellExecute
     R_LOG_INFO("Opening URL in browser: %s", url.c_str());
@@ -133,9 +163,8 @@ bool revere::open_url_in_browser(const std::string& url)
     return true;
 #elif defined(IS_MACOS)
     // macOS: Use open command
-    std::string command = "open \"" + url + "\"";
-    R_LOG_INFO("Opening URL with command: %s", command.c_str());
-    int result = system(command.c_str());
+    R_LOG_INFO("Opening URL with open: %s", url.c_str());
+    int result = _run_opener("open", url);
     if(result != 0)
     {
         R_LOG_ERROR("open command failed for URL: %s (exit code: %d)", url.c_str(), result);
@@ -143,9 +172,8 @@ bool revere::open_url_in_browser(const std::string& url)
     }
 #elif defined(IS_LINUX)
     // Linux: Use xdg-open which works with XDG Desktop Portal in snaps
-    std::string command = "xdg-open \"" + url + "\"";
-    R_LOG_INFO("Opening URL with command: %s", command.c_str());
-    int result = system(command.c_str());
+    R_LOG_INFO("Opening URL with xdg-open: %s", url.c_str());
+    int result = _run_opener("xdg-open", url);
     if(result != 0)
     {
         R_LOG_ERROR("xdg-open failed for URL: %s (exit code: %d)", url.c_str(), result);

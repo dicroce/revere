@@ -1008,3 +1008,70 @@ void test_r_http::test_web_server_https_survives_plaintext_probe()
 
     ws.stop();
 }
+
+// Busy over HTTPS: a refused connection is handled on the accept thread, so a
+// client that never starts its TLS handshake must not hold that thread for the
+// connection's 10 s I/O timeout. It's closed within the 50 ms budget (plus the
+// 503's own), and the accept thread goes on to refuse the next client properly.
+void test_r_http::test_web_server_https_busy_silent_client()
+{
+    int port = RTF_NEXT_PORT();
+    auto cfg = _test_tls_config();
+
+    std::mutex m;
+    std::condition_variable cv;
+    bool release = false;
+    std::atomic<int> blocked {0};
+    r_web_server<r_utils::r_ssl_server_socket> ws(port, "127.0.0.1", 1, 1);
+    ws.get_socket().set_config(cfg);
+    ws.add_route(METHOD_GET, "/block", [&](const r_web_server<r_utils::r_ssl_server_socket>&, r_utils::r_ssl_server_socket&, const r_server_request&){
+        ++blocked;
+        std::unique_lock<std::mutex> g(m);
+        cv.wait(g, [&](){ return release; });
+        return r_server_response();
+    });
+    // Released on the way out, pass or fail, so the server can stop.
+    struct releaser {
+        std::mutex& m; std::condition_variable& cv; bool& release;
+        ~releaser() { { std::lock_guard<std::mutex> g(m); release = true; } cv.notify_all(); }
+    } releaser_on_exit {m, cv, release};
+    ws.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // The one worker busy...
+    r_utils::r_ssl_socket a(false);
+    a.connect("127.0.0.1", port);
+    r_client_request block("127.0.0.1", port);
+    block.set_uri("/block");
+    block.write_request(a);
+    RTF_ASSERT(_wait_for([&](){ return blocked == 1; }));
+
+    // ...and the one queue place taken.
+    r_socket queued;
+    queued.connect("127.0.0.1", port);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Refused, and silent: no ClientHello, ever.
+    auto start = std::chrono::steady_clock::now();
+    r_socket silent;
+    silent.connect("127.0.0.1", port);
+    char c;
+    uint64_t wait_ms = 5000;
+    bool closed = silent.wait_till_recv_wont_block(wait_ms) && silent.recv(&c, 1) <= 0;
+    auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    RTF_ASSERT(closed);
+    RTF_ASSERT(took < 2000);
+
+    // The accept thread is free: a real HTTPS client right after gets its 503.
+    r_utils::r_ssl_socket next(false);
+    next.connect("127.0.0.1", port);
+    r_client_request request("127.0.0.1", port);
+    request.set_uri("/block");
+    request.write_request(next);
+    r_client_response busy;
+    busy.read_response(next);
+    RTF_ASSERT(busy.get_status() == 503);
+    RTF_ASSERT(busy.get_header("Retry-After") == "1");
+
+    queued.close();
+}

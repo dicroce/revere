@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <fcntl.h>
 #include <io.h>
+#include <process.h>
 #include <sys/stat.h>
 #endif
 #if defined(IS_LINUX) || defined(IS_MACOS)
@@ -2735,6 +2736,34 @@ int main(int argc, char** argv)
     signal(SIGTERM, _sigterm_handler);
 #endif
 
+    // Releasing the process lock unblocks any waiting --quit process,
+    // signalling that we have shut down.
+    auto release_process_lock = [&]() {
+#ifdef IS_WINDOWS
+        if(lock_fd >= 0) { _close(lock_fd); lock_fd = -1; }
+        if(hQuitEvent) { CloseHandle(hQuitEvent); hQuitEvent = NULL; }
+        if(hMutex) { CloseHandle(hMutex); hMutex = NULL; }
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+        if(lock_fd >= 0)
+        {
+            process_lock.unlock();
+            close(lock_fd);
+            lock_fd = -1;
+        }
+#endif
+    };
+
+    // A camera's teardown still stuck when the stream keeper stopped (it is
+    // logged by name): the rest of the cleanup would free what that thread may
+    // still use, so leave now. The OS reclaims the rest, and storage recovers
+    // from an unclean stop.
+    auto exit_with_stuck_teardown = [&]() {
+        R_LOG_ERROR("A camera teardown is still stuck; exiting without the rest of the cleanup");
+        release_process_lock();
+        _exit(0);
+    };
+
     r_logger::install_terminate();
 
     auto log_path = revere::sub_dir("logs");
@@ -2882,7 +2911,8 @@ int main(int argc, char** argv)
         _headless_wait_for_shutdown();
 
         R_LOG_INFO("Stopping...");
-        streamKeeper.stop();
+        if(!streamKeeper.stop())
+            exit_with_stuck_teardown();
         R_LOG_INFO("Stopping discovery agent...");
         agent.stop();
         R_LOG_INFO("Discovery agent stopped");
@@ -3712,7 +3742,8 @@ int main(int argc, char** argv)
 
     // Cleanup — order matters:
     // 1. Stop background workers first so they stop touching SDL textures
-    streamKeeper.stop();
+    if(!streamKeeper.stop())
+        exit_with_stuck_teardown();
     R_LOG_INFO("Stopping discovery agent...");
     agent.stop();
     R_LOG_INFO("Discovery agent stopped");
@@ -3736,20 +3767,8 @@ int main(int argc, char** argv)
     r_logger::clear_log_callback();
     r_logger::uninstall_logger();
 
-    // Release the process lock last — this unblocks any waiting --quit process,
-    // signalling that we have fully shut down.
-#ifdef IS_WINDOWS
-    if(lock_fd >= 0) _close(lock_fd);
-    if(hQuitEvent) CloseHandle(hQuitEvent);
-    if(hMutex) CloseHandle(hMutex);
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    if(lock_fd >= 0)
-    {
-        process_lock.unlock();
-        close(lock_fd);
-    }
-#endif
+    // Release the process lock last: we have fully shut down.
+    release_process_lock();
 
     return 0;
 }

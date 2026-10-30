@@ -1572,6 +1572,7 @@ int main(int argc, char** argv)
                     ph.set_active_audio_stream(last_audio_stream);
                 }
                 ph.set_stream_volume(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs.volume_gain);
+                ph.set_stream_denoise(ui_state.mcs.selected_stream_name, ui_state.mcs.obos.cbs.denoise);
                 ui_state.mcs.obos.cbs.has_audio = ph.has_audio(ui_state.mcs.selected_stream_name);
 
                 // Sync the control bar to the newly-selected camera. Keyed on
@@ -2037,6 +2038,7 @@ int run_overlay(const overlay_opts& opts)
     auto last_raise_check = chrono::steady_clock::now();
     SDL_GetGlobalMouseState(&last_mouse_x, &last_mouse_y);
     float bar_alpha = 1.0f;   // visible at launch so the controls are discoverable
+    bool popup_open = false;  // a control bar popup (time range) was open last frame
     bool audio_activated = false;  // one-shot: make this stream's audio active
 
     // Placement/pin persistence: `persisted` mirrors what's on disk (seeded
@@ -2170,8 +2172,9 @@ int run_overlay(const overlay_opts& opts)
             need_draw = true;
 
         // Auto-hiding controls: shown on mouse activity, faded out after 3 s
-        // idle. While fading, every frame is drawn.
-        bool bar_visible = (chrono::steady_clock::now() - last_mouse_activity) < chrono::milliseconds(3000);
+        // idle, but never while one of the bar's popups is open. While fading,
+        // every frame is drawn.
+        bool bar_visible = popup_open || (chrono::steady_clock::now() - last_mouse_activity) < chrono::milliseconds(3000);
         float target_alpha = bar_visible ? 1.0f : 0.0f;
         if(bar_alpha != target_alpha)
             need_draw = true;
@@ -2274,12 +2277,12 @@ int run_overlay(const overlay_opts& opts)
         {
             // Render the whole control block under a compact font. The app's
             // default font is 24pt (the first size loaded), which makes the
-            // control bar — sized as 6x the line height — about twice as tall as
+            // control bar (sized from the line height) about twice as tall as
             // it should be for this small overlay window. 14pt keeps it slim.
             ImFont* block_font = r_ui_utils::fonts[get_font_key_14()].inter_tight_regular;
             if(block_font) ImGui::PushFont(block_font);
 
-            uint16_t cb_h = (uint16_t)(6.0f * ImGui::GetTextLineHeightWithSpacing());
+            uint16_t cb_h = (uint16_t)std::ceil(control_bar_preferred_height());
             float block_top = (float)win_h - (float)cb_h;
 
             // Once the time bar's height is known (it follows the font): never
@@ -2333,8 +2336,15 @@ int run_overlay(const overlay_opts& opts)
 
             if(block_font) ImGui::PopFont();
 
-            // The bottom block, and the corner strip, take clicks.
-            hit_ctx.interactive = SDL_Rect{ 0, (int)block_top, win_w, win_h - (int)block_top };
+            // The bottom block, and the corner strip, take clicks. A popup
+            // (the time range list) opens above the bar, over the video, so
+            // while one is open the whole window takes clicks instead of
+            // dragging; the bottom resize strip still wins.
+            popup_open = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+            if(popup_open)
+                hit_ctx.interactive = SDL_Rect{ 0, 0, win_w, win_h };
+            else
+                hit_ctx.interactive = SDL_Rect{ 0, (int)block_top, win_w, win_h - (int)block_top };
             hit_ctx.corner_strip = SDL_Rect{ (int)corner.x, (int)corner.y, (int)std::ceil(corner.w), (int)std::ceil(corner.h) };
             hit_ctx.interactive_visible = true;
         }

@@ -16,6 +16,7 @@
 #include "r_vss/r_rtsp_transport.h"
 #include "r_vss/r_lag_watchdog.h"
 #include "r_vss/r_keep_awake.h"
+#include "r_vss/r_teardown_queue.h"
 #include <functional>
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
@@ -201,7 +202,10 @@ public:
     R_API ~r_stream_keeper() noexcept;
 
     R_API void start();
-    R_API void stop();
+    // False when a camera's teardown was still stuck at the bound and was left
+    // running (r_teardown_queue::finish): the caller should exit without
+    // freeing anything more.
+    R_API bool stop();
 
     R_API std::vector<r_stream_status> fetch_stream_status();
 
@@ -316,6 +320,13 @@ private:
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
     std::set<std::string> _suspended_cameras;
 
+    // Removed recording contexts are destroyed here, off the keeper's thread
+    // (see r_teardown_queue); a camera isn't started again while its old one
+    // is still pending. _stuck_warned: per camera, the 30 s steps of a stuck
+    // teardown already logged (keeper thread only).
+    r_teardown_queue _teardowns;
+    std::map<std::string, int64_t> _stuck_warned;
+
     // Per-camera backoff state for cameras whose r_recording_context construction
     // throws (e.g. legacy nanots v1 .nts files that the v2 lib can't open).
     // Without this, the main loop retries every iteration with no sleep, flooding
@@ -335,6 +346,8 @@ private:
     reconnect_log _reconnects;
     // Reconnects asked for by a camera's lag watchdog, with their backoff.
     r_lag_reconnects _lag_reconnects;
+    // Logs a teardown stuck past TEARDOWN_STUCK_MS, once per 30 s of it.
+    void _warn_stuck_teardowns();
     bool _lag_reconnect(const std::string& camera_id, const r_recording_context& rc);
     r_utils::r_work_q<r_stream_keeper_cmd, r_stream_keeper_result> _cmd_q;
 

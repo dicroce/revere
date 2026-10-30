@@ -563,12 +563,24 @@ void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
         [[fallthrough]];
         case 7:
         {
+            // ONVIF GetDeviceInformation, shown in the UI. Null on existing rows
+            // until the camera is next interrogated.
+            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
+                conn.exec("ALTER TABLE cameras ADD COLUMN manufacturer TEXT;");
+                conn.exec("ALTER TABLE cameras ADD COLUMN model TEXT;");
+                conn.exec("ALTER TABLE cameras ADD COLUMN firmware_version TEXT;");
+                _set_db_version(conn, 8);
+            });
+        }
+        [[fallthrough]];
+        case 8:
+        {
             // The camera's MAC address, filled in when it's next seen at its address.
             r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
                 conn.exec(
                     "ALTER TABLE cameras ADD COLUMN mac TEXT;"
                 );
-                _set_db_version(conn, 8);
+                _set_db_version(conn, 9);
             });
         }
         [[fallthrough]];
@@ -606,12 +618,15 @@ string r_devices::_create_insert_or_update_query(const r_db::r_sqlite_conn& conn
     if(result.empty())
     {
         query = r_string_utils::format(
-            "INSERT INTO cameras (id, %s%s%s%s%s%s%s%s%s%s%s%s%sstate, last_update_time, stream_config_hash) "
-            "VALUES('%s', %s%s%s%s%s%s%s%s%s%s%s%s%s'discovered', %s, '%s');",
+            "INSERT INTO cameras (id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, last_update_time, stream_config_hash) "
+            "VALUES('%s', %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s'discovered', %s, '%s');",
 
             (!stream_config.camera_name.is_null())?"camera_name, ":"",
             (!stream_config.ipv4.is_null())?"ipv4, ":"",
             (!stream_config.xaddrs.is_null())?"xaddrs, ":"",
+            (!stream_config.manufacturer.is_null())?"manufacturer, ":"",
+            (!stream_config.model.is_null())?"model, ":"",
+            (!stream_config.firmware_version.is_null())?"firmware_version, ":"",
             (!stream_config.port.is_null())?"onvif_port, ":"",
             (!stream_config.protocol.is_null())?"onvif_protocol, ":"",
             (!stream_config.address.is_null())?"address, ":"",
@@ -627,6 +642,9 @@ string r_devices::_create_insert_or_update_query(const r_db::r_sqlite_conn& conn
             (!stream_config.camera_name.is_null())?r_string_utils::format("'%s', ", stream_config.camera_name.value().c_str()).c_str():"",
             (!stream_config.ipv4.is_null())?r_string_utils::format("'%s', ", stream_config.ipv4.value().c_str()).c_str():"",
             (!stream_config.xaddrs.is_null())?r_string_utils::format("'%s', ", stream_config.xaddrs.value().c_str()).c_str():"",
+            (!stream_config.manufacturer.is_null())?r_string_utils::format("'%s', ", stream_config.manufacturer.value().c_str()).c_str():"",
+            (!stream_config.model.is_null())?r_string_utils::format("'%s', ", stream_config.model.value().c_str()).c_str():"",
+            (!stream_config.firmware_version.is_null())?r_string_utils::format("'%s', ", stream_config.firmware_version.value().c_str()).c_str():"",
             (!stream_config.port.is_null())?r_string_utils::format("%d, ", stream_config.port.value()).c_str():"",
             (!stream_config.protocol.is_null())?r_string_utils::format("'%s', ", stream_config.protocol.value().c_str()).c_str():"",
             (!stream_config.address.is_null())?r_string_utils::format("'%s', ", stream_config.address.value().c_str()).c_str():"",
@@ -658,12 +676,18 @@ string r_devices::_create_insert_or_update_query(const r_db::r_sqlite_conn& conn
                 "%s"
                 "%s"
                 "%s"
+                "%s"
+                "%s"
+                "%s"
                 "last_update_time=%s, "
                 "stream_config_hash='%s' "
             "WHERE id='%s';",
             (!stream_config.camera_name.is_null())?r_string_utils::format("camera_name='%s', ", stream_config.camera_name.value().c_str()).c_str():"",
             (!stream_config.ipv4.is_null())?r_string_utils::format("ipv4='%s', ", stream_config.ipv4.value().c_str()).c_str():"",
             (!stream_config.xaddrs.is_null())?r_string_utils::format("xaddrs='%s', ", stream_config.xaddrs.value().c_str()).c_str():"",
+            (!stream_config.manufacturer.is_null())?r_string_utils::format("manufacturer='%s', ", stream_config.manufacturer.value().c_str()).c_str():"",
+            (!stream_config.model.is_null())?r_string_utils::format("model='%s', ", stream_config.model.value().c_str()).c_str():"",
+            (!stream_config.firmware_version.is_null())?r_string_utils::format("firmware_version='%s', ", stream_config.firmware_version.value().c_str()).c_str():"",
             (!stream_config.port.is_null())?r_string_utils::format("onvif_port=%d, ", stream_config.port.value()).c_str():"",
             (!stream_config.protocol.is_null())?r_string_utils::format("onvif_protocol='%s', ", stream_config.protocol.value().c_str()).c_str():"",
             (!stream_config.address.is_null())?r_string_utils::format("address='%s', ", stream_config.address.value().c_str()).c_str():"",
@@ -695,6 +719,12 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
         camera.ipv4 = row.at("ipv4").value();
     if(!row.at("xaddrs").is_null())
         camera.xaddrs = row.at("xaddrs").value();
+    if(row.count("manufacturer") && !row.at("manufacturer").is_null())
+        camera.manufacturer = row.at("manufacturer").value();
+    if(row.count("model") && !row.at("model").is_null())
+        camera.model = row.at("model").value();
+    if(row.count("firmware_version") && !row.at("firmware_version").is_null())
+        camera.firmware_version = row.at("firmware_version").value();
     if(!row.at("onvif_port").is_null())
         camera.onvif_port = s_to_int(row.at("onvif_port").value());
     if(!row.at("onvif_protocol").is_null())
@@ -870,8 +900,11 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
 
     auto query = r_string_utils::format(
             "REPLACE INTO cameras("
-                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%s%s%s%s%slast_update_time, stream_config_hash) "
+                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%s%s%s%s%slast_update_time, stream_config_hash) "
             "VALUES("
+                "%s"
+                "%s"
+                "%s"
                 "%s"
                 "%s"
                 "%s"
@@ -909,6 +942,9 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.friendly_name.is_null())?"friendly_name, ":"",
             (!camera.ipv4.is_null())?"ipv4, ":"",
             (!camera.xaddrs.is_null())?"xaddrs, ":"",
+            (!camera.manufacturer.is_null())?"manufacturer, ":"",
+            (!camera.model.is_null())?"model, ":"",
+            (!camera.firmware_version.is_null())?"firmware_version, ":"",
             (!camera.onvif_port.is_null())?"onvif_port, ":"",
             (!camera.onvif_protocol.is_null())?"onvif_protocol, ":"",
             (!camera.address.is_null())?"address, ":"",
@@ -939,6 +975,9 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.friendly_name.is_null())?r_string_utils::format("'%s', ", camera.friendly_name.value().c_str()).c_str():"",
             (!camera.ipv4.is_null())?r_string_utils::format("'%s', ", camera.ipv4.value().c_str()).c_str():"",
             (!camera.xaddrs.is_null())?r_string_utils::format("'%s', ", camera.xaddrs.value().c_str()).c_str():"",
+            (!camera.manufacturer.is_null())?r_string_utils::format("'%s', ", camera.manufacturer.value().c_str()).c_str():"",
+            (!camera.model.is_null())?r_string_utils::format("'%s', ", camera.model.value().c_str()).c_str():"",
+            (!camera.firmware_version.is_null())?r_string_utils::format("'%s', ", camera.firmware_version.value().c_str()).c_str():"",
             (!camera.onvif_port.is_null())?r_string_utils::format("%d, ", camera.onvif_port.value()).c_str():"",
             (!camera.onvif_protocol.is_null())?r_string_utils::format("'%s', ", camera.onvif_protocol.value().c_str()).c_str():"",
             (!camera.address.is_null())?r_string_utils::format("'%s', ", camera.address.value().c_str()).c_str():"",
