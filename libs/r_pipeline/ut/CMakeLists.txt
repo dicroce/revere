@@ -5,6 +5,8 @@ add_executable(
     source/utils.cpp
     include/test_r_pipeline.h
     source/test_r_pipeline.cpp
+    include/test_r_stream_probe.h
+    source/test_r_stream_probe.cpp
 )
 
 target_include_directories(
