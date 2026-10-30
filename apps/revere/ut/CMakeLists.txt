@@ -9,6 +9,9 @@ add_executable(
     include/test_browser_url.h
     source/test_browser_url.cpp
     ../source/configure_state.cpp
+    include/test_tray_status.h
+    source/test_tray_status.cpp
+    ../source/tray_status.cpp
     ../source/browser_url.cpp
 )
 

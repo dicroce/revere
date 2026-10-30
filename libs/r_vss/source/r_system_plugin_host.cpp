@@ -4,6 +4,7 @@
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
+#include <cstdlib>
 #include <filesystem>
 
 using namespace r_vss;
@@ -23,10 +24,38 @@ typedef const char* (*system_plugin_get_status_message_func)(r_system_plugin_han
 typedef const char* (*get_system_plugin_version_func)();
 typedef void (*system_plugin_post_detection_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float);
 typedef void (*system_plugin_set_api_result_cb_func)(r_system_plugin_handle, system_plugin_api_result_cb, void*);
+typedef void (*system_plugin_cameras_changed_func)(r_system_plugin_handle);
 
 void r_system_plugin_host::_api_result_bridge(const char* name, const char* json, void* user_data)
 {
     reinterpret_cast<r_system_plugin_host*>(user_data)->_on_api_result(name, json);
+}
+
+r_system_plugin_dirs r_vss::system_plugin_dirs(const std::string& exe_dir,
+                                                const std::string& top_dir,
+                                                const char* snap,
+                                                const char* snap_user_common)
+{
+    r_system_plugin_dirs dirs;
+
+    // Primary location: alongside the executable (inside $SNAP under the Snap).
+    dirs.load.push_back(exe_dir + PATH_SLASH + "system_plugins");
+
+    const std::string user_dir = top_dir + PATH_SLASH + "system_plugins";
+    if(snap != nullptr && snap_user_common != nullptr && snap_user_common[0] != '\0')
+    {
+        // Under the Snap: plugins installed for this user, where the Snap may map code.
+        dirs.load.push_back(std::string(snap_user_common) + PATH_SLASH + "system_plugins");
+        dirs.unloadable = user_dir;
+    }
+    else
+    {
+        // User data directory for downloaded plugins
+        // (Documents/revere/revere on Linux/macOS, LocalAppData/Revere on Windows)
+        dirs.load.push_back(user_dir);
+    }
+
+    return dirs;
 }
 
 r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
@@ -45,15 +74,31 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
         const std::string plugin_ext = ".so";
 #endif
 
-        // Build list of plugin directories to search
-        std::vector<std::string> plugin_dirs;
+        auto dirs = system_plugin_dirs(r_fs::working_directory(), _top_dir, getenv("SNAP"), getenv("SNAP_USER_COMMON"));
+        const auto& plugin_dirs = dirs.load;
 
-        // Primary location: alongside the executable
-        plugin_dirs.push_back(r_fs::working_directory() + PATH_SLASH + "system_plugins");
-
-        // Also check user data directory for downloaded plugins
-        // (Documents/revere/revere on Linux/macOS, LocalAppData/Revere on Windows)
-        plugin_dirs.push_back(_top_dir + PATH_SLASH + "system_plugins");
+        // A plugin left where this install can't load it (installed for the
+        // Snap before it had a folder of its own): say where it belongs. Only a
+        // hint, so nothing here may stop the real plugins loading: error_code
+        // overloads throughout (a folder can stat but not list).
+        if (!dirs.unloadable.empty())
+        {
+            std::error_code ec;
+            fs::directory_iterator it(dirs.unloadable, ec), end;
+            for (; !ec && it != end; it.increment(ec))
+            {
+                std::error_code fec;
+                std::string filename = it->path().filename().string();
+                if (it->is_regular_file(fec) && filename.size() > plugin_ext.size() &&
+                    filename.substr(filename.size() - plugin_ext.size()) == plugin_ext)
+                {
+                    R_LOG_ERROR("System plugin %s is in %s, where the Snap can't load it. Run its installer again, or move it to %s.",
+                        filename.c_str(), dirs.unloadable.c_str(), dirs.load.back().c_str());
+                }
+            }
+            if (ec && ec != std::errc::no_such_file_or_directory)
+                R_LOG_WARNING("Could not check %s for left-over system plugins: %s", dirs.unloadable.c_str(), ec.message().c_str());
+        }
 
         for (const auto& plugin_dir : plugin_dirs)
         {
@@ -143,6 +188,13 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         set_api_result_cb_func = reinterpret_cast<system_plugin_set_api_result_cb_func>(sym);
                                 } catch (...) {}
 
+                                system_plugin_cameras_changed_func cameras_changed_func = nullptr;
+                                try {
+                                    void* sym = lib->resolve_symbol("system_plugin_cameras_changed");
+                                    if (sym)
+                                        cameras_changed_func = reinterpret_cast<system_plugin_cameras_changed_func>(sym);
+                                } catch (...) {}
+
                                 // Optional: the plugin's own version
                                 std::string plugin_version;
                                 try {
@@ -190,6 +242,7 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         status_message_func,
                                         post_detection_func,
                                         set_api_result_cb_func,
+                                        cameras_changed_func,
                                         plugin_name,
                                         plugin_guid,
                                         plugin_version
@@ -411,6 +464,18 @@ void r_system_plugin_host::_on_api_result(const char* name, const char* json)
 {
     if(_api_result_fn)
         _api_result_fn(name ? name : "", json ? json : "");
+}
+
+void r_system_plugin_host::notify_cameras_changed()
+{
+    for(auto& p : _plugins)
+    {
+        if(p.cameras_changed_func && p.plugin_handle)
+        {
+            try { p.cameras_changed_func(p.plugin_handle); }
+            catch(...) {}  // a plugin must never take the stream keeper down
+        }
+    }
 }
 
 void r_system_plugin_host::_dispatch_detection(const r_detection& det)
