@@ -79,7 +79,8 @@ vector<r_onvif::onvif_ptz_preset> r_agent::ptz_control(
     r_nullable<string> onvif_protocol
 )
 {
-    lock_guard<mutex> lk(_interrogation_mutex);
+    // Not under _interrogation_mutex: the provider serializes each camera's PTZ
+    // commands itself, so a move never waits on another camera's interrogation.
     return _onvif_provider->ptz_control(ipv4, xaddrs, username, password, cmd, onvif_port, onvif_protocol);
 }
 

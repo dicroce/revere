@@ -3127,25 +3127,46 @@ r_http::r_server_response r_ws::_post_ptz(r_utils::r_socket_base&, const r_http:
 {
     _require_auth(request);
 
+    // Every answer is JSON. A failure is {error, code}: "bad_request", "unknown_camera", "no_ptz" (501: the
+    // camera has no ONVIF PTZ service), "unreachable" or "camera_error" (502). error is a fixed sentence; the
+    // camera's own words, which can name its address, go to the log only.
+    auto failure = [](status_code status, const string& code, const string& error) {
+        json j;
+        j["error"] = error;
+        j["code"] = code;
+        r_server_response response(status);
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    };
+
+    json req;
     try
     {
-        auto req = json::parse(request.get_body_as_string());
+        req = json::parse(request.get_body_as_string());
+    }
+    catch(const std::exception&)
+    {
+        return failure(response_bad_request, "bad_request", "The request isn't JSON.");
+    }
 
-        if(!req.contains("camera_id"))
-            R_THROW(("Missing camera_id."));
-        auto camera_id = req["camera_id"].get<string>();
+    if(!req.contains("camera_id") || !req["camera_id"].is_string())
+        return failure(response_bad_request, "bad_request", "Missing camera_id.");
+    auto camera_id = req["camera_id"].get<string>();
 
-        auto maybe_camera = _devices.get_camera_by_id(camera_id);
-        if(maybe_camera.is_null())
-            R_THROW(("Unknown camera id: %s", camera_id.c_str()));
-        auto camera = maybe_camera.value();
+    auto maybe_camera = _devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        return failure(response_not_found, "unknown_camera", "No camera with that id.");
+    auto camera = maybe_camera.value();
 
-        if(camera.ipv4.is_null() || camera.xaddrs.is_null())
-            R_THROW(("Camera is missing ipv4/xaddrs (not an ONVIF discovery)."));
+    // A camera added by its RTSP URL has no ONVIF address to send PTZ to.
+    if(camera.ipv4.is_null() || camera.xaddrs.is_null())
+        return failure(response_not_implemented, "no_ptz", "This camera wasn't found by ONVIF discovery, so it has no PTZ.");
 
+    r_disco::r_ptz_command cmd;
+    try
+    {
         auto action = req.value("action", string("stop"));
-
-        r_disco::r_ptz_command cmd;
         if(action == "move")
         {
             cmd.op = r_disco::r_ptz_command::op_t::move;
@@ -3159,18 +3180,25 @@ r_http::r_server_response r_ws::_post_ptz(r_utils::r_socket_base&, const r_http:
         else if(action == "goto_preset")
         {
             cmd.op = r_disco::r_ptz_command::op_t::goto_preset;
-            if(!req.contains("preset_token"))
-                R_THROW(("goto_preset requires preset_token."));
-            cmd.preset_token = req["preset_token"].get<string>();
+            cmd.preset_token = req.value("preset_token", string());
+            if(cmd.preset_token.empty())
+                return failure(response_bad_request, "bad_request", "goto_preset requires preset_token.");
         }
         else if(action == "list_presets")
             cmd.op = r_disco::r_ptz_command::op_t::list_presets;
         else
-            R_THROW(("Unknown PTZ action: %s", action.c_str()));
+            return failure(response_bad_request, "bad_request", "Unknown PTZ action.");
 
-        if(req.contains("profile_token"))
-            cmd.profile_token = req["profile_token"].get<string>();
+        cmd.profile_token = req.value("profile_token", string());
+    }
+    catch(const std::exception&)
+    {
+        // A field of the wrong type (json throws on a mismatched value()).
+        return failure(response_bad_request, "bad_request", "A PTZ field has the wrong type.");
+    }
 
+    try
+    {
         // Creds come from the stored (decrypted) camera, like the events worker.
         auto presets = _agent.ptz_control(
             camera.ipv4.value(), camera.xaddrs.value(),
@@ -3189,11 +3217,20 @@ r_http::r_server_response r_ws::_post_ptz(r_utils::r_socket_base&, const r_http:
         response.set_body(j.dump());
         return response;
     }
+    catch(const r_disco::r_ptz_error& ex)
+    {
+        R_LOG_ERROR("PTZ %s on camera %s failed (%s): %s", req.value("action", string("stop")).c_str(), camera_id.c_str(), ex.code().c_str(), ex.what());
+        if(ex.code() == "no_ptz")
+            return failure(response_not_implemented, "no_ptz", "This camera has no ONVIF PTZ service.");
+        if(ex.code() == "unreachable")
+            return failure(response_bad_gateway, "unreachable", "The camera's ONVIF service didn't answer.");
+        return failure(response_bad_gateway, "camera_error", "The camera didn't carry out the PTZ command.");
+    }
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+        return failure(response_internal_server_error, "camera_error", "The camera didn't carry out the PTZ command.");
     }
-    R_STHROW(r_http_500_exception, ("Failed to run PTZ command."));
 }
 
 r_http::r_server_response r_ws::_get_measure_camera(r_utils::r_socket_base&, const r_http::r_server_request& request)

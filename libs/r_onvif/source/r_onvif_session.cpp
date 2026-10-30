@@ -1843,7 +1843,8 @@ r_nullable<r_onvif::onvif_endpoint> r_onvif::find_device_service(
             return onvif_endpoint{host, di.port, di.protocol.empty() ? string("http") : di.protocol, found_uri};
     }
 
-    const pair<int, const char*> common[] = {{80, "http"}, {8000, "http"}, {8080, "http"}, {443, "https"}};
+    // 2020: TP-Link Tapo cameras' ONVIF port.
+    const pair<int, const char*> common[] = {{80, "http"}, {8000, "http"}, {8080, "http"}, {2020, "http"}, {443, "https"}};
     for (auto& c : common)
     {
         if (stopping())
@@ -1857,7 +1858,7 @@ r_nullable<r_onvif::onvif_endpoint> r_onvif::find_device_service(
         }
     }
 
-    R_LOG_WARNING("onvif: no device service found for %s (tried %s, unicast discovery, 80, 8000, 8080, 443)",
+    R_LOG_WARNING("onvif: no device service found for %s (tried %s, unicast discovery, 80, 8000, 8080, 2020, 443)",
                   host.c_str(), hint_port.is_null() ? "no stored port" : ("stored port " + to_string(hint_port.value())).c_str());
     return r_nullable<onvif_endpoint>();
 }

@@ -89,7 +89,8 @@ public:
 
     // Perform a PTZ action against a camera's ONVIF PTZ service. Returns the
     // camera's presets (only for cmd.op == list_presets; empty otherwise).
-    // Serialized with the other on-demand ONVIF operations.
+    // Throws r_ptz_error. One camera's commands run one at a time; they don't
+    // wait on interrogation (r_onvif_provider::ptz_control).
     R_API std::vector<r_onvif::onvif_ptz_preset> ptz_control(
         const std::string& ipv4,
         const std::string& xaddrs,

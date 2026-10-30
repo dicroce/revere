@@ -40,9 +40,10 @@ R_API std::vector<discovered_info> filter_discovered(const std::vector<std::stri
 
 // Where a camera's ONVIF device service answers. Revere stores only the
 // service's path (xaddrs), and the port varies: 80 on many cameras, 8000 on
-// Reolinks. Tries, each with an unauthenticated GetSystemDateAndTime and a
-// short timeout: hint_port (when set), then unicast WS-Discovery to the host,
-// then 80, 8000 and 8080 over http and 443 over https. Null if none answers.
+// Reolinks, 2020 on Tapos. Tries, each with an unauthenticated
+// GetSystemDateAndTime and a short timeout: hint_port (when set), then unicast
+// WS-Discovery to the host, then 80, 8000, 8080 and 2020 over http and 443 over
+// https. Null if none answers.
 struct onvif_endpoint
 {
     std::string host;

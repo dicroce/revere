@@ -12,6 +12,8 @@
 #include "r_utils/r_logger.h"
 #include <string>
 #include <set>
+#include <memory>
+#include <mutex>
 
 using namespace r_disco;
 using namespace r_utils;
@@ -69,42 +71,122 @@ vector<r_onvif::onvif_ptz_preset> r_onvif_provider::ptz_control(
     r_nullable<string> onvif_protocol
 )
 {
-    auto ep = r_onvif::find_device_service(ipv4, xaddrs, onvif_port, onvif_protocol);
-    if(ep.is_null())
-        R_THROW(("No ONVIF device service answers at %s. Check that ONVIF is enabled on the camera.", ipv4.c_str()));
-    r_onvif::r_onvif_cam cam(ep.value().host, ep.value().port, ep.value().protocol, ep.value().uri, username, password);
-    auto caps = cam.get_camera_capabilities();
-
-    auto ptz = cam.get_ptz_service(caps);
-    if(ptz.is_null())
-        R_THROW(("Camera at %s has no ONVIF PTZ service.", ipv4.c_str()));
-
-    // ContinuousMove/GotoPreset take a *media* profile token (the one that
-    // references the camera's PTZ configuration). Use the caller's if given,
-    // else the camera's first profile (single-sensor PTZ cams have just one).
-    string profile_token = cmd.profile_token;
-    if(profile_token.empty())
+    shared_ptr<_ptz_session> session;
     {
-        auto oms = cam.get_media_service(caps);
-        auto profiles = cam.get_profile_tokens(oms);
-        if(profiles.empty())
-            R_THROW(("Camera at %s exposes no media profiles for PTZ.", ipv4.c_str()));
-        profile_token = profiles.front().token;
+        lock_guard<mutex> g(_ptz_sessions_lock);
+        // Keyed by where the camera answers: two cameras can share an address on different ports.
+        auto& slot = _ptz_sessions[ipv4 + "|" + (onvif_port.is_null() ? string() : to_string(onvif_port.value())) + "|" + xaddrs];
+        if(!slot)
+            slot = make_shared<_ptz_session>();
+        session = slot;
     }
 
-    switch(cmd.op)
+    // One command at a time per camera; other cameras and interrogation don't wait.
+    lock_guard<mutex> camera_lock(session->lock);
+
+    // New credentials mean a new session: the old one negotiated with the old ones.
+    auto credentials = (username.is_null() ? string() : username.value()) + "\n" + (password.is_null() ? string() : password.value());
+    if(session->credentials != credentials)
     {
-        case r_ptz_command::op_t::move:
-            cam.ptz_continuous_move(ptz.value(), profile_token, cmd.pan, cmd.tilt, cmd.zoom, cmd.timeout);
-            break;
-        case r_ptz_command::op_t::stop:
-            cam.ptz_stop(ptz.value(), profile_token);
-            break;
-        case r_ptz_command::op_t::goto_preset:
-            cam.ptz_goto_preset(ptz.value(), profile_token, cmd.preset_token);
-            break;
-        case r_ptz_command::op_t::list_presets:
-            return cam.get_ptz_presets(ptz.value(), profile_token);
+        session->cam.reset();
+        session->credentials = credentials;
+    }
+
+    bool reused = session->cam != nullptr;
+    try
+    {
+        if(!session->cam)
+            _open_ptz_session(*session, ipv4, xaddrs, username, password, onvif_port, onvif_protocol);
+        return _run_ptz(*session, cmd);
+    }
+    catch(const r_ptz_error& ex)
+    {
+        session->cam.reset();
+        // A kept session may have gone stale (the camera rebooted or moved); a new one is worth one more try.
+        if(!reused)
+            throw;
+        R_LOG_INFO("onvif: PTZ session for %s failed (%s); opening a new one", ipv4.c_str(), ex.what());
+    }
+
+    _open_ptz_session(*session, ipv4, xaddrs, username, password, onvif_port, onvif_protocol);
+    try
+    {
+        return _run_ptz(*session, cmd);
+    }
+    catch(...)
+    {
+        session->cam.reset();
+        throw;
+    }
+}
+
+void r_onvif_provider::_open_ptz_session(
+    _ptz_session& session,
+    const string& ipv4,
+    const string& xaddrs,
+    r_nullable<string> username,
+    r_nullable<string> password,
+    r_nullable<int> onvif_port,
+    r_nullable<string> onvif_protocol
+)
+{
+    session.cam.reset();
+    try
+    {
+        auto ep = r_onvif::find_device_service(ipv4, xaddrs, onvif_port, onvif_protocol);
+        if(ep.is_null())
+            throw r_ptz_error("unreachable", "No ONVIF device service answers at " + ipv4 + ". Check that ONVIF is enabled on the camera.");
+        auto cam = make_unique<r_onvif::r_onvif_cam>(ep.value().host, ep.value().port, ep.value().protocol, ep.value().uri, username, password);
+        auto caps = cam->get_camera_capabilities();
+
+        auto ptz = cam->get_ptz_service(caps);
+        if(ptz.is_null())
+            throw r_ptz_error("no_ptz", "Camera at " + ipv4 + " has no ONVIF PTZ service.");
+
+        // ContinuousMove/GotoPreset take a *media* profile token (the one that
+        // references the camera's PTZ configuration): the camera's first profile
+        // unless a command names one (single-sensor PTZ cams have just one).
+        auto profiles = cam->get_profile_tokens(cam->get_media_service(caps));
+        if(profiles.empty())
+            throw r_ptz_error("camera_error", "Camera at " + ipv4 + " exposes no media profiles for PTZ.");
+
+        session.ptz_service = ptz.value();
+        session.profile_token = profiles.front().token;
+        session.cam = std::move(cam);
+    }
+    catch(const r_ptz_error&)
+    {
+        throw;
+    }
+    catch(const std::exception& ex)
+    {
+        throw r_ptz_error("camera_error", ex.what());
+    }
+}
+
+vector<r_onvif::onvif_ptz_preset> r_onvif_provider::_run_ptz(_ptz_session& session, const r_ptz_command& cmd)
+{
+    const auto& profile_token = cmd.profile_token.empty() ? session.profile_token : cmd.profile_token;
+    try
+    {
+        switch(cmd.op)
+        {
+            case r_ptz_command::op_t::move:
+                session.cam->ptz_continuous_move(session.ptz_service, profile_token, cmd.pan, cmd.tilt, cmd.zoom, cmd.timeout);
+                break;
+            case r_ptz_command::op_t::stop:
+                session.cam->ptz_stop(session.ptz_service, profile_token);
+                break;
+            case r_ptz_command::op_t::goto_preset:
+                session.cam->ptz_goto_preset(session.ptz_service, profile_token, cmd.preset_token);
+                break;
+            case r_ptz_command::op_t::list_presets:
+                return session.cam->get_ptz_presets(session.ptz_service, profile_token);
+        }
+    }
+    catch(const std::exception& ex)
+    {
+        throw r_ptz_error("camera_error", ex.what());
     }
     return {};
 }
