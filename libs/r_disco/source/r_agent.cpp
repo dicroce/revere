@@ -71,6 +71,21 @@ vector<r_onvif::onvif_profile_info> r_agent::get_camera_profiles(
     return _onvif_provider->get_camera_profiles(ipv4, xaddrs, username, password, onvif_port, onvif_protocol);
 }
 
+vector<r_onvif::onvif_ptz_preset> r_agent::ptz_control(
+    const string& ipv4,
+    const string& xaddrs,
+    r_nullable<string> username,
+    r_nullable<string> password,
+    const r_ptz_command& cmd,
+    r_nullable<int> onvif_port,
+    r_nullable<string> onvif_protocol
+)
+{
+    // Not under _interrogation_mutex: the provider serializes each camera's PTZ
+    // commands itself, so a move never waits on another camera's interrogation.
+    return _onvif_provider->ptz_control(ipv4, xaddrs, username, password, cmd, onvif_port, onvif_protocol);
+}
+
 void r_agent::interrogate_camera(
     const std::string& camera_name,
     const std::string& ipv4,

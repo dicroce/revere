@@ -18,6 +18,28 @@ namespace r_vss
 class r_motion_event_plugin_host;
 struct r_detection;
 
+// Where system plugins are looked for, in order; the first copy of a filename wins.
+struct r_system_plugin_dirs
+{
+    std::vector<std::string> load;
+    // A folder plugins may still sit in from before, but that can't load them
+    // (the user data folder under the Snap); empty if none. Never loaded from,
+    // only checked so a plugin found there gets a hint in the log.
+    std::string unloadable;
+};
+
+// exe_dir: the folder with the executable. top_dir: the user data folder
+// (~/Documents/revere/revere, LocalAppData/Revere). snap, snap_user_common: the
+// $SNAP and $SNAP_USER_COMMON environment variables, or null when unset.
+//
+// The Snap's home plug lets it read the user data folder but not map code from
+// it (AppArmor allows mmap exec only under ~/snap/revere), so under the Snap
+// plugins are loaded from $SNAP_USER_COMMON/system_plugins instead.
+R_API r_system_plugin_dirs system_plugin_dirs(const std::string& exe_dir,
+                                              const std::string& top_dir,
+                                              const char* snap,
+                                              const char* snap_user_common);
+
 class r_system_plugin_host
 {
 public:
@@ -56,6 +78,12 @@ public:
     // result_type identifies the payload; json is the raw result.
     R_API void set_api_result_fn(std::function<void(const std::string&, const std::string&)> fn);
 
+    // Notify every plugin that implements system_plugin_cameras_changed that the
+    // camera set changed (added / removed / re-assigned), so it can sync right
+    // away instead of waiting for its next poll. Safe to call from the stream
+    // keeper's reconciliation thread; plugins that don't implement it are skipped.
+    R_API void notify_cameras_changed();
+
 private:
     void _dispatch_detection(const r_detection& det);
     void _on_api_result(const char* name, const char* json);
@@ -73,6 +101,7 @@ private:
         const char* (*status_message_func)(r_system_plugin_handle);  // Optional - nullptr if not supported
         void (*post_detection_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float);  // Optional - nullptr if not supported
         void (*set_api_result_cb_func)(r_system_plugin_handle, system_plugin_api_result_cb, void*);                   // Optional - nullptr if not supported
+        void (*cameras_changed_func)(r_system_plugin_handle);        // Optional - nullptr if not supported
         std::string name;
         std::string guid;
         std::string version;   // Empty if the plugin doesn't report one

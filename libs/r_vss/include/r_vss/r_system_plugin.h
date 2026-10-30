@@ -79,6 +79,12 @@ typedef void (*system_plugin_api_result_cb)(const char* name, const char* json, 
 R_API void system_plugin_set_api_result_cb(r_system_plugin_handle plugin,
     system_plugin_api_result_cb cb, void* user_data);
 
+// Optional: the host calls this when the set of cameras changes (a camera is
+// added, removed or re-assigned) so the plugin can act immediately instead of
+// waiting for its next periodic poll. Implement this if your plugin mirrors the
+// camera/device list to an external service (e.g. the cloud device sync).
+R_API void system_plugin_cameras_changed(r_system_plugin_handle plugin);
+
 // Convenience: call this to post a result — null-safe wrapper around the callback.
 static inline void system_plugin_post_api_result(system_plugin_api_result_cb cb, void* user_data,
     const char* name, const char* json)

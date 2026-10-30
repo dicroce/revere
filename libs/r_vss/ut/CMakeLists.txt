@@ -23,16 +23,22 @@ add_executable(
     source/test_r_detection_cap.cpp
     include/test_r_recording_context.h
     source/test_r_recording_context.cpp
+    include/test_r_ptz_session.h
+    source/test_r_ptz_session.cpp
     include/test_r_rtsp_transport.h
     source/test_r_rtsp_transport.cpp
     include/test_r_lag_watchdog.h
     source/test_r_lag_watchdog.cpp
+    include/test_r_system_plugin_dirs.h
+    source/test_r_system_plugin_dirs.cpp
     include/test_r_keep_awake.h
     source/test_r_keep_awake.cpp
     include/test_r_ws_auth.h
     source/test_r_ws_auth.cpp
     include/test_r_rtsp_auth.h
     source/test_r_rtsp_auth.cpp
+    include/test_r_storage_ops.h
+    source/test_r_storage_ops.cpp
     include/test_r_teardown_queue.h
     source/test_r_teardown_queue.cpp
 )
