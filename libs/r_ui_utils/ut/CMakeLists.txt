@@ -11,6 +11,8 @@ add_executable(
     source/test_text_selection.cpp
     include/test_log_tail.h
     source/test_log_tail.cpp
+    include/test_view_status.h
+    source/test_view_status.cpp
 )
 
 target_include_directories(

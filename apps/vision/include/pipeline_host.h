@@ -23,6 +23,8 @@
 #include "render_context.h"
 #include "frame.h"
 #include "control_bar.h"
+#include "r_ui_utils/view_status.h"
+#include "r_vss/r_display_key_frame.h"
 
 namespace vision
 {
@@ -117,6 +119,16 @@ struct stream_stats final
     }
 };
 
+// What a pane has shown of its live stream, for the words over its picture
+// (r_ui_utils::view_status).
+struct stream_view final
+{
+    bool presented {false};  // a picture has shown since live (re)started
+    bool restarting {false}; // a dead stream was restarted; cleared by the next picture
+    std::chrono::steady_clock::time_point last_present;
+    r_ui_utils::view_status status;
+};
+
 // Per-stream jitter buffer plus the clock anchor that maps frame pts onto the
 // local steady clock. Frames are presented when their pts comes due against
 // the anchor rather than on arrival, which smooths network/decode jitter.
@@ -163,6 +175,14 @@ public:
     void disconnect_stream(int window, const std::string& name);
 
     void post_video_frame(const std::string& name, std::shared_ptr<std::vector<uint8_t>> buffer, bool nv12, uint16_t w, uint16_t h, uint16_t original_w, uint16_t original_h, int64_t pts);
+
+    // The camera's newest recorded picture, shown when a pane opens until live
+    // video arrives. Dropped if the pane already has a picture.
+    void post_poster(const std::string& name, const r_vss::r_display_key_frame& kf);
+
+    // What the pane says over its picture now ("Connecting to camera...");
+    // empty when it's playing. Call once per drawn frame.
+    std::string view_label(const std::string& name);
 
     // True when the renderer is accelerated and takes NV12 textures: decoders
     // then hand over NV12 and the GPU converts to RGB, instead of swscale
@@ -296,6 +316,8 @@ private:
     std::map<std::string, std::shared_ptr<render_context>> _render_contexts;
     std::map<std::string, stream_presentation> _presentations;
     std::map<std::string, std::string> _name_remap; // pipeline's internal name → current layout name
+    std::map<std::string, frame> _posters;          // recorded pictures waiting to be shown (post_poster)
+    std::map<std::string, stream_view> _views;
 
     // Layout names whose pipeline the dead check tore down for a stall and
     // which haven't posted a frame since (drives the "Offline" tile badge).

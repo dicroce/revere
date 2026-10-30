@@ -29,6 +29,8 @@ add_executable(
     source/test_r_rtsp_transport.cpp
     include/test_r_lag_watchdog.h
     source/test_r_lag_watchdog.cpp
+    include/test_r_key_frame_reply.h
+    source/test_r_key_frame_reply.cpp
     include/test_r_system_plugin_dirs.h
     source/test_r_system_plugin_dirs.cpp
     include/test_r_keep_awake.h

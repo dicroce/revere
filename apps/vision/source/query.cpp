@@ -53,9 +53,9 @@ vector<sidebar_list_ui_item> vision::query_cameras(const string& ip_address)
     return cameras;
 }
 
-vector<uint8_t> vision::query_key(const string& ip_address, const string& camera_id, const string& start_time)
+vector<uint8_t> vision::query_key(const string& ip_address, const string& camera_id, const string& start_time, uint64_t timeout_ms)
 {
-    auto sok = revere_connect(ip_address, 10000);
+    auto sok = revere_connect(ip_address, timeout_ms);
 
     r_client_request req(ip_address, revere_port(ip_address));
     req.set_uri("/key_frame?camera_id=" + camera_id + "&start_time=" + start_time);

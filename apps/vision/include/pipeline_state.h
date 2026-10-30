@@ -77,6 +77,15 @@ public:
     inline uint16_t height() const {return _h;}
 
     inline bool has_audio() const {return _has_audio;}
+
+    // Following live (play_live), not playback or a still from the timeline.
+    inline bool live() const {return _live.load();}
+    // The source has delivered video since live started.
+    inline bool got_live_sample() const {return _got_live_sample.load();}
+
+    // Fetch the camera's newest recorded key frame from revere, on a thread of
+    // its own, and hand it to the host to show until live video arrives.
+    void request_poster();
     inline int64_t last_v_pts() const {return _last_v_pts;}
     inline int64_t last_a_pts() const {return _last_a_pts;}
 
@@ -151,6 +160,7 @@ private:
     // Adds Revere's RTSP credential for url's host (revere_api.h), if available.
     void _add_rtsp_credentials(std::vector<r_pipeline::r_arg>& arguments, const std::string& url);
     void _entry_point();
+    void _poster_entry_point(std::string revere_ip, uint16_t w, uint16_t h);
 
     stream_info _si;
     pipeline_host* _ph;
@@ -179,6 +189,10 @@ private:
     std::vector<int16_t> _denoise_out; // S16 stereo for SDL
     bool _has_audio;
     std::atomic<bool> _received_first_frame;
+    std::atomic<bool> _live {false};
+    std::atomic<bool> _got_live_sample {false};
+    std::atomic<bool> _closing {false};
+    std::thread _poster_th;
     int64_t _last_v_pts;
     int64_t _last_a_pts;
 

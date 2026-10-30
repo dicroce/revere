@@ -85,6 +85,24 @@ using namespace std;
 using namespace r_utils;
 using namespace vision;
 
+// What an overlay pane is waiting on ("Connecting to camera..."), over the top
+// left of the current window's picture. Nothing when text is empty. Grid tiles
+// show the same text in their status badge instead.
+static void draw_view_label(const std::string& text)
+{
+    if(text.empty())
+        return;
+    const float margin = 8.0f, pad_x = 8.0f, pad_y = 4.0f;
+    ImVec2 pos = ImGui::GetWindowPos();
+    ImVec2 text_size = ImGui::CalcTextSize(text.c_str());
+    float box_h = text_size.y + 2 * pad_y;
+    ImVec2 box_min(pos.x + margin, pos.y + margin);
+    ImVec2 box_max(box_min.x + text_size.x + 2 * pad_x, box_min.y + box_h);
+    auto* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(box_min, box_max, IM_COL32(0, 0, 0, 160), 4.0f);
+    dl->AddText(ImVec2(box_min.x + pad_x, box_min.y + pad_y), IM_COL32(255, 255, 255, 230), text.c_str());
+}
+
 // Load PNG from embedded data and create SDL texture
 static std::shared_ptr<r_ui_utils::texture> create_png_texture(const unsigned char* png_data, unsigned int png_len)
 {
@@ -1485,13 +1503,17 @@ int main(int argc, char** argv)
                                 ImGui::PopStyleColor();
                             }
 
-                            // Per-tile status badge, top-left corner: "Connecting..."
-                            // before the first frame, "Offline" once the dead check
-                            // has seen the stream stall. Gone while frames flow.
-                            if(status != stream_status::none)
+                            // Per-tile status badge, top-left corner: "Offline" once the
+                            // dead check has seen the stream stall, otherwise what the
+                            // pane is waiting on (view_label: "Connecting to camera...",
+                            // "Waiting for video...", ...). Gone while live frames flow.
+                            // view_label() is called every frame either way: it keeps the
+                            // pane's status timeline.
+                            const bool offline = (status == stream_status::offline);
+                            const std::string view_text = ph.view_label(name);
+                            if(offline || !view_text.empty())
                             {
-                                const bool offline = (status == stream_status::offline);
-                                const char* badge = offline ? "Offline" : "Connecting...";
+                                const char* badge = offline ? "Offline" : view_text.c_str();
                                 ImGui::PushFont(r_ui_utils::fonts[FONT_KEY_16].inter_tight_semibold);
                                 auto badge_size = ImGui::CalcTextSize(badge);
                                 ImVec2 wp = ImGui::GetWindowPos();
@@ -2246,6 +2268,8 @@ int run_overlay(const overlay_opts& opts)
                 ImGui::Image(rc->tex->imgui_id(), ImVec2(sw, sh), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
             }
         }
+
+        draw_view_label(ph.view_label(si.name));
 
         ImGui::End();
         ImGui::PopStyleVar();

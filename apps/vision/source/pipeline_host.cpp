@@ -1,5 +1,6 @@
 
 #include "r_utils/r_exception.h"
+#include <algorithm>
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/3rdparty/json/json.h"
@@ -116,6 +117,7 @@ void pipeline_host::change_layout(int window, layout l)
         std::map<std::string, std::shared_ptr<pipeline_state>> new_pipes;
         std::map<std::string, std::shared_ptr<render_context>> new_rc;
         std::map<std::string, stream_presentation> new_pres;
+        std::map<std::string, stream_view> new_views;
         std::set<std::string> reused_posting_names;
 
         for(auto& si : sis)
@@ -142,6 +144,10 @@ void pipeline_host::change_layout(int window, layout l)
                         auto pres_it = _presentations.find(map_name);
                         if(pres_it != end(_presentations))
                             new_pres[si.name] = std::move(pres_it->second);
+
+                        auto view_it = _views.find(map_name);
+                        if(view_it != end(_views))
+                            new_views[si.name] = view_it->second;
                         break;
                     }
                 }
@@ -165,6 +171,8 @@ void pipeline_host::change_layout(int window, layout l)
         _pipes = std::move(new_pipes);
         _render_contexts = std::move(new_rc);
         _presentations = std::move(new_pres);
+        _views = std::move(new_views);
+        _posters.clear();
 
         _retry_window = window;
         _retry_layout = l;
@@ -196,6 +204,8 @@ void pipeline_host::update_stream(int window, stream_info si)
 
         _render_contexts.erase(si.name);
         _presentations.erase(si.name);
+        _posters.erase(si.name);
+        _views.erase(si.name);
         _stream_infos[si.name] = si;
     }  // Lock is released here
 
@@ -228,6 +238,8 @@ void pipeline_host::disconnect_stream(int window, const string& name)
         }
 
         _presentations.erase(name);
+        _posters.erase(name);
+        _views.erase(name);
         _stream_infos.erase(name);
         _stalled.erase(name);
     }  // Lock is released here
@@ -471,6 +483,12 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
                 ps->play_live();
                 ps->set_audio_active(!_active_audio_stream.empty() && name == _active_audio_stream);
                 _pipes.insert(make_pair(name, ps));
+                _views[name].presented = false;
+
+                // A pane with nothing to show yet: its newest recorded picture
+                // until live arrives. A restarted pane keeps its last picture.
+                if(_render_contexts.find(name) == end(_render_contexts))
+                    ps->request_poster();
             }
             catch(const std::exception& e)
             {
@@ -525,6 +543,66 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
         rc.set_value(found_rc->second);
     }
     return rc;
+}
+
+void pipeline_host::post_poster(const string& name, const r_vss::r_display_key_frame& kf)
+{
+    lock_guard<mutex> g(_internals_lok);
+
+    auto remap_it = _name_remap.find(name);
+    const string& effective_name = (remap_it != end(_name_remap)) ? remap_it->second : name;
+
+    // Live (or anything else) got there first.
+    auto view_it = _views.find(effective_name);
+    if(_render_contexts.count(effective_name) > 0 || (view_it != end(_views) && view_it->second.presented))
+        return;
+
+    if(!kf.pixels || !state_validate::is_valid_frame_dimensions(kf.w, kf.h) ||
+       !state_validate::is_valid_frame_dimensions(kf.source_w, kf.source_h))
+        return;
+    size_t want = kf.nv12 ? (size_t)kf.w * kf.h * 3 / 2 : (size_t)kf.w * kf.h * 4;
+    if(kf.pixels->size() != want)
+        return;
+
+    frame f;
+    f.buffer = kf.pixels;
+    f.nv12 = kf.nv12;
+    f.w = kf.w;
+    f.h = kf.h;
+    f.original_w = kf.source_w;
+    f.original_h = kf.source_h;
+    f.pts = kf.ts;
+    f.arrival = steady_clock::now();
+    _posters[effective_name] = f;
+    _has_new_frames.store(true);
+}
+
+string pipeline_host::view_label(const string& name)
+{
+    lock_guard<mutex> g(_internals_lok);
+
+    if(_stream_infos.find(name) == end(_stream_infos))
+        return string();
+
+    auto& view = _views[name];
+    r_ui_utils::view_signals s;
+    auto pipe_it = _pipes.find(name);
+    if(pipe_it != end(_pipes))
+    {
+        s.live = pipe_it->second->live();
+        s.got_sample = pipe_it->second->got_live_sample();
+    }
+    // No pipeline: about to start live, or restarting a dead one.
+    s.restarting = view.restarting;
+    s.presented = view.presented;
+    s.last_present = view.last_present;
+    auto before = view.status.shown();
+    auto shown = view.status.update(s, steady_clock::now());
+    if(shown != before && shown == r_ui_utils::view_stage::none)
+        R_LOG_INFO("vision: %s is playing", name.c_str());
+    else if(shown != before)
+        R_LOG_INFO("vision: %s says \"%s\"", name.c_str(), r_ui_utils::view_stage_text(shown));
+    return r_ui_utils::view_stage_text(shown);
 }
 
 bool pipeline_host::load_video_textures()
@@ -688,8 +766,32 @@ bool pipeline_host::load_video_textures()
             if(found_rc != end(_render_contexts))
                 u.rc = found_rc->second;
 
+            auto& view = _views[name];
+            view.presented = true;
+            view.restarting = false;
+            view.last_present = now;
+
             uploads.push_back(std::move(u));
         }
+
+        // A recorded picture for a pane that has none yet. Once the pane has a
+        // picture (live, or a still from the timeline) it's no longer wanted.
+        for(auto& poster : _posters)
+        {
+            const auto& name = poster.first;
+            bool has_picture = _render_contexts.count(name) > 0 ||
+                std::any_of(uploads.begin(), uploads.end(), [&](const upload_item& u){ return u.name == name; });
+            if(!has_picture)
+            {
+                R_LOG_INFO("vision: %s shows its newest recorded picture (%lld ms old) until live arrives",
+                           name.c_str(), (long long)(duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() - poster.second.pts));
+                upload_item u;
+                u.name = name;
+                u.f = poster.second;
+                uploads.push_back(std::move(u));
+            }
+        }
+        _posters.clear();
 
         for(auto iter = begin(_render_contexts); iter != end(_render_contexts);)
         {
@@ -851,6 +953,7 @@ void pipeline_host::sync_live_cb()
         _playback_start_positions.erase(name);
         _playback_start_pts.erase(name);
         _reset_presentation(name);
+        _views[name].presented = false;
         pipe->play_live();
     }
 }
@@ -902,6 +1005,7 @@ void pipeline_host::control_bar_button_cb(const string& name, control_bar_button
                 _playback_start_positions.erase(name);
                 _playback_start_pts.erase(name);
                 _reset_presentation(name);
+                _views[name].presented = false;
                 pipe->play_live();
             }
         }
@@ -1420,6 +1524,7 @@ void pipeline_host::_entry_point()
                     {
                         R_LOG_ERROR("Dead stream detected");
                         _stalled.insert(curr->first);  // tile shows "Offline" until a frame arrives
+                        _views[curr->first].restarting = true;
                         dead_pipes.push_back(curr->second);
                         curr = _pipes.erase(curr);
                     }

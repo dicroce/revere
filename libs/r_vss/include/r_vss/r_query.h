@@ -5,6 +5,7 @@
 #include "r_utils/r_nullable.h"
 #include "r_disco/r_devices.h"
 #include "r_storage/r_md_storage_file_reader.h"
+#include "r_vss/r_display_key_frame.h"
 #include <vector>
 #include <chrono>
 #include <string>
