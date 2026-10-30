@@ -40,6 +40,7 @@ struct control_bar_state
 {
     bool has_audio {false};
     float volume_gain {0.0f};
+    bool denoise {false};
     int playhead_pos {1000};
     uint16_t playhead_x {4};
     uint16_t playhead_width {3};
@@ -278,12 +279,13 @@ struct control_bar_state
         playhead_pos = (int)(new_time_frac * 1000);
     }
 
-    std::string playhead_pos_s() const
+    std::chrono::system_clock::time_point playhead_time() const
     {
         auto delta = std::chrono::duration_cast<std::chrono::seconds>(tr.get_end() - tr.get_start()).count();
-        auto pos = tr.get_start() + std::chrono::seconds((int)(delta * (playhead_pos / 1000.0)));
-        return _tp_to_s(pos);
+        return tr.get_start() + std::chrono::seconds((int)(delta * (playhead_pos / 1000.0)));
     }
+
+    std::string playhead_pos_s() const {return _tp_to_s(playhead_time());}
 
     std::string range_start_s() const {return _tp_to_s(tr.get_start());}
 

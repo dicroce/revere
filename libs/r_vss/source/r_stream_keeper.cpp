@@ -23,6 +23,16 @@ using namespace r_utils::r_std_utils;
 using namespace r_disco;
 using namespace std;
 
+// A teardown this long is stuck: warned about (again each time this much
+// longer) and shown as the camera's failure. On quit, the wait for teardowns.
+static const int64_t TEARDOWN_STUCK_MS = 30000;
+static const int TEARDOWN_FINISH_S = 10;
+
+static string _display_name(const r_camera& c)
+{
+    return !c.friendly_name.is_null() ? c.friendly_name.value() : (!c.camera_name.is_null() ? c.camera_name.value() : c.id);
+}
+
 r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const string& top_dir, int rtsp_port) :
     _devices(devices),
     _agent(agent),
@@ -220,13 +230,22 @@ void r_stream_keeper::start()
     _keep_awake.start();
 }
 
-void r_stream_keeper::stop()
+bool r_stream_keeper::stop()
 {
     if(!_running)
         R_THROW(("Cannot stop stream keeper if its not running!"));
 
     // Recording is stopping: let the computer sleep again.
     _keep_awake.stop();
+
+    // Camera event subscriptions first: asking doesn't wait, they unsubscribe
+    // while the network and everything else are still up, and nothing later
+    // that blocks can leave one polling.
+    {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        for(auto& s : _streams)
+            s.second->stop_camera_events();
+    }
 
     R_LOG_INFO("Stopping prune...");
     _prune.stop();
@@ -288,9 +307,46 @@ void r_stream_keeper::stop()
     _rtsp_server_th.join();
     R_LOG_INFO("Rtsp server thread joined");
 
+    // The contexts still recording go the way removed ones do, and the wait for
+    // them all is bounded: one stuck teardown is logged and left, not waited on
+    // forever (r_teardown_queue).
+    {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        for(auto& s : _streams)
+            _teardowns.push(s.first, _display_name(s.second->camera()), s.second);
+        _streams.clear();
+    }
+    R_LOG_INFO("Waiting for camera teardowns...");
+    if(!_teardowns.finish(std::chrono::seconds(TEARDOWN_FINISH_S)))
+        return false;   // the caller exits without freeing more under it
+    R_LOG_INFO("Camera teardowns finished");
+
     R_LOG_INFO("Stopping system plugins...");
     _system_plugin_host.stop_all();
     R_LOG_INFO("System plugins stopped");
+    return true;
+}
+
+void r_stream_keeper::_warn_stuck_teardowns()
+{
+    auto stuck = _teardowns.stuck(TEARDOWN_STUCK_MS);
+    std::map<std::string, int64_t> now_stuck;
+    for(auto& t : stuck)
+    {
+        auto step = t.ms / TEARDOWN_STUCK_MS;
+        now_stuck[t.key] = step;
+        auto it = _stuck_warned.find(t.key);
+        if(it != _stuck_warned.end() && it->second >= step)
+            continue;
+        if(t.started)
+            R_LOG_WARNING("teardown %s (%s) hasn't finished after %lld s; the camera won't record until it does "
+                          "(the last \"teardown %s: ...\" line names the step it is stuck in)",
+                          t.key.c_str(), t.name.c_str(), (long long)(t.ms / 1000), t.key.substr(0, 8).c_str());
+        else
+            R_LOG_WARNING("teardown %s (%s) has waited %lld s behind other cameras' stuck teardowns; the camera won't record until it runs",
+                          t.key.c_str(), t.name.c_str(), (long long)(t.ms / 1000));
+    }
+    _stuck_warned = std::move(now_stuck);
 }
 
 vector<r_stream_status> r_stream_keeper::fetch_stream_status()
@@ -1088,7 +1144,10 @@ void r_stream_keeper::_entry_point()
                     }
                 }
 
+                for(auto& rc : doomed)
+                    _teardowns.push(rc->camera().id, _display_name(rc->camera()), rc);
                 doomed.clear();
+                _warn_stuck_teardowns();
 
                 std::lock_guard<std::mutex> lock(_streams_mutex);
                 if(_streams.empty())
@@ -1268,6 +1327,10 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         if(_streams.count(camera.id) > 0 || _suspended_cameras.count(camera.id) > 0)
             continue;
 
+        // Its old context still holds the camera's files and stream tags.
+        if(_teardowns.pending(camera.id))
+            continue;
+
         auto name = camera.friendly_name.is_null() ?
             (camera.camera_name.is_null() ? camera.id : camera.camera_name.value()) :
             camera.friendly_name.value();
@@ -1382,6 +1445,21 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             return s;
         }
     );
+
+    // A camera whose old context hasn't finished tearing down isn't recording,
+    // and won't until it does: say so rather than leave it out.
+    for(const auto& t : _teardowns.stuck(TEARDOWN_STUCK_MS))
+    {
+        if(_streams.count(t.key) > 0 || _failed_cameras.count(t.key) > 0)
+            continue;
+        r_stream_status s;
+        s.camera.id = t.key;
+        s.camera.friendly_name.set_value(t.name);
+        s.failed = true;
+        s.failure_message = (t.started ? "Stuck reconnecting for " : "Waiting behind another camera's reconnect for ") +
+                            std::to_string(t.ms / 1000) + " s; restart Revere to record this camera again";
+        statuses.push_back(std::move(s));
+    }
 
     // Surface backoff-failed cameras to the UI so the sidebar can show a
     // meaningful error instead of "N/A". Only id + friendly_name are populated

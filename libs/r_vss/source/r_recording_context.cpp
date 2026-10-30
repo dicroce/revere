@@ -552,12 +552,24 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
 r_recording_context::~r_recording_context() noexcept
 {
+    // Each step is logged first, so a teardown that never finishes names the
+    // call it is stuck in. The event subscription is asked to stop before the
+    // steps that can block, so a stuck teardown doesn't leave it polling.
+    auto id = _camera.id.substr(0, 8);
+    R_LOG_INFO("teardown %s: events stop", id.c_str());
+    stop_camera_events();
+
+    R_LOG_INFO("teardown %s: mount", id.c_str());
     _sk->remove_restream_mount(_restream_mount_path);
 
+    R_LOG_INFO("teardown %s: source stop", id.c_str());
     _source.stop();
 
-    // Waits for the subscriber's thread (stop() already asked it to finish).
+    // Waits for the subscriber's thread (asked to finish above).
+    R_LOG_INFO("teardown %s: events join", id.c_str());
     _camera_events.reset();
+
+    R_LOG_INFO("teardown %s: storage", id.c_str());
 
     // Explicitly clear write contexts BEFORE _storage_file is destroyed
     // This ensures nanots write_context unique_ptrs are destroyed immediately,
@@ -778,9 +790,14 @@ void r_recording_context::stop()
 {
     // Asks without waiting, so stopping every camera at shutdown winds their
     // subscribers down in parallel; the destructor waits.
+    stop_camera_events();
+    _source.stop();
+}
+
+void r_recording_context::stop_camera_events()
+{
     if(_camera_events)
         _camera_events->request_stop();
-    _source.stop();
 }
 
 bool r_recording_context::has_camera_events() const

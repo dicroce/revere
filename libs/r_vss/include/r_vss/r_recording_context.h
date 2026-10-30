@@ -263,6 +263,10 @@ public:
 
     R_API void stop();
 
+    // Asks its camera event subscription to stop (and unsubscribe) without
+    // waiting: first thing at shutdown, before anything that can block.
+    R_API void stop_camera_events();
+
     // The camera's ONVIF event subscription (shadow mode). Null status/empty
     // spans for a camera without one (added by RTSP URL).
     R_API bool has_camera_events() const;

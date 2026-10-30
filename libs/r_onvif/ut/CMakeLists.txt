@@ -5,6 +5,8 @@ add_executable(
     source/test_r_onvif.cpp
     include/test_r_onvif_events.h
     source/test_r_onvif_events.cpp
+    include/test_r_onvif_profiles.h
+    source/test_r_onvif_profiles.cpp
 )
 
 target_include_directories(
