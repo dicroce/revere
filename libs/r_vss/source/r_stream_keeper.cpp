@@ -230,7 +230,7 @@ void r_stream_keeper::start()
     _keep_awake.start();
 }
 
-void r_stream_keeper::stop()
+bool r_stream_keeper::stop()
 {
     if(!_running)
         R_THROW(("Cannot stop stream keeper if its not running!"));
@@ -317,12 +317,14 @@ void r_stream_keeper::stop()
         _streams.clear();
     }
     R_LOG_INFO("Waiting for camera teardowns...");
-    if(_teardowns.finish(std::chrono::seconds(TEARDOWN_FINISH_S)))
-        R_LOG_INFO("Camera teardowns finished");
+    if(!_teardowns.finish(std::chrono::seconds(TEARDOWN_FINISH_S)))
+        return false;   // the caller exits without freeing more under it
+    R_LOG_INFO("Camera teardowns finished");
 
     R_LOG_INFO("Stopping system plugins...");
     _system_plugin_host.stop_all();
     R_LOG_INFO("System plugins stopped");
+    return true;
 }
 
 void r_stream_keeper::_warn_stuck_teardowns()

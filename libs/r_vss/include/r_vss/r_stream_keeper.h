@@ -202,7 +202,10 @@ public:
     R_API ~r_stream_keeper() noexcept;
 
     R_API void start();
-    R_API void stop();
+    // False when a camera's teardown was still stuck at the bound and was left
+    // running (r_teardown_queue::finish): the caller should exit without
+    // freeing anything more.
+    R_API bool stop();
 
     R_API std::vector<r_stream_status> fetch_stream_status();
 
