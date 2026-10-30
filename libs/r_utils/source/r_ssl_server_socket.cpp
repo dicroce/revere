@@ -283,6 +283,29 @@ pair<string, string> r_ssl_server_config::generate_self_signed(const string& com
 // r_ssl_server_socket
 // ---------------------------------------------------------------------------
 
+void r_ssl_server_socket::set_io_timeout(uint64_t ioTimeOut)
+{
+    _ioTimeOut = ioTimeOut;
+    // An accepted connection's socket already has accept()'s timeouts, which
+    // bound each blocking recv()/send() inside the handshake: change them too.
+    if(_st && _st->tls && _st->sok.valid())
+    {
+        sock_t s = (sock_t)_st->sok.get_sok_id();
+#ifdef IS_WINDOWS
+        // Winsock takes a DWORD of milliseconds here (0 would mean no timeout).
+        DWORD io_timeout = (DWORD)(ioTimeOut > 0 ? ioTimeOut : 1);
+#else
+        timeval io_timeout;
+        io_timeout.tv_sec = (long)(ioTimeOut / 1000);
+        io_timeout.tv_usec = (long)((ioTimeOut % 1000) * 1000);
+        if(io_timeout.tv_sec == 0 && io_timeout.tv_usec == 0)
+            io_timeout.tv_usec = 1000; // a zero timeval means no timeout
+#endif
+        ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&io_timeout, sizeof(io_timeout));
+        ::setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&io_timeout, sizeof(io_timeout));
+    }
+}
+
 int r_ssl_server_socket::_bio_send(void* ctx, const unsigned char* buf, size_t len)
 {
     int ret = static_cast<r_raw_socket*>(ctx)->send(buf, len);

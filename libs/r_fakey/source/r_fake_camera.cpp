@@ -86,6 +86,11 @@ void r_fake_camera::quit() const
         g_main_loop_quit(_loop);
 }
 
+int r_fake_camera::bound_port() const
+{
+    return gst_rtsp_server_get_bound_port(_server);
+}
+
 string r_fake_camera::make_data_uri(const string& type, const uint8_t* p, size_t len)
 {
 //    <img src="data:video/mp4;base64,iVBORw0KGgoAAA

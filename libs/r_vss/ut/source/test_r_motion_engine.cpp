@@ -251,12 +251,16 @@ void test_r_motion_engine::test_real_frames_trigger_motion()
     r_motion_engine engine(factory, event_sink);
     engine.start();
 
-    // Feed every key frame from the clip into the engine.
+    // Feed every key frame from the clip into the engine, one at a time as a
+    // camera would. Posted all at once, the engine skips any that waited past
+    // r_newest_frame_gate::STALE_MS behind a newer one, so on a busy machine
+    // too few were looked at to start an event.
     // Timestamps are synthetic milliseconds at ~30fps; the motion state machine
     // only needs them to be monotonically increasing.
     {
         r_demuxer demuxer("bad_guy.mp4", false);
         int64_t ts_ms = 0;
+        size_t posted = 0;
         while(demuxer.read_frame())
         {
             auto fi = demuxer.get_frame_info();
@@ -265,6 +269,9 @@ void test_r_motion_engine::test_real_frames_trigger_motion()
                 r_pipeline::r_gst_buffer buf(fi.data, fi.size);
                 engine.post_frame(buf, ts_ms, "h264", "", "bad_guy_cam", true);
                 ts_ms += 33; // ~30fps
+                ++posted;
+                for(int i = 0; i < 500 && engine.processed_count() < posted; ++i)
+                    rtf_usleep(10000);
             }
         }
     } // demuxer closed here — file handle released before remove_file
@@ -291,6 +298,7 @@ void test_r_motion_engine::test_real_frames_trigger_motion()
         }
     }
     RTF_ASSERT(has_start);
+    RTF_ASSERT_EQUAL(engine.skipped_count(), (size_t)0);
 }
 
 namespace

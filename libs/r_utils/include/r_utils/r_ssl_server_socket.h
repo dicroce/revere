@@ -103,7 +103,11 @@ public:
     R_API void set_config(std::shared_ptr<r_ssl_server_config> cfg) { _cfg = std::move(cfg); }
     R_API std::shared_ptr<r_ssl_server_config> config() const { return _cfg; }
 
-    R_API void set_io_timeout(uint64_t ioTimeOut) { _ioTimeOut = ioTimeOut; }
+    // The timeout for a handshake, and for each blocking recv()/send() inside it.
+    // On an accepted connection it takes effect at once: the socket's own receive
+    // and send timeouts follow it (r_web_server shortens it for a refused
+    // connection, so a silent client can't hold the accept thread).
+    R_API void set_io_timeout(uint64_t ioTimeOut);
 
     // Listener side.
     R_API void bind(int port, const std::string& ip = "");
