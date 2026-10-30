@@ -23,6 +23,8 @@ add_executable(
     source/test_r_detection_cap.cpp
     include/test_r_recording_context.h
     source/test_r_recording_context.cpp
+    include/test_r_ptz_session.h
+    source/test_r_ptz_session.cpp
     include/test_r_rtsp_transport.h
     source/test_r_rtsp_transport.cpp
     include/test_r_lag_watchdog.h
