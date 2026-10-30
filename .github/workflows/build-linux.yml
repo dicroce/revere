@@ -323,7 +323,9 @@ jobs:
       # build/system_plugins/; the AppDir prune removed only the AppImage's copy,
       # so the build-tree copy is still here. The .run is delivered SEPARATELY —
       # it installs into ~/Documents/revere/revere/system_plugins on the user's
-      # machine, exactly where the app loads system plugins from.
+      # machine, exactly where the app loads system plugins from (or, when
+      # Revere is a Snap, into ~/snap/revere/common/system_plugins, where the
+      # Snap loads them from).
       - name: Stage release assets (versioned AppImage + cloud .run)
         run: |
           set -euo pipefail
