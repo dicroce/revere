@@ -4,6 +4,7 @@
 #include "r_utils/r_time_utils.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_http/r_client_request.h"
+#include "revere_api.h"
 #include "r_http/r_client_response.h"
 #include <map>
 
@@ -18,16 +19,16 @@ vector<sidebar_list_ui_item> vision::query_cameras(const string& ip_address)
 {
     vector<sidebar_list_ui_item> cameras;
 
-    r_socket sok;
-    sok.set_io_timeout(10000);
-    sok.connect(ip_address, 8088);
+    auto sok = revere_connect(ip_address, 10000);
 
-    r_client_request req(ip_address, 8088);
+    r_client_request req(ip_address, revere_port(ip_address));
     req.set_uri(r_uri("/cameras"));
-    req.write_request(sok);
+    authorize(req, ip_address);
+    req.write_request(*sok);
 
     r_client_response resp;
-    resp.read_response(sok);
+    resp.read_response(*sok);
+    note_status(ip_address, resp.get_status());
 
     auto response_txt = resp.get_body_as_string();
 
@@ -54,19 +55,18 @@ vector<sidebar_list_ui_item> vision::query_cameras(const string& ip_address)
 
 vector<uint8_t> vision::query_key(const string& ip_address, const string& camera_id, const string& start_time)
 {
-    r_socket sok;
-    sok.set_io_timeout(10000);
+    auto sok = revere_connect(ip_address, 10000);
 
-    sok.connect(ip_address, 8088);
-
-    r_client_request req(ip_address, 8088);
+    r_client_request req(ip_address, revere_port(ip_address));
     req.set_uri("/key_frame?camera_id=" + camera_id + "&start_time=" + start_time);
-    req.write_request(sok);
+    authorize(req, ip_address);
+    req.write_request(*sok);
 
     r_client_response response;
-    response.read_response(sok);
+    response.read_response(*sok);
+    note_status(ip_address, response.get_status());
 
-    sok.close();
+    sok->close();
 
     return response.release_body();
 }
@@ -77,18 +77,18 @@ contents_result vision::query_segments(const configure_state& cs, const std::str
     if(maybe_revere_ipv4.is_null())
         R_THROW(("Revere IPv4 address not set."));
 
-    r_socket sok;
-    sok.set_io_timeout(10000);
-    sok.connect(maybe_revere_ipv4.value(), 8088);
+    auto sok = revere_connect(maybe_revere_ipv4.value(), 10000);
 
-    r_client_request req(maybe_revere_ipv4.value(), 8088);
+    r_client_request req(maybe_revere_ipv4.value(), revere_port(maybe_revere_ipv4.value()));
     auto uri = r_string_utils::format("/contents?camera_id=%s&start_time=%s&end_time=%s", camera_id.c_str(), r_time_utils::tp_to_iso_8601(start, false).c_str(), r_time_utils::tp_to_iso_8601(end, false).c_str());
     req.set_uri(uri);
-    req.write_request(sok);
+    authorize(req, maybe_revere_ipv4.value());
+    req.write_request(*sok);
 
     r_client_response resp;
-    resp.read_response(sok);
-    sok.close();
+    resp.read_response(*sok);
+    note_status(maybe_revere_ipv4.value(), resp.get_status());
+    sok->close();
 
     if(resp.get_status() != 200)
         R_THROW(("Could not query segments."));
@@ -121,18 +121,18 @@ vector<motion_event> vision::query_motion_events(const configure_state& cs, cons
     if(maybe_revere_ipv4.is_null())
         R_THROW(("Revere IPv4 address not set."));
 
-    r_socket sok;
-    sok.set_io_timeout(10000);
-    sok.connect(maybe_revere_ipv4.value(), 8088);
+    auto sok = revere_connect(maybe_revere_ipv4.value(), 10000);
 
-    r_client_request req(maybe_revere_ipv4.value(), 8088);
+    r_client_request req(maybe_revere_ipv4.value(), revere_port(maybe_revere_ipv4.value()));
     auto uri = r_string_utils::format("/motion_events?camera_id=%s&start_time=%s&end_time=%s", camera_id.c_str(), r_time_utils::tp_to_iso_8601(start, false).c_str(), r_time_utils::tp_to_iso_8601(end, false).c_str());
     req.set_uri(uri);
-    req.write_request(sok);
+    authorize(req, maybe_revere_ipv4.value());
+    req.write_request(*sok);
 
     r_client_response resp;
-    resp.read_response(sok);
-    sok.close();
+    resp.read_response(*sok);
+    note_status(maybe_revere_ipv4.value(), resp.get_status());
+    sok->close();
 
     if(resp.get_status() != 200)
     {
@@ -168,9 +168,7 @@ vector<analytics_event> vision::query_analytics(const configure_state& cs, const
     if(maybe_revere_ipv4.is_null())
         R_THROW(("Revere IPv4 address not set."));
 
-    r_socket sok;
-    sok.set_io_timeout(10000);
-    sok.connect(maybe_revere_ipv4.value(), 8088);
+    auto sok = revere_connect(maybe_revere_ipv4.value(), 10000);
 
     // Build query string
     string query = "/analytics?camera_id=" + camera_id + 
@@ -183,14 +181,16 @@ vector<analytics_event> vision::query_analytics(const configure_state& cs, const
     }
     
 
-    r_client_request req(maybe_revere_ipv4.value(), 8088);
+    r_client_request req(maybe_revere_ipv4.value(), revere_port(maybe_revere_ipv4.value()));
     req.set_uri(query);
-    req.write_request(sok);
+    authorize(req, maybe_revere_ipv4.value());
+    req.write_request(*sok);
 
     r_client_response resp;
-    resp.read_response(sok);
+    resp.read_response(*sok);
+    note_status(maybe_revere_ipv4.value(), resp.get_status());
 
-    sok.close();
+    sok->close();
 
     if(resp.get_status() != 200)
     {
@@ -237,17 +237,17 @@ int vision::query_export_progress(const configure_state& cs, const string& expor
         auto maybe_revere_ipv4 = cs.get_revere_ipv4();
         auto ip = maybe_revere_ipv4.is_null() ? string("127.0.0.1") : maybe_revere_ipv4.value();
 
-        r_socket sok;
-        sok.set_io_timeout(5000);
-        sok.connect(ip, 8088);
+        auto sok = revere_connect(ip, 5000);
 
-        r_client_request req(ip, 8088);
+        r_client_request req(ip, revere_port(ip));
         req.set_uri("/export_progress?id=" + export_id);
-        req.write_request(sok);
+        authorize(req, ip);
+        req.write_request(*sok);
 
         r_client_response resp;
-        resp.read_response(sok);
-        sok.close();
+        resp.read_response(*sok);
+        note_status(ip, resp.get_status());
+        sok->close();
 
         if(resp.get_status() == 404)
             return 100;

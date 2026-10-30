@@ -6,7 +6,10 @@ add_executable(
     revere_ut
     include/test_configure_state.h
     source/test_configure_state.cpp
+    include/test_browser_url.h
+    source/test_browser_url.cpp
     ../source/configure_state.cpp
+    ../source/browser_url.cpp
 )
 
 target_include_directories(

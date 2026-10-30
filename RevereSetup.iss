@@ -15,6 +15,14 @@
 #ifndef VCRedistPath
   #define VCRedistPath "C:\dev\VC_redist.x64.exe"
 #endif
+; ComponentsInclude: the generated [Files]/[InstallDelete] entries that split the
+; staged tree into the Revere and Vision components. scripts/windows/
+; build_installers.py writes it (from the staged binaries' import tables) and
+; passes it as /DComponentsInclude=...; there is no hand-written fallback, since
+; a stale list would ship a broken Vision-only install.
+#ifndef ComponentsInclude
+  #error "Build with scripts/windows/build_installers.py (it generates and passes ComponentsInclude)."
+#endif
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
@@ -24,7 +32,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 ;AppVerName={#MyAppName} {#MyAppVersion}
 DefaultDirName={autopf}\Revere Surveillance
-UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayIcon={app}\vision.exe
 ; "ArchitecturesAllowed=x64compatible" specifies that Setup cannot run
 ; on anything but x64 and Windows 11 on Arm.
 ArchitecturesAllowed=x64compatible
@@ -45,6 +53,17 @@ WizardStyle=modern
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+; Vision is always installed; Revere (the recorder) is optional, so a computer
+; that only watches a Revere elsewhere on the network can skip it.
+[Types]
+Name: "full"; Description: "Revere and Vision"
+Name: "vision"; Description: "Vision only (watch a Revere on another computer)"
+Name: "custom"; Description: "Custom"; Flags: iscustom
+
+[Components]
+Name: "revere"; Description: "Revere: records this computer's cameras and serves them to Vision, browsers and the cloud"; Types: full custom
+Name: "vision"; Description: "Vision: watches live and recorded video"; Types: full vision custom; Flags: fixed
+
 [Code]
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
@@ -55,42 +74,52 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
-  // Stop any running Revere instance before replacing binaries.
-  // --quit signals graceful shutdown and waits up to 15s, escalating to
-  // force-terminate if needed. Safe to call when Revere is not running.
-  Exec(ExpandConstant('{app}\revere.exe'), '--quit', '', SW_HIDE,
-       ewWaitUntilTerminated, ResultCode);
+  // Stop any running Revere instance before replacing (or, for a Vision-only
+  // install, removing) its binaries. --quit signals graceful shutdown and
+  // waits up to 15s, escalating to force-terminate if needed. Only when
+  // there's a revere.exe to ask: a fresh or Vision-only folder has none.
+  if FileExists(ExpandConstant('{app}\revere.exe')) then
+    Exec(ExpandConstant('{app}\revere.exe'), '--quit', '', SW_HIDE,
+         ewWaitUntilTerminated, ResultCode);
   Result := '';
 end;
 
-[Files]
-Source: "{#StagingDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#StagingDir}\*"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#StagingDir}\gstreamer_plugins"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StagingDir}\gstreamer_plugins\*"; DestDir: "{app}\gstreamer_plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StagingDir}\models"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StagingDir}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StagingDir}\motion_plugins"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StagingDir}\motion_plugins\*"; DestDir: "{app}\motion_plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  // Vision-only over a full install: the recorder's files are removed
+  // ([InstallDelete], generated), and so is its start-at-login entry, or
+  // Windows would try to start a revere.exe that's gone. Recordings and
+  // settings in the user's data folder are left alone.
+  if (CurStep = ssPostInstall) and not WizardIsComponentSelected('revere') then
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Revere');
+end;
 
+#include ComponentsInclude
+
+[Files]
 Source: "{#VCRedistPath}"; DestDir: "{tmp}"; Flags: deleteafterinstall
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Components: revere
+Name: "{autoprograms}\Vision"; Filename: "{app}\vision.exe"
 
 [Run]
 ; Install Visual C++ 2022 Redistributable (required for application to run)
 Filename: "{tmp}\{#ExtractFileName(VCRedistPath)}"; Parameters: "/quiet /norestart"; StatusMsg: "Installing Visual C++ 2022 Runtime..."; Flags: waituntilterminated
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent; Components: revere
+Filename: "{app}\vision.exe"; Description: "{cm:LaunchProgram,Vision}"; Flags: nowait postinstall skipifsilent; Components: not revere
 
 [InstallDelete]
 Type: files; Name: "{app}\motion_plugins\yolov8_person_plugin.dll"
+Type: files; Name: "{app}\motion_plugins\test_plugin.dll"
+; (The generated include adds the Vision-only cleanup.)
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\gstreamer_plugins"
 Type: filesandordirs; Name: "{app}\models"
 Type: filesandordirs; Name: "{app}\motion_plugins"
+Type: files; Name: "{app}\*.rbt"
 Type: files; Name: "{app}\*.dll"
 Type: files; Name: "{app}\*.exe"
 Type: files; Name: "{app}\*.lib"

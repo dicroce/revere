@@ -420,7 +420,7 @@ nanots is highly optimized for multiple readers + writers. See the nanots repo f
 **Requirements:** NCNN, model files in `models/yolov8_motion_plugin/`
 
 #### test_plugin
-**Status:** Always built (no NCNN required)
+**Status:** Not built by default; `-DREVERE_BUILD_TEST_PLUGIN=ON` builds it (no NCNN required). Off, it isn't bundled or installed.
 **Purpose:** Reference implementation and testing
 **Use case:** Plugin development template and system testing
 

@@ -41,6 +41,9 @@ apps:
       - opengl
       - audio-playback
       - camera
+      # Keep this computer awake while recording: the desktop's suspend
+      # inhibitor (GNOME SessionManager / freedesktop PowerManagement).
+      - screen-inhibit-control
     desktop: usr/share/applications/revere.desktop
     environment:
       GST_PLUGIN_PATH: $SNAP/usr/lib/x86_64-linux-gnu/gstreamer-1.0:$SNAP/lib/gstreamer-1.0

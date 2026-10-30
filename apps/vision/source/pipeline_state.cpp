@@ -2,6 +2,7 @@
 #include "r_pipeline/r_stream_info.h"
 #include "r_pipeline/r_sample_context.h"
 #include "r_http/r_client_request.h"
+#include "revere_api.h"
 #include "r_http/r_client_response.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_time_utils.h"
@@ -11,12 +12,17 @@
 #include <cstdint>
 #include "pipeline_host.h"
 #include "query.h"
+#include "rnnoise.h"
 
 using namespace vision;
 using namespace r_pipeline;
 using namespace r_utils;
 using namespace r_http;
 using namespace std;
+
+// SDL output format. 48 kHz because that's what rnnoise runs at, so the denoise
+// path needs no extra resample.
+static const int AUDIO_OUT_RATE = 48000;
 using namespace std::chrono;
 
 // List the NAL header bytes in an Annex-B buffer (byte after each start code),
@@ -171,7 +177,7 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
                 {
                     SDL_AudioSpec want, have;
                     SDL_zero(want);
-                    want.freq     = 44100;
+                    want.freq     = AUDIO_OUT_RATE;
                     want.format   = AUDIO_S16SYS;
                     want.channels = 2;
                     want.samples  = 4096;
@@ -193,28 +199,38 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
         if(!_audio_decoder.is_null() && _sdl_audio_device != 0)
         {
             // Cap the SDL queue to ~200ms to prevent buffer buildup during fast playback delivery.
-            static const Uint32 MAX_QUEUED = 44100 * 2 * sizeof(int16_t) / 5; // 200ms S16 stereo
+            static const Uint32 MAX_QUEUED = AUDIO_OUT_RATE * 2 * sizeof(int16_t) / 5; // 200ms S16 stereo
             if(SDL_GetQueuedAudioSize(_sdl_audio_device) < MAX_QUEUED)
             {
                 auto m = buffer.map(r_gst_buffer::MT_READ);
                 _audio_decoder.raw().attach_buffer(m.data(), m.size());
                 if(_audio_decoder.raw().decode() == r_av::R_CODEC_STATE_HAS_OUTPUT)
                 {
-                    auto pcm = _audio_decoder.raw().get(AV_SAMPLE_FMT_S16, 44100, 2);
-                    if(pcm && !pcm->empty())
+                    float gain = _volume_gain.load();
+                    if(_denoise.load())
                     {
-                        float gain = _volume_gain.load();
-                        if(gain != 1.0f)
+                        auto pcm = _audio_decoder.raw().get(AV_SAMPLE_FMT_FLT, AUDIO_OUT_RATE, 1);
+                        if(pcm && !pcm->empty())
+                            _denoise_and_queue(*pcm, gain);
+                    }
+                    else
+                    {
+                        _denoise_was_on = false;
+                        auto pcm = _audio_decoder.raw().get(AV_SAMPLE_FMT_S16, AUDIO_OUT_RATE, 2);
+                        if(pcm && !pcm->empty())
                         {
-                            int16_t* samples = reinterpret_cast<int16_t*>(pcm->data());
-                            size_t n = pcm->size() / sizeof(int16_t);
-                            for(size_t i = 0; i < n; ++i)
+                            if(gain != 1.0f)
                             {
-                                int32_t v = (int32_t)((float)samples[i] * gain);
-                                samples[i] = (int16_t)std::clamp(v, (int32_t)INT16_MIN, (int32_t)INT16_MAX);
+                                int16_t* samples = reinterpret_cast<int16_t*>(pcm->data());
+                                size_t n = pcm->size() / sizeof(int16_t);
+                                for(size_t i = 0; i < n; ++i)
+                                {
+                                    int32_t v = (int32_t)((float)samples[i] * gain);
+                                    samples[i] = (int16_t)std::clamp(v, (int32_t)INT16_MIN, (int32_t)INT16_MAX);
+                                }
                             }
+                            SDL_QueueAudio(_sdl_audio_device, pcm->data(), (Uint32)pcm->size());
                         }
-                        SDL_QueueAudio(_sdl_audio_device, pcm->data(), (Uint32)pcm->size());
                     }
                 }
             }
@@ -368,6 +384,57 @@ pipeline_state::~pipeline_state()
         SDL_CloseAudioDevice(_sdl_audio_device);
         _sdl_audio_device = 0;
     }
+    if(_denoise_state)
+    {
+        rnnoise_destroy(_denoise_state);
+        _denoise_state = nullptr;
+    }
+}
+
+// Runs on the audio callback thread. pcm is 48 kHz mono float in [-1, 1]; rnnoise
+// wants fixed 480-sample frames in S16 range, so decoder output (arbitrary
+// sizes) is carried over between calls. Adds up to one frame (10 ms) of delay.
+void pipeline_state::_denoise_and_queue(const vector<uint8_t>& pcm_flt_mono, float gain)
+{
+    if(!_denoise_was_on || _denoise_reset.exchange(false))
+    {
+        if(!_denoise_state)
+            _denoise_state = rnnoise_create(nullptr);
+        else rnnoise_init(_denoise_state, nullptr);
+        _denoise_in.clear();
+    }
+    _denoise_was_on = true;
+
+    if(!_denoise_state)
+        return;
+
+    auto samples = reinterpret_cast<const float*>(pcm_flt_mono.data());
+    size_t n = pcm_flt_mono.size() / sizeof(float);
+    for(size_t i = 0; i < n; ++i)
+        _denoise_in.push_back(samples[i] * 32768.0f);
+
+    const size_t frame_size = (size_t)rnnoise_get_frame_size();
+    _denoise_frame.resize(frame_size);
+    _denoise_out.clear();
+
+    size_t consumed = 0;
+    while(_denoise_in.size() - consumed >= frame_size)
+    {
+        rnnoise_process_frame(_denoise_state, _denoise_frame.data(), _denoise_in.data() + consumed);
+        consumed += frame_size;
+
+        for(size_t i = 0; i < frame_size; ++i)
+        {
+            int32_t v = (int32_t)(_denoise_frame[i] * gain);
+            auto s = (int16_t)std::clamp(v, (int32_t)INT16_MIN, (int32_t)INT16_MAX);
+            _denoise_out.push_back(s); // L
+            _denoise_out.push_back(s); // R
+        }
+    }
+    _denoise_in.erase(_denoise_in.begin(), _denoise_in.begin() + consumed);
+
+    if(!_denoise_out.empty())
+        SDL_QueueAudio(_sdl_audio_device, _denoise_out.data(), (Uint32)(_denoise_out.size() * sizeof(int16_t)));
 }
 
 void pipeline_state::resize(uint16_t w, uint16_t h)
@@ -387,6 +454,7 @@ void pipeline_state::resize(uint16_t w, uint16_t h)
 
 void pipeline_state::play_live()
 {
+    _denoise_reset.store(true);
     _last_play_time = steady_clock::now();
     _playback = false;
     _play_generation++;
@@ -407,9 +475,21 @@ void pipeline_state::play_live()
     // keyframe. The restream is revere's own (usually on this machine), so
     // TCP costs nothing.
     add_argument(arguments, "protocols", string("TCP"));
+    _add_rtsp_credentials(arguments, _si.rtsp_url);
     _source.set_args(arguments);
 
     _source.play();
+}
+
+// Revere's restream requires its RTSP credential (fetched once per host from
+// the web API; see revere_api.h).
+void pipeline_state::_add_rtsp_credentials(vector<r_arg>& arguments, const string& url)
+{
+    auto creds = get_rtsp_credentials(host_of_url(url));
+    if(creds.is_null())
+        return;
+    add_argument(arguments, "username", creds.value().username);
+    add_argument(arguments, "password", creds.value().password);
 }
 
 void pipeline_state::play()
@@ -432,6 +512,7 @@ void pipeline_state::play(const system_clock::time_point& start, const system_cl
     _play_end = end;
     _playback = true;
     _play_generation++;
+    _denoise_reset.store(true);
     _frames_since_play.store(0);
 
     string url = r_string_utils::format(
@@ -447,6 +528,7 @@ void pipeline_state::play(const system_clock::time_point& start, const system_cl
     vector<r_arg> arguments;
     add_argument(arguments, "url", url);
     add_argument(arguments, "protocols", string("TCP"));
+    _add_rtsp_credentials(arguments, url);
     _source.set_args(arguments);
 
     _source.play();

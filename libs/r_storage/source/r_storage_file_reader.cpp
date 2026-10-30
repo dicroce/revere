@@ -186,6 +186,7 @@ vector<uint8_t> r_storage_file_reader::query_key(r_storage_media_type media_type
     vector<uint8_t> frame_data;
     try {
         string stream_tag = (media_type == R_STORAGE_MEDIA_TYPE_VIDEO) ? "video" : "audio";
+        static const int64_t five_minutes_ms = 5LL * 60 * 1000;
         nanots_iterator iterator(nanots_file_name, stream_tag);
         bool found = iterator.find(ts);
 
@@ -195,8 +196,21 @@ vector<uint8_t> r_storage_file_reader::query_key(r_storage_media_type media_type
         // forward from ts - 5 min keeps the reader slot (which holds off block
         // reclaim for the writer) for at most a GOP of steps.
         if (!found) {
-            static const int64_t five_minutes_ms = 5LL * 60 * 1000;
             found = iterator.seek_end() && iterator->timestamp >= ts - five_minutes_ms;
+        }
+
+        // find() lands on the first frame at or after ts. When that frame is
+        // later than ts, the frame showing at ts is the one before it: step
+        // back to it, so a ts just before a key frame gets the key frame
+        // before ts rather than the next one. Before the first frame there is
+        // nothing earlier, so that case keeps the first frame. In a recording
+        // gap the frame before can be hours older; as with the past-the-end
+        // case, only step back within 5 minutes, and otherwise keep the first
+        // frame after the gap.
+        if (found && iterator.valid() && iterator->timestamp > ts) {
+            --iterator;
+            if (!iterator.valid() || iterator->timestamp < ts - five_minutes_ms)
+                found = iterator.find(ts);
         }
 
         // Back up to find the closest previous key frame
