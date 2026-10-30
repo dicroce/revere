@@ -18,6 +18,14 @@ namespace r_vss
 class r_motion_event_plugin_host;
 struct r_detection;
 
+typedef void (*system_plugin_post_detection_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float);
+typedef void (*system_plugin_post_detection_v2_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float, int64_t);
+
+// Hands one detection to a system plugin: by its system_plugin_post_detection_v2
+// with posted_at_ms when it has one, else by system_plugin_post_detection, else not at all.
+R_API void post_detection_to_plugin(r_system_plugin_handle plugin, system_plugin_post_detection_func v1,
+                                    system_plugin_post_detection_v2_func v2, const r_detection& det, int64_t posted_at_ms);
+
 // Where system plugins are looked for, in order; the first copy of a filename wins.
 struct r_system_plugin_dirs
 {
@@ -85,7 +93,7 @@ public:
     R_API void notify_cameras_changed();
 
 private:
-    void _dispatch_detection(const r_detection& det);
+    void _dispatch_detection(const r_detection& det, int64_t posted_at_ms);
     void _on_api_result(const char* name, const char* json);
     static void _api_result_bridge(const char* result_type, const char* json, void* user_data);
     struct plugin_info
@@ -99,7 +107,8 @@ private:
         void (*set_enabled_func)(r_system_plugin_handle, bool);
         const char* (*status_func)(r_system_plugin_handle);          // Optional - nullptr if not supported
         const char* (*status_message_func)(r_system_plugin_handle);  // Optional - nullptr if not supported
-        void (*post_detection_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float);  // Optional - nullptr if not supported
+        system_plugin_post_detection_func post_detection_func;        // Optional - nullptr if not supported
+        system_plugin_post_detection_v2_func post_detection_v2_func;  // Optional - nullptr if not supported; preferred over v1
         void (*set_api_result_cb_func)(r_system_plugin_handle, system_plugin_api_result_cb, void*);                   // Optional - nullptr if not supported
         void (*cameras_changed_func)(r_system_plugin_handle);        // Optional - nullptr if not supported
         std::string name;

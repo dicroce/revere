@@ -485,13 +485,15 @@ r_http::r_server_response r_ws::_get_jpg(r_utils::r_socket_base&, const r_http::
         }
 
         auto t_start = steady_clock::now();
+        int64_t frame_ts = 0;
         auto result = query_get_jpg(
             _top_dir,
             _devices,
             args["camera_id"],
             r_time_utils::iso_8601_to_tp(args["start_time"]),
             w,
-            h
+            h,
+            &frame_ts
         );
 
         // Only the slow ones: /jpg is called for every event frame and snapshot.
@@ -502,6 +504,8 @@ r_http::r_server_response r_ws::_get_jpg(r_utils::r_socket_base&, const r_http::
         r_server_response response;
         response.set_content_type("image/jpeg");
         response.set_body(result.size(), result.data());
+        // The key frame decoded, which can differ from start_time: callers record which frame they got.
+        response.add_additional_header("X-Frame-Ts", std::to_string(frame_ts));
         return response;
     }
     catch(const r_utils::r_not_found_exception&)
@@ -546,18 +550,22 @@ r_http::r_server_response r_ws::_get_webp(r_utils::r_socket_base&, const r_http:
                 h = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["height"]), 480);
         }
 
+        int64_t frame_ts = 0;
         auto result = query_get_webp(
             _top_dir,
             _devices,
             args["camera_id"],
             r_time_utils::iso_8601_to_tp(args["start_time"]),
             w,
-            h
+            h,
+            &frame_ts
         );
 
         r_server_response response;
         response.set_content_type("image/webp");
         response.set_body(result.size(), result.data());
+        // The key frame decoded, which can differ from start_time: callers record which frame they got.
+        response.add_additional_header("X-Frame-Ts", std::to_string(frame_ts));
         return response;
     }
     catch(const r_utils::r_not_found_exception&)

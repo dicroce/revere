@@ -403,7 +403,7 @@ private:
 
     // Motion tiers (milestone 5).
     void _on_mog2_event(r_motion_event evt, const std::string& camera_id, int64_t ts);
-    static void _on_detection_bus(void* userdata, const r_detection& det);
+    static void _on_detection_bus(void* userdata, const r_detection& det, int64_t posted_at_ms);
     void _tier_tick();
     void _camera_class_output(const std::string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms);
     void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections);

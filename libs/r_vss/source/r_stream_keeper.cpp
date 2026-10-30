@@ -547,7 +547,7 @@ void r_stream_keeper::_on_mog2_event(r_motion_event evt, const string& camera_id
     }
 }
 
-void r_stream_keeper::_on_detection_bus(void* userdata, const r_detection& det)
+void r_stream_keeper::_on_detection_bus(void* userdata, const r_detection& det, int64_t)
 {
     auto sk = static_cast<r_stream_keeper*>(userdata);
     std::lock_guard<std::mutex> g(sk->_tier_lock);

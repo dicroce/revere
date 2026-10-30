@@ -69,6 +69,15 @@ R_API void system_plugin_post_detection(r_system_plugin_handle plugin,
     const char* camera_id, int64_t ts, const char* class_name,
     float confidence, float x1, float y1, float x2, float y2);
 
+// Optional: system_plugin_post_detection plus posted_at_ms, the gateway wall
+// clock (epoch ms) when the detection was put on the detection bus. The host
+// calls this instead of system_plugin_post_detection when the plugin exports
+// it, so a plugin can export both and still load in an older host.
+R_API void system_plugin_post_detection_v2(r_system_plugin_handle plugin,
+    const char* camera_id, int64_t ts, const char* class_name,
+    float confidence, float x1, float y1, float x2, float y2,
+    int64_t posted_at_ms);
+
 // Callback type the plugin invokes to deliver API results back to the host.
 // name: identifies the payload (e.g. "camera_answers")
 // json: the result payload as a JSON string
