@@ -119,18 +119,29 @@ R_API std::vector<uint8_t> make_h264_avcc_extradata(const r_utils::r_nullable<st
 
 struct r_h264_sps
 {
-    uint8_t profile_idc;
-    uint8_t level_idc;
-    uint16_t width;
-    uint16_t height;
+    uint8_t profile_idc {0};
+    uint8_t level_idc {0};
+    uint16_t width {0};
+    uint16_t height {0};
+    // constraint_set0_flag to constraint_set5_flag as the SPS's second byte holds them: set0 is 0x80, set5 is 0x04.
+    // profile_idc 66 with set1 (0x40) is Constrained Baseline.
+    uint8_t constraint_flags {0};
+    // The sample aspect ratio from the VUI; 0:0 when the SPS doesn't give one.
+    uint16_t sar_num {0};
+    uint16_t sar_den {0};
+    // The VUI's max_num_reorder_frames; -1 when the SPS doesn't say (no bitstream_restriction_flag).
+    int max_num_reorder_frames {-1};
 };
 
 struct r_h265_sps
 {
-    uint8_t profile_idc;
-    uint8_t level_idc;
-    uint16_t width;
-    uint16_t height;
+    uint8_t profile_idc {0};
+    uint8_t level_idc {0};
+    uint16_t width {0};
+    uint16_t height {0};
+    // The sample aspect ratio from the VUI; 0:0 when the SPS doesn't give one.
+    uint16_t sar_num {0};
+    uint16_t sar_den {0};
 };
 
 R_API struct r_h264_sps parse_h264_sps(const std::vector<uint8_t>& sps);

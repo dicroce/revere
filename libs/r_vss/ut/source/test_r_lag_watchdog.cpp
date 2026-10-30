@@ -3,6 +3,7 @@
 #include "r_vss/r_lag_watchdog.h"
 #include <cmath>
 #include <cstdint>
+#include <optional>
 
 using namespace r_vss;
 using namespace std;
@@ -39,10 +40,11 @@ struct stream
     int64_t now() const { return (int64_t)base; }
 
     // cam_step: camera time since the last frame (default one interval);
-    // anything else is a camera clock jump.
-    W::r_lag_event frame(double rate = 1.0, double cam_step = NAN)
+    // anything else is a camera clock jump. Not a NaN default: Release builds
+    // with -ffast-math, where std::isnan(NAN) can be false.
+    W::r_lag_event frame(double rate = 1.0, std::optional<double> cam_step = std::nullopt)
     {
-        cam += std::isnan(cam_step) ? interval : cam_step;
+        cam += cam_step.value_or(interval);
         base += interval / rate;
         rng = rng * 1103515245 + 12345;
         int64_t j = (jitter_ms > 0) ? (int64_t)((rng >> 8) % (uint32_t)jitter_ms) : 0;

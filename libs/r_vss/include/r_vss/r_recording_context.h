@@ -195,6 +195,11 @@ struct playback_restreaming_state
     // by up to a GOP at every chunk boundary).
     int64_t last_posted_v_ts {-1}; // stored ts are epoch ms, always positive
     int64_t last_posted_a_ts {-1};
+    // Start of the recording segment holding (or following) start_time. The
+    // first fetch's keyframe-before lookup can reach back across a gap into the
+    // previous segment; frames older than this are dropped so the stream
+    // doesn't open with that segment's tail followed by a gap-long pause.
+    int64_t min_ts {0};
     // Bounded queues - drop oldest frames when full to prevent memory exhaustion
     r_utils::r_blocking_q<struct _frame_context> video_samples;
     r_utils::r_blocking_q<struct _frame_context> audio_samples;
@@ -257,6 +262,10 @@ public:
     R_API void live_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media);
 
     R_API void stop();
+
+    // Asks its camera event subscription to stop (and unsubscribe) without
+    // waiting: first thing at shutdown, before anything that can block.
+    R_API void stop_camera_events();
 
     // The camera's ONVIF event subscription (shadow mode). Null status/empty
     // spans for a camera without one (added by RTSP URL).
