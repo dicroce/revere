@@ -77,7 +77,7 @@ void r_udp_sender::_configure()
 
 void r_udp_sender::_close() throw()
 {
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     if( _sok != 0 )
         ::close( _sok );
 #endif

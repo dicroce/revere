@@ -11,6 +11,7 @@
 #include "r_storage/r_storage_file.h"
 #include "r_disco/r_camera.h"
 #include "r_vss/r_camera_stats.h"
+#include "r_vss/r_keep_awake.h"
 #include <map>
 #include <memory>
 #include <chrono>
@@ -28,6 +29,28 @@
 
 namespace revere
 {
+
+// "Keep this computer awake" (the Settings menu, the camera wizard's
+// retention step and the status bar). The web UI says the same.
+namespace keep_awake_text
+{
+inline constexpr const char* menu_item = "Keep this computer awake";
+inline constexpr const char* menu_tooltip = "While it's plugged in, the computer won't go to sleep on its own, so recording doesn't stop. The display still turns off, and closing a laptop's lid still puts it to sleep.";
+inline constexpr const char* battery_item = "Also on battery";
+inline constexpr const char* battery_tooltip = "Keep a laptop awake on battery too. It will record until the battery runs out.";
+inline constexpr const char* wizard_line = "Revere keeps this computer awake while it's plugged in, so recording doesn't stop when it would sleep. You can change this in Settings.";
+inline constexpr const char* refused = "The computer may still go to sleep: ";
+
+// A tooltip that wraps: SetTooltip's one line would be wider than the window.
+inline void wrapped_tooltip(const char* text)
+{
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 22.0f);
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
+}
 
 // What the desktop app calls the password for revere's local web interface
 // (stored as the "system password"; the stored name doesn't change). One place,
@@ -47,6 +70,25 @@ inline constexpr const char* remove = "Remove password";
 inline constexpr const char* remove_confirm = "Remove the local web password? The web interface will ask for a new one the next time it's opened.";
 inline constexpr const char* remove_confirm_yes = "Remove";
 inline constexpr const char* remove_confirm_no = "Keep password";
+}
+
+namespace remote_access_text
+{
+inline constexpr const char* name = "Remote access";
+inline constexpr const char* menu_item = "Remote access...";
+inline constexpr const char* description = "Let Vision and web browsers on other computers on your network connect to this Revere. The connection is encrypted, and signing in needs the local web password.";
+inline constexpr const char* toggle_label = "Allow connections from other computers";
+inline constexpr const char* toggle_description = "Revere listens for encrypted connections on port 8443.";
+inline constexpr const char* restart_note = "This takes effect the next time Revere starts.";
+inline constexpr const char* no_password = "Set a local web password too (Settings > Local web password): other computers sign in with it.";
+inline constexpr const char* fingerprint_label = "Certificate fingerprint (SHA-256)";
+inline constexpr const char* fingerprint_help = "The first time Vision or a browser on another computer connects, check that it shows this same fingerprint before trusting it.";
+inline constexpr const char* no_tls = "Encrypted connections are unavailable (see Revere's log).";
+inline constexpr const char* video_note = "Video for Vision (RTSP, port 8554) needs a password too, but travels unencrypted: someone watching your network traffic could see it.";
+inline constexpr const char* copy = "Copy fingerprint";
+inline constexpr const char* copied = "Fingerprint copied.";
+inline constexpr const char* save = "Save";
+inline constexpr const char* cancel = "Cancel";
 }
 
 // BeginPopupModal with a taller title bar. ImGui sizes the title bar from
@@ -77,8 +119,8 @@ inline void pop_menu_bar_style()
     ImGui::PopStyleVar(4);
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB, typename ABOUT_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb, ABOUT_CB about_cb)
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename GET_KEEP_AWAKE_CB, typename SET_KEEP_AWAKE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB, typename REMOTE_ACCESS_CB, typename ABOUT_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, GET_KEEP_AWAKE_CB get_keep_awake_cb, SET_KEEP_AWAKE_CB set_keep_awake_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb, REMOTE_ACCESS_CB remote_access_cb, ABOUT_CB about_cb)
 {
     push_menu_bar_style();
     ImGui::BeginMainMenuBar();
@@ -117,8 +159,24 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
         if (ImGui::MenuItem("Start Revere at login", nullptr, &startup_enabled))
             set_startup_state_cb(startup_enabled);
 
+        r_vss::r_keep_awake_settings keep_awake = get_keep_awake_cb();
+        if (ImGui::MenuItem(keep_awake_text::menu_item, nullptr, &keep_awake.enabled))
+            set_keep_awake_cb(keep_awake);
+        if (ImGui::IsItemHovered())
+            keep_awake_text::wrapped_tooltip(keep_awake_text::menu_tooltip);
+        // A sub-option: indented, and only while the main one is on.
+        ImGui::Indent();
+        if (ImGui::MenuItem(keep_awake_text::battery_item, nullptr, &keep_awake.on_battery, keep_awake.enabled))
+            set_keep_awake_cb(keep_awake);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            keep_awake_text::wrapped_tooltip(keep_awake_text::battery_tooltip);
+        ImGui::Unindent();
+
         if (ImGui::MenuItem(web_password_text::menu_item))
             set_system_password_cb();
+
+        if (ImGui::MenuItem(remote_access_text::menu_item))
+            remote_access_cb();
 
         ImGui::EndMenu();
     }

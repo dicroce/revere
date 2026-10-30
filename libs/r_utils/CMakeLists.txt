@@ -31,7 +31,29 @@ if(C_HAS_ZERO_INIT_PADDING_BITS)
     add_compile_options($<$<COMPILE_LANGUAGE:C>:-fzero-init-padding-bits=unions>)
 endif()
 
+# Windows builds mbedtls with MBEDTLS_THREADING_ALT (see include/mbedtls/
+# user_config.h); mbedtls/threading.h then does #include "threading_alt.h",
+# which lives next to our config. Directory-scoped so the mbedtls targets
+# created by FetchContent_MakeAvailable below pick it up.
+if(WIN32)
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls)
+endif()
+
 FetchContent_MakeAvailable(mbedtls)
+
+# Every consumer of the mbedtls headers (not just r_utils: libdatachannel in
+# revere_cloud includes them too) must find threading_alt.h, so attach the
+# directory to the mbedtls targets themselves and let it propagate.
+if(WIN32)
+    foreach(_mbed_target mbedcrypto mbedx509 mbedtls)
+        target_include_directories(${_mbed_target} PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls>)
+    endforeach()
+    # The Windows mutex installer lives inside mbedcrypto itself, so every DLL
+    # that links a copy of mbedTLS also gets it (see threading_alt.h).
+    target_sources(mbedcrypto PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/mbedtls_threading/r_mbedtls_threading.cpp)
+endif()
 
 file(GLOB R_UTILS_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/r_utils/*.h
@@ -54,6 +76,16 @@ target_include_directories(
     $<INSTALL_INTERFACE:include>
 )
 
+# Consumers of r_utils headers reach mbedtls/threading.h transitively and need
+# threading_alt.h too (Windows only, see above).
+if(WIN32)
+    target_include_directories(
+        r_utils PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls>
+        $<INSTALL_INTERFACE:include/mbedtls>
+    )
+endif()
+
 target_link_libraries(
     r_utils PUBLIC
     uuid::uuid
@@ -65,7 +97,7 @@ target_link_libraries(
 
 if(WIN32)
     # Windows-specific libraries for r_secure_store (DPAPI and SHGetFolderPath)
-    target_link_libraries(r_utils PUBLIC crypt32 shell32)
+    target_link_libraries(r_utils PUBLIC crypt32 shell32 ole32)
 elseif(APPLE)
     # macOS-specific frameworks for r_startup (Login Items)
     find_package(Threads REQUIRED)

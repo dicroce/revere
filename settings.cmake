@@ -29,6 +29,12 @@ endif()
 # local/dev builds untouched; CI passes -DREVERE_PORTABLE_BUILD=ON.
 option(REVERE_PORTABLE_BUILD "Build portable binaries (no -march=native) for redistribution" OFF)
 
+# The test motion plugin (libs/r_vss/motion_plugins/test_plugin) is a no-op
+# reference plugin. Built, it lands in motion_plugins/ and is loaded by every
+# revere that ships it, where it copies each motion frame for nothing. Off by
+# default; turn it on to work on the plugin interface.
+option(REVERE_BUILD_TEST_PLUGIN "Build the no-op test motion plugin (not shipped by default)" OFF)
+
 # Install destinations - packaged builds (Flatpak/Snap) use standard FHS paths, portable uses single directory
 if(PACKAGED_BUILD)
     set(REVERE_INSTALL_BINDIR bin)

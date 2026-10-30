@@ -144,6 +144,11 @@ cat > "$PKG_DIR/DEBIAN/postinst" << 'EOF'
 #!/bin/sh
 set -e
 if [ "$1" = "configure" ]; then
+    # A service installed before Revere kept the computer awake needs the
+    # polkit rule too (--install-service writes it for new ones).
+    if [ -f /etc/systemd/system/revere.service ]; then
+        /opt/revere/revere --install-keep-awake-rule > /dev/null || true
+    fi
     if [ -d /run/systemd/system ] && systemctl is-active --quiet revere.service; then
         systemctl restart revere.service || true
     elif [ ! -f /etc/systemd/system/revere.service ]; then

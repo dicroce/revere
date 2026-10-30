@@ -19,6 +19,7 @@
 
 #include "r_vss/r_recording_context.h"
 #include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_rtsp_auth.h"
 #include "r_vss/r_ws.h"
 #include "r_vss/r_query.h"
 #include "r_pipeline/r_arg.h"
@@ -358,18 +359,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             // on every key so the cache always starts with a keyframe (until the
             // safety cap kicks in for a misbehaving source).
             if(key)
-            {
                 _video_gop_cache.clear();
-                if(!_maybe_video_storage_write_context.is_null())
-                {
-                    std::lock_guard<std::mutex> g(_latest_key_lock);
-                    _has_latest_key = true;
-                    _latest_key_ts = ts;
-                    _latest_key_buffer = buffer;
-                    _latest_key_codec_name = _maybe_video_storage_write_context.value().codec_name;
-                    _latest_key_codec_parameters = _maybe_video_storage_write_context.value().codec_parameters;
-                }
-            }
             _video_gop_cache.push_back({pts, key, buffer});
             while(_video_gop_cache.size() > GOP_CACHE_MAX_FRAMES)
                 _video_gop_cache.pop_front();
@@ -479,7 +469,12 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 }
             });
 
-            this->_storage_file.write_frame(
+            // The ts the frame is stored at. It differs from ts once storage has
+            // re-anchored a backward source jump (and for a clamped frame), and
+            // everything that refers to this frame by time must use it: motion
+            // events, detections and analytics are looked up in the recording
+            // by their ts (/jpg at a detection's time, event frames, vision).
+            const auto stored_ts = this->_storage_file.write_frame(
                 this->_maybe_video_storage_write_context.value(),
                 R_STORAGE_MEDIA_TYPE_VIDEO,
                 mi.data(),
@@ -493,6 +488,16 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             // frame actually reached storage (see storage_write_lag_ms()).
             _last_v_write_time = system_clock::now();
 
+            if(key)
+            {
+                std::lock_guard<std::mutex> g(_latest_key_lock);
+                _has_latest_key = true;
+                _latest_key_ts = stored_ts;
+                _latest_key_buffer = buffer;
+                _latest_key_codec_name = _maybe_video_storage_write_context.value().codec_name;
+                _latest_key_codec_parameters = _maybe_video_storage_write_context.value().codec_parameters;
+            }
+
             bool do_motion = (!this->_camera.do_motion_detection.is_null())?this->_camera.do_motion_detection.value():false;
 
             if(do_motion)
@@ -503,7 +508,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                     _close_camera_motion_ring();
                     this->_sk->post_frame_to_motion_engine(
                         buffer,
-                        ts,
+                        stored_ts,
                         this->_maybe_video_storage_write_context.value().codec_name,
                         this->_maybe_video_storage_write_context.value().codec_parameters,
                         this->_camera.id,
@@ -512,7 +517,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                     );
                 }
                 else if(key)
-                    _camera_motion_tick(ts);
+                    _camera_motion_tick(stored_ts);
             }
         }
         catch(exception& e)
@@ -547,12 +552,24 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
 r_recording_context::~r_recording_context() noexcept
 {
+    // Each step is logged first, so a teardown that never finishes names the
+    // call it is stuck in. The event subscription is asked to stop before the
+    // steps that can block, so a stuck teardown doesn't leave it polling.
+    auto id = _camera.id.substr(0, 8);
+    R_LOG_INFO("teardown %s: events stop", id.c_str());
+    stop_camera_events();
+
+    R_LOG_INFO("teardown %s: mount", id.c_str());
     _sk->remove_restream_mount(_restream_mount_path);
 
+    R_LOG_INFO("teardown %s: source stop", id.c_str());
     _source.stop();
 
-    // Waits for the subscriber's thread (stop() already asked it to finish).
+    // Waits for the subscriber's thread (asked to finish above).
+    R_LOG_INFO("teardown %s: events join", id.c_str());
     _camera_events.reset();
+
+    R_LOG_INFO("teardown %s: storage", id.c_str());
 
     // Explicitly clear write contexts BEFORE _storage_file is destroyed
     // This ensures nanots write_context unique_ptrs are destroyed immediately,
@@ -773,9 +790,14 @@ void r_recording_context::stop()
 {
     // Asks without waiting, so stopping every camera at shutdown winds their
     // subscribers down in parallel; the destructor waits.
+    stop_camera_events();
+    _source.stop();
+}
+
+void r_recording_context::stop_camera_events()
+{
     if(_camera_events)
         _camera_events->request_stop();
-    _source.stop();
 }
 
 bool r_recording_context::has_camera_events() const
@@ -974,6 +996,8 @@ void r_recording_context::create_playback_mount(GstRTSPServer*, GstRTSPMountPoin
     gst_rtsp_media_factory_set_launch(factory, launch_str.c_str());
 
     gst_rtsp_media_factory_set_shared(factory, FALSE);
+
+    r_rtsp_auth::allow_viewer(factory);
 
     g_signal_connect(factory, "media-configure", (GCallback)_playback_restream_media_configure_cbs, this);
 

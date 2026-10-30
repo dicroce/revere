@@ -46,7 +46,11 @@ public:
         r_storage_media_type media_type
     );
 
-    R_API void write_frame(const r_storage_write_context& ctx, r_storage_media_type media_type, const uint8_t* p, size_t size, bool key, int64_t ts, int64_t pts);
+    // Returns the ts the frame was stored at: ts, unless it was clamped
+    // (backward jitter) or re-anchored (a backward jump; the correction then
+    // applies to every later frame). Anything that refers to this frame by
+    // time, such as motion events and detections, should use the returned ts.
+    R_API int64_t write_frame(const r_storage_write_context& ctx, r_storage_media_type media_type, const uint8_t* p, size_t size, bool key, int64_t ts, int64_t pts);
 
     // Newest timestamp actually written to each stream (post correction/clamp),
     // -1 before the first write. This is the readable edge of the recording:

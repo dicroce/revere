@@ -63,13 +63,55 @@ typedef std::string onvif_capabilities;
 typedef std::string onvif_media_service;
 typedef std::string onvif_profile_token;
 
+// What GetDeviceInformation reports, so revere can show make/model/firmware.
+// Any field may be empty if the camera omits it.
+struct onvif_device_information
+{
+    std::string manufacturer;
+    std::string model;
+    std::string firmware_version;
+    std::string serial_number;
+    std::string hardware_id;
+};
+
 struct onvif_profile_info
 {
     onvif_profile_token token;
     std::string encoding;
-    uint16_t width;
-    uint16_t height;
+    uint16_t width {0};
+    uint16_t height {0};
+    // The sensor the profile encodes (VideoSourceConfiguration/SourceToken). Multi-lens, fisheye and dual-sensor
+    // cameras have several; a substream must share main's.
+    std::string video_source_token;
+    // The VideoEncoderConfiguration's settings, as the camera states them: hints only, since the stream itself (its
+    // SDP and SPS) is what counts. Empty or 0 when the camera doesn't give one.
+    std::string h264_profile;  // Baseline, Main, Extended or High
+    int gov_length {0};        // frames between keyframes
+    int fps_limit {0};
+    int bitrate_limit {0};     // kbit/s
 };
+
+// A Media1 GetProfilesResponse: one onvif_profile_info per Profiles, in the camera's order. Throws
+// std::runtime_error when the response isn't XML. The camera's strings are bounded: a profile whose token is empty,
+// longer than ONVIF_TOKEN_MAX_CHARS or has a control character is left out; a source token like that reads as
+// empty; encoding and h264_profile are cut to ONVIF_ENUM_MAX_BYTES. Whitespace around element text is dropped.
+constexpr size_t ONVIF_TOKEN_MAX_CHARS = 64;  // ONVIF's ReferenceToken
+constexpr size_t ONVIF_ENUM_MAX_BYTES = 16;
+R_API std::vector<onvif_profile_info> parse_profiles_response(const std::string& xml);
+
+// A camera's substream (its second, smaller stream, for live view and analysis): no narrower than this.
+constexpr int SUBSTREAM_MIN_WIDTH = 320;
+// The size a substream is ranked against: 640x480.
+constexpr int64_t SUBSTREAM_TARGET_PIXELS = 640 * 480;
+
+// The profiles that could be `main`'s substream, best first. Each is another profile of the same video source,
+// H.264 or H.265 (MJPEG and MPEG-4 can't be), at most a quarter of main's pixels and at least SUBSTREAM_MIN_WIDTH
+// wide. Aspect isn't tested: a 16:9 main's substream is often a squeezed 640x480 or 704x576 of the same view.
+// Ranked by closeness to 640x480 (640 wide or more first between equals), then H.264 over H.265, then Baseline or
+// Main over High, then the higher frame rate limit. ONVIF's word is a hint: the stream's own SDP and SPS decide
+// whether a candidate is used.
+R_API std::vector<onvif_profile_info> substream_candidates(const std::vector<onvif_profile_info>& profiles,
+                                                           const onvif_profile_info& main);
 
 // ONVIF events (Event service, WS-BaseNotification pull point).
 //
@@ -159,6 +201,10 @@ public:
     );
 
     R_API onvif_capabilities get_camera_capabilities();
+
+    // GetDeviceInformation (device service): manufacturer, model, firmware
+    // version, serial number, hardware id. Throws on a non-200 / SOAP fault.
+    R_API onvif_device_information get_device_information();
 
     R_API onvif_media_service get_media_service(const onvif_capabilities& capabilities) const;
 

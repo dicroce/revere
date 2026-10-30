@@ -1,6 +1,6 @@
 
 #include "r_utils/r_udp_receiver.h"
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
 #include <unistd.h>
 #endif
 #ifdef IS_WINDOWS
@@ -285,7 +285,8 @@ void r_udp_receiver::close()
 {
     // I'm adding this because I have seen cases where close() alone is not
     // enough to unblock a recvfrom() on another thread, but shutdown() does
-    // the trick. on linux!
+    // the trick. on linux! On macOS shutdown() of an unconnected UDP socket
+    // fails (ENOTCONN), but close() wakes the recvfrom() with EBADF.
     shutdown();
 
     sock_t tmpSok = _sok;
@@ -294,7 +295,7 @@ void r_udp_receiver::close()
 
     FULL_MEM_BARRIER();
 
-#ifdef IS_LINUX
+#if defined(IS_LINUX) || defined(IS_MACOS)
     if( tmpSok != 0 )
         ::close( tmpSok );
 #endif

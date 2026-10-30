@@ -204,6 +204,12 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/motion_plugins
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_BINARY_DIR}/motion_plugins $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/motion_plugins
     )
+    if(NOT REVERE_BUILD_TEST_PLUGIN)
+        # copy_directory only adds: drop a copy an earlier build put in the bundle.
+        add_custom_command(TARGET revere POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E remove -f $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/motion_plugins/test_plugin.dylib
+        )
+    endif()
     if(NCNN_AVAILABLE)
         add_custom_command(TARGET revere POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person

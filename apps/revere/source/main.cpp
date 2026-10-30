@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <fcntl.h>
 #include <io.h>
+#include <process.h>
 #include <sys/stat.h>
 #endif
 #if defined(IS_LINUX) || defined(IS_MACOS)
@@ -68,6 +69,7 @@
 #include "r_utils/3rdparty/json/json.h"
 #include "r_ui_utils/texture_loader.h"
 #include "r_ui_utils/wizard.h"
+#include "r_vss/r_rtsp_auth.h"
 
 // Define the fonts global variable for this app
 std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
@@ -962,6 +964,32 @@ void configure_camera_setup_wizard(
                         camera_setup_wizard.next("error_modal");
                     }
                 }
+            );
+        }
+    );
+    camera_setup_wizard.add_step(
+        "remote_access",
+        [&as, &camera_setup_wizard, &stream_keeper](){
+            ImGui::OpenPopup(revere::remote_access_text::name);
+            revere::remote_access_modal(
+                revere::remote_access_text::name,
+                stream_keeper.remote_access_configured(),
+                stream_keeper.remote_access_active(),
+                stream_keeper.tls_fingerprint(),
+                stream_keeper.system_password_set(),
+                [&](bool enabled){
+                    try
+                    {
+                        stream_keeper.set_remote_access(enabled);
+                        camera_setup_wizard.cancel();
+                    }
+                    catch(const std::exception& e)
+                    {
+                        as.error_message = e.what();
+                        camera_setup_wizard.next("error_modal");
+                    }
+                },
+                [&](){ camera_setup_wizard.cancel(); }
             );
         }
     );
@@ -2198,6 +2226,89 @@ static void _headless_wait_for_shutdown()
 static const char* REVERE_SERVICE_USER = "revere";
 static const char* REVERE_SERVICE_UNIT = "/etc/systemd/system/revere.service";
 
+// Lets the service user hold logind's "sleep" inhibitor, so Revere can keep
+// the computer awake while it records: polkit's default for a user with no
+// session is to ask for an admin password, which a service can't give. polkit
+// 0.106+ reads JavaScript rules; 0.105 (Ubuntu 22.04) reads .pkla files. Each
+// is written where its directory exists.
+static const char* REVERE_POLKIT_RULES = "/etc/polkit-1/rules.d/50-revere-keep-awake.rules";
+static const char* REVERE_POLKIT_PKLA = "/etc/polkit-1/localauthority/50-local.d/50-revere-keep-awake.pkla";
+
+static bool _dir_exists(const std::string& path)
+{
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static int _install_keep_awake_rule()
+{
+    if(geteuid() != 0)
+    {
+        fprintf(stderr, "revere --install-keep-awake-rule must be run as root.\n");
+        return 1;
+    }
+
+    const std::string rules =
+        "// Written by revere --install-service: lets the Revere service keep this\n"
+        "// computer from sleeping while it records cameras.\n"
+        "polkit.addRule(function(action, subject) {\n"
+        "    if (action.id == \"org.freedesktop.login1.inhibit-block-sleep\" &&\n"
+        "        subject.user == \"" + std::string(REVERE_SERVICE_USER) + "\") {\n"
+        "        return polkit.Result.YES;\n"
+        "    }\n"
+        "});\n";
+    const std::string pkla =
+        "# Written by revere --install-service: lets the Revere service keep this\n"
+        "# computer from sleeping while it records cameras.\n"
+        "[Revere keep this computer awake]\n"
+        "Identity=unix-user:" + std::string(REVERE_SERVICE_USER) + "\n"
+        "Action=org.freedesktop.login1.inhibit-block-sleep\n"
+        "ResultAny=yes\n"
+        "ResultInactive=yes\n"
+        "ResultActive=yes\n";
+
+    bool wrote = false;
+    auto write = [&](const char* path, const std::string& text) {
+        try
+        {
+            r_fs::write_file(reinterpret_cast<const uint8_t*>(text.data()), text.size(), path);
+            chmod(path, 0644);
+            printf("Wrote %s\n", path);
+            wrote = true;
+        }
+        catch(const std::exception& e)
+        {
+            fprintf(stderr, "Warning: could not write %s: %s\n", path, e.what());
+        }
+    };
+    if(_dir_exists("/etc/polkit-1/rules.d"))
+        write(REVERE_POLKIT_RULES, rules);
+    if(_dir_exists("/etc/polkit-1/localauthority/50-local.d"))
+        write(REVERE_POLKIT_PKLA, pkla);
+
+    if(!wrote)
+        printf("No polkit rules directory found: the service may not be able to keep this computer awake.\n");
+    return 0;
+}
+
+static void _uninstall_keep_awake_rule()
+{
+    for(auto path : {REVERE_POLKIT_RULES, REVERE_POLKIT_PKLA})
+    {
+        if(!r_fs::file_exists(path))
+            continue;
+        try
+        {
+            r_fs::remove_file(path);
+            printf("Removed %s\n", path);
+        }
+        catch(const std::exception& e)
+        {
+            fprintf(stderr, "Failed to remove %s: %s\n", path, e.what());
+        }
+    }
+}
+
 static int _install_systemd_service(const std::string& data_dir_arg, const std::string& secret_dir_arg)
 {
     if(geteuid() != 0)
@@ -2274,7 +2385,10 @@ static int _install_systemd_service(const std::string& data_dir_arg, const std::
     }
     printf("Wrote %s\n", REVERE_SERVICE_UNIT);
 
-    // 4. Reload, enable and start.
+    // 4. Let it keep the computer awake while it records.
+    _install_keep_awake_rule();
+
+    // 5. Reload, enable and start.
     if(system("systemctl daemon-reload") != 0)
         fprintf(stderr, "Warning: 'systemctl daemon-reload' failed.\n");
     if(system("systemctl enable --now revere.service") != 0)
@@ -2317,6 +2431,8 @@ static int _uninstall_systemd_service()
     }
     system("systemctl daemon-reload");
 
+    _uninstall_keep_awake_rule();
+
     printf("\nRevere service removed. The '%s' user and its data dir were left intact.\n", REVERE_SERVICE_USER);
     printf("  Remove recordings + credentials:  sudo rm -rf /var/lib/revere\n");
     printf("  Remove the service user:          sudo userdel %s\n", REVERE_SERVICE_USER);
@@ -2353,6 +2469,9 @@ static std::string _help_text()
         "                           runs Revere headless on boot, then enable + start.\n"
         "  --uninstall-service      Stop and remove the systemd unit (keeps the data\n"
         "                           directory and the 'revere' user).\n"
+        "  --install-keep-awake-rule\n"
+        "                           Write the polkit rule that lets the service keep\n"
+        "                           the computer awake (--install-service does this).\n"
         "\n"
         "Diagnostics:\n"
         "  --sim_mttf_seconds <n>   Simulate random stream failures ~every n seconds\n"
@@ -2448,6 +2567,12 @@ int main(int argc, char** argv)
         return _uninstall_systemd_service();
 #endif
     }
+
+#ifdef IS_LINUX
+    // For the .deb's postinst: a service installed before the rule existed.
+    if(r_args::check_argument(args, "--install-keep-awake-rule"))
+        return _install_keep_awake_rule();
+#endif
 
     // Compute top_dir early for lock file path
     auto top_dir = revere::top_dir();
@@ -2603,12 +2728,44 @@ int main(int argc, char** argv)
     signal(SIGTERM, _sigterm_handler);
 #endif
 
+    // Releasing the process lock unblocks any waiting --quit process,
+    // signalling that we have shut down.
+    auto release_process_lock = [&]() {
+#ifdef IS_WINDOWS
+        if(lock_fd >= 0) { _close(lock_fd); lock_fd = -1; }
+        if(hQuitEvent) { CloseHandle(hQuitEvent); hQuitEvent = NULL; }
+        if(hMutex) { CloseHandle(hMutex); hMutex = NULL; }
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
+        if(lock_fd >= 0)
+        {
+            process_lock.unlock();
+            close(lock_fd);
+            lock_fd = -1;
+        }
+#endif
+    };
+
+    // A camera's teardown still stuck when the stream keeper stopped (it is
+    // logged by name): the rest of the cleanup would free what that thread may
+    // still use, so leave now. The OS reclaims the rest, and storage recovers
+    // from an unclean stop.
+    auto exit_with_stuck_teardown = [&]() {
+        R_LOG_ERROR("A camera teardown is still stuck; exiting without the rest of the cleanup");
+        release_process_lock();
+        _exit(0);
+    };
+
     r_logger::install_terminate();
 
     auto log_path = revere::sub_dir("logs");
     revere::sub_dir("config");  // Ensure config dir exists for plugins
 
     r_logger::install_logger(r_fs::platform_path(log_path), "revere_log_");
+
+    // "Start at login" written by an older revere may launch a path that's
+    // gone (an AppImage's temporary mount); bring it up to date.
+    r_startup::refresh_autostart("Revere", r_fs::current_exe_path(), "--start_minimized");
     r_logger::set_log_callback([](r_logger::LOG_LEVEL, const std::string& line) { s_log_tail.add(line); });
 
     // After the logger, so a settings file that can't be read is in the log.
@@ -2737,7 +2894,8 @@ int main(int argc, char** argv)
         _headless_wait_for_shutdown();
 
         R_LOG_INFO("Stopping...");
-        streamKeeper.stop();
+        if(!streamKeeper.stop())
+            exit_with_stuck_teardown();
         R_LOG_INFO("Stopping discovery agent...");
         agent.stop();
         R_LOG_INFO("Discovery agent stopped");
@@ -3365,7 +3523,9 @@ int main(int argc, char** argv)
                     {
                         ui_state.friendly_name = status.camera.friendly_name.value();
                         ui_state.ipv4 = status.camera.ipv4.value();
-                        ui_state.restream_url = r_string_utils::format("rtsp://127.0.0.1:8554/%s",ui_state.friendly_name.c_str());
+                        // With the credential, so the URL works as copied (e.g. into VLC).
+                        ui_state.restream_url = r_string_utils::format("rtsp://%s:%s@127.0.0.1:8554/%s",
+                            r_vss::r_rtsp_auth::RTSP_USER, streamKeeper.rtsp_password().c_str(), ui_state.friendly_name.c_str());
                         ui_state.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
                         auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
                         ui_state.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
@@ -3429,11 +3589,20 @@ int main(int argc, char** argv)
                 if (enabled && success)
                     main_window_state.show_toast("Revere will start when you log in, minimized to the system tray.");
             },
+            [&]() -> r_vss::r_keep_awake_settings {
+                return streamKeeper.keep_awake().get_settings();
+            },
+            [&](const r_vss::r_keep_awake_settings& settings){
+                streamKeeper.keep_awake().set_settings(settings);
+            },
             [&](){
                 revere::open_url_in_browser("http://localhost:8088");
             },
             [&](){
                 camera_setup_wizard.next("set_system_password");
+            },
+            [&](){
+                camera_setup_wizard.next("remote_access");
             },
             [&](){
                 camera_setup_wizard.next("about_revere");
@@ -3457,7 +3626,12 @@ int main(int argc, char** argv)
         }
         else
         {
-            main_status.set_value(string("Revere running"));
+            // Said once the OS has refused, until it's held (retried each minute).
+            auto keep_awake_problem = streamKeeper.keep_awake().get_status().problem;
+            if(!keep_awake_problem.empty())
+                main_status.set_value(string(revere::keep_awake_text::refused) + keep_awake_problem);
+            else
+                main_status.set_value(string("Revere running"));
         }
 
         std::vector<revere::plugin_view> plugin_views;
@@ -3534,7 +3708,8 @@ int main(int argc, char** argv)
 
     // Cleanup — order matters:
     // 1. Stop background workers first so they stop touching SDL textures
-    streamKeeper.stop();
+    if(!streamKeeper.stop())
+        exit_with_stuck_teardown();
     R_LOG_INFO("Stopping discovery agent...");
     agent.stop();
     R_LOG_INFO("Discovery agent stopped");
@@ -3558,20 +3733,8 @@ int main(int argc, char** argv)
     r_logger::clear_log_callback();
     r_logger::uninstall_logger();
 
-    // Release the process lock last — this unblocks any waiting --quit process,
-    // signalling that we have fully shut down.
-#ifdef IS_WINDOWS
-    if(lock_fd >= 0) _close(lock_fd);
-    if(hQuitEvent) CloseHandle(hQuitEvent);
-    if(hMutex) CloseHandle(hMutex);
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    if(lock_fd >= 0)
-    {
-        process_lock.unlock();
-        close(lock_fd);
-    }
-#endif
+    // Release the process lock last: we have fully shut down.
+    release_process_lock();
 
     return 0;
 }
