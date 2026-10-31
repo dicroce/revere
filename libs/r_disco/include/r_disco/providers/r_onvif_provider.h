@@ -47,14 +47,14 @@ private:
 
 // The outcome of a PTZ action. presets is filled only for list_presets. The
 // capability flags report which continuous-move axes the camera's PTZ node
-// actually supports; they are queried on the list_presets probe (and left
-// false for the other ops), so a client can offer zoom controls only where
-// the camera can honor them.
+// actually supports; they are queried on the list_presets probe, and null for
+// the other ops and whenever the camera didn't say (GetNodes failed, or listed
+// no SupportedPTZSpaces): unknown, which a client must not read as "can't".
 struct r_ptz_result
 {
     std::vector<r_onvif::onvif_ptz_preset> presets;
-    bool supports_pan_tilt {false};
-    bool supports_zoom {false};
+    r_utils::r_nullable<bool> supports_pan_tilt;
+    r_utils::r_nullable<bool> supports_zoom;
 };
 
 class r_onvif_provider

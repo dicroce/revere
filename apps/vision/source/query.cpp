@@ -250,6 +250,7 @@ ptz_result vision::query_ptz(const string& ip_address, const string& camera_id, 
         body["pan"] = pan;
         body["tilt"] = tilt;
         body["zoom"] = zoom;
+        body["timeout"] = PTZ_MOVE_TIMEOUT;
     }
     else if(action == "goto_preset")
         body["preset_token"] = preset_token;
@@ -262,6 +263,8 @@ ptz_result vision::query_ptz(const string& ip_address, const string& camera_id, 
     note_status(ip_address, resp.get_status());
     sok->close();
 
+    if(resp.get_status() == 501)
+        throw ptz_unsupported("This camera has no ONVIF PTZ.");
     if(resp.get_status() != 200)
         R_THROW(("PTZ %s failed (HTTP %d).", action.c_str(), resp.get_status()));
 
@@ -280,8 +283,11 @@ ptz_result vision::query_ptz(const string& ip_address, const string& camera_id, 
                 result.presets.push_back(pp);
             }
         }
-        result.supports_pan_tilt = j.value("supports_pan_tilt", false);
-        result.supports_zoom = j.value("supports_zoom", false);
+        // Present only when the camera said; missing is unknown.
+        if(j.contains("supports_pan_tilt") && j["supports_pan_tilt"].is_boolean())
+            result.supports_pan_tilt = j["supports_pan_tilt"].get<bool>();
+        if(j.contains("supports_zoom") && j["supports_zoom"].is_boolean())
+            result.supports_zoom = j["supports_zoom"].get<bool>();
     }
 
     return result;

@@ -9,6 +9,8 @@
 #include "r_ui_utils/font_catalog.h"
 #include "font_keys.h"
 #include "r_utils/r_logger.h"
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -32,7 +34,10 @@ namespace vision
 // loop. A dropped move/stop isn't worth interrupting the
 // viewer, so failures are logged, not surfaced. The camera is told to move
 // while a direction is held and to stop on release; if the popup is dismissed
-// mid-move we still send a stop.
+// mid-move we still send a stop. Each move also stops by itself
+// (PTZ_MOVE_TIMEOUT) and is re-sent while held, so a stop that's lost, or
+// Vision quitting mid-hold, can't leave the camera moving. A probe that
+// couldn't reach Revere is tried again after PROBE_RETRY_S.
 
 namespace ptz_detail
 {
@@ -43,9 +48,15 @@ struct cam_entry
 {
     support sup {support::unknown};
     std::vector<ptz_preset> presets;
-    bool supports_zoom {false};   // camera's PTZ node has a continuous zoom axis
+    bool show_zoom {true};        // false only when the camera says it has no continuous zoom axis
     bool moving {false};          // a direction button was held last frame
+    // A probe that failed without an answer (Revere starting, or briefly
+    // unreachable): when it may be asked again. Unset for a camera without PTZ.
+    std::chrono::steady_clock::time_point retry_at {};
 };
+
+// A failed probe is asked again this long after, not left for the session.
+constexpr int PROBE_RETRY_S = 60;
 
 inline std::mutex& _mtx() { static std::mutex m; return m; }
 inline std::map<std::string, cam_entry>& _cams() { static std::map<std::string, cam_entry> m; return m; }
@@ -59,10 +70,14 @@ constexpr float PTZ_ZOOM_SPEED = 0.6f;
 // quick tap's stop must not overtake its move (a thread per command would race
 // for Revere's ONVIF lock, and a stop that ran first would leave the camera
 // moving). The queue is never destroyed, so the detached worker can't outlive it.
+// Commands sent and not yet answered; a keep-alive waits while any are.
+inline std::atomic<int>& _queued() { static auto* n = new std::atomic<int>(0); return *n; }
+
 inline void _fire(std::string host, std::string camera_id, std::string action,
                   float pan, float tilt, float zoom, std::string preset_token)
 {
     struct job { std::string host, camera_id, action; float pan, tilt, zoom; std::string preset_token; };
+    ++_queued();
     static auto* m = new std::mutex;
     static auto* cv = new std::condition_variable;
     static auto* q = new std::deque<job>;
@@ -86,6 +101,7 @@ inline void _fire(std::string host, std::string camera_id, std::string action,
                     }
                     try { query_ptz(j.host, j.camera_id, j.action, j.pan, j.tilt, j.zoom, j.preset_token); }
                     catch(const std::exception& ex) { R_LOG_WARNING("vision: PTZ %s failed: %s", j.action.c_str(), ex.what()); }
+                    --_queued();
                 }
             }).detach();
         }
@@ -99,18 +115,23 @@ inline void _probe(std::string host, std::string camera_id)
     std::thread([=]() {
         support result;
         ptz_result probe;
+        bool retry = false;
         try
         {
             probe = query_ptz(host, camera_id, "list_presets", 0.0f, 0.0f, 0.0f, std::string());
             result = support::yes;
         }
-        catch(...) { result = support::no; }
+        catch(const ptz_unsupported&) { result = support::no; }
+        catch(...) { result = support::no; retry = true; }
 
         std::lock_guard<std::mutex> g(_mtx());
         auto& e = _cams()[camera_id];
         e.sup = result;
         e.presets = probe.presets;
-        e.supports_zoom = probe.supports_zoom;
+        // Unknown keeps the zoom row; only an explicit "no zoom" hides it.
+        e.show_zoom = probe.supports_zoom.value_or(true);
+        e.retry_at = retry ? std::chrono::steady_clock::now() + std::chrono::seconds(PROBE_RETRY_S)
+                           : std::chrono::steady_clock::time_point{};
     }).detach();
 }
 
@@ -121,10 +142,23 @@ inline void _dir_button(const char* label, const char* id,
                         float pan, float tilt, float zoom, bool& any_active,
                         ImVec2 size = ImVec2(42, 42))
 {
+    // When the held button last sent its move (one button is held at a time).
+    static std::chrono::steady_clock::time_point last_move;
     ImGui::PushID(id);
     ImGui::Button(label, size);
+    auto now = std::chrono::steady_clock::now();
     if(ImGui::IsItemActivated())
+    {
         _fire(host, camera_id, "move", pan, tilt, zoom, std::string());
+        last_move = now;
+    }
+    else if(ImGui::IsItemActive() && now - last_move >= std::chrono::milliseconds(PTZ_KEEPALIVE_MS) && _queued().load() == 0)
+    {
+        // Still held: the move goes again before its timeout ends it. Not while
+        // a command is still on its way, so a slow Revere builds no queue.
+        _fire(host, camera_id, "move", pan, tilt, zoom, std::string());
+        last_move = now;
+    }
     if(ImGui::IsItemDeactivated())
         _fire(host, camera_id, "stop", 0.0f, 0.0f, 0.0f, std::string());
     if(ImGui::IsItemActive())
@@ -133,7 +167,7 @@ inline void _dir_button(const char* label, const char* id,
 }
 
 inline void _draw_pad(const std::string& host, const std::string& camera_id,
-                      const std::vector<ptz_preset>& presets, bool supports_zoom)
+                      const std::vector<ptz_preset>& presets, bool show_zoom)
 {
     ImFont* f = r_ui_utils::fonts[vision::get_font_key_16()].inter_tight_regular;
     if(f) ImGui::PushFont(f);
@@ -156,12 +190,11 @@ inline void _draw_pad(const std::string& host, const std::string& camera_id,
     ImGui::Dummy(ImVec2(42, 42)); ImGui::SameLine();
     _dir_button("v", "down", host, camera_id, 0.0f, -ptz_detail::PTZ_SPEED, 0.0f, any_active);
 
-    // Zoom row (ONVIF Zoom velocity): held to zoom, released to stop. Shown
-    // only when the camera's PTZ node advertises a continuous zoom axis -- a
-    // zoom command to a camera without one is a silent no-op, so the buttons
-    // would just sit there doing nothing. Release sends stop, which halts
-    // pan/tilt and zoom alike.
-    if(supports_zoom)
+    // Zoom row (ONVIF Zoom velocity): held to zoom, released to stop. Hidden
+    // when the camera's PTZ node says it has no continuous zoom axis -- a zoom
+    // command to it is a silent no-op -- and shown when it didn't say. Release
+    // sends stop, which halts pan/tilt and zoom alike.
+    if(show_zoom)
     {
         _dir_button("Zoom -", "zoomout", host, camera_id, 0.0f, 0.0f, -ptz_detail::PTZ_ZOOM_SPEED, any_active, ImVec2(63, 30));
         if(ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom out");
@@ -209,11 +242,14 @@ inline void ptz_control_button(const std::string& host, const std::string& camer
 
     support sup;
     std::vector<ptz_preset> presets;
-    bool supports_zoom = false;
+    bool show_zoom = true;
     {
         std::lock_guard<std::mutex> g(_mtx());
         auto it = _cams().find(camera_id);
-        if(it == _cams().end())
+        bool retry_due = it != _cams().end() && it->second.sup == support::no
+                         && it->second.retry_at != std::chrono::steady_clock::time_point{}
+                         && std::chrono::steady_clock::now() >= it->second.retry_at;
+        if(it == _cams().end() || retry_due)
         {
             _cams()[camera_id].sup = support::probing;
             sup = support::unknown;   // launch the probe below, outside the lock
@@ -222,7 +258,7 @@ inline void ptz_control_button(const std::string& host, const std::string& camer
         {
             sup = it->second.sup;
             presets = it->second.presets;
-            supports_zoom = it->second.supports_zoom;
+            show_zoom = it->second.show_zoom;
         }
     }
 
@@ -249,7 +285,7 @@ inline void ptz_control_button(const std::string& host, const std::string& camer
     ImGui::SetNextWindowPos(ImVec2(right_x + 80.0f, row_top - 6.0f), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
     if(ImGui::BeginPopup("##ptz_popover"))
     {
-        _draw_pad(host, camera_id, presets, supports_zoom);
+        _draw_pad(host, camera_id, presets, show_zoom);
         ImGui::EndPopup();
     }
     else

@@ -46,6 +46,7 @@ struct fake_camera
     vector<string> profile_tokens;    // the ProfileToken of each PTZ call, in order
     std::atomic<int> fail_ptz {0};    // fail this many PTZ calls next
     std::atomic<int> fail_caps {0};   // fail this many GetCapabilities next
+    string nodes {"fault"};           // how GetNodes answers (see _answer); set before the first call
     r_web_server<r_socket> ws;
 
     fake_camera(bool ptz = true, int at_port = 0) : port(at_port ? at_port : _next_port()), has_ptz(ptz), ws(port, "127.0.0.1")
@@ -89,7 +90,7 @@ struct fake_camera
 
     r_server_response _answer(const string& body)
     {
-        static const char* ops[] = {"GetSystemDateAndTime", "GetCapabilities", "GetProfiles", "GetPresets", "ContinuousMove", "tptz:Stop", "GotoPreset"};
+        static const char* ops[] = {"GetSystemDateAndTime", "GetCapabilities", "GetProfiles", "GetPresets", "ContinuousMove", "tptz:Stop", "GotoPreset", "GetNodes"};
         string op;
         for(auto o : ops)
             if(body.find(o) != string::npos) { op = o; break; }
@@ -133,6 +134,16 @@ struct fake_camera
             return _soap("<tptz:StopResponse/>");
         if(op == "GotoPreset")
             return _soap("<tptz:GotoPresetResponse/>");
+        // GetNodes per nodes: "fault", "no_spaces" (no SupportedPTZSpaces), "pan_only" or "both".
+        if(op == "GetNodes")
+        {
+            if(nodes == "fault")
+                return _soap("", response_bad_request);
+            string spaces = nodes == "no_spaces" ? string()
+                : "<tt:SupportedPTZSpaces><tt:ContinuousPanTiltVelocitySpace/>" +
+                  string(nodes == "both" ? "<tt:ContinuousZoomVelocitySpace/>" : "") + "</tt:SupportedPTZSpaces>";
+            return _soap("<tptz:GetNodesResponse><tptz:PTZNode token=\"n1\">" + spaces + "</tptz:PTZNode></tptz:GetNodesResponse>");
+        }
         return _soap("", response_bad_request);
     }
 };
@@ -312,4 +323,47 @@ void test_r_ptz_session::test_open_failure_is_camera_error()
     _run(p, cam, _cmd(r_ptz_command::op_t::stop));
     RTF_ASSERT_EQUAL(cam.count("GetCapabilities"), 2);
     RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 1);
+}
+
+// list_presets reports the axes the camera's PTZ node names (GetNodes).
+void test_r_ptz_session::test_list_presets_reports_axes()
+{
+    {
+        fake_camera cam;
+        cam.nodes = "pan_only";
+        r_onvif_provider p("", nullptr);
+        auto r = _run(p, cam, _cmd(r_ptz_command::op_t::list_presets));
+        RTF_ASSERT(!r.supports_pan_tilt.is_null() && r.supports_pan_tilt.value());
+        RTF_ASSERT(!r.supports_zoom.is_null() && !r.supports_zoom.value());
+        RTF_ASSERT_EQUAL(r.presets.size(), (size_t)2);
+    }
+    {
+        fake_camera cam;
+        cam.nodes = "both";
+        r_onvif_provider p("", nullptr);
+        auto r = _run(p, cam, _cmd(r_ptz_command::op_t::list_presets));
+        RTF_ASSERT(!r.supports_zoom.is_null() && r.supports_zoom.value());
+    }
+}
+
+// When the camera doesn't say (GetNodes faults, or names no SupportedPTZSpaces)
+// the flags are null, not false, and list_presets still answers. Other ops
+// carry no flags.
+void test_r_ptz_session::test_axes_unknown_are_null()
+{
+    for(auto how : {"fault", "no_spaces"})
+    {
+        fake_camera cam;
+        cam.nodes = how;
+        r_onvif_provider p("", nullptr);
+        auto r = _run(p, cam, _cmd(r_ptz_command::op_t::list_presets));
+        RTF_ASSERT(r.supports_pan_tilt.is_null());
+        RTF_ASSERT(r.supports_zoom.is_null());
+        RTF_ASSERT_EQUAL(r.presets.size(), (size_t)2);
+    }
+    fake_camera cam;
+    cam.nodes = "both";
+    r_onvif_provider p("", nullptr);
+    auto moved = _run(p, cam, _cmd(r_ptz_command::op_t::move));
+    RTF_ASSERT(moved.supports_pan_tilt.is_null() && moved.supports_zoom.is_null());
 }

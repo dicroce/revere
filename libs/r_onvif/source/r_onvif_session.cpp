@@ -2447,9 +2447,13 @@ r_onvif::onvif_ptz_caps r_onvif::parse_ptz_caps(const string& xml)
     // decide whether pan/tilt and zoom actually do anything. OR across every
     // node the camera returns (single-sensor PTZ cams return just one). Match by
     // local name so a camera's namespace-prefix choice can't hide the element.
-    if (doc.select_node("//*[local-name()='ContinuousPanTiltVelocitySpace']"))
+    // A reply with no SupportedPTZSpaces says nothing about the axes: unknown.
+    if (!doc.select_node("//*[local-name()='PTZNode']/*[local-name()='SupportedPTZSpaces']"))
+        return caps;
+    caps.known = true;
+    if (doc.select_node("//*[local-name()='SupportedPTZSpaces']/*[local-name()='ContinuousPanTiltVelocitySpace']"))
         caps.pan_tilt = true;
-    if (doc.select_node("//*[local-name()='ContinuousZoomVelocitySpace']"))
+    if (doc.select_node("//*[local-name()='SupportedPTZSpaces']/*[local-name()='ContinuousZoomVelocitySpace']"))
         caps.zoom = true;
     return caps;
 }

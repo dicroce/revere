@@ -140,9 +140,12 @@ R_API std::vector<onvif_profile_info> substream_candidates(const std::vector<onv
 // Which axes a camera's PTZ node can actually drive with ContinuousMove, read
 // from its SupportedPTZSpaces (GetNodes). A camera may advertise a PTZ service
 // yet have no zoom axis -- a continuous zoom command is then a silent no-op, so
-// a UI should hide zoom controls unless zoom is true.
+// a UI can hide zoom controls when zoom is known to be false. known is false
+// when the reply named no SupportedPTZSpaces at all: then the axes are unknown,
+// not absent, and pan_tilt and zoom mean nothing.
 struct onvif_ptz_caps
 {
+    bool known {false};      // some PTZ node listed its SupportedPTZSpaces
     bool pan_tilt {false};   // has a ContinuousPanTiltVelocitySpace
     bool zoom {false};       // has a ContinuousZoomVelocitySpace
 };
@@ -285,8 +288,8 @@ public:
     R_API std::vector<onvif_ptz_preset> get_ptz_presets(const std::string& ptz_service, const onvif_profile_token& profile_token);
 
     // GetNodes -> which continuous-move axes the camera's PTZ node supports.
-    // Used to decide whether to offer zoom controls. On a SOAP fault or a
-    // camera that omits SupportedPTZSpaces, the unknown axes stay false.
+    // Used to decide whether to offer zoom controls. Throws on a SOAP fault; a
+    // camera that omits SupportedPTZSpaces answers with known false.
     R_API onvif_ptz_caps get_ptz_caps(const std::string& ptz_service);
 
     // ContinuousMove: pan/tilt/zoom velocities, each normalized to [-1,1] (0 =

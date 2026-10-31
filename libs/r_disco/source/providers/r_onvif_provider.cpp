@@ -185,12 +185,15 @@ r_ptz_result r_onvif_provider::_run_ptz(_ptz_session& session, const r_ptz_comma
                 result.presets = session.cam->get_ptz_presets(session.ptz_service, profile_token);
                 // Report which axes the camera can actually drive. A fault here
                 // mustn't sink the probe (we still have a valid PTZ service and
-                // presets), so fall back to "unknown" = axes left false.
+                // presets), so the flags stay null: unknown, not "can't".
                 try
                 {
                     auto caps = session.cam->get_ptz_caps(session.ptz_service);
-                    result.supports_pan_tilt = caps.pan_tilt;
-                    result.supports_zoom = caps.zoom;
+                    if(caps.known)
+                    {
+                        result.supports_pan_tilt.set_value(caps.pan_tilt);
+                        result.supports_zoom.set_value(caps.zoom);
+                    }
                 }
                 catch(const std::exception& ex)
                 {

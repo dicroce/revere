@@ -2,6 +2,8 @@
 #ifndef __vision_ptz_query_h
 #define __vision_ptz_query_h
 
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -19,13 +21,28 @@ struct ptz_preset
 };
 
 // The reply to a /ptz call. presets and the capability flags are filled only
-// for the list_presets probe; the flags say which axes the camera can drive,
-// so the UI shows zoom controls only when supports_zoom is true.
+// for the list_presets probe. A flag is empty when the camera didn't say which
+// axes it drives: unknown, so the UI keeps that control, and hides it only on
+// an explicit false.
 struct ptz_result
 {
     std::vector<ptz_preset> presets;
-    bool supports_pan_tilt {false};
-    bool supports_zoom {false};
+    std::optional<bool> supports_pan_tilt;
+    std::optional<bool> supports_zoom;
+};
+
+// Each move stops by itself after this unless another arrives, so a lost stop
+// (Revere briefly unreachable) or Vision quitting with a direction held can't
+// leave the camera moving. A held button re-sends the move every
+// PTZ_KEEPALIVE_MS, well inside it, so a long hold keeps moving.
+constexpr const char* PTZ_MOVE_TIMEOUT = "PT1S";
+constexpr int PTZ_KEEPALIVE_MS = 700;
+
+// Thrown by query_ptz when Revere says the camera has no ONVIF PTZ (HTTP 501):
+// unlike a transport failure, that answer doesn't change by asking again.
+struct ptz_unsupported : std::runtime_error
+{
+    using std::runtime_error::runtime_error;
 };
 
 // Runs a PTZ command against Revere's POST /ptz for camera_id:
@@ -35,9 +52,9 @@ struct ptz_result
 //   action "list_presets"-- returns the camera's presets and axis capabilities
 // For every action but list_presets the result's presets/flags are empty.
 //
-// Throws on a transport error or a non-200 reply. A camera that has no ONVIF
-// PTZ service answers list_presets with an error, so a thrown exception from
-// a list_presets probe also means "this camera has no PTZ".
+// Throws on a transport error or a non-200 reply: ptz_unsupported when the
+// camera has no ONVIF PTZ service (HTTP 501), so a probe can tell "no PTZ"
+// from a Revere it couldn't reach. A move carries PTZ_MOVE_TIMEOUT.
 ptz_result query_ptz(
     const std::string& ip_address,
     const std::string& camera_id,
