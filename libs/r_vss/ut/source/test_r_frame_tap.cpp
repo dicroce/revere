@@ -388,3 +388,76 @@ void test_r_frame_tap::test_an_idle_tap_stops()
     // Room again for a new one.
     RTF_ASSERT(taps.newest("cam_c", 320, 0).status == r_frame_tap_status::nothing_newer);
 }
+
+// stop() ends the decoder: frames after it are dropped, and the destructor has
+// nothing left to wait for.
+void test_r_frame_tap::test_stop_ends_decoding()
+{
+    auto& c = _clip();
+    r_frame_tap tap(320, _clip_extradata());
+    for(size_t i = 0; i < 10; ++i)
+        _post(tap, c.frames[i]);
+    RTF_ASSERT(_eventually([&]() { return tap.frames_decoded() >= 10 - CLIP_REORDER; }));
+    tap.stop();
+    auto decoded = tap.frames_decoded();
+    // More than a queue's worth after the stop: none kept (no reset needed), none decoded.
+    for(size_t i = 0; i <= r_frame_tap::MAX_QUEUED + 10; ++i)
+        _post(tap, c.frames[10 + i % 40]);
+    this_thread::sleep_for(milliseconds(200));
+    RTF_ASSERT_EQUAL(tap.frames_decoded(), decoded);
+    RTF_ASSERT_EQUAL(tap.queue_resets(), (size_t)0);
+    tap.stop();   // again: harmless
+}
+
+// The reaper stops an idle tap itself, joining its decoder there, even while
+// someone else (post() on a recording thread) still holds a copy: letting that
+// copy go must never be what waits on a decode.
+void test_r_frame_tap::test_the_reaper_joins_not_the_last_holder()
+{
+    auto& c = _clip();
+    mutex m;
+    condition_variable cv;
+    bool release = false;
+    auto let_go = [&]() {
+        {
+            lock_guard<mutex> g(m);
+            release = true;
+        }
+        cv.notify_all();
+    };
+    auto now = steady_clock::now();
+    // The decoder blocks at its first key frame until let go: a decode in progress.
+    r_frame_taps taps([&](const string&, const string&) {
+        unique_lock<mutex> lk(m);
+        cv.wait(lk, [&]() { return release; });
+        return vector<uint8_t>();
+    }, [&]() { return now; });
+    struct on_exit { function<void()> f; ~on_exit() { f(); } } releaser{let_go};
+
+    taps.newest("cam_a", 320, 0);
+    auto& f = c.frames.front();
+    taps.post("cam_a", f.data.data(), f.data.size(), f.key, f.ts, "h264", "");
+    this_thread::sleep_for(milliseconds(50));
+
+    // post()'s copy, held across the reap.
+    auto held = taps.tap("cam_a");
+    RTF_ASSERT(held != nullptr);
+
+    now += milliseconds(r_frame_taps::IDLE_MS);
+    atomic<bool> reaped {false};
+    thread reaper([&]() { taps.reap(); reaped = true; });
+    // Joined however the test ends, after the decode is let go.
+    struct joiner { thread& t; function<void()> go; ~joiner() { go(); if(t.joinable()) t.join(); } } join_reaper{reaper, let_go};
+    // The reaper waits for the decode to end: it's the one joining.
+    this_thread::sleep_for(milliseconds(150));
+    RTF_ASSERT(!reaped.load());
+    let_go();
+    reaper.join();
+    RTF_ASSERT(reaped.load());
+    RTF_ASSERT_EQUAL(taps.active(), (size_t)0);
+
+    // Letting the last copy go waits on nothing.
+    auto t0 = steady_clock::now();
+    held.reset();
+    RTF_ASSERT(steady_clock::now() - t0 < milliseconds(50));
+}
