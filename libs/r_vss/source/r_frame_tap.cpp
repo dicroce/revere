@@ -51,12 +51,18 @@ r_frame_tap::r_frame_tap(uint16_t long_edge, extradata_fn extradata) :
 
 r_frame_tap::~r_frame_tap() noexcept
 {
+    stop();
+}
+
+void r_frame_tap::stop() noexcept
+{
     {
         lock_guard<mutex> g(_q_lock);
         _running = false;
+        _q.clear();
     }
     _q_cond.notify_one();
-    if(_th.joinable())
+    if(_th.joinable() && _th.get_id() != this_thread::get_id())
         _th.join();
 }
 
@@ -66,6 +72,9 @@ void r_frame_tap::post(const uint8_t* data, size_t size, bool key, int64_t ts, c
         return;
     {
         lock_guard<mutex> g(_q_lock);
+        // Stopped (reaped): nothing more is decoded.
+        if(!_running)
+            return;
         // A decoder that fell behind starts again at the next key frame: the
         // picture is meant to be now, not a catch-up through old frames.
         if(_q.size() >= MAX_QUEUED)
@@ -242,6 +251,14 @@ vector<shared_ptr<r_frame_tap>> r_frame_taps::_take_idle(steady_clock::time_poin
     return idle;
 }
 
+void r_frame_taps::_stop_all(vector<shared_ptr<r_frame_tap>>& taps)
+{
+    // On the reaping thread: whoever lets the last copy go has nothing to join.
+    for(auto& t : taps)
+        t->stop();
+    taps.clear();
+}
+
 void r_frame_taps::post(const string& camera_id, const uint8_t* data, size_t size, bool key, int64_t ts, const string& codec_name, const string& codec_params)
 {
     if(_count.load() == 0)
@@ -285,7 +302,7 @@ r_frame_tap_result r_frame_taps::newest(const string& camera_id, uint16_t long_e
         found->second.last_asked = now;
         tap = found->second.tap;
     }
-    idle.clear();
+    _stop_all(idle);
 
     if(tap->newest_jpeg(after, long_edge, result.jpeg, result.ts))
         result.status = r_frame_tap_status::picture;
@@ -299,6 +316,14 @@ void r_frame_taps::reap()
         lock_guard<mutex> g(_lock);
         idle = _take_idle(_now());
     }
+    _stop_all(idle);
+}
+
+shared_ptr<r_frame_tap> r_frame_taps::tap(const string& camera_id) const
+{
+    lock_guard<mutex> g(_lock);
+    auto found = _taps.find(camera_id);
+    return found == _taps.end() ? nullptr : found->second.tap;
 }
 
 size_t r_frame_taps::active() const
