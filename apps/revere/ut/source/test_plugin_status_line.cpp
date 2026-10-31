@@ -150,3 +150,17 @@ void test_plugin_status_line::test_confirm_asks_first()
     ui.click(m);                    // the button again: asks, doesn't run
     RTF_ASSERT(ui.ran.size() == 1);
 }
+
+void test_plugin_status_line::test_question_dropped_with_its_line()
+{
+    headless_ui ui;
+    auto m = _message({{"text", "Cam"}, {"action", "reset:1"}, {"action_label", "Reset pairing"}, {"confirm", "Remove it?"}});
+    ui.frame(m);
+    ui.click(m);                    // asking
+    ui.frame(json{{"lines", json::array()}}.dump());   // the line goes away for a frame
+    ui.frame(m);                    // and comes back: the button, not the question
+    ui.click(m);
+    RTF_ASSERT(ui.ran.empty());     // that click only asked again
+    ui.click(m);
+    RTF_ASSERT(ui.ran == vector<string>{"reset:1"});
+}

@@ -1364,28 +1364,38 @@ void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url
                 ImGui::SetClipboardText(line.copy.c_str());
             if(!line.action.empty())
             {
-                // The action whose question is showing, asked in place (as
-                // removing the web password is): the question, then Cancel and
-                // the action again.
-                static std::string confirming;
-                if(!line.confirm.empty() && confirming == line.action)
+                // The question is asked in place (as removing the web password
+                // is): the question, then Cancel and the action again. Whether
+                // it's showing is kept per action under the caller's ID (one
+                // per plugin), as the frame it was last drawn: a question whose
+                // line went away isn't shown again when the line comes back.
+                auto* asked = ImGui::GetStateStorage();
+                const ImGuiID id = ImGui::GetID(line.action.c_str());
+                const int frame = ImGui::GetFrameCount();
+                const int last = asked->GetInt(id, 0);
+                if(!line.confirm.empty() && last != 0 && last >= frame - 1)
                 {
+                    asked->SetInt(id, frame);
                     wrapped_text(r_ui_utils::theme::text_secondary, line.confirm);
                     flow_row ask;
                     if(flow_button(ask, "Cancel"))
-                        confirming.clear();
+                        asked->SetInt(id, 0);
                     if(flow_button(ask, line.action_label.c_str(), button_kind::destructive))
                     {
-                        confirming.clear();
+                        asked->SetInt(id, 0);
                         run_action(line.action);
                     }
                 }
-                else if(flow_button(row, line.action_label.c_str()))
+                else
                 {
-                    if(line.confirm.empty())
-                        run_action(line.action);
-                    else
-                        confirming = line.action;
+                    asked->SetInt(id, 0);
+                    if(flow_button(row, line.action_label.c_str()))
+                    {
+                        if(line.confirm.empty())
+                            run_action(line.action);
+                        else
+                            asked->SetInt(id, frame);
+                    }
                 }
             }
         }
@@ -1685,9 +1695,11 @@ inline void main_window(
             // The same gap above the content as above a camera's action row.
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
             ImGui::PushFont(font(fonts.key_22));
+            ImGui::PushID(p.name.c_str());   // keeps each plugin's questions apart
             plugin_status_lines(p.status_message, actions.open_url,
                                 [&](const std::string& action) { if(actions.run_plugin_action) actions.run_plugin_action(p.name, action); },
                                 fonts);
+            ImGui::PopID();
             ImGui::PopFont();
         }
         else if(!state.cameras_loaded)
