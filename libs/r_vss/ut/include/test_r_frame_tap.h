@@ -12,6 +12,8 @@ public:
       TEST(test_r_frame_tap::test_taps_start_on_ask_and_only_take_their_camera);
       TEST(test_r_frame_tap::test_at_most_max_taps);
       TEST(test_r_frame_tap::test_an_idle_tap_stops);
+      TEST(test_r_frame_tap::test_stop_ends_decoding);
+      TEST(test_r_frame_tap::test_the_reaper_joins_not_the_last_holder);
     RTF_FIXTURE_END();
 
     virtual ~test_r_frame_tap() throw() {}
@@ -27,4 +29,6 @@ public:
     void test_taps_start_on_ask_and_only_take_their_camera();
     void test_at_most_max_taps();
     void test_an_idle_tap_stops();
+    void test_stop_ends_decoding();
+    void test_the_reaper_joins_not_the_last_holder();
 };

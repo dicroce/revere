@@ -65,6 +65,12 @@ typedef _GstRTSPMedia GstRTSPMedia;
 namespace r_vss
 {
 
+// The audio half of create_restream_opus_launch_string, without its appsrc or
+// payloader's name and pt: the camera's audio decoded and encoded to Opus, then
+// RTP-payloaded. Empty for an encoding it doesn't decode, or when GStreamer is
+// missing one of its elements.
+R_API std::string restream_opus_audio_branch(r_pipeline::r_encoding audio_encoding);
+
 struct live_restreaming_state;
 
 // Types of queue overflow that can occur
@@ -227,7 +233,7 @@ public:
     R_API r_tier_status motion_tier_status(const std::string& camera_id) const;
 
     R_API std::string add_restream_mount(const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, const r_disco::r_camera& camera, r_recording_context* rc, r_utils::r_nullable<r_pipeline::r_encoding> video_encoding, r_utils::r_nullable<r_pipeline::r_encoding> audio_encoding);
-    R_API void remove_restream_mount(const std::string& path);
+    R_API void remove_restream_mount(const std::string& path);   // and its <path>/opus
 
     R_API void post_frame_to_motion_engine(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_params, const std::string& camera_id, bool is_key_frame, int64_t ingest_lag_ms = 0);
 
@@ -254,7 +260,14 @@ public:
     R_API void suspend(const std::string& camera_id);
     R_API void resume(const std::string& camera_id);
 
-    R_API std::string create_restream_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding, int audio_format);
+    R_API static std::string create_restream_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding, int audio_format);
+
+    // The restream with its audio as Opus, mounted beside the camera's own at
+    // <mount>/opus for viewers that take only Opus (Apple Home through go2rtc):
+    // the same video, the audio decoded and encoded to Opus (16 kHz mono, 20 ms
+    // frames) while someone pulls that track. Empty when there's no audio, an
+    // encoding it doesn't decode (AAC-LATM), or GStreamer lacks an element.
+    R_API static std::string create_restream_opus_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding);
 
     R_API r_disco::r_devices& get_devices();
 
@@ -317,6 +330,7 @@ private:
     void _update_status_cache();
     void _update_retention_cache();
     static void _live_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, gpointer user_data);
+    void _remove_mount(const std::string& mount_path);
     void _stop(const std::string& id);
     static void _client_connected_cbs(GstRTSPServer* server, GstRTSPClient* client, r_stream_keeper* sk);
     static void _options_cbs(GstRTSPClient * client, GstRTSPContext * ctx, r_stream_keeper* sk);

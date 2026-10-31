@@ -40,6 +40,12 @@ public:
     R_API r_frame_tap& operator=(const r_frame_tap&) = delete;
     R_API ~r_frame_tap() noexcept;
 
+    // Ends the decoder thread and joins it; after it, post() does nothing and the
+    // destructor has nothing to wait for. r_frame_taps stops a tap it reaps on
+    // the reaping thread, so whichever thread lets the last copy go (a camera's
+    // recording thread in post(), say) never waits on a decode.
+    R_API void stop() noexcept;
+
     // One frame as the camera sent it; ts is its stored time (epoch ms).
     R_API void post(const uint8_t* data, size_t size, bool key, int64_t ts, const std::string& codec_name, const std::string& codec_params);
 
@@ -140,6 +146,9 @@ public:
 
     R_API size_t active() const;
 
+    // The camera's tap, or null: for tests.
+    R_API std::shared_ptr<r_frame_tap> tap(const std::string& camera_id) const;
+
     static constexpr size_t MAX_TAPS = 4;
     static constexpr int64_t IDLE_MS = 5000;
 
@@ -150,8 +159,10 @@ private:
         std::chrono::steady_clock::time_point last_asked;
     };
 
-    // Takes the idle taps out of _taps (under _lock), for the caller to destroy after.
+    // Takes the idle taps out of _taps (under _lock), for the caller to stop
+    // (_stop_all) and let go after.
     std::vector<std::shared_ptr<r_frame_tap>> _take_idle(std::chrono::steady_clock::time_point now);
+    static void _stop_all(std::vector<std::shared_ptr<r_frame_tap>>& taps);
 
     r_frame_tap::extradata_fn _extradata;
     clock_fn _now;

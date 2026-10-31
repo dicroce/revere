@@ -47,6 +47,8 @@ add_executable(
     source/test_r_storage_ops.cpp
     include/test_r_teardown_queue.h
     source/test_r_teardown_queue.cpp
+    include/test_r_restream_opus.h
+    source/test_r_restream_opus.cpp
     include/test_r_system_plugin_action.h
     source/test_r_system_plugin_action.cpp
 )
