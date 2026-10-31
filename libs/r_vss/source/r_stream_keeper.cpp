@@ -881,6 +881,17 @@ vector<uint8_t> r_stream_keeper::get_jpg(const string& camera_id, int64_t ts, ui
     return query_get_jpg(_top_dir, _devices, camera_id, r_time_utils::epoch_millis_to_tp(ts), w, h);
 }
 
+r_nullable<r_frame_tap_result> r_stream_keeper::ptz_view_frame(const string& camera_id, uint16_t long_edge, int64_t after)
+{
+    {
+        // Only a camera recording here sends frames to tap.
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        if(_streams.find(camera_id) == _streams.end())
+            return r_nullable<r_frame_tap_result>();
+    }
+    return r_nullable<r_frame_tap_result>(_frame_taps.newest(camera_id, long_edge, after));
+}
+
 std::chrono::hours r_stream_keeper::get_retention_hours(const string& camera_id)
 {
     std::lock_guard<std::mutex> lock(_retention_cache_mutex);
@@ -1090,6 +1101,9 @@ void r_stream_keeper::_entry_point()
     {
         try
         {
+            // A tapped camera that stopped sending frames is never reaped by its own posts.
+            _frame_taps.reap();
+
             // All _streams map modifications are protected by _streams_mutex.
             //
             // IMPORTANT: dead, modified and removed recording contexts are fully

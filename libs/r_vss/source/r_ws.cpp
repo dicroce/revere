@@ -158,6 +158,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     // configure the camera for recording.
     route(METHOD_GET, "/camera_profiles", &r_ws::_get_camera_profiles);
     route(METHOD_POST, "/ptz", &r_ws::_post_ptz);
+    route(METHOD_GET, "/ptz_view/frame", &r_ws::_get_ptz_view_frame);
     route(METHOD_GET, "/measure_camera", &r_ws::_get_measure_camera);
     route(METHOD_GET, "/measure_progress", &r_ws::_get_measure_progress);
     route(METHOD_GET, "/measure_result", &r_ws::_get_measure_result);
@@ -3274,6 +3275,66 @@ r_http::r_server_response r_ws::_post_ptz(r_utils::r_socket_base&, const r_http:
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
         return failure(response_internal_server_error, "camera_error", "The camera didn't carry out the PTZ command.");
     }
+}
+
+// PTZ view's long edge: small enough to send several a second, never a full frame.
+static constexpr uint16_t PTZ_VIEW_MIN_EDGE = 160;
+static constexpr uint16_t PTZ_VIEW_MAX_EDGE = 1280;
+static constexpr uint16_t PTZ_VIEW_DEFAULT_EDGE = 640;
+
+// GET /ptz_view/frame?camera_id=&long_edge=&after=: the camera's newest decoded
+// picture as a JPEG, for showing a PTZ move as it happens (r_frame_taps). The
+// first ask starts decoding the camera's stream; it stops a few seconds after
+// the last. after (epoch ms, X-Frame-Ts of the last picture) makes it answer 204
+// while there's nothing newer, so a caller polling it sends each picture once.
+// 404: no such camera, or it isn't recording; 503: too many cameras are
+// being watched this way already.
+r_http::r_server_response r_ws::_get_ptz_view_frame(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    auto args = request.get_uri().get_get_args();
+    if(args.find("camera_id") == end(args) || args["camera_id"].empty())
+        R_STHROW(r_http_400_exception, ("Missing camera_id."));
+    auto camera_id = args["camera_id"];
+
+    uint16_t long_edge = PTZ_VIEW_DEFAULT_EDGE;
+    int64_t after = 0;
+    try
+    {
+        if(args.find("long_edge") != end(args))
+        {
+            auto le = r_string_utils::s_to_uint16(args["long_edge"]);
+            long_edge = le < PTZ_VIEW_MIN_EDGE ? PTZ_VIEW_MIN_EDGE : le > PTZ_VIEW_MAX_EDGE ? PTZ_VIEW_MAX_EDGE : le;
+        }
+        if(args.find("after") != end(args))
+            after = r_string_utils::s_to_int64(args["after"]);
+    }
+    catch(const std::exception&)
+    {
+        R_STHROW(r_http_400_exception, ("long_edge and after must be numbers."));
+    }
+
+    if(_devices.get_camera_by_id(camera_id).is_null())
+        R_STHROW(r_http_404_exception, ("No camera with that id."));
+
+    auto result = _stream_keeper.ptz_view_frame(camera_id, long_edge, after);
+    if(result.is_null())
+        R_STHROW(r_http_404_exception, ("That camera isn't recording."));
+
+    auto& r = result.value();
+    if(r.status == r_frame_tap_status::too_many)
+    {
+        r_server_response response(response_service_unavailable);
+        response.add_additional_header("Retry-After", "5");
+        return response;
+    }
+    if(r.status == r_frame_tap_status::nothing_newer)
+        return r_server_response(response_no_content);
+
+    r_server_response response;
+    response.set_content_type("image/jpeg");
+    response.set_body(r.jpeg.size(), r.jpeg.data());
+    response.add_additional_header("X-Frame-Ts", std::to_string(r.ts));
+    return response;
 }
 
 r_http::r_server_response r_ws::_get_measure_camera(r_utils::r_socket_base&, const r_http::r_server_request& request)

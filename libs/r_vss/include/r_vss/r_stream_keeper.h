@@ -17,6 +17,7 @@
 #include "r_vss/r_lag_watchdog.h"
 #include "r_vss/r_keep_awake.h"
 #include "r_vss/r_teardown_queue.h"
+#include "r_vss/r_frame_tap.h"
 #include <functional>
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
@@ -232,6 +233,16 @@ public:
 
     R_API std::vector<uint8_t> get_jpg(const std::string& camera_id, int64_t ts, uint16_t w, uint16_t h);
 
+    // PTZ view: a camera's newest decoded picture (r_frame_taps), for pictures that
+    // show a move as it happens. Null when the camera isn't recording here.
+    R_API r_utils::r_nullable<r_frame_tap_result> ptz_view_frame(const std::string& camera_id, uint16_t long_edge, int64_t after);
+
+    // Every frame a camera records goes here too; only a tapped camera's are kept.
+    R_API void post_frame_to_frame_taps(const std::string& camera_id, const uint8_t* data, size_t size, bool key, int64_t ts, const std::string& codec_name, const std::string& codec_params)
+    {
+        _frame_taps.post(camera_id, data, size, key, ts, codec_name, codec_params);
+    }
+
     R_API std::chrono::hours get_retention_hours(const std::string& camera_id);
 
     R_API void bounce(const std::string& camera_id);
@@ -330,6 +341,8 @@ private:
     // is still pending. _stuck_warned: per camera, the 30 s steps of a stuck
     // teardown already logged (keeper thread only).
     r_teardown_queue _teardowns;
+    // PTZ view pictures (ptz_view_frame).
+    r_frame_taps _frame_taps;
     std::map<std::string, int64_t> _stuck_warned;
 
     // Per-camera backoff state for cameras whose r_recording_context construction

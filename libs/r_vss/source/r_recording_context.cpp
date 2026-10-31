@@ -498,6 +498,18 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 _latest_key_codec_parameters = _maybe_video_storage_write_context.value().codec_parameters;
             }
 
+            // PTZ view: a tapped camera's frames are decoded for its newest picture
+            // (r_frame_taps); for any other camera this is one atomic load.
+            this->_sk->post_frame_to_frame_taps(
+                this->_camera.id,
+                mi.data(),
+                mi.size(),
+                key,
+                stored_ts,
+                this->_maybe_video_storage_write_context.value().codec_name,
+                this->_maybe_video_storage_write_context.value().codec_parameters
+            );
+
             bool do_motion = (!this->_camera.do_motion_detection.is_null())?this->_camera.do_motion_detection.value():false;
 
             if(do_motion)

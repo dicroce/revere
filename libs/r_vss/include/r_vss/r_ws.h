@@ -214,6 +214,7 @@ private:
     r_http::r_server_response _get_camera_profiles(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _post_ptz(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _get_ptz_view_frame(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _get_measure_camera(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
