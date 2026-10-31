@@ -47,6 +47,8 @@ add_executable(
     source/test_r_storage_ops.cpp
     include/test_r_teardown_queue.h
     source/test_r_teardown_queue.cpp
+    include/test_r_restream_opus.h
+    source/test_r_restream_opus.cpp
 )
 
 # What r_vss/r_build_info.h should report, from the root CMakeLists.
