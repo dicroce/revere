@@ -184,6 +184,11 @@ void r_muxer::set_audio_extradata(const std::vector<uint8_t>& ed)
     }
 }
 
+void r_muxer::set_max_interleave_delta(int64_t microseconds)
+{
+    _fc.get()->max_interleave_delta = microseconds;
+}
+
 void r_muxer::set_output_option(const std::string& key, const std::string& value)
 {
     _output_options[key] = value;

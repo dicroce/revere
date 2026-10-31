@@ -68,6 +68,18 @@ transcoder.stop();
 | `initial_bitrate` | uint32_t | Starting bitrate in bits/sec |
 | `max_bitrate` | uint32_t | Maximum allowed bitrate (usually source bitrate) |
 | `min_bitrate` | uint32_t | Minimum allowed bitrate (quality floor) |
+| `audio` | optional<r_transcoder_audio> | An audio stream for the output (codec, channels, sample rate, extradata), written as it comes; none by default |
+
+## Audio
+
+Made with `audio` (an AAC stream with its AudioSpecificConfig as extradata), the output carries a second stream for the
+camera's audio. `write_audio_frame(data, size, pts)` takes one encoded frame at its pts in the input timebase, the same
+clock as `write_frame()`. Audio is not re-encoded. It is queued with the video, so the output is written from one
+thread in the order frames came. Without `audio` (or with a sample rate of 0), `has_audio()` is false and
+`write_audio_frame()` does nothing.
+
+With audio, a pause in it holds the video back for at most 0.5 s (`R_TRANSCODER_AUDIO_INTERLEAVE_US`), not FFmpeg's
+default 10 s interleave wait.
 
 ## Bitrate Adaptation
 
@@ -103,7 +115,7 @@ r_transcoder transcoder(
 
 ## Thread Safety
 
-- `write_frame()`: Thread-safe, can be called from any thread
+- `write_frame()` / `write_audio_frame()`: Thread-safe, can be called from any thread
 - `start()` / `stop()`: Thread-safe, idempotent
 - Transcoding happens on dedicated worker thread
 - Automatic cleanup in destructor
