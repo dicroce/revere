@@ -94,6 +94,14 @@ R_API void system_plugin_set_api_result_cb(r_system_plugin_handle plugin,
 // camera/device list to an external service (e.g. the cloud device sync).
 R_API void system_plugin_cameras_changed(r_system_plugin_handle plugin);
 
+// Optional: run an action the user chose in the plugin's status message. A line
+// {"text", "action": "<id>", "action_label": "<button>", "confirm": "<question>"?}
+// draws a button under the text; choosing it (and confirming, if the line has
+// a "confirm" question) calls this with the line's "action" id. Called on the
+// UI thread, so return promptly and do any slow work on the plugin's own thread.
+// Only a plugin that exports this should put "action" in its lines.
+R_API void system_plugin_action(r_system_plugin_handle plugin, const char* action);
+
 // Convenience: call this to post a result — null-safe wrapper around the callback.
 static inline void system_plugin_post_api_result(system_plugin_api_result_cb cb, void* user_data,
     const char* name, const char* json)

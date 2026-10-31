@@ -158,6 +158,7 @@ struct main_window_actions
     std::function<void(int)> record;
     std::function<void(int)> forget;
     std::function<void(const std::string&, bool)> set_plugin_enabled;
+    std::function<void(const std::string&, const std::string&)> run_plugin_action;   // plugin name, action id
     std::function<void(const std::string&)> open_url;
     std::function<void()> add_rtsp_camera;
     std::function<void(const std::string&)> dismiss_notice;  // "Don't show again" on a toast
@@ -1193,7 +1194,9 @@ void link_text(const std::string& label, const std::string& url, OPEN_CB open_cb
 // The lines a system plugin returns from system_plugin_get_status_message,
 // {"lines": [...]}, each one of:
 //   {"text"} with an optional "copy" (adds Copy) or "url" (the text links to
-//     it, plus Copy URL);
+//     it, plus Copy URL), and optionally "action" with "action_label": a
+//     button that runs the plugin's action (system_plugin_action), asking
+//     the line's "confirm" question first when it has one;
 //   {"qr": text}, drawn as a QR code;
 //   {"tiles": [{"label", "value", "detail"?, "hint"?}], "title"?}, drawn as
 //     stat cards like a camera's, under the title if there is one.
@@ -1208,6 +1211,9 @@ struct plugin_status_line_view
     std::string text;
     std::string url;
     std::string copy;
+    std::string action;         // with action_label: a button (system_plugin_action)
+    std::string action_label;
+    std::string confirm;        // asked before the action runs, if not empty
     std::string title;
     std::vector<main_window_detail::stat_card> tiles;
     bool is_tiles {false};
@@ -1248,6 +1254,14 @@ inline bool parse_plugin_status_line(const nlohmann::json& line, plugin_status_l
         out.text = str(line, "text");
         out.url = str(line, "url");
         out.copy = str(line, "copy");
+        out.action_label = str(line, "action_label");
+        if(!out.action_label.empty())
+        {
+            out.action = str(line, "action");
+            out.confirm = str(line, "confirm");
+        }
+        if(out.action.empty())
+            out.action_label.clear();
         return !out.text.empty();
     }
     catch(...)
@@ -1256,8 +1270,8 @@ inline bool parse_plugin_status_line(const nlohmann::json& line, plugin_status_l
     }
 }
 
-template<typename OPEN_URL_CB>
-void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url, const main_window_fonts& fonts)
+template<typename OPEN_URL_CB, typename RUN_ACTION_CB>
+void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url, RUN_ACTION_CB run_action, const main_window_fonts& fonts)
 {
     using namespace main_window_detail;
     if(status_message.empty())
@@ -1348,6 +1362,42 @@ void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url
             row.after_text();
             if(!line.copy.empty() && flow_button(row, "Copy"))
                 ImGui::SetClipboardText(line.copy.c_str());
+            if(!line.action.empty())
+            {
+                // The question is asked in place (as removing the web password
+                // is): the question, then Cancel and the action again. Whether
+                // it's showing is kept per action under the caller's ID (one
+                // per plugin), as the frame it was last drawn: a question whose
+                // line went away isn't shown again when the line comes back.
+                auto* asked = ImGui::GetStateStorage();
+                const ImGuiID id = ImGui::GetID(line.action.c_str());
+                const int frame = ImGui::GetFrameCount();
+                const int last = asked->GetInt(id, 0);
+                if(!line.confirm.empty() && last != 0 && last >= frame - 1)
+                {
+                    asked->SetInt(id, frame);
+                    wrapped_text(r_ui_utils::theme::text_secondary, line.confirm);
+                    flow_row ask;
+                    if(flow_button(ask, "Cancel"))
+                        asked->SetInt(id, 0);
+                    if(flow_button(ask, line.action_label.c_str(), button_kind::destructive))
+                    {
+                        asked->SetInt(id, 0);
+                        run_action(line.action);
+                    }
+                }
+                else
+                {
+                    asked->SetInt(id, 0);
+                    if(flow_button(row, line.action_label.c_str()))
+                    {
+                        if(line.confirm.empty())
+                            run_action(line.action);
+                        else
+                            asked->SetInt(id, frame);
+                    }
+                }
+            }
         }
         ImGui::PopID();
     }
@@ -1645,7 +1695,11 @@ inline void main_window(
             // The same gap above the content as above a camera's action row.
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
             ImGui::PushFont(font(fonts.key_22));
-            plugin_status_lines(p.status_message, actions.open_url, fonts);
+            ImGui::PushID(p.name.c_str());   // keeps each plugin's questions apart
+            plugin_status_lines(p.status_message, actions.open_url,
+                                [&](const std::string& action) { if(actions.run_plugin_action) actions.run_plugin_action(p.name, action); },
+                                fonts);
+            ImGui::PopID();
             ImGui::PopFont();
         }
         else if(!state.cameras_loaded)
