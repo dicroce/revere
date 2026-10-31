@@ -626,6 +626,16 @@ uint16_t r_video_decoder::input_height() const
     return (uint16_t)_context->height;
 }
 
+void r_video_decoder::set_low_latency()
+{
+    if(_codec_opened || _hw_accel != r_hw_accel::none || !_codec || !_context)
+        return;
+    if(_codec->capabilities & AV_CODEC_CAP_SLICE_THREADS)
+        _context->thread_type = FF_THREAD_SLICE;
+    else
+        _context->thread_count = 1;
+}
+
 void r_video_decoder::set_log_tag(const string& tag)
 {
     if(_gaps)

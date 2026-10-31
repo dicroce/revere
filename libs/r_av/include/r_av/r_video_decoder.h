@@ -72,6 +72,11 @@ public:
 
     // Names this stream in the gap log lines (a camera id, say).
     R_API void set_log_tag(const std::string& tag);
+
+    // Before the first decode: each frame comes out as soon as it's decoded.
+    // Software decode otherwise uses frame threads, which hold output back by
+    // about a frame per thread; this uses slice threads (or one thread).
+    R_API void set_low_latency();
     R_API r_decoder_gap_stats gap_stats() const;
 
 private:
