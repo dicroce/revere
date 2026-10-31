@@ -3,8 +3,14 @@
 #include "srp6a_vectors.h"
 #include "r_crypto/r_ed25519.h"
 #include "r_crypto/r_srp6a.h"
+#include "x25519_hkdf_aead_vectors.h"
+#include "r_crypto/r_random.h"
+#include "r_crypto/r_x25519.h"
+#include "r_crypto/r_hkdf.h"
+#include "r_crypto/r_chacha20_poly1305.h"
 #include "r_utils/r_exception.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -379,4 +385,239 @@ void test_r_crypto::test_srp6a_known_answer_b_is_checked()
     RTF_ASSERT_THROWS(make(vector<uint8_t>(384, 0xff)), r_invalid_argument_exception);
     RTF_ASSERT_THROWS(make(unhex(SRP6A_N_3072)), r_invalid_argument_exception);
     RTF_ASSERT(make(unhex(v.b))->public_key() == unhex(v.B));
+}
+
+static bool all_zero(const vector<uint8_t>& v)
+{
+    for(auto b : v)
+        if(b)
+            return false;
+    return true;
+}
+
+void test_r_crypto::test_random_bytes()
+{
+    RTF_ASSERT(random_bytes(0).empty());
+    auto one = random_bytes(32);
+    auto two = random_bytes(32);
+    RTF_ASSERT_EQUAL(one.size(), (size_t)32);
+    RTF_ASSERT(one != two);
+    RTF_ASSERT(!all_zero(one));
+}
+
+void test_r_crypto::test_x25519_rfc7748()
+{
+    // RFC 7748 section 6.1: each side's public key from its secret, and both get
+    // the same shared secret.
+    auto a = unhex(RFC7748_ALICE_PRIVATE);
+    auto b = unhex(RFC7748_BOB_PRIVATE);
+    auto alice = r_x25519_key_pair::from_secret(a.data(), a.size());
+    auto bob = r_x25519_key_pair::from_secret(b.data(), b.size());
+    RTF_ASSERT(bytes(alice.public_key()) == unhex(RFC7748_ALICE_PUBLIC));
+    RTF_ASSERT(bytes(bob.public_key()) == unhex(RFC7748_BOB_PUBLIC));
+
+    array<uint8_t, 32> k1, k2;
+    auto bob_public = bob.public_key();
+    auto alice_public = alice.public_key();
+    RTF_ASSERT(alice.shared_secret(bob_public.data(), bob_public.size(), k1));
+    RTF_ASSERT(bob.shared_secret(alice_public.data(), alice_public.size(), k2));
+    RTF_ASSERT(bytes(k1) == unhex(RFC7748_ALICE_BOB_SHARED));
+    RTF_ASSERT(k1 == k2);
+}
+
+void test_r_crypto::test_x25519_wycheproof_vectors()
+{
+    // Every vector's shared secret, including public keys on the twist, with the
+    // top bit set, or not reduced mod p. A low-order public key gives all zeros,
+    // which is refused (RFC 7748 section 6.1); Wycheproof allows either.
+    size_t checked = 0, refused = 0, wrong = 0;
+    for(auto& v : WYCHEPROOF_X25519)
+    {
+        auto secret = unhex(v.private_key);
+        auto peer = unhex(v.public_key);
+        auto expected = unhex(v.shared);
+        auto pair = r_x25519_key_pair::from_secret(secret.data(), secret.size());
+        array<uint8_t, 32> shared {};
+        bool ok = pair.shared_secret(peer.data(), peer.size(), shared);
+        if(all_zero(expected))
+        {
+            ++refused;
+            if(ok)
+            {
+                printf("wycheproof x25519 tcId %d (%s): an all-zero secret was given\n", v.tc_id, v.flags);
+                ++wrong;
+            }
+        }
+        else
+        {
+            ++checked;
+            if(!ok || bytes(shared) != expected)
+            {
+                printf("wycheproof x25519 tcId %d (%s): wrong shared secret\n", v.tc_id, v.flags);
+                ++wrong;
+            }
+        }
+    }
+    RTF_ASSERT_EQUAL(checked + refused, (size_t)518);
+    RTF_ASSERT(refused > 0);
+    RTF_ASSERT_EQUAL(wrong, (size_t)0);
+}
+
+void test_r_crypto::test_x25519_generate()
+{
+    auto one = r_x25519_key_pair::generate();
+    auto two = r_x25519_key_pair::generate();
+    RTF_ASSERT(one.public_key() != two.public_key());
+    array<uint8_t, 32> k1, k2;
+    auto p1 = one.public_key();
+    auto p2 = two.public_key();
+    RTF_ASSERT(one.shared_secret(p2.data(), p2.size(), k1));
+    RTF_ASSERT(two.shared_secret(p1.data(), p1.size(), k2));
+    RTF_ASSERT(k1 == k2);
+}
+
+void test_r_crypto::test_x25519_sizes()
+{
+    auto a = unhex(RFC7748_ALICE_PRIVATE);
+    RTF_ASSERT_THROWS(r_x25519_key_pair::from_secret(a.data(), 31), r_invalid_argument_exception);
+    RTF_ASSERT_THROWS(r_x25519_key_pair::from_secret(nullptr, 32), r_invalid_argument_exception);
+    auto alice = r_x25519_key_pair::from_secret(a.data(), a.size());
+    auto b = unhex(RFC7748_BOB_PUBLIC);
+    array<uint8_t, 32> out {};
+    RTF_ASSERT(!alice.shared_secret(b.data(), 31, out));
+    b.push_back(0);
+    RTF_ASSERT(!alice.shared_secret(b.data(), b.size(), out));
+    RTF_ASSERT(!alice.shared_secret(nullptr, 32, out));
+}
+
+void test_r_crypto::test_x25519_move_wipes_the_source()
+{
+    auto a = unhex(RFC7748_ALICE_PRIVATE);
+    auto alice = r_x25519_key_pair::from_secret(a.data(), a.size());
+    auto pk = alice.public_key();
+    auto moved = std::move(alice);
+    RTF_ASSERT(moved.public_key() == pk);
+    array<uint8_t, 32> zero {};
+    RTF_ASSERT(alice.public_key() == zero);
+    // A moved-from pair gives no shared secret worth having: its secret is gone.
+    auto b = unhex(RFC7748_BOB_PUBLIC);
+    array<uint8_t, 32> k {};
+    alice.shared_secret(b.data(), b.size(), k);
+    RTF_ASSERT(bytes(k) != unhex(RFC7748_ALICE_BOB_SHARED));
+
+    auto other = r_x25519_key_pair::generate();
+    other = std::move(moved);
+    RTF_ASSERT(other.public_key() == pk);
+    RTF_ASSERT(moved.public_key() == zero);
+}
+
+void test_r_crypto::test_hkdf_sha512_wycheproof_vectors()
+{
+    // Every size up to the limit of 255 * 64 bytes, and one byte past it, refused.
+    size_t valid = 0, invalid = 0;
+    for(auto& v : WYCHEPROOF_HKDF_SHA512)
+    {
+        auto ikm = unhex(v.ikm);
+        auto salt = unhex(v.salt);
+        auto info = unhex(v.info);
+        if(v.result == WP_VALID)
+        {
+            auto okm = hkdf_sha512(ikm.data(), ikm.size(), salt.data(), salt.size(), info.data(), info.size(), v.size);
+            if(okm != unhex(v.okm))
+                printf("wycheproof hkdf tcId %d: wrong output\n", v.tc_id);
+            RTF_ASSERT(okm == unhex(v.okm));
+            ++valid;
+        }
+        else
+        {
+            RTF_ASSERT_THROWS(hkdf_sha512(ikm.data(), ikm.size(), salt.data(), salt.size(), info.data(), info.size(), v.size), r_invalid_argument_exception);
+            ++invalid;
+        }
+    }
+    RTF_ASSERT_EQUAL(valid, (size_t)80);
+    RTF_ASSERT_EQUAL(invalid, (size_t)3);
+}
+
+void test_r_crypto::test_chacha20_poly1305_wycheproof_vectors()
+{
+    // Valid vectors seal to their ciphertext and tag, and open back. A modified
+    // tag doesn't open; a nonce that isn't 12 bytes throws.
+    size_t valid = 0, invalid = 0;
+    for(auto& v : WYCHEPROOF_CHACHA20_POLY1305)
+    {
+        auto key = unhex(v.key);
+        auto nonce = unhex(v.nonce);
+        auto aad = unhex(v.aad);
+        auto msg = unhex(v.msg);
+        auto sealed_expected = unhex(v.ct);
+        auto tag = unhex(v.tag);
+        sealed_expected.insert(sealed_expected.end(), tag.begin(), tag.end());
+
+        if(nonce.size() != 12)
+        {
+            RTF_ASSERT(v.result == WP_INVALID);
+            // In a buffer of at least 12, so a missing size check reads bytes that
+            // are there and the test fails rather than crashes.
+            vector<uint8_t> room(max(nonce.size(), (size_t)12), 0);
+            copy(nonce.begin(), nonce.end(), room.begin());
+            RTF_ASSERT_THROWS(chacha20_poly1305_seal(key.data(), key.size(), room.data(), nonce.size(), aad.data(), aad.size(), msg.data(), msg.size()), r_invalid_argument_exception);
+            vector<uint8_t> out;
+            RTF_ASSERT_THROWS(chacha20_poly1305_open(key.data(), key.size(), room.data(), nonce.size(), aad.data(), aad.size(), sealed_expected.data(), sealed_expected.size(), out), r_invalid_argument_exception);
+            ++invalid;
+            continue;
+        }
+
+        vector<uint8_t> opened {0xee};
+        bool ok = chacha20_poly1305_open(key.data(), key.size(), nonce.data(), nonce.size(), aad.data(), aad.size(), sealed_expected.data(), sealed_expected.size(), opened);
+        if(v.result == WP_VALID)
+        {
+            auto sealed = chacha20_poly1305_seal(key.data(), key.size(), nonce.data(), nonce.size(), aad.data(), aad.size(), msg.data(), msg.size());
+            if(sealed != sealed_expected || !ok || opened != msg)
+                printf("wycheproof chacha20-poly1305 tcId %d (%s): wrong\n", v.tc_id, v.flags);
+            RTF_ASSERT(sealed == sealed_expected);
+            RTF_ASSERT(ok);
+            RTF_ASSERT(opened == msg);
+            ++valid;
+        }
+        else
+        {
+            if(ok)
+                printf("wycheproof chacha20-poly1305 tcId %d (%s): opened\n", v.tc_id, v.flags);
+            RTF_ASSERT(!ok);
+            RTF_ASSERT(opened.empty());
+            ++invalid;
+        }
+    }
+    RTF_ASSERT_EQUAL(valid, (size_t)256);
+    RTF_ASSERT_EQUAL(invalid, (size_t)69);
+}
+
+void test_r_crypto::test_chacha20_poly1305_tampering()
+{
+    // Any change to the ciphertext, the tag, the additional data, the nonce or the
+    // key is caught; less than a tag never opens; a key that isn't 32 bytes throws.
+    vector<uint8_t> key(32, 0x42), nonce(12, 0x07), aad = {1, 2, 3};
+    string text = "the camera at the back door";
+    vector<uint8_t> msg(text.begin(), text.end());
+    auto sealed = chacha20_poly1305_seal(key.data(), key.size(), nonce.data(), nonce.size(), aad.data(), aad.size(), msg.data(), msg.size());
+    RTF_ASSERT_EQUAL(sealed.size(), msg.size() + 16);
+
+    auto opens = [&](const vector<uint8_t>& k, const vector<uint8_t>& n, const vector<uint8_t>& a, const vector<uint8_t>& s) {
+        vector<uint8_t> out;
+        bool ok = chacha20_poly1305_open(k.data(), k.size(), n.data(), n.size(), a.data(), a.size(), s.data(), s.size(), out);
+        return ok && out == msg;
+    };
+    RTF_ASSERT(opens(key, nonce, aad, sealed));
+
+    auto flip = [](vector<uint8_t> v, size_t i) { v[i] ^= 0x01; return v; };
+    RTF_ASSERT(!opens(key, nonce, aad, flip(sealed, 0)));
+    RTF_ASSERT(!opens(key, nonce, aad, flip(sealed, sealed.size() - 1)));
+    RTF_ASSERT(!opens(key, nonce, flip(aad, 1), sealed));
+    RTF_ASSERT(!opens(key, flip(nonce, 11), aad, sealed));
+    RTF_ASSERT(!opens(flip(key, 31), nonce, aad, sealed));
+    RTF_ASSERT(!opens(key, nonce, aad, vector<uint8_t>(sealed.begin(), sealed.begin() + 15)));
+
+    vector<uint8_t> out;
+    RTF_ASSERT_THROWS(chacha20_poly1305_open(key.data(), 31, nonce.data(), nonce.size(), aad.data(), aad.size(), sealed.data(), sealed.size(), out), r_invalid_argument_exception);
+    RTF_ASSERT_THROWS(chacha20_poly1305_seal(key.data(), 33, nonce.data(), nonce.size(), aad.data(), aad.size(), msg.data(), msg.size()), r_invalid_argument_exception);
 }
