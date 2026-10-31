@@ -377,9 +377,13 @@ void test_r_frame_tap::test_an_idle_tap_stops()
     taps.reap();
     RTF_ASSERT_EQUAL(taps.active(), (size_t)1);
     now += milliseconds(r_frame_taps::IDLE_MS);
-    // A camera's own frames reap it too, without the keeper's loop.
+    // Frames never reap: they arrive on a camera's recording thread, which
+    // mustn't wait on a tap's decoder thread to end. The keeper's loop does.
     auto& f = _clip().frames.front();
     taps.post("cam_b", f.data.data(), f.data.size(), f.key, f.ts, "h264", "");
+    taps.post("cam_a", f.data.data(), f.data.size(), f.key, f.ts, "h264", "");
+    RTF_ASSERT_EQUAL(taps.active(), (size_t)1);
+    taps.reap();
     RTF_ASSERT_EQUAL(taps.active(), (size_t)0);
     // Room again for a new one.
     RTF_ASSERT(taps.newest("cam_c", 320, 0).status == r_frame_tap_status::nothing_newer);

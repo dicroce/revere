@@ -133,8 +133,9 @@ public:
     // none runs. The caller checks the camera exists and is recording.
     R_API r_frame_tap_result newest(const std::string& camera_id, uint16_t long_edge, int64_t after);
 
-    // Stops taps not asked for in IDLE_MS. Called by post() and newest(); the
-    // keeper's loop calls it too, for a camera that stopped sending frames.
+    // Stops taps not asked for in IDLE_MS, joining their threads. Called by
+    // newest() and by the keeper's loop, never by post(): that runs on a
+    // camera's recording thread, which mustn't wait on another tap's decoder.
     R_API void reap();
 
     R_API size_t active() const;

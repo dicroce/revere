@@ -247,17 +247,16 @@ void r_frame_taps::post(const string& camera_id, const uint8_t* data, size_t siz
     if(_count.load() == 0)
         return;
 
+    // No reaping here: destroying an idle tap joins its decoder thread, and this
+    // runs on a camera's recording thread, which mustn't wait on that. newest()
+    // and the keeper's loop reap.
     shared_ptr<r_frame_tap> tap;
-    vector<shared_ptr<r_frame_tap>> idle;
     {
         lock_guard<mutex> g(_lock);
-        idle = _take_idle(_now());
         auto found = _taps.find(camera_id);
         if(found != _taps.end())
             tap = found->second.tap;
     }
-    // Destroyed here, out of the lock (each joins its thread).
-    idle.clear();
 
     if(tap)
         tap->post(data, size, key, ts, codec_name, codec_params);
