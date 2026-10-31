@@ -182,7 +182,7 @@ jobs:
             libgsttcp libgstudp libgstsdpelem \
             libgstaudioparsers libgstvideoparsersbad \
             libgstplayback libgsttypefindfunctions libgstvideoconvertscale \
-            libgstaudioconvert libgstaudioresample \
+            libgstaudioconvert libgstaudioresample libgstopus \
             libgstlibav libgstvideofilter libgstautodetect libgstvideorate"
 
           bundle_gst_plugins() {  # $1 = path to .app

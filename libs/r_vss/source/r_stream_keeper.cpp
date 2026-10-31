@@ -797,6 +797,21 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
 
     gst_rtsp_mount_points_add_factory(_mounts, mount_path.c_str(), factory);
 
+    // The same with its audio as Opus, at <mount>/opus, when the audio can be.
+    auto opus_str = create_restream_opus_launch_string(video_encoding.value(), sdp_video.formats.front(), audio_encoding);
+    if(!opus_str.empty())
+    {
+        auto opus_factory = gst_rtsp_media_factory_new();
+        if(opus_factory)
+        {
+            gst_rtsp_media_factory_set_launch(opus_factory, opus_str.c_str());
+            gst_rtsp_media_factory_set_shared(opus_factory, FALSE);
+            r_rtsp_auth::allow_viewer(opus_factory);
+            g_signal_connect(opus_factory, "media-configure", (GCallback)_live_restream_media_configure, rc);
+            gst_rtsp_mount_points_add_factory(_mounts, (mount_path + "/opus").c_str(), opus_factory);
+        }
+    }
+
     return mount_path;
 }
 
@@ -805,6 +820,14 @@ void r_stream_keeper::remove_restream_mount(const string& mount_path)
     if(mount_path.empty() || mount_path[0] != '/')
         return;
 
+    // Its Opus twin goes with it (add_restream_mount); removing a path that
+    // was never mounted does nothing.
+    _remove_mount(mount_path + "/opus");
+    _remove_mount(mount_path);
+}
+
+void r_stream_keeper::_remove_mount(const string& mount_path)
+{
     // Safety check: return early if objects are null or invalid
     if(!_mounts || !GST_IS_RTSP_MOUNT_POINTS(_mounts))
         return;
@@ -1063,6 +1086,60 @@ void r_stream_keeper::resume(const std::string& camera_id)
     cmd.id = camera_id;
 
     _cmd_q.post(cmd).get();
+}
+
+// The decoder for each audio encoding the Opus restream takes.
+static string _opus_decoder(r_pipeline::r_encoding audio_encoding, vector<string>& elements)
+{
+    switch(audio_encoding)
+    {
+        case r_pipeline::r_encoding::AAC_GENERIC_ENCODING:
+            elements = {"aacparse", "avdec_aac"};
+            return "aacparse ! avdec_aac";
+        case r_pipeline::r_encoding::PCMU_ENCODING:
+            elements = {"mulawdec"};
+            return "mulawdec";
+        case r_pipeline::r_encoding::PCMA_ENCODING:
+            elements = {"alawdec"};
+            return "alawdec";
+        default:
+            return string();
+    }
+}
+
+string r_vss::restream_opus_audio_branch(r_pipeline::r_encoding audio_encoding)
+{
+    vector<string> elements;
+    auto decoder = _opus_decoder(audio_encoding, elements);
+    if(decoder.empty())
+        return string();
+    for(auto e : {"audioconvert", "audioresample", "opusenc", "rtpopuspay"})
+        elements.push_back(e);
+    for(const auto& e : elements)
+    {
+        auto f = gst_element_factory_find(e.c_str());
+        if(!f)
+            return string();
+        gst_object_unref(f);
+    }
+    // 16 kHz mono in 20 ms frames: what Apple Home asks of an Opus camera.
+    return decoder + " ! audioconvert ! audioresample ! audio/x-raw,rate=16000,channels=1 ! "
+                     "opusenc bitrate=24000 frame-size=20 ! rtpopuspay";
+}
+
+string r_stream_keeper::create_restream_opus_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding)
+{
+    if(maybe_audio_encoding.is_null())
+        return string();
+    auto audio = restream_opus_audio_branch(maybe_audio_encoding.value());
+    if(audio.empty())
+        return string();
+
+    // The video exactly as the camera's own restream has it, with no audio, then the Opus track.
+    auto launch_str = create_restream_launch_string(video_encoding, video_format, r_nullable<r_pipeline::r_encoding>(), 0);
+    launch_str.pop_back();   // its closing ')'
+    const int opus_pt = video_format == 111 ? 110 : 111;
+    return launch_str + r_string_utils::format(" appsrc name=audiosrc ! %s name=pay1 pt=%d )", audio.c_str(), opus_pt);
 }
 
 string r_stream_keeper::create_restream_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding, int audio_format)
