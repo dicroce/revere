@@ -57,8 +57,11 @@ public:
         const std::vector<uint8_t>& salt,
         const std::vector<uint8_t>& verifier
     );
-    // With a given b, for known-answer tests.
-    R_API r_srp6a_server(
+    // With a given b, for known-answer tests only: in a protocol b must be fresh
+    // and secret, which the constructor above gives. b must be at least 32 bytes
+    // and 0 < b < N, or it throws r_invalid_argument_exception (b = 0 would make
+    // S = 1 whatever the password).
+    R_API static std::unique_ptr<r_srp6a_server> for_known_answer_test(
         r_srp6a_group group,
         r_srp6a_hash hash,
         const std::string& username,
@@ -91,6 +94,8 @@ public:
     struct state;
 
 private:
+    explicit r_srp6a_server(std::unique_ptr<state> s);
+
     std::unique_ptr<state> _state;
 };
 

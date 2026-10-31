@@ -17,6 +17,8 @@ public:
       TEST(test_r_crypto::test_srp6a_wrong_password);
       TEST(test_r_crypto::test_srp6a_proof_sizes);
       TEST(test_r_crypto::test_srp6a_random_b);
+      TEST(test_r_crypto::test_srp6a_refuses_A_plus_N);
+      TEST(test_r_crypto::test_srp6a_known_answer_b_is_checked);
     RTF_FIXTURE_END();
 
     virtual ~test_r_crypto() throw() {}
@@ -36,4 +38,6 @@ public:
     void test_srp6a_wrong_password();
     void test_srp6a_proof_sizes();
     void test_srp6a_random_b();
+    void test_srp6a_refuses_A_plus_N();
+    void test_srp6a_known_answer_b_is_checked();
 };

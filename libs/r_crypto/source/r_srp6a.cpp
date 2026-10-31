@@ -224,18 +224,28 @@ r_srp6a_server::r_srp6a_server(
     } while(_state->B[0] == 0);
 }
 
-r_srp6a_server::r_srp6a_server(
+r_srp6a_server::r_srp6a_server(unique_ptr<state> s) :
+    _state(std::move(s))
+{
+}
+
+unique_ptr<r_srp6a_server> r_srp6a_server::for_known_answer_test(
     r_srp6a_group group,
     r_srp6a_hash hash,
     const string& username,
     const vector<uint8_t>& salt,
     const vector<uint8_t>& verifier,
     const vector<uint8_t>& b
-) :
-    _state(_new_state(group, hash, username, salt, verifier))
+)
 {
-    MPI_CHECK(mbedtls_mpi_read_binary(&_state->b.v, b.data(), b.size()));
-    _make_B(*_state);
+    auto s = _new_state(group, hash, username, salt, verifier);
+    if(b.size() < 32)
+        R_STHROW(r_invalid_argument_exception, ("An SRP b is at least 32 bytes, not %zu.", b.size()));
+    MPI_CHECK(mbedtls_mpi_read_binary(&s->b.v, b.data(), b.size()));
+    if(mbedtls_mpi_cmp_int(&s->b.v, 0) == 0 || mbedtls_mpi_cmp_mpi(&s->b.v, &s->group.N.v) >= 0)
+        R_STHROW(r_invalid_argument_exception, ("An SRP b must be above 0 and below N."));
+    _make_B(*s);
+    return unique_ptr<r_srp6a_server>(new r_srp6a_server(std::move(s)));
 }
 
 r_srp6a_server::~r_srp6a_server() noexcept

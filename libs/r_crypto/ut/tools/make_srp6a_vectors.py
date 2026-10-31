@@ -170,6 +170,28 @@ def main():
             out.append('        %s,' % hexs(v))
         out.append('    },')
     out += ['};', '']
+
+    # A + N is A again mod N, so a client that knows the password can make a
+    # proof over A + N's bytes. A must be below N, so it's refused all the same.
+    # That needs A + N to fit in N's 128 bytes: an A below 2^1024 - N.
+    for i in range(100000):
+        a6 = int.from_bytes(hashlib.sha512(b'revere srp6a A plus N %d' % i).digest()[:32], 'big')
+        r6 = srp.run(I, P, s, a6, rfc['b'])
+        if r6['A'] + srp.N < 2 ** 1024 and r6['A'].bit_length() > 1016:
+            break
+    B6 = srp.pad(r6['B'])
+    _, M1_A, _ = srp.proofs(I, s, nbytes(r6['A']), B6, r6['S'])
+    A_plus_N = srp.pad(r6['A'] + srp.N)
+    # A client sending A + N uses u from those bytes, so S is the one for that u.
+    u_plus_N = int.from_bytes(srp.h(A_plus_N, B6), 'big')
+    S_plus_N = pow(r6['A'] * pow(r6['v'], u_plus_N, srp.N), rfc['b'], srp.N)
+    _, M1_A_plus_N, _ = srp.proofs(I, s, A_plus_N, B6, S_plus_N)
+    out.append('// RFC 5054 appendix B\'s group, user, salt and b, with another A: the proof over A, and over A + N.')
+    out.append('static const char* SRP6A_RFC_A = %s;' % hexs(nbytes(r6['A'])))
+    out.append('static const char* SRP6A_RFC_M1_FOR_A = %s;' % hexs(M1_A))
+    out.append('static const char* SRP6A_RFC_A_PLUS_N = %s;' % hexs(A_plus_N))
+    out.append('static const char* SRP6A_RFC_M1_FOR_A_PLUS_N = %s;' % hexs(M1_A_plus_N))
+    out.append('')
     for bits in (1024, 3072):
         out.append('static const char* SRP6A_N_%d =\n        %s;' % (bits, hexs(nbytes(g[bits][0]))))
     out += ['', '#endif']

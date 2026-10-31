@@ -221,7 +221,7 @@ static r_srp6a_hash srp_hash(const srp6a_vector& v)
 
 static unique_ptr<r_srp6a_server> srp_server(const srp6a_vector& v)
 {
-    return make_unique<r_srp6a_server>(srp_group(v), srp_hash(v), v.username, unhex(v.salt), unhex(v.verifier), unhex(v.b));
+    return r_srp6a_server::for_known_answer_test(srp_group(v), srp_hash(v), v.username, unhex(v.salt), unhex(v.verifier), unhex(v.b));
 }
 
 void test_r_crypto::test_srp6a_known_answers()
@@ -315,10 +315,10 @@ void test_r_crypto::test_srp6a_wrong_password()
     auto& v = SRP6A_VECTORS[1];
     auto other = srp6a_verifier(srp_group(v), srp_hash(v), v.username, "correct horse battery!", unhex(v.salt));
     RTF_ASSERT(other != unhex(v.verifier));
-    r_srp6a_server server(srp_group(v), srp_hash(v), v.username, unhex(v.salt), other, unhex(v.b));
+    auto server = r_srp6a_server::for_known_answer_test(srp_group(v), srp_hash(v), v.username, unhex(v.salt), other, unhex(v.b));
     auto A = unhex(v.A);
     auto M1 = unhex(v.M1);
-    RTF_ASSERT(!server.verify_client(A.data(), A.size(), M1.data(), M1.size()));
+    RTF_ASSERT(!server->verify_client(A.data(), A.size(), M1.data(), M1.size()));
 }
 
 void test_r_crypto::test_srp6a_proof_sizes()
@@ -348,4 +348,35 @@ void test_r_crypto::test_srp6a_random_b()
     RTF_ASSERT_EQUAL(one.public_key().size(), (size_t)384);
     RTF_ASSERT(one.public_key()[0] != 0);
     RTF_ASSERT(two.public_key()[0] != 0);
+}
+
+void test_r_crypto::test_srp6a_refuses_A_plus_N()
+{
+    // A + N is the same A mod N, and the proof over its bytes is right for the
+    // password; A must still be below N. The same client with A itself passes.
+    auto& v = SRP6A_VECTORS[0];
+    auto A = unhex(SRP6A_RFC_A);
+    auto M1 = unhex(SRP6A_RFC_M1_FOR_A);
+    RTF_ASSERT(srp_server(v)->verify_client(A.data(), A.size(), M1.data(), M1.size()));
+
+    auto A_plus_N = unhex(SRP6A_RFC_A_PLUS_N);
+    auto M1_plus_N = unhex(SRP6A_RFC_M1_FOR_A_PLUS_N);
+    RTF_ASSERT_EQUAL(A_plus_N.size(), (size_t)128);
+    RTF_ASSERT(!srp_server(v)->verify_client(A_plus_N.data(), A_plus_N.size(), M1_plus_N.data(), M1_plus_N.size()));
+}
+
+void test_r_crypto::test_srp6a_known_answer_b_is_checked()
+{
+    // b = 0 would make S = 1 for any password; a short b, or one not below N, is
+    // refused too.
+    auto& v = SRP6A_VECTORS[1];
+    auto make = [&](const vector<uint8_t>& b) {
+        return r_srp6a_server::for_known_answer_test(srp_group(v), srp_hash(v), v.username, unhex(v.salt), unhex(v.verifier), b);
+    };
+    RTF_ASSERT_THROWS(make(vector<uint8_t>()), r_invalid_argument_exception);
+    RTF_ASSERT_THROWS(make(vector<uint8_t>(31, 0x55)), r_invalid_argument_exception);
+    RTF_ASSERT_THROWS(make(vector<uint8_t>(32, 0)), r_invalid_argument_exception);
+    RTF_ASSERT_THROWS(make(vector<uint8_t>(384, 0xff)), r_invalid_argument_exception);
+    RTF_ASSERT_THROWS(make(unhex(SRP6A_N_3072)), r_invalid_argument_exception);
+    RTF_ASSERT(make(unhex(v.b))->public_key() == unhex(v.B));
 }

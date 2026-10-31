@@ -138,6 +138,16 @@ static const srp6a_vector SRP6A_VECTORS[] = {
     },
 };
 
+// RFC 5054 appendix B's group, user, salt and b, with another A: the proof over A, and over A + N.
+static const char* SRP6A_RFC_A = "0c0c2043048816612bb8e8d68fe720a572a85f5949e59ce4cb6f570fcefabf8f94efd134ffeb63d00fab7ec31d445edb902b3215f3a61ab4bc2905e8"
+        "5c6ead187ed7c9e8a8fad526eab0dc53bcaaa3407916010e575d591fe91ebd472fa15144b2378d2734979afccc251c9c209b7890b2a9b6302491d366"
+        "56867eca922b7840";
+static const char* SRP6A_RFC_M1_FOR_A = "628d8b6994acb7a1aa34565c5d344cf2630a2d6b";
+static const char* SRP6A_RFC_A_PLUS_N = "fabb2afcb23ba437c7ece0e18a76e68dd31ac0e0bfe4d8f06a11885c6b2025066b64b0a996d5e5a347e6c6d6f3d725bc71010af8445fa6994a726205"
+        "bcf887e9dc9fa19d0a4fabddb93fd101265c0089fb6b9c37d32c71a5ae48b2ad95afa9311b2549633a0a07bcfbf9e890b80a232baffaef2ea80816c1"
+        "f64c9bfa53167f23";
+static const char* SRP6A_RFC_M1_FOR_A_PLUS_N = "a27d923e4bb6efb534f048e54439792524a8356b";
+
 static const char* SRP6A_N_1024 =
         "eeaf0ab9adb38dd69c33f80afa8fc5e86072618775ff3c0b9ea2314c9c256576d674df7496ea81d3383b4813d692c6e0e0d5d8e250b98be48e495c1d"
         "6089dad15dc7d7b46154d6b6ce8ef4ad69b15d4982559b297bcf1885c529f566660e57ec68edbc3c05726cc02fd4cbf4976eaa9afd5138fe8376435b"
