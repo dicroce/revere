@@ -45,6 +45,18 @@ private:
     std::string _code;
 };
 
+// The outcome of a PTZ action. presets is filled only for list_presets. The
+// capability flags report which continuous-move axes the camera's PTZ node
+// actually supports; they are queried on the list_presets probe, and null for
+// the other ops and whenever the camera didn't say (GetNodes failed, or listed
+// no SupportedPTZSpaces): unknown, which a client must not read as "can't".
+struct r_ptz_result
+{
+    std::vector<r_onvif::onvif_ptz_preset> presets;
+    r_utils::r_nullable<bool> supports_pan_tilt;
+    r_utils::r_nullable<bool> supports_zoom;
+};
+
 class r_onvif_provider
 {
 public:
@@ -68,14 +80,15 @@ public:
         r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
     );
 
-    // Perform a PTZ action against the camera's ONVIF PTZ service. Returns the
-    // camera's presets (only for op == list_presets; empty otherwise). Throws
-    // r_ptz_error if the camera has no PTZ service, can't be reached, or rejects
-    // the command. The camera's ONVIF session (endpoint, PTZ service, profile and
-    // the SOAP version and auth it settled on) is kept between commands, so a
-    // move is one request to the camera; commands to one camera run one at a
-    // time, and don't wait on camera interrogation. Safe to call from any thread.
-    R_API std::vector<r_onvif::onvif_ptz_preset> ptz_control(
+    // Perform a PTZ action against the camera's ONVIF PTZ service. For
+    // list_presets the result carries the camera's presets and PTZ-axis
+    // capabilities; the other ops return an empty result. Throws r_ptz_error if
+    // the camera has no PTZ service, can't be reached, or rejects the command.
+    // The camera's ONVIF session (endpoint, PTZ service, profile and the SOAP
+    // version and auth it settled on) is kept between commands, so a move is one
+    // request to the camera; commands to one camera run one at a time, and don't
+    // wait on camera interrogation. Safe to call from any thread.
+    R_API r_ptz_result ptz_control(
         const std::string& ipv4,
         const std::string& xaddrs,
         r_utils::r_nullable<std::string> username,
@@ -152,7 +165,7 @@ private:
         r_utils::r_nullable<int> onvif_port,
         r_utils::r_nullable<std::string> onvif_protocol
     );
-    std::vector<r_onvif::onvif_ptz_preset> _run_ptz(_ptz_session& session, const r_ptz_command& cmd);
+    r_ptz_result _run_ptz(_ptz_session& session, const r_ptz_command& cmd);
     std::mutex _ptz_sessions_lock;
     std::map<std::string, std::shared_ptr<_ptz_session>> _ptz_sessions;
 };

@@ -16,6 +16,7 @@ public:
       TEST(test_r_onvif_profiles::test_substream_codec_and_size);
       TEST(test_r_onvif_profiles::test_substream_rank);
       TEST(test_r_onvif_profiles::test_no_substream);
+      TEST(test_r_onvif_profiles::test_ptz_caps);
     RTF_FIXTURE_END();
 
     virtual ~test_r_onvif_profiles() throw() {}
@@ -33,4 +34,5 @@ public:
     void test_substream_codec_and_size();
     void test_substream_rank();
     void test_no_substream();
+    void test_ptz_caps();
 };

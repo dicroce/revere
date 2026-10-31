@@ -2436,6 +2436,45 @@ vector<r_onvif::onvif_ptz_preset> r_onvif::r_onvif_cam::get_ptz_presets(const st
     return parse_ptz_presets(result.second);
 }
 
+r_onvif::onvif_ptz_caps r_onvif::parse_ptz_caps(const string& xml)
+{
+    onvif_ptz_caps caps;
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetNodesResponse XML");
+    // A PTZNode advertises what it can drive under SupportedPTZSpaces. We drive
+    // motion with ContinuousMove, so the continuous-velocity spaces are what
+    // decide whether pan/tilt and zoom actually do anything. OR across every
+    // node the camera returns (single-sensor PTZ cams return just one). Match by
+    // local name so a camera's namespace-prefix choice can't hide the element.
+    // A reply with no SupportedPTZSpaces says nothing about the axes: unknown.
+    if (!doc.select_node("//*[local-name()='PTZNode']/*[local-name()='SupportedPTZSpaces']"))
+        return caps;
+    caps.known = true;
+    if (doc.select_node("//*[local-name()='SupportedPTZSpaces']/*[local-name()='ContinuousPanTiltVelocitySpace']"))
+        caps.pan_tilt = true;
+    if (doc.select_node("//*[local-name()='SupportedPTZSpaces']/*[local-name()='ContinuousZoomVelocitySpace']"))
+        caps.zoom = true;
+    return caps;
+}
+
+r_onvif::onvif_ptz_caps r_onvif::r_onvif_cam::get_ptz_caps(const string& ptz_service)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(ptz_service, host, port, protocol, uri);
+    auto result = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver20/ptz/wsdl/GetNodes",
+        [&](pugi::xml_node& body) {
+            body.append_child("tptz:GetNodes");
+        },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("GetNodes failed", result);
+    return parse_ptz_caps(result.second);
+}
+
 void r_onvif::r_onvif_cam::ptz_continuous_move(const string& ptz_service, const onvif_profile_token& profile_token,
                                                float pan, float tilt, float zoom, const string& timeout)
 {

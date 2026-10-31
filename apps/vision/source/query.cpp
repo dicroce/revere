@@ -1,9 +1,11 @@
 
 #include "query.h"
+#include "ptz_query.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_http/r_client_request.h"
+#include "r_http/r_methods.h"
 #include "revere_api.h"
 #include "r_http/r_client_response.h"
 #include <map>
@@ -225,6 +227,67 @@ vector<analytics_event> vision::query_analytics(const configure_state& cs, const
         }
 
         result.push_back(ae);
+    }
+
+    return result;
+}
+
+ptz_result vision::query_ptz(const string& ip_address, const string& camera_id, const string& action, float pan, float tilt, float zoom, const string& preset_token)
+{
+    auto sok = revere_connect(ip_address, 10000);
+
+    r_client_request req(ip_address, revere_port(ip_address));
+    req.set_method(METHOD_POST);
+    req.set_uri("/ptz");
+    authorize(req, ip_address);
+    req.set_content_type("application/json");
+
+    json body;
+    body["camera_id"] = camera_id;
+    body["action"] = action;
+    if(action == "move")
+    {
+        body["pan"] = pan;
+        body["tilt"] = tilt;
+        body["zoom"] = zoom;
+        body["timeout"] = PTZ_MOVE_TIMEOUT;
+    }
+    else if(action == "goto_preset")
+        body["preset_token"] = preset_token;
+    req.set_body(body.dump());
+
+    req.write_request(*sok);
+
+    r_client_response resp;
+    resp.read_response(*sok);
+    note_status(ip_address, resp.get_status());
+    sok->close();
+
+    if(resp.get_status() == 501)
+        throw ptz_unsupported("This camera has no ONVIF PTZ.");
+    if(resp.get_status() != 200)
+        R_THROW(("PTZ %s failed (HTTP %d).", action.c_str(), resp.get_status()));
+
+    ptz_result result;
+    auto response_txt = resp.get_body_as_string();
+    if(!response_txt.is_null())
+    {
+        auto j = json::parse(response_txt.value());
+        if(j.contains("presets") && j["presets"].is_array())
+        {
+            for(auto& p : j["presets"])
+            {
+                ptz_preset pp;
+                pp.token = p.value("token", string());
+                pp.name = p.value("name", string());
+                result.presets.push_back(pp);
+            }
+        }
+        // Present only when the camera said; missing is unknown.
+        if(j.contains("supports_pan_tilt") && j["supports_pan_tilt"].is_boolean())
+            result.supports_pan_tilt = j["supports_pan_tilt"].get<bool>();
+        if(j.contains("supports_zoom") && j["supports_zoom"].is_boolean())
+            result.supports_zoom = j["supports_zoom"].get<bool>();
     }
 
     return result;

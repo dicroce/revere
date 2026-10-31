@@ -2343,7 +2343,9 @@ int run_overlay(const overlay_opts& opts)
                 false,
                 mcs.sync_scrub,
                 false,   // no Export button in the overlay
-                0.6f     // smaller detection icons for the compact timeline
+                0.6f,    // smaller detection icons for the compact timeline
+                opts.revere_ip,   // PTZ: this camera's Revere
+                si.camera_id      // PTZ: the overlay's camera
             );
             ImGui::PopStyleVar();  // control_bar window padding
 

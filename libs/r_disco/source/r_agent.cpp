@@ -71,7 +71,7 @@ vector<r_onvif::onvif_profile_info> r_agent::get_camera_profiles(
     return _onvif_provider->get_camera_profiles(ipv4, xaddrs, username, password, onvif_port, onvif_protocol);
 }
 
-vector<r_onvif::onvif_ptz_preset> r_agent::ptz_control(
+r_ptz_result r_agent::ptz_control(
     const string& ipv4,
     const string& xaddrs,
     r_nullable<string> username,

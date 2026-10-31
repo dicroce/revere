@@ -61,7 +61,7 @@ vector<r_onvif::onvif_profile_info> r_onvif_provider::get_camera_profiles(
     return cam.get_profile_tokens(oms);
 }
 
-vector<r_onvif::onvif_ptz_preset> r_onvif_provider::ptz_control(
+r_ptz_result r_onvif_provider::ptz_control(
     const string& ipv4,
     const string& xaddrs,
     r_nullable<string> username,
@@ -164,9 +164,10 @@ void r_onvif_provider::_open_ptz_session(
     }
 }
 
-vector<r_onvif::onvif_ptz_preset> r_onvif_provider::_run_ptz(_ptz_session& session, const r_ptz_command& cmd)
+r_ptz_result r_onvif_provider::_run_ptz(_ptz_session& session, const r_ptz_command& cmd)
 {
     const auto& profile_token = cmd.profile_token.empty() ? session.profile_token : cmd.profile_token;
+    r_ptz_result result;
     try
     {
         switch(cmd.op)
@@ -181,14 +182,35 @@ vector<r_onvif::onvif_ptz_preset> r_onvif_provider::_run_ptz(_ptz_session& sessi
                 session.cam->ptz_goto_preset(session.ptz_service, profile_token, cmd.preset_token);
                 break;
             case r_ptz_command::op_t::list_presets:
-                return session.cam->get_ptz_presets(session.ptz_service, profile_token);
+                result.presets = session.cam->get_ptz_presets(session.ptz_service, profile_token);
+                // Report which axes the camera can actually drive. A fault here
+                // mustn't sink the probe (we still have a valid PTZ service and
+                // presets), so the flags stay null: unknown, not "can't".
+                try
+                {
+                    auto caps = session.cam->get_ptz_caps(session.ptz_service);
+                    if(caps.known)
+                    {
+                        result.supports_pan_tilt.set_value(caps.pan_tilt);
+                        result.supports_zoom.set_value(caps.zoom);
+                    }
+                }
+                catch(const std::exception& ex)
+                {
+                    R_LOG_WARNING("GetNodes (PTZ caps) failed: %s", ex.what());
+                }
+                break;
         }
+    }
+    catch(const r_ptz_error&)
+    {
+        throw;
     }
     catch(const std::exception& ex)
     {
         throw r_ptz_error("camera_error", ex.what());
     }
-    return {};
+    return result;
 }
 
 void r_onvif_provider::interrogate_camera(

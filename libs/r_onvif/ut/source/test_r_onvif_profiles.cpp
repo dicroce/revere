@@ -310,3 +310,47 @@ void test_r_onvif_profiles::test_no_substream()
     // But one that names a source isn't matched to a main that names none.
     RTF_ASSERT(substream_candidates({bare, prof("s", "VideoSource_1", "H264", 640, 360)}, bare).empty());
 }
+
+// GetNodes: which continuous-move axes a camera drives, and "unknown" when it
+// names no SupportedPTZSpaces (not "can't").
+void test_r_onvif_profiles::test_ptz_caps()
+{
+    auto node = [](const string& spaces) {
+        return string("<tptz:GetNodesResponse><tptz:PTZNode token=\"n1\"><tt:Name>PTZ</tt:Name>") +
+               (spaces.empty() ? string() : "<tt:SupportedPTZSpaces>" + spaces + "</tt:SupportedPTZSpaces>") +
+               "</tptz:PTZNode></tptz:GetNodesResponse>";
+    };
+    const string pt = "<tt:ContinuousPanTiltVelocitySpace><tt:URI>x</tt:URI></tt:ContinuousPanTiltVelocitySpace>";
+    const string zoom = "<tt:ContinuousZoomVelocitySpace><tt:URI>x</tt:URI></tt:ContinuousZoomVelocitySpace>";
+
+    auto both = parse_ptz_caps(node(pt + zoom));
+    RTF_ASSERT(both.known && both.pan_tilt && both.zoom);
+
+    auto pan_only = parse_ptz_caps(node(pt));
+    RTF_ASSERT(pan_only.known && pan_only.pan_tilt && !pan_only.zoom);
+
+    // Absolute and relative spaces only: no continuous axis to drive.
+    auto other = parse_ptz_caps(node("<tt:AbsoluteZoomPositionSpace/><tt:RelativePanTiltTranslationSpace/>"));
+    RTF_ASSERT(other.known && !other.pan_tilt && !other.zoom);
+
+    // Two nodes: an axis counts if any node has it.
+    auto two = parse_ptz_caps("<GetNodesResponse><PTZNode><SupportedPTZSpaces>" + pt + "</SupportedPTZSpaces></PTZNode>"
+                              "<PTZNode><SupportedPTZSpaces>" + zoom + "</SupportedPTZSpaces></PTZNode></GetNodesResponse>");
+    RTF_ASSERT(two.known && two.pan_tilt && two.zoom);
+
+    // Other prefixes, matched by local name.
+    auto prefixed = parse_ptz_caps("<a:GetNodesResponse xmlns:a=\"urn:a\"><a:PTZNode><a:SupportedPTZSpaces>"
+                                   "<a:ContinuousZoomVelocitySpace/></a:SupportedPTZSpaces></a:PTZNode></a:GetNodesResponse>");
+    RTF_ASSERT(prefixed.known && !prefixed.pan_tilt && prefixed.zoom);
+
+    // A continuous space outside SupportedPTZSpaces doesn't count.
+    auto outside = parse_ptz_caps("<GetNodesResponse><PTZNode><SupportedPTZSpaces/>" + zoom + "</PTZNode></GetNodesResponse>");
+    RTF_ASSERT(outside.known && !outside.zoom);
+
+    // No SupportedPTZSpaces at all: unknown, whatever else is there.
+    auto unknown = parse_ptz_caps(node(""));
+    RTF_ASSERT(!unknown.known);
+    RTF_ASSERT(!parse_ptz_caps("<GetNodesResponse/>").known);
+
+    RTF_ASSERT_THROWS(parse_ptz_caps("not xml <"), std::runtime_error);
+}

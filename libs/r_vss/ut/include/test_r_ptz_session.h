@@ -14,6 +14,8 @@ public:
       TEST(test_r_ptz_session::test_tapo_port_found);
       TEST(test_r_ptz_session::test_cameras_have_own_sessions);
       TEST(test_r_ptz_session::test_open_failure_is_camera_error);
+      TEST(test_r_ptz_session::test_list_presets_reports_axes);
+      TEST(test_r_ptz_session::test_axes_unknown_are_null);
     RTF_FIXTURE_END();
 
     virtual ~test_r_ptz_session() throw() {}
@@ -30,4 +32,6 @@ public:
     void test_tapo_port_found();
     void test_cameras_have_own_sessions();
     void test_open_failure_is_camera_error();
+    void test_list_presets_reports_axes();
+    void test_axes_unknown_are_null();
 };

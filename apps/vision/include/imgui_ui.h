@@ -27,6 +27,7 @@
 #include "control_bar.h"
 #include "control_bar_renderer.h"
 #include "overlay_controls.h"
+#include "ptz_controls.h"
 #include "timeline_constants.h"
 #include "error_handling.h"
 #include "font_keys.h"
@@ -316,7 +317,9 @@ void control_bar(
     bool is_multiview,
     bool& sync_scrub,
     bool show_export = true,   // overlay hides the Export button
-    float icon_scale = 1.0f    // overlay shrinks the detection icons
+    float icon_scale = 1.0f,   // overlay shrinks the detection icons
+    const std::string& ptz_host = std::string(),       // Revere this camera belongs to
+    const std::string& ptz_camera_id = std::string()   // camera under the selected stream
 )
 {
     if(!cbs.entered)
@@ -453,6 +456,11 @@ void control_bar(
             ImGui::SetTooltip("Save a snapshot of the selected camera (S)");
         right_x -= timeline_constants::ROW_BUTTON_GAP;
     }
+
+    // PTZ: only in live mode, and only for a camera that exposes ONVIF PTZ
+    // (ptz_control_button probes once and draws nothing otherwise).
+    if(is_at_live && cbs.exp_state != EXPORT_STATE_CONFIGURING)
+        vision::ptz_control_button(ptz_host, ptz_camera_id, calc.row_top, right_x);
 
     if(is_multiview)
     {
@@ -748,6 +756,8 @@ void main_client(
         mcs.selected_stream_name = "0_onebyone_0";
         auto si = cs.get_stream_info(mcs.selected_stream_name);
         bool show_motion_events = (!si.is_null()) ? si.value().do_motion_detection : false;
+        std::string ptz_host = cs.get_revere_ipv4().is_null() ? std::string() : cs.get_revere_ipv4().value();
+        std::string ptz_cam = si.is_null() ? std::string() : si.value().camera_id;
 
         vision::control_bar(
             x, y + video_pane_height, w, control_bar_height,
@@ -762,7 +772,11 @@ void main_client(
             export_cb,
             playing,
             false,
-            mcs.sync_scrub
+            mcs.sync_scrub,
+            true,
+            1.0f,
+            ptz_host,
+            ptz_cam
         );
     }
     else if(l == LAYOUT_TWO_BY_TWO)
@@ -778,6 +792,8 @@ void main_client(
 
         auto si = cs.get_stream_info(mcs.selected_stream_name);
         bool show_motion_events = (!si.is_null()) ? si.value().do_motion_detection : false;
+        std::string ptz_host = cs.get_revere_ipv4().is_null() ? std::string() : cs.get_revere_ipv4().value();
+        std::string ptz_cam = si.is_null() ? std::string() : si.value().camera_id;
 
         vision::control_bar(
             x, y + video_pane_height, w, control_bar_height,
@@ -792,7 +808,11 @@ void main_client(
             export_cb,
             playing,
             true,
-            mcs.sync_scrub
+            mcs.sync_scrub,
+            true,
+            1.0f,
+            ptz_host,
+            ptz_cam
         );
     }
     else if(l == LAYOUT_FOUR_BY_FOUR)
@@ -808,6 +828,8 @@ void main_client(
 
         auto si = cs.get_stream_info(mcs.selected_stream_name);
         bool show_motion_events = (!si.is_null()) ? si.value().do_motion_detection : false;
+        std::string ptz_host = cs.get_revere_ipv4().is_null() ? std::string() : cs.get_revere_ipv4().value();
+        std::string ptz_cam = si.is_null() ? std::string() : si.value().camera_id;
 
         vision::control_bar(
             x, y + video_pane_height, w, control_bar_height,
@@ -822,7 +844,11 @@ void main_client(
             export_cb,
             playing,
             true,
-            mcs.sync_scrub
+            mcs.sync_scrub,
+            true,
+            1.0f,
+            ptz_host,
+            ptz_cam
         );
     }
 }
