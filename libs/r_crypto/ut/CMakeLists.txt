@@ -3,6 +3,7 @@ add_executable(
     r_crypto_ut
     include/test_r_crypto.h
     include/ed25519_vectors.h
+    include/x25519_hkdf_aead_vectors.h
     source/test_r_crypto.cpp
 )
 
