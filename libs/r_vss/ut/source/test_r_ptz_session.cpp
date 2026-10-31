@@ -47,6 +47,7 @@ struct fake_camera
     std::atomic<int> fail_ptz {0};    // fail this many PTZ calls next
     std::atomic<int> fail_caps {0};   // fail this many GetCapabilities next
     string nodes {"fault"};           // how GetNodes answers (see _answer); set before the first call
+    map<string, string> last_body;    // the last request body of each op
     r_web_server<r_socket> ws;
 
     fake_camera(bool ptz = true, int at_port = 0) : port(at_port ? at_port : _next_port()), has_ptz(ptz), ws(port, "127.0.0.1")
@@ -99,6 +100,7 @@ struct fake_camera
         {
             std::lock_guard<std::mutex> g(lock);
             ++calls[op];
+            last_body[op] = body;
             if(is_ptz_call)
             {
                 auto at = body.find("ProfileToken>");
@@ -366,4 +368,54 @@ void test_r_ptz_session::test_axes_unknown_are_null()
     r_onvif_provider p("", nullptr);
     auto moved = _run(p, cam, _cmd(r_ptz_command::op_t::move));
     RTF_ASSERT(moved.supports_pan_tilt.is_null() && moved.supports_zoom.is_null());
+}
+
+// A move sends only the axes it uses: a camera without zoom can fault on a Zoom
+// velocity, even 0, while it pans.
+void test_r_ptz_session::test_only_the_axes_in_use()
+{
+    fake_camera cam;
+    r_onvif_provider p("", nullptr);
+    auto body = [&]() { std::lock_guard<std::mutex> g(cam.lock); return cam.last_body["ContinuousMove"]; };
+
+    auto pan = _cmd(r_ptz_command::op_t::move);   // pan 0.5
+    _run(p, cam, pan);
+    RTF_ASSERT(body().find("PanTilt") != string::npos);
+    RTF_ASSERT(body().find("Zoom") == string::npos);
+
+    auto zoom = _cmd(r_ptz_command::op_t::move);
+    zoom.pan = 0.0f;
+    zoom.zoom = -0.5f;
+    _run(p, cam, zoom);
+    RTF_ASSERT(body().find("Zoom") != string::npos);
+    RTF_ASSERT(body().find("PanTilt") == string::npos);
+
+    auto both = _cmd(r_ptz_command::op_t::move);
+    both.tilt = 0.5f;
+    both.zoom = 0.5f;
+    _run(p, cam, both);
+    RTF_ASSERT(body().find("PanTilt") != string::npos && body().find("Zoom") != string::npos);
+
+    // No axis at all still names PanTilt (Velocity needs one).
+    auto none = _cmd(r_ptz_command::op_t::move);
+    none.pan = 0.0f;
+    _run(p, cam, none);
+    RTF_ASSERT(body().find("PanTilt") != string::npos);
+    RTF_ASSERT(body().find("Zoom") == string::npos);
+}
+
+// Stop names no axis: without PanTilt or Zoom it stops all movement (ONVIF PTZ).
+void test_r_ptz_session::test_stop_names_no_axis()
+{
+    fake_camera cam;
+    r_onvif_provider p("", nullptr);
+    _run(p, cam, _cmd(r_ptz_command::op_t::stop));
+    string stop;
+    {
+        std::lock_guard<std::mutex> g(cam.lock);
+        stop = cam.last_body["tptz:Stop"];
+    }
+    RTF_ASSERT(stop.find("tptz:Stop") != string::npos);
+    RTF_ASSERT(stop.find("PanTilt") == string::npos);
+    RTF_ASSERT(stop.find("Zoom") == string::npos);
 }

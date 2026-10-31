@@ -293,12 +293,14 @@ public:
     R_API onvif_ptz_caps get_ptz_caps(const std::string& ptz_service);
 
     // ContinuousMove: pan/tilt/zoom velocities, each normalized to [-1,1] (0 =
-    // no motion on that axis). The camera keeps moving until Stop or, if given,
+    // no motion on that axis, and that axis isn't sent: PanTilt only when pan or
+    // tilt moves, Zoom only when zoom does). The camera keeps moving until Stop or, if given,
     // the timeout elapses (an xs:duration such as "PT1S"; empty = none sent).
     R_API void ptz_continuous_move(const std::string& ptz_service, const onvif_profile_token& profile_token,
                                    float pan, float tilt, float zoom, const std::string& timeout = "");
 
-    // Stop PanTilt and/or Zoom motion.
+    // Stop PanTilt and/or Zoom motion. Stopping both sends neither flag
+    // (ONVIF: a Stop without them stops all movement).
     R_API void ptz_stop(const std::string& ptz_service, const onvif_profile_token& profile_token,
                         bool pan_tilt = true, bool zoom = true);
 

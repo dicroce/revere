@@ -2487,11 +2487,21 @@ void r_onvif::r_onvif_cam::ptz_continuous_move(const string& ptz_service, const 
             auto req = body.append_child("tptz:ContinuousMove");
             req.append_child("tptz:ProfileToken").text().set(profile_token.c_str());
             auto vel = req.append_child("tptz:Velocity");
-            auto pt = vel.append_child("tt:PanTilt");
-            pt.append_attribute("x") = (double)pan;
-            pt.append_attribute("y") = (double)tilt;
-            auto z = vel.append_child("tt:Zoom");
-            z.append_attribute("x") = (double)zoom;
+            // Only the axes this move uses: a camera without zoom can answer a
+            // Zoom velocity (even 0) with a fault while it pans. A move on no
+            // axis still names PanTilt, as Velocity needs one.
+            bool zooms = zoom != 0.0f;
+            if(pan != 0.0f || tilt != 0.0f || !zooms)
+            {
+                auto pt = vel.append_child("tt:PanTilt");
+                pt.append_attribute("x") = (double)pan;
+                pt.append_attribute("y") = (double)tilt;
+            }
+            if(zooms)
+            {
+                auto z = vel.append_child("tt:Zoom");
+                z.append_attribute("x") = (double)zoom;
+            }
             if (!timeout.empty())
                 req.append_child("tptz:Timeout").text().set(timeout.c_str());
         },
@@ -2511,8 +2521,14 @@ void r_onvif::r_onvif_cam::ptz_stop(const string& ptz_service, const onvif_profi
         [&](pugi::xml_node& body) {
             auto req = body.append_child("tptz:Stop");
             req.append_child("tptz:ProfileToken").text().set(profile_token.c_str());
-            req.append_child("tptz:PanTilt").text().set(pan_tilt ? "true" : "false");
-            req.append_child("tptz:Zoom").text().set(zoom ? "true" : "false");
+            // Stopping everything names no axis: a Stop with neither flag stops
+            // all movement (ONVIF PTZ), and a camera without zoom never sees a
+            // Zoom flag it may fault on. Only stopping one axis names them.
+            if(!(pan_tilt && zoom))
+            {
+                req.append_child("tptz:PanTilt").text().set(pan_tilt ? "true" : "false");
+                req.append_child("tptz:Zoom").text().set(zoom ? "true" : "false");
+            }
         },
         _username, _password
     );
