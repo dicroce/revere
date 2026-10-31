@@ -47,6 +47,23 @@ add_executable(
     source/test_r_storage_ops.cpp
     include/test_r_teardown_queue.h
     source/test_r_teardown_queue.cpp
+    include/test_r_system_plugin_action.h
+    source/test_r_system_plugin_action.cpp
+)
+
+# Two system plugins for test_r_system_plugin_action: one with system_plugin_action, one without.
+foreach(variant action no_action)
+    add_library(test_${variant}_system_plugin SHARED test_plugin/test_action_system_plugin.cpp)
+    target_link_libraries(test_${variant}_system_plugin PRIVATE r_utils)
+    target_include_directories(test_${variant}_system_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+    target_compile_definitions(test_${variant}_system_plugin PRIVATE TEST_PLUGIN_GUID="com.revere.test.${variant}")
+    set_target_properties(test_${variant}_system_plugin PROPERTIES PREFIX "")
+    add_dependencies(r_vss_ut test_${variant}_system_plugin)
+endforeach()
+target_compile_definitions(test_no_action_system_plugin PRIVATE NO_ACTION_EXPORT)
+target_compile_definitions(r_vss_ut PRIVATE
+    TEST_ACTION_PLUGIN="$<TARGET_FILE:test_action_system_plugin>"
+    TEST_NO_ACTION_PLUGIN="$<TARGET_FILE:test_no_action_system_plugin>"
 )
 
 # What r_vss/r_build_info.h should report, from the root CMakeLists.

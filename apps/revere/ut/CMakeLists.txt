@@ -11,6 +11,8 @@ add_executable(
     ../source/configure_state.cpp
     include/test_tray_status.h
     source/test_tray_status.cpp
+    include/test_plugin_status_line.h
+    source/test_plugin_status_line.cpp
     ../source/tray_status.cpp
     ../source/browser_url.cpp
 )
@@ -26,6 +28,10 @@ target_link_libraries(
     experimentum
     r_utils
     r_ui_utils
+    # main_window.h's headers (test_plugin_status_line)
+    r_storage
+    r_disco
+    r_vss
 )
 
 # Ensure this is built as a console application on Windows

@@ -3387,6 +3387,10 @@ int main(int argc, char** argv)
     main_window_actions.set_plugin_enabled = [&](const std::string& name, bool enabled){
         streamKeeper.set_system_plugin_enabled(name, enabled);
     };
+    main_window_actions.run_plugin_action = [&](const std::string& name, const std::string& action){
+        if(!streamKeeper.run_system_plugin_action(name, action))
+            R_LOG_WARNING("Plugin %s has no action %s", name.c_str(), action.c_str());
+    };
     main_window_actions.add_rtsp_camera = [&](){
         rscc.rtsp_transport = "TCP";
         camera_setup_wizard.next("configure_rtsp_source_camera");

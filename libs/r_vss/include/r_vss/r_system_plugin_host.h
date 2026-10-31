@@ -78,6 +78,10 @@ public:
     // Get a plugin's version (empty if the plugin doesn't export get_system_plugin_version)
     R_API std::string get_plugin_version(const std::string& plugin_name) const;
 
+    // Run an action from a plugin's status message (system_plugin_action).
+    // False if the plugin isn't loaded or has no actions.
+    R_API bool run_plugin_action(const std::string& plugin_name, const std::string& action);
+
     // Wire up detection events from the motion plugin host to all system plugins
     // that implement system_plugin_post_detection. Call after construction, before start_all().
     R_API void connect_detection_bus(r_motion_event_plugin_host& meph);
@@ -111,6 +115,7 @@ private:
         system_plugin_post_detection_v2_func post_detection_v2_func;  // Optional - nullptr if not supported; preferred over v1
         void (*set_api_result_cb_func)(r_system_plugin_handle, system_plugin_api_result_cb, void*);                   // Optional - nullptr if not supported
         void (*cameras_changed_func)(r_system_plugin_handle);        // Optional - nullptr if not supported
+        void (*action_func)(r_system_plugin_handle, const char*);    // Optional - nullptr if not supported
         std::string name;
         std::string guid;
         std::string version;   // Empty if the plugin doesn't report one

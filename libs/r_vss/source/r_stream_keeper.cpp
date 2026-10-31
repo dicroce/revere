@@ -1023,6 +1023,11 @@ void r_stream_keeper::set_system_plugin_enabled(const std::string& plugin_name, 
     _system_plugin_host.set_plugin_enabled(plugin_name, enabled);
 }
 
+bool r_stream_keeper::run_system_plugin_action(const std::string& plugin_name, const std::string& action)
+{
+    return _system_plugin_host.run_plugin_action(plugin_name, action);
+}
+
 std::string r_stream_keeper::get_system_plugin_version(const std::string& plugin_name) const
 {
     return _system_plugin_host.get_plugin_version(plugin_name);

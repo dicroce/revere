@@ -279,6 +279,8 @@ public:
     R_API std::vector<std::string> get_loaded_system_plugins() const;
     R_API bool is_system_plugin_enabled(const std::string& plugin_name) const;
     R_API void set_system_plugin_enabled(const std::string& plugin_name, bool enabled);
+    // Runs an action from a plugin's status message; false if it has none.
+    R_API bool run_system_plugin_action(const std::string& plugin_name, const std::string& action);
     R_API std::string get_system_plugin_status(const std::string& plugin_name) const;
     R_API std::string get_system_plugin_status_message(const std::string& plugin_name) const;
     R_API std::string get_system_plugin_version(const std::string& plugin_name) const;

@@ -200,6 +200,13 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         cameras_changed_func = reinterpret_cast<system_plugin_cameras_changed_func>(sym);
                                 } catch (...) {}
 
+                                void (*action_func)(r_system_plugin_handle, const char*) = nullptr;
+                                try {
+                                    void* sym = lib->resolve_symbol("system_plugin_action");
+                                    if (sym)
+                                        action_func = reinterpret_cast<void (*)(r_system_plugin_handle, const char*)>(sym);
+                                } catch (...) {}
+
                                 // Optional: the plugin's own version
                                 std::string plugin_version;
                                 try {
@@ -249,6 +256,7 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         post_detection_v2_func,
                                         set_api_result_cb_func,
                                         cameras_changed_func,
+                                        action_func,
                                         plugin_name,
                                         plugin_guid,
                                         plugin_version
@@ -394,6 +402,29 @@ void r_system_plugin_host::set_plugin_enabled(const std::string& plugin_name, bo
             return;
         }
     }
+}
+
+bool r_system_plugin_host::run_plugin_action(const std::string& plugin_name, const std::string& action)
+{
+    for(auto& p : _plugins)
+    {
+        if(p.name != plugin_name)
+            continue;
+        if(!p.plugin_handle || !p.action_func)
+            return false;
+        try
+        {
+            p.action_func(p.plugin_handle, action.c_str());
+            R_LOG_INFO("Ran plugin %s action %s", plugin_name.c_str(), action.c_str());
+            return true;
+        }
+        catch (const std::exception& e)
+        {
+            R_LOG_ERROR("Error running plugin %s action %s: %s", plugin_name.c_str(), action.c_str(), e.what());
+            return false;
+        }
+    }
+    return false;
 }
 
 std::string r_system_plugin_host::get_plugin_status(const std::string& plugin_name) const
