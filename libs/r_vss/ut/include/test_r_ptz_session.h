@@ -16,6 +16,8 @@ public:
       TEST(test_r_ptz_session::test_open_failure_is_camera_error);
       TEST(test_r_ptz_session::test_list_presets_reports_axes);
       TEST(test_r_ptz_session::test_axes_unknown_are_null);
+      TEST(test_r_ptz_session::test_only_the_axes_in_use);
+      TEST(test_r_ptz_session::test_stop_names_no_axis);
     RTF_FIXTURE_END();
 
     virtual ~test_r_ptz_session() throw() {}
@@ -34,4 +36,6 @@ public:
     void test_open_failure_is_camera_error();
     void test_list_presets_reports_axes();
     void test_axes_unknown_are_null();
+    void test_only_the_axes_in_use();
+    void test_stop_names_no_axis();
 };
