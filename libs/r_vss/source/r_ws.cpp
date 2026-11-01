@@ -891,6 +891,14 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     // Where the camera's ONVIF device service last answered; 0 / "" when unknown.
                     {"onvif_port", (c.onvif_port.is_null())?0:c.onvif_port.value()},
                     {"onvif_protocol", (c.onvif_protocol.is_null())?"":c.onvif_protocol.value()},
+                    // The substream (r_camera::sub_*): sub_mode "on" or "off", sub_status "ok",
+                    // "pending" or "none:<reason>"; "" / 0 when unknown.
+                    {"sub_mode", r_disco::substream_on(c)?"on":"off"},
+                    {"sub_status", (c.sub_status.is_null())?"":c.sub_status.value()},
+                    {"sub_profile", (c.sub_onvif_profile_token.is_null())?"":c.sub_onvif_profile_token.value()},
+                    {"sub_codec", (c.sub_video_codec.is_null())?"":c.sub_video_codec.value()},
+                    {"sub_width", (c.sub_width.is_null())?0:c.sub_width.value()},
+                    {"sub_height", (c.sub_height.is_null())?0:c.sub_height.value()},
                     // The camera's ONVIF event subscription; null when it has none.
                     {"camera_events", camera_events},
                     // An address change (r_disco/r_camera_move.h): held or followed; null when none.
