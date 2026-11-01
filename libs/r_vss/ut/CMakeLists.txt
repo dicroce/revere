@@ -13,6 +13,8 @@ add_executable(
     source/test_r_snapshot_cache.cpp
     include/test_r_frame_tap.h
     source/test_r_frame_tap.cpp
+    include/test_r_frame_feeds.h
+    source/test_r_frame_feeds.cpp
     include/test_r_restream_track.h
     source/test_r_restream_track.cpp
     include/test_r_detection_planner.h
