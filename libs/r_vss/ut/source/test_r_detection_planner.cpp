@@ -339,14 +339,75 @@ void test_r_detection_planner::test_sources()
 
 void test_r_detection_planner::test_look_cap()
 {
+    // Twelve minutes of motion, nothing found: a session every MAX_SESSION_MS,
+    // each with at most MAX_LOOKS looks, then the last one ends with the motion.
     P p;
     vector<r_detection_session> f;
+    vector<r_look> looks;
     p.motion("a", "", true, 0);
-    _run(p, 0, 600000, _none, nullptr, &f);   // ten minutes of motion, nothing found
-    p.motion("a", "", false, 600000);
-    _run(p, 600100, 640000, _none, nullptr, &f);
+    _run(p, 0, 720000, _none, &looks, &f);
+    p.motion("a", "", false, 720000);
+    _run(p, 720100, 760000, _none, &looks, &f);
+
+    RTF_ASSERT_EQUAL(f.size(), (size_t)3);
+    RTF_ASSERT(f[0].cut && f[1].cut && !f[2].cut);
+    RTF_ASSERT_EQUAL(f[0].end_ms, (int64_t)P::MAX_SESSION_MS);
+    RTF_ASSERT_EQUAL(f[1].start_ms, f[0].end_ms);
+    RTF_ASSERT_EQUAL(f[1].end_ms, (int64_t)P::MAX_SESSION_MS * 2);
+    RTF_ASSERT_EQUAL(f[0].looks, (int)P::MAX_LOOKS);
+    RTF_ASSERT_EQUAL(f[1].looks, (int)P::MAX_LOOKS);
+    // The end look is allowed past the cap.
+    RTF_ASSERT(f[2].looks > 0 && f[2].looks <= (int)P::MAX_LOOKS + 1);
+
+    // A cut session's next look is at once, not after a gap.
+    bool look_at_cut = false;
+    for (auto& l : looks)
+        look_at_cut = look_at_cut || l.ts == (int64_t)P::MAX_SESSION_MS;
+    RTF_ASSERT(look_at_cut);
+}
+
+void test_r_detection_planner::test_long_motion_still_finds()
+{
+    // A camera in motion all along: a person shows up eight minutes in, long after
+    // the first session's looks ran out. A later session finds it, as an alert would.
+    P p;
+    vector<r_detection_session> f;
+    auto person_late = [](const r_look& l) {
+        return l.ts >= 480000 ? vector<r_detection>{_det("person", 100, 100, 200, 300)} : vector<r_detection>{};
+    };
+    p.motion("a", "", true, 0);
+    _run(p, 0, 590000, person_late, nullptr, &f);
 
     RTF_ASSERT_EQUAL(f.size(), (size_t)1);
-    // The end look is allowed past the cap.
-    RTF_ASSERT_EQUAL(f[0].looks, (int)P::MAX_LOOKS + 1);
+    RTF_ASSERT(f[0].detections.empty());
+    // The second session is still open: finish it.
+    p.motion("a", "", false, 590000);
+    _run(p, 590100, 630000, person_late, nullptr, &f);
+    RTF_ASSERT_EQUAL(f.size(), (size_t)2);
+    RTF_ASSERT(!f[1].first_found.empty());
+    RTF_ASSERT(f[1].first_found_ms >= 480000);
+}
+
+void test_r_detection_planner::test_cut_keeps_what_was_there()
+{
+    // A car parked in view all along: found once, at the start of the first
+    // session; the session after the cut takes it as already there, so it isn't
+    // found (and alerted) again. A person who arrives later still is.
+    P p;
+    vector<r_detection_session> f;
+    auto scene = [](const r_look& l) {
+        vector<r_detection> d;
+        if (l.kind != look_pre_roll)
+            d.push_back(_det("car", 300, 300, 500, 400));
+        if (l.ts >= 400000 && l.kind != look_pre_roll)
+            d.push_back(_det("person", 100, 100, 200, 300));
+        return d;
+    };
+    p.motion("a", "", true, 0);
+    _run(p, 0, 620000, scene, nullptr, &f);
+    RTF_ASSERT_EQUAL(f.size(), (size_t)2);
+    RTF_ASSERT_EQUAL(f[0].first_found.size(), (size_t)1);
+    RTF_ASSERT(f[0].first_found[0].class_name == "car");
+    RTF_ASSERT_EQUAL(f[1].first_found.size(), (size_t)1);
+    RTF_ASSERT(f[1].first_found[0].class_name == "person");
 }

@@ -15,6 +15,8 @@ public:
       TEST(test_r_detection_planner::test_early_camera_class);
       TEST(test_r_detection_planner::test_sources);
       TEST(test_r_detection_planner::test_look_cap);
+      TEST(test_r_detection_planner::test_long_motion_still_finds);
+      TEST(test_r_detection_planner::test_cut_keeps_what_was_there);
     RTF_FIXTURE_END();
 
     virtual ~test_r_detection_planner() throw() {}
@@ -33,4 +35,6 @@ public:
     void test_early_camera_class();
     void test_sources();
     void test_look_cap();
+    void test_long_motion_still_finds();
+    void test_cut_keeps_what_was_there();
 };
