@@ -304,3 +304,11 @@ void r_tier_controller::remove(const string& camera_id)
 {
     _cameras.erase(camera_id);
 }
+
+r_tier_status r_vss::tier_status_without_detector(const r_tier_status& status)
+{
+    auto out = status;
+    if(out.tier == motion_tier_3)
+        out.reason += (out.reason.empty() ? "" : "; ") + std::string("but no object detection plugin is loaded, so its motion gets no detections");
+    return out;
+}
