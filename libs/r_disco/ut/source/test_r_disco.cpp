@@ -379,15 +379,17 @@ void test_r_disco::test_failed_writes_are_logged()
     devices.start();
     devices.get_all_cameras();
 
-    // Break the table under it.
+    // Refuse inserts, so the write that fails is the INSERT itself, whose text
+    // has the camera's address and URL in it.
     {
         r_db::r_sqlite_conn conn(string("top_dir") + PATH_SLASH + "db" + PATH_SLASH + "cameras.db", true);
-        conn.exec("DROP TABLE cameras;");
+        conn.exec("CREATE TRIGGER refuse_writes BEFORE INSERT ON cameras BEGIN SELECT RAISE(ABORT, 'writes refused'); END;");
     }
     r_stream_config sc;
     sc.id = "cam-1";
     sc.ipv4 = "10.0.0.5";
-    sc.rtsp_url = "rtsp://10.0.0.5/stream1";
+    // A URL with a user in it, as some cameras give.
+    sc.rtsp_url = "rtsp://secret-user@10.0.0.5/stream1";
     for(int i = 0; i < 3; ++i)
         devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
     // A command after them, so they have run (it fails too, and logs its own error).
@@ -396,5 +398,10 @@ void test_r_disco::test_failed_writes_are_logged()
 
     auto lines = log.lines();
     RTF_ASSERT_EQUAL(lines.size(), (size_t)1);
-    RTF_ASSERT(lines[0].find("no such table: cameras") != string::npos);
+    // SQLite's reason when it gives one; never the query, which has the camera's
+    // address and credentials in it.
+    RTF_ASSERT(lines[0].find("Saving discovered cameras failed: ") != string::npos);
+    RTF_ASSERT(lines[0].find("10.0.0.5") == string::npos);
+    RTF_ASSERT(lines[0].find("secret-user") == string::npos);
+    RTF_ASSERT(lines[0].find("INSERT") == string::npos);
 }

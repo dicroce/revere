@@ -437,14 +437,27 @@ void r_devices::_entry_point()
 
 void r_devices::_log_failed_write(exception_ptr e)
 {
-    string what = "unknown error";
+    // Only SQLite's own reason: the exception's message carries the whole query,
+    // with the camera's address and credentials in it.
+    string what = "the database refused the write";
     try
     {
         rethrow_exception(e);
     }
     catch(const std::exception& ex)
     {
-        what = ex.what();
+        // r_sqlite_conn puts the reason after "Cause: " (a failed step) or
+        // "failed with: " (a failed prepare).
+        string msg = ex.what();
+        for(string marker : {"Cause: ", "failed with: "})
+        {
+            auto at = msg.rfind(marker);
+            if(at != string::npos && at + marker.size() < msg.size())
+            {
+                what = msg.substr(at + marker.size());
+                break;
+            }
+        }
     }
     catch(...)
     {
