@@ -18,6 +18,7 @@ public:
       TEST(test_r_disco::test_db_upgrade_repairs_a_missing_column);
       TEST(test_r_disco::test_db_upgrade_keeps_a_newer_version);
       TEST(test_r_disco::test_db_upgrade_twice);
+      TEST(test_r_disco::test_db_upgrade_from_version_7);
     RTF_FIXTURE_END();
 
     virtual ~test_r_disco() throw() {}
@@ -38,4 +39,5 @@ public:
     void test_db_upgrade_repairs_a_missing_column();
     void test_db_upgrade_keeps_a_newer_version();
     void test_db_upgrade_twice();
+    void test_db_upgrade_from_version_7();
 };

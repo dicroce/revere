@@ -465,3 +465,21 @@ void test_r_disco::test_db_upgrade_twice()
     RTF_ASSERT(db_columns() == columns);
     RTF_ASSERT_EQUAL(db_version(), 9);
 }
+
+void test_r_disco::test_db_upgrade_from_version_7()
+{
+    // A database from before either version 8: none of manufacturer, model,
+    // firmware_version or mac. All four are added, and the version becomes 9.
+    make_cameras_db(7, {});
+    auto before = db_columns();
+    for(auto c : {"manufacturer", "model", "firmware_version", "mac"})
+        RTF_ASSERT(before.count(c) == 0);
+
+    auto camera = start_and_save_device_info();
+    RTF_ASSERT(camera.value().manufacturer.value() == "TP-Link");
+    RTF_ASSERT(camera.value().firmware_version.value() == "1.3.7");
+    RTF_ASSERT_EQUAL(db_version(), 9);
+    auto after = db_columns();
+    for(auto c : {"manufacturer", "model", "firmware_version", "mac"})
+        RTF_ASSERT(after.count(c) == 1);
+}
