@@ -405,8 +405,9 @@ void test_r_ptz_session::test_only_the_axes_in_use()
 }
 
 // Stop names no axis: without PanTilt or Zoom it stops all movement (ONVIF PTZ).
-void test_r_ptz_session::test_stop_names_no_axis()
+void test_r_ptz_session::test_stop_names_pan_tilt()
 {
+    // A Tapo keeps moving on a Stop that doesn't name PanTilt; Zoom stays out, for cameras without zoom.
     fake_camera cam;
     r_onvif_provider p("", nullptr);
     _run(p, cam, _cmd(r_ptz_command::op_t::stop));
@@ -416,6 +417,80 @@ void test_r_ptz_session::test_stop_names_no_axis()
         stop = cam.last_body["tptz:Stop"];
     }
     RTF_ASSERT(stop.find("tptz:Stop") != string::npos);
-    RTF_ASSERT(stop.find("PanTilt") == string::npos);
+    RTF_ASSERT(stop.find("<tptz:PanTilt>true</tptz:PanTilt>") != string::npos);
     RTF_ASSERT(stop.find("Zoom") == string::npos);
+}
+
+namespace
+{
+r_ptz_command _move(const string& timeout)
+{
+    auto c = _cmd(r_ptz_command::op_t::move);
+    c.timeout = timeout;
+    return c;
+}
+void _wait_ms(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+}
+
+void test_r_ptz_session::test_timeout_read()
+{
+    RTF_ASSERT_EQUAL(ptz_timeout_ms("PT1S").value(), (int64_t)1000);
+    RTF_ASSERT_EQUAL(ptz_timeout_ms("PT1.5S").value(), (int64_t)1500);
+    RTF_ASSERT_EQUAL(ptz_timeout_ms("PT0.25S").value(), (int64_t)250);
+    RTF_ASSERT_EQUAL(ptz_timeout_ms("PT1M2S").value(), (int64_t)62000);
+    for(auto bad : {"", "PT", "PT0S", "1S", "PT1H", "PTxS", "P1S"})
+        RTF_ASSERT(ptz_timeout_ms(bad).is_null());
+}
+
+void test_r_ptz_session::test_move_stopped_at_its_timeout()
+{
+    // The camera ignores the Timeout (as a Tapo does), and the client's Stop never comes: Revere stops it.
+    fake_camera cam;
+    r_onvif_provider p("", nullptr);
+    _run(p, cam, _move("PT0.3S"));
+    RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 0);
+    _wait_ms(800);
+    RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 1);
+    // Once: nothing more after it.
+    _wait_ms(500);
+    RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 1);
+}
+
+void test_r_ptz_session::test_later_command_cancels_the_stop()
+{
+    fake_camera cam;
+    r_onvif_provider p("", nullptr);
+    // A client's Stop after the move: no second one from Revere.
+    _run(p, cam, _move("PT0.3S"));
+    _run(p, cam, _cmd(r_ptz_command::op_t::stop));
+    _wait_ms(800);
+    RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 1);
+    // A keep-alive (a held control) takes over the first move's Stop: the camera stops only at the last one's.
+    _run(p, cam, _move("PT0.6S"));
+    _wait_ms(300);
+    _run(p, cam, _move("PT0.6S"));
+    _wait_ms(450);
+    RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 1);
+    _wait_ms(600);
+    RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 2);
+}
+
+void test_r_ptz_session::test_no_timeout_no_stop()
+{
+    fake_camera cam;
+    r_onvif_provider p("", nullptr);
+    _run(p, cam, _move(""));
+    _wait_ms(500);
+    RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 0);
+}
+
+void test_r_ptz_session::test_shutdown_drops_pending_stops()
+{
+    fake_camera cam;
+    {
+        r_onvif_provider p("", nullptr);
+        _run(p, cam, _move("PT30S"));
+    }
+    // Gone at once, without waiting out the 30 s or stopping the camera.
+    RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 0);
 }

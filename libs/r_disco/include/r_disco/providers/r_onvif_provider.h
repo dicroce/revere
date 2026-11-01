@@ -8,11 +8,14 @@
 #include "r_onvif/r_onvif_session.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 namespace r_disco
 {
@@ -155,6 +158,9 @@ private:
         std::unique_ptr<r_onvif::r_onvif_cam> cam;
         std::string ptz_service;
         std::string profile_token;
+        // Counts this camera's commands, so a Stop scheduled by a move knows
+        // whether anything came after it.
+        uint64_t commands {0};
     };
     void _open_ptz_session(
         _ptz_session& session,
@@ -168,7 +174,30 @@ private:
     r_ptz_result _run_ptz(_ptz_session& session, const r_ptz_command& cmd);
     std::mutex _ptz_sessions_lock;
     std::map<std::string, std::shared_ptr<_ptz_session>> _ptz_sessions;
+
+    // A move's timeout, kept by Revere too: a Stop sent when it runs out,
+    // unless another command for the camera came first. A camera that ignores
+    // ContinuousMove's Timeout (Tapo), or a client's Stop that never arrives,
+    // then still ends the move. One thread, started with the first move.
+    struct _ptz_deadline
+    {
+        std::weak_ptr<_ptz_session> session;
+        uint64_t command {0};
+        std::string profile_token;
+        std::chrono::steady_clock::time_point at;
+    };
+    void _schedule_ptz_stop(const std::shared_ptr<_ptz_session>& session, uint64_t command, const r_ptz_command& cmd);
+    void _ptz_stopper_loop();
+    std::mutex _ptz_deadlines_lock;
+    std::condition_variable _ptz_deadlines_cv;
+    std::vector<_ptz_deadline> _ptz_deadlines;
+    std::thread _ptz_stopper;
+    bool _ptz_stopper_done {false};
 };
+
+// A ContinuousMove Timeout ("PT1S", "PT1.5S", "PT1M2S") in milliseconds; null
+// for an empty or unreadable one, or zero.
+R_API r_utils::r_nullable<int64_t> ptz_timeout_ms(const std::string& timeout);
 
 }
 
