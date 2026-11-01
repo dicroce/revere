@@ -353,3 +353,53 @@ void test_r_codec::test_decode_input_ending_at_a_page()
     }
 #endif
 }
+
+void test_r_codec::test_decode_again_after_its_input_sends_nothing()
+{
+    // A caller that drains with decode() until it stops giving output (the frame tap does) calls it once more after
+    // each frame is out. With nothing left to send, that call takes a frame the decoder holds, if any, and is
+    // otherwise hungry: it doesn't send an empty packet, which FFmpeg refuses with an error for every frame.
+    const uint16_t w = 320, h = 240;
+    r_video_encoder enc(AV_CODEC_ID_H264, 500000, w, h, AVRational{15, 1}, AV_PIX_FMT_YUV420P, 0, 15,
+                        AV_PROFILE_H264_MAIN, 41, "veryfast", "zerolatency");
+    vector<uint8_t> picture(w * h * 3 / 2, 128);
+    vector<vector<uint8_t>> packets;
+    for(int i = 0; i < 10; ++i)
+    {
+        enc.attach_buffer(picture.data(), picture.size(), i);
+        while(enc.encode() == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto pi = enc.get();
+            packets.emplace_back(pi.data, pi.data + pi.size);
+        }
+    }
+    RTF_ASSERT(packets.size() >= 5);
+
+    int send_errors = 0;
+    r_logger::set_log_callback([&](r_logger::LOG_LEVEL, const string& message) {
+        if(message.find("Failed to send packet") != string::npos)
+            ++send_errors;
+    });
+
+    r_video_decoder dec(AV_CODEC_ID_H264);
+    dec.set_extradata(enc.get_extradata());
+    int pictures = 0;
+    for(auto& p : packets)
+    {
+        dec.attach_buffer(p.data(), p.size());
+        r_codec_state st = R_CODEC_STATE_HUNGRY;
+        for(int calls = 0; calls < 5; ++calls)
+        {
+            st = dec.decode();
+            if(st != R_CODEC_STATE_HAS_OUTPUT && st != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+                break;
+            ++pictures;
+        }
+        RTF_ASSERT(st == R_CODEC_STATE_HUNGRY);
+    }
+    r_logger::clear_log_callback();
+
+    RTF_ASSERT(send_errors == 0);
+    // Every frame came out once, none twice.
+    RTF_ASSERT(pictures == (int)packets.size());
+}

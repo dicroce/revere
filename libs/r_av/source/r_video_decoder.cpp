@@ -374,6 +374,21 @@ r_codec_state r_video_decoder::decode()
     // size, and before get() did the download the surface was already free here.
     _release_hw_frame();
 
+    // Direct mode with the attached buffer already sent (a caller draining with decode() until it stops giving
+    // output): there's nothing to send. Take a frame the decoder still holds, if any. Sending an empty packet instead
+    // is refused by FFmpeg (EINVAL), which logged an error for every frame drained this way.
+    if(!_parse_input && _remaining_size == 0)
+    {
+        int recv_result = avcodec_receive_frame(_context, _frame);
+        if(recv_result >= 0)
+            return (_gaps && !_gap_take_output()) ? R_CODEC_STATE_HUNGRY : R_CODEC_STATE_HAS_OUTPUT;
+        if(recv_result == AVERROR_EOF)
+            return R_CODEC_STATE_EOF;
+        if(recv_result != AVERROR(EAGAIN))
+            R_LOG_ERROR("Failed to receive frame: %s", _ff_rc_to_msg(recv_result).c_str());
+        return R_CODEC_STATE_HUNGRY;
+    }
+
     auto packet = shared_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* pkt) { av_packet_free(&pkt); });
 
     if(_parse_input && _parser)
