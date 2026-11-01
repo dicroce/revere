@@ -412,6 +412,9 @@ void r_devices::_entry_point()
             }
             catch(...)
             {
+                // Nobody waits on these: without a log line a failed save is silent.
+                if(cmd.first.type == INSERT_OR_UPDATE_DEVICES)
+                    _log_failed_write(current_exception());
                 try
                 {
                     cmd.second.set_exception(current_exception());
@@ -430,6 +433,36 @@ void r_devices::_entry_point()
             create_db();
         _update_caches();
     }
+}
+
+void r_devices::_log_failed_write(exception_ptr e)
+{
+    string what = "unknown error";
+    try
+    {
+        rethrow_exception(e);
+    }
+    catch(const std::exception& ex)
+    {
+        what = ex.what();
+    }
+    catch(...)
+    {
+    }
+
+    // At most one line a minute, with a count of the failures in between, so a
+    // failure that repeats on every discovery pass doesn't fill the log.
+    auto now = chrono::steady_clock::now();
+    if(_write_failures_logged && now - _last_write_failure_log < chrono::minutes(1))
+    {
+        ++_write_failures_unlogged;
+        return;
+    }
+    R_LOG_ERROR("Saving discovered cameras failed: %s%s", what.c_str(),
+                _write_failures_unlogged ? (" (and " + to_string(_write_failures_unlogged) + " more since the last report)").c_str() : "");
+    _write_failures_logged = true;
+    _write_failures_unlogged = 0;
+    _last_write_failure_log = now;
 }
 
 void r_devices::_create_db(const std::string& top_dir) const
@@ -469,7 +502,10 @@ void r_devices::_create_db(const std::string& top_dir) const
         ");"
     );
 
+    auto found_version = _get_db_version(conn);
     _upgrade_db(conn);
+    // Which file, and its schema: a gateway can have more than one data dir.
+    R_LOG_INFO("Cameras database: %s (schema version %d, was %d)", (db_dir + PATH_SLASH + "cameras.db").c_str(), _get_db_version(conn), found_version);
 }
 
 r_sqlite_conn r_devices::_open_db(const std::string& top_dir, bool rw) const

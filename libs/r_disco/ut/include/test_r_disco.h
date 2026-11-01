@@ -13,6 +13,8 @@ public:
       TEST(test_r_disco::test_agent_holds_when_old_alive_mac_differs_or_unknown);
       TEST(test_r_disco::test_agent_confirm_and_dismiss);
       TEST(test_r_disco::test_agent_backfills_mac_at_stored_address);
+      TEST(test_r_disco::test_startup_logs_the_database);
+      TEST(test_r_disco::test_failed_writes_are_logged);
     RTF_FIXTURE_END();
 
     virtual ~test_r_disco() throw() {}
@@ -28,4 +30,6 @@ public:
     void test_agent_holds_when_old_alive_mac_differs_or_unknown();
     void test_agent_confirm_and_dismiss();
     void test_agent_backfills_mac_at_stored_address();
+    void test_startup_logs_the_database();
+    void test_failed_writes_are_logged();
 };
