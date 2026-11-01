@@ -8,6 +8,7 @@ public:
       TEST(test_r_db::test_db_ctor);
       TEST(test_r_db::test_db_insert);
       TEST(test_r_db::test_db_paging);
+      TEST(test_r_db::test_db_errors_name_the_query_not_its_values);
 #if 0
       TEST(test_r_db::test_db_embedded);
       TEST(test_r_db::test_db_embedded_multiple_tables);
@@ -38,6 +39,7 @@ public:
     void test_db_ctor();
     void test_db_insert();
     void test_db_paging();
+    void test_db_errors_name_the_query_not_its_values();
 #if 0
     void test_db_embedded();
     void test_db_embedded_multiple_tables();
