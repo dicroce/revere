@@ -411,3 +411,54 @@ void test_r_detection_planner::test_cut_keeps_what_was_there()
     RTF_ASSERT_EQUAL(f[1].first_found.size(), (size_t)1);
     RTF_ASSERT(f[1].first_found[0].class_name == "person");
 }
+
+void test_r_detection_planner::test_cut_waits_for_looks()
+{
+    // A cut waits for the session's looks: one taken and not yet done, and a
+    // stored look still planned. Each counts in the session it was for.
+    {
+        // Something found, so live looks come every FOLLOW_UP_FOUND_MS and are
+        // still going at the cut. One is taken just before it and done after.
+        P p;
+        vector<r_detection_session> f;
+        auto person = [](const r_look& l) {
+            return l.kind == look_pre_roll ? vector<r_detection>{} : vector<r_detection>{_det("person", 100, 100, 200, 300)};
+        };
+        p.motion("a", "", true, 0);
+        _run(p, 0, 280000, person, nullptr, &f);
+        r_utils::r_nullable<r_look> taken;
+        for (int64_t t = 280100; t < 300000 && taken.is_null(); t += 100)
+        {
+            auto l = p.next_look(t);
+            if (l.is_null())
+                continue;
+            if (l.value().kind == look_follow_up)
+                taken = l;
+            else
+                p.look_done(l.value(), true, l.value().ts, person(l.value()), t);
+        }
+        RTF_ASSERT(!taken.is_null());
+        RTF_ASSERT(p.finished(300500).empty());
+        p.look_done(taken.value(), true, taken.value().ts, person(taken.value()), 300600);
+        auto cut = p.finished(300700);
+        RTF_ASSERT_EQUAL(cut.size(), (size_t)1);
+        RTF_ASSERT(cut[0].cut);
+        RTF_ASSERT_EQUAL(cut[0].end_ms, (int64_t)300700);
+    }
+    {
+        // The motion stops and starts again just before the cut: the end look is
+        // stored and due after it. The cut comes once it's done.
+        P p;
+        vector<r_detection_session> f;
+        p.motion("a", "", true, 0);
+        _run(p, 0, 299000, _none, nullptr, &f);
+        p.motion("a", "", false, 299000);
+        p.motion("a", "", true, 299500);
+        auto early = p.finished(300000);
+        RTF_ASSERT(early.empty());
+        _run(p, 300000, 310000, _none, nullptr, &f);
+        RTF_ASSERT_EQUAL(f.size(), (size_t)1);
+        RTF_ASSERT(f[0].cut);
+        RTF_ASSERT(f[0].end_ms > (int64_t)P::MAX_SESSION_MS);
+    }
+}
