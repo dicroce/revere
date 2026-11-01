@@ -52,6 +52,25 @@ void test_r_db::test_db_ctor()
     RTF_ASSERT(r_fs::file_exists("test.db"));
 }
 
+void test_r_db::test_db_failed_step_says_why()
+{
+    // A statement that fails when it runs (not when it's prepared) says why.
+    r_sqlite_conn conn("test.db", true);
+    conn.exec("CREATE TABLE things(id INTEGER PRIMARY KEY, name TEXT);");
+    conn.exec("INSERT INTO things(id, name) VALUES(1, 'a');");
+    string message;
+    try
+    {
+        conn.exec("INSERT INTO things(id, name) VALUES(1, 'b');");
+    }
+    catch(const exception& e)
+    {
+        message = e.what();
+    }
+    RTF_ASSERT(message.find("to db failed") != string::npos);
+    RTF_ASSERT(message.find("UNIQUE constraint failed: things.id") != string::npos);
+}
+
 void test_r_db::test_db_insert()
 {
     r_sqlite_conn conn("test.db", true);

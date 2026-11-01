@@ -141,7 +141,7 @@ vector<map<string, r_nullable<string>>> r_sqlite_conn::exec(const string& query)
             }
             else
             {
-                R_STHROW(r_internal_exception, ("Query (%s) to db failed. Cause:", query.c_str(), sqlite3_errmsg(_db)));
+                R_STHROW(r_internal_exception, ("Query (%s) to db failed. Cause: %s", query.c_str(), sqlite3_errmsg(_db)));
             }
         }
 
