@@ -53,6 +53,8 @@ add_executable(
     source/test_r_restream_opus.cpp
     include/test_r_system_plugin_action.h
     source/test_r_system_plugin_action.cpp
+    include/test_r_system_plugin_frames.h
+    source/test_r_system_plugin_frames.cpp
 )
 
 # Two system plugins for test_r_system_plugin_action: one with system_plugin_action, one without.
@@ -65,9 +67,17 @@ foreach(variant action no_action)
     add_dependencies(r_vss_ut test_${variant}_system_plugin)
 endforeach()
 target_compile_definitions(test_no_action_system_plugin PRIVATE NO_ACTION_EXPORT)
+
+# A system plugin for test_r_system_plugin_frames: it reads frame feeds through the host's functions.
+add_library(test_frames_system_plugin SHARED test_plugin/test_frames_system_plugin.cpp)
+target_link_libraries(test_frames_system_plugin PRIVATE r_utils)
+target_include_directories(test_frames_system_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+set_target_properties(test_frames_system_plugin PROPERTIES PREFIX "")
+add_dependencies(r_vss_ut test_frames_system_plugin)
 target_compile_definitions(r_vss_ut PRIVATE
     TEST_ACTION_PLUGIN="$<TARGET_FILE:test_action_system_plugin>"
     TEST_NO_ACTION_PLUGIN="$<TARGET_FILE:test_no_action_system_plugin>"
+    TEST_FRAMES_PLUGIN="$<TARGET_FILE:test_frames_system_plugin>"
 )
 
 # What r_vss/r_build_info.h should report, from the root CMakeLists.

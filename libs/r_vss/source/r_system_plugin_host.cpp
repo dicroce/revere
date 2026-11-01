@@ -1,5 +1,9 @@
 
 #include "r_vss/r_system_plugin_host.h"
+#include "r_vss/r_frame_feeds.h"
+#include <cstddef>
+#include <mutex>
+#include <set>
 #include "r_vss/r_motion_event_plugin_host.h"
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_file.h"
@@ -28,6 +32,131 @@ typedef void (*system_plugin_cameras_changed_func)(r_system_plugin_handle);
 void r_system_plugin_host::_api_result_bridge(const char* name, const char* json, void* user_data)
 {
     reinterpret_cast<r_system_plugin_host*>(user_data)->_on_api_result(name, json);
+}
+
+// One live-frame feed a plugin holds: its r_frame_feeds id, and the frame its
+// last next_frame returned, whose data stays valid until the next call.
+struct r_frame_subscription
+{
+    uint64_t id {0};
+    std::string camera_id;
+    r_feed_frame current;
+};
+
+// A plugin's live-frame functions (r_system_plugin_host_api), and its feeds.
+struct r_system_plugin_host::frame_api
+{
+    // A feed's bound is raised to this, so a key frame always fits; and a plugin has at
+    // most MAX_FEEDS feeds, each holding up to its bound.
+    static constexpr size_t MIN_FEED_BYTES = 1024 * 1024;
+    static constexpr size_t MAX_FEEDS = 16;
+
+    r_frame_feeds* feeds {nullptr};
+    std::function<bool(const std::string&)> camera_recording;
+    std::string guid;
+    r_system_plugin_host_api table {};
+    std::mutex lock;
+    std::set<r_frame_subscription*> subs;
+
+    static r_frame_subscription_handle subscribe(void* host, const char* camera_id, const char* stream, uint32_t media, size_t max_queued_bytes)
+    {
+        auto api = static_cast<frame_api*>(host);
+        if(!api || !camera_id || !api->feeds)
+            return nullptr;
+        std::string camera = camera_id;
+        std::string s = stream ? stream : "";
+        if(api->camera_recording && !api->camera_recording(camera))
+            return nullptr;
+        {
+            std::lock_guard<std::mutex> g(api->lock);
+            if(api->subs.size() >= MAX_FEEDS)
+            {
+                R_LOG_WARNING("System plugin %s: no frame feed for camera %s: it has %zu already", api->guid.c_str(), camera.c_str(), api->subs.size());
+                return nullptr;
+            }
+        }
+        if(max_queued_bytes != 0 && max_queued_bytes < MIN_FEED_BYTES)
+            max_queued_bytes = MIN_FEED_BYTES;
+        auto id = api->feeds->subscribe(camera, s, media, max_queued_bytes);
+        if(id == 0)
+            return nullptr;
+        auto sub = new r_frame_subscription;
+        sub->id = id;
+        sub->camera_id = camera;
+        {
+            std::lock_guard<std::mutex> g(api->lock);
+            api->subs.insert(sub);
+        }
+        R_LOG_INFO("System plugin %s: frame feed for camera %s (%s%s%s)", api->guid.c_str(), camera.c_str(),
+                   s.empty() ? "main" : s.c_str(), (media & R_FRAME_VIDEO) ? ", video" : "", (media & R_FRAME_AUDIO) ? ", audio" : "");
+        return sub;
+    }
+
+    static int next(void* host, r_frame_subscription_handle sub, int timeout_ms, r_frame* frame)
+    {
+        auto api = static_cast<frame_api*>(host);
+        if(!api || !sub || !frame || !api->feeds)
+            return -1;
+        auto r = api->feeds->next(sub->id, timeout_ms, sub->current);
+        if(r != 1)
+            return r;
+        // Only the fields that fit in the plugin's r_frame: an older plugin's is smaller.
+        auto fits = [frame](size_t offset, size_t size) { return frame->struct_size >= offset + size; };
+        auto& c = sub->current;
+        if(fits(offsetof(r_frame, flags), sizeof(frame->flags))) frame->flags = c.flags;
+        if(fits(offsetof(r_frame, ts), sizeof(frame->ts))) frame->ts = c.ts;
+        if(fits(offsetof(r_frame, data), sizeof(frame->data))) frame->data = c.data.data();
+        if(fits(offsetof(r_frame, size), sizeof(frame->size))) frame->size = c.data.size();
+        if(fits(offsetof(r_frame, codec_name), sizeof(frame->codec_name))) frame->codec_name = c.codec_name.c_str();
+        if(fits(offsetof(r_frame, codec_params), sizeof(frame->codec_params))) frame->codec_params = c.codec_params.c_str();
+        if(fits(offsetof(r_frame, stream), sizeof(frame->stream))) frame->stream = c.stream.c_str();
+        return 1;
+    }
+
+    static void unsubscribe(void* host, r_frame_subscription_handle sub)
+    {
+        auto api = static_cast<frame_api*>(host);
+        if(!api || !sub)
+            return;
+        {
+            std::lock_guard<std::mutex> g(api->lock);
+            if(api->subs.erase(sub) == 0)
+                return;
+        }
+        if(api->feeds)
+            api->feeds->unsubscribe(sub->id);
+        R_LOG_INFO("System plugin %s: frame feed for camera %s ended", api->guid.c_str(), sub->camera_id.c_str());
+        delete sub;
+    }
+};
+
+void r_system_plugin_host::set_frame_source(r_frame_feeds* feeds, std::function<bool(const std::string&)> camera_recording)
+{
+    _feeds = feeds;
+    for(auto& p : _plugins)
+    {
+        if(!p.plugin_handle || !p.set_host_api_func || p.frames)
+            continue;
+        auto api = std::make_shared<frame_api>();
+        api->feeds = feeds;
+        api->camera_recording = camera_recording;
+        api->guid = p.guid;
+        api->table.struct_size = sizeof(r_system_plugin_host_api);
+        api->table.version = R_SYSTEM_PLUGIN_HOST_API_VERSION;
+        api->table.host = api.get();
+        api->table.subscribe_frames = &frame_api::subscribe;
+        api->table.next_frame = &frame_api::next;
+        api->table.unsubscribe = &frame_api::unsubscribe;
+        p.frames = api;
+        try
+        {
+            p.set_host_api_func(p.plugin_handle, &p.frames->table);
+        }
+        catch (const std::exception& e)
+        {
+            R_LOG_ERROR("Error giving system plugin %s its host functions: %s", p.name.c_str(), e.what());
+        }
+    }
 }
 
 r_system_plugin_dirs r_vss::system_plugin_dirs(const std::string& exe_dir,
@@ -207,6 +336,13 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         action_func = reinterpret_cast<void (*)(r_system_plugin_handle, const char*)>(sym);
                                 } catch (...) {}
 
+                                void (*set_host_api_func)(r_system_plugin_handle, const r_system_plugin_host_api*) = nullptr;
+                                try {
+                                    void* sym = lib->resolve_symbol("system_plugin_set_host_api");
+                                    if (sym)
+                                        set_host_api_func = reinterpret_cast<void (*)(r_system_plugin_handle, const r_system_plugin_host_api*)>(sym);
+                                } catch (...) {}
+
                                 // Optional: the plugin's own version
                                 std::string plugin_version;
                                 try {
@@ -261,6 +397,7 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                                         plugin_guid,
                                         plugin_version
                                     });
+                                    _plugins.back().set_host_api_func = set_host_api_func;
 
                                     if(set_api_result_cb_func && _api_result_fn)
                                         set_api_result_cb_func(plugin_handle, _api_result_bridge, this);
@@ -313,6 +450,18 @@ r_system_plugin_host::~r_system_plugin_host()
                 R_LOG_ERROR("Error destroying system plugin %s: %s", p.name.c_str(), e.what());
             }
         }
+        // Feeds a plugin never unsubscribed: closed when it stopped, freed now.
+        if(p.frames)
+        {
+            std::lock_guard<std::mutex> g(p.frames->lock);
+            for(auto sub : p.frames->subs)
+            {
+                if(_feeds)
+                    _feeds->unsubscribe(sub->id);
+                delete sub;
+            }
+            p.frames->subs.clear();
+        }
     }
     _plugins.clear();
 }
@@ -353,6 +502,10 @@ void r_system_plugin_host::stop_all()
             }
         }
     }
+    // A plugin stopping unsubscribes its feeds; any left are closed, so a next_frame
+    // on them returns -1 at once. They're freed when the plugin is destroyed.
+    if(_feeds)
+        _feeds->close_all();
 }
 
 std::vector<std::string> r_system_plugin_host::get_loaded_plugins() const

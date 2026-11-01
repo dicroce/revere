@@ -116,6 +116,11 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
 
     _motionEngine.start();
     _system_plugin_host.connect_detection_bus(_meph);
+    // Plugins may read cameras' frames (r_system_plugin.h): from the cameras recording here.
+    _system_plugin_host.set_frame_source(&_frame_feeds, [this](const string& camera_id) {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        return _streams.find(camera_id) != _streams.end();
+    });
     _system_plugin_host.start_all();
 }
 
@@ -1236,12 +1241,14 @@ void r_stream_keeper::_entry_point()
                                               it->first.c_str(), was.c_str(), transport.protocols().c_str());
                             // The next pass starts it again: a reconnect.
                             _reconnects.record(it->first);
+                            _frame_feeds.camera_restarted(it->first);
                             doomed.push_back(it->second);
                             it = _streams.erase(it);
                         }
                         else if(_lag_reconnect(it->first, *it->second))
                         {
                             _reconnects.record(it->first);
+                            _frame_feeds.camera_restarted(it->first);
                             doomed.push_back(it->second);
                             it = _streams.erase(it);
                         }
@@ -1349,6 +1356,8 @@ void r_stream_keeper::_entry_point()
                             _streams.erase(it);
                         }
                         _suspended_cameras.insert(cmd.first.id);
+                        // Not recording here now: plugins' feeds of it close.
+                        _frame_feeds.close_camera(cmd.first.id);
                     }
 
                     if(rc)
@@ -1526,6 +1535,7 @@ vector<shared_ptr<r_recording_context>> r_stream_keeper::_remove_recording_conte
             // its file handles) once _streams_mutex is released.
             removed.push_back(_streams[camera.id]);
             _streams.erase(camera.id);
+            _frame_feeds.close_camera(camera.id);
         }
     }
     return removed;

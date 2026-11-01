@@ -199,6 +199,16 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 pts
             );
 
+            // Plugins' frame feeds, as stored: one atomic load while none is open.
+            this->_sk->post_audio_to_feeds(
+                this->_camera.id,
+                mi.data(),
+                mi.size(),
+                ts,
+                this->_maybe_audio_storage_write_context.value().codec_name,
+                this->_maybe_audio_storage_write_context.value().codec_parameters
+            );
+
             this->_sk->iterate_live_restreaming_states(this->_camera.id, [&](live_restreaming_state& lrs) {
                 // Only queue audio this session's pipeline is reading: a client
                 // that didn't set up the audio track (or whose audio branch
@@ -501,6 +511,17 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             // PTZ view: a tapped camera's frames are decoded for its newest picture
             // (r_frame_taps); for any other camera this is one atomic load.
             this->_sk->post_frame_to_frame_taps(
+                this->_camera.id,
+                mi.data(),
+                mi.size(),
+                key,
+                stored_ts,
+                this->_maybe_video_storage_write_context.value().codec_name,
+                this->_maybe_video_storage_write_context.value().codec_parameters
+            );
+
+            // Plugins' frame feeds: one atomic load while none is open.
+            this->_sk->post_video_to_feeds(
                 this->_camera.id,
                 mi.data(),
                 mi.size(),

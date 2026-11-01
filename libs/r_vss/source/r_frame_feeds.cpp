@@ -87,6 +87,20 @@ void r_frame_feeds::close_all()
     }
 }
 
+void r_frame_feeds::camera_restarted(const string& camera_id)
+{
+    lock_guard<mutex> g(_lock);
+    for(auto& p : _feeds)
+    {
+        auto& f = *p.second;
+        if(f.closed || f.camera_id != camera_id)
+            continue;
+        f.need_key = true;
+        f.video_gap = f.video_seen;
+        f.audio_gap = f.audio_seen;
+    }
+}
+
 void r_frame_feeds::post_video(const string& camera_id, const string& stream, const uint8_t* data, size_t size, bool key, int64_t ts, const string& codec_name, const string& codec_params)
 {
     if(_count.load(memory_order_relaxed) == 0)

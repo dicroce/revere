@@ -289,3 +289,30 @@ void test_r_frame_feeds::test_two_feeds_get_their_own_copies()
     RTF_ASSERT_EQUAL(g2.size(), (size_t)1);
     RTF_ASSERT(g1[0].data == g2[0].data);
 }
+
+void test_r_frame_feeds::test_a_restarted_stream_is_a_gap()
+{
+    // The camera's stream reconnected: its feeds carry on, video from the next key frame,
+    // and the first frame of each media after it marked GAP. Another camera's isn't.
+    F f;
+    auto feed = f.subscribe("a", "", F::VIDEO | F::AUDIO, 0);
+    auto other = f.subscribe("b", "", F::VIDEO, 0);
+    video(f, "a", 10, true, 1);
+    audio(f, "a", 5, 2);
+    video(f, "b", 10, true, 1);
+    drain(f, feed);
+    drain(f, other);
+
+    f.camera_restarted("a");
+    video(f, "a", 10, false, 3);
+    audio(f, "a", 5, 4);
+    video(f, "a", 10, true, 5);
+    video(f, "b", 10, false, 2);
+    auto got = drain(f, feed);
+    RTF_ASSERT_EQUAL(got.size(), (size_t)2);
+    RTF_ASSERT_EQUAL(got[0].flags, (uint32_t)(F::AUDIO | F::GAP));
+    RTF_ASSERT_EQUAL(got[1].flags, (uint32_t)(F::VIDEO | F::KEY | F::GAP));
+    auto b = drain(f, other);
+    RTF_ASSERT_EQUAL(b.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(b[0].flags, (uint32_t)F::VIDEO);
+}
