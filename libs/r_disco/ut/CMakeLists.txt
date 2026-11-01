@@ -3,6 +3,8 @@ add_executable(
     r_disco_ut
     include/test_r_disco.h
     source/test_r_disco.cpp
+    include/test_r_substream.h
+    source/test_r_substream.cpp
 )
 
 target_include_directories(
