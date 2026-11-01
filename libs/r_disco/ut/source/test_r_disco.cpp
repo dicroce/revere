@@ -6,6 +6,8 @@
 #include <chrono>
 #include <map>
 #include "r_utils/r_file.h"
+#include "r_db/r_sqlite_conn.h"
+#include <set>
 
 using namespace std;
 using namespace r_utils;
@@ -21,6 +23,16 @@ void test_r_disco::setup()
 
 void test_r_disco::teardown()
 {
+    // The cameras.db tests leave a database behind.
+    auto db_dir = string("top_dir") + PATH_SLASH + "db";
+    for(auto f : {"cameras.db", "cameras.db-wal", "cameras.db-shm", "cameras.db-journal"})
+    {
+        auto path = db_dir + PATH_SLASH + f;
+        if(r_fs::file_exists(path))
+            r_fs::remove_file(path);
+    }
+    if(r_fs::file_exists(db_dir))
+        r_fs::rmdir(db_dir);
     r_fs::rmdir("top_dir");
 }
 
@@ -317,4 +329,139 @@ void test_r_disco::test_agent_backfills_mac_at_stored_address()
     // Already known: not looked up or saved again.
     agent.apply_discovered_changes({{_discovered("cam1", "10.0.0.5"), "h2"}});
     RTF_ASSERT(host.saved.size() == 1);
+}
+
+static string cameras_db_path()
+{
+    return string("top_dir") + PATH_SLASH + "db" + PATH_SLASH + "cameras.db";
+}
+
+// cameras.db as an older build left it: the original table, the columns of
+// versions 2 to 7, then the given extra columns, at the given user_version.
+static void make_cameras_db(int version, const vector<string>& extra_columns, const string& drop = string())
+{
+    r_fs::mkdir(string("top_dir") + PATH_SLASH + "db");
+    r_db::r_sqlite_conn conn(cameras_db_path(), true);
+    conn.exec(
+        "CREATE TABLE cameras ("
+            "id TEXT PRIMARY KEY NOT NULL UNIQUE, camera_name TEXT, friendly_name TEXT, ipv4 TEXT, "
+            "xaddrs TEXT, address TEXT, rtsp_url TEXT, rtsp_username TEXT, rtsp_password TEXT, "
+            "video_codec TEXT, video_codec_parameters TEXT, video_timebase INTEGER, "
+            "audio_codec TEXT, audio_codec_parameters TEXT, audio_timebase INTEGER, state TEXT, "
+            "record_file_path TEXT, n_record_file_blocks INTEGER, record_file_block_size INTEGER, "
+            "do_motion_detection INTEGER, motion_detection_file_path TEXT, "
+            "last_update_time INTEGER, stream_config_hash TEXT);"
+    );
+    vector<string> columns = {
+        "do_motion_pruning INTEGER DEFAULT 0", "min_continuous_recording_hours INTEGER DEFAULT 24",
+        "onvif_profile_token TEXT", "onvif_port INTEGER", "onvif_protocol TEXT", "motion_tier TEXT",
+        "motion_tier_verified INTEGER", "rtsp_transport TEXT"
+    };
+    columns.insert(columns.end(), extra_columns.begin(), extra_columns.end());
+    for(auto& c : columns)
+        if(drop.empty() || c.rfind(drop + " ", 0) != 0)
+            conn.exec("ALTER TABLE cameras ADD COLUMN " + c + ";");
+    conn.exec("INSERT INTO cameras (id, camera_name, ipv4, state, rtsp_url) VALUES ('cam-1', 'Cats', '10.0.0.5', 'assigned', 'rtsp://10.0.0.5/stream1');");
+    conn.exec("PRAGMA user_version=" + to_string(version) + ";");
+}
+
+static int db_version()
+{
+    r_db::r_sqlite_conn conn(cameras_db_path(), false);
+    return stoi(conn.exec("PRAGMA user_version;").front().begin()->second.value());
+}
+
+static set<string> db_columns()
+{
+    r_db::r_sqlite_conn conn(cameras_db_path(), false);
+    set<string> names;
+    for(auto& row : conn.exec("PRAGMA table_info(cameras);"))
+        names.insert(row.at("name").value());
+    return names;
+}
+
+// Starts r_devices on top_dir, then saves the camera's ONVIF device information,
+// which names the manufacturer, model and firmware_version columns.
+static r_nullable<r_camera> start_and_save_device_info()
+{
+    r_devices devices("top_dir");
+    devices.start();
+    r_stream_config sc;
+    sc.id = "cam-1";
+    sc.ipv4 = "10.0.0.5";
+    sc.rtsp_url = "rtsp://10.0.0.5/stream1";
+    sc.manufacturer = "TP-Link";
+    sc.model = "C500";
+    sc.firmware_version = "1.3.7";
+    devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
+    auto camera = devices.get_camera_by_id("cam-1");
+    devices.stop();
+    return camera;
+}
+
+void test_r_disco::test_db_upgrade_from_mac_at_version_8()
+{
+    // One build added mac as version 8; another added the device information as
+    // version 8 and mac as 9. A database from the first is at 8 with mac and
+    // without the device information. It used to fail on "duplicate column name:
+    // mac" at every start, and every write naming the device information failed.
+    make_cameras_db(8, {"mac TEXT"});
+    {
+        r_db::r_sqlite_conn conn(cameras_db_path(), true);
+        conn.exec("UPDATE cameras SET mac='aa:bb:cc:dd:ee:ff' WHERE id='cam-1';");
+    }
+
+    auto camera = start_and_save_device_info();
+    RTF_ASSERT(!camera.is_null());
+    RTF_ASSERT(camera.value().manufacturer.value() == "TP-Link");
+    RTF_ASSERT(camera.value().firmware_version.value() == "1.3.7");
+    RTF_ASSERT(camera.value().mac.value() == "aa:bb:cc:dd:ee:ff");
+
+    RTF_ASSERT_EQUAL(db_version(), 9);
+    auto columns = db_columns();
+    for(auto c : {"manufacturer", "model", "firmware_version", "mac"})
+        RTF_ASSERT(columns.count(c) == 1);
+}
+
+void test_r_disco::test_db_upgrade_from_device_info_at_version_8()
+{
+    // The other order: the device information at 8, without mac.
+    make_cameras_db(8, {"manufacturer TEXT", "model TEXT", "firmware_version TEXT"});
+    auto camera = start_and_save_device_info();
+    RTF_ASSERT(camera.value().model.value() == "C500");
+    RTF_ASSERT_EQUAL(db_version(), 9);
+    RTF_ASSERT(db_columns().count("mac") == 1);
+}
+
+void test_r_disco::test_db_upgrade_repairs_a_missing_column()
+{
+    // At the latest version but without a column: it's added anyway.
+    make_cameras_db(9, {"manufacturer TEXT", "model TEXT", "firmware_version TEXT", "mac TEXT"}, "model");
+    RTF_ASSERT(db_columns().count("model") == 0);
+    auto camera = start_and_save_device_info();
+    RTF_ASSERT(camera.value().model.value() == "C500");
+    RTF_ASSERT(db_columns().count("model") == 1);
+    RTF_ASSERT_EQUAL(db_version(), 9);
+}
+
+void test_r_disco::test_db_upgrade_keeps_a_newer_version()
+{
+    // A database a newer build has used keeps its version.
+    make_cameras_db(12, {"manufacturer TEXT", "model TEXT", "firmware_version TEXT", "mac TEXT"});
+    auto camera = start_and_save_device_info();
+    RTF_ASSERT(!camera.is_null());
+    RTF_ASSERT_EQUAL(db_version(), 12);
+}
+
+void test_r_disco::test_db_upgrade_twice()
+{
+    // A new database, then a second start on it: nothing to add, nothing fails.
+    auto first = start_and_save_device_info();
+    RTF_ASSERT(first.value().manufacturer.value() == "TP-Link");
+    RTF_ASSERT_EQUAL(db_version(), 9);
+    auto columns = db_columns();
+    auto second = start_and_save_device_info();
+    RTF_ASSERT(second.value().manufacturer.value() == "TP-Link");
+    RTF_ASSERT(db_columns() == columns);
+    RTF_ASSERT_EQUAL(db_version(), 9);
 }

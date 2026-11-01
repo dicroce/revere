@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstdint>
 #include <vector>
+#include <set>
 #include <thread>
 #include <string>
 #include <map>
@@ -102,6 +103,7 @@ private:
     void _create_db(const std::string& top_dir) const;
     r_db::r_sqlite_conn _open_db(const std::string& top_dir, bool rw = true) const;
     void _upgrade_db(const r_db::r_sqlite_conn& conn) const;
+    std::set<std::string> _camera_columns(const r_db::r_sqlite_conn& conn) const;
 
     int _get_db_version(const r_db::r_sqlite_conn& conn) const;
     void _set_db_version(const r_db::r_sqlite_conn& conn, int version) const;

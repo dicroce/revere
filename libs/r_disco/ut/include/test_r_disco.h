@@ -13,6 +13,11 @@ public:
       TEST(test_r_disco::test_agent_holds_when_old_alive_mac_differs_or_unknown);
       TEST(test_r_disco::test_agent_confirm_and_dismiss);
       TEST(test_r_disco::test_agent_backfills_mac_at_stored_address);
+      TEST(test_r_disco::test_db_upgrade_from_mac_at_version_8);
+      TEST(test_r_disco::test_db_upgrade_from_device_info_at_version_8);
+      TEST(test_r_disco::test_db_upgrade_repairs_a_missing_column);
+      TEST(test_r_disco::test_db_upgrade_keeps_a_newer_version);
+      TEST(test_r_disco::test_db_upgrade_twice);
     RTF_FIXTURE_END();
 
     virtual ~test_r_disco() throw() {}
@@ -28,4 +33,9 @@ public:
     void test_agent_holds_when_old_alive_mac_differs_or_unknown();
     void test_agent_confirm_and_dismiss();
     void test_agent_backfills_mac_at_stored_address();
+    void test_db_upgrade_from_mac_at_version_8();
+    void test_db_upgrade_from_device_info_at_version_8();
+    void test_db_upgrade_repairs_a_missing_column();
+    void test_db_upgrade_keeps_a_newer_version();
+    void test_db_upgrade_twice();
 };
