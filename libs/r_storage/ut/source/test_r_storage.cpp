@@ -10,6 +10,7 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_algorithms.h"
 #include "r_utils/r_file.h"
+#include "r_utils/r_time_utils.h"
 #include "r_utils/r_blob_tree.h"
 //#include "r_pipeline/r_gst_source.h"
 //#include "r_pipeline/r_arg.h"
@@ -1843,3 +1844,34 @@ void test_r_storage::test_r_ring_basic()
 }
 #endif
 
+void test_r_storage::test_r_ring_empty_and_backwards_ranges()
+{
+    // A range that starts and ends at the same moment is empty, not an error, for
+    // both query and query_raw. One that ends before it starts throws, and says
+    // which times it was given.
+    r_ring::allocate("ring_buffer_ranges", 1, 60);
+    {
+        r_ring r("ring_buffer_ranges", 1);
+        auto now = system_clock::now();
+
+        int calls = 0;
+        r.query(now, now, [&calls](const uint8_t*){ ++calls; });
+        RTF_ASSERT_EQUAL(calls, 0);
+        RTF_ASSERT(r.query_raw(now, now).empty());
+
+        auto earlier = now - seconds(5);
+        RTF_ASSERT_THROWS(r.query(now, earlier, [](const uint8_t*){}), r_exception);
+        string what;
+        try
+        {
+            r.query_raw(now, earlier);
+        }
+        catch(const r_exception& e)
+        {
+            what = e.what();
+        }
+        RTF_ASSERT(what.find("invalid query: ") != string::npos);
+        RTF_ASSERT(what.find(r_time_utils::tp_to_iso_8601(earlier, false)) != string::npos);
+    }
+    r_fs::remove_file("ring_buffer_ranges");
+}

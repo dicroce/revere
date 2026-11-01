@@ -43,7 +43,10 @@ public:
         auto now = std::chrono::system_clock::now();
         std::time_t now_et = std::chrono::system_clock::to_time_t(now);
 
-        if(qe <= qs)
+        // An empty range has nothing in it; one that ends before it starts is a mistake.
+        if(qe == qs)
+            return;
+        if(qe < qs)
             R_THROW(("invalid query: " + r_utils::r_time_utils::tp_to_iso_8601(qs, false) + " to " + r_utils::r_time_utils::tp_to_iso_8601(qe, false)));
 
         std::time_t qs_et = std::chrono::system_clock::to_time_t(qs);
@@ -80,8 +83,11 @@ public:
         auto now = std::chrono::system_clock::now();
         std::time_t now_et = std::chrono::system_clock::to_time_t(now);
 
-        if(qe <= qs)
-            R_THROW(("invalid query"));
+        // An empty range has nothing in it; one that ends before it starts is a mistake.
+        if(qe == qs)
+            return {};
+        if(qe < qs)
+            R_THROW(("invalid query: " + r_utils::r_time_utils::tp_to_iso_8601(qs, false) + " to " + r_utils::r_time_utils::tp_to_iso_8601(qe, false)));
 
         std::time_t qs_et = std::chrono::system_clock::to_time_t(qs);
         std::time_t oldest_et = now_et - n_elements;
