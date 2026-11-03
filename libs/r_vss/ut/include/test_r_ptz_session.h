@@ -17,7 +17,12 @@ public:
       TEST(test_r_ptz_session::test_list_presets_reports_axes);
       TEST(test_r_ptz_session::test_axes_unknown_are_null);
       TEST(test_r_ptz_session::test_only_the_axes_in_use);
-      TEST(test_r_ptz_session::test_stop_names_no_axis);
+      TEST(test_r_ptz_session::test_stop_names_pan_tilt);
+      TEST(test_r_ptz_session::test_timeout_read);
+      TEST(test_r_ptz_session::test_move_stopped_at_its_timeout);
+      TEST(test_r_ptz_session::test_later_command_cancels_the_stop);
+      TEST(test_r_ptz_session::test_no_timeout_no_stop);
+      TEST(test_r_ptz_session::test_shutdown_drops_pending_stops);
     RTF_FIXTURE_END();
 
     virtual ~test_r_ptz_session() throw() {}
@@ -37,5 +42,10 @@ public:
     void test_list_presets_reports_axes();
     void test_axes_unknown_are_null();
     void test_only_the_axes_in_use();
-    void test_stop_names_no_axis();
+    void test_stop_names_pan_tilt();
+    void test_timeout_read();
+    void test_move_stopped_at_its_timeout();
+    void test_later_command_cancels_the_stop();
+    void test_no_timeout_no_stop();
+    void test_shutdown_drops_pending_stops();
 };

@@ -2521,14 +2521,13 @@ void r_onvif::r_onvif_cam::ptz_stop(const string& ptz_service, const onvif_profi
         [&](pugi::xml_node& body) {
             auto req = body.append_child("tptz:Stop");
             req.append_child("tptz:ProfileToken").text().set(profile_token.c_str());
-            // Stopping everything names no axis: a Stop with neither flag stops
-            // all movement (ONVIF PTZ), and a camera without zoom never sees a
-            // Zoom flag it may fault on. Only stopping one axis names them.
+            // PanTilt is always named: some cameras (Tapo) read a Stop without
+            // it as "don't stop pan/tilt" and keep moving. Stopping everything
+            // leaves Zoom out (ONVIF: absent stops it too), so a camera without
+            // zoom never sees a Zoom flag it may fault on.
+            req.append_child("tptz:PanTilt").text().set(pan_tilt ? "true" : "false");
             if(!(pan_tilt && zoom))
-            {
-                req.append_child("tptz:PanTilt").text().set(pan_tilt ? "true" : "false");
                 req.append_child("tptz:Zoom").text().set(zoom ? "true" : "false");
-            }
         },
         _username, _password
     );
