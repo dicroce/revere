@@ -202,7 +202,7 @@ void r_detection_pass::_log_session(const r_detection_session& s)
         found_after = buf;
     }
 
-    R_LOG_INFO("detection pass [%s]: session %s-%s (%lld s, %d looks%s): %s%s%s; camera said: %s",
+    R_LOG_INFO("detection pass [%s]: session %s-%s (%lld s, %d looks%s): %s%s%s; camera said: %s%s",
                _name(s.camera_id).c_str(),
                _clock(s.start_ms).c_str(), _clock(s.end_ms).c_str(),
                (long long)((s.end_ms - s.start_ms) / 1000), s.looks,
@@ -210,5 +210,6 @@ void r_detection_pass::_log_session(const r_detection_session& s)
                _summary(s.detections, true).c_str(),
                s.dropped_static ? ("; dropped " + to_string(s.dropped_static) + " already there").c_str() : "",
                found_after.c_str(),
-               camera_said.empty() ? "nothing" : camera_said.c_str());
+               camera_said.empty() ? "nothing" : camera_said.c_str(),
+               s.cut ? "; the motion goes on, a new session carries on" : "");
 }

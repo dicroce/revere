@@ -1,5 +1,7 @@
 
 #include "test_r_utils.h"
+#include "r_utils/r_nullable.h"
+#include <type_traits>
 #include <filesystem>
 #include <algorithm>
 #include "r_utils/r_string_utils.h"
@@ -3000,4 +3002,18 @@ void test_r_utils::test_parse_proc_net_arp()
     RTF_ASSERT(r_parse_proc_net_arp(text, "192.168.1.22").is_null());
     RTF_ASSERT(r_parse_proc_net_arp("", "192.168.1.20").is_null());
     RTF_ASSERT(r_parse_proc_net_arp(text, "192.168.1.2 ").is_null());
+}
+
+void test_r_utils::test_nullable_bool_is_explicit()
+{
+    // A nullable never turns into a bool by itself, nor through one into a char or a number: a std::string
+    // assigned a nullable became "\x01", and av_d2q given one read 1.0. Asking it in a condition still works.
+    static_assert(!std::is_convertible<r_nullable<std::string>, bool>::value, "no implicit bool");
+    static_assert(!std::is_assignable<std::string&, r_nullable<std::string>>::value, "no string from a nullable");
+    static_assert(!std::is_convertible<r_nullable<float>, double>::value, "no number from a nullable");
+    static_assert(std::is_constructible<bool, r_nullable<std::string>>::value, "still testable");
+    r_nullable<std::string> n;
+    RTF_ASSERT(!n);
+    n.set_value("x");
+    RTF_ASSERT(n && n.value() == "x");
 }

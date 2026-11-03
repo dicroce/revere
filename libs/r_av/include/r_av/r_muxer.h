@@ -56,6 +56,11 @@ public:
 
     R_API void set_output_option(const std::string& key, const std::string& value);
 
+    // With video and audio, the muxer holds one stream's packets while the other has none queued, until the queued
+    // span passes this many microseconds (FFmpeg's default is 10 s). A live output whose audio can pause sets it low,
+    // so a quiet stretch of audio holds the picture back for at most this long.
+    R_API void set_max_interleave_delta(int64_t microseconds);
+
     // Move the moov atom to the front of the file after writing so the MP4 can
     // be played before it is fully downloaded. Only valid for file output (not
     // output_to_buffer). Call before open().

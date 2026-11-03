@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <vector>
 #include <set>
+#include <exception>
+#include <chrono>
 #include <thread>
 #include <string>
 #include <map>
@@ -104,6 +106,7 @@ private:
     r_db::r_sqlite_conn _open_db(const std::string& top_dir, bool rw = true) const;
     void _upgrade_db(const r_db::r_sqlite_conn& conn) const;
     std::set<std::string> _camera_columns(const r_db::r_sqlite_conn& conn) const;
+    void _log_failed_write(std::exception_ptr e);
 
     int _get_db_version(const r_db::r_sqlite_conn& conn) const;
     void _set_db_version(const r_db::r_sqlite_conn& conn, int version) const;
@@ -141,6 +144,11 @@ private:
     std::vector<r_camera> _all_cameras_cache;
     std::vector<r_camera> _assigned_cameras_cache;
     std::atomic<uint64_t> _cache_generation {0};
+
+    // Failed insert_or_update_devices writes, logged at most once a minute (_log_failed_write).
+    bool _write_failures_logged {false};
+    int _write_failures_unlogged {0};
+    std::chrono::steady_clock::time_point _last_write_failure_log;
     void _update_caches();
 
     // In-memory per-camera alert messages — see set_camera_alert() above.

@@ -80,7 +80,7 @@ public:
         return *this;
     }
 
-    R_API operator bool() const
+    R_API explicit operator bool() const
     {
         return !_is_null;
     }

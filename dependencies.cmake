@@ -392,7 +392,30 @@ if(NOT TARGET ncnn::ncnn)
             if(CMAKE_SYSTEM_NAME MATCHES "Linux")
                 target_link_libraries(ncnn::ncnn INTERFACE gomp)
             endif()
+        elseif(CMAKE_SYSTEM_NAME MATCHES "Windows" AND EXISTS "${NCNN_ROOT}/lib/cmake/ncnn/ncnnConfig.cmake")
+            # ncnn's own package knows what it was built with: an ncnn built
+            # with Vulkan (NCNN_VULKAN) needs glslang, SPIRV, MachineIndependent,
+            # GenericCodeGen and OSDependent besides ncnn.lib, and its package
+            # brings them (from lib/cmake/glslang). ncnn.lib alone leaves the
+            # glslang symbols in gpu.obj unresolved. A CPU-only ncnn needs only
+            # Threads, which the package also brings.
+            find_package(ncnn CONFIG REQUIRED PATHS "${NCNN_ROOT}/lib/cmake/ncnn" NO_DEFAULT_PATH)
+            # RelWithDebInfo and MinSizeRel use the Release libraries: otherwise
+            # CMake takes the first imported configuration, Debug, whose libraries
+            # are built against the debug C runtime.
+            foreach(_ncnn_target ncnn glslang::glslang glslang::SPIRV glslang::MachineIndependent
+                    glslang::GenericCodeGen glslang::OSDependent glslang::OGLCompiler
+                    glslang::glslang-default-resource-limits)
+                if(TARGET ${_ncnn_target})
+                    set_target_properties(${_ncnn_target} PROPERTIES
+                        MAP_IMPORTED_CONFIG_RELWITHDEBINFO "Release;Debug"
+                        MAP_IMPORTED_CONFIG_MINSIZEREL "Release;Debug")
+                endif()
+            endforeach()
+            target_link_libraries(ncnn::ncnn INTERFACE ncnn)
+            message(STATUS "NCNN package: ${ncnn_DIR} (Vulkan: ${NCNN_VULKAN})")
         elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
+            # An ncnn install without its CMake package: the libraries by name.
             target_link_directories(ncnn::ncnn INTERFACE
                 $<$<CONFIG:Debug>:${NCNN_ROOT}/lib>
                 $<$<CONFIG:Release>:${NCNN_ROOT}/lib>

@@ -38,6 +38,7 @@ public:
       TEST(test_r_storage::test_r_storage_file_human_readable_file_size);
       TEST(test_r_storage::test_r_ring_basic);
 #endif
+      TEST(test_r_storage::test_r_ring_empty_and_backwards_ranges);
     RTF_FIXTURE_END();
 
     virtual ~test_r_storage() throw() {}
@@ -80,4 +81,5 @@ public:
     void test_r_ring_basic();
     void test_r_nanots_auto_reclaim();
 #endif
+    void test_r_ring_empty_and_backwards_ranges();
 };

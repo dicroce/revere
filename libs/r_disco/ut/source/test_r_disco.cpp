@@ -7,7 +7,9 @@
 #include <map>
 #include "r_utils/r_file.h"
 #include "r_db/r_sqlite_conn.h"
+#include "r_utils/r_logger.h"
 #include <set>
+#include <mutex>
 
 using namespace std;
 using namespace r_utils;
@@ -24,6 +26,8 @@ void test_r_disco::setup()
 void test_r_disco::teardown()
 {
     // The cameras.db tests leave a database behind.
+    r_logger::clear_log_callback();
+    // The r_devices tests leave a database behind.
     auto db_dir = string("top_dir") + PATH_SLASH + "db";
     for(auto f : {"cameras.db", "cameras.db-wal", "cameras.db-shm", "cameras.db-journal"})
     {
@@ -482,4 +486,77 @@ void test_r_disco::test_db_upgrade_from_version_7()
     auto after = db_columns();
     for(auto c : {"manufacturer", "model", "firmware_version", "mac"})
         RTF_ASSERT(after.count(c) == 1);
+}
+
+// Log lines that contain `what`, from set_log_callback.
+struct log_capture
+{
+    log_capture(const string& what) : _what(what)
+    {
+        r_logger::set_log_callback([this](r_logger::LOG_LEVEL, const string& msg) {
+            if(msg.find(_what) != string::npos)
+            {
+                lock_guard<mutex> g(_lock);
+                _lines.push_back(msg);
+            }
+        });
+    }
+    ~log_capture() { r_logger::clear_log_callback(); }
+    vector<string> lines() { lock_guard<mutex> g(_lock); return _lines; }
+    string _what;
+    mutex _lock;
+    vector<string> _lines;
+};
+
+void test_r_disco::test_startup_logs_the_database()
+{
+    // Which file it opened and its schema version, so a log shows which data
+    // dir a gateway runs from.
+    log_capture log("Cameras database:");
+    {
+        r_devices devices("top_dir");
+        devices.start();
+        devices.get_all_cameras();
+        devices.stop();
+    }
+    auto lines = log.lines();
+    RTF_ASSERT_EQUAL(lines.size(), (size_t)1);
+    RTF_ASSERT(lines[0].find(string("top_dir") + PATH_SLASH + "db" + PATH_SLASH + "cameras.db") != string::npos);
+    RTF_ASSERT(lines[0].find("(schema version 9, was 0)") != string::npos);
+}
+
+void test_r_disco::test_failed_writes_are_logged()
+{
+    // insert_or_update_devices doesn't wait for its write. One that fails is
+    // logged, at most once a minute however often discovery tries.
+    log_capture log("Saving discovered cameras failed");
+    r_devices devices("top_dir");
+    devices.start();
+    devices.get_all_cameras();
+
+    // Refuse inserts, so the write that fails is the INSERT itself, whose text
+    // has the camera's address and URL in it.
+    {
+        r_db::r_sqlite_conn conn(string("top_dir") + PATH_SLASH + "db" + PATH_SLASH + "cameras.db", true);
+        conn.exec("CREATE TRIGGER refuse_writes BEFORE INSERT ON cameras BEGIN SELECT RAISE(ABORT, 'writes refused'); END;");
+    }
+    r_stream_config sc;
+    sc.id = "cam-1";
+    sc.ipv4 = "10.0.0.5";
+    // A URL with a user in it, as some cameras give.
+    sc.rtsp_url = "rtsp://secret-user@10.0.0.5/stream1";
+    for(int i = 0; i < 3; ++i)
+        devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
+    // A command after them, so they have run (it fails too, and logs its own error).
+    devices.get_all_cameras();
+    devices.stop();
+
+    auto lines = log.lines();
+    RTF_ASSERT_EQUAL(lines.size(), (size_t)1);
+    // SQLite's reason when it gives one; never the query, which has the camera's
+    // address and credentials in it.
+    RTF_ASSERT(lines[0].find("Saving discovered cameras failed: ") != string::npos);
+    RTF_ASSERT(lines[0].find("10.0.0.5") == string::npos);
+    RTF_ASSERT(lines[0].find("secret-user") == string::npos);
+    RTF_ASSERT(lines[0].find("INSERT") == string::npos);
 }

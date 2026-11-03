@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <sstream>
 #include <string>
+#include <functional>
 
 using namespace std;
 using namespace std::chrono;
@@ -50,6 +51,45 @@ void test_r_db::teardown()
 void test_r_db::test_db_ctor()
 {
     RTF_ASSERT(r_fs::file_exists("test.db"));
+}
+
+static string error_of(const function<void()>& f)
+{
+    try
+    {
+        f();
+    }
+    catch(const exception& e)
+    {
+        return e.what();
+    }
+    return string();
+}
+
+void test_r_db::test_db_errors_name_the_query_not_its_values()
+{
+    // An error says which statement failed (verb and table) and SQLite's reason,
+    // but never the values in it: they can be camera addresses and credentials.
+    r_sqlite_conn conn("test.db", true);
+    conn.exec("CREATE TABLE things(id INTEGER PRIMARY KEY, name TEXT);");
+    conn.exec("INSERT INTO things(id, name) VALUES(1, 'a');");
+
+    // Fails when it runs.
+    auto step = error_of([&]() { conn.exec("INSERT INTO things(id, name) VALUES(1, 'secret-value');"); });
+    RTF_ASSERT(step.find("Query (INSERT INTO things) to db failed. Cause: UNIQUE constraint failed: things.id") != string::npos);
+    RTF_ASSERT(step.find("secret-value") == string::npos);
+
+    // Fails when it's prepared.
+    auto prepare = error_of([&]() { conn.exec("SELECT secret_column FROM nowhere WHERE x='secret-value';"); });
+    RTF_ASSERT(prepare.find("sqlite3_prepare_v2(SELECT FROM nowhere) failed with: no such table: nowhere") != string::npos);
+    RTF_ASSERT(prepare.find("secret") == string::npos);
+
+    auto stmt = error_of([&]() { conn.prepare("UPDATE nowhere SET name='secret-value';"); });
+    RTF_ASSERT(stmt.find("sqlite3_prepare_v2(UPDATE nowhere)") != string::npos);
+    RTF_ASSERT(stmt.find("secret-value") == string::npos);
+
+    auto pragma = error_of([&]() { conn.exec("PRAGMA user_version=secret-value;"); });
+    RTF_ASSERT(pragma.empty() || pragma.find("secret-value") == string::npos);
 }
 
 void test_r_db::test_db_insert()

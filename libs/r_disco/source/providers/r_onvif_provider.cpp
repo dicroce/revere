@@ -1,5 +1,7 @@
 
 #include <thread>
+#include <regex>
+#include <algorithm>
 #include "r_disco/providers/r_onvif_provider.h"
 #include "r_disco/r_agent.h"
 #include "r_pipeline/r_gst_source.h"
@@ -31,6 +33,87 @@ r_onvif_provider::r_onvif_provider(const string& top_dir, r_agent* agent) :
 
 r_onvif_provider::~r_onvif_provider()
 {
+    // Pending Stops are dropped: one already running finishes first.
+    {
+        lock_guard<mutex> g(_ptz_deadlines_lock);
+        _ptz_stopper_done = true;
+    }
+    _ptz_deadlines_cv.notify_all();
+    if(_ptz_stopper.joinable())
+        _ptz_stopper.join();
+}
+
+r_nullable<int64_t> r_disco::ptz_timeout_ms(const string& timeout)
+{
+    r_nullable<int64_t> ms;
+    static const regex duration(R"(^PT(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$)");
+    smatch m;
+    if(timeout.size() <= 2 || !regex_match(timeout, m, duration))
+        return ms;
+    double total = (m[1].matched ? stod(m[1].str()) * 60.0 : 0.0) + (m[2].matched ? stod(m[2].str()) : 0.0);
+    if(total > 0.0)
+        ms.set_value((int64_t)(total * 1000.0 + 0.5));
+    return ms;
+}
+
+void r_onvif_provider::_schedule_ptz_stop(const shared_ptr<_ptz_session>& session, uint64_t command, const r_ptz_command& cmd)
+{
+    auto ms = ptz_timeout_ms(cmd.timeout);
+    if(ms.is_null())
+        return;
+    lock_guard<mutex> g(_ptz_deadlines_lock);
+    if(_ptz_stopper_done)
+        return;
+    _ptz_deadlines.push_back({session, command, cmd.profile_token, steady_clock::now() + milliseconds(ms.value())});
+    if(!_ptz_stopper.joinable())
+        _ptz_stopper = thread(&r_onvif_provider::_ptz_stopper_loop, this);
+    _ptz_deadlines_cv.notify_all();
+}
+
+void r_onvif_provider::_ptz_stopper_loop()
+{
+    unique_lock<mutex> lk(_ptz_deadlines_lock);
+    while(!_ptz_stopper_done)
+    {
+        if(_ptz_deadlines.empty())
+        {
+            _ptz_deadlines_cv.wait(lk);
+            continue;
+        }
+        auto next = min_element(_ptz_deadlines.begin(), _ptz_deadlines.end(),
+                                [](const _ptz_deadline& a, const _ptz_deadline& b) { return a.at < b.at; });
+        if(steady_clock::now() < next->at)
+        {
+            _ptz_deadlines_cv.wait_until(lk, next->at);
+            continue;
+        }
+        auto due = *next;
+        _ptz_deadlines.erase(next);
+        lk.unlock();
+
+        auto session = due.session.lock();
+        if(session)
+        {
+            lock_guard<mutex> camera_lock(session->lock);
+            // Anything since the move (a keep-alive, a Stop, a preset) has taken over from it.
+            if(session->commands == due.command && session->cam)
+            {
+                r_ptz_command stop;
+                stop.op = r_ptz_command::op_t::stop;
+                stop.profile_token = due.profile_token;
+                try
+                {
+                    _run_ptz(*session, stop);
+                }
+                catch(const std::exception& ex)
+                {
+                    session->cam.reset();
+                    R_LOG_WARNING("onvif: Stop at the end of a move's timeout failed: %s", ex.what());
+                }
+            }
+        }
+        lk.lock();
+    }
 }
 
 vector<r_stream_config> r_onvif_provider::poll(const std::function<bool()>& should_continue)
@@ -83,6 +166,14 @@ r_ptz_result r_onvif_provider::ptz_control(
 
     // One command at a time per camera; other cameras and interrogation don't wait.
     lock_guard<mutex> camera_lock(session->lock);
+    auto command = ++session->commands;
+    // A move that reached the camera stops when its timeout runs out, whatever the camera does with it.
+    auto run = [&]() {
+        auto result = _run_ptz(*session, cmd);
+        if(cmd.op == r_ptz_command::op_t::move)
+            _schedule_ptz_stop(session, command, cmd);
+        return result;
+    };
 
     // New credentials mean a new session: the old one negotiated with the old ones.
     auto credentials = (username.is_null() ? string() : username.value()) + "\n" + (password.is_null() ? string() : password.value());
@@ -97,7 +188,7 @@ r_ptz_result r_onvif_provider::ptz_control(
     {
         if(!session->cam)
             _open_ptz_session(*session, ipv4, xaddrs, username, password, onvif_port, onvif_protocol);
-        return _run_ptz(*session, cmd);
+        return run();
     }
     catch(const r_ptz_error& ex)
     {
@@ -111,7 +202,7 @@ r_ptz_result r_onvif_provider::ptz_control(
     _open_ptz_session(*session, ipv4, xaddrs, username, password, onvif_port, onvif_protocol);
     try
     {
-        return _run_ptz(*session, cmd);
+        return run();
     }
     catch(...)
     {

@@ -41,6 +41,14 @@ add_custom_command(TARGET test_plugin POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:test_plugin> ${CMAKE_BINARY_DIR}/motion_plugins/
 )
 
+# And beside the executable, where revere run from the build tree loads it.
+if(NOT APPLE)
+    add_custom_command(TARGET test_plugin POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${REVERE_RUNTIME_DIR}/motion_plugins
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:test_plugin> ${REVERE_RUNTIME_DIR}/motion_plugins/
+    )
+endif()
+
 # Install the plugin to motion_plugins subdirectory relative to the executable (skip on macOS - bundled into .app)
 if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     install(TARGETS test_plugin

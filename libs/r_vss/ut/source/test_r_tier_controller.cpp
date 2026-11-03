@@ -287,3 +287,29 @@ void test_r_tier_controller::test_forced_tiers()
     t.tick(5 * MIN);
     RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_1);  // automatic: not verified yet
 }
+
+void test_r_tier_controller::test_status_without_detector()
+{
+    // Tier 3 says it gets no detections; tiers 1 and 2 don't need the plugin's
+    // detection pass, so they read as before.
+    r_tier_status s;
+    s.tier = motion_tier_3;
+    s.reason = "the camera's motion events match Revere's; Revere finds the objects";
+    s.checked = 7;
+    auto out = tier_status_without_detector(s);
+    RTF_ASSERT(out.tier == motion_tier_3);
+    RTF_ASSERT(out.reason == "the camera's motion events match Revere's; Revere finds the objects; but no object detection plugin is loaded, so its motion gets no detections");
+    RTF_ASSERT_EQUAL(out.checked, 7);
+
+    r_tier_status empty;
+    empty.tier = motion_tier_3;
+    RTF_ASSERT(tier_status_without_detector(empty).reason == "but no object detection plugin is loaded, so its motion gets no detections");
+
+    for(int tier : {(int)motion_tier_1, (int)motion_tier_2})
+    {
+        r_tier_status other;
+        other.tier = tier;
+        other.reason = "why";
+        RTF_ASSERT(tier_status_without_detector(other).reason == "why");
+    }
+}

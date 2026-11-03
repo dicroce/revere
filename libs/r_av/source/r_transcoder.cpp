@@ -21,7 +21,8 @@ r_transcoder::r_transcoder(
     uint32_t max_bitrate,
     uint32_t min_bitrate,
     bool enable_dynamic_bitrate,
-    const std::string& passphrase
+    const std::string& passphrase,
+    const std::optional<r_transcoder_audio>& audio
 ) :
     _running(false),
     _max_queue_size(30),
@@ -69,6 +70,16 @@ r_transcoder::r_transcoder(
     // Setup muxer
     _muxer.add_video_stream(framerate, AV_CODEC_ID_H264, output_width, output_height, _profile, _level);
     _muxer.set_video_extradata(_encoder.get_extradata());
+    if (audio && audio->sample_rate > 0)
+    {
+        _muxer.add_audio_stream(audio->codec_id, audio->channels, audio->sample_rate);
+        if (!audio->extradata.empty())
+            _muxer.set_audio_extradata(audio->extradata);
+        // A camera's audio can pause (or be held back while the stream catches up with live): the picture must not
+        // wait the default 10 s for it.
+        _muxer.set_max_interleave_delta(R_TRANSCODER_AUDIO_INTERLEAVE_US);
+        _has_audio = true;
+    }
     _muxer.open();
 }
 
@@ -123,6 +134,29 @@ void r_transcoder::write_frame(const uint8_t* data, size_t size, int64_t pts)
     _queue_cv.notify_one();
 }
 
+void r_transcoder::write_audio_frame(const uint8_t* data, size_t size, int64_t pts)
+{
+    if (!_has_audio || size == 0)
+        return;
+
+    std::unique_lock<std::mutex> lock(_queue_mutex);
+
+    _queue_cv.wait(lock, [this] {
+        return _input_queue.size() < _max_queue_size || !_running;
+    });
+
+    if (!_running)
+        return;
+
+    queued_frame frame;
+    frame.data.assign(data, data + size);
+    frame.pts = pts;
+    frame.audio = true;
+
+    _input_queue.push_back(std::move(frame));
+    _queue_cv.notify_one();
+}
+
 void r_transcoder::_worker_thread()
 {
     try
@@ -156,6 +190,13 @@ void r_transcoder::_worker_thread()
 
             // Notify write_frame() that space is available
             _queue_cv.notify_one();
+
+            // Audio goes to the output as it is, in the order it came with the video.
+            if (frame.audio)
+            {
+                _muxer.write_audio_frame(frame.data.data(), frame.data.size(), frame.pts, _input_timebase);
+                continue;
+            }
 
             // 2. Decode
             _decoder.attach_buffer(frame.data.data(), frame.data.size());

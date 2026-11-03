@@ -299,8 +299,9 @@ public:
     R_API void ptz_continuous_move(const std::string& ptz_service, const onvif_profile_token& profile_token,
                                    float pan, float tilt, float zoom, const std::string& timeout = "");
 
-    // Stop PanTilt and/or Zoom motion. Stopping both sends neither flag
-    // (ONVIF: a Stop without them stops all movement).
+    // Stop PanTilt and/or Zoom motion. PanTilt is always named (true when it
+    // stops); stopping both leaves Zoom out (ONVIF: an absent flag stops that
+    // axis too), so a camera without zoom never sees a Zoom flag.
     R_API void ptz_stop(const std::string& ptz_service, const onvif_profile_token& profile_token,
                         bool pan_tilt = true, bool zoom = true);
 

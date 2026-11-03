@@ -71,6 +71,16 @@ foreach(CONFIG ${CMAKE_CONFIGURATION_TYPES})
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${CONFIG_UPPER} ${CMAKE_BINARY_DIR}/bin/${CONFIG})
 endforeach()
 
+# The executables' directory in the build tree, for plugins: revere loads motion
+# and system plugins from motion_plugins/ and system_plugins/ beside its
+# executable. With a multi-config generator it holds $<CONFIG>, so it's for
+# add_custom_command and other places that take generator expressions.
+if(CMAKE_CONFIGURATION_TYPES)
+    set(REVERE_RUNTIME_DIR "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+else()
+    set(REVERE_RUNTIME_DIR "${CMAKE_BINARY_DIR}/bin")
+endif()
+
 # Apply build flags per platform and configuration
 if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_compile_definitions(IS_LINUX _GLIBCXX_ASSERTIONS)

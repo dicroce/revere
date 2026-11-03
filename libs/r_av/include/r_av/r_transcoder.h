@@ -21,6 +21,7 @@ extern "C"
 #include <atomic>
 #include <functional>
 #include <chrono>
+#include <optional>
 #include <cstdint>
 #include <memory> // For std::shared_ptr
 
@@ -57,6 +58,21 @@ private:
     int64_t _next_pts {-1};
 };
 
+/**
+ * An audio stream for the transcoder's output, written as it comes (not re-encoded): AAC with its AudioSpecificConfig
+ * as extradata, for an MPEG-TS that carries the camera's audio beside the video.
+ */
+// A live output with audio holds its video for at most this long while the audio pauses (r_muxer::set_max_interleave_delta).
+constexpr int64_t R_TRANSCODER_AUDIO_INTERLEAVE_US = 500000;
+
+struct r_transcoder_audio
+{
+    AVCodecID codec_id{AV_CODEC_ID_AAC};
+    uint8_t channels{1};
+    uint32_t sample_rate{0};
+    std::vector<uint8_t> extradata;
+};
+
 class r_transcoder final
 {
 public:
@@ -73,7 +89,8 @@ public:
         uint32_t max_bitrate,
         uint32_t min_bitrate,
         bool enable_dynamic_bitrate = true,
-        const std::string& passphrase = ""
+        const std::string& passphrase = "",
+        const std::optional<r_transcoder_audio>& audio = std::nullopt
     );
 
     R_API ~r_transcoder();
@@ -82,6 +99,16 @@ public:
     R_API r_transcoder& operator=(const r_transcoder&) = delete;
 
     R_API void write_frame(const uint8_t* data, size_t size, int64_t pts);
+
+    /**
+     * One encoded audio frame at its pts (the input timebase, as write_frame's), written to the output's audio stream
+     * as it is. Ignored when the transcoder was made without audio. Queued with the video, so the output is written
+     * from one thread.
+     */
+    R_API void write_audio_frame(const uint8_t* data, size_t size, int64_t pts);
+
+    /** Whether the output has an audio stream (the constructor's audio). */
+    R_API bool has_audio() const { return _has_audio; }
 
     // Start/stop transcoding
     R_API void start();
@@ -99,6 +126,7 @@ private:
     struct queued_frame {
         std::vector<uint8_t> data;
         int64_t pts;
+        bool audio{false};
     };
     std::deque<queued_frame> _input_queue;
     std::mutex _queue_mutex;
@@ -132,6 +160,9 @@ private:
     AVRational _input_timebase;
     r_output_frame_selector _selector;
     std::shared_ptr<std::vector<uint8_t>> _last_decoded_frame;
+
+    // Audio, written as it comes (see r_transcoder_audio)
+    bool _has_audio{false};
 };
 
 }

@@ -357,10 +357,29 @@ vector<r_detection_session> r_detection_planner::finished(int64_t now_ms)
     out.swap(_finished);
     for (auto it = _sessions.begin(); it != _sessions.end();)
     {
-        if (_done(it->second, now_ms))
+        auto& s = it->second;
+        if (_done(s, now_ms))
         {
-            out.push_back(_finish(it->second));
+            out.push_back(_finish(s));
             it = _sessions.erase(it);
+        }
+        else if (_active(s) && now_ms - s.result.start_ms >= MAX_SESSION_MS && s.in_flight == 0 && s.stored.empty())
+        {
+            // Still in motion after MAX_SESSION_MS: report this session and carry
+            // on in a new one, which looks again at once.
+            _session next;
+            next.result.camera_id = s.result.camera_id;
+            next.result.start_ms = now_ms;
+            next.event_start_ms = now_ms;
+            next.active_sources = s.active_sources;
+            next.pre_roll = s.last_frame;
+            _plan_live(next, now_ms);
+
+            s.result.end_ms = now_ms;
+            s.result.cut = true;
+            out.push_back(_finish(s));
+            s = next;
+            ++it;
         }
         else
             ++it;

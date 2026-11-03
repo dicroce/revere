@@ -19,6 +19,8 @@ public:
       TEST(test_r_disco::test_db_upgrade_keeps_a_newer_version);
       TEST(test_r_disco::test_db_upgrade_twice);
       TEST(test_r_disco::test_db_upgrade_from_version_7);
+      TEST(test_r_disco::test_startup_logs_the_database);
+      TEST(test_r_disco::test_failed_writes_are_logged);
     RTF_FIXTURE_END();
 
     virtual ~test_r_disco() throw() {}
@@ -40,4 +42,6 @@ public:
     void test_db_upgrade_keeps_a_newer_version();
     void test_db_upgrade_twice();
     void test_db_upgrade_from_version_7();
+    void test_startup_logs_the_database();
+    void test_failed_writes_are_logged();
 };
