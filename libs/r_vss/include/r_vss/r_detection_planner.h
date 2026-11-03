@@ -51,6 +51,7 @@ struct r_detection_session
     int dropped_static {0};                   // detections dropped as things that were already there
     int64_t first_found_ms {0};               // when a look first found something new (not in the pre-roll), 0 if none
     std::vector<r_detection> first_found;     // what it found: what an alert would have said
+    bool cut {false};                         // finished at MAX_SESSION_MS with the motion still on; a new session carries on
 };
 
 // Plans the detection pass over camera-reported motion (milestone 4): when to
@@ -76,7 +77,12 @@ struct r_detection_session
 //    Both come from storage, STORAGE_DELAY_MS after the time wanted, so the
 //    frame is written.
 //  - A session finishes CLUSTER_GAP_MS after its last motion ends, once its
-//    looks are done. Detections that match one in the pre-roll, or that sit in
+//    looks are done. Motion that doesn't stop (a camera that never goes quiet)
+//    is cut into sessions of MAX_SESSION_MS: each is finished and reported, and
+//    a new one carries on with a look at once, so a camera in constant motion
+//    still gets up to MAX_LOOKS looks each MAX_SESSION_MS. The new session
+//    takes the last frame's detections as its pre-roll, so what was already
+//    there at the cut isn't found again. Detections that match one in the pre-roll, or that sit in
 //    the same place in the session's first and last frames (IoU >= 0.85, the
 //    same class), are dropped as things that were already there: camera
 //    events have no motion regions to filter by.
@@ -97,6 +103,7 @@ public:
         RETRY_MS = 3000,
         MAX_ATTEMPTS = 2,
         MAX_LOOKS = 30,      // per session; a camera in motion for minutes stops costing a decode every few seconds
+        MAX_SESSION_MS = 300000,
         EARLY_CLASS_MS = 5000
     };
 
