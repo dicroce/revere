@@ -46,7 +46,7 @@ string r_arg::get_name() const
 
 bool r_arg::has_value() const
 {
-    return _value;
+    return !_value.is_null();
 }
 
 void r_arg::set_value(const string& value)

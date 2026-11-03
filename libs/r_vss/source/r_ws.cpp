@@ -1144,7 +1144,7 @@ void r_ws::_export(export_job& job)
                     if(!maybe_sps.is_null())
                     {
                         auto sps_info = r_pipeline::parse_h264_sps(maybe_sps.value());
-                        muxer.add_video_stream(av_d2q(fr, 10000), video_codec_id, sps_info.width, sps_info.height, sps_info.profile_idc, sps_info.level_idc);
+                        muxer.add_video_stream(av_d2q(fr.value(), 10000), video_codec_id, sps_info.width, sps_info.height, sps_info.profile_idc, sps_info.level_idc);
                     }
                     auto maybe_pps = r_pipeline::get_h264_pps(video_codec_parameters);
                     muxer.set_video_extradata(r_pipeline::make_h264_extradata(maybe_sps, maybe_pps));
@@ -1156,7 +1156,7 @@ void r_ws::_export(export_job& job)
                     if(!maybe_sps.is_null())
                     {
                         auto sps_info = r_pipeline::parse_h265_sps(maybe_sps.value());
-                        muxer.add_video_stream(av_d2q(fr, 10000), video_codec_id, sps_info.width, sps_info.height, sps_info.profile_idc, sps_info.level_idc);
+                        muxer.add_video_stream(av_d2q(fr.value(), 10000), video_codec_id, sps_info.width, sps_info.height, sps_info.profile_idc, sps_info.level_idc);
                     }
                     auto maybe_pps = r_pipeline::get_h265_pps(video_codec_parameters);
                     muxer.set_video_extradata(r_pipeline::make_h265_extradata(maybe_vps, maybe_sps, maybe_pps));
