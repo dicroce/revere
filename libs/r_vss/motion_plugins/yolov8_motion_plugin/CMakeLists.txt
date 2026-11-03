@@ -40,10 +40,19 @@ target_include_directories(
 # Set the output name to avoid lib prefix on all platforms
 set_target_properties(yolov8_motion_plugin PROPERTIES PREFIX "")
 
-# Copy the plugin to the motion_plugins directory after build
+# Copy the plugin to the motion_plugins directory after build (the macOS app
+# bundle takes its plugins from there: apps/revere)
 add_custom_command(TARGET yolov8_motion_plugin POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:yolov8_motion_plugin> ${CMAKE_BINARY_DIR}/motion_plugins/
 )
+
+# And beside the executable, where revere run from the build tree loads it.
+if(NOT APPLE)
+    add_custom_command(TARGET yolov8_motion_plugin POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${REVERE_RUNTIME_DIR}/motion_plugins
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:yolov8_motion_plugin> ${REVERE_RUNTIME_DIR}/motion_plugins/
+    )
+endif()
 
 # Install the plugin to motion_plugins subdirectory relative to the executable (skip on macOS - bundled into .app)
 if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
