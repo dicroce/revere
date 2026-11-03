@@ -9,6 +9,7 @@ public:
       TEST(test_r_codec::test_basic_video_transcode);
       TEST(test_r_codec::test_mjpeg_snapshot_quality);
       TEST(test_r_codec::test_decode_input_ending_at_a_page);
+      TEST(test_r_codec::test_decode_again_after_its_input_sends_nothing);
     RTF_FIXTURE_END();
 
     virtual ~test_r_codec() throw() {}
@@ -20,4 +21,5 @@ public:
     void test_basic_video_transcode();
     void test_mjpeg_snapshot_quality();
     void test_decode_input_ending_at_a_page();
+    void test_decode_again_after_its_input_sends_nothing();
 };
