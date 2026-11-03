@@ -3,6 +3,8 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_string_utils.h"
 #include <thread>
+#include <vector>
+#include <cctype>
 
 using namespace r_db;
 using namespace r_utils;
@@ -80,6 +82,47 @@ r_sqlite_conn& r_sqlite_conn::operator=(r_sqlite_conn&& obj) noexcept
     return *this;
 }
 
+// What a query is, for an error message: its verb and table ("INSERT INTO
+// cameras", "PRAGMA user_version"), never its values, which can be camera
+// addresses and credentials.
+static string _describe(const string& query)
+{
+    vector<string> words;
+    string w;
+    for(char c : query)
+    {
+        if(isspace((unsigned char)c) || c == '(' || c == '=' || c == ';' || c == ',')
+        {
+            if(!w.empty())
+                words.push_back(w);
+            w.clear();
+        }
+        else w += c;
+    }
+    if(!w.empty())
+        words.push_back(w);
+    if(words.empty())
+        return "(empty query)";
+
+    auto upper = [](string s) { for(auto& c : s) c = (char)toupper((unsigned char)c); return s; };
+    auto verb = upper(words[0]);
+    // The word after the first of these is the table (or the pragma's name).
+    for(size_t i = 0; i < words.size(); ++i)
+    {
+        auto u = upper(words[i]);
+        bool before_table = u == "INTO" || u == "FROM" || u == "TABLE" || u == "INDEX" ||
+                            (i == 0 && (u == "UPDATE" || u == "PRAGMA"));
+        if(!before_table)
+            continue;
+        size_t t = i + 1;
+        while(t < words.size() && (upper(words[t]) == "IF" || upper(words[t]) == "NOT" || upper(words[t]) == "EXISTS"))
+            ++t;
+        if(t < words.size())
+            return verb + (i == 0 ? "" : " " + u) + " " + words[t];
+    }
+    return verb;
+}
+
 vector<map<string, r_nullable<string>>> r_sqlite_conn::exec(const string& query) const
 {
     if(!_db)
@@ -91,7 +134,7 @@ vector<map<string, r_nullable<string>>> r_sqlite_conn::exec(const string& query)
 
     int rc = sqlite3_prepare_v3(_db, query.c_str(), (int)query.length(), 0, &stmt, nullptr);
     if(rc != SQLITE_OK)
-        R_STHROW(r_internal_exception, ("sqlite3_prepare_v2(%s) failed with: %s", query.c_str(), sqlite3_errmsg(_db)));
+        R_STHROW(r_internal_exception, ("sqlite3_prepare_v2(%s) failed with: %s", _describe(query).c_str(), sqlite3_errmsg(_db)));
     if(stmt == NULL)
         R_STHROW(r_internal_exception, ("sqlite3_prepare_v2() succeeded but returned NULL statement."));
 
@@ -141,7 +184,7 @@ vector<map<string, r_nullable<string>>> r_sqlite_conn::exec(const string& query)
             }
             else
             {
-                R_STHROW(r_internal_exception, ("Query (%s) to db failed. Cause:", query.c_str(), sqlite3_errmsg(_db)));
+                R_STHROW(r_internal_exception, ("Query (%s) to db failed. Cause: %s", _describe(query).c_str(), sqlite3_errmsg(_db)));
             }
         }
 
@@ -189,7 +232,7 @@ r_sqlite_stmt::r_sqlite_stmt(sqlite3* db, const string& query) :
 {
     int rc = sqlite3_prepare_v2(_db, query.c_str(), (int)query.length(), &_stmt, nullptr);
     if(rc != SQLITE_OK)
-        R_STHROW(r_internal_exception, ("sqlite3_prepare_v2(%s) failed with: %s", query.c_str(), sqlite3_errmsg(_db)));
+        R_STHROW(r_internal_exception, ("sqlite3_prepare_v2(%s) failed with: %s", _describe(query).c_str(), sqlite3_errmsg(_db)));
     if(_stmt == nullptr)
         R_STHROW(r_internal_exception, ("sqlite3_prepare_v2() succeeded but returned NULL statement."));
 }
