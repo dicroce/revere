@@ -427,8 +427,9 @@ private:
 
     // Runs over tier 3 cameras' motion when a motion plugin offers object
     // detection. Kept (stopped) after stop() so late transitions are harmless.
-    std::mutex _detection_pass_lock;
+    mutable std::mutex _detection_pass_lock;
     std::unique_ptr<r_detection_pass> _detection_pass;
+    std::set<std::string> _no_detector_logged;     // tier-3 cameras already warned about, under _detection_pass_lock
 
     // Motion tiers (milestone 5).
     void _on_mog2_event(r_motion_event evt, const std::string& camera_id, int64_t ts);

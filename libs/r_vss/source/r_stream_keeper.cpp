@@ -222,6 +222,12 @@ void r_stream_keeper::start()
         std::lock_guard<std::mutex> g(_detection_pass_lock);
         _detection_pass = std::move(pass);
     }
+    else
+    {
+        // Tier 3 relies on it: without one, those cameras' motion is kept but
+        // nothing in it is detected. A plugin that failed to load says why above.
+        R_LOG_WARNING("No object detection plugin is loaded: cameras on motion tier 3 will get no detections, only their own motion.");
+    }
 
     _th = thread(&r_stream_keeper::_entry_point, this);
 
@@ -498,13 +504,22 @@ void r_stream_keeper::camera_transition(const string& camera_id, const r_cameras
     if(tier != motion_tier_3)
         return;
 
-    std::lock_guard<std::mutex> g(_detection_pass_lock);
-    if(!_detection_pass)
-        return;
-    if(t.what == "motion")
-        _detection_pass->motion(camera_id, t.source, t.active);
-    else if(t.active)
-        _detection_pass->camera_class(camera_id, t.what);
+    bool warn = false;
+    {
+        std::lock_guard<std::mutex> g(_detection_pass_lock);
+        if(_detection_pass)
+        {
+            if(t.what == "motion")
+                _detection_pass->motion(camera_id, t.source, t.active);
+            else if(t.active)
+                _detection_pass->camera_class(camera_id, t.what);
+            return;
+        }
+        warn = _no_detector_logged.insert(camera_id).second;
+    }
+    // Once per camera, so it's in the log next to the camera's motion.
+    if(warn)
+        R_LOG_WARNING("motion tier [%s]: tier 3, but no object detection plugin is loaded, so its motion gets no detections", _camera_name(camera_id).c_str());
 }
 
 int r_stream_keeper::motion_tier(const string& camera_id)
@@ -515,8 +530,13 @@ int r_stream_keeper::motion_tier(const string& camera_id)
 
 r_tier_status r_stream_keeper::motion_tier_status(const string& camera_id) const
 {
-    std::lock_guard<std::mutex> g(_tier_lock);
-    return _tiers.status(camera_id);
+    r_tier_status status;
+    {
+        std::lock_guard<std::mutex> g(_tier_lock);
+        status = _tiers.status(camera_id);
+    }
+    std::lock_guard<std::mutex> g(_detection_pass_lock);
+    return _detection_pass ? status : tier_status_without_detector(status);
 }
 
 string r_stream_keeper::_camera_name(const string& camera_id)

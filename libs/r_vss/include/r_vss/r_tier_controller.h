@@ -34,6 +34,11 @@ struct r_tier_status
     int person_matched {0};     // of those, ones where the camera reported a person too
 };
 
+// The status as shown when no object detection plugin is loaded: a camera on
+// tier 3 then gets no detections, only its own motion, and its reason says so.
+// Other tiers are unchanged.
+R_API r_tier_status tier_status_without_detector(const r_tier_status& status);
+
 // Chooses each camera's tier (milestone 5), by verifying the camera's events
 // rather than trusting what it advertises (Driveway advertised motion and
 // people while a no-alarm area kept it silent). No threads and no clock: the
