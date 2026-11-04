@@ -144,6 +144,53 @@ vector<r_onvif::onvif_profile_info> r_onvif_provider::get_camera_profiles(
     return cam.get_profile_tokens(oms);
 }
 
+r_onvif::onvif_video_flip r_onvif_provider::imaging_control(
+    const string& ipv4,
+    const string& xaddrs,
+    r_nullable<string> username,
+    r_nullable<string> password,
+    const r_imaging_command& cmd,
+    r_nullable<int> onvif_port,
+    r_nullable<string> onvif_protocol
+)
+{
+    try
+    {
+        auto ep = r_onvif::find_device_service(ipv4, xaddrs, onvif_port, onvif_protocol);
+        if(ep.is_null())
+            throw r_ptz_error("unreachable", "No ONVIF device service answers at " + ipv4 + ". Check that ONVIF is enabled on the camera.");
+        r_onvif::r_onvif_cam cam(ep.value().host, ep.value().port, ep.value().protocol, ep.value().uri, username, password);
+        auto media = cam.get_media_service(cam.get_camera_capabilities());
+        auto profiles = cam.get_profile_tokens(media);
+        if(profiles.empty())
+            throw r_ptz_error("camera_error", "Camera at " + ipv4 + " exposes no media profiles.");
+        const auto& profile = cmd.profile_token.empty() ? profiles.front().token : cmd.profile_token;
+        if(cmd.op == r_imaging_command::op_t::set_flip)
+        {
+            auto now = cam.get_video_flip(media, profile);
+            if(!now.supported)
+                throw r_ptz_error("unsupported", "Camera at " + ipv4 + " offers no picture flip over ONVIF.");
+            if(now.on != cmd.flip)
+            {
+                cam.set_video_flip(media, profile, cmd.flip);
+                // A camera that restarts to apply it can't be asked again yet: it took the change.
+                if(now.reboot)
+                    return {true, cmd.flip, true};
+            }
+        }
+        // As the camera now has it.
+        return cam.get_video_flip(media, profile);
+    }
+    catch(const r_ptz_error&)
+    {
+        throw;
+    }
+    catch(const std::exception& ex)
+    {
+        throw r_ptz_error("camera_error", ex.what());
+    }
+}
+
 r_ptz_result r_onvif_provider::ptz_control(
     const string& ipv4,
     const string& xaddrs,

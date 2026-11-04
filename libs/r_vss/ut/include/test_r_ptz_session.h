@@ -22,6 +22,16 @@ public:
       TEST(test_r_ptz_session::test_move_stopped_at_its_timeout);
       TEST(test_r_ptz_session::test_later_command_cancels_the_stop);
       TEST(test_r_ptz_session::test_no_timeout_no_stop);
+      TEST(test_r_ptz_session::test_flip_read);
+      TEST(test_r_ptz_session::test_flip_set_sends_the_source_back_with_rotate);
+      TEST(test_r_ptz_session::test_flip_keeps_the_source_name);
+      TEST(test_r_ptz_session::test_flip_unsupported);
+      TEST(test_r_ptz_session::test_flip_needs_no_ptz);
+      TEST(test_r_ptz_session::test_flip_keeps_the_extension);
+      TEST(test_r_ptz_session::test_flip_is_180_degrees);
+      TEST(test_r_ptz_session::test_flip_reboot);
+      TEST(test_r_ptz_session::test_flip_extension_keeps_the_cameras_namespaces);
+      TEST(test_r_ptz_session::test_flip_extension_added_where_missing);
       TEST(test_r_ptz_session::test_shutdown_drops_pending_stops);
     RTF_FIXTURE_END();
 
@@ -47,5 +57,15 @@ public:
     void test_move_stopped_at_its_timeout();
     void test_later_command_cancels_the_stop();
     void test_no_timeout_no_stop();
+    void test_flip_read();
+    void test_flip_set_sends_the_source_back_with_rotate();
+    void test_flip_keeps_the_source_name();
+    void test_flip_unsupported();
+    void test_flip_needs_no_ptz();
+    void test_flip_keeps_the_extension();
+    void test_flip_is_180_degrees();
+    void test_flip_reboot();
+    void test_flip_extension_keeps_the_cameras_namespaces();
+    void test_flip_extension_added_where_missing();
     void test_shutdown_drops_pending_stops();
 };

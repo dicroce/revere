@@ -48,6 +48,16 @@ private:
     std::string _code;
 };
 
+// "Flip picture" (r_onvif::onvif_video_flip): read it, or set it to flip. Failures throw r_ptz_error, with
+// "unsupported" for a set on a camera that offers no Rotate ON.
+struct r_imaging_command
+{
+    enum class op_t { get, set_flip };
+    op_t op {op_t::get};
+    bool flip {false};
+    std::string profile_token;    // optional; empty = the camera's first media profile
+};
+
 // The outcome of a PTZ action. presets is filled only for list_presets. The
 // capability flags report which continuous-move axes the camera's PTZ node
 // actually supports; they are queried on the list_presets probe, and null for
@@ -97,6 +107,19 @@ public:
         r_utils::r_nullable<std::string> username,
         r_utils::r_nullable<std::string> password,
         const r_ptz_command& cmd,
+        r_utils::r_nullable<int> onvif_port = r_utils::r_nullable<int>(),
+        r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
+    );
+
+    // Read or set the camera's picture flip (r_imaging_command), and return it as it now is: as read back, or, on a
+    // camera that restarts to apply a change (reboot), as set. A setting change is rare, so each call opens the
+    // camera afresh; it needs no PTZ service. Throws r_ptz_error ("unreachable", "unsupported", "camera_error").
+    R_API r_onvif::onvif_video_flip imaging_control(
+        const std::string& ipv4,
+        const std::string& xaddrs,
+        r_utils::r_nullable<std::string> username,
+        r_utils::r_nullable<std::string> password,
+        const r_imaging_command& cmd,
         r_utils::r_nullable<int> onvif_port = r_utils::r_nullable<int>(),
         r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
     );

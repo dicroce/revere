@@ -2224,6 +2224,158 @@ static string _bounded_enum(const char* value)
     return s.substr(0, n);
 }
 
+r_onvif::onvif_video_source_config r_onvif::parse_video_source_config(const string& xml)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetProfile response");
+    auto vsc = doc.select_node("//*[local-name()='Profile']/*[local-name()='VideoSourceConfiguration']");
+    if (!vsc)
+        throw std::runtime_error("The profile has no VideoSourceConfiguration");
+    auto n = vsc.node();
+    onvif_video_source_config c;
+    c.token = n.attribute("token").value();
+    if (!_valid_token(c.token))
+        throw std::runtime_error("The VideoSourceConfiguration has no valid token");
+    // Sent back on a Set, so read whole: cutting it would rename the source. ONVIF's Name is at most 64 characters;
+    // a longer one is refused rather than cut.
+    c.name = r_string_utils::strip(n.select_node("./*[local-name()='Name']").node().child_value());
+    size_t name_chars = 0;
+    for (unsigned char ch : c.name)
+        if ((ch & 0xc0) != 0x80)
+            ++name_chars;
+    if (name_chars > ONVIF_NAME_MAX_CHARS)
+        throw std::runtime_error("The VideoSourceConfiguration's Name is longer than ONVIF allows");
+    c.use_count = _int_child(n, "./*[local-name()='UseCount']");
+    c.source_token = r_string_utils::strip(n.select_node("./*[local-name()='SourceToken']").node().child_value());
+    if (!_valid_token(c.source_token))
+        throw std::runtime_error("The VideoSourceConfiguration has no valid SourceToken");
+    auto bounds = n.select_node("./*[local-name()='Bounds']").node();
+    c.x = bounds.attribute("x").as_int();
+    c.y = bounds.attribute("y").as_int();
+    c.width = bounds.attribute("width").as_int();
+    c.height = bounds.attribute("height").as_int();
+    auto rotate = n.select_node("./*[local-name()='Extension']/*[local-name()='Rotate']").node();
+    c.rotate_mode = _bounded_enum(rotate.select_node("./*[local-name()='Mode']").node().child_value());
+    c.rotate_degree = _bounded_enum(rotate.select_node("./*[local-name()='Degree']").node().child_value());
+    return c;
+}
+
+bool r_onvif::is_flipped(const onvif_video_source_config& c)
+{
+    return c.rotate_mode == "ON" && (c.rotate_degree.empty() || c.rotate_degree == "180");
+}
+
+r_onvif::onvif_rotate_options r_onvif::parse_rotate_options(const string& xml)
+{
+    onvif_rotate_options o;
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetVideoSourceConfigurationOptions response");
+    auto rotate = doc.select_node("//*[local-name()='Options']/*[local-name()='Extension']/*[local-name()='Rotate']").node();
+    for (auto m : rotate.select_nodes("./*[local-name()='Mode']"))
+        o.modes.push_back(_bounded_enum(m.node().child_value()));
+    // xs:boolean: "true" or "1".
+    auto reboot = r_string_utils::strip(rotate.attribute("Reboot").value());
+    o.reboot = reboot == "true" || reboot == "1";
+    return o;
+}
+
+// The part of a qualified name before its colon, "" when it has none.
+static string _prefix_of(const string& name)
+{
+    auto colon = name.find(':');
+    return colon == string::npos ? string() : name.substr(0, colon);
+}
+
+static string _local_name_of(const string& name)
+{
+    auto colon = name.find(':');
+    return colon == string::npos ? name : name.substr(colon + 1);
+}
+
+// The namespace a prefix ("" for the default one) is bound to at n, by n's or its ancestors' xmlns attributes; ""
+// when nothing binds it.
+static string _namespace_at(pugi::xml_node n, const string& prefix)
+{
+    auto attr = prefix.empty() ? string("xmlns") : "xmlns:" + prefix;
+    for (; n; n = n.parent())
+        if (n.type() == pugi::node_element)
+            if (auto a = n.attribute(attr.c_str()))
+                return a.value();
+    return string();
+}
+
+// src copied under dest_parent, elements, attributes and text, each prefix it uses declared on the copy where the
+// destination doesn't already bind it to the same namespace: the camera's XML can use its own prefixes.
+static pugi::xml_node _copy_element(pugi::xml_node src, pugi::xml_node dest_parent)
+{
+    auto out = dest_parent.append_child(src.name());
+    auto declare = [&](const string& prefix) {
+        if (prefix == "xml" || prefix == "xmlns")
+            return;
+        auto ns = _namespace_at(src, prefix);
+        if (ns.empty() || _namespace_at(out, prefix) == ns)
+            return;
+        out.append_attribute((prefix.empty() ? string("xmlns") : "xmlns:" + prefix).c_str()) = ns.c_str();
+    };
+    declare(_prefix_of(src.name()));
+    for (auto a : src.attributes())
+    {
+        string name = a.name();
+        if (name == "xmlns" || name.rfind("xmlns:", 0) == 0)
+            continue;
+        // An unprefixed attribute has no namespace, whatever the default.
+        if (name.find(':') != string::npos)
+            declare(_prefix_of(name));
+        out.append_attribute(a.name()) = a.value();
+    }
+    for (auto child : src.children())
+    {
+        if (child.type() == pugi::node_element)
+            _copy_element(child, out);
+        else if (child.type() == pugi::node_pcdata || child.type() == pugi::node_cdata)
+            out.append_child(pugi::node_pcdata).set_value(child.value());
+    }
+    return out;
+}
+
+static pugi::xml_node _child_named(pugi::xml_node n, const char* local_name)
+{
+    for (auto c : n.children())
+        if (c.type() == pugi::node_element && _local_name_of(c.name()) == local_name)
+            return c;
+    return pugi::xml_node();
+}
+
+static void _set_text(pugi::xml_node n, const char* text)
+{
+    while (n.first_child())
+        n.remove_child(n.first_child());
+    n.append_child(pugi::node_pcdata).set_value(text);
+}
+
+void r_onvif::append_flip_extension(pugi::xml_node config, const string& xml, bool on)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetProfile response");
+    auto src = doc.select_node("//*[local-name()='Profile']/*[local-name()='VideoSourceConfiguration']/*[local-name()='Extension']").node();
+    auto ext = src ? _copy_element(src, config) : config.append_child("tt:Extension");
+    // Rotate comes first in the Extension, and Mode first in Rotate.
+    auto rotate = _child_named(ext, "Rotate");
+    if (!rotate)
+        rotate = ext.prepend_child("tt:Rotate");
+    auto mode = _child_named(rotate, "Mode");
+    if (!mode)
+        mode = rotate.prepend_child("tt:Mode");
+    _set_text(mode, on ? "ON" : "OFF");
+    // A source turned 90 or 270 degrees isn't flipped by Mode ON alone.
+    if (on)
+        if (auto degree = _child_named(rotate, "Degree"))
+            _set_text(degree, "180");
+}
+
 vector<r_onvif::onvif_profile_info> r_onvif::parse_profiles_response(const string& xml)
 {
     vector<onvif_profile_info> out;
@@ -2533,6 +2685,82 @@ void r_onvif::r_onvif_cam::ptz_stop(const string& ptz_service, const onvif_profi
     );
     if (result.first != 200)
         throw _events_error("Stop failed", result);
+}
+
+r_onvif::onvif_video_flip r_onvif::r_onvif_cam::get_video_flip(onvif_media_service media_service, const onvif_profile_token& profile_token)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(media_service, host, port, protocol, uri);
+    auto profile = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver10/media/wsdl/GetProfile",
+        [&](pugi::xml_node& body) {
+            body.append_child("trt:GetProfile").append_child("trt:ProfileToken").text().set(profile_token.c_str());
+        },
+        _username, _password
+    );
+    if (profile.first != 200)
+        throw _events_error("GetProfile failed", profile);
+    auto config = parse_video_source_config(profile.second);
+
+    auto options = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver10/media/wsdl/GetVideoSourceConfigurationOptions",
+        [&](pugi::xml_node& body) {
+            auto req = body.append_child("trt:GetVideoSourceConfigurationOptions");
+            req.append_child("trt:ConfigurationToken").text().set(config.token.c_str());
+            req.append_child("trt:ProfileToken").text().set(profile_token.c_str());
+        },
+        _username, _password
+    );
+    onvif_video_flip flip;
+    // A camera that can't answer for its options has no Rotate to offer.
+    if (options.first != 200)
+        return flip;
+    auto offered = parse_rotate_options(options.second);
+    flip.supported = std::find(offered.modes.begin(), offered.modes.end(), "ON") != offered.modes.end();
+    flip.on = flip.supported && is_flipped(config);
+    flip.reboot = flip.supported && offered.reboot;
+    return flip;
+}
+
+void r_onvif::r_onvif_cam::set_video_flip(onvif_media_service media_service, const onvif_profile_token& profile_token, bool on)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(media_service, host, port, protocol, uri);
+    auto profile = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver10/media/wsdl/GetProfile",
+        [&](pugi::xml_node& body) {
+            body.append_child("trt:GetProfile").append_child("trt:ProfileToken").text().set(profile_token.c_str());
+        },
+        _username, _password
+    );
+    if (profile.first != 200)
+        throw _events_error("GetProfile failed", profile);
+    auto c = parse_video_source_config(profile.second);
+
+    // The source's configuration as the camera gave it, its Extension whole, with only its rotation changed.
+    auto result = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver10/media/wsdl/SetVideoSourceConfiguration",
+        [&](pugi::xml_node& body) {
+            auto req = body.append_child("trt:SetVideoSourceConfiguration");
+            auto cfg = req.append_child("trt:Configuration");
+            cfg.append_attribute("token") = c.token.c_str();
+            cfg.append_child("tt:Name").text().set(c.name.c_str());
+            cfg.append_child("tt:UseCount").text().set(c.use_count);
+            cfg.append_child("tt:SourceToken").text().set(c.source_token.c_str());
+            auto bounds = cfg.append_child("tt:Bounds");
+            bounds.append_attribute("x") = c.x;
+            bounds.append_attribute("y") = c.y;
+            bounds.append_attribute("width") = c.width;
+            bounds.append_attribute("height") = c.height;
+            append_flip_extension(cfg, profile.second, on);
+            req.append_child("trt:ForcePersistence").text().set("true");
+        },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("SetVideoSourceConfiguration failed", result);
 }
 
 void r_onvif::r_onvif_cam::ptz_goto_preset(const string& ptz_service, const onvif_profile_token& profile_token, const string& preset_token)
