@@ -100,8 +100,10 @@ public:
     // A finished MOG2 event (only tier 1 cameras run MOG2).
     R_API void mog2_event(const std::string& camera_id, int64_t start_ms, int64_t end_ms);
 
-    // A detection YOLO put on the bus (tier 1: from the motion plugin).
-    R_API void yolo_detection(const std::string& camera_id, const std::string& class_name, int64_t ts);
+    // A detection put on the bus (tier 1: from the motion plugin), with its
+    // source (r_detection::source). A camera's own report ("camera") is ignored:
+    // it is what YOLO's finds are checked against, not one of them.
+    R_API void yolo_detection(const std::string& camera_id, const std::string& class_name, int64_t ts, const std::string& source = std::string());
 
     // A detection pass session (tier 3): whether YOLO found a person in it, and
     // whether the camera reported one.

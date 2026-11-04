@@ -21,6 +21,8 @@ add_executable(
     source/test_r_detection_planner.cpp
     include/test_r_tier_controller.h
     source/test_r_tier_controller.cpp
+    include/test_r_tier_outputs.h
+    source/test_r_tier_outputs.cpp
     include/test_r_early_alerts.h
     source/test_r_early_alerts.cpp
     include/test_r_event_timing.h

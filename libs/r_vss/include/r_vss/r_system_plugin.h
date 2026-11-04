@@ -64,7 +64,11 @@ R_API const char* get_system_plugin_version();
 R_API const char* system_plugin_get_status_message(r_system_plugin_handle plugin);
 
 // Optional: Receive a detection event emitted by a motion plugin
-// Implement this if your system plugin wants to consume detection events
+// Implement this if your system plugin wants to consume detection events.
+// Boxes are in 640x640 letterbox space. A class the camera reported itself
+// ("person", "vehicle", "animal") has no box and no confidence: x1, y1, x2, y2
+// and confidence are all 0. Treat such a box as none (no area, no overlap),
+// not as a point at the corner.
 R_API void system_plugin_post_detection(r_system_plugin_handle plugin,
     const char* camera_id, int64_t ts, const char* class_name,
     float confidence, float x1, float y1, float x2, float y2);

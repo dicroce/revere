@@ -571,7 +571,7 @@ void r_stream_keeper::_on_detection_bus(void* userdata, const r_detection& det, 
 {
     auto sk = static_cast<r_stream_keeper*>(userdata);
     std::lock_guard<std::mutex> g(sk->_tier_lock);
-    sk->_tiers.yolo_detection(det.camera_id, det.class_name, det.ts);
+    sk->_tiers.yolo_detection(det.camera_id, det.class_name, det.ts, det.source);
 }
 
 void r_stream_keeper::_tier_tick()
@@ -650,16 +650,13 @@ void r_stream_keeper::_tier_tick()
 
 void r_stream_keeper::_camera_class_output(const string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms)
 {
-    auto yolo = camera_class_to_yolo(t.what);
-    if(yolo.empty() || !_motion_detection_on(camera_id))
+    auto what = camera_report_class(t.what);
+    if(what.empty() || !_motion_detection_on(camera_id))
         return;
 
     auto key = camera_id + "|" + t.what;
-    r_detection d;
-    d.camera_id = camera_id;
-    d.class_name = yolo;
-    d.confidence = 1.0f;   // cameras give no confidence
-    whole_frame(d);
+    // The camera's own word, with no box: it says neither where nor which animal.
+    auto d = camera_report(camera_id, what, now_ms);
 
     if(t.active)
     {
@@ -669,7 +666,6 @@ void r_stream_keeper::_camera_class_output(const string& camera_id, const r_came
                 return;
             _camera_class_starts[key] = now_ms;
         }
-        d.ts = now_ms;
         _meph.emit_detection(d);
         return;
     }
