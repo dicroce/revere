@@ -91,6 +91,9 @@ public:
     // version and auth it settled on) is kept between commands, so a move is one
     // request to the camera; commands to one camera run one at a time, and don't
     // wait on camera interrogation. Safe to call from any thread.
+    // How many timed Stops are waiting, across cameras (for tests).
+    R_API size_t pending_ptz_stops();
+
     R_API r_ptz_result ptz_control(
         const std::string& ipv4,
         const std::string& xaddrs,
@@ -186,6 +189,7 @@ private:
         std::string profile_token;
         std::chrono::steady_clock::time_point at;
     };
+    void _drop_ptz_stops(const std::shared_ptr<_ptz_session>& session);
     void _schedule_ptz_stop(const std::shared_ptr<_ptz_session>& session, uint64_t command, const r_ptz_command& cmd);
     void _ptz_stopper_loop();
     std::mutex _ptz_deadlines_lock;
@@ -195,7 +199,7 @@ private:
     bool _ptz_stopper_done {false};
 };
 
-// A ContinuousMove Timeout ("PT1S", "PT1.5S", "PT1M2S") in milliseconds; null
+// A ContinuousMove Timeout ("PT1S", "PT1.5S", "PT1M2S", "PT1H") in milliseconds; null
 // for an empty or unreadable one, or zero.
 R_API r_utils::r_nullable<int64_t> ptz_timeout_ms(const std::string& timeout);
 
