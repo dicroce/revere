@@ -4,6 +4,7 @@
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
+#include "r_utils/r_string_utils.h"
 #include <filesystem>
 #include <vector>
 
@@ -18,6 +19,17 @@ typedef void (*destroy_plugin_func)(r_motion_plugin_handle);
 typedef void (*post_motion_event_func)(r_motion_plugin_handle, int, const char*, int64_t, const uint8_t*, size_t, uint16_t, uint16_t, int, int, int, int, bool);
 typedef void (*post_motion_event_regions_func)(r_motion_plugin_handle, int, const char*, int64_t, const uint8_t*, size_t, uint16_t, uint16_t, int, int, int, int, bool, const int*, size_t);
 typedef int (*detect_objects_func)(r_motion_plugin_handle, const uint8_t*, size_t, uint16_t, uint16_t, r_object_detection_cb, void*);
+typedef int (*abi_version_func)();
+
+std::string r_vss::motion_plugin_abi_problem(abi_version_func abi_version)
+{
+    if (!abi_version)
+        return r_string_utils::format("it was built before motion plugins carried an ABI version (this Revere's is %d); rebuild it with this Revere", R_MOTION_PLUGIN_ABI_VERSION);
+    int v = abi_version();
+    if (v != R_MOTION_PLUGIN_ABI_VERSION)
+        return r_string_utils::format("it was built for motion plugin ABI version %d, and this Revere's is %d; rebuild it with this Revere", v, R_MOTION_PLUGIN_ABI_VERSION);
+    return std::string();
+}
 
 r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devices, const std::string& top_dir, r_stream_keeper& stream_keeper)
     : _devices(devices),
@@ -60,6 +72,23 @@ r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devic
                     {
                         // Load the dynamic library
                         auto lib = std::make_unique<r_dynamic_library>(entry.path().string());
+
+                        // Before anything else is called: a plugin built against other
+                        // headers would use the host's objects with the wrong layout.
+                        void* abi_symbol = nullptr;
+                        try
+                        {
+                            abi_symbol = lib->resolve_symbol("motion_plugin_abi_version");
+                        }
+                        catch(const std::exception&)
+                        {
+                        }
+                        auto abi_problem = motion_plugin_abi_problem(reinterpret_cast<abi_version_func>(abi_symbol));
+                        if (!abi_problem.empty())
+                        {
+                            R_LOG_ERROR("Motion plugin %s not loaded: %s", filename.c_str(), abi_problem.c_str());
+                            continue;
+                        }
 
                         // Look for the required C API symbols
                         void* load_symbol = lib->resolve_symbol("load_plugin");

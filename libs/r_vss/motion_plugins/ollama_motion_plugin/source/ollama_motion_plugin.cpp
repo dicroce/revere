@@ -354,6 +354,11 @@ void ollama_motion_plugin::_load_config()
 extern "C"
 {
 
+R_API int motion_plugin_abi_version()
+{
+    return R_MOTION_PLUGIN_ABI_VERSION;
+}
+
 R_API r_motion_plugin_handle load_plugin(r_motion_event_plugin_host_handle host_handle)
 {
     auto* host = reinterpret_cast<r_vss::r_motion_event_plugin_host*>(host_handle);

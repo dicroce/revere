@@ -115,10 +115,11 @@ inline ImVec4 detection_class_color(const std::string& class_name)
 {
     if(class_name == "person")
         return class_person;
-    if(class_name == "bicycle" || class_name == "car" || class_name == "motorcycle" || class_name == "airplane" ||
+    // "vehicle" and "animal": a camera's own report, which doesn't say which.
+    if(class_name == "vehicle" || class_name == "bicycle" || class_name == "car" || class_name == "motorcycle" || class_name == "airplane" ||
        class_name == "bus" || class_name == "train" || class_name == "truck" || class_name == "boat")
         return class_vehicle;
-    if(class_name == "bird" || class_name == "cat" || class_name == "dog" || class_name == "horse" ||
+    if(class_name == "animal" || class_name == "bird" || class_name == "cat" || class_name == "dog" || class_name == "horse" ||
        class_name == "sheep" || class_name == "cow" || class_name == "bear")
         return class_animal;
     if(class_name == "backpack" || class_name == "handbag" || class_name == "suitcase")

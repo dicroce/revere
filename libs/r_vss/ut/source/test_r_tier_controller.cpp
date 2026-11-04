@@ -313,3 +313,30 @@ void test_r_tier_controller::test_status_without_detector()
         RTF_ASSERT(tier_status_without_detector(other).reason == "why");
     }
 }
+
+// A camera's own report on the bus (source "camera") is what YOLO is checked
+// against, not a YOLO find: it confirms no MOG2 event and is no person check.
+void test_r_tier_controller::test_camera_reports_are_not_yolo()
+{
+    T t;
+    t.subscription("a", true, 0);
+    int64_t at = 10 * MIN;
+    for (int i = 0; i < 10; ++i, at += MIN)
+    {
+        _event(t, "a", at, true, false, true, false);   // the camera reported motion and a person; YOLO found nothing
+        t.yolo_detection("a", "person", at + 4000, "camera");
+        t.tick(at + 10000);
+    }
+    t.tick(at + T::VERIFY_DELAY_MS);
+    RTF_ASSERT_EQUAL(t.status("a").checked, 0);
+    RTF_ASSERT_EQUAL(t.status("a").person_checked, 0);
+    RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_1);
+
+    // The same from YOLO checks them.
+    at += MIN;
+    _event(t, "a", at, true, false, true, false);
+    t.yolo_detection("a", "person", at + 4000, "");
+    t.tick(at + 10000 + T::VERIFY_DELAY_MS);
+    RTF_ASSERT_EQUAL(t.status("a").checked, 1);
+    RTF_ASSERT_EQUAL(t.status("a").person_checked, 1);
+}

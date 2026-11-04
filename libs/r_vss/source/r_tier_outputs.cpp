@@ -8,29 +8,29 @@ using namespace r_utils;
 using namespace std;
 using json = nlohmann::json;
 
-string r_vss::camera_class_to_yolo(const string& what)
+string r_vss::camera_report_class(const string& what)
 {
-    if (what == "person")
-        return "person";
-    if (what == "vehicle")
-        return "car";
-    if (what == "animal")
-        return "dog";
+    if (what == "person" || what == "vehicle" || what == "animal")
+        return what;
     return string();
+}
+
+r_detection r_vss::camera_report(const string& camera_id, const string& class_name, int64_t ts)
+{
+    r_detection d;
+    d.camera_id = camera_id;
+    d.ts = ts;
+    d.class_name = class_name;
+    d.confidence = 0.0f;
+    d.x1 = d.y1 = d.x2 = d.y2 = 0.0f;
+    d.source = "camera";
+    return d;
 }
 
 bool r_vss::reported_class(const string& class_name)
 {
     auto g = detection_group(class_name);
     return g == "person" || g == "vehicle" || g == "animal";
-}
-
-void r_vss::whole_frame(r_detection& d)
-{
-    d.x1 = 0.0f;
-    d.y1 = 0.0f;
-    d.x2 = 639.0f;
-    d.y2 = 639.0f;
 }
 
 static string _iso(int64_t ms)
@@ -43,15 +43,19 @@ string r_vss::analytics_json(int64_t start_ms, int64_t end_ms, const vector<r_de
     json dets = json::array();
     for (auto& d : detections)
     {
-        dets.push_back({
+        json det = {
             {"timestamp", _iso(d.ts)},
-            {"class_name", d.class_name},
-            {"confidence", d.confidence},
-            {"x1", d.x1 / 640.0f},
-            {"y1", d.y1 / 640.0f},
-            {"x2", d.x2 / 640.0f},
-            {"y2", d.y2 / 640.0f}
-        });
+            {"class_name", d.class_name}
+        };
+        if (!is_camera_report(d))
+        {
+            det["confidence"] = d.confidence;
+            det["x1"] = d.x1 / 640.0f;
+            det["y1"] = d.y1 / 640.0f;
+            det["x2"] = d.x2 / 640.0f;
+            det["y2"] = d.y2 / 640.0f;
+        }
+        dets.push_back(det);
     }
     json j;
     j["analytics"] = {

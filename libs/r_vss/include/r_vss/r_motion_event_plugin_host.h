@@ -29,7 +29,19 @@ struct r_detection
     std::string class_name;
     float       confidence;
     float       x1, y1, x2, y2;  // 640x640 letterbox space
+    // Where it came from: "" for object detection (YOLO); "camera" for a class
+    // the camera reported itself ("person", "vehicle", "animal"), which has no
+    // box and no confidence: both are 0.
+    std::string source;
 };
+
+// A camera's own report, with no box or confidence.
+inline bool is_camera_report(const r_detection& d) { return d.source == "camera"; }
+
+// Why a motion plugin can't be loaded, from its motion_plugin_abi_version
+// (null when it doesn't export one: built before the check), or "" when its
+// version is this host's R_MOTION_PLUGIN_ABI_VERSION.
+R_API std::string motion_plugin_abi_problem(int (*abi_version)());
 
 // posted_at_ms: gateway wall clock (epoch ms) when the detection was put on the bus.
 typedef void (*r_detection_callback)(void* userdata, const r_detection& det, int64_t posted_at_ms);

@@ -217,7 +217,8 @@ vector<analytics_event> vision::query_analytics(const configure_state& cs, const
         {
             analytics_detection ad;
             ad.class_name = det["class_name"].get<string>();
-            ad.confidence = det["confidence"].get<float>();
+            // A camera's own report has no confidence or box.
+            ad.confidence = det.value("confidence", 0.0f);
             ad.timestamp = r_time_utils::iso_8601_to_tp(det["timestamp"]);
             ad.x1 = det.value("x1", 0.0f);
             ad.y1 = det.value("y1", 0.0f);

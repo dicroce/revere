@@ -61,9 +61,9 @@ void r_tier_controller::mog2_event(const string& camera_id, int64_t start_ms, in
     _cameras[camera_id].pending.push_back({start_ms, end_ms});
 }
 
-void r_tier_controller::yolo_detection(const string& camera_id, const string& class_name, int64_t ts)
+void r_tier_controller::yolo_detection(const string& camera_id, const string& class_name, int64_t ts, const string& source)
 {
-    if (!reported_class(class_name))
+    if (source == "camera" || !reported_class(class_name))
         return;
     auto& c = _cameras[camera_id];
     c.yolo_found.push_back(ts);

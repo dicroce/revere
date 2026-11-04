@@ -40,6 +40,11 @@ void test_plugin::post_motion_event(r_vss::r_motion_event evt, const std::string
 extern "C"
 {
 
+R_API int motion_plugin_abi_version()
+{
+    return R_MOTION_PLUGIN_ABI_VERSION;
+}
+
 R_API r_motion_plugin_handle load_plugin(r_motion_event_plugin_host_handle host)
 {
     R_LOG_INFO("test_plugin: load_plugin() called");

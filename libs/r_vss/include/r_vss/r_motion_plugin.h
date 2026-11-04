@@ -90,7 +90,19 @@ extern "C" {
 typedef void* r_motion_plugin_handle;
 typedef void* r_motion_event_plugin_host_handle;
 
+// The motion plugin ABI. A plugin reaches the host's C++ types through its
+// host handle (r_motion_event_plugin_host, r_detection, r_devices, r_camera),
+// so it must be built against the same headers. Bump this when any of them
+// changes layout. Version 2: r_detection gained source.
+#define R_MOTION_PLUGIN_ABI_VERSION 2
+
 // Plugin entry points that must be implemented by each plugin
+// motion_plugin_abi_version: R_MOTION_PLUGIN_ABI_VERSION as the plugin was
+// built. The host refuses a plugin without it, or with another version, before
+// calling anything else: a stale plugin would read and write the host's
+// objects with the wrong layout.
+R_API int motion_plugin_abi_version();
+
 // load_plugin: Creates and returns a new plugin instance
 R_API r_motion_plugin_handle load_plugin(r_motion_event_plugin_host_handle host);
 
