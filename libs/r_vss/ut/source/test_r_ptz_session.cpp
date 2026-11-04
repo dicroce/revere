@@ -47,6 +47,8 @@ struct fake_camera
     std::atomic<int> fail_ptz {0};    // fail this many PTZ calls next
     std::atomic<int> fail_caps {0};   // fail this many GetCapabilities next
     string nodes {"fault"};           // how GetNodes answers (see _answer); set before the first call
+    bool offers_rotate {true};        // GetVideoSourceConfigurationOptions lists Rotate ON and OFF
+    string rotate {"OFF"};            // the source's Rotate Mode, as SetVideoSourceConfiguration last set it
     map<string, string> last_body;    // the last request body of each op
     r_web_server<r_socket> ws;
 
@@ -91,7 +93,9 @@ struct fake_camera
 
     r_server_response _answer(const string& body)
     {
-        static const char* ops[] = {"GetSystemDateAndTime", "GetCapabilities", "GetProfiles", "GetPresets", "ContinuousMove", "tptz:Stop", "GotoPreset", "GetNodes"};
+        // GetProfiles before GetProfile: the first's body holds the second's name.
+        static const char* ops[] = {"GetSystemDateAndTime", "GetCapabilities", "GetProfiles", "GetPresets", "ContinuousMove", "tptz:Stop", "GotoPreset", "GetNodes",
+                                    "GetVideoSourceConfigurationOptions", "SetVideoSourceConfiguration", "GetProfile"};
         string op;
         for(auto o : ops)
             if(body.find(o) != string::npos) { op = o; break; }
@@ -134,6 +138,26 @@ struct fake_camera
             return _soap("<tptz:ContinuousMoveResponse/>");
         if(op == "tptz:Stop")
             return _soap("<tptz:StopResponse/>");
+        if(op == "GetProfile")
+        {
+            std::lock_guard<std::mutex> g(lock);
+            return _soap("<trt:GetProfileResponse><trt:Profile token=\"profile_1\"><tt:Name>main</tt:Name>"
+                         "<tt:VideoSourceConfiguration token=\"vsc_1\"><tt:Name>\n  Source 1\n</tt:Name><tt:UseCount>2</tt:UseCount>"
+                         "<tt:SourceToken> source_1 </tt:SourceToken><tt:Bounds x=\"0\" y=\"0\" width=\"1920\" height=\"1080\"/>"
+                         "<tt:Extension><tt:Rotate><tt:Mode>" + rotate + "</tt:Mode></tt:Rotate></tt:Extension>"
+                         "</tt:VideoSourceConfiguration></trt:Profile></trt:GetProfileResponse>");
+        }
+        if(op == "GetVideoSourceConfigurationOptions")
+            return _soap(string("<trt:GetVideoSourceConfigurationOptionsResponse><trt:Options>"
+                         "<tt:BoundsRange><tt:XRange><tt:Min>0</tt:Min><tt:Max>0</tt:Max></tt:XRange></tt:BoundsRange>") +
+                         (offers_rotate ? "<tt:Extension><tt:Rotate><tt:Mode>OFF</tt:Mode><tt:Mode>ON</tt:Mode></tt:Rotate></tt:Extension>" : "") +
+                         "</trt:Options></trt:GetVideoSourceConfigurationOptionsResponse>");
+        if(op == "SetVideoSourceConfiguration")
+        {
+            std::lock_guard<std::mutex> g(lock);
+            rotate = body.find("<tt:Mode>ON</tt:Mode>") != string::npos ? "ON" : "OFF";
+            return _soap("<trt:SetVideoSourceConfigurationResponse/>");
+        }
         if(op == "GotoPreset")
             return _soap("<tptz:GotoPresetResponse/>");
         // GetNodes per nodes: "fault", "no_spaces" (no SupportedPTZSpaces), "pan_only" or "both".
@@ -494,3 +518,77 @@ void test_r_ptz_session::test_shutdown_drops_pending_stops()
     // Gone at once, without waiting out the 30 s or stopping the camera.
     RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 0);
 }
+
+namespace
+{
+r_imaging_command _flip(bool on)
+{
+    r_imaging_command c;
+    c.op = r_imaging_command::op_t::set_flip;
+    c.flip = on;
+    return c;
+}
+r_onvif::onvif_video_flip _imaging(r_onvif_provider& p, fake_camera& cam, const r_imaging_command& cmd)
+{
+    return p.imaging_control("127.0.0.1", "/onvif/device_service", _s("admin"), _s("pw"), cmd, _i(cam.port), _s("http"));
+}
+}
+
+void test_r_ptz_session::test_flip_read()
+{
+    fake_camera cam;
+    r_onvif_provider p("", nullptr);
+    auto f = _imaging(p, cam, r_imaging_command());
+    RTF_ASSERT(f.supported);
+    RTF_ASSERT(!f.on);
+    // A read sets nothing.
+    RTF_ASSERT_EQUAL(cam.count("SetVideoSourceConfiguration"), 0);
+}
+
+void test_r_ptz_session::test_flip_set_sends_the_source_back_with_rotate()
+{
+    fake_camera cam;
+    r_onvif_provider p("", nullptr);
+    auto f = _imaging(p, cam, _flip(true));
+    RTF_ASSERT(f.supported && f.on);
+    string set;
+    {
+        std::lock_guard<std::mutex> g(cam.lock);
+        set = cam.last_body["SetVideoSourceConfiguration"];
+    }
+    // The source's own configuration, trimmed, with only its rotation changed, kept over a reboot.
+    RTF_ASSERT(set.find("token=\"vsc_1\"") != string::npos);
+    RTF_ASSERT(set.find("<tt:Name>Source 1</tt:Name>") != string::npos);
+    RTF_ASSERT(set.find("<tt:UseCount>2</tt:UseCount>") != string::npos);
+    RTF_ASSERT(set.find("<tt:SourceToken>source_1</tt:SourceToken>") != string::npos);
+    RTF_ASSERT(set.find("width=\"1920\"") != string::npos && set.find("height=\"1080\"") != string::npos);
+    RTF_ASSERT(set.find("<tt:Rotate><tt:Mode>ON</tt:Mode></tt:Rotate>") != string::npos);
+    RTF_ASSERT(set.find("<trt:ForcePersistence>true</trt:ForcePersistence>") != string::npos);
+    // Already on: nothing to set. Off again: set.
+    _imaging(p, cam, _flip(true));
+    RTF_ASSERT_EQUAL(cam.count("SetVideoSourceConfiguration"), 1);
+    RTF_ASSERT(!_imaging(p, cam, _flip(false)).on);
+    RTF_ASSERT_EQUAL(cam.count("SetVideoSourceConfiguration"), 2);
+}
+
+void test_r_ptz_session::test_flip_unsupported()
+{
+    fake_camera cam;
+    cam.offers_rotate = false;
+    r_onvif_provider p("", nullptr);
+    RTF_ASSERT(!_imaging(p, cam, r_imaging_command()).supported);
+    string code;
+    try { _imaging(p, cam, _flip(true)); }
+    catch(const r_ptz_error& ex) { code = ex.code(); }
+    RTF_ASSERT_EQUAL(code, string("unsupported"));
+    RTF_ASSERT_EQUAL(cam.count("SetVideoSourceConfiguration"), 0);
+}
+
+void test_r_ptz_session::test_flip_needs_no_ptz()
+{
+    // A camera with no PTZ service can still flip its picture.
+    fake_camera cam(false);
+    r_onvif_provider p("", nullptr);
+    RTF_ASSERT(_imaging(p, cam, _flip(true)).on);
+}
+

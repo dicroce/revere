@@ -146,6 +146,17 @@ public:
         r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
     );
 
+    // Read or set a camera's picture flip (r_onvif_provider::imaging_control). Throws r_ptz_error.
+    R_API r_onvif::onvif_video_flip imaging_control(
+        const std::string& ipv4,
+        const std::string& xaddrs,
+        r_utils::r_nullable<std::string> username,
+        r_utils::r_nullable<std::string> password,
+        const r_imaging_command& cmd,
+        r_utils::r_nullable<int> onvif_port = r_utils::r_nullable<int>(),
+        r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
+    );
+
     R_API void interrogate_camera(
         const std::string& camera_name,
         const std::string& ipv4,

@@ -123,6 +123,33 @@ constexpr size_t ONVIF_TOKEN_MAX_CHARS = 64;  // ONVIF's ReferenceToken
 constexpr size_t ONVIF_ENUM_MAX_BYTES = 16;
 R_API std::vector<onvif_profile_info> parse_profiles_response(const std::string& xml);
 
+// A profile's VideoSourceConfiguration (ONVIF Media), as SetVideoSourceConfiguration needs it back, and its
+// rotation (Extension/Rotate/Mode: "ON", "OFF", "AUTO"; empty when the camera says none).
+struct onvif_video_source_config
+{
+    std::string token;
+    std::string name;
+    int use_count {0};
+    std::string source_token;
+    int x {0}, y {0}, width {0}, height {0};
+    std::string rotate_mode;
+};
+
+// The profile's VideoSourceConfiguration from a GetProfile response; throws when it has none.
+R_API onvif_video_source_config parse_video_source_config(const std::string& get_profile_xml);
+
+// The Rotate modes a GetVideoSourceConfigurationOptions response offers (Extension/Rotate/Mode), as given.
+R_API std::vector<std::string> parse_rotate_modes(const std::string& options_xml);
+
+// "Flip picture": the video source turned 180 degrees, for a camera mounted upside down, through the Media
+// service's Rotate. ONVIF's Imaging service has no flip, and a mirror alone isn't standard. supported when the
+// source's options offer Rotate ON.
+struct onvif_video_flip
+{
+    bool supported {false};
+    bool on {false};
+};
+
 // A camera's substream (its second, smaller stream, for live view and analysis): no narrower than this.
 constexpr int SUBSTREAM_MIN_WIDTH = 320;
 // The size a substream is ranked against: 640x480.
@@ -306,6 +333,11 @@ public:
                         bool pan_tilt = true, bool zoom = true);
 
     // GotoPreset: move to a saved position by its token.
+    // The profile's source flip (see onvif_video_flip); a camera that offers no Rotate ON is unsupported, not off.
+    R_API onvif_video_flip get_video_flip(onvif_media_service media_service, const onvif_profile_token& profile_token);
+    // Turn it on or off (SetVideoSourceConfiguration, ForcePersistence), from the source's own configuration.
+    R_API void set_video_flip(onvif_media_service media_service, const onvif_profile_token& profile_token, bool on);
+
     R_API void ptz_goto_preset(const std::string& ptz_service, const onvif_profile_token& profile_token,
                               const std::string& preset_token);
 

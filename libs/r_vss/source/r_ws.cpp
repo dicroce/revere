@@ -158,6 +158,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     // configure the camera for recording.
     route(METHOD_GET, "/camera_profiles", &r_ws::_get_camera_profiles);
     route(METHOD_POST, "/ptz", &r_ws::_post_ptz);
+    route(METHOD_POST, "/imaging", &r_ws::_post_imaging);
     route(METHOD_GET, "/ptz_view/frame", &r_ws::_get_ptz_view_frame);
     route(METHOD_GET, "/measure_camera", &r_ws::_get_measure_camera);
     route(METHOD_GET, "/measure_progress", &r_ws::_get_measure_progress);
@@ -3155,6 +3156,95 @@ r_http::r_server_response r_ws::_get_camera_profiles(r_utils::r_socket_base&, co
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to get camera profiles."));
+}
+
+r_http::r_server_response r_ws::_post_imaging(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    // The camera's picture flip (ONVIF Media Rotate): {camera_id, action: "get" | "set_flip", flip, profile_token?}.
+    // Answers {status: "ok", flip: {supported, on}}, as the camera now has it. A failure is {error, code}, as /ptz's:
+    // "bad_request", "unknown_camera", "no_onvif" (501: no ONVIF address), "unsupported" (501: a set the camera
+    // offers no flip for), "unreachable" or "camera_error" (502).
+    auto failure = [](status_code status, const string& code, const string& error) {
+        json j;
+        j["error"] = error;
+        j["code"] = code;
+        r_server_response response(status);
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    };
+
+    json req;
+    try
+    {
+        req = json::parse(request.get_body_as_string());
+    }
+    catch(const std::exception&)
+    {
+        return failure(response_bad_request, "bad_request", "The request isn't JSON.");
+    }
+    if(!req.is_object() || !req.contains("camera_id") || !req["camera_id"].is_string())
+        return failure(response_bad_request, "bad_request", "Missing camera_id.");
+    auto camera_id = req["camera_id"].get<string>();
+
+    auto maybe_camera = _devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        return failure(response_not_found, "unknown_camera", "No camera with that id.");
+    auto camera = maybe_camera.value();
+    if(camera.ipv4.is_null() || camera.xaddrs.is_null())
+        return failure(response_not_implemented, "no_onvif", "This camera wasn't found by ONVIF discovery, so its picture can't be set.");
+
+    r_disco::r_imaging_command cmd;
+    try
+    {
+        auto action = req.value("action", string("get"));
+        if(action == "set_flip")
+        {
+            if(!req.contains("flip") || !req["flip"].is_boolean())
+                return failure(response_bad_request, "bad_request", "set_flip requires flip, true or false.");
+            cmd.op = r_disco::r_imaging_command::op_t::set_flip;
+            cmd.flip = req["flip"].get<bool>();
+        }
+        else if(action != "get")
+            return failure(response_bad_request, "bad_request", "Unknown imaging action.");
+        cmd.profile_token = req.value("profile_token", string());
+    }
+    catch(const std::exception&)
+    {
+        return failure(response_bad_request, "bad_request", "An imaging field has the wrong type.");
+    }
+
+    try
+    {
+        auto flip = _agent.imaging_control(
+            camera.ipv4.value(), camera.xaddrs.value(),
+            camera.rtsp_username, camera.rtsp_password, cmd,
+            camera.onvif_port, camera.onvif_protocol
+        );
+        json j;
+        j["status"] = "ok";
+        j["flip"] = {{"supported", flip.supported}, {"on", flip.on}};
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    catch(const r_disco::r_ptz_error& ex)
+    {
+        R_LOG_ERROR("Imaging %s on camera %s failed (%s): %s", req.value("action", string("get")).c_str(), camera_id.c_str(), ex.code().c_str(), ex.what());
+        if(ex.code() == "unsupported")
+            return failure(response_not_implemented, "unsupported", "This camera doesn't offer a picture flip over ONVIF.");
+        if(ex.code() == "unreachable")
+            return failure(response_bad_gateway, "unreachable", "The camera's ONVIF service didn't answer.");
+        return failure(response_bad_gateway, "camera_error", "The camera didn't change its picture.");
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+        return failure(response_internal_server_error, "camera_error", "The camera didn't change its picture.");
+    }
 }
 
 r_http::r_server_response r_ws::_post_ptz(r_utils::r_socket_base&, const r_http::r_server_request& request)

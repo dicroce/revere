@@ -2224,6 +2224,44 @@ static string _bounded_enum(const char* value)
     return s.substr(0, n);
 }
 
+r_onvif::onvif_video_source_config r_onvif::parse_video_source_config(const string& xml)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetProfile response");
+    auto vsc = doc.select_node("//*[local-name()='Profile']/*[local-name()='VideoSourceConfiguration']");
+    if (!vsc)
+        throw std::runtime_error("The profile has no VideoSourceConfiguration");
+    auto n = vsc.node();
+    onvif_video_source_config c;
+    c.token = n.attribute("token").value();
+    if (!_valid_token(c.token))
+        throw std::runtime_error("The VideoSourceConfiguration has no valid token");
+    c.name = _bounded_enum(n.select_node("./*[local-name()='Name']").node().child_value());
+    c.use_count = _int_child(n, "./*[local-name()='UseCount']");
+    c.source_token = r_string_utils::strip(n.select_node("./*[local-name()='SourceToken']").node().child_value());
+    if (!_valid_token(c.source_token))
+        throw std::runtime_error("The VideoSourceConfiguration has no valid SourceToken");
+    auto bounds = n.select_node("./*[local-name()='Bounds']").node();
+    c.x = bounds.attribute("x").as_int();
+    c.y = bounds.attribute("y").as_int();
+    c.width = bounds.attribute("width").as_int();
+    c.height = bounds.attribute("height").as_int();
+    c.rotate_mode = _bounded_enum(n.select_node("./*[local-name()='Extension']/*[local-name()='Rotate']/*[local-name()='Mode']").node().child_value());
+    return c;
+}
+
+vector<string> r_onvif::parse_rotate_modes(const string& xml)
+{
+    vector<string> modes;
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetVideoSourceConfigurationOptions response");
+    for (auto m : doc.select_nodes("//*[local-name()='Options']/*[local-name()='Extension']/*[local-name()='Rotate']/*[local-name()='Mode']"))
+        modes.push_back(_bounded_enum(m.node().child_value()));
+    return modes;
+}
+
 vector<r_onvif::onvif_profile_info> r_onvif::parse_profiles_response(const string& xml)
 {
     vector<onvif_profile_info> out;
@@ -2533,6 +2571,81 @@ void r_onvif::r_onvif_cam::ptz_stop(const string& ptz_service, const onvif_profi
     );
     if (result.first != 200)
         throw _events_error("Stop failed", result);
+}
+
+r_onvif::onvif_video_flip r_onvif::r_onvif_cam::get_video_flip(onvif_media_service media_service, const onvif_profile_token& profile_token)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(media_service, host, port, protocol, uri);
+    auto profile = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver10/media/wsdl/GetProfile",
+        [&](pugi::xml_node& body) {
+            body.append_child("trt:GetProfile").append_child("trt:ProfileToken").text().set(profile_token.c_str());
+        },
+        _username, _password
+    );
+    if (profile.first != 200)
+        throw _events_error("GetProfile failed", profile);
+    auto config = parse_video_source_config(profile.second);
+
+    auto options = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver10/media/wsdl/GetVideoSourceConfigurationOptions",
+        [&](pugi::xml_node& body) {
+            auto req = body.append_child("trt:GetVideoSourceConfigurationOptions");
+            req.append_child("trt:ConfigurationToken").text().set(config.token.c_str());
+            req.append_child("trt:ProfileToken").text().set(profile_token.c_str());
+        },
+        _username, _password
+    );
+    onvif_video_flip flip;
+    // A camera that can't answer for its options has no Rotate to offer.
+    if (options.first != 200)
+        return flip;
+    auto modes = parse_rotate_modes(options.second);
+    flip.supported = std::find(modes.begin(), modes.end(), "ON") != modes.end();
+    flip.on = flip.supported && config.rotate_mode == "ON";
+    return flip;
+}
+
+void r_onvif::r_onvif_cam::set_video_flip(onvif_media_service media_service, const onvif_profile_token& profile_token, bool on)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(media_service, host, port, protocol, uri);
+    auto profile = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver10/media/wsdl/GetProfile",
+        [&](pugi::xml_node& body) {
+            body.append_child("trt:GetProfile").append_child("trt:ProfileToken").text().set(profile_token.c_str());
+        },
+        _username, _password
+    );
+    if (profile.first != 200)
+        throw _events_error("GetProfile failed", profile);
+    auto c = parse_video_source_config(profile.second);
+
+    // The source's configuration as the camera gave it, with only its rotation changed.
+    auto result = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver10/media/wsdl/SetVideoSourceConfiguration",
+        [&](pugi::xml_node& body) {
+            auto req = body.append_child("trt:SetVideoSourceConfiguration");
+            auto cfg = req.append_child("trt:Configuration");
+            cfg.append_attribute("token") = c.token.c_str();
+            cfg.append_child("tt:Name").text().set(c.name.c_str());
+            cfg.append_child("tt:UseCount").text().set(c.use_count);
+            cfg.append_child("tt:SourceToken").text().set(c.source_token.c_str());
+            auto bounds = cfg.append_child("tt:Bounds");
+            bounds.append_attribute("x") = c.x;
+            bounds.append_attribute("y") = c.y;
+            bounds.append_attribute("width") = c.width;
+            bounds.append_attribute("height") = c.height;
+            cfg.append_child("tt:Extension").append_child("tt:Rotate").append_child("tt:Mode").text().set(on ? "ON" : "OFF");
+            req.append_child("trt:ForcePersistence").text().set("true");
+        },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("SetVideoSourceConfiguration failed", result);
 }
 
 void r_onvif::r_onvif_cam::ptz_goto_preset(const string& ptz_service, const onvif_profile_token& profile_token, const string& preset_token)
