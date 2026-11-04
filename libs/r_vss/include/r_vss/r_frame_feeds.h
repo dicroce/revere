@@ -81,6 +81,10 @@ public:
     // Closes every feed.
     R_API void close_all();
 
+    // The camera's stream started again (a reconnect): its feeds carry on, video from
+    // the next key frame, the first frame of each media marked GAP.
+    R_API void camera_restarted(const std::string& camera_id);
+
     // A frame the camera recorded. stream is the stream it came from.
     R_API void post_video(const std::string& camera_id, const std::string& stream, const uint8_t* data, size_t size, bool key, int64_t ts, const std::string& codec_name, const std::string& codec_params);
     R_API void post_audio(const std::string& camera_id, const uint8_t* data, size_t size, int64_t ts, const std::string& codec_name, const std::string& codec_params);

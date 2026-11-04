@@ -16,6 +16,7 @@ public:
       TEST(test_r_frame_feeds::test_closing_a_camera_and_all);
       TEST(test_r_frame_feeds::test_a_wait_times_out);
       TEST(test_r_frame_feeds::test_two_feeds_get_their_own_copies);
+      TEST(test_r_frame_feeds::test_a_restarted_stream_is_a_gap);
     RTF_FIXTURE_END();
 
     virtual ~test_r_frame_feeds() throw() {}
@@ -35,4 +36,5 @@ public:
     void test_closing_a_camera_and_all();
     void test_a_wait_times_out();
     void test_two_feeds_get_their_own_copies();
+    void test_a_restarted_stream_is_a_gap();
 };

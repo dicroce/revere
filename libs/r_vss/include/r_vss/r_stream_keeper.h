@@ -11,6 +11,7 @@
 #include "r_vss/r_camera_stats.h"
 #include "r_cameras/r_camera_events.h"
 #include "r_vss/r_detection_pass.h"
+#include "r_vss/r_frame_feeds.h"
 #include "r_vss/r_tier_controller.h"
 #include "r_vss/r_tier_outputs.h"
 #include "r_vss/r_rtsp_transport.h"
@@ -249,6 +250,17 @@ public:
         _frame_taps.post(camera_id, data, size, key, ts, codec_name, codec_params);
     }
 
+    // Every recorded video and audio frame goes to plugins' frame feeds too (one atomic
+    // load while none is open; r_frame_feeds).
+    R_API void post_video_to_feeds(const std::string& camera_id, const uint8_t* data, size_t size, bool key, int64_t ts, const std::string& codec_name, const std::string& codec_params)
+    {
+        _frame_feeds.post_video(camera_id, "main", data, size, key, ts, codec_name, codec_params);
+    }
+    R_API void post_audio_to_feeds(const std::string& camera_id, const uint8_t* data, size_t size, int64_t ts, const std::string& codec_name, const std::string& codec_params)
+    {
+        _frame_feeds.post_audio(camera_id, data, size, ts, codec_name, codec_params);
+    }
+
     R_API std::chrono::hours get_retention_hours(const std::string& camera_id);
 
     R_API void bounce(const std::string& camera_id);
@@ -359,6 +371,8 @@ private:
     r_teardown_queue _teardowns;
     // PTZ view pictures (ptz_view_frame).
     r_frame_taps _frame_taps;
+    // Before _system_plugin_host, which reads from it until it's destroyed.
+    r_frame_feeds _frame_feeds;
     std::map<std::string, int64_t> _stuck_warned;
 
     // Per-camera backoff state for cameras whose r_recording_context construction

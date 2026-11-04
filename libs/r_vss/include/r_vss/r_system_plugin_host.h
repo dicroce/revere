@@ -16,6 +16,7 @@ namespace r_vss
 {
 
 class r_motion_event_plugin_host;
+class r_frame_feeds;
 struct r_detection;
 
 typedef void (*system_plugin_post_detection_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float);
@@ -96,10 +97,16 @@ public:
     // keeper's reconciliation thread; plugins that don't implement it are skipped.
     R_API void notify_cameras_changed();
 
+    // Gives plugins that export system_plugin_set_host_api the live-frame functions,
+    // reading from feeds; camera_recording says whether a camera is recording here.
+    // Call after construction, before start_all(). stop_all() closes their feeds.
+    R_API void set_frame_source(r_frame_feeds* feeds, std::function<bool(const std::string&)> camera_recording);
+
 private:
     void _dispatch_detection(const r_detection& det, int64_t posted_at_ms);
     void _on_api_result(const char* name, const char* json);
     static void _api_result_bridge(const char* result_type, const char* json, void* user_data);
+    struct frame_api;
     struct plugin_info
     {
         std::unique_ptr<r_utils::r_dynamic_library> library;
@@ -119,6 +126,8 @@ private:
         std::string name;
         std::string guid;
         std::string version;   // Empty if the plugin doesn't report one
+        void (*set_host_api_func)(r_system_plugin_handle, const r_system_plugin_host_api*) = nullptr;   // Optional
+        std::shared_ptr<frame_api> frames;   // its live-frame functions, once set_frame_source() gave them
     };
 
     std::string _top_dir;
@@ -126,6 +135,7 @@ private:
     std::set<std::string> _loaded_guids;       // Track loaded plugin GUIDs to prevent duplicates
     std::set<std::string> _loaded_filenames;   // Track loaded plugin filenames (dedupe BEFORE dlopen)
     std::function<void(const std::string&, const std::string&)> _api_result_fn;
+    r_frame_feeds* _feeds {nullptr};
 };
 
 }
