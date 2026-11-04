@@ -2,6 +2,10 @@
 #include "r_vss/r_substream_recorder.h"
 #include "r_fakey/r_fake_camera.h"
 #include "r_storage/r_storage_file_reader.h"
+#include "r_vss/r_query.h"
+#include "r_disco/r_devices.h"
+#include "r_utils/r_blob_tree.h"
+#include "r_utils/r_exception.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_string_utils.h"
 #include <chrono>
@@ -20,7 +24,10 @@ static const string RING_DIR = "substream_ut";
 
 static void _remove_dir()
 {
-    for(auto f : {"front_sub.nts", "none_sub.nts"})
+    vector<string> files = {"front_sub.nts", "none_sub.nts"};
+    for(auto f : {"cameras.db", "cameras.db-wal", "cameras.db-shm"})
+        files.push_back("db" + PATH_SLASH + f);
+    for(auto& f : files)
     {
         auto p = RING_DIR + PATH_SLASH + f;
         if(r_fs::file_exists(p))
@@ -116,8 +123,44 @@ void test_r_substream_recorder::test_records_into_its_ring()
 
     // An existing ring is kept as it is.
     ensure_substream_ring(ring);
-    r_storage::r_storage_file_reader reader(ring);
-    RTF_ASSERT(!reader.query_segments().empty());
+    {
+        r_storage::r_storage_file_reader reader(ring);
+        RTF_ASSERT(!reader.query_segments().empty());
+    }
+
+    // /video?stream=sub reads it: the camera records to front.nts, so its ring is front_sub.nts.
+    r_devices devices(RING_DIR);
+    devices.start();
+    r_stream_config sc;
+    sc.id = "cam-sub";
+    sc.ipv4 = "127.0.0.1";
+    sc.rtsp_url = "rtsp://127.0.0.1/main";
+    devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
+    auto cam = devices.get_camera_by_id("cam-sub").value();
+    cam.record_file_path = RING_DIR + PATH_SLASH + "front.nts";
+    devices.save_camera(cam);
+
+    auto now = system_clock::now();
+    auto video = query_get_video(RING_DIR, devices, "cam-sub", now - minutes(5), now, true);
+    uint32_t version = 0;
+    auto bt = r_blob_tree::deserialize(video.data(), video.size(), version);
+    RTF_ASSERT(bt["frames"].size() >= 15);
+    RTF_ASSERT(bt["video_codec_name"].get_string() == "h264");
+
+    // A camera with no ring: not found (a 404), not some other error.
+    cam.record_file_path = RING_DIR + PATH_SLASH + "back.nts";
+    devices.save_camera(cam);
+    bool not_found = false;
+    try
+    {
+        query_get_video(RING_DIR, devices, "cam-sub", now - minutes(5), now, true);
+    }
+    catch(const r_not_found_exception&)
+    {
+        not_found = true;
+    }
+    RTF_ASSERT(not_found);
+    devices.stop();
 }
 
 void test_r_substream_recorder::test_no_camera()

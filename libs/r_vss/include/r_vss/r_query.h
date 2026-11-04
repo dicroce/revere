@@ -86,7 +86,9 @@ R_API std::vector<uint8_t> query_get_bgr24_frame(const std::string& top_dir, r_d
 
 R_API std::vector<uint8_t> query_get_rgb24_frame(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h);
 
-R_API std::vector<uint8_t> query_get_video(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
+// The camera's video (and audio) between start and end, as a blob tree. substream: from the camera's substream ring
+// instead (r_substream_recorder.h), video only; not found when the camera has none.
+R_API std::vector<uint8_t> query_get_video(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end, bool substream = false);
 
 R_API contents query_get_contents(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
 

@@ -1,4 +1,5 @@
 #include "r_vss/r_query.h"
+#include "r_vss/r_substream_recorder.h"
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_snapshot_cache.h"
 #include "r_vss/r_recap.h"
@@ -641,7 +642,7 @@ vector<uint8_t> r_vss::query_get_rgb24_frame(const std::string& top_dir, r_devic
     R_THROW(("Unable to decode frame."));
 }
 
-vector<uint8_t> r_vss::query_get_video(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
+vector<uint8_t> r_vss::query_get_video(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end, bool substream)
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
 
@@ -651,7 +652,15 @@ vector<uint8_t> r_vss::query_get_video(const std::string& top_dir, r_devices& de
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
+    auto path = _get_storage_path(maybe_camera.value().record_file_path.value(), top_dir);
+    if(substream)
+    {
+        path = substream_ring_path(path);
+        if(!r_fs::file_exists(path))
+            throw r_utils::r_not_found_exception("Camera %s has no substream recording.", camera_id.c_str());
+    }
+
+    r_storage_file_reader sf(path);
 
     return sf.query(
         R_STORAGE_MEDIA_TYPE_ALL,

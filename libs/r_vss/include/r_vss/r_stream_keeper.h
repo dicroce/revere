@@ -119,6 +119,8 @@ struct r_stream_status
     r_disco::r_camera camera;
     uint32_t bytes_per_second;
     bool receiving_video {false};
+    // Its substream recorder wrote a frame within SUBSTREAM_FRESH_MS (r_substream_recorder::fresh).
+    bool sub_fresh {false};
     int64_t storage_write_lag_ms {0}; // how far storage persistence trails reception
     int64_t storage_timeline_lag_ms {0}; // how far the written timeline trails the wall clock
     r_overflow_type overflow_flags {r_overflow_type::none};

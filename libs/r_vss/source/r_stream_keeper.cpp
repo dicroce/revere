@@ -1672,6 +1672,8 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.camera = c.second->camera();
             s.bytes_per_second = c.second->bytes_per_second();
             s.receiving_video = c.second->receiving_video();
+            auto sub = _substreams.find(c.first);
+            s.sub_fresh = sub != _substreams.end() && sub->second->fresh();
             s.storage_write_lag_ms = c.second->storage_write_lag_ms();
             s.storage_timeline_lag_ms = c.second->storage_timeline_lag_ms();
             s.has_camera_events = c.second->has_camera_events();

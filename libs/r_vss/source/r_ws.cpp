@@ -790,6 +790,7 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
             const auto& res = src.resolution;
 
             bool receiving_video = false;
+            bool sub_fresh = false;
             bool stream_failed = false;
             int64_t storage_write_lag_ms = 0;
             int64_t storage_timeline_lag_ms = 0;
@@ -800,6 +801,7 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
             if(sit != status_by_id.end())
             {
                 receiving_video = sit->second.receiving_video;
+                sub_fresh = sit->second.sub_fresh;
                 stream_failed = sit->second.failed;
                 storage_write_lag_ms = sit->second.storage_write_lag_ms;
                 storage_timeline_lag_ms = sit->second.storage_timeline_lag_ms;
@@ -899,6 +901,9 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     {"sub_codec", (c.sub_video_codec.is_null())?"":c.sub_video_codec.value()},
                     {"sub_width", (c.sub_width.is_null())?0:c.sub_width.value()},
                     {"sub_height", (c.sub_height.is_null())?0:c.sub_height.value()},
+                    // The substream ring got a frame within the last few seconds (r_substream_recorder::fresh):
+                    // /video?stream=sub has live video.
+                    {"sub_fresh", sub_fresh},
                     // The camera's ONVIF event subscription; null when it has none.
                     {"camera_events", camera_events},
                     // An address change (r_disco/r_camera_move.h): held or followed; null when none.
@@ -1508,12 +1513,23 @@ r_http::r_server_response r_ws::_get_video(r_utils::r_socket_base&, const r_http
         if(args.find("end_time") == args.end())
             R_THROW(("Missing end_time."));
 
+        // stream=sub: the camera's substream ring, for live view; main otherwise.
+        bool substream = false;
+        if(args.find("stream") != args.end())
+        {
+            if(args["stream"] == "sub")
+                substream = true;
+            else if(args["stream"] != "main")
+                R_THROW(("Unknown stream: %s", args["stream"].c_str()));
+        }
+
         auto qr_buffer = query_get_video(
             _top_dir,
             _devices,
             args["camera_id"],
             r_time_utils::iso_8601_to_tp(args["start_time"]),
-            r_time_utils::iso_8601_to_tp(args["end_time"])
+            r_time_utils::iso_8601_to_tp(args["end_time"]),
+            substream
         );
 
         r_server_response response;
