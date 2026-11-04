@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <iterator>
 #include <chrono>
+#include <set>
 
 using namespace r_disco;
 using namespace r_db;
@@ -324,9 +325,12 @@ uint64_t r_devices::cache_generation() const
 
 void r_devices::_entry_point()
 {
-    // A failure here is logged, not fatal: it's retried with each cache
-    // refresh below, and the UI shows its loading state meanwhile.
+    // A failure here is logged, not fatal: it's retried, and the UI shows its
+    // loading state meanwhile. Retries back off from 2 seconds to 5 minutes, so
+    // a failure that repeats doesn't fill the log.
     bool db_created = false;
+    auto retry_delay = chrono::seconds(2);
+    auto next_create = chrono::steady_clock::now();
     auto create_db = [&]() {
         try
         {
@@ -336,6 +340,8 @@ void r_devices::_entry_point()
         catch(const std::exception& e)
         {
             R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+            next_create = chrono::steady_clock::now() + retry_delay;
+            retry_delay = (std::min)(retry_delay * 2, chrono::seconds(chrono::minutes(5)));
         }
     };
     create_db();
@@ -429,7 +435,7 @@ void r_devices::_entry_point()
         }
 
         // Update caches periodically (every 2 seconds when poll times out, or after processing commands)
-        if(!db_created)
+        if(!db_created && chrono::steady_clock::now() >= next_create)
             create_db();
         _update_caches();
     }
@@ -527,115 +533,70 @@ r_sqlite_conn r_devices::_open_db(const std::string& top_dir, bool rw) const
     return r_sqlite_conn(db_dir + PATH_SLASH + "cameras.db", rw);
 }
 
+// The columns each schema version added to the cameras table, in order. To
+// change the schema, add rows here with the next version.
+namespace
+{
+struct camera_column
+{
+    int version;
+    const char* name;
+    const char* type;
+};
+
+const camera_column CAMERA_COLUMNS[] = {
+    {2, "do_motion_pruning", "INTEGER DEFAULT 0"},
+    {2, "min_continuous_recording_hours", "INTEGER DEFAULT 24"},
+    {3, "onvif_profile_token", "TEXT"},
+    {4, "onvif_port", "INTEGER"},
+    {4, "onvif_protocol", "TEXT"},
+    {5, "motion_tier", "TEXT"},
+    {6, "motion_tier_verified", "INTEGER"},
+    // Null on existing rows means TCP, the default.
+    {7, "rtsp_transport", "TEXT"},
+    // ONVIF GetDeviceInformation, shown in the UI. Null on existing rows until
+    // the camera is next interrogated.
+    {8, "manufacturer", "TEXT"},
+    {8, "model", "TEXT"},
+    {8, "firmware_version", "TEXT"},
+    // The camera's MAC address, filled in when it's next seen at its address.
+    {9, "mac", "TEXT"}
+};
+
+const int CAMERA_DB_VERSION = 9;
+}
+
 void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
 {
+    // Every start adds whichever of the columns are missing, whatever the stored
+    // version says. A database can reach a version by another path: two builds
+    // once both used version 8 for different columns, so a database at 8 may have
+    // either set. Adding only what's missing makes each step safe to repeat, and
+    // the version only ever moves forward.
     auto current_version = _get_db_version(conn);
 
-    switch(current_version)
+    r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
+        auto existing = _camera_columns(conn);
+        for(auto& c : CAMERA_COLUMNS)
+        {
+            if(existing.count(c.name) == 0)
+                conn.exec(string("ALTER TABLE cameras ADD COLUMN ") + c.name + " " + c.type + ";");
+        }
+        if(current_version < CAMERA_DB_VERSION)
+            _set_db_version(conn, CAMERA_DB_VERSION);
+    });
+}
+
+set<string> r_devices::_camera_columns(const r_db::r_sqlite_conn& conn) const
+{
+    set<string> names;
+    for(auto& row : conn.exec("PRAGMA table_info(cameras);"))
     {
-        // case 0 can serve as an example and model for future upgrades
-        // Note: the cases purposefully fall through.
-        case 0:
-        {
-            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
-                // perform alter statements here
-                _set_db_version(conn, 1);
-            });
-        }
-        [[fallthrough]];
-        case 1:
-        {
-            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
-                conn.exec(
-                    "ALTER TABLE cameras ADD COLUMN do_motion_pruning INTEGER DEFAULT 0;"
-                );
-                conn.exec(
-                    "ALTER TABLE cameras ADD COLUMN min_continuous_recording_hours INTEGER DEFAULT 24;"
-                );
-                _set_db_version(conn, 2);
-            });
-        }
-        [[fallthrough]];
-        case 2:
-        {
-            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
-                conn.exec(
-                    "ALTER TABLE cameras ADD COLUMN onvif_profile_token TEXT;"
-                );
-                _set_db_version(conn, 3);
-            });
-        }
-        [[fallthrough]];
-        case 3:
-        {
-            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
-                conn.exec(
-                    "ALTER TABLE cameras ADD COLUMN onvif_port INTEGER;"
-                );
-                conn.exec(
-                    "ALTER TABLE cameras ADD COLUMN onvif_protocol TEXT;"
-                );
-                _set_db_version(conn, 4);
-            });
-        }
-        [[fallthrough]];
-        case 4:
-        {
-            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
-                conn.exec(
-                    "ALTER TABLE cameras ADD COLUMN motion_tier TEXT;"
-                );
-                _set_db_version(conn, 5);
-            });
-        }
-        [[fallthrough]];
-        case 5:
-        {
-            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
-                conn.exec(
-                    "ALTER TABLE cameras ADD COLUMN motion_tier_verified INTEGER;"
-                );
-                _set_db_version(conn, 6);
-            });
-        }
-        [[fallthrough]];
-        case 6:
-        {
-            // Null on existing rows means TCP, the default
-            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
-                conn.exec(
-                    "ALTER TABLE cameras ADD COLUMN rtsp_transport TEXT;"
-                );
-                _set_db_version(conn, 7);
-            });
-        }
-        [[fallthrough]];
-        case 7:
-        {
-            // ONVIF GetDeviceInformation, shown in the UI. Null on existing rows
-            // until the camera is next interrogated.
-            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
-                conn.exec("ALTER TABLE cameras ADD COLUMN manufacturer TEXT;");
-                conn.exec("ALTER TABLE cameras ADD COLUMN model TEXT;");
-                conn.exec("ALTER TABLE cameras ADD COLUMN firmware_version TEXT;");
-                _set_db_version(conn, 8);
-            });
-        }
-        [[fallthrough]];
-        case 8:
-        {
-            // The camera's MAC address, filled in when it's next seen at its address.
-            r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
-                conn.exec(
-                    "ALTER TABLE cameras ADD COLUMN mac TEXT;"
-                );
-                _set_db_version(conn, 9);
-            });
-        }
-        [[fallthrough]];
-        default:
-            break;
-    };
+        auto it = row.find("name");
+        if(it != row.end() && !it->second.is_null())
+            names.insert(it->second.value());
+    }
+    return names;
 }
 
 int r_devices::_get_db_version(const r_db::r_sqlite_conn& conn) const
