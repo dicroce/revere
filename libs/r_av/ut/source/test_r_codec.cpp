@@ -3,6 +3,7 @@
 #include "bad_guy.h"
 #include "r_av/r_video_decoder.h"
 #include "r_av/r_video_encoder.h"
+#include "r_av/r_hw_accel.h"
 #include <algorithm>
 #include <vector>
 #include "r_av/r_demuxer.h"
@@ -403,3 +404,132 @@ void test_r_codec::test_decode_again_after_its_input_sends_nothing()
     // Every frame came out once, none twice.
     RTF_ASSERT(pictures == (int)packets.size());
 }
+
+namespace
+{
+// A flat grey picture's stream, and whether a decoder given it puts out that picture.
+const uint16_t GREY_W = 320, GREY_H = 240;
+vector<vector<uint8_t>> grey_stream(vector<uint8_t>& extradata)
+{
+    r_video_encoder enc(AV_CODEC_ID_H264, 500000, GREY_W, GREY_H, AVRational{15, 1}, AV_PIX_FMT_YUV420P, 0, 15,
+                        AV_PROFILE_H264_MAIN, 41, "veryfast", "zerolatency");
+    vector<uint8_t> picture(GREY_W * GREY_H * 3 / 2, 128);
+    vector<vector<uint8_t>> packets;
+    for(int i = 0; i < 10; ++i)
+    {
+        enc.attach_buffer(picture.data(), picture.size(), i);
+        while(enc.encode() == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto pi = enc.get();
+            packets.emplace_back(pi.data, pi.data + pi.size);
+        }
+    }
+    extradata = enc.get_extradata();
+    return packets;
+}
+
+bool decodes_grey(r_video_decoder& dec)
+{
+    vector<uint8_t> extradata;
+    auto packets = grey_stream(extradata);
+    dec.set_extradata(extradata);
+    for(auto& p : packets)
+    {
+        dec.attach_buffer(p.data(), p.size());
+        auto st = dec.decode();
+        if(st == R_CODEC_STATE_HAS_OUTPUT || st == R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+        {
+            auto out = dec.get(AV_PIX_FMT_YUV420P, GREY_W, GREY_H, 1);
+            if(!out || out->size() < (size_t)GREY_W * GREY_H)
+                return false;
+            for(size_t i = 0; i < (size_t)GREY_W * GREY_H; ++i)
+                if(abs((int)(*out)[i] - 128) > 4)
+                    return false;
+            return true;
+        }
+    }
+    return false;
+}
+
+// A device that can't be created, as CUDA fails when the GPU has no room for another context: FFmpeg's line in its
+// three pieces, then a second line, as a backend that reports in two steps logs.
+int failing_device_create(AVBufferRef**, AVHWDeviceType)
+{
+    av_log(nullptr, AV_LOG_ERROR, "cuCtxCreate(&hwctx->cuda_ctx, desired_flags, hwctx->internal->cuda_device) failed");
+    av_log(nullptr, AV_LOG_ERROR, " -> CUDA_ERROR_OUT_OF_MEMORY: out of memory");
+    av_log(nullptr, AV_LOG_ERROR, "\n");
+    av_log(nullptr, AV_LOG_ERROR, "Device creation failed: %d.\n", AVERROR_EXTERNAL);
+    return AVERROR_EXTERNAL;
+}
+}
+
+void test_r_codec::test_hw_device_failure_decodes_in_software()
+{
+    // The backend probed at startup, failing for a later decoder (no room on the GPU, a driver reset, an RDP
+    // session): the decoder decodes in software, with one warning saying why in FFmpeg's own words, instead of
+    // throwing and failing the stream.
+    auto accel = r_find_best_hw_accel(AV_CODEC_ID_H264);
+    if(accel == r_hw_accel::none)
+        return;  // no hardware decoder on this machine to fail
+
+    vector<string> warnings;
+    r_logger::set_log_callback([&](r_logger::LOG_LEVEL, const string& message) {
+        if(message.find("decoding in software") != string::npos)
+            warnings.push_back(message);
+    });
+    r_hw_device_create_override(failing_device_create);
+    bool decoded = false;
+    try
+    {
+        r_video_decoder dec(AV_CODEC_ID_H264, accel);
+        decoded = decodes_grey(dec);
+    }
+    catch(...) {}
+    r_hw_device_create_override(nullptr);
+    r_logger::clear_log_callback();
+
+    RTF_ASSERT(decoded);
+    RTF_ASSERT(warnings.size() == 1);
+    RTF_ASSERT(warnings[0].find("Generic error in an external library") != string::npos);
+    // FFmpeg's lines, joined into the one warning (the logger would split it at a newline).
+    RTF_ASSERT(warnings[0].find("cuCtxCreate(&hwctx->cuda_ctx, desired_flags, hwctx->internal->cuda_device) failed -> CUDA_ERROR_OUT_OF_MEMORY: out of memory Device creation failed: -542398533.") != string::npos);
+
+    // The hardware again, as before.
+    r_video_decoder hw(AV_CODEC_ID_H264, accel);
+    RTF_ASSERT(decodes_grey(hw));
+}
+
+void test_r_codec::test_hw_accel_without_a_decoder_decodes_in_software()
+{
+    // Asked for a backend this build's H.264 decoder doesn't have: software too, where it used to throw.
+    const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    auto has = [&](AVHWDeviceType type) {
+        for(int i = 0; auto c = avcodec_get_hw_config(codec, i); ++i)
+            if((c->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) && c->device_type == type)
+                return true;
+        return false;
+    };
+    const pair<r_hw_accel, AVHWDeviceType> backends[] = {
+        {r_hw_accel::cuda, AV_HWDEVICE_TYPE_CUDA}, {r_hw_accel::qsv, AV_HWDEVICE_TYPE_QSV},
+        {r_hw_accel::d3d11va, AV_HWDEVICE_TYPE_D3D11VA}, {r_hw_accel::vaapi, AV_HWDEVICE_TYPE_VAAPI},
+        {r_hw_accel::videotoolbox, AV_HWDEVICE_TYPE_VIDEOTOOLBOX}};
+    r_hw_accel missing = r_hw_accel::none;
+    for(auto& [accel, type] : backends)
+        if(!has(type))
+        {
+            missing = accel;
+            break;
+        }
+    if(missing == r_hw_accel::none)
+        return;  // a build with every backend
+
+    bool decoded = false;
+    try
+    {
+        r_video_decoder dec(AV_CODEC_ID_H264, missing);
+        decoded = decodes_grey(dec);
+    }
+    catch(...) {}
+    RTF_ASSERT(decoded);
+}
+

@@ -178,21 +178,39 @@ r_video_decoder::r_video_decoder(AVCodecID codec_id, r_hw_accel accel, bool pars
     {
         auto device_type = r_hw_accel_to_device_type(_hw_accel);
 
+        // The backend r_find_best_hw_accel probed once at startup can fail for
+        // a decoder made later: a GPU out of memory or contexts, a driver
+        // reset, a session without the GPU (RDP). Decode in software then,
+        // with one warning saying why, rather than fail the caller's stream.
+        string why;
         _hw_pix_fmt = r_hw_accel_get_pix_fmt(_codec, device_type);
         if(_hw_pix_fmt == AV_PIX_FMT_NONE)
-            R_THROW(("Codec does not support requested hw accel"));
+            why = "the codec has no decoder for it";
+        else
+        {
+            int ret = r_hw_device_create(&_hw_device_ctx, device_type, why);
+            if(ret < 0)
+                why = _ff_rc_to_msg(ret) + (why.empty() ? string() : ": " + why);
+        }
 
-        int ret = av_hwdevice_ctx_create(&_hw_device_ctx, device_type, nullptr, nullptr, 0);
-        if(ret < 0)
-            R_THROW(("Failed to create hw device context: %s", _ff_rc_to_msg(ret).c_str()));
+        if(!_hw_device_ctx)
+        {
+            R_LOG_WARNING("r_video_decoder: %s decode unavailable, decoding in software: %s",
+                          _accel_name(_hw_accel), why.c_str());
+            _hw_accel = r_hw_accel::none;
+            _hw_pix_fmt = AV_PIX_FMT_NONE;
+        }
+        else
+        {
+            _sw_frame = av_frame_alloc();
+            if(!_sw_frame)
+                R_THROW(("Failed to allocate sw frame"));
 
-        _sw_frame = av_frame_alloc();
-        if(!_sw_frame)
-            R_THROW(("Failed to allocate sw frame"));
-
-        _context->thread_count = 1;  // hw handles parallelism
+            _context->thread_count = 1;  // hw handles parallelism
+        }
     }
-    else
+
+    if(_hw_accel == r_hw_accel::none)
     {
         if(_codec->capabilities & AV_CODEC_CAP_FRAME_THREADS)
             _context->thread_type = FF_THREAD_FRAME;
