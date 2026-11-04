@@ -125,7 +125,7 @@ constexpr size_t ONVIF_NAME_MAX_CHARS = 64;  // ONVIF's Name
 R_API std::vector<onvif_profile_info> parse_profiles_response(const std::string& xml);
 
 // A profile's VideoSourceConfiguration (ONVIF Media), as SetVideoSourceConfiguration needs it back, and its
-// rotation (Extension/Rotate/Mode: "ON", "OFF", "AUTO"; empty when the camera says none).
+// rotation (Extension/Rotate: Mode "ON", "OFF", "AUTO", and Degree; each empty when the camera says none).
 struct onvif_video_source_config
 {
     std::string token;
@@ -134,21 +134,39 @@ struct onvif_video_source_config
     std::string source_token;
     int x {0}, y {0}, width {0}, height {0};
     std::string rotate_mode;
+    std::string rotate_degree;
 };
 
 // The profile's VideoSourceConfiguration from a GetProfile response; throws when it has none.
 R_API onvif_video_source_config parse_video_source_config(const std::string& get_profile_xml);
 
-// The Rotate modes a GetVideoSourceConfigurationOptions response offers (Extension/Rotate/Mode), as given.
-R_API std::vector<std::string> parse_rotate_modes(const std::string& options_xml);
+// Whether the source is turned 180 degrees: Rotate Mode ON with no Degree (which means 180) or Degree 180. A
+// camera turned 90 or 270 degrees isn't flipped.
+R_API bool is_flipped(const onvif_video_source_config& config);
+
+// What a GetVideoSourceConfigurationOptions response offers for Rotate (Extension/Rotate): its modes, as given,
+// and whether the camera restarts to apply a change (@Reboot).
+struct onvif_rotate_options
+{
+    std::vector<std::string> modes;
+    bool reboot {false};
+};
+R_API onvif_rotate_options parse_rotate_options(const std::string& options_xml);
+
+// SetVideoSourceConfiguration's Extension for a flip, appended to config: the camera's own from the GetProfile
+// response, kept whole (Rotate's Degree and Mirror, LensDescription, SceneOrientation and anything else), with only
+// Rotate/Mode set, and a Degree set to 180 when the flip is turned on. One with no Extension or Rotate gets them.
+// A namespace prefix of the camera's that the request doesn't bind the same way is declared where it's used.
+R_API void append_flip_extension(pugi::xml_node config, const std::string& get_profile_xml, bool on);
 
 // "Flip picture": the video source turned 180 degrees, for a camera mounted upside down, through the Media
-// service's Rotate. ONVIF's Imaging service has no flip, and a mirror alone isn't standard. supported when the
-// source's options offer Rotate ON.
+// service's Rotate. ONVIF's Imaging service has no flip; Rotate's Mirror (newer schemas) is kept but not used.
+// supported when the source's options offer Rotate ON; reboot when the camera restarts to apply a change.
 struct onvif_video_flip
 {
     bool supported {false};
     bool on {false};
+    bool reboot {false};
 };
 
 // A camera's substream (its second, smaller stream, for live view and analysis): no narrower than this.
@@ -333,12 +351,13 @@ public:
     R_API void ptz_stop(const std::string& ptz_service, const onvif_profile_token& profile_token,
                         bool pan_tilt = true, bool zoom = true);
 
-    // GotoPreset: move to a saved position by its token.
     // The profile's source flip (see onvif_video_flip); a camera that offers no Rotate ON is unsupported, not off.
     R_API onvif_video_flip get_video_flip(onvif_media_service media_service, const onvif_profile_token& profile_token);
-    // Turn it on or off (SetVideoSourceConfiguration, ForcePersistence), from the source's own configuration.
+    // Turn it on or off (SetVideoSourceConfiguration, ForcePersistence): the source's own configuration, its
+    // Extension kept whole (append_flip_extension).
     R_API void set_video_flip(onvif_media_service media_service, const onvif_profile_token& profile_token, bool on);
 
+    // GotoPreset: move to a saved position by its token.
     R_API void ptz_goto_preset(const std::string& ptz_service, const onvif_profile_token& profile_token,
                               const std::string& preset_token);
 

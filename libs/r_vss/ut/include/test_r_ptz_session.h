@@ -27,6 +27,11 @@ public:
       TEST(test_r_ptz_session::test_flip_keeps_the_source_name);
       TEST(test_r_ptz_session::test_flip_unsupported);
       TEST(test_r_ptz_session::test_flip_needs_no_ptz);
+      TEST(test_r_ptz_session::test_flip_keeps_the_extension);
+      TEST(test_r_ptz_session::test_flip_is_180_degrees);
+      TEST(test_r_ptz_session::test_flip_reboot);
+      TEST(test_r_ptz_session::test_flip_extension_keeps_the_cameras_namespaces);
+      TEST(test_r_ptz_session::test_flip_extension_added_where_missing);
       TEST(test_r_ptz_session::test_shutdown_drops_pending_stops);
     RTF_FIXTURE_END();
 
@@ -57,5 +62,10 @@ public:
     void test_flip_keeps_the_source_name();
     void test_flip_unsupported();
     void test_flip_needs_no_ptz();
+    void test_flip_keeps_the_extension();
+    void test_flip_is_180_degrees();
+    void test_flip_reboot();
+    void test_flip_extension_keeps_the_cameras_namespaces();
+    void test_flip_extension_added_where_missing();
     void test_shutdown_drops_pending_stops();
 };

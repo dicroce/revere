@@ -3163,7 +3163,8 @@ r_http::r_server_response r_ws::_post_imaging(r_utils::r_socket_base&, const r_h
     _require_auth(request);
 
     // The camera's picture flip (ONVIF Media Rotate): {camera_id, action: "get" | "set_flip", flip, profile_token?}.
-    // Answers {status: "ok", flip: {supported, on}}, as the camera now has it. A failure is {error, code}, as /ptz's:
+    // Answers {status: "ok", flip: {supported, on, reboot}}, as the camera now has it; reboot: the camera restarts to
+    // apply a change (after a set, it's restarting now). A failure is {error, code}, as /ptz's:
     // "bad_request", "unknown_camera", "no_onvif" (501: no ONVIF address), "unsupported" (501: a set the camera
     // offers no flip for), "unreachable" or "camera_error" (502).
     auto failure = [](status_code status, const string& code, const string& error) {
@@ -3225,7 +3226,7 @@ r_http::r_server_response r_ws::_post_imaging(r_utils::r_socket_base&, const r_h
         );
         json j;
         j["status"] = "ok";
-        j["flip"] = {{"supported", flip.supported}, {"on", flip.on}};
+        j["flip"] = {{"supported", flip.supported}, {"on", flip.on}, {"reboot", flip.reboot}};
         r_server_response response;
         response.set_content_type("text/json");
         response.set_body(j.dump());

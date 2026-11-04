@@ -8,6 +8,8 @@
 #include <thread>
 #include <map>
 #include <mutex>
+#include <regex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -49,6 +51,11 @@ struct fake_camera
     string nodes {"fault"};           // how GetNodes answers (see _answer); set before the first call
     bool offers_rotate {true};        // GetVideoSourceConfigurationOptions lists Rotate ON and OFF
     string rotate {"OFF"};            // the source's Rotate Mode, as SetVideoSourceConfiguration last set it
+    string degree;                    // its Rotate Degree, likewise; empty: none
+    string rotate_attrs;              // Rotate's attributes as GetProfile gives them, e.g. ` Mirror="true"`
+    string more_extension;            // the rest of the source's Extension, after Rotate
+    bool rotate_reboot {false};       // its options say a Rotate change restarts the camera
+    bool offers_on {true};            // its Rotate options include ON (else OFF only)
     string vsc_name {"\n  Source 1\n"}; // the VideoSourceConfiguration's Name, as GetProfile gives it
     map<string, string> last_body;    // the last request body of each op
     r_web_server<r_socket> ws;
@@ -145,18 +152,24 @@ struct fake_camera
             return _soap("<trt:GetProfileResponse><trt:Profile token=\"profile_1\"><tt:Name>main</tt:Name>"
                          "<tt:VideoSourceConfiguration token=\"vsc_1\"><tt:Name>" + vsc_name + "</tt:Name><tt:UseCount>2</tt:UseCount>"
                          "<tt:SourceToken> source_1 </tt:SourceToken><tt:Bounds x=\"0\" y=\"0\" width=\"1920\" height=\"1080\"/>"
-                         "<tt:Extension><tt:Rotate><tt:Mode>" + rotate + "</tt:Mode></tt:Rotate></tt:Extension>"
+                         "<tt:Extension><tt:Rotate" + rotate_attrs + "><tt:Mode>" + rotate + "</tt:Mode>" +
+                         (degree.empty() ? "" : "<tt:Degree>" + degree + "</tt:Degree>") + "</tt:Rotate>" + more_extension + "</tt:Extension>"
                          "</tt:VideoSourceConfiguration></trt:Profile></trt:GetProfileResponse>");
         }
         if(op == "GetVideoSourceConfigurationOptions")
             return _soap(string("<trt:GetVideoSourceConfigurationOptionsResponse><trt:Options>"
                          "<tt:BoundsRange><tt:XRange><tt:Min>0</tt:Min><tt:Max>0</tt:Max></tt:XRange></tt:BoundsRange>") +
-                         (offers_rotate ? "<tt:Extension><tt:Rotate><tt:Mode>OFF</tt:Mode><tt:Mode>ON</tt:Mode></tt:Rotate></tt:Extension>" : "") +
+                         (offers_rotate ? string("<tt:Extension><tt:Rotate") + (rotate_reboot ? " Reboot=\"true\"" : "") +
+                                          "><tt:Mode>OFF</tt:Mode>" + (offers_on ? "<tt:Mode>ON</tt:Mode>" : "") + "</tt:Rotate></tt:Extension>" : "") +
                          "</trt:Options></trt:GetVideoSourceConfigurationOptionsResponse>");
         if(op == "SetVideoSourceConfiguration")
         {
             std::lock_guard<std::mutex> g(lock);
-            rotate = body.find("<tt:Mode>ON</tt:Mode>") != string::npos ? "ON" : "OFF";
+            // Rotate's Mode comes first; its Degree, if sent.
+            smatch m;
+            rotate = regex_search(body, m, regex("<tt:Mode>(ON|OFF)</tt:Mode>")) ? m[1].str() : "OFF";
+            if(regex_search(body, m, regex("<tt:Degree>([0-9]+)</tt:Degree>")))
+                degree = m[1].str();
             return _soap("<trt:SetVideoSourceConfigurationResponse/>");
         }
         if(op == "GotoPreset")
@@ -542,6 +555,7 @@ void test_r_ptz_session::test_flip_read()
     auto f = _imaging(p, cam, r_imaging_command());
     RTF_ASSERT(f.supported);
     RTF_ASSERT(!f.on);
+    RTF_ASSERT(!f.reboot);
     // A read sets nothing.
     RTF_ASSERT_EQUAL(cam.count("SetVideoSourceConfiguration"), 0);
 }
@@ -617,3 +631,126 @@ void test_r_ptz_session::test_flip_needs_no_ptz()
     RTF_ASSERT(_imaging(p, cam, _flip(true)).on);
 }
 
+void test_r_ptz_session::test_flip_keeps_the_extension()
+{
+    // The camera's own Extension goes back whole: Rotate's Mirror and the SceneOrientation it set, only Mode changed.
+    fake_camera cam;
+    cam.rotate_attrs = " Mirror=\"true\"";
+    cam.more_extension = "<tt:Extension><tt:SceneOrientation><tt:Mode>MANUAL</tt:Mode><tt:Orientation>Below</tt:Orientation></tt:SceneOrientation></tt:Extension>";
+    r_onvif_provider p("", nullptr);
+    RTF_ASSERT(_imaging(p, cam, _flip(true)).on);
+    string set;
+    {
+        std::lock_guard<std::mutex> g(cam.lock);
+        set = cam.last_body["SetVideoSourceConfiguration"];
+    }
+    RTF_ASSERT(set.find("<tt:Extension><tt:Rotate Mirror=\"true\"><tt:Mode>ON</tt:Mode></tt:Rotate>"
+                        "<tt:Extension><tt:SceneOrientation><tt:Mode>MANUAL</tt:Mode><tt:Orientation>Below</tt:Orientation></tt:SceneOrientation></tt:Extension>"
+                        "</tt:Extension>") != string::npos);
+    RTF_ASSERT(!_imaging(p, cam, _flip(false)).on);
+    {
+        std::lock_guard<std::mutex> g(cam.lock);
+        set = cam.last_body["SetVideoSourceConfiguration"];
+    }
+    RTF_ASSERT(set.find("<tt:Rotate Mirror=\"true\"><tt:Mode>OFF</tt:Mode></tt:Rotate>") != string::npos);
+    RTF_ASSERT(set.find("<tt:Orientation>Below</tt:Orientation>") != string::npos);
+}
+
+void test_r_ptz_session::test_flip_is_180_degrees()
+{
+    // Turned 90 degrees: Rotate ON, but not flipped. Flipping it sets Degree 180 with Mode ON.
+    fake_camera cam;
+    cam.rotate = "ON";
+    cam.degree = "90";
+    r_onvif_provider p("", nullptr);
+    auto f = _imaging(p, cam, r_imaging_command());
+    RTF_ASSERT(f.supported && !f.on);
+    RTF_ASSERT(_imaging(p, cam, _flip(true)).on);
+    string set;
+    {
+        std::lock_guard<std::mutex> g(cam.lock);
+        set = cam.last_body["SetVideoSourceConfiguration"];
+    }
+    RTF_ASSERT(set.find("<tt:Rotate><tt:Mode>ON</tt:Mode><tt:Degree>180</tt:Degree></tt:Rotate>") != string::npos);
+    // Off changes only the Mode.
+    RTF_ASSERT(!_imaging(p, cam, _flip(false)).on);
+    {
+        std::lock_guard<std::mutex> g(cam.lock);
+        set = cam.last_body["SetVideoSourceConfiguration"];
+    }
+    RTF_ASSERT(set.find("<tt:Rotate><tt:Mode>OFF</tt:Mode><tt:Degree>180</tt:Degree></tt:Rotate>") != string::npos);
+    // Degree 180 and ON is flipped; 270 isn't.
+    cam.rotate = "ON";
+    RTF_ASSERT(_imaging(p, cam, r_imaging_command()).on);
+    cam.degree = "270";
+    RTF_ASSERT(!_imaging(p, cam, r_imaging_command()).on);
+}
+
+void test_r_ptz_session::test_flip_reboot()
+{
+    // A camera whose options say a Rotate change restarts it: said on a read, and a set answers as set, without
+    // asking the restarting camera again.
+    fake_camera cam;
+    cam.rotate_reboot = true;
+    r_onvif_provider p("", nullptr);
+    auto f = _imaging(p, cam, r_imaging_command());
+    RTF_ASSERT(f.supported && !f.on && f.reboot);
+    auto before = cam.count("GetProfile");
+    auto set = _imaging(p, cam, _flip(true));
+    RTF_ASSERT(set.supported && set.on && set.reboot);
+    RTF_ASSERT_EQUAL(cam.count("SetVideoSourceConfiguration"), 1);
+    // One GetProfile to read it, one for the set's configuration, none after.
+    RTF_ASSERT_EQUAL(cam.count("GetProfile") - before, 2);
+    // A camera that offers no flip (Rotate OFF only) says no reboot either.
+    fake_camera none;
+    none.offers_on = false;
+    none.rotate_reboot = true;
+    r_onvif_provider q("", nullptr);
+    auto n = _imaging(q, none, r_imaging_command());
+    RTF_ASSERT(!n.supported && !n.reboot);
+}
+
+namespace
+{
+// append_flip_extension into a request whose envelope binds tt, as the session's does.
+string _flip_extension(const string& get_profile_xml, bool on)
+{
+    pugi::xml_document doc;
+    auto env = doc.append_child("SOAP-ENV:Envelope");
+    env.append_attribute("xmlns:tt") = "http://www.onvif.org/ver10/schema";
+    auto cfg = env.append_child("SOAP-ENV:Body").append_child("trt:Configuration");
+    r_onvif::append_flip_extension(cfg, get_profile_xml, on);
+    ostringstream out;
+    cfg.print(out, "", pugi::format_raw);
+    return out.str();
+}
+const string _profile_head = "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:trt=\"http://www.onvif.org/ver10/media/wsdl\""
+                             " xmlns:ns2=\"http://www.onvif.org/ver10/schema\"><s:Body><trt:GetProfileResponse><trt:Profile token=\"p\">"
+                             "<ns2:VideoSourceConfiguration token=\"v\"><ns2:Name>s</ns2:Name>";
+const string _profile_tail = "</ns2:VideoSourceConfiguration></trt:Profile></trt:GetProfileResponse></s:Body></s:Envelope>";
+}
+
+void test_r_ptz_session::test_flip_extension_keeps_the_cameras_namespaces()
+{
+    // The camera's own prefix, bound only in its response, is declared on the copy; a vendor element keeps its own.
+    auto x = _flip_extension(_profile_head + "<ns2:Extension><ns2:Rotate><ns2:Mode>OFF</ns2:Mode></ns2:Rotate>"
+                             "<ns2:Extension><vnd:Lens xmlns:vnd=\"urn:vendor\" vnd:id=\"1\">wide</vnd:Lens></ns2:Extension></ns2:Extension>" + _profile_tail, true);
+    RTF_ASSERT_EQUAL(x, string("<trt:Configuration><ns2:Extension xmlns:ns2=\"http://www.onvif.org/ver10/schema\"><ns2:Rotate><ns2:Mode>ON</ns2:Mode></ns2:Rotate>"
+                               "<ns2:Extension><vnd:Lens xmlns:vnd=\"urn:vendor\" vnd:id=\"1\">wide</vnd:Lens></ns2:Extension></ns2:Extension></trt:Configuration>"));
+    // A default namespace is declared too.
+    auto d = _flip_extension(_profile_head + "<Extension xmlns=\"http://www.onvif.org/ver10/schema\"><Rotate><Mode>ON</Mode></Rotate></Extension>" + _profile_tail, false);
+    RTF_ASSERT_EQUAL(d, string("<trt:Configuration><Extension xmlns=\"http://www.onvif.org/ver10/schema\"><Rotate><Mode>OFF</Mode></Rotate></Extension></trt:Configuration>"));
+}
+
+void test_r_ptz_session::test_flip_extension_added_where_missing()
+{
+    // No Extension: one with Rotate/Mode. An Extension without Rotate: Rotate goes first in it.
+    RTF_ASSERT_EQUAL(_flip_extension(_profile_head + _profile_tail, true),
+                     string("<trt:Configuration><tt:Extension><tt:Rotate><tt:Mode>ON</tt:Mode></tt:Rotate></tt:Extension></trt:Configuration>"));
+    auto x = _flip_extension(_profile_head + "<ns2:Extension><ns2:Extension><ns2:LensDescription>x</ns2:LensDescription></ns2:Extension></ns2:Extension>" + _profile_tail, true);
+    RTF_ASSERT_EQUAL(x, string("<trt:Configuration><ns2:Extension xmlns:ns2=\"http://www.onvif.org/ver10/schema\"><tt:Rotate><tt:Mode>ON</tt:Mode></tt:Rotate>"
+                               "<ns2:Extension><ns2:LensDescription>x</ns2:LensDescription></ns2:Extension></ns2:Extension></trt:Configuration>"));
+    // A Rotate without Mode gets it first; a Degree is set to 180 only when turned on.
+    auto r = _flip_extension(_profile_head + "<ns2:Extension><ns2:Rotate><ns2:Degree>90</ns2:Degree></ns2:Rotate></ns2:Extension>" + _profile_tail, false);
+    RTF_ASSERT(r.find("<ns2:Rotate><tt:Mode>OFF</tt:Mode><ns2:Degree>90</ns2:Degree></ns2:Rotate>") != string::npos);
+}

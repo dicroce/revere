@@ -171,7 +171,12 @@ r_onvif::onvif_video_flip r_onvif_provider::imaging_control(
             if(!now.supported)
                 throw r_ptz_error("unsupported", "Camera at " + ipv4 + " offers no picture flip over ONVIF.");
             if(now.on != cmd.flip)
+            {
                 cam.set_video_flip(media, profile, cmd.flip);
+                // A camera that restarts to apply it can't be asked again yet: it took the change.
+                if(now.reboot)
+                    return {true, cmd.flip, true};
+            }
         }
         // As the camera now has it.
         return cam.get_video_flip(media, profile);

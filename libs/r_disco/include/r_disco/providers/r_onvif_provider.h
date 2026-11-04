@@ -111,9 +111,9 @@ public:
         r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
     );
 
-    // Read or set the camera's picture flip (r_imaging_command), and return it as it now is. A setting change is
-    // rare, so each call opens the camera afresh; it needs no PTZ service. Throws r_ptz_error ("unreachable",
-    // "unsupported", "camera_error").
+    // Read or set the camera's picture flip (r_imaging_command), and return it as it now is: as read back, or, on a
+    // camera that restarts to apply a change (reboot), as set. A setting change is rare, so each call opens the
+    // camera afresh; it needs no PTZ service. Throws r_ptz_error ("unreachable", "unsupported", "camera_error").
     R_API r_onvif::onvif_video_flip imaging_control(
         const std::string& ipv4,
         const std::string& xaddrs,
