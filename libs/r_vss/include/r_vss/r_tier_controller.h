@@ -14,7 +14,8 @@ namespace r_vss
 
 // Where a camera's motion and object classes come from:
 //  1: Revere's own: MOG2 motion, YOLO on it (today).
-//  2: the camera's: its motion events and its own person/vehicle/animal events.
+//  2: the camera's: its motion events and its own person/vehicle/animal events,
+//     each report looked at by Revere's YOLO detection pass over its window.
 //  3: the camera's motion events, with Revere's YOLO detection pass on them.
 enum r_motion_tier
 {

@@ -462,3 +462,59 @@ void test_r_detection_planner::test_cut_waits_for_looks()
         RTF_ASSERT(f[0].end_ms > (int64_t)P::MAX_SESSION_MS);
     }
 }
+
+// Tier 2: a camera's class report drives a session as camera motion does on
+// tier 3 (the stream keeper gives it as motion from source "report:<class>").
+// The looks a report costs, which is the pass's whole cost on tier 2.
+void test_r_detection_planner::test_camera_report_sessions()
+{
+    auto report = [](int64_t length_ms, bool found, vector<r_look>& looks, vector<r_detection_session>& done) {
+        P p;
+        p.motion("a", "report:person", true, 1000);
+        p.camera_class("a", "person", 1000);
+        auto dets = [found](const r_look& l) {
+            return (found && l.kind != look_pre_roll) ? vector<r_detection>{_det("person", 100, 100, 200, 300)} : vector<r_detection>{};
+        };
+        _run(p, 1000, 1000 + length_ms, dets, &looks, &done);
+        p.motion("a", "report:person", false, 1000 + length_ms + 100);
+        _run(p, 1000 + length_ms + 100, 1000 + length_ms + P::CLUSTER_GAP_MS + 10000, dets, &looks, &done);
+    };
+    auto count = [&](int64_t length_ms, bool found) {
+        vector<r_look> looks;
+        vector<r_detection_session> done;
+        report(length_ms, found, looks, done);
+        RTF_ASSERT_EQUAL(done.size(), (size_t)1);
+        RTF_ASSERT(done[0].camera_classes == vector<string>({"person"}));
+        // What set the camera off, from storage, and the first live look 2 s in.
+        RTF_ASSERT(looks[0].kind == look_pre_roll && looks[1].kind == look_first && looks[2].kind == look_start);
+        RTF_ASSERT_EQUAL(looks[1].due_ms, (int64_t)(1000 + P::FIRST_LOOK_MS));
+        RTF_ASSERT(looks.back().kind == look_end);
+        if (found)
+            RTF_ASSERT_EQUAL(done[0].first_found_ms - done[0].start_ms, (int64_t)P::FIRST_LOOK_MS);
+        return looks.size();
+    };
+    // Found at once: 4 looks for 10 s, 5 for 20 s, 8 for a minute.
+    RTF_ASSERT_EQUAL(count(10000, true), (size_t)4);
+    RTF_ASSERT_EQUAL(count(20000, true), (size_t)5);
+    RTF_ASSERT_EQUAL(count(60000, true), (size_t)8);
+    // Nothing found: a follow-up every 4 s while the report lasts.
+    RTF_ASSERT_EQUAL(count(10000, false), (size_t)6);
+    RTF_ASSERT_EQUAL(count(20000, false), (size_t)8);
+    RTF_ASSERT_EQUAL(count(60000, false), (size_t)18);
+
+    // A person and a vehicle reported together are one session.
+    P p;
+    p.motion("a", "report:person", true, 1000);
+    p.camera_class("a", "person", 1000);
+    p.motion("a", "report:vehicle", true, 3000);
+    p.camera_class("a", "vehicle", 3000);
+    vector<r_detection_session> done;
+    _run(p, 1000, 10000, _none, nullptr, &done);
+    p.motion("a", "report:person", false, 10000);
+    _run(p, 10000, 15000, _none, nullptr, &done);
+    RTF_ASSERT(done.empty());   // the vehicle report goes on
+    p.motion("a", "report:vehicle", false, 15000);
+    _run(p, 15000, 15000 + P::CLUSTER_GAP_MS + 10000, _none, nullptr, &done);
+    RTF_ASSERT_EQUAL(done.size(), (size_t)1);
+    RTF_ASSERT(done[0].camera_classes == vector<string>({"person", "vehicle"}));
+}

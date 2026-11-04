@@ -92,3 +92,61 @@ void test_r_tier_outputs::test_plugins_get_a_report_with_no_box()
     RTF_ASSERT_EQUAL(got.class_name, string("vehicle"));
     RTF_ASSERT(got.confidence == 0.0f && got.x1 == 0.0f && got.y1 == 0.0f && got.x2 == 0.0f && got.y2 == 0.0f);
 }
+
+namespace
+{
+r_detection_session _session(const string& camera_id, int64_t start, int64_t end, vector<string> classes)
+{
+    r_detection_session s;
+    s.camera_id = camera_id;
+    s.start_ms = start;
+    s.end_ms = end;
+    for(auto& c : classes)
+        s.detections.push_back({camera_id, start + 1000, c, 0.8f, 10, 10, 100, 100});
+    return s;
+}
+}
+
+// Tier 2: what the pass confirms is in its detections (a cat, with a box); a
+// report it doesn't confirm is kept, as the camera said it, with no box.
+void test_r_tier_outputs::test_a_session_rules_on_the_reports_it_covers()
+{
+    vector<r_camera_report_span> pending {
+        {"a", "animal", T0, T0 + 20000},          // the pass found a cat: confirmed
+        {"a", "vehicle", T0 + 2000, T0 + 9000},   // a truck: confirmed
+        {"a", "person", T0 + 5000, T0 + 15000},   // no person found: kept as reported
+        {"a", "person", T0 - 4000, T0 + 1000},    // just before the session (a camera reports early): covered, kept
+        {"a", "person", T0 - 9000, T0 - 6000},    // too early: not this session's
+        {"a", "animal", T0 + 61000, T0 + 70000},  // after it: not this session's
+        {"b", "animal", T0, T0 + 20000}           // another camera's
+    };
+    auto out = unconfirmed_reports(pending, _session("a", T0, T0 + 60000, {"cat", "truck", "bowl"}));
+    RTF_ASSERT_EQUAL(out.size(), (size_t)2);
+    RTF_ASSERT(out[0].class_name == "person" && out[0].start_ms == T0 + 5000 && out[0].end_ms == T0 + 15000);
+    RTF_ASSERT(out[1].class_name == "person" && out[1].start_ms == T0 - 4000);
+    // The covered ones are ruled on and gone; the rest wait for their own session.
+    RTF_ASSERT_EQUAL(pending.size(), (size_t)3);
+    RTF_ASSERT(pending[0].start_ms == T0 - 9000 && pending[1].start_ms == T0 + 61000 && pending[2].camera_id == "b");
+
+    // A session that found nothing keeps every report it covers.
+    vector<r_camera_report_span> one {{"a", "animal", T0, T0 + 20000}};
+    out = unconfirmed_reports(one, _session("a", T0, T0 + 50000, {}));
+    RTF_ASSERT(out.size() == 1 && out[0].class_name == "animal" && one.empty());
+    // One that found a person doesn't confirm an animal.
+    one = {{"a", "animal", T0, T0 + 20000}};
+    out = unconfirmed_reports(one, _session("a", T0, T0 + 50000, {"person"}));
+    RTF_ASSERT(out.size() == 1 && one.empty());
+}
+
+void test_r_tier_outputs::test_reports_no_session_came_for()
+{
+    vector<r_camera_report_span> pending {
+        {"a", "animal", T0, T0 + 20000},
+        {"a", "person", T0 + 30000, T0 + 40000}
+    };
+    RTF_ASSERT(stale_reports(pending, T0 + 20000 + CAMERA_REPORT_WAIT_MS - 1).empty());
+    RTF_ASSERT_EQUAL(pending.size(), (size_t)2);
+    auto out = stale_reports(pending, T0 + 20000 + CAMERA_REPORT_WAIT_MS);
+    RTF_ASSERT(out.size() == 1 && out[0].class_name == "animal");
+    RTF_ASSERT(pending.size() == 1 && pending[0].class_name == "person");
+}

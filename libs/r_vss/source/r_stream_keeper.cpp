@@ -491,7 +491,9 @@ void r_stream_keeper::camera_transition(const string& camera_id, const r_cameras
         tier = _tiers.tier(camera_id);
     }
 
-    // Tier 2: the camera's own classes are the result; no YOLO.
+    // Tier 2: the camera's own class reports. No MOG2 and no YOLO on every
+    // frame: the detection pass looks only at each report's window, for what it
+    // is and where. Plain motion drives nothing here.
     if(tier == motion_tier_2)
     {
         if(t.what != "motion")
@@ -645,7 +647,20 @@ void r_stream_keeper::_tier_tick()
         // Off tier 1: MOG2 stops getting this camera's frames; free its decoder.
         if(c.second.tier != motion_tier_1)
             _motionEngine.remove_work_context(c.first);
+        // Off tier 2: reports still going end now.
+        if(c.second.tier != motion_tier_2)
+            _end_open_reports(c.first, now);
     }
+
+    // Held reports no session came for: written as they stand.
+    vector<r_camera_report_span> stale;
+    {
+        std::lock_guard<std::mutex> g(_tier_lock);
+        stale = stale_reports(_pending_reports, now);
+    }
+    for(auto& r : stale)
+        if(_motion_detection_on(r.camera_id))
+            _write_camera_report(r);
 }
 
 void r_stream_keeper::_camera_class_output(const string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms)
@@ -654,9 +669,7 @@ void r_stream_keeper::_camera_class_output(const string& camera_id, const r_came
     if(what.empty() || !_motion_detection_on(camera_id))
         return;
 
-    auto key = camera_id + "|" + t.what;
-    // The camera's own word, with no box: it says neither where nor which animal.
-    auto d = camera_report(camera_id, what, now_ms);
+    auto key = camera_id + "|" + what;
 
     if(t.active)
     {
@@ -666,7 +679,10 @@ void r_stream_keeper::_camera_class_output(const string& camera_id, const r_came
                 return;
             _camera_class_starts[key] = now_ms;
         }
-        _meph.emit_detection(d);
+        // The camera's own word, with no box: it says neither where nor which
+        // animal. On the bus at once, so an alert doesn't wait for the pass.
+        _meph.emit_detection(camera_report(camera_id, what, now_ms));
+        _report_to_pass(camera_id, what, true);
         return;
     }
 
@@ -679,8 +695,58 @@ void r_stream_keeper::_camera_class_output(const string& camera_id, const r_came
         start = it->second;
         _camera_class_starts.erase(it);
     }
-    d.ts = start;
-    write_metadata(camera_id, "camera_events", analytics_json(start, now_ms, {d}, "camera"), start);
+    _end_report(camera_id, what, start, now_ms);
+}
+
+bool r_stream_keeper::_report_to_pass(const string& camera_id, const string& what, bool active)
+{
+    // A report is a session's motion for the pass, as camera motion is on tier
+    // 3, under a source of its own, so two reports at once are one session.
+    std::lock_guard<std::mutex> g(_detection_pass_lock);
+    if(!_detection_pass)
+        return false;
+    _detection_pass->motion(camera_id, "report:" + what, active);
+    if(active)
+        _detection_pass->camera_class(camera_id, what);
+    return true;
+}
+
+void r_stream_keeper::_end_report(const string& camera_id, const string& what, int64_t start_ms, int64_t end_ms)
+{
+    r_camera_report_span report {camera_id, what, start_ms, end_ms};
+    // Held for the pass's session over it; without a pass, written as it stands.
+    if(_report_to_pass(camera_id, what, false))
+    {
+        std::lock_guard<std::mutex> g(_tier_lock);
+        _pending_reports.push_back(report);
+        return;
+    }
+    _write_camera_report(report);
+}
+
+void r_stream_keeper::_end_open_reports(const string& camera_id, int64_t now_ms)
+{
+    // The camera left tier 2 with reports still going: their ends will find no
+    // start, so they end now and the pass stops looking.
+    vector<pair<string, int64_t>> open;
+    {
+        std::lock_guard<std::mutex> g(_tier_lock);
+        auto prefix = camera_id + "|";
+        for(auto it = _camera_class_starts.lower_bound(prefix); it != _camera_class_starts.end() && it->first.compare(0, prefix.size(), prefix) == 0;)
+        {
+            open.push_back({it->first.substr(prefix.size()), it->second});
+            it = _camera_class_starts.erase(it);
+        }
+    }
+    for(auto& o : open)
+        _end_report(camera_id, o.first, o.second, now_ms);
+}
+
+void r_stream_keeper::_write_camera_report(const r_camera_report_span& report)
+{
+    write_metadata(report.camera_id, "camera_events",
+                   analytics_json(report.start_ms, report.end_ms, {camera_report(report.camera_id, report.class_name, report.start_ms)}, "camera"),
+                   report.start_ms);
 }
 
 static bool _same_detection(const r_detection& a, const r_detection& b)
@@ -688,9 +754,16 @@ static bool _same_detection(const r_detection& a, const r_detection& b)
     return a.ts == b.ts && a.class_name == b.class_name && a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
 }
 
+// The detection pass runs on tiers 2 and 3: on camera motion on 3, on the
+// camera's class reports on 2.
+static bool _pass_tier(int tier)
+{
+    return tier == motion_tier_2 || tier == motion_tier_3;
+}
+
 void r_stream_keeper::_pass_found(const string& camera_id, const vector<r_detection>& detections)
 {
-    if(motion_tier(camera_id) != motion_tier_3 || !_motion_detection_on(camera_id))
+    if(!_pass_tier(motion_tier(camera_id)) || !_motion_detection_on(camera_id))
         return;
 
     vector<r_detection> reported;
@@ -729,7 +802,19 @@ void r_stream_keeper::_pass_session(const r_detection_session& session)
         _tiers.pass_session(session.camera_id, yolo_person, camera_person);
     }
 
-    if(motion_tier(session.camera_id) != motion_tier_3 || !_motion_detection_on(session.camera_id))
+    // Tier 2 reports this session covered: the ones its detections confirm are
+    // in them, with boxes and YOLO's class (a cat, not "animal"); the rest are
+    // written as the camera said them, with no box.
+    vector<r_camera_report_span> unconfirmed;
+    {
+        std::lock_guard<std::mutex> g(_tier_lock);
+        unconfirmed = unconfirmed_reports(_pending_reports, session);
+    }
+    if(!unconfirmed.empty() && _motion_detection_on(session.camera_id))
+        for(auto& r : unconfirmed)
+            _write_camera_report(r);
+
+    if(!_pass_tier(motion_tier(session.camera_id)) || !_motion_detection_on(session.camera_id))
         return;
 
     vector<r_detection> kept;

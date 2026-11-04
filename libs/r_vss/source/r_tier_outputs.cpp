@@ -2,6 +2,7 @@
 #include "r_vss/r_camera_stats.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/3rdparty/json/json.h"
+#include <algorithm>
 
 using namespace r_vss;
 using namespace r_utils;
@@ -31,6 +32,37 @@ bool r_vss::reported_class(const string& class_name)
 {
     auto g = detection_group(class_name);
     return g == "person" || g == "vehicle" || g == "animal";
+}
+
+vector<r_camera_report_span> r_vss::unconfirmed_reports(vector<r_camera_report_span>& pending, const r_detection_session& session)
+{
+    vector<r_camera_report_span> out, kept;
+    for (auto& r : pending)
+    {
+        bool covered = r.camera_id == session.camera_id &&
+                       r.start_ms >= session.start_ms - r_detection_planner::EARLY_CLASS_MS &&
+                       r.start_ms <= session.end_ms;
+        if (!covered)
+        {
+            kept.push_back(r);
+            continue;
+        }
+        bool confirmed = any_of(session.detections.begin(), session.detections.end(),
+                                [&](const r_detection& d) { return detection_group(d.class_name) == r.class_name; });
+        if (!confirmed)
+            out.push_back(r);
+    }
+    pending.swap(kept);
+    return out;
+}
+
+vector<r_camera_report_span> r_vss::stale_reports(vector<r_camera_report_span>& pending, int64_t now_ms)
+{
+    vector<r_camera_report_span> out, kept;
+    for (auto& r : pending)
+        (now_ms - r.end_ms >= CAMERA_REPORT_WAIT_MS ? out : kept).push_back(r);
+    pending.swap(kept);
+    return out;
 }
 
 static string _iso(int64_t ms)

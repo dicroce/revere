@@ -425,8 +425,9 @@ private:
     std::chrono::steady_clock::time_point _restream_overflow_window_start {std::chrono::steady_clock::now()};
     r_overflow_type _current_overflow_flags {r_overflow_type::none};
 
-    // Runs over tier 3 cameras' motion when a motion plugin offers object
-    // detection. Kept (stopped) after stop() so late transitions are harmless.
+    // Runs over tier 3 cameras' motion, and tier 2 cameras' class reports, when
+    // a motion plugin offers object detection. Kept (stopped) after stop() so
+    // late transitions are harmless.
     mutable std::mutex _detection_pass_lock;
     std::unique_ptr<r_detection_pass> _detection_pass;
     std::set<std::string> _no_detector_logged;     // tier-3 cameras already warned about, under _detection_pass_lock
@@ -436,6 +437,10 @@ private:
     static void _on_detection_bus(void* userdata, const r_detection& det, int64_t posted_at_ms);
     void _tier_tick();
     void _camera_class_output(const std::string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms);
+    bool _report_to_pass(const std::string& camera_id, const std::string& what, bool active);
+    void _end_report(const std::string& camera_id, const std::string& what, int64_t start_ms, int64_t end_ms);
+    void _end_open_reports(const std::string& camera_id, int64_t now_ms);
+    void _write_camera_report(const r_camera_report_span& report);
     void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections);
     void _pass_session(const r_detection_session& session);
     bool _motion_detection_on(const std::string& camera_id);
@@ -445,7 +450,8 @@ private:
     r_tier_controller _tiers;
     std::map<std::string, int64_t> _mog2_starts;                       // camera id -> its MOG2 event's start
     std::map<std::string, int64_t> _camera_class_starts;               // camera id + "|" + class -> start (tier 2)
-    std::map<std::string, std::vector<r_detection>> _emitted_first;    // camera id -> first found, already on the bus (tier 3)
+    std::map<std::string, std::vector<r_detection>> _emitted_first;    // camera id -> first found, already on the bus (tiers 2 and 3)
+    std::vector<r_camera_report_span> _pending_reports;                // tier 2 reports the pass hasn't ruled on yet
     std::set<std::string> _tiers_restored;                             // cameras whose saved verification was given back
 };
 
