@@ -476,7 +476,9 @@ void test_r_ptz_session::test_timeout_read()
     RTF_ASSERT_EQUAL(ptz_timeout_ms("PT1.5S").value(), (int64_t)1500);
     RTF_ASSERT_EQUAL(ptz_timeout_ms("PT0.25S").value(), (int64_t)250);
     RTF_ASSERT_EQUAL(ptz_timeout_ms("PT1M2S").value(), (int64_t)62000);
-    for(auto bad : {"", "PT", "PT0S", "1S", "PT1H", "PTxS", "P1S"})
+    RTF_ASSERT_EQUAL(ptz_timeout_ms("PT1H").value(), (int64_t)3600000);
+    RTF_ASSERT_EQUAL(ptz_timeout_ms("PT1H1M1.5S").value(), (int64_t)3661500);
+    for(auto bad : {"", "PT", "PT0S", "1S", "PT1D", "PTxS", "P1S", "PT1S1M", "PT1.5H"})
         RTF_ASSERT(ptz_timeout_ms(bad).is_null());
 }
 
@@ -511,6 +513,23 @@ void test_r_ptz_session::test_later_command_cancels_the_stop()
     RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 1);
     _wait_ms(600);
     RTF_ASSERT_EQUAL(cam.count("tptz:Stop"), 2);
+}
+
+void test_r_ptz_session::test_keep_alives_leave_one_stop_waiting()
+{
+    fake_camera cam;
+    fake_camera other;
+    r_onvif_provider p("", nullptr);
+    // A held control: each keep-alive replaces the last one's Stop, rather than adding another.
+    for(int i = 0; i < 5; ++i)
+        _run(p, cam, _move("PT30S"));
+    RTF_ASSERT_EQUAL(p.pending_ptz_stops(), (size_t)1);
+    // Another camera's move has its own.
+    _run(p, other, _move("PT30S"));
+    RTF_ASSERT_EQUAL(p.pending_ptz_stops(), (size_t)2);
+    // A client's Stop leaves none for that camera.
+    _run(p, cam, _cmd(r_ptz_command::op_t::stop));
+    RTF_ASSERT_EQUAL(p.pending_ptz_stops(), (size_t)1);
 }
 
 void test_r_ptz_session::test_no_timeout_no_stop()

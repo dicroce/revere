@@ -21,6 +21,7 @@ public:
       TEST(test_r_ptz_session::test_timeout_read);
       TEST(test_r_ptz_session::test_move_stopped_at_its_timeout);
       TEST(test_r_ptz_session::test_later_command_cancels_the_stop);
+      TEST(test_r_ptz_session::test_keep_alives_leave_one_stop_waiting);
       TEST(test_r_ptz_session::test_no_timeout_no_stop);
       TEST(test_r_ptz_session::test_flip_read);
       TEST(test_r_ptz_session::test_flip_set_sends_the_source_back_with_rotate);
@@ -56,6 +57,7 @@ public:
     void test_timeout_read();
     void test_move_stopped_at_its_timeout();
     void test_later_command_cancels_the_stop();
+    void test_keep_alives_leave_one_stop_waiting();
     void test_no_timeout_no_stop();
     void test_flip_read();
     void test_flip_set_sends_the_source_back_with_rotate();

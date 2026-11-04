@@ -46,14 +46,32 @@ r_onvif_provider::~r_onvif_provider()
 r_nullable<int64_t> r_disco::ptz_timeout_ms(const string& timeout)
 {
     r_nullable<int64_t> ms;
-    static const regex duration(R"(^PT(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$)");
+    static const regex duration(R"(^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$)");
     smatch m;
     if(timeout.size() <= 2 || !regex_match(timeout, m, duration))
         return ms;
-    double total = (m[1].matched ? stod(m[1].str()) * 60.0 : 0.0) + (m[2].matched ? stod(m[2].str()) : 0.0);
+    double total = (m[1].matched ? stod(m[1].str()) * 3600.0 : 0.0) + (m[2].matched ? stod(m[2].str()) * 60.0 : 0.0)
+                 + (m[3].matched ? stod(m[3].str()) : 0.0);
     if(total > 0.0)
         ms.set_value((int64_t)(total * 1000.0 + 0.5));
     return ms;
+}
+
+void r_onvif_provider::_drop_ptz_stops(const shared_ptr<_ptz_session>& session)
+{
+    // A camera's new command makes its pending Stops void: drop them (and any for a session that's gone), so a held
+    // control's keep-alives leave one waiting, not one per keep-alive.
+    lock_guard<mutex> g(_ptz_deadlines_lock);
+    _ptz_deadlines.erase(remove_if(_ptz_deadlines.begin(), _ptz_deadlines.end(), [&](const _ptz_deadline& d) {
+        auto s = d.session.lock();
+        return !s || s == session;
+    }), _ptz_deadlines.end());
+}
+
+size_t r_onvif_provider::pending_ptz_stops()
+{
+    lock_guard<mutex> g(_ptz_deadlines_lock);
+    return _ptz_deadlines.size();
 }
 
 void r_onvif_provider::_schedule_ptz_stop(const shared_ptr<_ptz_session>& session, uint64_t command, const r_ptz_command& cmd)
@@ -214,6 +232,7 @@ r_ptz_result r_onvif_provider::ptz_control(
     // One command at a time per camera; other cameras and interrogation don't wait.
     lock_guard<mutex> camera_lock(session->lock);
     auto command = ++session->commands;
+    _drop_ptz_stops(session);
     // A move that reached the camera stops when its timeout runs out, whatever the camera does with it.
     auto run = [&]() {
         auto result = _run_ptz(*session, cmd);
