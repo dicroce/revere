@@ -2,6 +2,7 @@
 #include "r_av/r_hw_accel.h"
 #include "r_utils/r_logger.h"
 
+#include <cstdarg>
 #include <map>
 #include <mutex>
 
@@ -32,6 +33,29 @@ namespace
     std::mutex g_probe_lok;
     std::map<AVCodecID, r_hw_accel> g_decoder_cache;
     std::map<AVCodecID, r_hw_accel> g_encoder_cache;
+
+    // FFmpeg says why a device couldn't be created only in its log, which
+    // otherwise goes to stderr (nowhere, on Windows). While r_hw_device_create
+    // runs, this thread's error and warning lines are also kept for the caller.
+    // Other threads, and other times, log as before.
+    thread_local std::string* t_device_log = nullptr;
+    std::once_flag g_log_callback_once;
+    int (*g_device_create)(AVBufferRef**, AVHWDeviceType) = nullptr;
+
+    void _log_callback(void* avcl, int level, const char* fmt, va_list vl)
+    {
+        if(t_device_log && level <= AV_LOG_WARNING)
+        {
+            va_list copy;
+            va_copy(copy, vl);
+            char line[512];
+            int print_prefix = 1;
+            av_log_format_line(avcl, level, fmt, copy, line, sizeof(line), &print_prefix);
+            va_end(copy);
+            t_device_log->append(line);
+        }
+        av_log_default_callback(avcl, level, fmt, vl);
+    }
 }
 
 static const char* _accel_name(r_hw_accel accel)
@@ -58,6 +82,35 @@ AVHWDeviceType r_av::r_hw_accel_to_device_type(r_hw_accel accel)
         case r_hw_accel::videotoolbox: return AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
         default:                       return AV_HWDEVICE_TYPE_NONE;
     }
+}
+
+int r_av::r_hw_device_create(AVBufferRef** device_ctx, AVHWDeviceType device_type, std::string& why)
+{
+    std::call_once(g_log_callback_once, [] { av_log_set_callback(_log_callback); });
+    std::string logged;
+    t_device_log = &logged;
+    int ret = g_device_create ? g_device_create(device_ctx, device_type)
+                              : av_hwdevice_ctx_create(device_ctx, device_type, nullptr, nullptr, 0);
+    t_device_log = nullptr;
+    // One line: FFmpeg's pieces end in newlines.
+    why.clear();
+    for(char c : logged)
+    {
+        if(c == '\n' || c == '\r')
+        {
+            if(!why.empty() && why.back() != ' ')
+                why += ' ';
+        }
+        else why += c;
+    }
+    while(!why.empty() && why.back() == ' ')
+        why.pop_back();
+    return ret;
+}
+
+void r_av::r_hw_device_create_override(int (*create)(AVBufferRef**, AVHWDeviceType))
+{
+    g_device_create = create;
 }
 
 AVPixelFormat r_av::r_hw_accel_get_pix_fmt(const AVCodec* codec, AVHWDeviceType device_type)
@@ -216,11 +269,14 @@ r_hw_accel r_av::r_find_best_hw_accel(AVCodecID codec_id)
         }
 
         AVBufferRef* hw_device_ctx = nullptr;
-        int ret = av_hwdevice_ctx_create(&hw_device_ctx, device_type, nullptr, nullptr, 0);
+        std::string why;
+        int ret = r_hw_device_create(&hw_device_ctx, device_type, why);
         if(ret < 0)
         {
             char errbuf[256];
             av_strerror(ret, errbuf, sizeof(errbuf));
+            R_LOG_INFO("r_av: %s decode for codec %d unavailable: %s%s%s", _accel_name(accel), (int)codec_id,
+                       errbuf, why.empty() ? "" : ": ", why.c_str());
             continue;
         }
 
