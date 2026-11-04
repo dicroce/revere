@@ -164,6 +164,8 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_GET, "/measure_result", &r_ws::_get_measure_result);
     route(METHOD_POST, "/configure_camera", &r_ws::_post_configure_camera);
     route(METHOD_POST, "/remove_camera", &r_ws::_post_remove_camera);
+    route(METHOD_POST, "/stop_camera", &r_ws::_post_stop_camera);
+    route(METHOD_POST, "/start_camera", &r_ws::_post_start_camera);
     route(METHOD_POST, "/update_camera_properties", &r_ws::_post_update_camera_properties);
     route(METHOD_POST, "/forget_camera", &r_ws::_post_forget_camera);
     route(METHOD_POST, "/add_rtsp_camera", &r_ws::_post_add_rtsp_camera);
@@ -811,6 +813,8 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     {"video_codec", (c.video_codec.is_null())?"":c.video_codec.value()},
                     {"audio_codec", (c.audio_codec.is_null())?"":c.audio_codec.value()},
                     {"state", c.state},
+                    // Stopped by the user: assigned, its recordings kept, not recording.
+                    {"stopped", c.stopped},
                     {"do_motion_detection", do_motion_detection},
                     {"do_motion_pruning", (c.do_motion_pruning.is_null())?false:c.do_motion_pruning.value()},
                     {"min_continuous_recording_hours", (c.min_continuous_recording_hours.is_null())?24:c.min_continuous_recording_hours.value()},
@@ -3646,6 +3650,59 @@ r_http::r_server_response r_ws::_post_remove_camera(r_utils::r_socket_base&, con
     R_STHROW(r_http_500_exception, ("Failed to remove camera."));
 }
 
+r_http::r_server_response r_ws::_post_stop_camera(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    return _set_camera_stopped(request, true);
+}
+
+r_http::r_server_response r_ws::_post_start_camera(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    return _set_camera_stopped(request, false);
+}
+
+// {"camera_id"}: stops or starts recording an assigned camera, keeping its
+// settings and recordings. 400 for a missing id, 404 for a camera that isn't
+// assigned here.
+r_http::r_server_response r_ws::_set_camera_stopped(const r_http::r_server_request& request, bool stopped)
+{
+    _require_auth(request);
+
+    string camera_id;
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+        if(req.is_object() && req.contains("camera_id") && req["camera_id"].is_string())
+            camera_id = req["camera_id"].get<string>();
+    }
+    catch(const std::exception&) {}
+    if(camera_id.empty())
+        R_STHROW(r_http_400_exception, ("Missing camera_id."));
+
+    auto camera = _devices.get_camera_by_id(camera_id);
+    if(camera.is_null() || camera.value().state != "assigned")
+        R_STHROW(r_http_404_exception, ("No camera %s is recording here.", camera_id.c_str()));
+
+    try
+    {
+        query_set_camera_stopped(_devices, camera_id, stopped);
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+        R_STHROW(r_http_500_exception, (stopped ? "Failed to stop camera." : "Failed to start camera."));
+    }
+    R_LOG_INFO("Camera %s %s", camera_id.c_str(), stopped ? "stopped" : "started");
+
+    json j;
+    j["camera_id"] = camera_id;
+    j["stopped"] = stopped;
+
+    r_server_response response;
+    response.set_content_type("text/json");
+    response.set_body(j.dump());
+    return response;
+}
+
 r_http::r_server_response r_ws::_post_update_camera_properties(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
@@ -4595,6 +4652,7 @@ r_server_response r_ws::_post_mcp(r_socket_base&, const r_server_request& reques
                         {"friendly_name",      c.friendly_name.is_null() ? "" : c.friendly_name.value()},
                         {"ipv4",               c.ipv4.is_null()          ? "" : c.ipv4.value()},
                         {"state",              c.state},
+                        {"stopped",            c.stopped},
                         {"do_motion_detection", !c.do_motion_detection.is_null() && c.do_motion_detection.value()}
                     });
                 }

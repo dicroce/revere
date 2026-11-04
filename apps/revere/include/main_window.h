@@ -151,6 +151,7 @@ struct main_window_actions
     std::function<void(int)> view;
     std::function<void(int)> properties;
     std::function<void(int)> remove;
+    std::function<void(int, bool)> set_stopped;   // stop (true) or start (false) recording the camera
     std::function<void(int)> repair;        // the card's action_label button
     std::function<void(int)> move_use;      // a held move: use the new address
     std::function<void(int)> move_keep;     // a held move: keep the current address
@@ -398,6 +399,7 @@ inline const char* camera_state(stream_health h)
         case stream_health::healthy: return "recording";
         case stream_health::not_receiving: return "not receiving video";
         case stream_health::failed: return "failed to start";
+        case stream_health::stopped: return "stopped";
         default: return "starting";
     }
 }
@@ -1628,6 +1630,11 @@ inline void main_window(
                     actions.open_url(local_web_ui_camera_url(item.camera_id));
                 if(!item.action_label.empty() && flow_button(a.row, item.action_label.c_str()))
                     actions.repair(sel_index);
+                const bool stopped = item.health == stream_health::stopped;
+                if(flow_button(a.row, stopped ? "Start recording" : "Stop recording") && actions.set_stopped)
+                    actions.set_stopped(sel_index, !stopped);
+                if(ImGui::IsItemHovered())
+                    ImGui::SetTooltip(stopped ? "Record this camera again" : "Stop recording and streaming this camera, keeping its settings and recordings");
                 if(flow_button(a.row, "Remove", button_kind::ghost_destructive, false, true))
                     actions.remove(sel_index);
             }

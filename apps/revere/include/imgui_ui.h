@@ -356,7 +356,8 @@ enum class stream_health
     unknown,        // no status data available
     healthy,        // receiving video frames
     not_receiving,  // stream up but no video frames (status: warning)
-    failed          // recording context failed to start (status: danger)
+    failed,         // recording context failed to start (status: danger)
+    stopped         // stopped by the user: kept, not recording
 };
 
 struct sidebar_list_ui_item
@@ -615,6 +616,8 @@ void sidebar_list(
             status_row(r_ui_utils::theme::status_neutral_dot, secondary, "Starting...");
         else if(failed)
             status_row(r_ui_utils::theme::status_danger_dot, r_ui_utils::theme::status_danger_text, "Failed to start");
+        else if(lbl.health == stream_health::stopped)
+            status_row(r_ui_utils::theme::status_neutral_dot, secondary, "Stopped");
         else if(not_receiving)
             status_row(r_ui_utils::theme::status_warning_dot, r_ui_utils::theme::status_warning_text, "No video Â· bitrate: " + lbl.kbps);
         else if(!lbl.kbps.empty())

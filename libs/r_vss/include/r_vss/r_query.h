@@ -107,6 +107,11 @@ R_API void query_configure_camera(const std::string& top_dir, r_disco::r_devices
 // .mdb/.db/.mdnts/.mdnts.db[-shm/-wal] set). Mirrors the desktop Remove dialog.
 R_API void query_remove_camera(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, bool delete_files);
 
+// Stops recording an assigned camera, or starts it again, keeping its settings
+// and recordings (r_camera::stopped). The stream keeper's poll loop (~2s) tears
+// its stream down or starts it. Throws for an unknown or unassigned camera.
+R_API void query_set_camera_stopped(r_disco::r_devices& devices, const std::string& camera_id, bool stopped);
+
 // Updates an assigned camera's recording settings (motion detection, motion
 // pruning, minimum continuous retention hours) and persists them. When motion
 // detection is enabled it ensures the camera's motion (.mdb/.mdnts) files exist,

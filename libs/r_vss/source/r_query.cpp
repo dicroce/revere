@@ -434,6 +434,22 @@ void r_vss::query_remove_camera(const string& top_dir, r_devices& devices, const
     }
 }
 
+void r_vss::query_set_camera_stopped(r_devices& devices, const string& camera_id, bool stopped)
+{
+    auto maybe_camera = devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+
+    auto camera = maybe_camera.value();
+    if(camera.state != "assigned")
+        R_THROW(("Camera %s isn't recording here.", camera_id.c_str()));
+
+    if(camera.stopped == stopped)
+        return;
+    camera.stopped = stopped;
+    devices.save_camera(camera);
+}
+
 void r_vss::query_update_camera_properties(const string& top_dir, r_devices& devices, const string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours, const r_nullable<string>& motion_tier)
 {
     if(!motion_tier.is_null() && motion_tier.value() != "auto" && motion_tier.value() != "1" &&

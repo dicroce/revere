@@ -53,6 +53,8 @@ add_executable(
     source/test_r_restream_opus.cpp
     include/test_r_system_plugin_action.h
     source/test_r_system_plugin_action.cpp
+    include/test_r_camera_stop.h
+    source/test_r_camera_stop.cpp
 )
 
 # Two system plugins for test_r_system_plugin_action: one with system_plugin_action, one without.

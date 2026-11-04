@@ -56,6 +56,7 @@
 #include "r_vss/r_disk_benchmark.h"
 #include "r_vss/r_build_info.h"
 #include "r_vss/r_storage_ops.h"
+#include "r_vss/r_query.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_file.h"
 #include "r_storage/r_md_storage_file.h"
@@ -404,7 +405,12 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
         if(status_by_id.find(c.first) != status_by_id.end())
         {
             auto& status = status_by_id[c.first];
-            if(status.failed)
+            if(status.stopped)
+            {
+                // Stopped by the user: no bitrate or retention to show.
+                item.health = revere::stream_health::stopped;
+            }
+            else if(status.failed)
             {
                 // Recording context construction is failing (e.g. legacy nanots v1
                 // file). Show the cause in the card so the user has a hint about
@@ -3297,6 +3303,19 @@ int main(int argc, char** argv)
             // Show the removal confirmation dialog
             camera_setup_wizard.next("remove_camera_modal");
         }
+    };
+    main_window_actions.set_stopped = [&](int i, bool stopped){
+        if(i < 0 || i >= (int)ui_state.recording_items.size())
+            return;
+        try
+        {
+            r_vss::query_set_camera_stopped(devices, ui_state.recording_items[i].camera_id, stopped);
+        }
+        catch(const std::exception& e)
+        {
+            R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+        }
+        force_ui_update = true;
     };
     main_window_actions.properties = [&](int i){
         ui_state.recording_selected_item = i;

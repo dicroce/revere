@@ -560,10 +560,12 @@ const camera_column CAMERA_COLUMNS[] = {
     {8, "model", "TEXT"},
     {8, "firmware_version", "TEXT"},
     // The camera's MAC address, filled in when it's next seen at its address.
-    {9, "mac", "TEXT"}
+    {9, "mac", "TEXT"},
+    // 1 while the user has stopped the camera (r_camera::stopped).
+    {10, "stopped", "INTEGER DEFAULT 0"}
 };
 
-const int CAMERA_DB_VERSION = 9;
+const int CAMERA_DB_VERSION = 10;
 }
 
 void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
@@ -802,6 +804,7 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
         camera.rtsp_transport = row.at("rtsp_transport").value();
     if(row.count("mac") && !row.at("mac").is_null())
         camera.mac = row.at("mac").value();
+    camera.stopped = row.count("stopped") && !row.at("stopped").is_null() && s_to_int(row.at("stopped").value()) != 0;
 
     camera.stream_config_hash = row.at("stream_config_hash").value();
     return camera;
@@ -910,7 +913,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
 
     auto query = r_string_utils::format(
             "REPLACE INTO cameras("
-                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%s%s%s%s%slast_update_time, stream_config_hash) "
+                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%s%s%s%s%sstopped, last_update_time, stream_config_hash) "
             "VALUES("
                 "%s"
                 "%s"
@@ -947,6 +950,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
                 "%s"
                 "%s"
                 "%s"
+            "%s"
             ");",
             (!camera.camera_name.is_null())?"camera_name, ":"",
             (!camera.friendly_name.is_null())?"friendly_name, ":"",
@@ -1013,6 +1017,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
             (!camera.motion_tier_verified.is_null())?r_string_utils::format("%d, ", camera.motion_tier_verified.value()).c_str():"",
             (!rtsp_transport.is_null())?r_string_utils::format("'%s', ", rtsp_transport.value().c_str()).c_str():"",
             (!mac.is_null())?r_string_utils::format("'%s', ", mac.value().c_str()).c_str():"",
+            camera.stopped ? "1, " : "0, ",
 
             "unixepoch(), ",
             r_string_utils::format("'%s'", hash.c_str()).c_str()

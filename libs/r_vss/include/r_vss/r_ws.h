@@ -225,6 +225,9 @@ private:
     r_http::r_server_response _post_configure_camera(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _post_remove_camera(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _post_stop_camera(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _post_start_camera(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _set_camera_stopped(const r_http::r_server_request& request, bool stopped);
 
     r_http::r_server_response _post_update_camera_properties(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 

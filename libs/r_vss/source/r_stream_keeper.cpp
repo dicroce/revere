@@ -1257,6 +1257,15 @@ void r_stream_keeper::_entry_point()
                             doomed.push_back(rc);
                         for(auto& rc : _remove_recording_contexts(_devices.get_assigned_cameras_removed(cameras)))
                             doomed.push_back(rc);
+
+                        // Stopped by the user: torn down like a removed camera, its
+                        // files and settings kept.
+                        std::vector<r_camera> stopped;
+                        for(const auto& c : _devices.get_assigned_cameras())
+                            if(c.stopped && _streams.count(c.id) > 0)
+                                stopped.push_back(c);
+                        for(auto& rc : _remove_recording_contexts(stopped))
+                            doomed.push_back(rc);
                     }
                 }
 
@@ -1272,15 +1281,24 @@ void r_stream_keeper::_entry_point()
                     _add_recording_contexts(_devices.get_assigned_cameras_added(_get_current_cameras()));
             }
 
-            // If the set of assigned cameras changed (one added or forgotten),
-            // notify the system plugins so e.g. the cloud plugin pushes the
-            // device list up right away instead of waiting for its periodic
-            // poll. A stream reconnect leaves the assigned set unchanged, so it
-            // won't trigger this.
+            // If the set of assigned cameras changed (one added, forgotten, stopped
+            // or started), notify the system plugins so e.g. the cloud plugin
+            // pushes the device list up right away instead of waiting for its
+            // periodic poll. A stream reconnect leaves the assigned set unchanged,
+            // so it won't trigger this.
             {
                 std::set<std::string> assigned_ids;
+                std::map<std::string, r_camera> stopped;
                 for(const auto& c : _devices.get_assigned_cameras())
-                    assigned_ids.insert(c.id);
+                {
+                    assigned_ids.insert(c.stopped ? c.id + " stopped" : c.id);
+                    if(c.stopped)
+                        stopped[c.id] = c;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(_streams_mutex);
+                    _stopped_cameras = std::move(stopped);
+                }
                 if(assigned_ids != _last_assigned_camera_ids)
                 {
                     _last_assigned_camera_ids = std::move(assigned_ids);
@@ -1443,6 +1461,13 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         if(_streams.count(camera.id) > 0 || _suspended_cameras.count(camera.id) > 0)
             continue;
 
+        // Stopped by the user: not started until it's started again.
+        if(camera.stopped)
+        {
+            _failed_cameras.erase(camera.id);
+            continue;
+        }
+
         // Its old context still holds the camera's files and stream tags.
         if(_teardowns.pending(camera.id))
             continue;
@@ -1581,6 +1606,17 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
     // meaningful error instead of "N/A". Only id + friendly_name are populated
     // on the embedded r_camera here — the UI matches by id and shows the
     // failure_message text.
+    for(const auto& kv : _stopped_cameras)
+    {
+        if(_streams.count(kv.first) > 0)
+            continue;
+        r_stream_status s;
+        s.camera = kv.second;
+        s.bytes_per_second = 0;
+        s.stopped = true;
+        statuses.push_back(std::move(s));
+    }
+
     for(const auto& kv : _failed_cameras)
     {
         r_stream_status s;

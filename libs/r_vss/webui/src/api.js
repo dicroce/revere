@@ -210,6 +210,18 @@ export async function removeCamera(cameraId, deleteFiles) {
   return res.json()
 }
 
+// Stops recording the camera, or starts it again (stopped false). It stays
+// under Recording with its settings and recordings; the stream stops or starts
+// within a few seconds.
+export async function setCameraStopped(cameraId, stopped) {
+  const res = await apiFetch(stopped ? '/stop_camera' : '/start_camera', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ camera_id: cameraId }),
+  })
+  return res.json()
+}
+
 // Updates a recording camera's settings (motion detection, motion pruning,
 // minimum continuous retention hours). The server bounces the camera so the
 // change applies live.

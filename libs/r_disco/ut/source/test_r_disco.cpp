@@ -369,6 +369,9 @@ static void make_cameras_db(int version, const vector<string>& extra_columns, co
     conn.exec("PRAGMA user_version=" + to_string(version) + ";");
 }
 
+// The cameras.db version this build writes (CAMERA_DB_VERSION in r_devices.cpp).
+static const int LATEST_DB_VERSION = 10;
+
 static int db_version()
 {
     r_db::r_sqlite_conn conn(cameras_db_path(), false);
@@ -421,7 +424,7 @@ void test_r_disco::test_db_upgrade_from_mac_at_version_8()
     RTF_ASSERT(camera.value().firmware_version.value() == "1.3.7");
     RTF_ASSERT(camera.value().mac.value() == "aa:bb:cc:dd:ee:ff");
 
-    RTF_ASSERT_EQUAL(db_version(), 9);
+    RTF_ASSERT_EQUAL(db_version(), LATEST_DB_VERSION);
     auto columns = db_columns();
     for(auto c : {"manufacturer", "model", "firmware_version", "mac"})
         RTF_ASSERT(columns.count(c) == 1);
@@ -433,7 +436,7 @@ void test_r_disco::test_db_upgrade_from_device_info_at_version_8()
     make_cameras_db(8, {"manufacturer TEXT", "model TEXT", "firmware_version TEXT"});
     auto camera = start_and_save_device_info();
     RTF_ASSERT(camera.value().model.value() == "C500");
-    RTF_ASSERT_EQUAL(db_version(), 9);
+    RTF_ASSERT_EQUAL(db_version(), LATEST_DB_VERSION);
     RTF_ASSERT(db_columns().count("mac") == 1);
 }
 
@@ -445,7 +448,7 @@ void test_r_disco::test_db_upgrade_repairs_a_missing_column()
     auto camera = start_and_save_device_info();
     RTF_ASSERT(camera.value().model.value() == "C500");
     RTF_ASSERT(db_columns().count("model") == 1);
-    RTF_ASSERT_EQUAL(db_version(), 9);
+    RTF_ASSERT_EQUAL(db_version(), LATEST_DB_VERSION);
 }
 
 void test_r_disco::test_db_upgrade_keeps_a_newer_version()
@@ -462,18 +465,18 @@ void test_r_disco::test_db_upgrade_twice()
     // A new database, then a second start on it: nothing to add, nothing fails.
     auto first = start_and_save_device_info();
     RTF_ASSERT(first.value().manufacturer.value() == "TP-Link");
-    RTF_ASSERT_EQUAL(db_version(), 9);
+    RTF_ASSERT_EQUAL(db_version(), LATEST_DB_VERSION);
     auto columns = db_columns();
     auto second = start_and_save_device_info();
     RTF_ASSERT(second.value().manufacturer.value() == "TP-Link");
     RTF_ASSERT(db_columns() == columns);
-    RTF_ASSERT_EQUAL(db_version(), 9);
+    RTF_ASSERT_EQUAL(db_version(), LATEST_DB_VERSION);
 }
 
 void test_r_disco::test_db_upgrade_from_version_7()
 {
     // A database from before either version 8: none of manufacturer, model,
-    // firmware_version or mac. All four are added, and the version becomes 9.
+    // firmware_version or mac. All four are added, and the version becomes the latest.
     make_cameras_db(7, {});
     auto before = db_columns();
     for(auto c : {"manufacturer", "model", "firmware_version", "mac"})
@@ -482,10 +485,65 @@ void test_r_disco::test_db_upgrade_from_version_7()
     auto camera = start_and_save_device_info();
     RTF_ASSERT(camera.value().manufacturer.value() == "TP-Link");
     RTF_ASSERT(camera.value().firmware_version.value() == "1.3.7");
-    RTF_ASSERT_EQUAL(db_version(), 9);
+    RTF_ASSERT_EQUAL(db_version(), LATEST_DB_VERSION);
     auto after = db_columns();
     for(auto c : {"manufacturer", "model", "firmware_version", "mac"})
         RTF_ASSERT(after.count(c) == 1);
+}
+
+void test_r_disco::test_db_upgrade_adds_stopped()
+{
+    // A database from before cameras could be stopped: the column is added and its
+    // cameras aren't stopped.
+    make_cameras_db(9, {"manufacturer TEXT", "model TEXT", "firmware_version TEXT", "mac TEXT"});
+    RTF_ASSERT(db_columns().count("stopped") == 0);
+    auto camera = start_and_save_device_info();
+    RTF_ASSERT(!camera.is_null());
+    RTF_ASSERT(!camera.value().stopped);
+    RTF_ASSERT(camera.value().state == "assigned");
+    RTF_ASSERT(db_columns().count("stopped") == 1);
+    RTF_ASSERT_EQUAL(db_version(), LATEST_DB_VERSION);
+}
+
+void test_r_disco::test_a_stopped_camera_stays_stopped()
+{
+    // Stopped is saved with the camera, kept when it's rediscovered (its stream
+    // config written again) and across a restart, and cleared by starting it.
+    r_stream_config sc;
+    sc.id = "cam-1";
+    sc.ipv4 = "10.0.0.5";
+    sc.rtsp_url = "rtsp://10.0.0.5/stream1";
+    {
+        r_devices devices("top_dir");
+        devices.start();
+        devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
+        auto camera = devices.get_camera_by_id("cam-1").value();
+        RTF_ASSERT(!camera.stopped);
+        devices.assign_camera(camera);
+        camera.stopped = true;
+        devices.save_camera(camera);
+        RTF_ASSERT(devices.get_camera_by_id("cam-1").value().stopped);
+
+        sc.ipv4 = "10.0.0.6";
+        devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
+        auto again = devices.get_camera_by_id("cam-1").value();
+        RTF_ASSERT(again.stopped);
+        RTF_ASSERT(again.state == "assigned");
+        auto assigned = devices.get_assigned_cameras();
+        RTF_ASSERT_EQUAL(assigned.size(), (size_t)1);
+        RTF_ASSERT(assigned[0].stopped);
+        devices.stop();
+    }
+    {
+        r_devices devices("top_dir");
+        devices.start();
+        auto camera = devices.get_camera_by_id("cam-1").value();
+        RTF_ASSERT(camera.stopped);
+        camera.stopped = false;
+        devices.save_camera(camera);
+        RTF_ASSERT(!devices.get_camera_by_id("cam-1").value().stopped);
+        devices.stop();
+    }
 }
 
 // Log lines that contain `what`, from set_log_callback.
@@ -522,7 +580,7 @@ void test_r_disco::test_startup_logs_the_database()
     auto lines = log.lines();
     RTF_ASSERT_EQUAL(lines.size(), (size_t)1);
     RTF_ASSERT(lines[0].find(string("top_dir") + PATH_SLASH + "db" + PATH_SLASH + "cameras.db") != string::npos);
-    RTF_ASSERT(lines[0].find("(schema version 9, was 0)") != string::npos);
+    RTF_ASSERT(lines[0].find("(schema version " + to_string(LATEST_DB_VERSION) + ", was 0)") != string::npos);
 }
 
 void test_r_disco::test_failed_writes_are_logged()

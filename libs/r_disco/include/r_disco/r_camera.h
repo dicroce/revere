@@ -61,6 +61,9 @@ struct r_camera
     // to tell a camera that moved from another device at its new address (see
     // r_camera_move.h). Null until first seen.
     r_utils::r_nullable<std::string> mac;
+    // Stopped by the user: still assigned, with its settings and recordings kept,
+    // but not recorded, restreamed or analysed until it's started again.
+    bool stopped {false};
 
     std::string stream_config_hash;
 };

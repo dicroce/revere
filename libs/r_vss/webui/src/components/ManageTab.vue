@@ -40,8 +40,8 @@
           <li v-for="c in recording" :key="c.id">
             <span
               class="dot"
-              :class="c.receiving_video ? 'rec-ok' : 'rec-bad'"
-              :title="c.receiving_video ? 'Connected' : (c.stream_failed ? 'Stream failed' : 'Not connected')"
+              :class="c.stopped ? 'stopped' : (c.receiving_video ? 'rec-ok' : 'rec-bad')"
+              :title="c.stopped ? 'Stopped' : (c.receiving_video ? 'Connected' : (c.stream_failed ? 'Stream failed' : 'Not connected'))"
             ></span>
             <span class="cam-name">{{ c.friendly_name || c.camera_name || c.id }}</span>
             <span class="cam-ip">{{ c.ipv4 }}</span>
@@ -56,6 +56,12 @@
               :title="authed ? 'Edit camera settings' : 'Sign in to manage'"
               @click="askProperties(c)"
             >Properties</button>
+            <button
+              class="ghost small"
+              :disabled="!authed || toggling === c.id"
+              :title="!authed ? 'Sign in to manage' : (c.stopped ? 'Record this camera again' : 'Stop recording and streaming, keeping its settings and recordings')"
+              @click="toggleStopped(c)"
+            >{{ toggling === c.id ? '…' : (c.stopped ? 'Start' : 'Stop') }}</button>
             <button
               class="ghost small danger"
               :disabled="!authed"
@@ -217,7 +223,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   isAuthed, getCameras,
-  removeCamera, updateCameraProperties, forgetCamera, addRtspCamera,
+  removeCamera, setCameraStopped, updateCameraProperties, forgetCamera, addRtspCamera,
 } from '../api.js'
 import KeepAwakeSection from './KeepAwakeSection.vue'
 import RecordWizard from './RecordWizard.vue'
@@ -235,6 +241,7 @@ function onBackdropDown(e) { backdropPress.value = e.target === e.currentTarget 
 
 const wizardCamera = ref(null)
 const forgetting = ref(null)
+const toggling = ref(null)
 
 const removeTarget = ref(null)
 const deleteFiles = ref(false)
@@ -326,6 +333,19 @@ async function doForget(camera) {
     error.value = e.message
   } finally {
     forgetting.value = null
+  }
+}
+
+async function toggleStopped(camera) {
+  if (!authed.value || toggling.value) return
+  toggling.value = camera.id
+  try {
+    await setCameraStopped(camera.id, !camera.stopped)
+    await refresh()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    toggling.value = null
   }
 }
 
@@ -509,6 +529,7 @@ section h2 {
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .dot.rec-ok { background: #4caf72; }
 .dot.rec-bad { background: #e05555; }
+.dot.stopped { background: #8a8a93; }
 .dot.new { background: #2d6cdf; }
 .cam-name { font-weight: 500; }
 .cam-ip { color: #888; font-size: 0.85rem; }

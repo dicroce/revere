@@ -132,6 +132,10 @@ struct r_stream_status
     r_lag_snapshot ingest_lag;
     int lag_reconnects_1h {0};
     bool falling_behind {false};
+
+    // Stopped by the user (r_camera::stopped): not recording until started again.
+    // Only camera is filled in besides.
+    bool stopped {false};
 };
 
 // Passes MOG2's events on to the motion plugins, and tells the stream keeper
@@ -351,6 +355,8 @@ private:
     // the assignment actually changes (a camera added or forgotten) — not on the
     // stream reconnects that leave the assigned set intact.
     std::set<std::string> _last_assigned_camera_ids;
+    // Assigned cameras the user has stopped, as of the last pass, for their status.
+    std::map<std::string, r_disco::r_camera> _stopped_cameras;
 
     // Removed recording contexts are destroyed here, off the keeper's thread
     // (see r_teardown_queue); a camera isn't started again while its old one
