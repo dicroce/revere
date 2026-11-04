@@ -38,6 +38,11 @@ struct r_detection
 // A camera's own report, with no box or confidence.
 inline bool is_camera_report(const r_detection& d) { return d.source == "camera"; }
 
+// Why a motion plugin can't be loaded, from its motion_plugin_abi_version
+// (null when it doesn't export one: built before the check), or "" when its
+// version is this host's R_MOTION_PLUGIN_ABI_VERSION.
+R_API std::string motion_plugin_abi_problem(int (*abi_version)());
+
 // posted_at_ms: gateway wall clock (epoch ms) when the detection was put on the bus.
 typedef void (*r_detection_callback)(void* userdata, const r_detection& det, int64_t posted_at_ms);
 
