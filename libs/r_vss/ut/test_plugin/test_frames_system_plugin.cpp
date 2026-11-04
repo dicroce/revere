@@ -6,12 +6,21 @@
 //   read:<n>:<full|small>           up to n frames; "small" passes an r_frame without its stream field
 //   next                            one next_frame without waiting, and its result
 //   unsub                           unsubscribe
+//   wake                            a thread waits in next_frame; unsubscribe from here; its result
+//   stale                           unsubscribe, then next_frame on the old handle
+//   race:<camera>:<threads>:<each>  threads subscribe at once, each <each> times; how many got feeds
+//   churn:<camera>:<rounds>         each round a thread reads frames, touching every byte, until
+//                                   this one unsubscribes it mid-stream; frames read and rounds ended
 #include "r_vss/r_system_plugin.h"
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <chrono>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace
 {
@@ -147,6 +156,96 @@ R_API void system_plugin_action(r_system_plugin_handle h, const char* action)
         memset(&fr, 0, sizeof(fr));
         fr.struct_size = sizeof(fr);
         note(p, "next=" + std::to_string(p->api->next_frame(p->api->host, p->sub, 0, &fr)));
+    }
+    else if(cmd == "wake")
+    {
+        std::atomic<int> result {99};
+        std::thread reader([p, &result]() {
+            r_frame fr;
+            memset(&fr, 0, sizeof(fr));
+            fr.struct_size = sizeof(fr);
+            result = p->api->next_frame(p->api->host, p->sub, 5000, &fr);
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        auto start = std::chrono::steady_clock::now();
+        p->api->unsubscribe(p->api->host, p->sub);
+        reader.join();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+        p->sub = nullptr;
+        note(p, "wake=" + std::to_string(result.load()) + (ms < 2000 ? " prompt" : " late"));
+    }
+    else if(cmd == "stale")
+    {
+        auto old = p->sub;
+        p->api->unsubscribe(p->api->host, old);
+        p->sub = nullptr;
+        r_frame fr;
+        memset(&fr, 0, sizeof(fr));
+        fr.struct_size = sizeof(fr);
+        note(p, "stale=" + std::to_string(p->api->next_frame(p->api->host, old, 0, &fr)));
+    }
+    else if(cmd == "race")
+    {
+        auto camera = field(a, 1);
+        int threads = atoi(field(a, 2).c_str()), each = atoi(field(a, 3).c_str());
+        std::atomic<int> got {0};
+        std::atomic<bool> go {false};
+        std::vector<std::thread> ts;
+        for(int t = 0; t < threads; ++t)
+            ts.emplace_back([&]() {
+                while(!go) std::this_thread::yield();
+                for(int i = 0; i < each; ++i)
+                    if(p->api->subscribe_frames(p->api->host, camera.c_str(), nullptr, R_FRAME_VIDEO, 0))
+                        ++got;
+            });
+        go = true;
+        for(auto& t : ts)
+            t.join();
+        note(p, "race got=" + std::to_string(got.load()));
+    }
+    else if(cmd == "churn")
+    {
+        auto camera = field(a, 1);
+        int rounds = atoi(field(a, 2).c_str());
+        long frames = 0;
+        int ended = 0;
+        for(int r = 0; r < rounds; ++r)
+        {
+            auto sub = p->api->subscribe_frames(p->api->host, camera.c_str(), nullptr, R_FRAME_VIDEO | R_FRAME_AUDIO, 0);
+            if(!sub)
+                break;
+            std::atomic<long> n {0};
+            std::atomic<int> last {99};
+            std::thread reader([p, sub, &n, &last]() {
+                for(;;)
+                {
+                    r_frame fr;
+                    memset(&fr, 0, sizeof(fr));
+                    fr.struct_size = sizeof(fr);
+                    int res = p->api->next_frame(p->api->host, sub, 20, &fr);
+                    if(res < 0)
+                    {
+                        last = res;
+                        return;
+                    }
+                    if(res == 1)
+                    {
+                        unsigned sum = 0;
+                        for(size_t i = 0; i < fr.size; ++i)
+                            sum += fr.data[i];
+                        sum += (unsigned)strlen(fr.codec_name) + (unsigned)strlen(fr.codec_params) + (unsigned)strlen(fr.stream);
+                        if(sum != 0xFFFFFFFF)
+                            ++n;
+                    }
+                }
+            });
+            std::this_thread::sleep_for(std::chrono::microseconds(500 + (r % 7) * 300));
+            p->api->unsubscribe(p->api->host, sub);
+            reader.join();
+            frames += n;
+            ended += last == -1 ? 1 : 0;
+        }
+        note(p, "churn frames=" + std::string(frames > 0 ? "some" : "none") + " ended=" + std::to_string(ended));
     }
     else if(cmd == "unsub")
     {

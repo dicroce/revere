@@ -3,7 +3,7 @@
 #include "r_vss/r_frame_feeds.h"
 #include <cstddef>
 #include <mutex>
-#include <set>
+#include <map>
 #include "r_vss/r_motion_event_plugin_host.h"
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_file.h"
@@ -55,8 +55,10 @@ struct r_system_plugin_host::frame_api
     std::function<bool(const std::string&)> camera_recording;
     std::string guid;
     r_system_plugin_host_api table {};
+    // The plugin's feeds by handle. next() holds its own reference while it reads, so an
+    // unsubscribe from another thread meanwhile only drops the map's: the last one frees it.
     std::mutex lock;
-    std::set<r_frame_subscription*> subs;
+    std::map<r_frame_subscription*, std::shared_ptr<r_frame_subscription>> subs;
 
     static r_frame_subscription_handle subscribe(void* host, const char* camera_id, const char* stream, uint32_t media, size_t max_queued_bytes)
     {
@@ -67,25 +69,25 @@ struct r_system_plugin_host::frame_api
         std::string s = stream ? stream : "";
         if(api->camera_recording && !api->camera_recording(camera))
             return nullptr;
+        if(max_queued_bytes != 0 && max_queued_bytes < MIN_FEED_BYTES)
+            max_queued_bytes = MIN_FEED_BYTES;
+        r_frame_subscription* sub = nullptr;
         {
+            // Checked and added under one lock, so concurrent subscribes can't pass the cap.
             std::lock_guard<std::mutex> g(api->lock);
             if(api->subs.size() >= MAX_FEEDS)
             {
                 R_LOG_WARNING("System plugin %s: no frame feed for camera %s: it has %zu already", api->guid.c_str(), camera.c_str(), api->subs.size());
                 return nullptr;
             }
-        }
-        if(max_queued_bytes != 0 && max_queued_bytes < MIN_FEED_BYTES)
-            max_queued_bytes = MIN_FEED_BYTES;
-        auto id = api->feeds->subscribe(camera, s, media, max_queued_bytes);
-        if(id == 0)
-            return nullptr;
-        auto sub = new r_frame_subscription;
-        sub->id = id;
-        sub->camera_id = camera;
-        {
-            std::lock_guard<std::mutex> g(api->lock);
-            api->subs.insert(sub);
+            auto id = api->feeds->subscribe(camera, s, media, max_queued_bytes);
+            if(id == 0)
+                return nullptr;
+            auto owned = std::make_shared<r_frame_subscription>();
+            owned->id = id;
+            owned->camera_id = camera;
+            sub = owned.get();
+            api->subs[sub] = std::move(owned);
         }
         R_LOG_INFO("System plugin %s: frame feed for camera %s (%s%s%s)", api->guid.c_str(), camera.c_str(),
                    s.empty() ? "main" : s.c_str(), (media & R_FRAME_VIDEO) ? ", video" : "", (media & R_FRAME_AUDIO) ? ", audio" : "");
@@ -97,12 +99,20 @@ struct r_system_plugin_host::frame_api
         auto api = static_cast<frame_api*>(host);
         if(!api || !sub || !frame || !api->feeds)
             return -1;
-        auto r = api->feeds->next(sub->id, timeout_ms, sub->current);
+        std::shared_ptr<r_frame_subscription> s;
+        {
+            std::lock_guard<std::mutex> g(api->lock);
+            auto it = api->subs.find(sub);
+            if(it == api->subs.end())
+                return -1;   // unsubscribed
+            s = it->second;
+        }
+        auto r = api->feeds->next(s->id, timeout_ms, s->current);
         if(r != 1)
             return r;
         // Only the fields that fit in the plugin's r_frame: an older plugin's is smaller.
         auto fits = [frame](size_t offset, size_t size) { return frame->struct_size >= offset + size; };
-        auto& c = sub->current;
+        auto& c = s->current;
         if(fits(offsetof(r_frame, flags), sizeof(frame->flags))) frame->flags = c.flags;
         if(fits(offsetof(r_frame, ts), sizeof(frame->ts))) frame->ts = c.ts;
         if(fits(offsetof(r_frame, data), sizeof(frame->data))) frame->data = c.data.data();
@@ -118,15 +128,19 @@ struct r_system_plugin_host::frame_api
         auto api = static_cast<frame_api*>(host);
         if(!api || !sub)
             return;
+        std::shared_ptr<r_frame_subscription> s;
         {
             std::lock_guard<std::mutex> g(api->lock);
-            if(api->subs.erase(sub) == 0)
+            auto it = api->subs.find(sub);
+            if(it == api->subs.end())
                 return;
+            s = std::move(it->second);
+            api->subs.erase(it);
         }
+        // Wakes a next() waiting on it, which still holds its own reference.
         if(api->feeds)
-            api->feeds->unsubscribe(sub->id);
-        R_LOG_INFO("System plugin %s: frame feed for camera %s ended", api->guid.c_str(), sub->camera_id.c_str());
-        delete sub;
+            api->feeds->unsubscribe(s->id);
+        R_LOG_INFO("System plugin %s: frame feed for camera %s ended", api->guid.c_str(), s->camera_id.c_str());
     }
 };
 
@@ -454,12 +468,9 @@ r_system_plugin_host::~r_system_plugin_host()
         if(p.frames)
         {
             std::lock_guard<std::mutex> g(p.frames->lock);
-            for(auto sub : p.frames->subs)
-            {
+            for(auto& sub : p.frames->subs)
                 if(_feeds)
-                    _feeds->unsubscribe(sub->id);
-                delete sub;
-            }
+                    _feeds->unsubscribe(sub.second->id);
             p.frames->subs.clear();
         }
     }

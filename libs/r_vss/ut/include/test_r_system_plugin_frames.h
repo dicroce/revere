@@ -13,6 +13,10 @@ public:
       TEST(test_r_system_plugin_frames::test_without_a_frame_source_no_functions);
       TEST(test_r_system_plugin_frames::test_a_small_bound_still_fits_a_key_frame);
       TEST(test_r_system_plugin_frames::test_at_most_16_feeds_a_plugin);
+      TEST(test_r_system_plugin_frames::test_unsubscribe_wakes_a_waiting_reader);
+      TEST(test_r_system_plugin_frames::test_an_old_handle_reads_as_closed);
+      TEST(test_r_system_plugin_frames::test_concurrent_subscribes_keep_the_cap);
+      TEST(test_r_system_plugin_frames::test_unsubscribe_races_a_reading_thread);
     RTF_FIXTURE_END();
 
     virtual ~test_r_system_plugin_frames() throw() {}
@@ -28,6 +32,10 @@ public:
     void test_without_a_frame_source_no_functions();
     void test_a_small_bound_still_fits_a_key_frame();
     void test_at_most_16_feeds_a_plugin();
+    void test_unsubscribe_wakes_a_waiting_reader();
+    void test_an_old_handle_reads_as_closed();
+    void test_concurrent_subscribes_keep_the_cap();
+    void test_unsubscribe_races_a_reading_thread();
 
 private:
     std::string _top;

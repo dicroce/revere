@@ -5,7 +5,9 @@
 #include "r_utils/r_logger.h"
 #include <filesystem>
 #include <fstream>
+#include <atomic>
 #include <mutex>
+#include <thread>
 #include <random>
 #include <sstream>
 #include <vector>
@@ -203,4 +205,68 @@ void test_r_system_plugin_frames::test_at_most_16_feeds_a_plugin()
     RTF_ASSERT(host.run_plugin_action(_name(), "subs:cam1:20"));
     RTF_ASSERT(_lines(_top + "/frames.txt").back() == "subs got=16");
     RTF_ASSERT_EQUAL(feeds.feeds(), (size_t)16);
+}
+
+void test_r_system_plugin_frames::test_unsubscribe_wakes_a_waiting_reader()
+{
+    // A plugin thread waiting in next_frame while another unsubscribes: it returns -1 at
+    // once, and the feed is freed only after it has.
+    r_frame_feeds feeds;
+    r_system_plugin_host host(_top);
+    host.set_frame_source(&feeds, _recording("cam1"));
+    RTF_ASSERT(host.run_plugin_action(_name(), "sub:cam1:-:" + to_string(R_FRAME_VIDEO)));
+    RTF_ASSERT(host.run_plugin_action(_name(), "wake"));
+    RTF_ASSERT(_lines(_top + "/frames.txt").back() == "wake=-1 prompt");
+    RTF_ASSERT_EQUAL(feeds.feeds(), (size_t)0);
+}
+
+void test_r_system_plugin_frames::test_an_old_handle_reads_as_closed()
+{
+    // next_frame on a handle already unsubscribed says closed, not whatever is in freed memory.
+    r_frame_feeds feeds;
+    r_system_plugin_host host(_top);
+    host.set_frame_source(&feeds, _recording("cam1"));
+    RTF_ASSERT(host.run_plugin_action(_name(), "sub:cam1:-:" + to_string(R_FRAME_VIDEO)));
+    _video(feeds, "cam1", 10, true, 1);
+    RTF_ASSERT(host.run_plugin_action(_name(), "stale"));
+    RTF_ASSERT(_lines(_top + "/frames.txt").back() == "stale=-1");
+}
+
+void test_r_system_plugin_frames::test_concurrent_subscribes_keep_the_cap()
+{
+    // Eight threads subscribing at once still get 16 feeds between them, not more.
+    for(int round = 0; round < 20; ++round)
+    {
+        r_frame_feeds feeds;
+        r_system_plugin_host host(_top);
+        host.set_frame_source(&feeds, _recording("cam1"));
+        RTF_ASSERT(host.run_plugin_action(_name(), "race:cam1:8:4"));
+        RTF_ASSERT(_lines(_top + "/frames.txt").back() == "race got=16");
+        RTF_ASSERT_EQUAL(feeds.feeds(), (size_t)16);
+    }
+}
+
+void test_r_system_plugin_frames::test_unsubscribe_races_a_reading_thread()
+{
+    // A plugin thread reading frames as fast as they come while another unsubscribes it,
+    // 200 times: every reader ends with -1, and (under ASan) nothing it reads was freed.
+    r_frame_feeds feeds;
+    r_system_plugin_host host(_top);
+    host.set_frame_source(&feeds, _recording("cam1"));
+    atomic<bool> stop {false};
+    thread poster([&]() {
+        int64_t ts = 0;
+        while(!stop)
+        {
+            _video(feeds, "cam1", 2000, (ts % 10) == 0, ts);
+            _audio(feeds, "cam1", 200, ts);
+            ++ts;
+        }
+    });
+    auto ok = host.run_plugin_action(_name(), "churn:cam1:200");
+    stop = true;
+    poster.join();
+    RTF_ASSERT(ok);
+    RTF_ASSERT(_lines(_top + "/frames.txt").back() == "churn frames=some ended=200");
+    RTF_ASSERT_EQUAL(feeds.feeds(), (size_t)0);
 }
