@@ -59,6 +59,63 @@ static string _get_storage_path(const string& record_file_path, const string& to
     return top_dir + PATH_SLASH + "video" + PATH_SLASH + record_file_path;
 }
 
+string r_vss::stored_video_codec_parameters(const string& video_codec_name, const string& sdp_codec_parameters,
+                                            r_gst_source& source, const sample_context& sc)
+{
+    auto video_codec_parameters = sdp_codec_parameters;
+
+    if(video_codec_parameters.find("encoded_video_sample_caps") == std::string::npos)
+    {
+        auto vcaps = source.get_video_caps();
+        gchar* vcaps_sp = gst_caps_serialize(vcaps.value(), GST_SERIALIZE_FLAG_NONE);
+        string vcaps_s(vcaps_sp);
+        g_free(vcaps_sp);
+        auto encoded_vcaps_s = r_string_utils::to_base64(vcaps_s.data(), vcaps_s.size());
+        video_codec_parameters += ", encoded_video_sample_caps=" + encoded_vcaps_s;
+    }
+
+    if(!sc.framerate().is_null())
+        video_codec_parameters += ", sc_framerate=" + r_string_utils::double_to_s(sc.framerate().value());
+
+    if(video_codec_name == "h264")
+    {
+        //, sprop-parameter-sets=Z2QACqzZRifmwFqAgICgAAB9IAAXcAHiRLLA,aOvjyyLA
+        auto maybe_sps = sc.sprop_sps();
+        auto maybe_pps = sc.sprop_pps();
+
+        string param_sets;
+        if(!maybe_sps.is_null())
+            param_sets = maybe_sps.value();
+        if(!maybe_pps.is_null())
+        {
+            param_sets += ",";
+            param_sets += maybe_pps.value();
+        }
+
+        if(!param_sets.empty())
+            video_codec_parameters += string(", sprop-parameter-sets=") + param_sets;
+    }
+    else if(video_codec_name == "h265")
+    {
+        //, sprop-vps=QAEMAf//AIAAAAMAAAMAAAMAAAMAALUCQA==, sprop-sps=QgEBAIAAAAMAAAMAAAMAAAMAAKACgIAtH+W1kkbQzkkktySqSfKSyA==, sprop-pps=RAHBpVgeSA==
+
+        auto maybe_sps = sc.sprop_sps();
+        auto maybe_pps = sc.sprop_pps();
+        auto maybe_vps = sc.sprop_vps();
+
+        if(!maybe_sps.is_null())
+            video_codec_parameters += string(", sprop-sps=") + maybe_sps.value();
+
+        if(!maybe_pps.is_null())
+            video_codec_parameters += string(", sprop-pps=") + maybe_pps.value();
+
+        if(!maybe_vps.is_null())
+            video_codec_parameters += string(", sprop-vps=") + maybe_vps.value();
+    }
+
+    return video_codec_parameters;
+}
+
 string r_vss::recording_source_name_prefix(const r_camera& camera)
 {
     // Not camera.friendly_name + "_": r_nullable converts to bool, so that
@@ -305,55 +362,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 string video_codec_name, video_codec_parameters;
                 int video_timebase;
                 tie(video_codec_name, video_codec_parameters, video_timebase) = sdp_media_map_to_s(VIDEO_MEDIA, this->_sdp_medias);
-
-                if(video_codec_parameters.find("encoded_video_sample_caps") == std::string::npos)
-                {
-                    auto vcaps = _source.get_video_caps();
-                    gchar* vcaps_sp = gst_caps_serialize(vcaps.value(), GST_SERIALIZE_FLAG_NONE);
-                    string vcaps_s(vcaps_sp);
-                    g_free(vcaps_sp);
-                    auto encoded_vcaps_s = r_string_utils::to_base64(vcaps_s.data(), vcaps_s.size());
-                    video_codec_parameters += ", encoded_video_sample_caps=" + encoded_vcaps_s;
-                }
-
-                if(!sc.framerate().is_null())
-                    video_codec_parameters += ", sc_framerate=" + r_string_utils::double_to_s(sc.framerate().value());
-
-                if(video_codec_name == "h264")
-                {
-                    //, sprop-parameter-sets=Z2QACqzZRifmwFqAgICgAAB9IAAXcAHiRLLA,aOvjyyLA
-                    auto maybe_sps = sc.sprop_sps();
-                    auto maybe_pps = sc.sprop_pps();
-
-                    string param_sets;
-                    if(!maybe_sps.is_null())
-                        param_sets = maybe_sps.value();
-                    if(!maybe_pps.is_null())
-                    {
-                        param_sets += ",";
-                        param_sets += maybe_pps.value();
-                    }
-
-                    if(!param_sets.empty())
-                        video_codec_parameters += string(", sprop-parameter-sets=") + param_sets;
-                }
-                else if(video_codec_name == "h265")
-                {
-                    //, sprop-vps=QAEMAf//AIAAAAMAAAMAAAMAAAMAALUCQA==, sprop-sps=QgEBAIAAAAMAAAMAAAMAAAMAAKACgIAtH+W1kkbQzkkktySqSfKSyA==, sprop-pps=RAHBpVgeSA==
-
-                    auto maybe_sps = sc.sprop_sps();
-                    auto maybe_pps = sc.sprop_pps();
-                    auto maybe_vps = sc.sprop_vps();
-
-                    if(!maybe_sps.is_null())
-                        video_codec_parameters += string(", sprop-sps=") + maybe_sps.value();
-                    
-                    if(!maybe_pps.is_null())
-                        video_codec_parameters += string(", sprop-pps=") + maybe_pps.value();
-                    
-                    if(!maybe_vps.is_null())
-                        video_codec_parameters += string(", sprop-vps=") + maybe_vps.value();
-                }
+                video_codec_parameters = stored_video_codec_parameters(video_codec_name, video_codec_parameters, _source, sc);
 
                 _maybe_video_storage_write_context = this->_storage_file.create_write_context(video_codec_name, video_codec_parameters, R_STORAGE_MEDIA_TYPE_VIDEO);
                 _maybe_video_storage_write_context->codec_name = video_codec_name;

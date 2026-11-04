@@ -1,0 +1,91 @@
+#ifndef __r_vss_r_substream_recorder_h
+#define __r_vss_r_substream_recorder_h
+
+#include "r_disco/r_camera.h"
+#include "r_pipeline/r_gst_source.h"
+#include "r_pipeline/r_stream_info.h"
+#include "r_storage/r_storage_file.h"
+#include "r_utils/r_nullable.h"
+#include "r_utils/r_macro.h"
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <map>
+#include <mutex>
+#include <string>
+
+namespace r_vss
+{
+
+// The substream ring: a small storage file of its own beside the camera's recording, kept only for live view.
+// 13 blocks of 10 MiB, about 17 minutes at 1 Mbit/s.
+constexpr size_t SUBSTREAM_RING_BLOCK_SIZE = 10485760;
+constexpr size_t SUBSTREAM_RING_BLOCKS = 13;
+
+// The substream counts as fresh while its newest frame is this recent.
+constexpr int64_t SUBSTREAM_FRESH_MS = 5000;
+// With no video for this long, the recorder is dead and is started again (as main's recording context).
+constexpr int64_t SUBSTREAM_DEAD_MS = 20000;
+
+// The substream ring's path for a camera recording to record_file_path: "front_door.nts" records its substream to
+// "front_door_sub.nts" in the same directory.
+R_API std::string substream_ring_path(const std::string& record_file_path);
+
+// What r_stream_keeper does about a camera's substream recorder on a pass.
+enum class substream_step { none, start, stop };
+
+// wanted: the camera has a usable substream chosen (sub_mode on, sub_status ok, a URL, a recording path).
+// main_receiving: its main recording is getting video, which comes first on a camera that limits sessions.
+// running / running_dead: a recorder exists, and whether it's dead. backoff_over: long enough since the last start.
+// A running recorder stops when it's dead or no longer wanted, or when main isn't receiving; one starts when
+// wanted, main is receiving and the backoff is over.
+R_API substream_step substream_next_step(bool wanted, bool main_receiving, bool running, bool running_dead, bool backoff_over);
+
+// A substream is started again at most this often.
+constexpr int64_t SUBSTREAM_RESTART_BACKOFF_MS = 30000;
+// After this many recorders in a row ended without the camera answering, it's taken to allow one stream at a time.
+constexpr int SUBSTREAM_REFUSALS_TO_GIVE_UP = 2;
+constexpr const char* SUBSTREAM_REFUSED_STATUS = "none:camera allows one stream at a time";
+
+// Allocates the ring at ring_path unless a file is already there.
+R_API void ensure_substream_ring(const std::string& ring_path);
+
+// A camera's substream (r_camera::sub_*), recorded into its ring. It has its own RTSP session and storage file and
+// records video only, so whatever happens to it, main's recording carries on. It starts on construction and stops on
+// destruction; r_stream_keeper replaces it when it's dead.
+class r_substream_recorder final
+{
+public:
+    R_API r_substream_recorder(const r_disco::r_camera& camera, const std::string& ring_path, const std::string& rtsp_protocols);
+    R_API ~r_substream_recorder() noexcept;
+    R_API r_substream_recorder(const r_substream_recorder&) = delete;
+    R_API r_substream_recorder& operator=(const r_substream_recorder&) = delete;
+
+    // The camera answered (its SDP arrived).
+    R_API bool answered() const { return _answered; }
+    // A frame reached the ring within SUBSTREAM_FRESH_MS.
+    R_API bool fresh() const;
+    // No video for SUBSTREAM_DEAD_MS: since it started, or since its last frame.
+    R_API bool dead() const;
+    // Frames written to the ring so far.
+    R_API int64_t frames_written() const { return _frames_written; }
+
+private:
+    int64_t _ms_since_video() const;
+
+    r_disco::r_camera _camera;
+    r_storage::r_storage_file _ring;
+    r_utils::r_nullable<r_storage::r_storage_write_context> _write_context;
+    std::mutex _sdp_lock;
+    std::map<std::string, r_pipeline::r_sdp_media> _sdp_medias;
+    std::atomic<bool> _answered {false};
+    std::atomic<int64_t> _frames_written {0};
+    // steady_clock ms of the newest frame written, or of the start before there is one.
+    std::atomic<int64_t> _last_video_ms {0};
+    // Last, so it's destroyed first: its callbacks stop before the write context and ring go.
+    r_pipeline::r_gst_source _source;
+};
+
+}
+
+#endif

@@ -77,6 +77,11 @@ class r_recording_context;
 // appsinks): the friendly name, or the camera id when it has none, then "_".
 R_API std::string recording_source_name_prefix(const r_disco::r_camera& camera);
 
+// The codec parameters a stream's video is stored with: the SDP's (sdp_codec_parameters), plus the source's caps
+// (encoded_video_sample_caps), its frame rate, and the H.264 or H.265 parameter sets it saw.
+R_API std::string stored_video_codec_parameters(const std::string& video_codec_name, const std::string& sdp_codec_parameters,
+                                                r_pipeline::r_gst_source& source, const r_pipeline::sample_context& sc);
+
 struct _frame_context
 {
     uint64_t gst_pts;

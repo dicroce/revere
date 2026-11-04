@@ -6,6 +6,7 @@
 #include "r_av/r_muxer.h"
 #include "r_av/r_audio_decoder.h"
 #include "r_vss/r_recording_context.h"
+#include "r_vss/r_storage_ops.h"
 #include "r_vss/r_query.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_std_utils.h"
@@ -314,6 +315,9 @@ bool r_stream_keeper::stop()
     R_LOG_INFO("Joining stream keeper thread...");
     _th.join();
     R_LOG_INFO("Stream keeper thread joined");
+
+    // Substream recorders (keeper thread only, and it's joined): stopped before the recordings they follow.
+    _substreams.clear();
 
     R_LOG_INFO("Joining rtsp server thread...");
     _rtsp_server_th.join();
@@ -1300,6 +1304,8 @@ void r_stream_keeper::_entry_point()
                     _add_recording_contexts(_devices.get_assigned_cameras_added(_get_current_cameras()));
             }
 
+            _tend_substreams();
+
             // If the set of assigned cameras changed (one added or forgotten),
             // notify the system plugins so e.g. the cloud plugin pushes the
             // device list up right away instead of waiting for its periodic
@@ -1534,6 +1540,96 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
                 name.c_str(), camera.id.c_str(), e.what(), delay_seconds, fc.attempt_count);
         }
     }
+}
+
+// Starts, keeps or stops each recording camera's substream recorder (r_substream_recorder.h). A recorder is only
+// ever started after its camera's main recording gets video, and it never touches main's context.
+void r_stream_keeper::_tend_substreams()
+{
+    struct camera_now
+    {
+        r_camera camera;
+        bool main_receiving {false};
+        string protocols;
+    };
+    map<string, camera_now> recording;
+    {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        for(auto& s : _streams)
+            recording[s.first] = {s.second->camera(), s.second->receiving_video(), s.second->rtsp_protocols()};
+    }
+
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    vector<unique_ptr<r_substream_recorder>> doomed;
+
+    // A camera that's no longer recording takes its substream with it.
+    for(auto it = _substreams.begin(); it != _substreams.end();)
+    {
+        if(recording.count(it->first) == 0)
+        {
+            doomed.push_back(std::move(it->second));
+            it = _substreams.erase(it);
+        }
+        else
+            ++it;
+    }
+
+    for(auto& [id, c] : recording)
+    {
+        auto& cam = c.camera;
+        bool wanted = r_disco::substream_on(cam) && !cam.sub_status.is_null() && cam.sub_status.value() == "ok" &&
+                      !cam.sub_rtsp_url.is_null() && !cam.record_file_path.is_null();
+        auto running = _substreams.find(id);
+        bool is_running = running != _substreams.end();
+        auto started = _substream_started.find(id);
+        bool backoff_over = started == _substream_started.end() || now_ms - started->second >= SUBSTREAM_RESTART_BACKOFF_MS;
+
+        auto step = substream_next_step(wanted, c.main_receiving, is_running, is_running && running->second->dead(), backoff_over);
+        if(step == substream_step::stop)
+        {
+            auto& rec = running->second;
+            if(rec->dead())
+            {
+                auto refusals = rec->answered() ? 0 : _substream_refusals[id] + 1;
+                _substream_refusals[id] = refusals;
+                if(refusals >= SUBSTREAM_REFUSALS_TO_GIVE_UP)
+                {
+                    // Saved, so it isn't tried again until someone chooses a substream again; main isn't
+                    // restarted (its stream_config_hash doesn't cover the substream).
+                    auto current = _devices.get_camera_by_id(id);
+                    if(!current.is_null())
+                    {
+                        auto updated = current.value();
+                        updated.sub_status = string(SUBSTREAM_REFUSED_STATUS);
+                        _devices.save_camera(updated);
+                    }
+                    R_LOG_WARNING("substream of %s: the camera didn't answer a second stream %d times; using main only",
+                                  id.c_str(), refusals);
+                    _substream_refusals.erase(id);
+                }
+            }
+            doomed.push_back(std::move(rec));
+            _substreams.erase(running);
+        }
+        else if(step == substream_step::start)
+        {
+            _substream_started[id] = now_ms;
+            try
+            {
+                auto ring = substream_ring_path(storage_path(_top_dir, cam.record_file_path.value()));
+                ensure_substream_ring(ring);
+                _substreams[id] = make_unique<r_substream_recorder>(cam, ring, c.protocols);
+                R_LOG_INFO("substream of %s: recording to %s", id.c_str(), ring.c_str());
+            }
+            catch(const exception& e)
+            {
+                R_LOG_ERROR("substream of %s didn't start: %s", id.c_str(), e.what());
+            }
+        }
+    }
+
+    // Stopped outside any lock: a recorder whose camera stopped answering can take a while to wind down.
+    doomed.clear();
 }
 
 vector<shared_ptr<r_recording_context>> r_stream_keeper::_remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras)

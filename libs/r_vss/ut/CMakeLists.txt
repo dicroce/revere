@@ -59,6 +59,8 @@ add_executable(
     source/test_r_teardown_queue.cpp
     include/test_r_restream_opus.h
     source/test_r_restream_opus.cpp
+    include/test_r_substream_recorder.h
+    source/test_r_substream_recorder.cpp
     include/test_r_system_plugin_action.h
     source/test_r_system_plugin_action.cpp
     include/test_r_system_plugin_frames.h
@@ -106,6 +108,7 @@ target_link_libraries(
     r_vss_ut LINK_PUBLIC
     experimentum
     r_vss
+    r_fakey
     r_pipeline
     r_av
     r_motion
