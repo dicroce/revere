@@ -2237,7 +2237,15 @@ r_onvif::onvif_video_source_config r_onvif::parse_video_source_config(const stri
     c.token = n.attribute("token").value();
     if (!_valid_token(c.token))
         throw std::runtime_error("The VideoSourceConfiguration has no valid token");
-    c.name = _bounded_enum(n.select_node("./*[local-name()='Name']").node().child_value());
+    // Sent back on a Set, so read whole: cutting it would rename the source. ONVIF's Name is at most 64 characters;
+    // a longer one is refused rather than cut.
+    c.name = r_string_utils::strip(n.select_node("./*[local-name()='Name']").node().child_value());
+    size_t name_chars = 0;
+    for (unsigned char ch : c.name)
+        if ((ch & 0xc0) != 0x80)
+            ++name_chars;
+    if (name_chars > ONVIF_NAME_MAX_CHARS)
+        throw std::runtime_error("The VideoSourceConfiguration's Name is longer than ONVIF allows");
     c.use_count = _int_child(n, "./*[local-name()='UseCount']");
     c.source_token = r_string_utils::strip(n.select_node("./*[local-name()='SourceToken']").node().child_value());
     if (!_valid_token(c.source_token))

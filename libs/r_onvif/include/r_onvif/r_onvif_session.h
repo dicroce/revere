@@ -121,6 +121,7 @@ struct onvif_ptz_preset
 // empty; encoding and h264_profile are cut to ONVIF_ENUM_MAX_BYTES. Whitespace around element text is dropped.
 constexpr size_t ONVIF_TOKEN_MAX_CHARS = 64;  // ONVIF's ReferenceToken
 constexpr size_t ONVIF_ENUM_MAX_BYTES = 16;
+constexpr size_t ONVIF_NAME_MAX_CHARS = 64;  // ONVIF's Name
 R_API std::vector<onvif_profile_info> parse_profiles_response(const std::string& xml);
 
 // A profile's VideoSourceConfiguration (ONVIF Media), as SetVideoSourceConfiguration needs it back, and its

@@ -49,6 +49,7 @@ struct fake_camera
     string nodes {"fault"};           // how GetNodes answers (see _answer); set before the first call
     bool offers_rotate {true};        // GetVideoSourceConfigurationOptions lists Rotate ON and OFF
     string rotate {"OFF"};            // the source's Rotate Mode, as SetVideoSourceConfiguration last set it
+    string vsc_name {"\n  Source 1\n"}; // the VideoSourceConfiguration's Name, as GetProfile gives it
     map<string, string> last_body;    // the last request body of each op
     r_web_server<r_socket> ws;
 
@@ -142,7 +143,7 @@ struct fake_camera
         {
             std::lock_guard<std::mutex> g(lock);
             return _soap("<trt:GetProfileResponse><trt:Profile token=\"profile_1\"><tt:Name>main</tt:Name>"
-                         "<tt:VideoSourceConfiguration token=\"vsc_1\"><tt:Name>\n  Source 1\n</tt:Name><tt:UseCount>2</tt:UseCount>"
+                         "<tt:VideoSourceConfiguration token=\"vsc_1\"><tt:Name>" + vsc_name + "</tt:Name><tt:UseCount>2</tt:UseCount>"
                          "<tt:SourceToken> source_1 </tt:SourceToken><tt:Bounds x=\"0\" y=\"0\" width=\"1920\" height=\"1080\"/>"
                          "<tt:Extension><tt:Rotate><tt:Mode>" + rotate + "</tt:Mode></tt:Rotate></tt:Extension>"
                          "</tt:VideoSourceConfiguration></trt:Profile></trt:GetProfileResponse>");
@@ -569,6 +570,30 @@ void test_r_ptz_session::test_flip_set_sends_the_source_back_with_rotate()
     RTF_ASSERT_EQUAL(cam.count("SetVideoSourceConfiguration"), 1);
     RTF_ASSERT(!_imaging(p, cam, _flip(false)).on);
     RTF_ASSERT_EQUAL(cam.count("SetVideoSourceConfiguration"), 2);
+}
+
+void test_r_ptz_session::test_flip_keeps_the_source_name()
+{
+    // A Name past 16 bytes (Hikvision and Dahua say "VideoSourceConfig", 17) goes back whole: a flip renames nothing.
+    fake_camera cam;
+    cam.vsc_name = "VideoSourceConfig_Main_Sensor_1";
+    r_onvif_provider p("", nullptr);
+    _imaging(p, cam, _flip(true));
+    string set;
+    {
+        std::lock_guard<std::mutex> g(cam.lock);
+        set = cam.last_body["SetVideoSourceConfiguration"];
+    }
+    RTF_ASSERT(set.find("<tt:Name>VideoSourceConfig_Main_Sensor_1</tt:Name>") != string::npos);
+    // A Name longer than ONVIF allows isn't cut and sent back: the set is refused, and nothing is sent.
+    fake_camera odd;
+    odd.vsc_name = string(65, 'n');
+    r_onvif_provider q("", nullptr);
+    string code;
+    try { _imaging(q, odd, _flip(true)); }
+    catch(const r_ptz_error& ex) { code = ex.code(); }
+    RTF_ASSERT_EQUAL(code, string("camera_error"));
+    RTF_ASSERT_EQUAL(odd.count("SetVideoSourceConfiguration"), 0);
 }
 
 void test_r_ptz_session::test_flip_unsupported()
