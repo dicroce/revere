@@ -237,9 +237,10 @@ public:
 
     // How far storage persistence trails frame reception, in ms: the gap
     // between the last received video frame and the last one successfully
-    // written to storage. ~0 when healthy; grows when write_frame is failing
-    // (e.g. throwing), which reception-based signals like receiving_video()
-    // and dead() cannot see because the frames still arrive from the camera.
+    // written to storage. ~0 when healthy; grows when writes are failing, or
+    // queued behind a slow disk (writes happen on the storage file's writer
+    // thread), which reception-based signals like receiving_video() and dead()
+    // cannot see because the frames still arrive from the camera.
     R_API int64_t storage_write_lag_ms() const;
 
     // How far the written video timeline trails the wall clock, in ms: now
@@ -306,7 +307,7 @@ private:
     r_utils::r_nullable<r_storage::r_storage_write_context> _maybe_audio_storage_write_context;
     std::chrono::system_clock::time_point _last_v_time;
     std::chrono::system_clock::time_point _last_a_time;
-    std::chrono::system_clock::time_point _last_v_write_time; // last SUCCESSFUL video write
+    std::chrono::system_clock::time_point _last_v_write_time; // creation: storage_write_lag_ms() before the first write
     bool _has_audio;
     std::chrono::system_clock::time_point _stream_start_ts;
     bool _stream_start_ts_set;
