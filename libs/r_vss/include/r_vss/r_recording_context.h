@@ -235,12 +235,13 @@ public:
     // The RTSP transport this attempt uses ("TCP" or "UDP")
     R_API const std::string& rtsp_protocols() const { return _rtsp_protocols; }
 
-    // How far storage persistence trails frame reception, in ms: the gap
-    // between the last received video frame and the last one successfully
-    // written to storage. ~0 when healthy; grows when writes are failing, or
-    // queued behind a slow disk (writes happen on the storage file's writer
-    // thread), which reception-based signals like receiving_video() and dead()
-    // cannot see because the frames still arrive from the camera.
+    // How far storage persistence trails frame reception, in ms: the newest
+    // video frame received versus when the newest one written to storage was
+    // received. ~0 when healthy; it's the queue's delay while frames wait
+    // behind a slow disk (writes happen on the storage file's writer thread),
+    // and grows steadily while writes fail. Reception-based signals like
+    // receiving_video() and dead() can't see either, because the frames still
+    // arrive from the camera.
     R_API int64_t storage_write_lag_ms() const;
 
     // How far the written video timeline trails the wall clock, in ms: now

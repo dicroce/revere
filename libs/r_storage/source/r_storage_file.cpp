@@ -133,6 +133,7 @@ int64_t r_storage_file::write_frame(const r_storage_write_context& ctx, r_storag
     }
 
     uint32_t flags = key ? 1 : 0;
+    const int64_t arrival_ms = _now_epoch_ms();
 
     {
         unique_lock<mutex> g(_q_lock);
@@ -160,6 +161,7 @@ int64_t r_storage_file::write_frame(const r_storage_write_context& ctx, r_storag
             f.data.assign(p, p + size);
             f.flags = flags;
             f.ts = corrected;
+            f.arrival_ms = arrival_ms;
             _q_bytes += size;
             _q.push_back(std::move(f));
             g.unlock();
@@ -168,12 +170,12 @@ int64_t r_storage_file::write_frame(const r_storage_write_context& ctx, r_storag
         }
     }
 
-    _write(*ctx.wc, media_type, p, size, flags, corrected, 0);
+    _write(*ctx.wc, media_type, p, size, flags, corrected, arrival_ms, 0);
 
     return corrected;
 }
 
-void r_storage_file::_write(write_context& wc, r_storage_media_type media_type, const uint8_t* p, size_t size, uint32_t flags, int64_t ts, size_t queued_bytes)
+void r_storage_file::_write(write_context& wc, r_storage_media_type media_type, const uint8_t* p, size_t size, uint32_t flags, int64_t ts, int64_t arrival_ms, size_t queued_bytes)
 {
     // A write is normally a memcpy into a mapped block (microseconds). A slow
     // one is a block transition or a page that had to come from disk — on a
@@ -188,7 +190,7 @@ void r_storage_file::_write(write_context& wc, r_storage_media_type media_type, 
     if(media_type == R_STORAGE_MEDIA_TYPE_VIDEO)
     {
         _written_video_ts.store(ts, std::memory_order_release);
-        _last_video_write_ms.store(_now_epoch_ms(), std::memory_order_release);
+        _written_video_arrival_ms.store(arrival_ms, std::memory_order_release);
     }
 }
 
@@ -256,7 +258,7 @@ void r_storage_file::_writer_entry()
 
         try
         {
-            _write(*f.wc, f.media_type, f.data.data(), f.data.size(), f.flags, f.ts, behind);
+            _write(*f.wc, f.media_type, f.data.data(), f.data.size(), f.flags, f.ts, f.arrival_ms, behind);
         }
         catch(const std::exception& e)
         {

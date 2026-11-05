@@ -80,14 +80,16 @@ public:
     R_API void start_async_writes(size_t max_queued_bytes);
     R_API void stop_async_writes() noexcept;
 
-    // Of the video frames that reached storage: the newest ts (-1 before the
-    // first), and the wall-clock time of the newest successful write (the
-    // epoch before the first). This is the readable edge of the recording;
-    // with async writes it trails write_frame() by whatever is queued.
+    // Of the video frames that reached storage, the newest one's ts (-1 before
+    // the first) and when write_frame() was given it (wall clock; the epoch
+    // before the first). The ts is the readable edge of the recording. The
+    // arrival time trails "now" by how long frames wait to be written: ~0
+    // synchronously, the queue's delay with async writes (a steady backlog
+    // shows), and it stops moving while writes fail.
     R_API int64_t written_video_ts() const { return _written_video_ts.load(std::memory_order_acquire); }
-    R_API std::chrono::system_clock::time_point last_video_write_time() const
+    R_API std::chrono::system_clock::time_point written_video_arrival_time() const
     {
-        return std::chrono::system_clock::time_point(std::chrono::milliseconds(_last_video_write_ms.load(std::memory_order_acquire)));
+        return std::chrono::system_clock::time_point(std::chrono::milliseconds(_written_video_arrival_ms.load(std::memory_order_acquire)));
     }
 
     R_API static size_t remove_blocks(const std::string& file_name, int64_t start_ts, int64_t end_ts);
@@ -102,10 +104,11 @@ private:
         std::vector<uint8_t> data;
         uint32_t flags {0};
         int64_t ts {0};
+        int64_t arrival_ms {0};
     };
 
     // The nanots write itself, on whichever thread does it.
-    void _write(write_context& wc, r_storage_media_type media_type, const uint8_t* p, size_t size, uint32_t flags, int64_t ts, size_t queued_bytes);
+    void _write(write_context& wc, r_storage_media_type media_type, const uint8_t* p, size_t size, uint32_t flags, int64_t ts, int64_t arrival_ms, size_t queued_bytes);
     void _writer_entry();
 
     std::string _file_name;
@@ -117,7 +120,7 @@ private:
     int64_t _last_drift_alarm_ms {0};
 
     std::atomic<int64_t> _written_video_ts {-1};
-    std::atomic<int64_t> _last_video_write_ms {0};
+    std::atomic<int64_t> _written_video_arrival_ms {0};
 
     // Async writes. _async: write_frame() queues. _writer_running: the writer
     // thread exists (it can still be writing what's queued after _async goes

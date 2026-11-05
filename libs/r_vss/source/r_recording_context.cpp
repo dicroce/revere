@@ -671,10 +671,11 @@ int64_t r_recording_context::storage_write_lag_ms() const
 {
     if(!_got_first_video_sample)
         return 0;
-    // Writes happen on the storage file's writer thread; its time is the last
-    // one that succeeded (or, before any has, this context's creation).
-    auto last_write = (std::max)(_last_v_write_time, _storage_file.last_video_write_time());
-    auto lag = _last_v_time - last_write;
+    // Writes happen on the storage file's writer thread: compare the newest
+    // frame received with when the newest frame written was received (before
+    // any is written, this context's creation).
+    auto written_arrival = (std::max)(_last_v_write_time, _storage_file.written_video_arrival_time());
+    auto lag = _last_v_time - written_arrival;
     if(lag < system_clock::duration::zero())
         return 0;
     return duration_cast<milliseconds>(lag).count();
