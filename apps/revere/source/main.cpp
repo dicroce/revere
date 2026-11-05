@@ -34,6 +34,7 @@
 
 #include <string>
 #include <thread>
+#include <mutex>
 #include <chrono>
 #include <fstream>
 #include <cmath>
@@ -338,21 +339,43 @@ static string _make_file_name(string name)
 }
 
 // Resolution and framerate from a camera's recording file (the same reading
-// /cameras reports), re-read at most once a minute per camera since it means
-// opening the file.
+// /cameras reports). Reading it opens the recording file and its catalog and
+// reads a key frame, which on a busy recording disk can take seconds, so it
+// never runs on the UI thread: the UI shows the last value read, and an entry
+// over a minute old is re-read on a background thread, at most one read per
+// camera at a time. (Every camera's entry goes stale in the same frame, so
+// reading inline stacked one slow read per camera into a single frame — long
+// enough for Windows to call the app hung and close it.)
 static r_vss::camera_source_info _cached_source_info(const r_disco::r_camera& cam)
 {
-    static map<string, pair<chrono::steady_clock::time_point, r_vss::camera_source_info>> cache;
-    auto now = chrono::steady_clock::now();
-    auto it = cache.find(cam.id);
-    if(it != cache.end() && (now - it->second.first) < chrono::seconds(60))
-        return it->second.second;
+    struct entry
+    {
+        chrono::steady_clock::time_point read_at {};
+        bool read_once {false};
+        bool reading {false};
+        r_vss::camera_source_info info;
+    };
+    // Never destroyed: a read thread may still be finishing when the app exits.
+    static auto* cache_lock = new mutex();
+    static auto* cache = new map<string, entry>();
 
-    r_vss::camera_source_info info;
-    if(!cam.record_file_path.is_null())
-        info = r_vss::read_camera_source_info(_get_storage_path(cam.record_file_path.value()));
-    cache[cam.id] = {now, info};
-    return info;
+    lock_guard<mutex> g(*cache_lock);
+    auto& e = (*cache)[cam.id];
+    auto stale = !e.read_once || (chrono::steady_clock::now() - e.read_at) >= chrono::seconds(60);
+    if(stale && !e.reading && !cam.record_file_path.is_null())
+    {
+        e.reading = true;
+        thread([id = cam.id, path = _get_storage_path(cam.record_file_path.value())]() {
+            auto info = r_vss::read_camera_source_info(path);  // swallows its own errors
+            lock_guard<mutex> g(*cache_lock);
+            auto& e = (*cache)[id];
+            e.info = info;
+            e.read_at = chrono::steady_clock::now();
+            e.read_once = true;
+            e.reading = false;
+        }).detach();
+    }
+    return e.info;
 }
 
 void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_vss::r_stream_keeper& streamKeeper)
