@@ -355,6 +355,7 @@ struct source_info_entry
     bool read_once {false};
     bool reading {false};
     bool stopped {false};  // its files are being deleted: no more reads
+    bool drop_when_read {false};  // the delete finished first: the read drops the entry
     r_vss::camera_source_info info;
 };
 
@@ -390,10 +391,15 @@ static r_vss::camera_source_info _cached_source_info(const r_disco::r_camera& ca
                 {
                     lock_guard<mutex> g(c.lock);
                     auto& e = c.entries[id];
-                    e.info = info;
-                    e.read_at = chrono::steady_clock::now();
-                    e.read_once = true;
-                    e.reading = false;
+                    if(e.drop_when_read)
+                        c.entries.erase(id);
+                    else
+                    {
+                        e.info = info;
+                        e.read_at = chrono::steady_clock::now();
+                        e.read_once = true;
+                        e.reading = false;
+                    }
                 }
                 c.read_done.notify_all();
             }).detach();
@@ -427,9 +433,12 @@ public:
         auto& c = _source_info_cache();
         lock_guard<mutex> g(c.lock);
         auto it = c.entries.find(_camera_id);
-        // A read that outlived the wait still owns its entry; it stays stopped.
-        if(it != c.entries.end() && !it->second.reading)
-            c.entries.erase(it);
+        if(it == c.entries.end())
+            return;
+        // A read that outlived the wait drops the entry itself when it ends.
+        if(it->second.reading)
+            it->second.drop_when_read = true;
+        else c.entries.erase(it);
     }
     source_info_reads_stopped(const source_info_reads_stopped&) = delete;
     source_info_reads_stopped& operator=(const source_info_reads_stopped&) = delete;
