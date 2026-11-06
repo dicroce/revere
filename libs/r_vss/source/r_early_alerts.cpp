@@ -77,6 +77,20 @@ r_early_alerts::r_decision r_early_alerts::consider(const string& camera_id, con
     return d;
 }
 
+bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts) const
+{
+    if(alert_group_of(class_name) != "vehicle")
+        return false;
+    lock_guard<mutex> g(_mtx);
+    auto it = _anchors.find(camera_id);
+    if(it == _anchors.end())
+        return false;
+    for(const auto& a : it->second)
+        if(a.class_name == class_name && a.active(ts) && box_iou(a.box, box) >= ANCHOR_MATCH_IOU)
+            return true;
+    return false;
+}
+
 bool r_early_alerts::sent_early(const string& camera_id, const string& class_name, int64_t ts) const
 {
     lock_guard<mutex> g(_mtx);

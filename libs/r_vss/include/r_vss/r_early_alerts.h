@@ -115,6 +115,11 @@ public:
     R_API r_decision consider(const std::string& camera_id, const std::string& class_name, float confidence, const r_box& box, int64_t ts);
     // Whether a detection (class at ts) went out early this event.
     R_API bool sent_early(const std::string& camera_id, const std::string& class_name, int64_t ts) const;
+    // Whether a vehicle at box (at ts) sits on one of the camera's learnt anchors: a parked car seen in an event
+    // that was about something else. The event's record leaves such a detection out, so it doesn't colour a
+    // raccoon's event as a vehicle's. Vehicles only: animals and persons come and go, and an animal anchor is a
+    // feeding station or a favourite chair, where the record should keep every sighting.
+    R_API bool is_parked_vehicle(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts) const;
     // How long to wait between looks during this camera's event.
     R_API int64_t look_interval_ms(const std::string& camera_id) const;
     // Learns anchors from the detections (unfiltered) in the frames that
