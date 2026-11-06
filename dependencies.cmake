@@ -306,10 +306,13 @@ if(NOT TARGET ffmpeg::ffmpeg)
                 "${FFMPEG_ROOT}/lib/swresample.lib"
             )
         else()
-            # Linux/macOS with explicit path
-            target_link_libraries(ffmpeg::ffmpeg INTERFACE
-                avcodec avformat avutil swscale swresample
-            )
+            # Linux/macOS with explicit path, also by absolute path: OpenCV's and
+            # GStreamer's -L (Homebrew's lib dir on macOS) hold the system FFmpeg,
+            # a GPL build, which bare names could resolve against.
+            foreach(lib avcodec avformat avutil swscale swresample)
+                target_link_libraries(ffmpeg::ffmpeg INTERFACE
+                    "${FFMPEG_ROOT}/lib/lib${lib}${CMAKE_SHARED_LIBRARY_SUFFIX}")
+            endforeach()
         endif()
 
     elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|Darwin")
