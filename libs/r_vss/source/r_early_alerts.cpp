@@ -77,7 +77,7 @@ r_early_alerts::r_decision r_early_alerts::consider(const string& camera_id, con
     return d;
 }
 
-bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts) const
+bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts, const vector<r_seen>& start_frame) const
 {
     if(alert_group_of(class_name) != "vehicle")
         return false;
@@ -87,7 +87,12 @@ bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& cl
         return false;
     for(const auto& a : it->second)
         if(a.class_name == class_name && a.active(ts) && box_iou(a.box, box) >= ANCHOR_MATCH_IOU)
-            return true;
+        {
+            // Parked before the event began? Otherwise it arrived at (or took) the spot during it.
+            for(const auto& s : start_frame)
+                if(s.class_name == class_name && box_iou(a.box, s.box) >= ANCHOR_MATCH_IOU)
+                    return true;
+        }
     return false;
 }
 
