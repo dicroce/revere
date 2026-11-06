@@ -236,7 +236,8 @@ jobs:
           echo "libavcodec majors: $majors"
           [ "$majors" = "62 " ] || { echo "::error::libavcodec majors '$majors' in /opt/revere (expected only 62)"; fail=1; }
           for lib in "${avcodec[@]}"; do
-            strings "$lib" | grep -q "LGPL version 2.1 or later" || { echo "::error::$lib isn't revere's LGPL build"; fail=1; }
+            # grep -a on the file, not strings | grep -q (fails under pipefail).
+            grep -aq "LGPL version 2.1 or later" "$lib" || { echo "::error::$lib isn't revere's LGPL build"; fail=1; }
           done
           # What the installed revere actually loads.
           ldd /opt/revere/revere | grep -E 'lib(av|sw)' || true
