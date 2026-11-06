@@ -29,6 +29,7 @@
 #include <map>
 #include <set>
 #include <vector>
+#include <cstdint>
 #include <thread>
 #include <mutex>
 #include <memory>
@@ -63,14 +64,28 @@ typedef struct _GstRTSPMediaFactory GstRTSPMediaFactory;
 struct _GstRTSPMedia;
 typedef _GstRTSPMedia GstRTSPMedia;
 
+namespace r_av
+{
+class r_audio_decoder;
+}
+
 namespace r_vss
 {
 
 // The audio half of create_restream_opus_launch_string, without its appsrc or
 // payloader's name and pt: the camera's audio decoded and encoded to Opus, then
 // RTP-payloaded. Empty for an encoding it doesn't decode, or when GStreamer is
-// missing one of its elements.
+// missing one of its elements. AAC arrives already decoded (see restream_pcm),
+// so its branch starts at the PCM.
 R_API std::string restream_opus_audio_branch(r_pipeline::r_encoding audio_encoding);
+
+// The Opus restream's AAC is decoded by revere's own FFmpeg (r_av), not by
+// GStreamer's gst-libav, which links whatever FFmpeg the system has and would
+// bring a second (GPL) copy into the process. Its appsrc, named pcmsrc, takes
+// this PCM. restream_pcm decodes one AAC frame to it; empty while the decoder
+// has nothing to give.
+#define R_RESTREAM_PCM_CAPS "audio/x-raw,format=S16LE,layout=interleaved,rate=16000,channels=1"
+R_API std::vector<uint8_t> restream_pcm(r_av::r_audio_decoder& decoder, const uint8_t* data, size_t size);
 
 struct live_restreaming_state;
 

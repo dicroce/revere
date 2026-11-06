@@ -26,6 +26,7 @@
 #include "r_pipeline/r_stream_info.h"
 #include "r_pipeline/r_gst_buffer.h"
 #include "r_av/r_muxer.h"
+#include "r_av/r_audio_decoder.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_time_utils.h"
@@ -259,7 +260,14 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                     fc.gst_dts = (pts * 1000000) - lrs.first_restream_a_dts - skew;
 
                     fc.key = key;
-                    fc.buffer = buffer;
+                    if(lrs.pcm_decoder)
+                    {
+                        auto pcm = restream_pcm(*lrs.pcm_decoder, mi.data(), mi.size());
+                        if(pcm.empty())
+                            return;
+                        fc.buffer = r_gst_buffer(pcm.data(), pcm.size());
+                    }
+                    else fc.buffer = buffer;
                     lrs.audio_samples.post(fc);
                 }
             });
@@ -805,11 +813,31 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
 
     lrs->a_appsrc = gst_bin_get_by_name_recurse_up(GST_BIN(element), "audiosrc");
 
+    // The Opus mount's AAC comes in as PCM, decoded here (restream_pcm).
+    GstCaps* pcm_caps = nullptr;
+    if(!lrs->a_appsrc)
+    {
+        lrs->a_appsrc = gst_bin_get_by_name_recurse_up(GST_BIN(element), "pcmsrc");
+        if(lrs->a_appsrc)
+        {
+            lrs->pcm_decoder = make_shared<r_av::r_audio_decoder>(AV_CODEC_ID_AAC);
+            if(!_maybe_audio_storage_write_context.is_null())
+            {
+                auto asc = r_pipeline::get_audio_codec_extradata(_maybe_audio_storage_write_context.value().codec_parameters);
+                if(!asc.empty())
+                    lrs->pcm_decoder->set_extradata(asc);
+            }
+            pcm_caps = gst_caps_from_string(R_RESTREAM_PCM_CAPS);
+        }
+    }
+
     if(lrs->a_appsrc)
     {
         gst_util_set_object_arg(G_OBJECT(lrs->a_appsrc), "format", "time");
 
-        g_object_set(G_OBJECT(lrs->a_appsrc), "caps", (GstCaps*)_audio_caps.value(), NULL);
+        g_object_set(G_OBJECT(lrs->a_appsrc), "caps", pcm_caps ? pcm_caps : (GstCaps*)_audio_caps.value(), NULL);
+        if(pcm_caps)
+            gst_caps_unref(pcm_caps);
         g_object_set(G_OBJECT(lrs->a_appsrc), "is-live", TRUE, NULL);
 
         g_signal_connect(lrs->a_appsrc, "need-data", (GCallback)_need_live_data_cbs, lrs.get());
