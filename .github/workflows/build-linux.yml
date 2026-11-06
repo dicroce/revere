@@ -16,6 +16,10 @@ permissions:
 env:
   # NCNN is built from source (not in apt) and cached. Bump to rebuild.
   NCNN_VERSION: "20240820"
+  # revere's own LGPL FFmpeg (scripts/linux/build_ffmpeg_lgpl.sh), cached. The
+  # same release line as Windows and macOS. Bump to rebuild.
+  FFMPEG_VERSION: n8.1.3
+  OPENH264_VERSION: v2.6.0
 
 jobs:
   build-linux:
@@ -64,14 +68,17 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
+          # No distro FFmpeg (a GPL build), gstreamer1.0-libav (links it) or
+          # plugins-ugly (x264enc): see "Build FFmpeg". nasm, libwebp, libopus,
+          # libva (VAAPI) and the NVENC/NVDEC headers are for that build.
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake git pkg-config patchelf file \
+            nasm libwebp-dev libopus-dev libva-dev libffmpeg-nvenc-dev \
             libopencv-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
+            gstreamer1.0-plugins-bad \
             libssl-dev libsqlite3-dev uuid-dev \
             libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
             libgl1-mesa-dev libglu1-mesa-dev \
@@ -100,6 +107,24 @@ jobs:
             -DNCNN_SHARED_LIB=ON -DNCNN_VULKAN=OFF
           cmake --build ncnn-build --parallel "$(nproc)"
           cmake --install ncnn-build
+
+      # FFmpeg, LGPL. The closed Revere Cloud and HomeKit plugins load into
+      # revere's process, and Ubuntu's FFmpeg is a GPL build, so revere builds
+      # and ships its own; with FFMPEG_TOP_DIR set the CMake install puts its
+      # libraries next to revere. Bump the key's -vN when the script changes.
+      - name: Restore cached FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-lgpl
+          key: ffmpeg-lgpl-${{ env.FFMPEG_VERSION }}-openh264-${{ env.OPENH264_VERSION }}-ubuntu-24.04-x64-v1
+
+      - name: Build FFmpeg (LGPL, cache miss only)
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        run: bash revere/scripts/linux/build_ffmpeg_lgpl.sh "${GITHUB_WORKSPACE}/ffmpeg-lgpl" --enable-vaapi
+
+      - name: Use the LGPL FFmpeg
+        run: echo "FFMPEG_TOP_DIR=${GITHUB_WORKSPACE}/ffmpeg-lgpl" >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
@@ -223,6 +248,27 @@ jobs:
           for so in AppDir/usr/bin/motion_plugins/*.so; do
             deps_only+=( --deploy-deps-only "$so" )
           done
+          # linuxdeploy-plugin-gstreamer copies EVERY plugin in its directory.
+          # Point it at a curated set (as macOS bundles), so nothing GPL comes
+          # along: gst-libav (links a GPL FFmpeg), x264enc, faad and the other
+          # GPL plugins in plugins-bad. The Opus restream decodes AAC itself.
+          sys_plugins="/usr/lib/$(uname -m)-linux-gnu/gstreamer-1.0"
+          export GSTREAMER_PLUGINS_DIR="${GITHUB_WORKSPACE}/gst-plugins-curated"
+          mkdir -p "$GSTREAMER_PLUGINS_DIR"
+          for name in \
+            libgstapp libgstcoreelements libgstrtp libgstrtpmanager libgstrtsp \
+            libgsttcp libgstudp libgstsdpelem \
+            libgstaudioparsers libgstvideoparsersbad \
+            libgstplayback libgsttypefindfunctions libgstvideoconvertscale \
+            libgstaudioconvert libgstaudioresample libgstopus libgstmulaw libgstalaw \
+            libgstvideofilter libgstautodetect libgstvideorate; do
+            if [ -e "$sys_plugins/$name.so" ]; then
+              cp -L "$sys_plugins/$name.so" "$GSTREAMER_PLUGINS_DIR"/
+            else
+              echo "::warning::GStreamer plugin $name not installed"
+            fi
+          done
+          echo "Curated GStreamer plugins:"; ls "$GSTREAMER_PLUGINS_DIR"
           ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
             --appdir AppDir \
             --executable AppDir/usr/bin/revere \
@@ -302,6 +348,35 @@ jobs:
 
           [ "$fail" -eq 0 ] || { echo "::error::smoke test failed"; exit 1; }
           echo "smoke test OK"
+
+      # The AppImage (extracted by the smoke test) must carry exactly one FFmpeg,
+      # revere's LGPL build, and no GPL library or GStreamer plugin.
+      - name: Verify the bundled FFmpeg is LGPL
+        run: |
+          set -uo pipefail
+          fail=0
+          root=squashfs-root
+          echo "=== FFmpeg and codec libraries in the AppImage ==="
+          find "$root" -name 'lib*.so*' | grep -E '/lib(av|sw|postproc|x26|faad|openh264)' || true
+          # One FFmpeg: every libavcodec file (the install may copy the .so
+          # symlinks as files) is soname 62, ours, and each is the LGPL build.
+          mapfile -t avcodec < <(find "$root" -type f -name 'libavcodec.so*')
+          [ "${#avcodec[@]}" -ge 1 ] || { echo "::error::no libavcodec in the AppImage"; fail=1; }
+          majors="$(printf '%s\n' "${avcodec[@]}" | sed -nE 's/.*libavcodec\.so\.([0-9]+).*/\1/p' | sort -u | tr '\n' ' ')"
+          echo "libavcodec majors: $majors"
+          [ "$majors" = "62 " ] || { echo "::error::libavcodec majors '$majors' in the AppImage (expected only 62)"; fail=1; }
+          for lib in "${avcodec[@]}"; do
+            # grep -a on the file, not strings | grep -q (fails under pipefail).
+            grep -aq "LGPL version 2.1 or later" "$lib" || { echo "::error::$lib isn't revere's LGPL build"; fail=1; }
+          done
+          if find "$root" -name 'lib*.so*' | grep -qE '/lib(postproc|x264|x265|faad)[.-]'; then
+            echo "::error::the AppImage bundles a GPL library"; fail=1
+          fi
+          if find "$root" -name 'libgst*.so' | grep -qE '/libgst(libav|x264|x265|faad|mpeg2dec|a52dec|dtsdec|mpeg2enc|mplex|resindvd)\.so'; then
+            echo "::error::the AppImage bundles a GPL GStreamer plugin"; fail=1
+          fi
+          [ "$fail" -eq 0 ] || exit 1
+          echo "OK: one LGPL FFmpeg, no GPL libraries or plugins"
 
       # Compute the release version: the tag on tag builds (e.g. v0.0.22), else
       # the short git hash (workflow_dispatch test builds). Used to name both the

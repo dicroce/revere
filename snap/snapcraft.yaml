@@ -86,6 +86,32 @@ parts:
       - g++
       - libgomp1
 
+  # revere's own FFmpeg, LGPL only (scripts/linux/build_ffmpeg_lgpl.sh): the
+  # closed Revere Cloud and HomeKit plugins load into revere's process, and
+  # Ubuntu's FFmpeg is a GPL build. Installed to usr/lib like any staged lib.
+  ffmpeg:
+    plugin: nil
+    source: scripts/linux
+    source-type: local
+    override-build: |
+      bash build_ffmpeg_lgpl.sh "$CRAFT_PART_INSTALL/usr" --enable-vaapi
+    build-packages:
+      - g++
+      - make
+      - git
+      - pkg-config
+      - nasm
+      - libwebp-dev
+      - libopus-dev
+      - libva-dev
+      - libffmpeg-nvenc-dev
+    stage-packages:
+      - libwebp7
+      - libopus0
+      - libva2
+      - libva-drm2
+      - libva-x11-2
+
   opencv:
     plugin: cmake
     source: https://github.com/opencv/opencv/archive/refs/tags/4.10.0.tar.gz
@@ -93,15 +119,16 @@ parts:
     cmake-parameters:
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_INSTALL_PREFIX=/usr
-      - -DBUILD_LIST=core,imgproc,imgcodecs,video,videoio,calib3d,features2d,flann,dnn
+      # No videoio: revere doesn't use it, and it would link Ubuntu's (GPL) FFmpeg.
+      - -DBUILD_LIST=core,imgproc,imgcodecs,video,calib3d,features2d,flann,dnn
       - -DBUILD_opencv_python2=OFF
       - -DBUILD_opencv_python3=OFF
       - -DBUILD_TESTS=OFF
       - -DBUILD_PERF_TESTS=OFF
       - -DBUILD_EXAMPLES=OFF
       - -DBUILD_DOCS=OFF
-      - -DWITH_FFMPEG=ON
-      - -DWITH_GSTREAMER=ON
+      - -DWITH_FFMPEG=OFF
+      - -DWITH_GSTREAMER=OFF
       - -DWITH_GTK=OFF
       - -DWITH_QT=OFF
       - -DWITH_VA=OFF
@@ -109,24 +136,12 @@ parts:
       - -DBUILD_SHARED_LIBS=ON
     build-packages:
       - g++
-      - libavcodec-dev
-      - libavformat-dev
-      - libavutil-dev
-      - libswscale-dev
-      - libgstreamer1.0-dev
-      - libgstreamer-plugins-base1.0-dev
       - libjpeg-dev
       - libpng-dev
       - libtiff-dev
       - libwebp-dev
       - libopenjp2-7-dev
     stage-packages:
-      - libavcodec60
-      - libavformat60
-      - libavutil58
-      - libswscale7
-      - libgstreamer1.0-0
-      - libgstreamer-plugins-base1.0-0
       - libjpeg8
       - libpng16-16
       - libtiff6
@@ -139,11 +154,24 @@ parts:
       - gstreamer1.0-plugins-base
       - gstreamer1.0-plugins-good
       - gstreamer1.0-plugins-bad
-      - gstreamer1.0-plugins-ugly
-      - gstreamer1.0-libav
       - gstreamer1.0-tools
       - libblas3
       - liblapack3
+    # No gstreamer1.0-libav (links Ubuntu's GPL FFmpeg; the Opus restream
+    # decodes AAC itself) or plugins-ugly (x264enc). plugins-bad's few GPL
+    # plugins, and the GPL libraries they pull in, are left out too.
+    prime:
+      - -usr/lib/*/gstreamer-1.0/libgstfaad.so
+      - -usr/lib/*/gstreamer-1.0/libgstx265.so
+      - -usr/lib/*/gstreamer-1.0/libgstdtsdec.so
+      - -usr/lib/*/gstreamer-1.0/libgstmpeg2enc.so
+      - -usr/lib/*/gstreamer-1.0/libgstmplex.so
+      - -usr/lib/*/gstreamer-1.0/libgstresindvd.so
+      - -usr/lib/*/libfaad*
+      - -usr/lib/*/libx265*
+      - -usr/lib/*/libdca*
+      - -usr/lib/*/libmpeg2encpp*
+      - -usr/lib/*/libmplex2*
 
   libappindicator:
     plugin: nil
@@ -159,6 +187,7 @@ parts:
     source-type: local
     after:
       - ncnn
+      - ffmpeg
       - opencv
       - gstreamer
       - libappindicator
@@ -184,6 +213,7 @@ parts:
       - CMAKE_PREFIX_PATH: $CRAFT_STAGE/usr
       - NCNN_TOP_DIR: $CRAFT_STAGE/usr
       - OPENCV_TOP_DIR: $CRAFT_STAGE/usr
+      - FFMPEG_TOP_DIR: $CRAFT_STAGE/usr
       - LIBRARY_PATH: $CRAFT_STAGE/usr/lib/x86_64-linux-gnu:$CRAFT_STAGE/usr/lib:${LIBRARY_PATH:-}
       - LD_LIBRARY_PATH: $CRAFT_STAGE/usr/lib/x86_64-linux-gnu:$CRAFT_STAGE/usr/lib:${LD_LIBRARY_PATH:-}
     build-packages:
