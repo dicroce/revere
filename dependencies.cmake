@@ -134,15 +134,26 @@ if(NOT TARGET opencv::opencv)
             # Drop opencv_dnn from the pkg-config link list: unused (we use NCNN)
             # and it pulls libprotobuf, whose duplicate-load (from a separately
             # built plugin) crashed the app. This is the path macOS/brew uses.
+            # Also videoio, highgui and viz: unused, and videoio links the
+            # system's FFmpeg (Homebrew's and the distros' are GPL builds, with
+            # x264/x265), which the closed plugins mustn't share a process with.
             set(OPENCV_LINK_LIBS "")
             foreach(_l ${OPENCV_LIBRARIES})
-                if(_l MATCHES "opencv_dnn")
+                if(_l MATCHES "opencv_(dnn|videoio|highgui|viz)")
                     continue()
                 endif()
                 list(APPEND OPENCV_LINK_LIBS ${_l})
             endforeach()
             target_link_libraries(opencv::opencv INTERFACE ${OPENCV_LINK_LIBS})
-            message(STATUS "Using system OpenCV via pkg-config (opencv_dnn excluded)")
+            # The .pc lists every module (and OpenCV 5 renamed some), so also
+            # have the linker drop any OpenCV library nothing uses, rather than
+            # leave it to be loaded and bundled with its dependencies.
+            if(APPLE)
+                target_link_options(opencv::opencv INTERFACE "LINKER:-dead_strip_dylibs")
+            else()
+                target_link_options(opencv::opencv INTERFACE "LINKER:--as-needed")
+            endif()
+            message(STATUS "Using system OpenCV via pkg-config (dnn, videoio, highgui, viz excluded)")
         else()
             message(WARNING "OpenCV not found - motion detection features will be limited")
             add_library(opencv::opencv INTERFACE IMPORTED GLOBAL)

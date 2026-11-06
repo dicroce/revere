@@ -331,7 +331,9 @@ jobs:
               echo "::error::$app bundles a GPL GStreamer plugin"; fail=1
             fi
             for lib in "$libdir"/libavcodec*.dylib; do
-              strings "$lib" | grep -q "LGPL version 2.1 or later" || { echo "::error::$(basename "$lib") isn't revere's LGPL build"; fail=1; }
+              # grep -a on the file, not strings | grep -q: with pipefail, grep
+              # quitting early fails strings ("failed to flush output").
+              grep -aq "LGPL version 2.1 or later" "$lib" || { echo "::error::$(basename "$lib") isn't revere's LGPL build"; fail=1; }
             done
             # Nothing may still load Homebrew's FFmpeg by its keg path.
             if find "$app" -type f -name '*.dylib' -exec otool -L {} \; 2>/dev/null | grep -q "/opt/ffmpeg/"; then
