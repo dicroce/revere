@@ -1207,6 +1207,11 @@ void pipeline_host::control_bar_export_cb(const std::string& stream_name, const 
 void pipeline_host::control_bar_export_progress_cb(const std::string& /*stream_name*/, control_bar_state& cbs)
 {
     int percent = query_export_progress(_cfg, cbs.export_id);
+    if(percent == EXPORT_PROGRESS_FAILED)
+    {
+        cbs.exp_state = EXPORT_STATE_FINISHED_ERROR;
+        return;
+    }
     if(percent < 0)
         return;  // transient error, retry next poll
 

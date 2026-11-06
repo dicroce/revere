@@ -313,8 +313,9 @@ int vision::query_export_progress(const configure_state& cs, const string& expor
         note_status(ip, resp.get_status());
         sok->close();
 
+        // Unknown to revere (it restarted, or the job was dropped): the export is gone.
         if(resp.get_status() == 404)
-            return 100;
+            return EXPORT_PROGRESS_FAILED;
 
         if(!resp.is_success())
             return -1;
@@ -324,6 +325,11 @@ int vision::query_export_progress(const configure_state& cs, const string& expor
             return -1;
 
         auto j = json::parse(body.value());
+        if(j.value("failed", false))
+        {
+            R_LOG_ERROR("Export %s failed: %s", export_id.c_str(), j.value("error", string("no reason given")).c_str());
+            return EXPORT_PROGRESS_FAILED;
+        }
         return j["percent_complete"].get<int>();
     }
     catch(...) { return -1; }

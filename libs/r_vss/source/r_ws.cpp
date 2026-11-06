@@ -1,5 +1,6 @@
 
 #include "r_vss/r_ws.h"
+#include "r_vss/r_export_output.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_rtsp_auth.h"
 #include "r_vss/r_query.h"
@@ -907,6 +908,12 @@ static float _compute_framerate(const r_blob_tree& bt)
     return (float)1000 / (float)avg_delta;
 }
 
+// An export's times, for its messages.
+static string _export_range(system_clock::time_point start, system_clock::time_point end)
+{
+    return r_time_utils::tp_to_iso_8601(start, false) + " to " + r_time_utils::tp_to_iso_8601(end, false);
+}
+
 static void _check_timestamps(const r_blob_tree& bt)
 {
     if(!bt.has_key("frames"))
@@ -956,7 +963,9 @@ void r_ws::_export_entry_point()
         auto job = item.value();
         auto job_id = job.id;
 
+        // Every way an export ends without its file throws (r_export_output), so a failed job never looks finished.
         bool failed = false;
+        string error;
         try
         {
             if(job.type == export_type::standard)
@@ -967,7 +976,9 @@ void r_ws::_export_entry_point()
         catch(const exception& ex)
         {
             failed = true;
+            error = export_message(ex);
             R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+            R_LOG_ERROR("Export %s of camera %s failed: %s", job_id.c_str(), job.camera_id.c_str(), error.c_str());
         }
 
         {
@@ -978,6 +989,7 @@ void r_ws::_export_entry_point()
                 it->second.percent_complete = 100;
                 it->second.completed_at = steady_clock::now();
                 it->second.failed = failed;
+                it->second.error = error;
             }
             auto cutoff = steady_clock::now() - minutes(5);
             for(auto it2 = _export_progress.begin(); it2 != _export_progress.end(); )
@@ -1056,12 +1068,9 @@ r_http::r_server_response r_ws::_get_export(r_utils::r_socket_base&, const r_htt
 
 void r_ws::_export(export_job& job)
 {
-    auto dot = job.file_name.rfind('.');
-    auto ext = (dot != string::npos) ? job.file_name.substr(dot) : string{};
-    auto output_path = job.exports_path + PATH_SLASH + job.file_name;
-    auto temp_path = r_fs::temp_file_name(job.exports_path, "tmp_") + ext;
-
-    r_muxer muxer(temp_path);
+    // Declared before the muxer, so the muxer has closed the temp file before an unfinished export removes it.
+    r_export_output out(job.exports_path, job.file_name);
+    r_muxer muxer(out.temp_path());
     muxer.enable_faststart();
 
     auto qs = job.start_time;
@@ -1077,12 +1086,12 @@ void r_ws::_export(export_job& job)
 
         auto rs = qs;
         auto re = rs;
-        if(rs + chrono::minutes(5) >= qe)
+        if(rs + EXPORT_CHUNK >= qe)
         {
             re = qe;
             done = true;
         }
-        else re = rs + chrono::minutes(5);
+        else re = rs + EXPORT_CHUNK;
 
         auto qr_buffer = query_get_video(_top_dir, _devices, job.camera_id, rs, re);
         qs = re;
@@ -1093,7 +1102,7 @@ void r_ws::_export(export_job& job)
             auto done_ms  = duration_cast<milliseconds>(qs - job.start_time).count();
             auto pit = _export_progress.find(job.id);
             if(pit != _export_progress.end())
-                pit->second.percent_complete = (total_ms > 0) ? (int)(done_ms * 100 / total_ms) : 100;
+                pit->second.percent_complete = export_percent(done_ms, total_ms);
         }
 
         try
@@ -1230,6 +1239,9 @@ void r_ws::_export(export_job& job)
 
                 auto ts = bt["frames"][fi]["ts"].get_value<int64_t>();
 
+                if(!out.take(sid, ts))
+                    continue;  // already in, with the last chunk
+
                 if(ts_first_frame == 0)
                     ts_first_frame = ts;
 
@@ -1246,14 +1258,13 @@ void r_ws::_export(export_job& job)
                 r_time_utils::tp_to_iso_8601(re, false).c_str(),
                 ex.what()
             );
+            out.skipped(export_message(ex));
         }
     }
 
-    if(muxer_opened)
-    {
-        muxer.finalize();
-        r_fs::atomic_rename_file(temp_path, output_path);
-    }
+    out.check(muxer_opened, !_export_running, _export_range(job.start_time, job.end_time));
+    muxer.finalize();
+    out.commit();
 }
 
 r_http::r_server_response r_ws::_get_analytics(r_utils::r_socket_base&, const r_http::r_server_request& request)
@@ -2767,7 +2778,11 @@ r_http::r_server_response r_ws::_get_transcode_export(r_utils::r_socket_base&, c
             if(inflight >= MAX_INFLIGHT_EXPORTS)
                 R_THROW(("Too many exports in progress; try again later."));
 
-            _export_progress[job.id] = {0, {}};
+            // Its file, for /export_download, as /export does.
+            auto& p = _export_progress[job.id];
+            p.percent_complete = 0;
+            p.completed_at = {};
+            p.file_path = exports_path + PATH_SLASH + job.file_name;
         }
 
         _export_q.post(job);
@@ -2790,12 +2805,8 @@ r_http::r_server_response r_ws::_get_transcode_export(r_utils::r_socket_base&, c
 
 void r_ws::_transcode_export(export_job& job)
 {
-    auto dot = job.file_name.rfind('.');
-    auto ext = (dot != string::npos) ? job.file_name.substr(dot) : string{};
-    auto output_path = job.exports_path + PATH_SLASH + job.file_name;
-    auto temp_path = r_fs::temp_file_name(job.exports_path, "tmp_") + ext;
-
-    r_muxer muxer(temp_path);
+    r_export_output out(job.exports_path, job.file_name);
+    r_muxer muxer(out.temp_path());
     muxer.enable_faststart();
 
     auto output_width = job.width;
@@ -2824,12 +2835,12 @@ void r_ws::_transcode_export(export_job& job)
 
         auto rs = qs;
         auto re = rs;
-        if(rs + chrono::minutes(5) >= qe)
+        if(rs + EXPORT_CHUNK >= qe)
         {
             re = qe;
             done = true;
         }
-        else re = rs + chrono::minutes(5);
+        else re = rs + EXPORT_CHUNK;
 
         auto qr_buffer = query_get_video(_top_dir, _devices, job.camera_id, rs, re);
         qs = re;
@@ -2840,7 +2851,7 @@ void r_ws::_transcode_export(export_job& job)
             auto done_ms  = duration_cast<milliseconds>(qs - job.start_time).count();
             auto pit = _export_progress.find(job.id);
             if(pit != _export_progress.end())
-                pit->second.percent_complete = (total_ms > 0) ? (int)(done_ms * 100 / total_ms) : 100;
+                pit->second.percent_complete = export_percent(done_ms, total_ms);
         }
 
         try
@@ -2945,6 +2956,9 @@ void r_ws::_transcode_export(export_job& job)
 
                 auto sid        = bt["frames"][fi]["stream_id"].get_value<int>();
                 auto ts         = bt["frames"][fi]["ts"].get_value<int64_t>();
+                if(!out.take(sid, ts))
+                    continue;  // already in (decoded, for video) with the last chunk
+
                 auto frame_data = bt["frames"][fi]["data"].get_blob();
 
                 if(ts_first_frame == 0)
@@ -2991,10 +3005,11 @@ void r_ws::_transcode_export(export_job& job)
                 r_time_utils::tp_to_iso_8601(re, false).c_str(),
                 ex.what()
             );
+            out.skipped(export_message(ex));
         }
     }
 
-    if(initialized)
+    out.check(initialized, !_export_running, _export_range(job.start_time, job.end_time));
     {
         if(encoder)
         {
@@ -3009,7 +3024,7 @@ void r_ws::_transcode_export(export_job& job)
         }
 
         muxer.finalize();
-        r_fs::atomic_rename_file(temp_path, output_path);
+        out.commit();
     }
 }
 
@@ -3033,6 +3048,8 @@ r_http::r_server_response r_ws::_get_export_progress(r_utils::r_socket_base&, co
         j["id"] = id;
         j["percent_complete"] = it->second.percent_complete;
         j["failed"] = it->second.failed;
+        if(it->second.failed)
+            j["error"] = it->second.error;
 
         r_server_response response;
         response.set_content_type("text/json");
@@ -3067,6 +3084,8 @@ r_http::r_server_response r_ws::_get_export_download(r_utils::r_socket_base&, co
                 R_STHROW(r_http_404_exception, ("Export not found: %s", id.c_str()));
             if(it->second.percent_complete < 100)
                 R_STHROW(r_http_500_exception, ("Export not yet complete: %s", id.c_str()));
+            if(it->second.failed)
+                R_STHROW(r_http_404_exception, ("Export %s failed, no file: %s", id.c_str(), it->second.error.c_str()));
             file_path = it->second.file_path;
         }
 
