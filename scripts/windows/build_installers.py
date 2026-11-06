@@ -47,7 +47,8 @@ SYSTEM_DLL_RE = re.compile(
     r"dwmapi|d3d9|d3d11|d3d12|dxgi|d3dcompiler.*|"
     r"opengl32|glu32|d2d1|dwrite|mf|mfplat|mfreadwrite|"  # d2d1/dwrite: pulled by avcodec
     r"mfcore|avicap32|vfw32|winhttp|wininet|urlmon|"
-    r"normaliz|bcryptprimitives|win32u|gdi32full|msvcp_win"
+    r"normaliz|bcryptprimitives|win32u|gdi32full|msvcp_win|"
+    r"usp10|msimg32"                                     # pulled by LGPL FFmpeg 8.1
     r")\.dll$",
     re.IGNORECASE,
 )

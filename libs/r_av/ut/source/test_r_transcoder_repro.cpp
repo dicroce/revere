@@ -220,55 +220,59 @@ void test_r_transcoder_repro::test_audio_written_as_it_comes()
     transcode_with_audio("transcoder_audio.ts", true, written);
     RTF_ASSERT(written > 10);
 
-    r_demuxer d("transcoder_audio.ts");
-    auto ai = d.get_audio_stream_index();
-    RTF_ASSERT(ai >= 0);
-    auto info = d.get_stream_info(ai);
-    RTF_ASSERT(info.codec_id == AV_CODEC_ID_AAC);
-    RTF_ASSERT(info.sample_rate == 16000);
-    RTF_ASSERT(info.channels == 1);
-    RTF_ASSERT(d.get_video_stream_index() >= 0);
-    r_audio_decoder dec(AV_CODEC_ID_AAC);
-    if (!info.extradata.empty())
-        dec.set_extradata(info.extradata);
-    int audio_read = 0, audio_decoded = 0, video_read = 0;
-    int64_t first_pts = -1, last_pts = -1, first_video_pts = -1;
-    bool pts_climbs = true;
-    while (d.read_frame())
+    // Scoped so the demuxer closes the file before it's removed (Windows can't
+    // delete an open file).
     {
-        auto fi = d.get_frame_info();
-        if (fi.index == ai)
+        r_demuxer d("transcoder_audio.ts");
+        auto ai = d.get_audio_stream_index();
+        RTF_ASSERT(ai >= 0);
+        auto info = d.get_stream_info(ai);
+        RTF_ASSERT(info.codec_id == AV_CODEC_ID_AAC);
+        RTF_ASSERT(info.sample_rate == 16000);
+        RTF_ASSERT(info.channels == 1);
+        RTF_ASSERT(d.get_video_stream_index() >= 0);
+        r_audio_decoder dec(AV_CODEC_ID_AAC);
+        if (!info.extradata.empty())
+            dec.set_extradata(info.extradata);
+        int audio_read = 0, audio_decoded = 0, video_read = 0;
+        int64_t first_pts = -1, last_pts = -1, first_video_pts = -1;
+        bool pts_climbs = true;
+        while (d.read_frame())
         {
-            ++audio_read;
-            if (last_pts >= 0 && fi.pts <= last_pts)
-                pts_climbs = false;
-            if (first_pts < 0)
-                first_pts = fi.pts;
-            last_pts = fi.pts;
-            dec.attach_buffer(fi.data, fi.size);
-            auto st = dec.decode();
-            if (st == R_CODEC_STATE_HAS_OUTPUT || st == R_CODEC_STATE_AGAIN_HAS_OUTPUT)
-                ++audio_decoded;
+            auto fi = d.get_frame_info();
+            if (fi.index == ai)
+            {
+                ++audio_read;
+                if (last_pts >= 0 && fi.pts <= last_pts)
+                    pts_climbs = false;
+                if (first_pts < 0)
+                    first_pts = fi.pts;
+                last_pts = fi.pts;
+                dec.attach_buffer(fi.data, fi.size);
+                auto st = dec.decode();
+                if (st == R_CODEC_STATE_HAS_OUTPUT || st == R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+                    ++audio_decoded;
+            }
+            else if (fi.index == d.get_video_stream_index())
+            {
+                if (first_video_pts < 0)
+                    first_video_pts = fi.pts;
+                ++video_read;
+            }
         }
-        else if (fi.index == d.get_video_stream_index())
-        {
-            if (first_video_pts < 0)
-                first_video_pts = fi.pts;
-            ++video_read;
-        }
+        // Every AAC frame written is in the output, beside the video, in order, and plays.
+        RTF_ASSERT(audio_read == written);
+        RTF_ASSERT(audio_decoded >= written - 2);
+        RTF_ASSERT(pts_climbs);
+        // About a second of audio, on the stream's clock.
+        auto span_ms = av_rescale_q(last_pts - first_pts, info.time_base, {1, 1000});
+        RTF_ASSERT(span_ms > 800 && span_ms < 1100);
+        RTF_ASSERT(video_read > 0);
+        // In step with the video: both were written from 0 ms, so they start together in the TS.
+        auto vinfo = d.get_stream_info(d.get_video_stream_index());
+        auto lead_ms = av_rescale_q(first_pts, info.time_base, {1, 1000}) - av_rescale_q(first_video_pts, vinfo.time_base, {1, 1000});
+        RTF_ASSERT(lead_ms > -100 && lead_ms < 100);
     }
-    // Every AAC frame written is in the output, beside the video, in order, and plays.
-    RTF_ASSERT(audio_read == written);
-    RTF_ASSERT(audio_decoded >= written - 2);
-    RTF_ASSERT(pts_climbs);
-    // About a second of audio, on the stream's clock.
-    auto span_ms = av_rescale_q(last_pts - first_pts, info.time_base, {1, 1000});
-    RTF_ASSERT(span_ms > 800 && span_ms < 1100);
-    RTF_ASSERT(video_read > 0);
-    // In step with the video: both were written from 0 ms, so they start together in the TS.
-    auto vinfo = d.get_stream_info(d.get_video_stream_index());
-    auto lead_ms = av_rescale_q(first_pts, info.time_base, {1, 1000}) - av_rescale_q(first_video_pts, vinfo.time_base, {1, 1000});
-    RTF_ASSERT(lead_ms > -100 && lead_ms < 100);
     r_fs::remove_file("transcoder_audio.ts");
 }
 
@@ -276,12 +280,14 @@ void test_r_transcoder_repro::test_no_audio_without_it()
 {
     int written = 0;
     transcode_with_audio("transcoder_no_audio.ts", false, written);
-    r_demuxer d("transcoder_no_audio.ts");
-    // A transcoder made without audio ignores audio frames: video only, as before (no audio stream to find).
-    bool no_audio = false;
-    try { d.get_audio_stream_index(); } catch (const std::exception&) { no_audio = true; }
-    RTF_ASSERT(no_audio);
-    RTF_ASSERT(d.get_video_stream_index() >= 0);
+    {
+        r_demuxer d("transcoder_no_audio.ts");
+        // A transcoder made without audio ignores audio frames: video only, as before (no audio stream to find).
+        bool no_audio = false;
+        try { d.get_audio_stream_index(); } catch (const std::exception&) { no_audio = true; }
+        RTF_ASSERT(no_audio);
+        RTF_ASSERT(d.get_video_stream_index() >= 0);
+    }
 
     // The same video with audio beside it: the audio takes nothing from the video (none of it goes to the decoder).
     transcode_with_audio("transcoder_with_audio.ts", true, written);
