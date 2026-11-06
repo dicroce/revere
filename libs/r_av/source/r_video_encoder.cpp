@@ -131,7 +131,14 @@ r_video_encoder::r_video_encoder(
 
     // hw encoders handle their own threading; preset/tune are sw-encoder concepts
     AVDictionary* opts = nullptr;
-    if(_hw_accel == r_hw_accel::none)
+    if(_hw_accel == r_hw_accel::none && strcmp(_codec->name, "libopenh264") == 0)
+    {
+        // LGPL FFmpeg's software H.264 encoder. It has no preset/tune, and its
+        // default rate control targets quality and overshoots bit_rate (+36% at
+        // 720p, +80% at 2048x1536 in testing), so ask for bitrate mode.
+        av_dict_set(&opts, "rc_mode", "bitrate", 0);
+    }
+    else if(_hw_accel == r_hw_accel::none)
     {
         if(!preset.empty())
             av_dict_set(&opts, "preset", preset.c_str(), 0);
