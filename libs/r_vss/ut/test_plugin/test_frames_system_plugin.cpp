@@ -125,7 +125,7 @@ R_API void system_plugin_action(r_system_plugin_handle h, const char* action)
     else if(cmd == "read")
     {
         int n = atoi(field(a, 1).c_str());
-        bool small = field(a, 2) == "small";
+        bool short_frame = field(a, 2) == "small";
         for(int i = 0; i < n; ++i)
         {
             // A buffer bigger than r_frame, filled with a marker: a "small" r_frame
@@ -133,7 +133,7 @@ R_API void system_plugin_action(r_system_plugin_handle h, const char* action)
             unsigned char buf[sizeof(r_frame) + 16];
             memset(buf, 0xA5, sizeof(buf));
             auto fr = reinterpret_cast<r_frame*>(buf);
-            fr->struct_size = small ? (uint32_t)offsetof(r_frame, stream) : (uint32_t)sizeof(r_frame);
+            fr->struct_size = short_frame ? (uint32_t)offsetof(r_frame, stream) : (uint32_t)sizeof(r_frame);
             int r = p->api->next_frame(p->api->host, p->sub, 200, fr);
             if(r != 1)
             {
@@ -141,12 +141,12 @@ R_API void system_plugin_action(r_system_plugin_handle h, const char* action)
                 break;
             }
             bool untouched = true;
-            for(size_t b = small ? offsetof(r_frame, stream) : sizeof(r_frame); b < sizeof(buf); ++b)
+            for(size_t b = short_frame ? offsetof(r_frame, stream) : sizeof(r_frame); b < sizeof(buf); ++b)
                 untouched = untouched && buf[b] == 0xA5;
             std::string line = "frame flags=" + std::to_string(fr->flags) + " ts=" + std::to_string(fr->ts) + " size=" + std::to_string(fr->size) +
                                " codec=" + std::string(fr->codec_name) + " params=" + std::string(fr->codec_params) +
                                " data0=" + std::to_string(fr->size ? fr->data[0] : 0);
-            line += small ? std::string(" stream=") + (untouched ? "unwritten" : "WRITTEN") : std::string(" stream=") + fr->stream + (untouched ? "" : " OVERRUN");
+            line += short_frame ? std::string(" stream=") + (untouched ? "unwritten" : "WRITTEN") : std::string(" stream=") + fr->stream + (untouched ? "" : " OVERRUN");
             note(p, line);
         }
     }

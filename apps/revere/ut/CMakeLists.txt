@@ -39,4 +39,10 @@ if(WIN32)
     set_target_properties(revere_ut PROPERTIES
         LINK_FLAGS "/SUBSYSTEM:CONSOLE"
     )
+    # main_window.h (test_plugin_status_line) uses std::max and a parameter
+    # named `small`. r_macro.h includes the full windows.h, whose min/max
+    # macros and rpcndr.h's `#define small char` break the header. The app
+    # itself only survives because OpenCV's cvdef.h (reached via r_motion)
+    # #undefs all three; nothing here includes OpenCV, so define these instead.
+    target_compile_definitions(revere_ut PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
