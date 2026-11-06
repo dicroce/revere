@@ -146,6 +146,10 @@ void test_r_early_alerts::test_parked_vehicle_left_out_of_the_record()
     RTF_ASSERT(!e.is_parked_vehicle("c", "car", PARKED_CAR, T0 + HOUR, {}));
     RTF_ASSERT(!e.is_parked_vehicle("c", "car", PARKED_CAR, T0 + HOUR, {{"car", box(20, 330, 150, 80)}}));
     RTF_ASSERT(!e.is_parked_vehicle("c", "car", PARKED_CAR, T0 + HOUR, {{"truck", PARKED_CAR}}));
+    // A start-frame car that only overlaps the spot a little (a car pulled in beside it) doesn't count either.
+    RTF_ASSERT(!e.is_parked_vehicle("c", "car", PARKED_CAR, T0 + HOUR, {{"car", shift(PARKED_CAR, 90, 0)}}));
+    // Nor does a truck detection take a car's anchor, even with a truck on the spot at the start.
+    RTF_ASSERT(!e.is_parked_vehicle("c", "truck", PARKED_CAR, T0 + HOUR, {{"truck", PARKED_CAR}}));
 
     // A car seen once moving a little between the endpoint frames (a weak sighting) isn't parked yet; a second makes it so.
     E w;
