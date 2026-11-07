@@ -111,6 +111,54 @@ void test_r_early_alerts::test_parked_car_anchor()
     RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.9f, shift(PARKED_CAR, 90, 0), T0 + HOUR).verdict, (int)E::early_sent);
 }
 
+void test_r_early_alerts::test_parked_vehicle_left_out_of_the_record()
+{
+    // The event's start frame: the car already on its spot, or a cat or person at theirs.
+    const vector<E::r_seen> ON_SPOT = {{"car", PARKED_CAR}};
+    const vector<E::r_seen> CAT_THERE = {{"cat", LEAVES}};
+    const vector<E::r_seen> PERSON_THERE = {{"person", LEAVES}};
+    E e;
+    // Nothing learnt yet: a car is no parked vehicle.
+    RTF_ASSERT(!e.is_parked_vehicle("c", "car", PARKED_CAR, T0, ON_SPOT));
+    // A parked car seen in both endpoint frames of an event becomes an anchor.
+    RTF_ASSERT(_event(e, T0, {{"car", PARKED_CAR}}, {{"car", shift(PARKED_CAR, 2, 1)}}));
+    // Later, YOLO's box for it (a little off, any frame of the event) is left out of the record...
+    RTF_ASSERT(e.is_parked_vehicle("c", "car", shift(PARKED_CAR, -6, 4), T0 + HOUR, ON_SPOT));
+    // ...also under another vehicle word, no: the anchor is the class's own.
+    RTF_ASSERT(!e.is_parked_vehicle("c", "truck", PARKED_CAR, T0 + HOUR, ON_SPOT));
+    // A car driving past elsewhere, or pulling in beside it, is kept.
+    RTF_ASSERT(!e.is_parked_vehicle("c", "car", box(20, 330, 150, 80), T0 + HOUR, ON_SPOT));
+    RTF_ASSERT(!e.is_parked_vehicle("c", "car", shift(PARKED_CAR, 90, 0), T0 + HOUR, ON_SPOT));
+    // Another camera's anchors aren't this one's.
+    RTF_ASSERT(!e.is_parked_vehicle("other", "car", PARKED_CAR, T0 + HOUR, ON_SPOT));
+    // The anchor lapses a day after it was last seen.
+    RTF_ASSERT(!e.is_parked_vehicle("c", "car", PARKED_CAR, T0 + 25 * HOUR, ON_SPOT));
+
+    // Animals and persons are never left out for sitting where one sat before: a feeding station, a doorstep.
+    RTF_ASSERT(_event(e, T0, {{"cat", LEAVES}}, {{"cat", shift(LEAVES, 1, 1)}}));
+    RTF_ASSERT(!e.is_parked_vehicle("c", "cat", LEAVES, T0 + HOUR, CAT_THERE));
+    RTF_ASSERT(_event(e, T0, {{"person", LEAVES}}, {{"person", shift(LEAVES, 1, 1)}}));
+    RTF_ASSERT(!e.is_parked_vehicle("c", "person", LEAVES, T0 + HOUR, PERSON_THERE));
+
+    // The anchor outlives the car, so a car arriving into the spot (or a visitor taking it) is kept: the start
+    // frame showed the spot empty, or something else on it.
+    RTF_ASSERT(e.is_parked_vehicle("c", "car", PARKED_CAR, T0 + HOUR, ON_SPOT));
+    RTF_ASSERT(!e.is_parked_vehicle("c", "car", PARKED_CAR, T0 + HOUR, {}));
+    RTF_ASSERT(!e.is_parked_vehicle("c", "car", PARKED_CAR, T0 + HOUR, {{"car", box(20, 330, 150, 80)}}));
+    RTF_ASSERT(!e.is_parked_vehicle("c", "car", PARKED_CAR, T0 + HOUR, {{"truck", PARKED_CAR}}));
+    // A start-frame car that only overlaps the spot a little (a car pulled in beside it) doesn't count either.
+    RTF_ASSERT(!e.is_parked_vehicle("c", "car", PARKED_CAR, T0 + HOUR, {{"car", shift(PARKED_CAR, 90, 0)}}));
+    // Nor does a truck detection take a car's anchor, even with a truck on the spot at the start.
+    RTF_ASSERT(!e.is_parked_vehicle("c", "truck", PARKED_CAR, T0 + HOUR, {{"truck", PARKED_CAR}}));
+
+    // A car seen once moving a little between the endpoint frames (a weak sighting) isn't parked yet; a second makes it so.
+    E w;
+    RTF_ASSERT(_event(w, T0, {{"car", PARKED_CAR}}, {{"car", shift(PARKED_CAR, 24, 0)}}));
+    RTF_ASSERT(!w.is_parked_vehicle("c", "car", PARKED_CAR, T0 + HOUR, ON_SPOT));
+    RTF_ASSERT(_event(w, T0 + HOUR, {{"car", PARKED_CAR}}, {{"car", shift(PARKED_CAR, 24, 0)}}));
+    RTF_ASSERT(w.is_parked_vehicle("c", "car", PARKED_CAR, T0 + 2 * HOUR, ON_SPOT));
+}
+
 void test_r_early_alerts::test_jittery_leaf()
 {
     E e;
