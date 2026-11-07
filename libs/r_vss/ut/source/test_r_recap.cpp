@@ -156,14 +156,15 @@ void test_r_recap::test_pad()
 namespace
 {
 
-// The test clip recorded, every frame at its own time from base, for camera "cam-recap".
+// The test clip recorded, every frame at its own time from base, for camera "cam-recap". Frames
+// from gap_from up to gap_to (ms into the clip) are left out, as when a camera drops off.
 struct recorded
 {
     int64_t base {0};
     vector<int64_t> keys;
     unique_ptr<r_disco::r_devices> devices;
 
-    recorded()
+    recorded(int64_t gap_from = -1, int64_t gap_to = -1)
     {
         using namespace r_utils;
         r_fs::write_file(bad_guy_mp4, bad_guy_mp4_len, "recap_bad_guy.mp4");
@@ -185,6 +186,8 @@ struct recorded
                 if(fi.index != vsi)
                     continue;
                 const int64_t ms = (fi.pts * 1000 * tb.num) / tb.den;
+                if(ms >= gap_from && ms < gap_to)
+                    continue;
                 if(fi.key)
                     keys.push_back(base + ms);
                 sf.write_frame(wc, r_storage::R_STORAGE_MEDIA_TYPE_VIDEO, fi.data, fi.size, fi.key, base + ms, ms);
@@ -293,6 +296,20 @@ void test_r_recap::test_recap_decoding_every_frame()
     RTF_ASSERT(r.frames == 24);
 }
 
+void test_r_recap::test_recap_across_a_gap()
+{
+    // No recording from the key frame at 5.27 s to the one at 16.05 s (three key frames gone). Over
+    // the first 20 s, a time every 833 ms: the 7 before the gap each get a frame, the first frame
+    // after it stands for the 13 in the gap, and the 4 after that get a frame each.
+    recorded rec(5271, 16049);
+    RTF_ASSERT(rec.keys.size() == 57 - 3);
+
+    auto r = rec.recap(0, 20000);
+    RTF_ASSERT(r.decode_all);
+    RTF_ASSERT(r.frames == 7 + 1 + 4);
+    RTF_ASSERT(probe(r.mp4).frames == 12);
+}
+
 void test_r_recap::test_no_recording()
 {
     recorded rec;
@@ -326,8 +343,9 @@ void test_r_recap::test_no_recording()
     try { rec.recap(0, RECAP_MAX_SPAN_MS + 1); }
     catch(const std::exception&) { threw = true; }
     RTF_ASSERT(threw);
+    // Backwards, though the key frame showing at its start is within it.
     threw = false;
-    try { rec.recap(10000, 0); }
+    try { rec.recap(10000, 9000); }
     catch(const std::exception&) { threw = true; }
     RTF_ASSERT(threw);
 }

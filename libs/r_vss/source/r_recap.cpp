@@ -11,8 +11,6 @@ vector<int64_t> recap_pick_evenly(const vector<int64_t>& v, size_t n)
 {
     if(v.size() <= n)
         return v;
-    if(n == 0)
-        return {};
     if(n == 1)
         return {v.front()};
 
