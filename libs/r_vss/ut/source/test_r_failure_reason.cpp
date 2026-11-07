@@ -1,6 +1,9 @@
 #include "test_r_failure_reason.h"
 #include "r_vss/r_query.h"
 
+#include <chrono>
+#include <string>
+
 using namespace r_vss;
 using namespace std;
 
@@ -61,4 +64,32 @@ void test_r_failure_reason::test_path_with_spaces()
     RTF_ASSERT(r_failure_reason("Failed to open /Users/someone/Application Support/cam1.nts for reading") == "Failed to open cam1.nts for reading");
     RTF_ASSERT(r_failure_reason("copy /a/b and /c/d/e.txt failed") == "copy b and e.txt failed");
     RTF_ASSERT(r_failure_reason("either and/or/else") == "either and/or/else");
+}
+
+void test_r_failure_reason::test_text_from_a_caller_is_bounded_and_clean()
+{
+    // A request's handle is echoed in an error, URL-decoded, so it can hold this function's own markers.
+    auto r = r_failure_reason(string("Unknown transcode handle: \x01") + "7\x02");
+    RTF_ASSERT(r.find('\x01') == string::npos && r.find('\x02') == string::npos);
+    r = r_failure_reason(string("Unknown transcode handle: \x01") + "x\x02");
+    RTF_ASSERT(r.find('\x01') == string::npos && r.find('\x02') == string::npos);
+    r = r_failure_reason(string("Unknown transcode handle: \x01") + " no end");
+    RTF_ASSERT(r.find('\x01') == string::npos);
+    // With a real URL ahead of a forged marker.
+    r = r_failure_reason(string("rtsp://a:b@h/x \x01") + "0\x02 \x01" + "9\x02");
+    RTF_ASSERT(r.find('\x01') == string::npos && r.find("a:b") == string::npos);
+
+    // Bounded, and not quadratic on a long run.
+    auto t0 = std::chrono::steady_clock::now();
+    RTF_ASSERT(r_failure_reason(string(20000, 'x')).size() <= 512);
+    RTF_ASSERT(r_failure_reason(string(20000, 'x') + "://" + string(20000, 'y')).size() <= 512);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    RTF_ASSERT(ms < 1000);
+
+    // Control characters are dropped from the message.
+    RTF_ASSERT(r_failure_reason(string("bad\tvalue\x1b[31m here\r")) == "badvalue[31m here");
+
+    // api_key and apikey are masked like the other secrets.
+    RTF_ASSERT(r_failure_reason("GET http://cam/x?api_key=abc123&a=1 failed") == "GET http://cam/x?api_key=***&a=1 failed");
+    RTF_ASSERT(r_failure_reason("auth apikey=abc123 rejected") == "auth apikey=*** rejected");
 }

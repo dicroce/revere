@@ -10,6 +10,7 @@ public:
       TEST(test_r_failure_reason::test_url_credentials_removed);
       TEST(test_r_failure_reason::test_url_keeps_its_host_and_port);
       TEST(test_r_failure_reason::test_path_with_spaces);
+      TEST(test_r_failure_reason::test_text_from_a_caller_is_bounded_and_clean);
     RTF_FIXTURE_END();
 
     virtual ~test_r_failure_reason() throw() {}
@@ -23,4 +24,5 @@ public:
     void test_url_credentials_removed();
     void test_url_keeps_its_host_and_port();
     void test_path_with_spaces();
+    void test_text_from_a_caller_is_bounded_and_clean();
 };

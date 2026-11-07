@@ -15,6 +15,7 @@
 #include "r_av/r_video_decoder.h"
 #include "r_av/r_video_encoder.h"
 #include "r_av/r_muxer.h"
+#include <algorithm>
 #include <functional>
 #include <regex>
 #include <array>
@@ -971,13 +972,19 @@ r_letterboxed_frame r_vss::query_get_letterboxed_key_frame(const std::string& to
 string r_vss::r_failure_reason(const string& what)
 {
     string reason = what.substr(0, what.find('\n'));
+    // The text can come from a caller (a request's handle, URL-decoded): bound it before any pattern runs, which
+    // are quadratic on a long run of letters, and drop control characters, which also keeps this function's own
+    // markers (\x01, \x02) out of it.
+    if(reason.size() > 512)
+        reason.resize(512);
+    reason.erase(remove_if(reason.begin(), reason.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; }), reason.end());
 
     // A URL (a camera's rtsp://user:pass@host:554/path) is not a build path: set aside while paths are cut, and its
     // credentials go before anything else. "user:pass@" can hold any character, so everything up to the last "@" of
     // the URL is dropped, and a secret passed in the query (password=..., token=...) is hidden.
     static const regex url(R"([A-Za-z][A-Za-z0-9+.\-]*://\S+)");
     static const regex credentials(R"(^([A-Za-z][A-Za-z0-9+.\-]*://)\S*@)");
-    static const regex secret(R"(([?&;,\s]|^)(pass(?:word|wd)?|pwd|token|secret|key)=[^&\s]*)", regex::icase);
+    static const regex secret(R"(([?&;,\s]|^)(pass(?:word|wd)?|pwd|token|secret|(?:api_?)?key)=[^&\s]*)", regex::icase);
     vector<string> urls;
     {
         string without;
@@ -1025,7 +1032,16 @@ string r_vss::r_failure_reason(const string& what)
         if(out[i] == '\x01')
         {
             size_t end = out.find('\x02', i);
-            result += urls[stoul(out.substr(i + 1, end - i - 1))];
+            size_t n = 0;
+            bool ok = end != string::npos && end > i + 1;
+            for(size_t d = i + 1; ok && d < end; ++d)
+            {
+                ok = out[d] >= '0' && out[d] <= '9' && n < urls.size();
+                n = n * 10 + (out[d] - '0');
+            }
+            if(!ok || n >= urls.size())
+                break;
+            result += urls[n];
             i = end;
         }
         else result += out[i];
