@@ -1,6 +1,8 @@
 
 add_subdirectory(experimentum)
 add_subdirectory(r_utils)
+add_subdirectory(monocypher)
+add_subdirectory(r_crypto)
 add_subdirectory(r_db)
 add_subdirectory(r_http)
 add_subdirectory(r_av)
