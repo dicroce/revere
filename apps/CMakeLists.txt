@@ -96,6 +96,10 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         BUNDLE DESTINATION .
     )
 
+    # Third-party licence texts (see licenses/README.md), in each app's Resources.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/licenses/ DESTINATION Revere.app/Contents/Resources/licenses)
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/licenses/ DESTINATION Vision.app/Contents/Resources/licenses)
+
     # Bundle shared libraries, plugins, and models into each app
     install(CODE "
         # Copy all project dylibs from the build directory into both app bundles
@@ -149,6 +153,9 @@ else()
         TARGETS vision
         RUNTIME DESTINATION ${REVERE_INSTALL_BINDIR}
     )
+
+    # Third-party licence texts (see licenses/README.md), next to the binaries.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/licenses/ DESTINATION ${REVERE_INSTALL_BINDIR}/licenses)
 endif()
 
 # NOTE: desktop-file installation is handled per-app in apps/revere/CMakeLists.txt
