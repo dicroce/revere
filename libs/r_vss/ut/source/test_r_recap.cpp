@@ -148,12 +148,12 @@ void test_r_recap::test_pad()
         big[48 + i] = (uint8_t)(100 + i);
         big[60 + i] = (uint8_t)(150 + i);
     }
-    vector<uint8_t> small(4 * 2 * 3 / 2);
-    recap_pad_yuv420p(big.data(), 8, 6, small.data(), 4, 2);
-    RTF_ASSERT(vector<uint8_t>(small.begin(), small.begin() + 4) == vector<uint8_t>({18, 19, 20, 21}));
-    RTF_ASSERT(vector<uint8_t>(small.begin() + 4, small.begin() + 8) == vector<uint8_t>({26, 27, 28, 29}));
-    RTF_ASSERT(small[8] == 105 && small[9] == 106);   // U row 1, columns 1-2
-    RTF_ASSERT(small[10] == 155 && small[11] == 156); // V
+    vector<uint8_t> cropped(4 * 2 * 3 / 2);
+    recap_pad_yuv420p(big.data(), 8, 6, cropped.data(), 4, 2);
+    RTF_ASSERT(vector<uint8_t>(cropped.begin(), cropped.begin() + 4) == vector<uint8_t>({18, 19, 20, 21}));
+    RTF_ASSERT(vector<uint8_t>(cropped.begin() + 4, cropped.begin() + 8) == vector<uint8_t>({26, 27, 28, 29}));
+    RTF_ASSERT(cropped[8] == 105 && cropped[9] == 106);   // U row 1, columns 1-2
+    RTF_ASSERT(cropped[10] == 155 && cropped[11] == 156); // V
 }
 
 namespace
@@ -453,7 +453,7 @@ vector<int> middle_lumas(const vector<uint8_t>& mp4)
     return out;
 }
 
-bool near(int a, int b) { return a >= b - 2 && a <= b + 2; }
+bool within_two(int a, int b) { return a >= b - 2 && a <= b + 2; }
 
 }
 
@@ -471,7 +471,7 @@ void test_r_recap::test_frames_decoded_show_their_times()
     for(int k = 0; k < 24; ++k)
     {
         const int i = (40 * k + 23) / 24;
-        RTF_ASSERT(near(lumas[k], 16 + 5 * i));
+        RTF_ASSERT(within_two(lumas[k], 16 + 5 * i));
     }
 }
 
@@ -485,5 +485,5 @@ void test_r_recap::test_key_frames_show_their_times()
     auto lumas = middle_lumas(r.mp4);
     RTF_ASSERT(lumas.size() == 30);
     for(int s = 0; s < 30; ++s)
-        RTF_ASSERT(near(lumas[s], 16 + 7 * s));
+        RTF_ASSERT(within_two(lumas[s], 16 + 7 * s));
 }
