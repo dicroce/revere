@@ -291,3 +291,14 @@ r_hw_accel r_av::r_find_best_hw_accel(AVCodecID codec_id)
     g_decoder_cache[codec_id] = r_hw_accel::none;
     return r_hw_accel::none;
 }
+
+void r_av::r_hw_accel_decode_failed(AVCodecID codec_id)
+{
+    std::lock_guard<std::mutex> probe_guard(g_probe_lok);
+    auto it = g_decoder_cache.find(codec_id);
+    if(it != g_decoder_cache.end() && it->second == r_hw_accel::none)
+        return;
+    R_LOG_WARNING("r_av: %s decode for codec %d failed on this machine's driver; decoding in software from now on",
+                  it != g_decoder_cache.end() ? _accel_name(it->second) : "hardware", (int)codec_id);
+    g_decoder_cache[codec_id] = r_hw_accel::none;
+}
