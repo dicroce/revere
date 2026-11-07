@@ -9,9 +9,14 @@
 #include <vector>
 #include <memory>
 #include <climits>
+#include <functional>
 
 namespace r_storage
 {
+
+// Runs one stream's read for query(). A nanots error stops that stream's read only: it is logged with the stream's tag
+// and window, and false is returned. Any other exception passes through.
+R_API bool read_stream_or_warn(const char* stream_tag, int64_t start_ts, int64_t end_ts, const std::function<void()>& read);
 
 class r_storage_file_reader final
 {
