@@ -12,6 +12,11 @@ public:
       TEST(test_r_storage::test_r_storage_file_query_key_gap);
       TEST(test_r_storage::test_r_storage_file_query_key_across_blocks);
       TEST(test_r_storage::test_r_storage_file_query_key_empty);
+      TEST(test_r_storage::test_r_storage_file_async_writes_reach_storage);
+      TEST(test_r_storage::test_r_storage_file_async_full_queue_waits);
+      TEST(test_r_storage::test_r_storage_file_async_audio_and_video);
+      TEST(test_r_storage::test_r_storage_file_async_write_during_stop);
+      TEST(test_r_storage::test_r_storage_file_sync_after_async_stop);
 #if 0
       TEST(test_r_storage::test_r_dumbdex_writing);
       TEST(test_r_storage::test_r_dumbdex_consistency);
@@ -53,6 +58,11 @@ public:
     void test_r_storage_file_query_key_gap();
     void test_r_storage_file_query_key_across_blocks();
     void test_r_storage_file_query_key_empty();
+    void test_r_storage_file_async_writes_reach_storage();
+    void test_r_storage_file_async_full_queue_waits();
+    void test_r_storage_file_async_audio_and_video();
+    void test_r_storage_file_async_write_during_stop();
+    void test_r_storage_file_sync_after_async_stop();
 
 #if 0
     void test_r_dumbdex_writing();

@@ -374,6 +374,209 @@ void test_r_storage::test_r_storage_file_query_key_empty()
     RTF_ASSERT(bt["frames"].size() == 0);
 }
 
+// Async writes: frame n carries n in its first two bytes, so a readback shows
+// whether every frame reached storage, once, in order.
+static vector<uint8_t> _indexed_frame(int n, size_t size)
+{
+    vector<uint8_t> f(size, 0x5A);
+    f[0] = (uint8_t)(n & 0xFF);
+    f[1] = (uint8_t)((n >> 8) & 0xFF);
+    return f;
+}
+
+static vector<int> _stored_indexes(const string& file_name, r_storage_media_type media_type, int64_t start_ts, int64_t end_ts)
+{
+    r_storage_file_reader sfr(file_name);
+    auto buf = sfr.query(media_type, start_ts, end_ts);
+    uint32_t version = 0;
+    auto bt = r_blob_tree::deserialize(buf.data(), buf.size(), version);
+    vector<int> out;
+    for(size_t i = 0; i < bt["frames"].size(); ++i)
+    {
+        auto d = bt["frames"][i]["data"].get_blob();
+        out.push_back((int)d[0] | ((int)d[1] << 8));
+    }
+    return out;
+}
+
+static vector<int> _zero_to(int n)
+{
+    vector<int> v(n);
+    iota(v.begin(), v.end(), 0);
+    return v;
+}
+
+// Every queued frame reaches storage, in order, across several blocks; the
+// returned ts is the stored one; the written edge catches up by stop.
+void test_r_storage::test_r_storage_file_async_writes_reach_storage()
+{
+    r_storage_file::allocate("ts_test.nts", 65536, 20);
+    r_storage_file sf("ts_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    RTF_ASSERT(sf.written_video_ts() == -1);
+
+    sf.start_async_writes(1024 * 1024);
+
+    const int N = 200;
+    int64_t base = _wall_now_ms() - 20000;
+    for(int i = 0; i < N; ++i)
+    {
+        auto f = _indexed_frame(i, 2000);
+        auto stored = sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, f.data(), f.size(), (i % 30) == 0, base + i * 33, i * 33);
+        RTF_ASSERT(stored == base + i * 33);
+    }
+    RTF_ASSERT(sf.last_video_ts() == base + (N - 1) * 33);
+
+    sf.stop_async_writes();
+
+    RTF_ASSERT(sf.written_video_ts() == base + (N - 1) * 33);
+    RTF_ASSERT(sf.written_video_arrival_time().time_since_epoch().count() > 0);
+    RTF_ASSERT(_stored_indexes("ts_test.nts", R_STORAGE_MEDIA_TYPE_VIDEO, base - 1, base + N * 33) == _zero_to(N));
+}
+
+// A queue too small for one frame: write_frame() waits for the writer each
+// time instead of dropping anything, or letting the queue grow.
+void test_r_storage::test_r_storage_file_async_full_queue_waits()
+{
+    r_storage_file::allocate("ts_test.nts", 65536, 20);
+    r_storage_file sf("ts_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    sf.start_async_writes(1);
+
+    const int N = 150;
+    int64_t base = _wall_now_ms() - 20000;
+    for(int i = 0; i < N; ++i)
+    {
+        auto f = _indexed_frame(i, 3000);
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, f.data(), f.size(), (i % 30) == 0, base + i * 33, i * 33);
+        // The bound holds: write_frame(i) returns only once frame i-1 left the
+        // queue, and the writer takes a frame only after writing the one
+        // before, so frame i-2 is written.
+        if(i >= 2)
+            RTF_ASSERT(sf.written_video_ts() >= base + (i - 2) * 33);
+    }
+
+    sf.stop_async_writes();
+
+    RTF_ASSERT(_stored_indexes("ts_test.nts", R_STORAGE_MEDIA_TYPE_VIDEO, base - 1, base + N * 33) == _zero_to(N));
+}
+
+// Audio and video written from two threads at once (as a camera's pipeline
+// does) share the one writer thread; each stream stays complete and in order.
+void test_r_storage::test_r_storage_file_async_audio_and_video()
+{
+    r_storage_file::allocate("ts_test.nts", 65536, 30);
+    r_storage_file sf("ts_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto vwc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+    r_nullable<string> ap;
+    ap.set_value(string("aparams"));
+    auto awc = sf.create_write_context("aac", ap, R_STORAGE_MEDIA_TYPE_AUDIO);
+
+    sf.start_async_writes(64 * 1024);
+
+    const int N = 300;
+    int64_t base = _wall_now_ms() - 20000;
+    thread vt([&]() {
+        for(int i = 0; i < N; ++i)
+        {
+            auto f = _indexed_frame(i, 1500);
+            sf.write_frame(vwc, R_STORAGE_MEDIA_TYPE_VIDEO, f.data(), f.size(), (i % 30) == 0, base + i * 33, i * 33);
+        }
+    });
+    thread at([&]() {
+        for(int i = 0; i < N; ++i)
+        {
+            auto f = _indexed_frame(i, 400);
+            sf.write_frame(awc, R_STORAGE_MEDIA_TYPE_AUDIO, f.data(), f.size(), true, base + i * 20, i * 20);
+        }
+    });
+    vt.join();
+    at.join();
+
+    sf.stop_async_writes();
+
+    RTF_ASSERT(_stored_indexes("ts_test.nts", R_STORAGE_MEDIA_TYPE_VIDEO, base - 1, base + N * 33) == _zero_to(N));
+    RTF_ASSERT(_stored_indexes("ts_test.nts", R_STORAGE_MEDIA_TYPE_AUDIO, base - 1, base + N * 20) == _zero_to(N));
+}
+
+// Writes racing stop_async_writes(): while the queue drains they wait for it,
+// so a synchronous write never lands ahead of older queued frames (nanots
+// would reject the queued ones as out of order, losing them).
+void test_r_storage::test_r_storage_file_async_write_during_stop()
+{
+    r_storage_file::allocate("ts_test.nts", 65536, 40);
+    r_storage_file sf("ts_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    int64_t base = _wall_now_ms() - 30000;
+    auto write = [&](int i) {
+        auto f = _indexed_frame(i, 2000);
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, f.data(), f.size(), (i % 30) == 0, base + i * 33, i * 33);
+    };
+
+    // A backlog for the stop to drain.
+    sf.start_async_writes(4 * 1024 * 1024);
+    const int N = 600;
+    for(int i = 0; i < N / 2; ++i)
+        write(i);
+
+    thread stopper([&]() { sf.stop_async_writes(); });
+    for(int i = N / 2; i < N; ++i)
+        RTF_ASSERT_NO_THROW(write(i));
+    stopper.join();
+
+    RTF_ASSERT(_stored_indexes("ts_test.nts", R_STORAGE_MEDIA_TYPE_VIDEO, base - 1, base + N * 33) == _zero_to(N));
+}
+
+// After a stop, writes are synchronous again and continue the same stream;
+// async can be started again on the same file.
+void test_r_storage::test_r_storage_file_sync_after_async_stop()
+{
+    r_storage_file::allocate("ts_test.nts", 65536, 20);
+    r_storage_file sf("ts_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    int64_t base = _wall_now_ms() - 20000;
+    auto write = [&](int i) {
+        auto f = _indexed_frame(i, 2000);
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, f.data(), f.size(), (i % 30) == 0, base + i * 33, i * 33);
+    };
+
+    sf.start_async_writes(256 * 1024);
+    for(int i = 0; i < 50; ++i)
+        write(i);
+    sf.stop_async_writes();
+    sf.stop_async_writes();  // idempotent
+
+    for(int i = 50; i < 100; ++i)
+        RTF_ASSERT_NO_THROW(write(i));
+    RTF_ASSERT(sf.written_video_ts() == base + 99 * 33);  // synchronous: written at once
+
+    sf.start_async_writes(256 * 1024);
+    for(int i = 100; i < 150; ++i)
+        write(i);
+    sf.stop_async_writes();
+
+    RTF_ASSERT(_stored_indexes("ts_test.nts", R_STORAGE_MEDIA_TYPE_VIDEO, base - 1, base + 150 * 33) == _zero_to(150));
+}
+
 #if 0
 
 static int _random()
