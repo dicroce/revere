@@ -174,6 +174,7 @@ private:
     r_http::r_server_response _get_webp(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _get_key_frame(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _get_recap(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _get_contents(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
