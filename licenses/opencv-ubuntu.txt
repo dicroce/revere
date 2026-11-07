@@ -1,0 +1,350 @@
+OpenCV as packaged by Ubuntu (third-party code inside)
+======================================================
+
+Licence:   Apache-2.0 AND others (see file)
+Version:   4.6.0
+Shipped in: Linux AppImage
+Used for:  Motion detection
+Source:    https://github.com/opencv/opencv
+
+------------------------------------------------------------------------------
+From Debian source package opencv: https://sources.debian.org/data/main/o/opencv/4.10.0%2Bdfsg-5/debian/copyright
+------------------------------------------------------------------------------
+
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: OpenCV
+Source: https://opencv.org
+Files-Excluded:
+ 3rdparty
+ doc/js_tutorials/js_assets/lena.jpg
+ doc/js_tutorials/js_assets/lenaFace.png
+ doc/tutorials/dnn/images/lena_hed.jpg
+ modules/core/misc/objc/test/resources/lena.png
+ modules/highgui/src/files_Qt/Milky
+ modules/java/test/common_test/res/drawable/lena.png
+ modules/objdetect/doc/pics/lena-face-detection.jpg
+ samples/data/lena.jpg
+ samples/data/lena_tmpl.jpg
+ samples/java/clojure/simple-sample/resources
+ samples/java/clojure/simple-sample/resources/images
+ samples/java/clojure/simple-sample/resources/images/lena.png
+ samples/winrt/OcvImageProcessing/OcvImageProcessing/Assets/Lena.png
+ samples/winrt_universal/PhoneTutorial/Lena.png
+ samples/wp8/OcvRotatingCube/PhoneXamlDirect3DApp1/PhoneXamlDirect3DApp1/Assets/Lena.png
+ samples/wp8/OpenCVXaml/OpenCVXaml/Assets/Lena.png
+Files-Excluded-contrib:
+ modules/xfeatures2d
+
+Files: *
+Copyright: 2000-2022, Intel Corporation, all rights reserved.
+           2009-2011, Willow Garage Inc., all rights reserved.
+           2009-2016, NVIDIA Corporation, all rights reserved.
+           2010-2013, Advanced Micro Devices, Inc., all rights reserved.
+           2015-2022, OpenCV Foundation, all rights reserved.
+           2008-2016, Itseez Inc., all rights reserved.
+           2019-2022, Xperience AI, all rights reserved.
+           2019-2022, Shenzhen Institute of Artificial Intelligence and Robotics for Society, all rights reserved.
+           Respective opencv contributors.
+License: Apache-2.0 AND BSD-3-Clause
+Comment: upstream relicensed the whole project to Apache-2.0, but a large
+ portion of the source tree remains to be licensed under BSD-3-Clause.
+
+# /* apps */
+
+Files: apps/annotation/opencv_annotation.cpp
+       apps/createsamples/*.cpp
+       apps/createsamples/*.hpp
+       apps/traincascade/old_ml*.cpp
+       apps/traincascade/old_ml*.hpp
+       apps/visualisation/opencv_visualisation.cpp
+Copyright: 2000-2008, Intel Corporation
+           2009, Willow Garage Inc.
+           2013, OpenCV Foundation
+License: BSD-3-Clause
+
+# /* cmake */
+
+Files: cmake/FindCUDA/*
+Copyright: 2008 - 2009 NVIDIA Corporation.
+           2007-2009 Scientific Computing and Imaging Institute, University of Utah
+License: Expat
+
+Files: cmake/OpenCVFindAtlas.cmake
+       cmake/OpenCVFindOpenBLAS.cmake
+Copyright: 2014, 2015, The Regents of the University of California
+           2014, 2015, the respective contributors
+License: BSD-2-Clause
+Comment: upstream copied these files from src:caffe
+
+# /* contrib */
+
+Files: contrib/modules/ximgproc/src/scansegment.cpp
+Copyright: 2021, Dr Seng Cheong Loke (lokesengcheong@gmail.com)
+License: Apache-2.0
+
+# /* data */
+
+Files: data/*
+Copyright: 2000, Intel Corporation, all rights reserved.
+           2014-2016, Joseph Howse (Nummist Media Corporation Limited)
+           2004, Hannes Kruppa and Bernt Schiele (ETH Zurich)
+           2011, Modesto Castrillon-Santana (IUSIANI, Universidad de Las Palmas de Gran Canaria, Spain)
+           2017, Puttemans Steven, Can Ergun and Toon Goedeme
+License: BSD-3-Clause
+
+# /* doc */
+
+Files: doc/pattern_tools/svgfig.py
+Copyright: 2008 Jim Pivarski <jpivarski@gmail.com>
+License: GPL-2.0+
+
+# /* include */
+
+Files: include/opencv2/opencv.hpp
+Copyright: 2000-2008, Intel Corporation, all rights reserved.
+           2009-2010, Willow Garage Inc., all rights reserved.
+License: BSD-3-Clause
+
+# /* platforms */ 
+
+Files: platforms/winrt/*
+Copyright: Microsoft Open Technologies, Inc.
+License: BSD-3-Clause
+
+# /* samples */
+
+Files: samples/cpp/stereo_calib.cpp
+Copyright: Gary Bradski and Adrian Kaehler
+License: STEREO_CALIB_PERMISSIVE
+ Right to use this code in any way you want without warranty, support or
+ any guarantee of it working.
+
+Files: samples/cpp/logistic_regression.cpp
+       samples/cpp/tutorial_code/gapi/face_beautification/face_beautification.cpp
+       samples/winrt/FaceDetection/FaceDetection/Assets/haarcascade_frontalface_alt.xml
+Copyright: Copyright (C) 2000-2008, Intel Corporation, all rights reserved.
+ Copyright (C) 2008-2011, Willow Garage Inc., all rights reserved.
+License: BSD-3-Clause
+
+Files: samples/cpp/stereo_match.cpp
+Copyright: 2010 Argus Corp
+License: Apache-2.0
+
+Files: samples/cpp/videocapture_gphoto2_autofocus.cpp
+Copyright: 2015, Piotr Dobrowolski dobrypd[at]gmail[dot]com
+License: BSD-2-Clause
+
+Files: samples/va_intel/va_intel_interop.cpp
+Copyright: 2007-2008 Intel Corporation
+License: Expat
+
+Files: samples/winrt/JavaScript/*
+       samples/winrt/ImageManipulations/*
+       samples/winrt_universal/VideoCaptureXAML/*
+Copyright: Microsoft Corporation.
+           Microsoft Open Technologies, Inc.
+License: Apache-2.0
+
+# /* modules */
+
+Files: modules/calib3d/misc/objc/test/Calib3dTest.swift
+Copyright: Giles Payne
+License: Apache-2.0
+
+Files: modules/core/3rdparty/SoftFloat/*
+Copyright: 2017 John R. Hauser
+License: BSD-3-Clause
+
+Files: modules/dnn/src/onnx/opencv-onnx.proto
+Copyright: 2018 Facebook Inc. and Microsoft Corporation
+License: Expat
+
+Files: modules/dnn/src/caffe/opencv-caffe.proto
+Copyright: 2014, The Regents of the University of California
+           2014, Caffe Contributors
+License: BSD-2-Clause
+
+Files: modules/dnn/src/opencl/lrn.cl
+       modules/dnn/src/opencl/pooling.cl
+       modules/dnn/src/opencl/softmax.cl
+Copyright: 2015, Advanced Micro Devices, Inc.
+License: BSD-2-Clause
+
+Files: modules/dnn/src/torch/*
+Copyright:2011-2014 Idiap Research Institute (Ronan Collobert)
+          2012-2014 Deepmind Technologies (Koray Kavukcuoglu)
+          2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+          2011-2013 NYU (Clement Farabet)
+          2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+          2006      Idiap Research Institute (Samy Bengio)
+          2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+          2013,     OpenCV Foundation
+License: BSD-3-Clause
+
+Files: modules/features2d/src/*
+Copyright: 2006, 2008 Edward Rosten
+License: BSD-3-Clause
+
+Files: modules/features2d/doc/agast*
+       modules/features2d/src/agast*
+Copyright: 2010  Elmar Mair
+License: BSD-3-Clause
+
+Files: modules/features2d/src/sift.dispatch.cpp
+Copyright: 2006-2010, Rob Hess <hess@eecs.oregonstate.edu>
+		   2009, Willow Garage Inc., all rights reserved.
+		   2020, Intel Corporation, all rights reserved.
+License: BSD-3-Clause
+Comment: The related patent has expired.
+
+Files: modules/features2d/src/mser.cpp
+Copyright: 2009, Liu Liu All rights reserved.
+License: BSD-3-Clause
+
+Files: modules/flann/*
+Copyright: 2008-2009  Marius Muja (mariusm@cs.ubc.ca)
+           2008-2009  David G. Lowe (lowe@cs.ubc.ca)
+			Christopher Diggins 2005-2011
+			Pablo Aguilar 2005
+			Kevlin Henney 2001
+License: BSD-2-Clause
+
+Files: modules/ml/src/svm.cpp
+Copyright: 2000-2003 Chih-Chung Chang and Chih-Jen Lin
+License: BSD-3-Clause
+
+Files: modules/videoio/src/cap_gstreamer.cpp
+       modules/videoio/src/cap_images.cpp
+Copyright: 2008, 2011, Nils Hasler, all rights reserved.
+License: BSD-3-Clause
+
+# /* debian */
+
+Files: debian/*
+Copyright: 2004-2008 Sam Hocevar <sam@zoy.org>
+           2009-2017 Nobuhiro Iwamatsu <iwamatsu@debian.org>
+           2016-2017 Mattia Rizzolo <mattia@debian.org>
+           2018-2019 Mo Zhou <cdluminate@gmail.com>
+           2018-2020 Mo Zhou <lumin@debian.org>
+License: BSD-3-clause
+
+# /* embedded sources */
+Files: debian/3rdparty-4.10.0/quirc/*
+Copyright: 2010-2012, Daniel Beer <dlbeer@gmail.com>
+License: ISC
+Comment: We embed this code because it has been removed through Files-Excluded: 3rdparty.
+ We may include this part for the next upstream release.
+
+License: BSD-3-clause
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+ .
+   * Redistribution's [sic] of source code must retain the above copyright notice,
+     this list of conditions and the following disclaimer.
+ .
+   * Redistribution's [sic] in binary form must reproduce the above copyright notice,
+     this list of conditions and the following disclaimer in the documentation
+     and/or other materials provided with the distribution.
+ .
+   * The name of the copyright holders may not be used to endorse or promote products
+     derived from this software without specific prior written permission.
+ .
+ This software is provided by the copyright holders and contributors "as is" and
+ any express or implied warranties, including, but not limited to, the implied
+ warranties of merchantability and fitness for a particular purpose are disclaimed.
+ In no event shall the Intel Corporation or contributors be liable for any direct,
+ indirect, incidental, special, exemplary, or consequential damages
+ (including, but not limited to, procurement of substitute goods or services;
+ loss of use, data, or profits; or business interruption) however caused
+ and on any theory of liability, whether in contract, strict liability,
+ or tort (including negligence or otherwise) arising in any way out of
+ the use of this software, even if advised of the possibility of such damage.
+
+License: Expat
+ Permission is hereby granted, free of charge, to any person obtaining a
+ copy of this software and associated documentation files (the "Software"),
+ to deal in the Software without restriction, including without limitation
+ the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ and/or sell copies of the Software, and to permit persons to whom the
+ Software is furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included
+ in all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+ OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License: BSD-2-Clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE HOLDERS OR
+ CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License: Apache-2.0
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+ .
+ http://www.apache.org/licenses/LICENSE-2.0
+ .
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ .
+ On Debian systems, the complete text of the Apache version 2.0 license
+ can be found in "/usr/share/common-licenses/Apache-2.0".
+
+License: GPL-2.0+
+ This package is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; either version 2 of the License, or
+ (at your option) any later version.
+ .
+ This package is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program. If not, see <http://www.gnu.org/licenses/>
+ .
+ On Debian systems, the complete text of the GNU General
+ Public License version 2 can be found in "/usr/share/common-licenses/GPL-2".
+
+License: ISC
+ Permission to use, copy, modify, and/or distribute this software for
+ any purpose with or without fee is hereby granted, provided that the
+ above copyright notice and this permission notice appear in all
+ copies.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
+ WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
+ AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
+ DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR
+ PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+ PERFORMANCE OF THIS SOFTWARE.

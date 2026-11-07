@@ -1,0 +1,14 @@
+GLib (glib, gobject, gio, gmodule)
+==================================
+
+Licence:   LGPL-2.1-or-later
+Version:   2.86.3 (Windows), Homebrew's (macOS), 2.80.0 (AppImage)
+Shipped in: Windows, macOS, Linux AppImage
+Used for:  GStreamer's base library
+Source:    https://download.gnome.org/sources/glib/
+
+------------------------------------------------------------------------------
+From https://raw.githubusercontent.com/GNOME/glib/2.86.3/COPYING
+------------------------------------------------------------------------------
+
+LICENSES/LGPL-2.1-or-later.txt
