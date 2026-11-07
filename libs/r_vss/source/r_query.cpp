@@ -971,24 +971,66 @@ r_letterboxed_frame r_vss::query_get_letterboxed_key_frame(const std::string& to
 string r_vss::r_failure_reason(const string& what)
 {
     string reason = what.substr(0, what.find('\n'));
-    // "/path/to/file.cpp:1835: " and "C:\\path\\file.cpp:1835: ": the source position, which says nothing to a user.
-    static const regex source_position(R"((?:[A-Za-z]:)?[\\/](?:[^\s:\\/]+[\\/])*[^\s:\\/]+:\d+:?\s*)");
-    reason = regex_replace(reason, source_position, "");
-    // Any other path: its last part.
-    static const regex path(R"((?:[A-Za-z]:)?(?:[\\/][^\s:\\/]+){2,})");
-    string out;
-    auto begin = sregex_iterator(reason.begin(), reason.end(), path);
-    size_t at = 0;
-    for(auto it = begin; it != sregex_iterator(); ++it)
+
+    // A URL (a camera's rtsp://user:pass@host:554/path) is not a build path: set aside while paths are cut, and its
+    // credentials go before anything else. "user:pass@" can hold any character, so everything up to the last "@" of
+    // the URL is dropped, and a secret passed in the query (password=..., token=...) is hidden.
+    static const regex url(R"([A-Za-z][A-Za-z0-9+.\-]*://\S+)");
+    static const regex credentials(R"(^([A-Za-z][A-Za-z0-9+.\-]*://)\S*@)");
+    static const regex secret(R"(([?&;,\s]|^)(pass(?:word|wd)?|pwd|token|secret|key)=[^&\s]*)", regex::icase);
+    vector<string> urls;
     {
-        auto m = *it;
+        string without;
+        size_t at = 0;
+        for(auto it = sregex_iterator(reason.begin(), reason.end(), url); it != sregex_iterator(); ++it)
+        {
+            without.append(reason, at, it->position() - at);
+            string u = regex_replace(it->str(), credentials, "$1");
+            urls.push_back(regex_replace(u, secret, "$1$2=***"));
+            without += "\x01" + to_string(urls.size() - 1) + "\x02";
+            at = it->position() + it->length();
+        }
+        without.append(reason, at, string::npos);
+        reason = without;
+    }
+    // A bare "name=secret" outside a URL too.
+    reason = regex_replace(reason, secret, "$1$2=***");
+
+    // A path component may hold spaces ("Application Support", "Program Files") but neither starts nor ends with one
+    // (a trailing space is the sentence going on), and the last part, the file, holds none. A path begins the text or
+    // follows a space, quote, bracket or "=" (not "and/or").
+    const string comp = R"([^\s\\/:](?:[^\\/:\n]*[^\s\\/:])?)";
+    static const regex source_position(R"((^|[\s"'(=\[])(?:[A-Za-z]:)?(?:[\\/])" + comp + R"((?=[\\/]))*[\\/][^\s:\\/]+:\d+:?\s*)");
+    static const regex path(R"((^|[\s"'(=\[])((?:[A-Za-z]:)?(?:[\\/])" + comp + R"((?=[\\/]))+[\\/][^\s:\\/]+))");
+    // "/path/to/file.cpp:1835: ": the source position, which says nothing to a user.
+    reason = regex_replace(reason, source_position, "$1");
+    // Any other path: its last part.
+    string out;
+    size_t at = 0;
+    for(auto it = sregex_iterator(reason.begin(), reason.end(), path); it != sregex_iterator(); ++it)
+    {
+        auto& m = *it;
         out.append(reason, at, m.position() - at);
-        string full = m.str();
+        out += m[1].str();
+        string full = m[2].str();
         out += full.substr(full.find_last_of("\\/") + 1);
         at = m.position() + m.length();
     }
     out.append(reason, at, string::npos);
-    while(!out.empty() && out.back() == ' ')
-        out.pop_back();
-    return out;
+
+    // The URLs back.
+    string result;
+    for(size_t i = 0; i < out.size(); ++i)
+    {
+        if(out[i] == '\x01')
+        {
+            size_t end = out.find('\x02', i);
+            result += urls[stoul(out.substr(i + 1, end - i - 1))];
+            i = end;
+        }
+        else result += out[i];
+    }
+    while(!result.empty() && result.back() == ' ')
+        result.pop_back();
+    return result;
 }
