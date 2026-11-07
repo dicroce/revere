@@ -52,6 +52,19 @@ R_API std::vector<uint8_t> query_get_webp(const std::string& top_dir, r_disco::r
 
 R_API std::chrono::hours query_get_retention_hours(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id);
 
+struct recap_result
+{
+    std::vector<uint8_t> mp4;
+    size_t frames {0};
+    int fps {0};
+    bool decode_all {false};
+};
+
+// A short, sped-up MP4 of camera_id's recording from start to end (at most an hour): a
+// faststart H.264 file, RECAP_WIDTH x RECAP_HEIGHT, its frames picked by plan_recap (r_recap.h).
+// Throws r_not_found_exception when there's no recording to make it from.
+R_API recap_result query_get_recap(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
+
 R_API std::vector<uint8_t> query_get_key_frame(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts);
 
 // A key frame decoded the way YOLO takes it: RGB24, scaled to fit size x size
