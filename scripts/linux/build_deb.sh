@@ -74,6 +74,23 @@ if [ ! -f "$PKG_DIR/opt/revere/motion_plugins/yolov8_motion_plugin.so" ]; then
     echo "         Configure with NCNN_TOP_DIR set (see docs/BUILDING.md) to build it."
 fi
 
+# Debian policy wants /usr/share/doc/<package>/copyright. The full set of
+# third-party licences is installed with the app (licenses/ in the repo).
+if [ ! -f "$PKG_DIR/opt/revere/licenses/README.md" ]; then
+    echo "Error: no licenses/ in the install; the build tree predates it. Re-run cmake."
+    exit 1
+fi
+mkdir -p "$PKG_DIR/usr/share/doc/revere"
+{
+    echo "Revere is licensed under the BSD 3-Clause License, below."
+    echo
+    echo "The package also contains third-party software under its own licences."
+    echo "They are listed in /opt/revere/licenses/README.md, with each full licence"
+    echo "text in /opt/revere/licenses/."
+    echo
+    cat "$PROJECT_DIR/LICENSE"
+} > "$PKG_DIR/usr/share/doc/revere/copyright"
+
 mkdir -p "$PKG_DIR/usr/share/applications" "$PKG_DIR/usr/share/icons/hicolor/256x256/apps"
 cp "$PROJECT_DIR/apps/revere/R.png" "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/revere.png"
 cp "$PROJECT_DIR/apps/vision/V.png" "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/vision.png"

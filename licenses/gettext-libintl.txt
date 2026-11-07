@@ -1,0 +1,117 @@
+GNU gettext runtime (libintl)
+=============================
+
+Licence:   LGPL-2.1-or-later
+Shipped in: Windows, macOS
+Used for:  GLib dependency
+Source:    https://www.gnu.org/software/gettext/
+
+------------------------------------------------------------------------------
+From Debian source package gettext: https://sources.debian.org/data/main/g/gettext/0.23.1-2/debian/copyright
+------------------------------------------------------------------------------
+
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: GNU gettext
+Upstream-Contact: bug-gettext@gnu.org
+Source: https://ftp.gnu.org/pub/gnu/gettext/
+
+Files: *
+Copyright: 1995-2024 Free Software Foundation, Inc.
+License: GPL-3+
+
+Files: gettext-runtime/intl/*
+Comment: libintl library
+Copyright: 1984-2024 Free Software Foundation, Inc.
+License: LGPL-2.1+
+
+Files: gettext-runtime/libasprintf/*
+Comment: libasprintf library
+Copyright: 1991-2024 Free Software Foundation, Inc.
+License: LGPL-2.1+
+
+Files: gettext-runtime/intl-java/*
+Comment: libintl.jar Java library
+Copyright: 1994-2013 Free Software Foundation, Inc.
+License: LGPL-2.1+
+
+Files: gettext-runtime/intl-csharp/*
+Comment: GNU.Gettext.dll C# library
+Copyright: 1994-2021 Free Software Foundation, Inc.
+License: LGPL-2.1+
+
+Files: gettext-runtime/src/gettext.sh.in
+Comment: gettext.sh shells script function library
+Copyright: 2003-2023 Free Software Foundation, Inc.
+License: LGPL-2.1+
+
+Files: gettext-tools/*
+Comment: gettext tools
+Copyright: 1983-2024 Free Software Foundation, Inc.
+License: GPL-3+
+
+Files: gettext-tools/libgettextpo/*
+Comment: libgettextpo library
+Copyright: 1988-2024 Free Software Foundation, Inc.
+License: GPL-3+
+
+Files: gettext-tools/doc/*
+Comment: gettext documentation
+Copyright: 1994-2023 Free Software Foundation, Inc.
+License: FDL-1.2+ or GPL-2+
+
+Files: libtextstyle/*
+Comment: libtextstyle library
+Copyright: 1985-2024 Free Software Foundation, Inc.
+License: GPL-3+
+
+Files: libtextstyle/doc/*
+Comment: libtextstyle library documentation
+Copyright: 1994-2021 Free Software Foundation, Inc.
+License: FDL-1.2+ or GPL-2+
+
+License: GPL-2+
+ This program is free software: You can redistribute it and/or
+ modify it under the terms of the GNU General Public License (GPL),
+ either version 2 of the License, or (at your option) any later
+ version published by the Free Software Foundation (FSF).
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 2 can be found in `/usr/share/common-licenses/GPL-2'.
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 3 can be found in `/usr/share/common-licenses/GPL-3'.
+
+License: LGPL-2.1+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU Lesser General Public License as published
+ by the Free Software Foundation; either version 2.1 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU Lesser General Public License for more details.
+ .
+ On Debian systems, the complete text of the GNU Lesser General Public License
+ version 2.1 can be found in `/usr/share/common-licenses/LGPL-2.1'.
+
+License: FDL-1.2+
+ Permission is granted to copy, distribute and/or modify this document
+ under the terms of the GNU Free Documentation License (FDL), either
+ version 1.2 of the License, or (at your option) any later version
+ published by the Free Software Foundation (FSF); with no Invariant
+ Sections, with no Front-Cover Texts, and with no Back-Cover Texts.
+ .
+ On Debian systems, the complete text of the GNU Free Documentation License
+ version 1.2 can be found in `/usr/share/common-licenses/GFDL-1.2'.
