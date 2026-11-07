@@ -170,6 +170,12 @@ jobs:
           rm -rf AppDir/usr/revere/system_plugins
           rm -rf AppDir/usr/revere/gstreamer_plugins
           rm -f AppDir/usr/share/applications/vision.desktop
+          # The install also lays down dependencies' headers, CMake packages and
+          # static libraries (mbedtls, traypp, imgui, and the cloud plugin's
+          # libdatachannel stack); none of it is used at runtime.
+          rm -rf AppDir/usr/include AppDir/usr/lib/cmake
+          find AppDir/usr -name '*.a' -delete
+          [ -f AppDir/usr/revere/licenses/README.md ] || { echo "::error::licenses/ missing from the install"; exit 1; }
           mv AppDir/usr/revere AppDir/usr/bin
           echo "AppDir/usr/bin contents:"; ls -la AppDir/usr/bin
 

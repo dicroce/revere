@@ -135,7 +135,8 @@ def _write_index(manifest):
     md = [
         "# Third-party licences",
         "",
-        "Revere is BSD-3-Clause licensed (see [../LICENSE](../LICENSE)). Its packages also contain the",
+        "Revere itself is BSD-3-Clause licensed (see [revere.txt](revere.txt), a copy of the repository's",
+        "LICENSE). Its packages also contain the",
         "third-party software below, each under its own licence. Every component's full licence text is in",
         "the file linked from its name.",
         "",
@@ -182,6 +183,8 @@ def main():
             except Exception as e:
                 print(f"    FAILED: {e}")
                 failed.append(c["id"])
+    # Revere's own licence, so the directory stands alone once installed.
+    (OUT / "revere.txt").write_text((ROOT / "LICENSE").read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
     _write_index(manifest)
     if failed:
         print("\nFailed: " + ", ".join(failed))

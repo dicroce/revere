@@ -1,6 +1,7 @@
 # Third-party licences
 
-Revere is BSD-3-Clause licensed (see [../LICENSE](../LICENSE)). Its packages also contain the
+Revere itself is BSD-3-Clause licensed (see [revere.txt](revere.txt), a copy of the repository's
+LICENSE). Its packages also contain the
 third-party software below, each under its own licence. Every component's full licence text is in
 the file linked from its name.
 
