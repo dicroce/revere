@@ -2011,10 +2011,14 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
-        // Say why: the caller used to learn only that it failed, and reported "no video".
-        // what() is the message, then the stack: send the message.
-        string msg = ex.what();
-        R_STHROW(r_http_500_exception, ("Failed to transcode video: %s", msg.substr(0, msg.find('\n')).c_str()));
+        // Say why: the caller used to learn only that it failed, and reported "no video". Returned, not thrown: the
+        // web server's 500 has no body.
+        r_server_response response;
+        response.set_status_code(response_internal_server_error);
+        response.set_content_type("text/plain");
+        auto text = r_string_utils::format("Failed to transcode video: %s", r_failure_reason(ex.what()).c_str());
+        response.set_body(text.size(), text.data());
+        return response;
     }
     R_STHROW(r_http_500_exception, ("Failed to transcode video."));
 }

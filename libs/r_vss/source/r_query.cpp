@@ -16,6 +16,7 @@
 #include "r_av/r_video_encoder.h"
 #include "r_av/r_muxer.h"
 #include <functional>
+#include <regex>
 #include <array>
 #include <thread>
 #include <tuple>
@@ -963,5 +964,31 @@ r_letterboxed_frame r_vss::query_get_letterboxed_key_frame(const std::string& to
     auto kf = _find_key_frame(top_dir, devices, camera_id, ts);
     auto out = decode_letterboxed_key_frame(kf.codec_name, kf.codec_parameters, kf.data, size);
     out.ts = kf.ts;
+    return out;
+}
+
+
+string r_vss::r_failure_reason(const string& what)
+{
+    string reason = what.substr(0, what.find('\n'));
+    // "/path/to/file.cpp:1835: " and "C:\\path\\file.cpp:1835: ": the source position, which says nothing to a user.
+    static const regex source_position(R"((?:[A-Za-z]:)?[\\/](?:[^\s:\\/]+[\\/])*[^\s:\\/]+:\d+:?\s*)");
+    reason = regex_replace(reason, source_position, "");
+    // Any other path: its last part.
+    static const regex path(R"((?:[A-Za-z]:)?(?:[\\/][^\s:\\/]+){2,})");
+    string out;
+    auto begin = sregex_iterator(reason.begin(), reason.end(), path);
+    size_t at = 0;
+    for(auto it = begin; it != sregex_iterator(); ++it)
+    {
+        auto m = *it;
+        out.append(reason, at, m.position() - at);
+        string full = m.str();
+        out += full.substr(full.find_last_of("\\/") + 1);
+        at = m.position() + m.length();
+    }
+    out.append(reason, at, string::npos);
+    while(!out.empty() && out.back() == ' ')
+        out.pop_back();
     return out;
 }
