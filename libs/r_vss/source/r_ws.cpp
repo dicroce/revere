@@ -1675,6 +1675,7 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
                 "",
                 r_find_best_hw_accel_encoder(out_codec_id)
             );
+            R_LOG_INFO("[TRANSCODE] Encoding with %s", session.encoder->name());
 
             float fr = (float)session.framerate_num / (float)session.framerate_den;
             try
@@ -2010,6 +2011,10 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+        // Say why: the caller used to learn only that it failed, and reported "no video".
+        // what() is the message, then the stack: send the message.
+        string msg = ex.what();
+        R_STHROW(r_http_500_exception, ("Failed to transcode video: %s", msg.substr(0, msg.find('\n')).c_str()));
     }
     R_STHROW(r_http_500_exception, ("Failed to transcode video."));
 }
@@ -2887,6 +2892,7 @@ void r_ws::_transcode_export(export_job& job)
                     "",
                     r_find_best_hw_accel_encoder(out_codec_id)
                 );
+                R_LOG_INFO("[EXPORT] Job %s: encoding with %s", job.id.c_str(), encoder->name());
 
                 // Use the encoder's own AVCC/HVCC extradata to configure the muxer.
                 // profile and level were already computed above and used to create the
