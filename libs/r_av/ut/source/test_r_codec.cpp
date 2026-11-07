@@ -5,6 +5,7 @@
 #include "r_av/r_video_encoder.h"
 #include "r_av/r_hw_accel.h"
 #include <algorithm>
+#include <cstring>
 #include <vector>
 #include "r_av/r_demuxer.h"
 #include "r_av/r_muxer.h"
@@ -551,4 +552,143 @@ void test_r_codec::test_hw_decode_failure_is_remembered()
 
     RTF_ASSERT(r_find_best_hw_accel(AV_CODEC_ID_VP9) == r_hw_accel::none);
     RTF_ASSERT(warnings.size() <= 1);
+}
+
+namespace
+{
+// An encoder that won't open when it is a hardware one, as h264_nvenc does with no session left: FFmpeg's own line,
+// then the generic code. Software encoders open as they do.
+bool is_hw_encoder(const AVCodec* codec)
+{
+    string n = codec->name;
+    for(auto suffix : {"_nvenc", "_qsv", "_vaapi", "_videotoolbox"})
+        if(n.size() > strlen(suffix) && n.compare(n.size() - strlen(suffix), string::npos, suffix) == 0)
+            return true;
+    return false;
+}
+
+int hw_encoder_without_a_session(AVCodecContext* context, const AVCodec* codec, AVDictionary** opts)
+{
+    if(!is_hw_encoder(codec))
+        return avcodec_open2(context, codec, opts);
+    av_log(nullptr, AV_LOG_ERROR, "OpenEncodeSessionEx failed: out of memory (10): (no details)\n");
+    return AVERROR_EXTERNAL;
+}
+
+int no_encoder_opens(AVCodecContext*, const AVCodec*, AVDictionary**)
+{
+    return AVERROR_EXTERNAL;
+}
+
+// Whether an encoder made with `accel` puts out a stream the decoder reads back as the grey picture.
+bool encodes_grey(r_video_encoder& enc)
+{
+    vector<uint8_t> picture(GREY_W * GREY_H * 3 / 2, 128);
+    vector<vector<uint8_t>> packets;
+    for(int i = 0; i < 10; ++i)
+    {
+        enc.attach_buffer(picture.data(), picture.size(), i);
+        while(enc.encode() == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto pi = enc.get();
+            packets.emplace_back(pi.data, pi.data + pi.size);
+        }
+    }
+    if(packets.empty())
+        return false;
+    r_video_decoder dec(AV_CODEC_ID_H264);
+    dec.set_extradata(enc.get_extradata());
+    for(auto& p : packets)
+    {
+        dec.attach_buffer(p.data(), p.size());
+        auto st = dec.decode();
+        if(st == R_CODEC_STATE_HAS_OUTPUT || st == R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+            return dec.get(AV_PIX_FMT_YUV420P, GREY_W, GREY_H, 1) != nullptr;
+    }
+    return false;
+}
+
+r_video_encoder make_encoder(r_hw_accel accel)
+{
+    return r_video_encoder(AV_CODEC_ID_H264, 500000, GREY_W, GREY_H, AVRational{15, 1}, AV_PIX_FMT_YUV420P, 0, 15,
+                           AV_PROFILE_H264_MAIN, 41, "veryfast", "zerolatency", accel);
+}
+}
+
+void test_r_codec::test_hw_encoder_open_failure_encodes_in_software()
+{
+    // The backend found for encoding refusing to open (no session left, a driver reset): the encoder encodes in
+    // software, with one warning saying why in FFmpeg's own words, instead of throwing and failing the export.
+    auto accel = r_find_best_hw_accel_encoder(AV_CODEC_ID_H264);
+    if(accel == r_hw_accel::none)
+        return;  // no hardware encoder on this machine to fail
+
+    vector<string> warnings;
+    r_logger::set_log_callback([&](r_logger::LOG_LEVEL, const string& message) {
+        if(message.find("encoding in software") != string::npos)
+            warnings.push_back(message);
+    });
+    r_hw_encoder_open_override(hw_encoder_without_a_session);
+    bool encoded = false, in_software = false;
+    try
+    {
+        auto enc = make_encoder(accel);
+        in_software = enc.hw_accel() == r_hw_accel::none && !is_hw_encoder(avcodec_find_encoder_by_name(enc.name()));
+        encoded = encodes_grey(enc);
+    }
+    catch(...) {}
+    r_hw_encoder_open_override(nullptr);
+    r_logger::clear_log_callback();
+
+    RTF_ASSERT(encoded);
+    RTF_ASSERT(in_software);
+    RTF_ASSERT(warnings.size() == 1);
+    RTF_ASSERT(warnings[0].find("Generic error in an external library") != string::npos);
+    RTF_ASSERT(warnings[0].find("OpenEncodeSessionEx failed: out of memory (10): (no details)") != string::npos);
+
+    // The hardware again, as before.
+    auto hw = make_encoder(accel);
+    RTF_ASSERT(hw.hw_accel() == accel);
+    RTF_ASSERT(is_hw_encoder(avcodec_find_encoder_by_name(hw.name())));
+}
+
+void test_r_codec::test_hw_encoder_missing_encodes_in_software()
+{
+    // Asked for a backend whose H.264 encoder this build doesn't have: software too, where it used to throw.
+    r_hw_accel missing = r_hw_accel::none;
+    for(auto accel : {r_hw_accel::cuda, r_hw_accel::qsv, r_hw_accel::vaapi, r_hw_accel::videotoolbox})
+        if(!avcodec_find_encoder_by_name(r_hw_accel_encoder_name(accel, AV_CODEC_ID_H264)))
+        {
+            missing = accel;
+            break;
+        }
+    if(missing == r_hw_accel::none)
+        return;  // a build with every backend
+
+    bool encoded = false;
+    try
+    {
+        auto enc = make_encoder(missing);
+        encoded = enc.hw_accel() == r_hw_accel::none && encodes_grey(enc);
+    }
+    catch(...) {}
+    RTF_ASSERT(encoded);
+}
+
+void test_r_codec::test_software_encoder_failure_still_throws()
+{
+    // Nothing to fall back to: the error is the caller's, saying which encoder, rather than a retry that loops.
+    r_hw_encoder_open_override(no_encoder_opens);
+    string what;
+    try
+    {
+        auto enc = make_encoder(r_hw_accel::none);
+    }
+    catch(const std::exception& ex)
+    {
+        what = ex.what();
+    }
+    r_hw_encoder_open_override(nullptr);
+    RTF_ASSERT(what.find("Failed to open codec") != string::npos);
+    RTF_ASSERT(what.find("Generic error in an external library") != string::npos);
 }

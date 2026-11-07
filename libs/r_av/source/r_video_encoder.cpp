@@ -70,6 +70,51 @@ r_video_encoder::r_video_encoder(
     _buffer(),
     _pkt()
 {
+    // A hardware encoder can fail to open on a machine whose backend was found:
+    // no session left (consumer NVIDIA GPUs allow a few at a time, and an export
+    // opens one per window while the recorder and a live stream hold others), a
+    // driver reset, no GPU in this session. Encode in software then, with one
+    // warning saying why, rather than fail the caller's export or stream.
+    if(_hw_accel != r_hw_accel::none)
+    {
+        string why;
+        try
+        {
+            _open(bit_rate, w, h, framerate, max_b_frames, gop_size, profile, level, preset, tune, why);
+            return;
+        }
+        catch(const std::exception& ex)
+        {
+            // what() is the message, then the stack: keep the message.
+            string msg = ex.what();
+            msg = msg.substr(0, msg.find('\n'));
+            why = msg + (why.empty() ? string() : ": " + why);
+        }
+        const char* hw_name = _codec ? _codec->name : r_hw_accel_encoder_name(_hw_accel, _codec_id);
+        R_LOG_WARNING("r_video_encoder: %s unavailable, encoding in software: %s", hw_name ? hw_name : "hardware encoder", why.c_str());
+        _clear();
+        _hw_accel = r_hw_accel::none;
+    }
+
+    string why;
+    _open(bit_rate, w, h, framerate, max_b_frames, gop_size, profile, level, preset, tune, why);
+}
+
+void r_video_encoder::_open(
+    uint32_t bit_rate,
+    uint16_t w,
+    uint16_t h,
+    AVRational framerate,
+    uint8_t max_b_frames,
+    uint16_t gop_size,
+    int profile,
+    int level,
+    const std::string& preset,
+    const std::string& tune,
+    std::string& why
+)
+{
+    AVPixelFormat pix_fmt = _input_pix_fmt;
     if(_hw_accel != r_hw_accel::none)
     {
         const char* enc_name = r_hw_accel_encoder_name(_hw_accel, _codec_id);
@@ -151,11 +196,11 @@ r_video_encoder::r_video_encoder(
         av_dict_set(&opts, "rc_mode", "VBR", 0);
     }
 
-    auto ret = avcodec_open2(_context, _codec, &opts);
+    auto ret = r_hw_encoder_open(_context, _codec, &opts, why);
     av_dict_free(&opts);
 
     if(ret < 0)
-        R_THROW(("Failed to open codec: %s", _ff_rc_to_msg(ret).c_str()));
+        R_THROW(("Failed to open codec %s: %s", _codec->name, _ff_rc_to_msg(ret).c_str()));
 
     // set up pixel format conversion if the hw encoder needs a different format
     if(_hw_accel != r_hw_accel::none && enc_pix_fmt != _input_pix_fmt)
@@ -387,6 +432,16 @@ vector<uint8_t> r_video_encoder::get_extradata() const
     ed.resize(_context->extradata_size);
     memcpy(ed.data(), _context->extradata, _context->extradata_size);
     return ed;
+}
+
+const char* r_video_encoder::name() const
+{
+    return _codec ? _codec->name : "none";
+}
+
+r_hw_accel r_video_encoder::hw_accel() const
+{
+    return _hw_accel;
 }
 
 void r_video_encoder::_clear()

@@ -41,6 +41,7 @@ namespace
     thread_local std::string* t_device_log = nullptr;
     std::once_flag g_log_callback_once;
     int (*g_device_create)(AVBufferRef**, AVHWDeviceType) = nullptr;
+    int (*g_encoder_open)(AVCodecContext*, const AVCodec*, AVDictionary**) = nullptr;
 
     void _log_callback(void* avcl, int level, const char* fmt, va_list vl)
     {
@@ -84,28 +85,52 @@ AVHWDeviceType r_av::r_hw_accel_to_device_type(r_hw_accel accel)
     }
 }
 
+namespace
+{
+    // Runs `call` with this thread's FFmpeg error and warning lines kept in `why`, as one line.
+    template<typename F>
+    int _with_logged_why(std::string& why, F call)
+    {
+        std::call_once(g_log_callback_once, [] { av_log_set_callback(_log_callback); });
+        std::string logged;
+        t_device_log = &logged;
+        int ret = call();
+        t_device_log = nullptr;
+        // One line: FFmpeg's pieces end in newlines.
+        why.clear();
+        for(char c : logged)
+        {
+            if(c == '\n' || c == '\r')
+            {
+                if(!why.empty() && why.back() != ' ')
+                    why += ' ';
+            }
+            else why += c;
+        }
+        while(!why.empty() && why.back() == ' ')
+            why.pop_back();
+        return ret;
+    }
+}
+
 int r_av::r_hw_device_create(AVBufferRef** device_ctx, AVHWDeviceType device_type, std::string& why)
 {
-    std::call_once(g_log_callback_once, [] { av_log_set_callback(_log_callback); });
-    std::string logged;
-    t_device_log = &logged;
-    int ret = g_device_create ? g_device_create(device_ctx, device_type)
-                              : av_hwdevice_ctx_create(device_ctx, device_type, nullptr, nullptr, 0);
-    t_device_log = nullptr;
-    // One line: FFmpeg's pieces end in newlines.
-    why.clear();
-    for(char c : logged)
-    {
-        if(c == '\n' || c == '\r')
-        {
-            if(!why.empty() && why.back() != ' ')
-                why += ' ';
-        }
-        else why += c;
-    }
-    while(!why.empty() && why.back() == ' ')
-        why.pop_back();
-    return ret;
+    return _with_logged_why(why, [&] {
+        return g_device_create ? g_device_create(device_ctx, device_type)
+                               : av_hwdevice_ctx_create(device_ctx, device_type, nullptr, nullptr, 0);
+    });
+}
+
+int r_av::r_hw_encoder_open(AVCodecContext* context, const AVCodec* codec, AVDictionary** opts, std::string& why)
+{
+    return _with_logged_why(why, [&] {
+        return g_encoder_open ? g_encoder_open(context, codec, opts) : avcodec_open2(context, codec, opts);
+    });
+}
+
+void r_av::r_hw_encoder_open_override(int (*open)(AVCodecContext*, const AVCodec*, AVDictionary**))
+{
+    g_encoder_open = open;
 }
 
 void r_av::r_hw_device_create_override(int (*create)(AVBufferRef**, AVHWDeviceType))

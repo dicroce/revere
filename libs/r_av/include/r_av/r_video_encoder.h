@@ -74,8 +74,16 @@ public:
 
     R_API std::vector<uint8_t> get_extradata() const;
 
+    // The FFmpeg encoder in use ("h264_nvenc", "libx264", ...). A hardware accel asked for
+    // that couldn't be used is encoding in software, and this says so.
+    R_API const char* name() const;
+    R_API r_hw_accel hw_accel() const;
+
 private:
     void _clear();
+    void _open(uint32_t bit_rate, uint16_t w, uint16_t h, AVRational framerate, uint8_t max_b_frames,
+               uint16_t gop_size, int profile, int level, const std::string& preset, const std::string& tune,
+               std::string& why);
 
     AVCodecID _codec_id;
     r_hw_accel _hw_accel;

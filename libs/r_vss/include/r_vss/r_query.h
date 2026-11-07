@@ -115,6 +115,12 @@ R_API void query_remove_camera(const std::string& top_dir, r_disco::r_devices& d
 // motion_tier: "auto", "1", "2" or "3" (see r_tier_controller); null leaves it as it is.
 R_API void query_update_camera_properties(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours, const r_utils::r_nullable<std::string>& motion_tier = r_utils::r_nullable<std::string>());
 
+// The reason in an exception's what(), for text that leaves the recorder (an HTTP error body, which a clip's
+// error then shows the user): its first line (the rest is the stack) without the build paths in it. A nanots
+// exception begins "/Users/<name>/.../nanots.cpp:1835: <message>": the "file:line:" is dropped; any other path
+// is cut to its last part.
+R_API std::string r_failure_reason(const std::string& what);
+
 }
 
 #endif
