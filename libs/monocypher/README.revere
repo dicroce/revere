@@ -1,0 +1,30 @@
+Monocypher (vendored)
+=====================
+
+Upstream:  https://github.com/LoupVaillant/Monocypher
+Version:   4.0.2 (tag 4.0.2, commit 0d85f98c9d9b0227e42cf795cb527dff372b40a4;
+           GitHub tag tarball, sha256 bc1ca30b1b2654e4e7daf2492c0d204200e55137f23fda6b7142fd7d523bd6b4)
+License:   BSD-2-Clause or CC0-1.0, at our choice (see LICENSE)
+
+Used by r_crypto for Ed25519 (RFC 8032) signatures, which mbedtls doesn't have.
+
+What was taken
+--------------
+src/monocypher.c and .h, and the optional src/optional/monocypher-ed25519.c
+and .h, unchanged. Left out: tests, docs, the makefile and the other
+optional files.
+
+Only the crypto_ed25519_* functions are Ed25519. Monocypher's default
+crypto_eddsa_* functions use BLAKE2b instead of SHA-512 and aren't
+compatible with Ed25519 (its manual says so). r_crypto doesn't use them.
+
+Local changes
+-------------
+- include/ and source/: the four files are split between them; the
+  include lines are untouched, so both headers sit in include/.
+- CMakeLists.txt: ours (upstream uses a makefile).
+
+Upgrading
+---------
+Download the new tag's tarball, copy over the same four files, and diff.
+Run r_crypto_ut: its RFC 8032 and Wycheproof vectors must all pass.
