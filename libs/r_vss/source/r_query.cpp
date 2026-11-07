@@ -1038,15 +1038,32 @@ recap_result r_vss::query_get_recap(const string& top_dir, r_devices& devices, c
         {
             auto codec_name = bt["video_codec_name"].get_string();
             auto codec_params = bt["video_codec_parameters"].get_string();
-            r_video_decoder decoder(r_av::encoding_to_av_codec_id(codec_name), r_av::r_hw_accel::none, true);
+            // Each stored frame is one whole access unit, so no parser: with one, a frame comes out only when
+            // the next goes in, a frame behind, and the last never does.
+            r_video_decoder decoder(r_av::encoding_to_av_codec_id(codec_name), r_av::r_hw_accel::none, false);
             // Each frame out as it's decoded, so it's kept against its own time.
             decoder.set_low_latency();
             bool extradata_checked = false;
             size_t next = 0;
+            // A decoded frame, at the time of the stored frame that made it: kept if it reaches the next planned time.
+            auto consider = [&](int64_t ts) {
+                if(next >= plan.times.size() || ts < plan.times[next])
+                    return;
+                uint16_t w = RECAP_WIDTH, h = RECAP_HEIGHT;
+                _fit_inside(decoder.input_width(), decoder.input_height(), w, h);
+                auto decoded = decoder.get(AV_PIX_FMT_YUV420P, w, h, 1);
+                if(decoded)
+                    add_picture(decoded->data(), w, h);
+                while(next < plan.times.size() && plan.times[next] <= ts)
+                    ++next;
+            };
+            const auto has_output = [](r_codec_state ds) { return ds == R_CODEC_STATE_HAS_OUTPUT || ds == R_CODEC_STATE_AGAIN_HAS_OUTPUT; };
+            int64_t last_ts = 0;
             for(size_t fi = 0; fi < n && next < plan.times.size(); ++fi)
             {
                 auto data = bt["frames"][fi]["data"].get_blob();
                 auto ts = r_string_utils::s_to_int64(bt["frames"][fi]["ts"].get_string());
+                last_ts = ts;
                 if(!extradata_checked)
                 {
                     if(!_has_inline_sps(data))
@@ -1054,17 +1071,21 @@ recap_result r_vss::query_get_recap(const string& top_dir, r_devices& devices, c
                     extradata_checked = true;
                 }
                 decoder.attach_buffer(data.data(), data.size());
-                auto ds = decoder.decode();
-                if(ds != R_CODEC_STATE_HAS_OUTPUT && ds != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
-                    continue;
-                if(ts < plan.times[next])
-                    continue;
-                uint16_t w = RECAP_WIDTH, h = RECAP_HEIGHT;
-                _fit_inside(decoder.input_width(), decoder.input_height(), w, h);
-                auto decoded = decoder.get(AV_PIX_FMT_YUV420P, w, h, 1);
-                add_picture(decoded->data(), w, h);
-                while(next < plan.times.size() && plan.times[next] <= ts)
-                    ++next;
+                for(int calls = 0; calls < RECAP_DECODE_CALLS; ++calls)
+                {
+                    auto ds = decoder.decode();
+                    if(!has_output(ds))
+                        break;
+                    consider(ts);
+                }
+            }
+            // What the decoder still holds, at the last frame's time.
+            for(int calls = 0; calls < RECAP_DECODE_CALLS && next < plan.times.size(); ++calls)
+            {
+                auto ds = decoder.flush();
+                if(!has_output(ds))
+                    break;
+                consider(last_ts);
             }
         }
     }

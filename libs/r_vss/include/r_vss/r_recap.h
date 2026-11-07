@@ -25,6 +25,8 @@ constexpr int64_t RECAP_DECODE_ALL_MAX_MS = 60000;
 // The longest span a recap covers.
 constexpr int64_t RECAP_MAX_SPAN_MS = 60 * 60 * 1000;
 constexpr uint32_t RECAP_BITRATE = 600000;
+// The most decode() calls for one stored frame, draining what it gives.
+constexpr int RECAP_DECODE_CALLS = 8;
 
 struct recap_plan
 {

@@ -10,6 +10,8 @@ public:
       TEST(test_r_recap::test_recap_from_key_frames);
       TEST(test_r_recap::test_recap_decoding_every_frame);
       TEST(test_r_recap::test_recap_across_a_gap);
+      TEST(test_r_recap::test_frames_decoded_show_their_times);
+      TEST(test_r_recap::test_key_frames_show_their_times);
       TEST(test_r_recap::test_no_recording);
     RTF_FIXTURE_END();
 
@@ -24,5 +26,7 @@ public:
     void test_recap_from_key_frames();
     void test_recap_decoding_every_frame();
     void test_recap_across_a_gap();
+    void test_frames_decoded_show_their_times();
+    void test_key_frames_show_their_times();
     void test_no_recording();
 };

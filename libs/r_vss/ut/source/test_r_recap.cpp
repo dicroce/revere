@@ -4,6 +4,9 @@
 #include "r_disco/r_devices.h"
 #include "r_storage/r_storage_file.h"
 #include "r_av/r_demuxer.h"
+#include "r_av/r_video_encoder.h"
+#include "r_av/r_video_decoder.h"
+#include <functional>
 #include "r_utils/r_file.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_exception.h"
@@ -348,4 +351,139 @@ void test_r_recap::test_no_recording()
     try { rec.recap(10000, 9000); }
     catch(const std::exception&) { threw = true; }
     RTF_ASSERT(threw);
+}
+
+namespace
+{
+
+// A recording made here: frame i of n, at fps, flat grey at luma(i), 160x90, a key frame every gop frames, for
+// camera "cam-grey". What each recap frame shows says which frame it came from.
+struct grey_recording
+{
+    int64_t base {0};
+    unique_ptr<r_disco::r_devices> devices;
+
+    grey_recording(int n, int fps, int gop, const std::function<int(int)>& luma)
+    {
+        using namespace r_utils;
+        base = r_time_utils::tp_to_epoch_millis(std::chrono::system_clock::now()) - 400000;
+        r_storage::r_storage_file::allocate(RECAP_NTS, 2 * 1024 * 1024, 4);
+        {
+            r_storage::r_storage_file sf(RECAP_NTS);
+            r_nullable<string> vp;
+            vp.set_value(string(""));
+            auto wc = sf.create_write_context("h264", vp, r_storage::R_STORAGE_MEDIA_TYPE_VIDEO);
+
+            const uint16_t W = 160, H = 90;
+            r_av::r_video_encoder enc(AV_CODEC_ID_H264, 1000000, W, H, {fps, 1}, AV_PIX_FMT_YUV420P, 0, (uint16_t)gop, AV_PROFILE_H264_MAIN, 30, "veryfast");
+            // The parameter sets go in front of each key frame, as a camera sends them.
+            const auto sps_pps = enc.get_extradata();
+            int written = 0;
+            auto drain = [&](r_av::r_codec_state st, const std::function<r_av::r_codec_state()>& again) {
+                while(st == r_av::R_CODEC_STATE_HAS_OUTPUT)
+                {
+                    auto pi = enc.get();
+                    vector<uint8_t> au;
+                    if(pi.key)
+                        au = sps_pps;
+                    au.insert(au.end(), pi.data, pi.data + pi.size);
+                    const int64_t ms = (int64_t)written * 1000 / fps;
+                    sf.write_frame(wc, r_storage::R_STORAGE_MEDIA_TYPE_VIDEO, au.data(), au.size(), pi.key, base + ms, ms);
+                    ++written;
+                    st = again();
+                }
+            };
+            vector<uint8_t> yuv((size_t)W * H * 3 / 2);
+            for(int i = 0; i < n; ++i)
+            {
+                memset(yuv.data(), luma(i), (size_t)W * H);
+                memset(yuv.data() + (size_t)W * H, 128, (size_t)W * H / 2);
+                enc.attach_buffer(yuv.data(), yuv.size(), i);
+                drain(enc.encode(), [&]() { return enc.encode(); });
+            }
+            drain(enc.flush(), [&]() { return enc.flush(); });
+            RTF_ASSERT(written == n);
+        }
+
+        r_fs::mkdir(RECAP_TOP);
+        devices = make_unique<r_disco::r_devices>(RECAP_TOP);
+        devices->start();
+        r_disco::r_camera cam;
+        cam.id = "cam-grey";
+        cam.state = "assigned";
+        cam.record_file_path.set_value(RECAP_NTS);
+        devices->save_camera(cam);
+    }
+
+    ~grey_recording() { devices->stop(); }
+
+    recap_result recap(int64_t from_ms, int64_t to_ms)
+    {
+        return query_get_recap(RECAP_TOP, *devices, "cam-grey",
+            r_utils::r_time_utils::epoch_millis_to_tp(base + from_ms),
+            r_utils::r_time_utils::epoch_millis_to_tp(base + to_ms));
+    }
+};
+
+// The luma at the middle of each of the recap's frames, decoded.
+vector<int> middle_lumas(const vector<uint8_t>& mp4)
+{
+    r_utils::r_fs::write_file(mp4.data(), mp4.size(), RECAP_OUT);
+    r_av::r_demuxer demuxer(RECAP_OUT);
+    auto vsi = demuxer.get_video_stream_index();
+    r_av::r_video_decoder decoder(demuxer.get_stream_info(vsi).codec_id, r_av::r_hw_accel::none, false);
+    decoder.set_extradata(demuxer.get_extradata(vsi));
+    decoder.set_low_latency();
+    vector<int> out;
+    auto take = [&]() {
+        auto yuv = decoder.get(AV_PIX_FMT_YUV420P, RECAP_WIDTH, RECAP_HEIGHT, 1);
+        out.push_back((*yuv)[(size_t)(RECAP_HEIGHT / 2) * RECAP_WIDTH + RECAP_WIDTH / 2]);
+    };
+    while(demuxer.read_frame())
+    {
+        auto fi = demuxer.get_frame_info();
+        if(fi.index != vsi)
+            continue;
+        decoder.attach_buffer(fi.data, fi.size);
+        for(auto ds = decoder.decode(); ds == r_av::R_CODEC_STATE_HAS_OUTPUT || ds == r_av::R_CODEC_STATE_AGAIN_HAS_OUTPUT; ds = decoder.decode())
+            take();
+    }
+    for(auto ds = decoder.flush(); ds == r_av::R_CODEC_STATE_HAS_OUTPUT || ds == r_av::R_CODEC_STATE_AGAIN_HAS_OUTPUT; ds = decoder.flush())
+        take();
+    return out;
+}
+
+bool near(int a, int b) { return a >= b - 2 && a <= b + 2; }
+
+}
+
+void test_r_recap::test_frames_decoded_show_their_times()
+{
+    // 4 s at 10 fps, a key frame every 2 s: every frame is decoded. Frame i is grey 16 + 5i, so a frame a step
+    // early or late shows 5 off.
+    grey_recording rec(40, 10, 20, [](int i) { return 16 + 5 * i; });
+    auto r = rec.recap(0, 4000);
+    RTF_ASSERT(r.decode_all);
+    RTF_ASSERT(r.frames == 24);
+    auto lumas = middle_lumas(r.mp4);
+    RTF_ASSERT(lumas.size() == 24);
+    // Recap frame k is the first at or after 4000 * k / 24 ms: frame ceil(40k / 24).
+    for(int k = 0; k < 24; ++k)
+    {
+        const int i = (40 * k + 23) / 24;
+        RTF_ASSERT(near(lumas[k], 16 + 5 * i));
+    }
+}
+
+void test_r_recap::test_key_frames_show_their_times()
+{
+    // 30 s at 10 fps, a key frame every second: 30 key frames, each its second's grey (16 + 7s).
+    grey_recording rec(300, 10, 10, [](int i) { return 16 + 7 * (i / 10); });
+    auto r = rec.recap(0, 29900);
+    RTF_ASSERT(!r.decode_all);
+    RTF_ASSERT(r.frames == 30);
+    auto lumas = middle_lumas(r.mp4);
+    RTF_ASSERT(lumas.size() == 30);
+    for(int s = 0; s < 30; ++s)
+        RTF_ASSERT(near(lumas[s], 16 + 7 * s));
 }
