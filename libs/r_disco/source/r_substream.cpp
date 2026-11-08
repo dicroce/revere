@@ -1,4 +1,5 @@
 #include "r_disco/r_substream.h"
+#include "r_pipeline/r_stream_info.h"
 #include "r_utils/r_logger.h"
 #include <algorithm>
 #include <exception>
@@ -64,4 +65,107 @@ r_substream_choice r_disco::find_substream(
     }
 
     return choice;
+}
+
+pair<uint16_t, uint16_t> r_disco::main_picture_size(const string& codec, const string& parameters)
+{
+    try
+    {
+        if(codec == "H264")
+        {
+            auto sps = r_pipeline::get_h264_sps(parameters);
+            if(!sps.is_null())
+            {
+                auto info = r_pipeline::parse_h264_sps(sps.value());
+                return {info.width, info.height};
+            }
+        }
+        else if(codec == "H265")
+        {
+            auto sps = r_pipeline::get_h265_sps(parameters);
+            if(!sps.is_null())
+            {
+                auto info = r_pipeline::parse_h265_sps(sps.value());
+                return {info.width, info.height};
+            }
+        }
+    }
+    catch(const exception& e)
+    {
+        R_LOG_INFO("substream: main's SPS didn't parse: %s", e.what());
+    }
+    return {0, 0};
+}
+
+void r_disco::substream_set(
+    r_camera& camera,
+    const r_substream_choice& choice,
+    const string& codec,
+    const string& parameters,
+    int timebase
+)
+{
+    camera.sub_mode.set_value("on");
+    camera.sub_status.set_value("ok");
+    camera.sub_onvif_profile_token.set_value(choice.profile.token);
+    camera.sub_rtsp_url.set_value(choice.rtsp_url);
+    camera.sub_video_codec.set_value(codec);
+    camera.sub_video_codec_parameters.set_value(parameters);
+    camera.sub_video_timebase.set_value(timebase);
+    // The picture the stream really has (its SPS), not what ONVIF said.
+    camera.sub_width.set_value(choice.probe.width);
+    camera.sub_height.set_value(choice.probe.height);
+    if(choice.probe.key_interval_ms >= 0)
+        camera.sub_key_interval_ms.set_value((int)choice.probe.key_interval_ms);
+    else
+        camera.sub_key_interval_ms.clear();
+}
+
+void r_disco::substream_clear(r_camera& camera, const string& reason)
+{
+    camera.sub_mode.set_value("off");
+    camera.sub_status.set_value("none: " + reason);
+    camera.sub_onvif_profile_token.clear();
+    camera.sub_rtsp_url.clear();
+    camera.sub_video_codec.clear();
+    camera.sub_video_codec_parameters.clear();
+    camera.sub_video_timebase.clear();
+    camera.sub_width.clear();
+    camera.sub_height.clear();
+    camera.sub_key_interval_ms.clear();
+}
+
+void r_disco::substream_copy(const r_camera& from, r_camera& to)
+{
+    to.sub_mode = from.sub_mode;
+    to.sub_status = from.sub_status;
+    to.sub_onvif_profile_token = from.sub_onvif_profile_token;
+    to.sub_rtsp_url = from.sub_rtsp_url;
+    to.sub_video_codec = from.sub_video_codec;
+    to.sub_video_codec_parameters = from.sub_video_codec_parameters;
+    to.sub_video_timebase = from.sub_video_timebase;
+    to.sub_width = from.sub_width;
+    to.sub_height = from.sub_height;
+    to.sub_key_interval_ms = from.sub_key_interval_ms;
+}
+
+bool r_disco::substream_follow(r_camera& camera, const string& url, const string& codec, const string& parameters)
+{
+    if(!substream_on(camera))
+        return true;
+
+    auto size = main_picture_size(codec, parameters);
+    const bool same =
+        !camera.sub_video_codec.is_null() && camera.sub_video_codec.value() == codec &&
+        !camera.sub_width.is_null() && camera.sub_width.value() == size.first &&
+        !camera.sub_height.is_null() && camera.sub_height.value() == size.second;
+    if(!same)
+    {
+        substream_clear(camera, "camera changed the stream");
+        return false;
+    }
+
+    camera.sub_rtsp_url.set_value(url);
+    camera.sub_video_codec_parameters.set_value(parameters);
+    return true;
 }

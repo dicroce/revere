@@ -11,6 +11,12 @@ public:
       TEST(test_r_substream::test_no_stream_address);
       TEST(test_r_substream::test_probes_at_most_the_limit);
       TEST(test_r_substream::test_squeezed_picture_is_kept);
+      TEST(test_r_substream::test_set_records_the_pick);
+      TEST(test_r_substream::test_clear_goes_back_to_main);
+      TEST(test_r_substream::test_main_picture_size);
+      TEST(test_r_substream::test_copy_takes_only_the_substream);
+      TEST(test_r_substream::test_follow_keeps_the_same_stream);
+      TEST(test_r_substream::test_follow_drops_a_resized_stream);
     RTF_FIXTURE_END();
 
     virtual ~test_r_substream() throw() {}
@@ -24,4 +30,10 @@ public:
     void test_no_stream_address();
     void test_probes_at_most_the_limit();
     void test_squeezed_picture_is_kept();
+    void test_set_records_the_pick();
+    void test_clear_goes_back_to_main();
+    void test_main_picture_size();
+    void test_copy_takes_only_the_substream();
+    void test_follow_keeps_the_same_stream();
+    void test_follow_drops_a_resized_stream();
 };

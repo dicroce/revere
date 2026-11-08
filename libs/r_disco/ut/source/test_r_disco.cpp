@@ -522,7 +522,7 @@ void test_r_disco::test_startup_logs_the_database()
     auto lines = log.lines();
     RTF_ASSERT_EQUAL(lines.size(), (size_t)1);
     RTF_ASSERT(lines[0].find(string("top_dir") + PATH_SLASH + "db" + PATH_SLASH + "cameras.db") != string::npos);
-    RTF_ASSERT(lines[0].find("(schema version 9, was 0)") != string::npos);
+    RTF_ASSERT(lines[0].find("(schema version 10, was 0)") != string::npos);
 }
 
 void test_r_disco::test_failed_writes_are_logged()
