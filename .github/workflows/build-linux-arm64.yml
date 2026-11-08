@@ -15,6 +15,10 @@ permissions:
 env:
   # NCNN is built from source (not in apt) and cached. Bump to rebuild.
   NCNN_VERSION: "20240820"
+  # revere's own LGPL FFmpeg (scripts/linux/build_ffmpeg_lgpl.sh), cached and
+  # shipped in the .deb. The same release line as the other platforms.
+  FFMPEG_VERSION: n8.1.3
+  OPENH264_VERSION: v2.6.0
 
 jobs:
   build-linux-arm64:
@@ -30,15 +34,18 @@ jobs:
       - name: Install build dependencies
         run: |
           apt-get update
+          # No distro FFmpeg (Debian's is a GPL build), gstreamer1.0-libav
+          # (links it) or plugins-ugly (x264enc): see "Build FFmpeg". libwebp
+          # and libopus are for that build.
           apt-get install -y --no-install-recommends \
             build-essential cmake git pkg-config patchelf file \
-            ca-certificates curl zstd \
+            ca-certificates curl zstd binutils \
+            libwebp-dev libopus-dev \
             libopencv-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
+            gstreamer1.0-plugins-bad \
             libssl-dev libsqlite3-dev uuid-dev \
             libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
             libgl1-mesa-dev libglu1-mesa-dev \
@@ -109,6 +116,27 @@ jobs:
             -DNCNN_SHARED_LIB=OFF -DNCNN_VULKAN=OFF
           cmake --build ncnn-build --parallel "$(nproc)"
           cmake --install ncnn-build
+
+      # FFmpeg, LGPL. The closed Revere Cloud and HomeKit plugins load into
+      # revere's process, and Debian's FFmpeg is a GPL build, so the .deb ships
+      # revere's own in /opt/revere (the CMake install copies FFMPEG_TOP_DIR's
+      # libraries there) rather than depending on Debian's. Bump the key's -vN
+      # when the script changes.
+      - name: Restore cached FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-lgpl
+          key: ffmpeg-lgpl-${{ env.FFMPEG_VERSION }}-openh264-${{ env.OPENH264_VERSION }}-bookworm-arm64-v1
+
+      - name: Build FFmpeg (LGPL, cache miss only)
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        shell: bash
+        run: bash revere/scripts/linux/build_ffmpeg_lgpl.sh "${GITHUB_WORKSPACE}/ffmpeg-lgpl"
+
+      - name: Use the LGPL FFmpeg
+        shell: bash
+        run: echo "FFMPEG_TOP_DIR=${GITHUB_WORKSPACE}/ffmpeg-lgpl" >> "$GITHUB_ENV"
 
       # PORTABLE: no -march=native, which would target the runner's CPU and
       # could use instructions a Pi's Cortex-A72/A76 doesn't have.
@@ -184,6 +212,40 @@ jobs:
           esac
           [ "$web" = "200" ] || { echo "::error::web UI did not answer (got $web)"; exit 1; }
           echo "smoke test OK"
+
+      # The .deb must carry exactly one FFmpeg, revere's LGPL build, and must not
+      # depend on Debian's (GPL) FFmpeg or on gst-libav.
+      - name: Verify the packaged FFmpeg is LGPL
+        shell: bash
+        run: |
+          set -uo pipefail
+          fail=0
+          deb="$(ls dist/revere-*-linux-arm64.deb)"
+          depends="$(dpkg-deb -f "$deb" Depends)"
+          echo "=== Depends ==="; echo "$depends" | tr ',' '\n'
+          if echo "$depends" | grep -qE 'libav(codec|format|util)|libsw(scale|resample)|libpostproc|gstreamer1.0-libav'; then
+            echo "::error::the .deb depends on Debian's FFmpeg or gst-libav"; fail=1
+          fi
+          echo "=== FFmpeg in the package ==="
+          dpkg-deb -c "$deb" | grep -E 'lib(av|sw|postproc)' || true
+          # One FFmpeg: every libavcodec file (the install may copy the .so
+          # symlinks as files) is soname 62, ours, and each is the LGPL build.
+          mapfile -t avcodec < <(find /opt/revere -type f -name 'libavcodec.so*')
+          [ "${#avcodec[@]}" -ge 1 ] || { echo "::error::no libavcodec in /opt/revere"; fail=1; }
+          majors="$(printf '%s\n' "${avcodec[@]}" | sed -nE 's/.*libavcodec\.so\.([0-9]+).*/\1/p' | sort -u | tr '\n' ' ')"
+          echo "libavcodec majors: $majors"
+          [ "$majors" = "62 " ] || { echo "::error::libavcodec majors '$majors' in /opt/revere (expected only 62)"; fail=1; }
+          for lib in "${avcodec[@]}"; do
+            # grep -a on the file, not strings | grep -q (fails under pipefail).
+            grep -aq "LGPL version 2.1 or later" "$lib" || { echo "::error::$lib isn't revere's LGPL build"; fail=1; }
+          done
+          # What the installed revere actually loads.
+          ldd /opt/revere/revere | grep -E 'lib(av|sw)' || true
+          if ldd /opt/revere/revere | grep -E 'lib(av|sw)' | grep -qv '/opt/revere/'; then
+            echo "::error::revere loads an FFmpeg library from outside /opt/revere"; fail=1
+          fi
+          [ "$fail" -eq 0 ] || exit 1
+          echo "OK: one LGPL FFmpeg in the .deb, no dependency on Debian's"
 
       - name: Upload Linux arm64 assets
         uses: actions/upload-artifact@v4

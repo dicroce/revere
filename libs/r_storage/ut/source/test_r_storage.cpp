@@ -59,7 +59,9 @@ static void _whack_files()
     if(r_fs::file_exists("nanots_test_4mb.nts"))
         r_fs::remove_file("nanots_test_4mb.nts");
 
-    for(auto& f : {"ts_test.nts", "ts_test.db", "ts_test.db-wal", "ts_test.db-shm"})
+    for(auto& f : {"ts_test.nts", "ts_test.db", "ts_test.db-wal", "ts_test.db-shm",
+                   "av_query_test.nts", "av_query_test.db", "av_query_test.db-wal", "av_query_test.db-shm",
+                   "bad_magic_test.nts", "bad_magic_test.db"})
         if(r_fs::file_exists(f))
             r_fs::remove_file(f);
 
@@ -217,6 +219,122 @@ void test_r_storage::test_r_storage_file_query_key()
     RTF_ASSERT(key_at(newest + 60000) == 90);
     // More than 5 minutes past the newest frame: nothing, as before.
     RTF_ASSERT(key_at(newest + 6 * 60000) == -1);
+}
+
+// A playback's read (query with ALL): the camera's audio comes back beside the video, from the video's key frame on,
+// and the reply says it has audio.
+void test_r_storage::test_r_storage_file_query_all_has_audio()
+{
+    r_storage_file::allocate("av_query_test.nts", 65536, 10);
+    int64_t base = _wall_now_ms() - 60000;
+    {
+        r_storage_file sf("av_query_test.nts");
+        r_nullable<string> vp, ap;
+        vp.set_value(string("vparams"));
+        ap.set_value(string("aparams"));
+        auto vwc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+        auto awc = sf.create_write_context("pcma", ap, R_STORAGE_MEDIA_TYPE_AUDIO);
+        // 10 s: video every 33 ms with a key frame every 30th, audio every 20 ms, written in time order.
+        int vi = 0, ai = 0;
+        while(vi < 300 || ai < 500)
+        {
+            int64_t vts = base + vi * 33, ats = base + ai * 20 + 5;
+            if(vi < 300 && (ai >= 500 || vts <= ats))
+            {
+                vector<uint8_t> frame(64, (uint8_t)vi);
+                sf.write_frame(vwc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), (vi % 30) == 0, vts, vi * 33);
+                ++vi;
+            }
+            else
+            {
+                vector<uint8_t> frame(16, 0xd5);
+                sf.write_frame(awc, R_STORAGE_MEDIA_TYPE_AUDIO, frame.data(), frame.size(), true, ats, ai * 20);
+                ++ai;
+            }
+        }
+    }
+
+    r_storage_file_reader sfr("av_query_test.nts");
+    // From mid-GOP: the read starts at the key frame before (frame 60), audio with it.
+    auto buf = sfr.query(R_STORAGE_MEDIA_TYPE_ALL, base + 70 * 33, base + 150 * 33);
+    uint32_t version = 0;
+    auto bt = r_blob_tree::deserialize(buf.data(), buf.size(), version);
+    RTF_ASSERT(bt["has_audio"].get_string() == "true");
+    RTF_ASSERT(bt["audio_codec_name"].get_string() == "pcma");
+    RTF_ASSERT(bt["video_codec_name"].get_string() == "h264");
+
+    int64_t first_video = -1, first_audio = -1, last_ts = -1;
+    int n_video = 0, n_audio = 0;
+    bool in_order = true;
+    for(size_t fi = 0; fi < bt["frames"].size(); ++fi)
+    {
+        auto ts = r_string_utils::s_to_int64(bt["frames"][fi]["ts"].get_string());
+        if(ts < last_ts)
+            in_order = false;
+        last_ts = ts;
+        if(bt["frames"][fi]["stream_id"].get_value<int>() == R_STORAGE_MEDIA_TYPE_VIDEO)
+        {
+            if(first_video < 0)
+                first_video = ts;
+            ++n_video;
+        }
+        else
+        {
+            if(first_audio < 0)
+                first_audio = ts;
+            ++n_audio;
+        }
+    }
+    RTF_ASSERT(first_video == base + 60 * 33);
+    RTF_ASSERT(n_video == 90);
+    // Audio from the key frame (not from start_ts) to the window's end: 20 ms apart over 90 * 33 ms.
+    RTF_ASSERT(first_audio >= first_video && first_audio < first_video + 20);
+    RTF_ASSERT(n_audio >= 148 && n_audio <= 150);
+    RTF_ASSERT(in_order);
+}
+
+// One stream's read: a nanots error stops that stream only (false, logged, not thrown); anything else passes through.
+void test_r_storage::test_r_storage_read_stream_or_warn()
+{
+    bool ran = false;
+    RTF_ASSERT(read_stream_or_warn("audio", 0, 1000, [&]() { ran = true; }));
+    RTF_ASSERT(ran);
+
+    // A real nanots error: a file of zeros has no nanots header, so opening an iterator on it throws.
+    {
+        vector<uint8_t> zeros(1024 * 1024, 0);
+        FILE* f = fopen("bad_magic_test.nts", "wb");
+        RTF_ASSERT(f != nullptr);
+        fwrite(zeros.data(), 1, zeros.size(), f);
+        fclose(f);
+    }
+    int read_before = 0;
+    bool returned = false;
+    try
+    {
+        returned = read_stream_or_warn("video", 0, 1000, [&]() {
+            ++read_before;
+            nanots_iterator it("bad_magic_test.nts", "video");
+            ++read_before;
+        });
+    }
+    catch(...)
+    {
+        RTF_ASSERT(false);
+    }
+    RTF_ASSERT(!returned);
+    RTF_ASSERT(read_before == 1);
+
+    bool passed_through = false;
+    try
+    {
+        read_stream_or_warn("audio", 0, 1000, []() { throw std::runtime_error("not nanots"); });
+    }
+    catch(const std::runtime_error&)
+    {
+        passed_through = true;
+    }
+    RTF_ASSERT(passed_through);
 }
 
 // write_frame returns the ts the frame was stored at, which is what anything

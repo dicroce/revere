@@ -533,3 +533,22 @@ void test_r_codec::test_hw_accel_without_a_decoder_decodes_in_software()
     RTF_ASSERT(decoded);
 }
 
+void test_r_codec::test_hw_decode_failure_is_remembered()
+{
+    // A decoder whose hardware turned out unable to decode the stream (a VAAPI
+    // driver without H.264): r_find_best_hw_accel answers none for that codec from
+    // then on, saying so once. VP9, which no other test decodes, so the shared
+    // probe cache stays as it was for the H.264 tests.
+    vector<string> warnings;
+    r_logger::set_log_callback([&](r_logger::LOG_LEVEL, const string& message) {
+        if(message.find("decoding in software from now on") != string::npos)
+            warnings.push_back(message);
+    });
+    r_find_best_hw_accel(AV_CODEC_ID_VP9);
+    r_hw_accel_decode_failed(AV_CODEC_ID_VP9);
+    r_hw_accel_decode_failed(AV_CODEC_ID_VP9);
+    r_logger::clear_log_callback();
+
+    RTF_ASSERT(r_find_best_hw_accel(AV_CODEC_ID_VP9) == r_hw_accel::none);
+    RTF_ASSERT(warnings.size() <= 1);
+}

@@ -29,6 +29,12 @@ enum class r_hw_accel
 // backend that can decode codec_id, or r_hw_accel::none for software fallback.
 R_API r_hw_accel r_find_best_hw_accel(AVCodecID codec_id);
 
+// A decoder found that r_find_best_hw_accel's choice can't decode codec_id after
+// all: the device opened, but the driver refused the stream (e.g. a VAAPI driver
+// without H.264). From now on r_find_best_hw_accel returns none for codec_id, so
+// later decoders start in software instead of failing the same way.
+R_API void r_hw_accel_decode_failed(AVCodecID codec_id);
+
 // Probes available hardware encoders and returns the best backend, or none.
 // Note: D3D11VA is decode-only and is never returned by this function.
 R_API r_hw_accel r_find_best_hw_accel_encoder(AVCodecID codec_id);

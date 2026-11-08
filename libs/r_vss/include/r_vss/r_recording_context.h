@@ -121,6 +121,9 @@ struct live_restreaming_state
 
     GstElement* v_appsrc {nullptr};
     GstElement* a_appsrc {nullptr};
+    // An Opus (/opus) session's AAC decoder: its appsrc is pcmsrc and takes the
+    // audio as R_RESTREAM_PCM_CAPS (see restream_pcm). Null for every other session.
+    std::shared_ptr<r_av::r_audio_decoder> pcm_decoder;
     // Names the session in logs: "<camera> session <n>".
     uint64_t session_id {0};
     std::string camera_name;

@@ -18,6 +18,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # revere's own FFmpeg (see "Build FFmpeg"): the same release line as the
+  # Windows deps (BtbN n8.1 lgpl-shared). Bump to rebuild.
+  FFMPEG_VERSION: n8.1.3
+
 jobs:
   build-macos:
     runs-on: macos-15   # Apple Silicon (arm64)
@@ -66,13 +71,59 @@ jobs:
           # Runtime/build deps via Homebrew. ncnn is in brew (arm64) so the
           # yolov8 plugin builds without a from-source NCNN. dylibbundler gathers
           # the non-system dylibs into the .app and rewrites their load paths.
+          # FFmpeg is NOT Homebrew's (see "Build FFmpeg"); openh264, webp and
+          # opus are for that build.
           brew install \
             cmake pkg-config dylibbundler \
-            opencv ffmpeg \
+            opencv \
             gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad \
-            glfw sqlite ncnn
+            glfw sqlite ncnn \
+            openh264 webp opus
+          # Homebrew's opencv and gstreamer still pull in its ffmpeg, a GPL build
+          # (x264/x265). Unlink it so its headers, libs and .pc files leave the
+          # Homebrew prefix: nothing can build or link against it by accident.
+          # (Homebrew's own libs keep loading it by its keg path.)
+          brew unlink ffmpeg || true
+          # Our FFmpeg links these by versioned name, so a cached build is only
+          # good for the versions it was built against.
+          echo "FFMPEG_DEPS_KEY=$(brew list --versions openh264 webp opus | tr ' \n' '-_')" >> "$GITHUB_ENV"
           # Make sure pkg-config sees the Homebrew prefix (Apple Silicon).
           echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix)/share/pkgconfig" >> "$GITHUB_ENV"
+
+      # FFmpeg, LGPL. The closed Revere Cloud and HomeKit plugins load into
+      # revere's process, so revere must not bundle a GPL FFmpeg, and Homebrew's
+      # is one. Build our own instead, cached by version. Without --enable-gpl or
+      # --enable-nonfree configure refuses every GPL/nonfree component, so the
+      # result is LGPL whatever it autodetects. Bump the key's -vN when the
+      # configure line changes.
+      - name: Restore cached FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-lgpl
+          key: ffmpeg-lgpl-${{ env.FFMPEG_VERSION }}-macos-15-arm64-v1-${{ env.FFMPEG_DEPS_KEY }}
+
+      - name: Build FFmpeg (LGPL, cache miss only)
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${FFMPEG_VERSION}" https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
+          cd ffmpeg-src
+          ./configure \
+            --prefix="${GITHUB_WORKSPACE}/ffmpeg-lgpl" \
+            --enable-shared --disable-static \
+            --disable-programs --disable-doc --disable-debug \
+            --disable-avdevice --disable-avfilter \
+            --disable-sdl2 --disable-xlib --disable-libxcb \
+            --enable-videotoolbox --enable-audiotoolbox \
+            --enable-libopenh264 --enable-libwebp --enable-libopus
+          grep -E "^#define CONFIG_(GPL|NONFREE) 0" config.h | wc -l | grep -q 2 || { echo "::error::FFmpeg configured with GPL or nonfree parts"; exit 1; }
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+          ls -la "${GITHUB_WORKSPACE}/ffmpeg-lgpl/lib"
+
+      - name: Use the LGPL FFmpeg
+        run: echo "FFMPEG_TOP_DIR=${GITHUB_WORKSPACE}/ffmpeg-lgpl" >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
@@ -177,13 +228,15 @@ jobs:
           # every plugin pulls in ones (webrtc, etc.) whose backing libs aren't
           # installed -> dylibbundler then hangs on an interactive "can't find it"
           # prompt. We only need the RTSP/RTP ingest + parse/decode elements.
+          # No libgstlibav: it links Homebrew's (GPL) FFmpeg. The Opus restream
+          # decodes AAC with revere's own FFmpeg instead (restream_pcm).
           want="\
             libgstapp libgstcoreelements libgstrtp libgstrtpmanager libgstrtsp \
             libgsttcp libgstudp libgstsdpelem \
             libgstaudioparsers libgstvideoparsersbad \
             libgstplayback libgsttypefindfunctions libgstvideoconvertscale \
             libgstaudioconvert libgstaudioresample libgstopus libgstmulaw libgstalaw \
-            libgstlibav libgstvideofilter libgstautodetect libgstvideorate"
+            libgstvideofilter libgstautodetect libgstvideorate"
 
           bundle_gst_plugins() {  # $1 = path to .app
             local app="$1"
@@ -256,6 +309,39 @@ jobs:
 
           [ "$fail" -eq 0 ] || { echo "::error::gstreamer plugin bundling had failures"; exit 1; }
           echo "PHASE: gstreamer plugins bundled into all app bundles"
+
+      # The bundles must carry exactly one FFmpeg, revere's LGPL build: no second
+      # libavcodec (Homebrew's, by way of a GStreamer plugin or OpenCV) and no
+      # GPL library or plugin.
+      - name: Verify the bundled FFmpeg is LGPL
+        run: |
+          set -uo pipefail
+          fail=0
+          for app in macos-install/Revere.app macos-install/Vision.app; do
+            [ -d "$app" ] || continue
+            libdir="$app/Contents/libs"
+            echo "=== $app: FFmpeg and codec libs ==="
+            ls "$libdir" | grep -E '^lib(av|sw|postproc|x26|openh264)' || true
+            n=$(ls "$libdir" | grep -c '^libavcodec')
+            [ "$n" -eq 1 ] || { echo "::error::$app has $n libavcodec copies (expected 1)"; fail=1; }
+            if ls "$libdir" | grep -qE '^lib(postproc|x264|x265)'; then
+              echo "::error::$app bundles a GPL library"; fail=1
+            fi
+            if ls "$app/Contents/MacOS/gstreamer_plugins" 2>/dev/null | grep -qE '^libgst(libav|x264|x265)'; then
+              echo "::error::$app bundles a GPL GStreamer plugin"; fail=1
+            fi
+            for lib in "$libdir"/libavcodec*.dylib; do
+              # grep -a on the file, not strings | grep -q: with pipefail, grep
+              # quitting early fails strings ("failed to flush output").
+              grep -aq "LGPL version 2.1 or later" "$lib" || { echo "::error::$(basename "$lib") isn't revere's LGPL build"; fail=1; }
+            done
+            # Nothing may still load Homebrew's FFmpeg by its keg path.
+            if find "$app" -type f -name '*.dylib' -exec otool -L {} \; 2>/dev/null | grep -q "/opt/ffmpeg/"; then
+              echo "::error::something in $app links Homebrew's ffmpeg"; fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "OK: one LGPL FFmpeg per app bundle, no GPL libraries or plugins"
 
       - name: Determine version
         id: ver

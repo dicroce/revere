@@ -6,6 +6,7 @@
 #include "r_utils/r_std_utils.h"
 #include <cstring>
 #include <libavutil/hwcontext.h>
+#include <libavutil/pixdesc.h>
 
 using namespace r_av;
 using namespace r_utils;
@@ -340,6 +341,22 @@ AVPixelFormat r_video_decoder::_get_hw_format(AVCodecContext* ctx, const AVPixel
     for(const AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p)
         if(*p == *target)
             return *p;
+
+    // The hardware format isn't offered: FFmpeg calls again without it when the
+    // hwaccel failed to set up (a VAAPI driver that opens but has no H.264, say).
+    // Take a software format so this stream keeps decoding (get() handles
+    // software frames), and stop later decoders trying the same hardware.
+    if(*target != AV_PIX_FMT_NONE)
+    {
+        r_hw_accel_decode_failed(ctx->codec_id);
+        *target = AV_PIX_FMT_NONE;
+    }
+    for(const AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p)
+    {
+        auto desc = av_pix_fmt_desc_get(*p);
+        if(desc && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL))
+            return *p;
+    }
     return AV_PIX_FMT_NONE;
 }
 

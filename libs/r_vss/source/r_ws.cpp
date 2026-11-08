@@ -1,5 +1,6 @@
 
 #include "r_vss/r_ws.h"
+#include "r_vss/r_recap.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_rtsp_auth.h"
 #include "r_vss/r_query.h"
@@ -138,6 +139,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_GET, "/analytics", &r_ws::_get_analytics);
 
     route(METHOD_GET, "/key_frame", &r_ws::_get_key_frame);
+    route(METHOD_GET, "/recap", &r_ws::_get_recap);
     route(METHOD_GET, "/video", &r_ws::_get_video);
     route(METHOD_GET, "/jpg", &r_ws::_get_jpg);
     route(METHOD_GET, "/webp", &r_ws::_get_webp);
@@ -616,6 +618,66 @@ r_http::r_server_response r_ws::_get_key_frame(r_utils::r_socket_base&, const r_
     }
 
     R_STHROW(r_http_500_exception, ("Failed to fetch key frame."));
+}
+
+// One recap is built at a time; a request waits up to RECAP_WAIT for the one before it.
+static std::timed_mutex& _recap_lock()
+{
+    static std::timed_mutex lock;
+    return lock;
+}
+static const std::chrono::seconds RECAP_WAIT(30);
+
+r_http::r_server_response r_ws::_get_recap(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    auto args = request.get_uri().get_get_args();
+
+    if(args.find("camera_id") == end(args) || args.find("start_time") == end(args) || args.find("end_time") == end(args))
+        R_STHROW(r_http_400_exception, ("Missing camera_id, start_time or end_time."));
+
+    std::chrono::system_clock::time_point start, end_tp;
+    try
+    {
+        start = r_time_utils::iso_8601_to_tp(args["start_time"]);
+        end_tp = r_time_utils::iso_8601_to_tp(args["end_time"]);
+    }
+    catch(const std::exception&)
+    {
+        R_STHROW(r_http_400_exception, ("Bad start_time or end_time."));
+    }
+    if(end_tp < start || end_tp - start > std::chrono::milliseconds(RECAP_MAX_SPAN_MS))
+        R_STHROW(r_http_400_exception, ("A recap covers a span of up to an hour."));
+
+    std::unique_lock<std::timed_mutex> lock(_recap_lock(), std::defer_lock);
+    if(!lock.try_lock_for(RECAP_WAIT))
+        R_STHROW(r_http_500_exception, ("Busy making another recap."));
+
+    try
+    {
+        auto t_start = steady_clock::now();
+        auto recap = query_get_recap(_top_dir, _devices, args["camera_id"], start, end_tp);
+        auto elapsed_ms = (long long)duration_cast<milliseconds>(steady_clock::now() - t_start).count();
+        R_LOG_INFO("[RECAP] %s %s to %s: %zu frames at %d fps%s, %zu bytes, %lld ms",
+            args["camera_id"].c_str(), args["start_time"].c_str(), args["end_time"].c_str(),
+            recap.frames, recap.fps, recap.decode_all ? " (every frame decoded)" : "", recap.mp4.size(), elapsed_ms);
+
+        r_server_response response;
+        response.set_content_type("video/mp4");
+        response.set_body(recap.mp4.size(), recap.mp4.data());
+        response.add_additional_header("X-Recap-Frames", std::to_string(recap.frames));
+        response.add_additional_header("X-Recap-Fps", std::to_string(recap.fps));
+        return response;
+    }
+    catch(const r_utils::r_not_found_exception&)
+    {
+        throw; // no recording in the span: 404
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+
+    R_STHROW(r_http_500_exception, ("Failed to make a recap."));
 }
 
 r_http::r_server_response r_ws::_get_contents(r_utils::r_socket_base&, const r_http::r_server_request& request)

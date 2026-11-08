@@ -4,6 +4,7 @@
 #include "r_vss/r_early_alerts.h"
 #include "r_vss/r_motion_storage_sink.h"
 #include "r_av/r_muxer.h"
+#include "r_av/r_audio_decoder.h"
 #include "r_vss/r_recording_context.h"
 #include "r_vss/r_query.h"
 #include "r_utils/r_exception.h"
@@ -1114,30 +1115,51 @@ void r_stream_keeper::resume(const std::string& camera_id)
     _cmd_q.post(cmd).get();
 }
 
-// The decoder for each audio encoding the Opus restream takes.
-static string _opus_decoder(r_pipeline::r_encoding audio_encoding, vector<string>& elements)
+// The decoder for each audio encoding the Opus restream takes; false for one it
+// doesn't. AAC needs none here: it is decoded before its appsrc (restream_pcm).
+static bool _opus_decoder(r_pipeline::r_encoding audio_encoding, string& decoder, vector<string>& elements)
 {
     switch(audio_encoding)
     {
         case r_pipeline::r_encoding::AAC_GENERIC_ENCODING:
-            elements = {"aacparse", "avdec_aac"};
-            return "aacparse ! avdec_aac";
+            decoder.clear();
+            return true;
         case r_pipeline::r_encoding::PCMU_ENCODING:
             elements = {"mulawdec"};
-            return "mulawdec";
+            decoder = "mulawdec";
+            return true;
         case r_pipeline::r_encoding::PCMA_ENCODING:
             elements = {"alawdec"};
-            return "alawdec";
+            decoder = "alawdec";
+            return true;
         default:
-            return string();
+            return false;
     }
+}
+
+vector<uint8_t> r_vss::restream_pcm(r_av::r_audio_decoder& decoder, const uint8_t* data, size_t size)
+{
+    vector<uint8_t> pcm;
+    decoder.attach_buffer(data, size);
+    auto st = decoder.decode();
+    // AGAIN_HAS_OUTPUT: a frame came out but the packet wasn't taken; send it again.
+    while(st == r_av::R_CODEC_STATE_HAS_OUTPUT || st == r_av::R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+    {
+        auto out = decoder.get(AV_SAMPLE_FMT_S16, 16000, 1);
+        if(out)
+            pcm.insert(pcm.end(), out->begin(), out->end());
+        if(st != r_av::R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+            break;
+        st = decoder.decode();
+    }
+    return pcm;
 }
 
 string r_vss::restream_opus_audio_branch(r_pipeline::r_encoding audio_encoding)
 {
     vector<string> elements;
-    auto decoder = _opus_decoder(audio_encoding, elements);
-    if(decoder.empty())
+    string decoder;
+    if(!_opus_decoder(audio_encoding, decoder, elements))
         return string();
     for(auto e : {"audioconvert", "audioresample", "opusenc", "rtpopuspay"})
         elements.push_back(e);
@@ -1149,8 +1171,9 @@ string r_vss::restream_opus_audio_branch(r_pipeline::r_encoding audio_encoding)
         gst_object_unref(f);
     }
     // 16 kHz mono in 20 ms frames: what Apple Home asks of an Opus camera.
-    return decoder + " ! audioconvert ! audioresample ! audio/x-raw,rate=16000,channels=1 ! "
-                     "opusenc bitrate=24000 frame-size=20 ! rtpopuspay";
+    return (decoder.empty() ? string() : decoder + " ! ") +
+           "audioconvert ! audioresample ! audio/x-raw,rate=16000,channels=1 ! "
+           "opusenc bitrate=24000 frame-size=20 ! rtpopuspay";
 }
 
 string r_stream_keeper::create_restream_opus_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding)
@@ -1165,7 +1188,9 @@ string r_stream_keeper::create_restream_opus_launch_string(r_pipeline::r_encodin
     auto launch_str = create_restream_launch_string(video_encoding, video_format, r_nullable<r_pipeline::r_encoding>(), 0);
     launch_str.pop_back();   // its closing ')'
     const int opus_pt = video_format == 111 ? 110 : 111;
-    return launch_str + r_string_utils::format(" appsrc name=audiosrc ! %s name=pay1 pt=%d )", audio.c_str(), opus_pt);
+    // AAC goes in as PCM (restream_pcm), to an appsrc named for it.
+    const char* src = maybe_audio_encoding.value() == r_pipeline::r_encoding::AAC_GENERIC_ENCODING ? "pcmsrc" : "audiosrc";
+    return launch_str + r_string_utils::format(" appsrc name=%s ! %s name=pay1 pt=%d )", src, audio.c_str(), opus_pt);
 }
 
 string r_stream_keeper::create_restream_launch_string(r_pipeline::r_encoding video_encoding, int video_format, r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding, int audio_format)
