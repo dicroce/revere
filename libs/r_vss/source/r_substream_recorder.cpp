@@ -41,6 +41,7 @@ void r_vss::ensure_substream_ring(const string& ring_path)
 
 r_substream_recorder::r_substream_recorder(const r_camera& camera, const string& ring_path, const string& rtsp_protocols) :
     _camera(camera),
+    _ring_path(ring_path),
     _ring(ring_path),
     _write_context(),
     _sdp_lock(),
@@ -127,4 +128,75 @@ bool r_substream_recorder::fresh() const
 bool r_substream_recorder::dead() const
 {
     return _ms_since_video() > SUBSTREAM_DEAD_MS;
+}
+
+r_substream_decision r_substream_governor::pass(const string& camera_id, const r_substream_pass& in)
+{
+    auto& st = _cameras[camera_id];
+
+    // A camera given up stays held off while the recording context whose copy of it still says "wanted" lives.
+    bool wanted = in.wanted;
+    if(st.given_up)
+    {
+        auto held = st.given_up_context.lock();
+        if(held && held == in.context)
+            wanted = false;
+        else
+            st.given_up = false;
+    }
+
+    const bool backoff_over = !st.started || in.now_ms - st.started_ms >= SUBSTREAM_RESTART_BACKOFF_MS;
+    const bool dead = in.running && in.dead;
+
+    r_substream_decision d;
+    d.step = substream_next_step(wanted, in.main_receiving, in.running, dead, backoff_over);
+    if(in.running && d.step == substream_step::none && in.ring_moved)
+        d.step = substream_step::stop;
+
+    if(d.step == substream_step::stop && dead)
+    {
+        // A recorder that never wrote a frame was refused (the camera may answer DESCRIBE and still refuse SETUP),
+        // not merely lost.
+        if(in.frames_written == 0)
+        {
+            if(++st.refusals >= SUBSTREAM_REFUSALS_TO_GIVE_UP)
+            {
+                d.gave_up = true;
+                st.given_up = true;
+                st.given_up_context = in.context;
+                st.refusals = 0;
+            }
+        }
+        else
+            st.refusals = 0;
+    }
+
+    if(d.step == substream_step::start)
+    {
+        st.started = true;
+        st.started_ms = in.now_ms;
+    }
+
+    // It has been up past the window with main still going: main's drops since weren't its doing.
+    if(in.running && !dead && st.started && in.now_ms - st.started_ms > SUBSTREAM_MAIN_DROP_WINDOW_MS)
+        st.main_drops = 0;
+    return d;
+}
+
+bool r_substream_governor::main_dropped(const string& camera_id, int64_t now_ms)
+{
+    auto it = _cameras.find(camera_id);
+    if(it == _cameras.end() || !it->second.started || now_ms - it->second.started_ms >= SUBSTREAM_MAIN_DROP_WINDOW_MS)
+        return false;
+    auto& st = it->second;
+    if(++st.main_drops < SUBSTREAM_REFUSALS_TO_GIVE_UP)
+        return false;
+    st.main_drops = 0;
+    st.refusals = 0;
+    return true;
+}
+
+void r_substream_governor::forget(const string& camera_id)
+{
+    _cameras.erase(camera_id);
 }

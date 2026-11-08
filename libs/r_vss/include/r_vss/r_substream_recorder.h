@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 
@@ -43,9 +44,72 @@ R_API substream_step substream_next_step(bool wanted, bool main_receiving, bool 
 
 // A substream is started again at most this often.
 constexpr int64_t SUBSTREAM_RESTART_BACKOFF_MS = 30000;
-// After this many recorders in a row ended without the camera answering, it's taken to allow one stream at a time.
+// After this many recorders in a row ended without a single frame (the camera refused the stream, at DESCRIBE or at
+// SETUP), or this many times main's recording was dropped soon after one started (a camera that closes its older
+// session), the camera is taken to allow one stream at a time and the substream is given up.
 constexpr int SUBSTREAM_REFUSALS_TO_GIVE_UP = 2;
-constexpr const char* SUBSTREAM_REFUSED_STATUS = "none: camera allows one stream at a time";
+// A drop of main's recording this soon after a substream recorder started counts against it.
+constexpr int64_t SUBSTREAM_MAIN_DROP_WINDOW_MS = 10000;
+// What the camera's settings say when it's given up (r_disco::substream_clear adds "none: ").
+constexpr const char* SUBSTREAM_REFUSED_REASON = "camera allows one stream at a time";
+
+// What the stream keeper knows about one camera's substream on a pass.
+struct r_substream_pass
+{
+    // The recording context's copy of the camera has a usable substream chosen (sub_mode on, sub_status ok, a URL,
+    // a recording path). That copy is as old as the context: see r_substream_governor.
+    bool wanted {false};
+    // The recording context that copy belongs to.
+    std::shared_ptr<const void> context;
+    // Main's recording is getting video, which comes first on a camera that limits sessions.
+    bool main_receiving {false};
+    // A recorder exists, whether it is dead, and how many frames it wrote.
+    bool running {false};
+    bool dead {false};
+    int64_t frames_written {0};
+    // The recorder's ring isn't where the camera's recording file now says it should be (it was moved).
+    bool ring_moved {false};
+    int64_t now_ms {0};
+};
+
+struct r_substream_decision
+{
+    substream_step step {substream_step::none};
+    // The camera was just taken to allow one stream at a time: the caller saves that (substream_clear with
+    // SUBSTREAM_REFUSED_REASON) and the substream isn't started again until the camera's context is replaced.
+    bool gave_up {false};
+};
+
+// Decides what to do about each camera's substream recorder, and remembers what it has seen: when each last started,
+// how many recorders in a row never got a frame, how often main dropped soon after a start, and the cameras given
+// up. A give-up is saved to the camera, but the stream keeper's copy of it only changes with its recording context
+// (a settings Save replaces that), so a given-up camera is held off for as long as that same context lives; the
+// next context is built from the saved camera. Keeper thread only; no I/O.
+class r_substream_governor final
+{
+public:
+    R_API r_substream_decision pass(const std::string& camera_id, const r_substream_pass& in);
+
+    // Main's recording for the camera ended (a reconnect). True when it ended soon after a substream recorder
+    // started, again: the camera closes its older session, which would cut gaps into main's recording. The caller
+    // saves the give-up before main's context is built again.
+    R_API bool main_dropped(const std::string& camera_id, int64_t now_ms);
+
+    // The camera is no longer recording here, or was suspended.
+    R_API void forget(const std::string& camera_id);
+
+private:
+    struct state
+    {
+        bool started {false};
+        int64_t started_ms {0};
+        int refusals {0};
+        int main_drops {0};
+        std::weak_ptr<const void> given_up_context;
+        bool given_up {false};
+    };
+    std::map<std::string, state> _cameras;
+};
 
 // Allocates the ring at ring_path unless a file is already there.
 R_API void ensure_substream_ring(const std::string& ring_path);
@@ -69,11 +133,14 @@ public:
     R_API bool dead() const;
     // Frames written to the ring so far.
     R_API int64_t frames_written() const { return _frames_written; }
+    // Where it writes.
+    R_API const std::string& ring_path() const { return _ring_path; }
 
 private:
     int64_t _ms_since_video() const;
 
     r_disco::r_camera _camera;
+    std::string _ring_path;
     r_storage::r_storage_file _ring;
     r_utils::r_nullable<r_storage::r_storage_write_context> _write_context;
     std::mutex _sdp_lock;

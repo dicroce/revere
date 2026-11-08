@@ -7,6 +7,7 @@
 #include "r_av/r_audio_decoder.h"
 #include "r_vss/r_recording_context.h"
 #include "r_vss/r_storage_ops.h"
+#include "r_disco/r_substream.h"
 #include "r_vss/r_query.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_std_utils.h"
@@ -1247,6 +1248,10 @@ void r_stream_keeper::_entry_point()
             // request), and nothing else should wait on _streams_mutex for that.
             {
                 std::vector<std::shared_ptr<r_recording_context>> doomed;
+                // Cameras that closed main's session when a substream opened, again: saved below, after the lock and
+                // before main's context is built again (from the saved camera).
+                std::vector<std::string> substreams_to_give_up;
+                const auto now_steady_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
                 {
                     std::lock_guard<std::mutex> lock(_streams_mutex);
 
@@ -1267,6 +1272,8 @@ void r_stream_keeper::_entry_point()
                             // The next pass starts it again: a reconnect.
                             _reconnects.record(it->first);
                             _frame_feeds.camera_restarted(it->first);
+                            if(_substream_governor.main_dropped(it->first, now_steady_ms))
+                                substreams_to_give_up.push_back(it->first);
                             doomed.push_back(it->second);
                             it = _streams.erase(it);
                         }
@@ -1274,6 +1281,8 @@ void r_stream_keeper::_entry_point()
                         {
                             _reconnects.record(it->first);
                             _frame_feeds.camera_restarted(it->first);
+                            if(_substream_governor.main_dropped(it->first, now_steady_ms))
+                                substreams_to_give_up.push_back(it->first);
                             doomed.push_back(it->second);
                             it = _streams.erase(it);
                         }
@@ -1296,6 +1305,11 @@ void r_stream_keeper::_entry_point()
                     _teardowns.push(rc->camera().id, _display_name(rc->camera()), rc);
                 doomed.clear();
                 _warn_stuck_teardowns();
+                for(auto& id : substreams_to_give_up)
+                {
+                    R_LOG_WARNING("substream of %s: main's recording dropped as it opened, twice", id.c_str());
+                    _give_up_substream(id);
+                }
 
                 std::lock_guard<std::mutex> lock(_streams_mutex);
                 if(_streams.empty())
@@ -1386,6 +1400,11 @@ void r_stream_keeper::_entry_point()
                         // Not recording here now: plugins' feeds of it close.
                         _frame_feeds.close_camera(cmd.first.id);
                     }
+
+                    // Its substream recorder too, before the ack: whatever suspended the camera (a storage move, a
+                    // reset) may move or delete the ring next.
+                    _substream_governor.forget(cmd.first.id);
+                    _substreams.erase(cmd.first.id);
 
                     if(rc)
                     {
@@ -1543,11 +1562,13 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
 }
 
 // Starts, keeps or stops each recording camera's substream recorder (r_substream_recorder.h). A recorder is only
-// ever started after its camera's main recording gets video, and it never touches main's context.
+// ever started after its camera's main recording gets video, and it never touches main's context. What to do is
+// r_substream_governor's: this reads the cameras, carries it out, and saves a give-up.
 void r_stream_keeper::_tend_substreams()
 {
     struct camera_now
     {
+        std::shared_ptr<r_recording_context> context;
         r_camera camera;
         bool main_receiving {false};
         string protocols;
@@ -1556,7 +1577,7 @@ void r_stream_keeper::_tend_substreams()
     {
         std::lock_guard<std::mutex> lock(_streams_mutex);
         for(auto& s : _streams)
-            recording[s.first] = {s.second->camera(), s.second->receiving_video(), s.second->rtsp_protocols()};
+            recording[s.first] = {s.second, s.second->camera(), s.second->receiving_video(), s.second->rtsp_protocols()};
     }
 
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -1567,6 +1588,7 @@ void r_stream_keeper::_tend_substreams()
     {
         if(recording.count(it->first) == 0)
         {
+            _substream_governor.forget(it->first);
             doomed.push_back(std::move(it->second));
             it = _substreams.erase(it);
         }
@@ -1577,43 +1599,32 @@ void r_stream_keeper::_tend_substreams()
     for(auto& [id, c] : recording)
     {
         auto& cam = c.camera;
+        // This is the context's copy of the camera, as old as the context: a give-up saved to the camera is held off
+        // by the governor until the context is replaced.
         bool wanted = r_disco::substream_on(cam) && !cam.sub_status.is_null() && cam.sub_status.value() == "ok" &&
                       !cam.sub_rtsp_url.is_null() && !cam.record_file_path.is_null();
         auto running = _substreams.find(id);
-        bool is_running = running != _substreams.end();
-        auto started = _substream_started.find(id);
-        bool backoff_over = started == _substream_started.end() || now_ms - started->second >= SUBSTREAM_RESTART_BACKOFF_MS;
+        const bool is_running = running != _substreams.end();
 
-        auto step = substream_next_step(wanted, c.main_receiving, is_running, is_running && running->second->dead(), backoff_over);
-        if(step == substream_step::stop)
+        r_substream_pass in;
+        in.wanted = wanted;
+        in.context = c.context;
+        in.main_receiving = c.main_receiving;
+        in.running = is_running;
+        in.dead = is_running && running->second->dead();
+        in.frames_written = is_running ? running->second->frames_written() : 0;
+        in.ring_moved = is_running && !cam.record_file_path.is_null() &&
+                        running->second->ring_path() != substream_ring_path(storage_path(_top_dir, cam.record_file_path.value()));
+        in.now_ms = now_ms;
+
+        auto d = _substream_governor.pass(id, in);
+        if(d.step == substream_step::stop)
         {
-            auto& rec = running->second;
-            if(rec->dead())
-            {
-                auto refusals = rec->answered() ? 0 : _substream_refusals[id] + 1;
-                _substream_refusals[id] = refusals;
-                if(refusals >= SUBSTREAM_REFUSALS_TO_GIVE_UP)
-                {
-                    // Saved, so it isn't tried again until someone chooses a substream again; main isn't
-                    // restarted (its stream_config_hash doesn't cover the substream).
-                    auto current = _devices.get_camera_by_id(id);
-                    if(!current.is_null())
-                    {
-                        auto updated = current.value();
-                        updated.sub_status = string(SUBSTREAM_REFUSED_STATUS);
-                        _devices.save_camera(updated);
-                    }
-                    R_LOG_WARNING("substream of %s: the camera didn't answer a second stream %d times; using main only",
-                                  id.c_str(), refusals);
-                    _substream_refusals.erase(id);
-                }
-            }
-            doomed.push_back(std::move(rec));
+            doomed.push_back(std::move(running->second));
             _substreams.erase(running);
         }
-        else if(step == substream_step::start)
+        else if(d.step == substream_step::start)
         {
-            _substream_started[id] = now_ms;
             try
             {
                 auto ring = substream_ring_path(storage_path(_top_dir, cam.record_file_path.value()));
@@ -1626,10 +1637,27 @@ void r_stream_keeper::_tend_substreams()
                 R_LOG_ERROR("substream of %s didn't start: %s", id.c_str(), e.what());
             }
         }
+        if(d.gave_up)
+            _give_up_substream(id);
     }
 
     // Stopped outside any lock: a recorder whose camera stopped answering can take a while to wind down.
     doomed.clear();
+}
+
+// The camera allows one stream at a time (or closes its older session when a second opens): saved, so the substream
+// isn't tried again until someone chooses one again. Main isn't restarted: its stream_config_hash doesn't cover the
+// substream. Not under _streams_mutex: it waits on the database.
+void r_stream_keeper::_give_up_substream(const string& camera_id)
+{
+    auto current = _devices.get_camera_by_id(camera_id);
+    if(!current.is_null())
+    {
+        auto updated = current.value();
+        r_disco::substream_clear(updated, SUBSTREAM_REFUSED_REASON);
+        _devices.save_camera(updated);
+    }
+    R_LOG_WARNING("substream of %s: the camera allows one stream at a time; using main only", camera_id.c_str());
 }
 
 vector<shared_ptr<r_recording_context>> r_stream_keeper::_remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras)

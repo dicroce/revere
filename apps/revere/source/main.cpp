@@ -669,6 +669,21 @@ void _delete_camera_files(const r_disco::r_camera& camera)
                 R_LOG_ERROR("Failed to delete storage file %s: %s", storage_path.c_str(), e.what());
             }
         }
+
+        // The substream's ring beside it (r_substream_recorder.h).
+        auto ring_path = r_vss::substream_ring_path(storage_path);
+        if(r_fs::file_exists(ring_path))
+        {
+            try
+            {
+                r_fs::remove_file(ring_path);
+                R_LOG_INFO("Deleted camera substream file: %s", ring_path.c_str());
+            }
+            catch(const std::exception& e)
+            {
+                R_LOG_ERROR("Failed to delete substream file %s: %s", ring_path.c_str(), e.what());
+            }
+        }
     }
 
     // Delete motion detection files (.mdb and .mdnts)

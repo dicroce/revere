@@ -357,6 +357,7 @@ private:
     // caller to destroy after releasing _streams_mutex.
     std::vector<std::shared_ptr<r_recording_context>> _remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras);
     void _tend_substreams();
+    void _give_up_substream(const std::string& camera_id);
     std::vector<r_stream_status> _fetch_stream_status() const;
     void _update_status_cache();
     void _update_retention_cache();
@@ -378,12 +379,10 @@ private:
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
     std::set<std::string> _suspended_cameras;
 
-    // Each recording camera's substream recorder, when it has one (r_substream_recorder.h); keeper thread only.
-    // _substream_started: when each camera's last one started (steady ms), for SUBSTREAM_RESTART_BACKOFF_MS.
-    // _substream_refusals: recorders in a row that ended without the camera answering.
+    // Each recording camera's substream recorder, when it has one (r_substream_recorder.h), and what to do about
+    // them; keeper thread only.
     std::map<std::string, std::unique_ptr<r_substream_recorder>> _substreams;
-    std::map<std::string, int64_t> _substream_started;
-    std::map<std::string, int> _substream_refusals;
+    r_substream_governor _substream_governor;
 
     // Last-seen set of assigned camera ids, to notify system plugins only when
     // the assignment actually changes (a camera added or forgotten) — not on the
