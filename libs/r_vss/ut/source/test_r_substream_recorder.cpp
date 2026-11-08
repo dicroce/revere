@@ -1,6 +1,12 @@
 #include "test_r_substream_recorder.h"
 #include "r_vss/r_substream_recorder.h"
 #include "r_vss/r_frame_feeds.h"
+#include "r_vss/r_live_restream_host.h"
+#include "r_vss/r_recording_context.h"
+#include "r_vss/r_rtsp_auth.h"
+#include "r_pipeline/r_stream_probe.h"
+#include <gst/rtsp-server/rtsp-server.h>
+#include <thread>
 #include "r_fakey/r_fake_camera.h"
 #include "r_storage/r_storage_file_reader.h"
 #include "r_vss/r_query.h"
@@ -16,6 +22,7 @@
 using namespace std;
 using namespace std::chrono;
 using namespace r_vss;
+using namespace r_pipeline;
 using namespace r_disco;
 using namespace r_utils;
 
@@ -404,4 +411,173 @@ void test_r_substream_recorder::test_posts_to_the_frame_feeds()
     RTF_ASSERT(first_ts > 0);
     RTF_ASSERT(all_sub);
     RTF_ASSERT(codec_ok);
+}
+
+// ---- the smaller stream's live restream mount ----
+
+void test_r_substream_recorder::test_mount_path()
+{
+    r_camera c;
+    c.id = "cam-1";
+    c.friendly_name = string("Front Door");
+    RTF_ASSERT(substream_mount_path(c) == "/Front_Door/sub");      // as the main mount is named, plus /sub
+    r_camera unnamed;
+    unnamed.id = "cam-2";
+    RTF_ASSERT(substream_mount_path(unnamed) == "/cam-2/sub");
+}
+
+namespace
+{
+// A bare RTSP server standing in for the stream keeper, so the recorder's mount and viewers are the real thing
+// (the keeper's constructor starts the system plugin host, which a unit test must not).
+class bare_host final : public r_live_restream_host
+{
+public:
+    bare_host() :
+        _server(gst_rtsp_server_new()),
+        _auth(r_rtsp_auth::make_auth(PASSWORD))
+    {
+        gst_rtsp_server_set_service(_server, "0");     // any free port
+        _mounts = gst_rtsp_server_get_mount_points(_server);
+        gst_rtsp_server_set_auth(_server, _auth);
+        _th = thread([this]() {
+            GMainContext* context = g_main_context_new();
+            g_main_context_push_thread_default(context);
+            gst_rtsp_server_attach(_server, context);
+            _port = gst_rtsp_server_get_bound_port(_server);
+            while(_running)
+            {
+                while(g_main_context_pending(context))
+                    g_main_context_iteration(context, false);
+                this_thread::sleep_for(milliseconds(1));
+            }
+            g_main_context_pop_thread_default(context);
+            g_main_context_unref(context);
+        });
+        auto deadline = steady_clock::now() + seconds(5);
+        while(_port <= 0 && steady_clock::now() < deadline)
+            this_thread::sleep_for(milliseconds(10));
+    }
+
+    ~bare_host() override
+    {
+        _running = false;
+        _th.join();
+        g_object_unref(_mounts);
+        g_object_unref(_server);
+        g_object_unref(_auth);
+    }
+
+    int port() const { return _port; }
+    size_t viewers() const { lock_guard<mutex> g(_lock); return _states.size(); }
+
+    // Whether a mount (the longest prefix of the path) is registered on the server.
+    bool has_mount(const string& path) const
+    {
+        gint matched = 0;
+        auto factory = gst_rtsp_mount_points_match(_mounts, path.c_str(), &matched);
+        if(factory)
+            g_object_unref(factory);
+        return factory != nullptr;
+    }
+
+    void add_live_restreaming_state(_GstRTSPMedia* media, shared_ptr<live_restreaming_state> lrs) override
+    {
+        lock_guard<mutex> g(_lock);
+        _states[media] = lrs;
+    }
+
+    void remove_live_restreaming_state(_GstRTSPMedia* media) override
+    {
+        lock_guard<mutex> g(_lock);
+        _states.erase(media);
+    }
+
+    void iterate_live_restreaming_states(const string& key, function<void(live_restreaming_state&)> fn) override
+    {
+        vector<shared_ptr<live_restreaming_state>> snapshot;
+        {
+            lock_guard<mutex> g(_lock);
+            for(auto& s : _states)
+            {
+                if(s.second->camera_id == key)
+                    snapshot.push_back(s.second);
+            }
+        }
+        for(auto& s : snapshot)
+            fn(*s);
+    }
+
+    string add_substream_mount(const r_camera& camera, const map<string, r_sdp_media>& sdp_medias, r_nullable<r_encoding> video_encoding, r_substream_recorder* recorder) override
+    {
+        return add_substream_mount_to(_mounts, camera, sdp_medias, video_encoding, recorder);
+    }
+
+    void remove_restream_mount(const string& path) override
+    {
+        gst_rtsp_mount_points_remove_factory(_mounts, path.c_str());
+    }
+
+    static constexpr const char* PASSWORD = "bare-host-password";
+
+private:
+    GstRTSPServer* _server;
+    GstRTSPMountPoints* _mounts {nullptr};
+    GstRTSPAuth* _auth;
+    thread _th;
+    atomic<bool> _running {true};
+    atomic<int> _port {0};
+    mutable mutex _lock;
+    map<_GstRTSPMedia*, shared_ptr<live_restreaming_state>> _states;
+};
+}
+
+// The recorder mounts the camera's smaller stream at <main mount>/sub as soon as it has video, serves it to a viewer
+// that connects (video only, at the substream's size), and takes the mount down with it.
+void test_r_substream_recorder::test_serves_its_sub_mount()
+{
+    auto fc = _substream_camera();
+    if(!fc)
+        return;
+    while(fc->bound_port() < 0)
+        this_thread::sleep_for(milliseconds(10));
+
+    bare_host host;
+    RTF_ASSERT(host.port() > 0);
+
+    auto ring = RING_DIR + PATH_SLASH + "front_sub.nts";
+    ensure_substream_ring(ring);
+
+    string mount;
+    r_stream_probe_result served, after;
+    {
+        r_substream_recorder rec(_camera(r_string_utils::format("rtsp://127.0.0.1:%d/sub", fc->bound_port())), ring, "tcp", nullptr, &host);
+        auto deadline = steady_clock::now() + seconds(15);
+        while((rec.mount_path().empty() || rec.frames_written() < 20) && steady_clock::now() < deadline)
+            this_thread::sleep_for(milliseconds(50));
+        mount = rec.mount_path();
+        RTF_ASSERT(mount == "/Front/sub");
+        RTF_ASSERT(host.has_mount(mount));
+
+        auto url = r_string_utils::format("rtsp://127.0.0.1:%d%s", host.port(), mount.c_str());
+        served = probe_stream(url, r_nullable<string>(string(r_rtsp_auth::RTSP_USER)), r_nullable<string>(string(bare_host::PASSWORD)), 2, 10);
+        RTF_ASSERT(served.answered);
+        RTF_ASSERT(served.received_video);
+        RTF_ASSERT_EQUAL(served.width, 320);
+        RTF_ASSERT_EQUAL(served.height, 240);
+        RTF_ASSERT(served.key_frames >= 1);
+    }
+    // The viewer's session ends with its client (the server tears it down a moment after), and the recorder is gone,
+    // its mount with it.
+    {
+        auto deadline = steady_clock::now() + seconds(5);
+        while(host.viewers() > 0 && steady_clock::now() < deadline)
+            this_thread::sleep_for(milliseconds(20));
+    }
+    RTF_ASSERT_EQUAL(host.viewers(), (size_t)0);
+    after = probe_stream(r_string_utils::format("rtsp://127.0.0.1:%d%s", host.port(), mount.c_str()),
+        r_nullable<string>(string(r_rtsp_auth::RTSP_USER)), r_nullable<string>(string(bare_host::PASSWORD)), 1, 3);
+    RTF_ASSERT(!after.received_video);
+    RTF_ASSERT(!host.has_mount(mount));      // unmounted with the recorder
+    fc->quit();
 }

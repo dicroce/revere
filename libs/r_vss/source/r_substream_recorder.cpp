@@ -1,8 +1,13 @@
 #include "r_vss/r_substream_recorder.h"
 #include "r_vss/r_recording_context.h"
+#include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_live_restream_host.h"
+#include "r_vss/r_rtsp_auth.h"
+#include <gst/rtsp-server/rtsp-server.h>
 #include "r_pipeline/r_arg.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
+#include <algorithm>
 
 using namespace r_vss;
 using namespace r_disco;
@@ -26,6 +31,14 @@ string r_vss::substream_ring_path(const string& record_file_path)
     return record_file_path.substr(0, dot) + "_sub" + record_file_path.substr(dot);
 }
 
+string r_vss::substream_mount_path(const r_camera& camera)
+{
+    // As the main mount is named (r_stream_keeper::add_restream_mount): the friendly name, spaces as underscores.
+    string name = camera.friendly_name.is_null() ? camera.id : camera.friendly_name.value();
+    replace(begin(name), end(name), ' ', '_');
+    return "/" + name + "/sub";
+}
+
 substream_step r_vss::substream_next_step(bool wanted, bool main_receiving, bool running, bool running_dead, bool backoff_over)
 {
     if(running)
@@ -39,10 +52,15 @@ void r_vss::ensure_substream_ring(const string& ring_path)
         r_storage_file::allocate(ring_path, SUBSTREAM_RING_BLOCK_SIZE, SUBSTREAM_RING_BLOCKS);
 }
 
-r_substream_recorder::r_substream_recorder(const r_camera& camera, const string& ring_path, const string& rtsp_protocols, r_frame_feeds* feeds) :
+r_substream_recorder::r_substream_recorder(const r_camera& camera, const string& ring_path, const string& rtsp_protocols, r_frame_feeds* feeds, r_live_restream_host* sk) :
     _camera(camera),
     _ring_path(ring_path),
     _feeds(feeds),
+    _sk(sk),
+    _fanout(make_unique<r_live_video_fanout>()),
+    _mount_lock(),
+    _mount_path(),
+    _video_caps(),
     _ring(ring_path),
     _write_context(),
     _sdp_lock(),
@@ -72,6 +90,37 @@ r_substream_recorder::r_substream_recorder(const r_camera& camera, const string&
     _source.set_video_sample_cb([this](const sample_context& sc, const r_pipeline::r_gst_buffer& buffer, bool key, int64_t pts){
         try
         {
+            // The smaller stream's live restream mount: video caps from the first frame, then the mount, and every
+            // frame to its viewers before the ring write, as main's go (r_live_video_fanout).
+            if(_sk)
+            {
+                if(_video_caps.is_null())
+                {
+                    _video_caps = _source.get_video_caps();
+                    if(!_video_caps.is_null())
+                    {
+                        map<string, r_sdp_media> sdp_medias;
+                        {
+                            lock_guard<mutex> g(_sdp_lock);
+                            sdp_medias = _sdp_medias;
+                        }
+                        try
+                        {
+                            auto path = _sk->add_substream_mount(_camera, sdp_medias, sc.video_encoding(), this);
+                            lock_guard<mutex> g(_mount_lock);
+                            _mount_path = path;
+                        }
+                        catch(const exception& e)
+                        {
+                            R_LOG_ERROR("substream of %s: no live restream mount: %s", _camera.id.c_str(), e.what());
+                        }
+                    }
+                }
+                _fanout->post(pts, key, buffer, [&](const function<void(live_restreaming_state&)>& fn) {
+                    _sk->iterate_live_restreaming_states(_camera.id + "/sub", fn);
+                });
+            }
+
             if(_write_context.is_null())
             {
                 // The ring is written from the start of a GOP, so a reader never gets frames it can't decode.
@@ -107,11 +156,36 @@ r_substream_recorder::r_substream_recorder(const r_camera& camera, const string&
     _source.play();
 }
 
+string r_substream_recorder::mount_path() const
+{
+    lock_guard<mutex> g(_mount_lock);
+    return _mount_path;
+}
+
+void r_substream_recorder::live_restream_media_configure(_GstRTSPMediaFactory*, _GstRTSPMedia* media)
+{
+    auto name = (_camera.friendly_name.is_null() ? _camera.id : _camera.friendly_name.value()) + " (smaller stream)";
+    live_restream_configure_video_only(_sk, media, _camera.id + "/sub", name, _video_caps.value());
+}
+
 r_substream_recorder::~r_substream_recorder() noexcept
 {
     try
     {
         _source.stop();
+    }
+    catch(...)
+    {
+    }
+    // Its mount goes with it: a request for it then finds the main stream's, or nothing.
+    try
+    {
+        if(_sk)
+        {
+            auto path = mount_path();
+            if(!path.empty())
+                _sk->remove_restream_mount(path);
+        }
     }
     catch(...)
     {
@@ -209,4 +283,35 @@ bool r_substream_governor::main_dropped(const string& camera_id, int64_t now_ms,
 void r_substream_governor::forget(const string& camera_id)
 {
     _cameras.erase(camera_id);
+}
+
+static void _substream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, gpointer user_data)
+{
+    ((r_substream_recorder*)user_data)->live_restream_media_configure((_GstRTSPMediaFactory*)factory, (_GstRTSPMedia*)media);
+}
+
+string r_vss::add_substream_mount_to(_GstRTSPMountPoints* mounts, const r_camera& camera, const map<string, r_sdp_media>& sdp_medias, r_nullable<r_encoding> video_encoding, r_substream_recorder* recorder)
+{
+    if(video_encoding.is_null())
+        R_THROW(("No video encoding for the substream mount!"));
+    if(sdp_medias.find("video") == sdp_medias.end())
+        R_THROW(("No video stream found in SDP!"));
+    auto& sdp_video = sdp_medias.at("video");
+    if(sdp_video.formats.empty())
+        R_THROW(("No video formats found in SDP!"));
+
+    auto factory = gst_rtsp_media_factory_new();
+    if(!factory)
+        R_THROW(("Failed to create restream media factory!"));
+
+    // Video only: the smaller stream carries none of the camera's audio, which is main's.
+    auto launch_str = r_stream_keeper::create_restream_launch_string(video_encoding.value(), sdp_video.formats.front(), r_nullable<r_encoding>(), 0);
+    gst_rtsp_media_factory_set_launch(factory, launch_str.c_str());
+    gst_rtsp_media_factory_set_shared(factory, FALSE);
+    r_rtsp_auth::allow_viewer(factory);
+    g_signal_connect(factory, "media-configure", (GCallback)_substream_media_configure, recorder);
+
+    auto mount_path = substream_mount_path(camera);
+    gst_rtsp_mount_points_add_factory((GstRTSPMountPoints*)mounts, mount_path.c_str(), factory);
+    return mount_path;
 }

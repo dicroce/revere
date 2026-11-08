@@ -842,6 +842,11 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
     return mount_path;
 }
 
+std::string r_stream_keeper::add_substream_mount(const r_camera& camera, const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, r_nullable<r_pipeline::r_encoding> video_encoding, r_substream_recorder* recorder)
+{
+    return add_substream_mount_to(_mounts, camera, sdp_medias, video_encoding, recorder);
+}
+
 void r_stream_keeper::remove_restream_mount(const string& mount_path)
 {
     if(mount_path.empty() || mount_path[0] != '/')
@@ -1633,7 +1638,7 @@ void r_stream_keeper::_tend_substreams()
             {
                 auto ring = substream_ring_path(storage_path(_top_dir, cam.record_file_path.value()));
                 ensure_substream_ring(ring);
-                _substreams[id] = make_unique<r_substream_recorder>(cam, ring, c.protocols, &_frame_feeds);
+                _substreams[id] = make_unique<r_substream_recorder>(cam, ring, c.protocols, &_frame_feeds, this);
                 R_LOG_INFO("substream of %s: recording to %s", id.c_str(), ring.c_str());
             }
             catch(const exception& e)
@@ -1711,8 +1716,11 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.camera = c.second->camera();
             s.bytes_per_second = c.second->bytes_per_second();
             s.receiving_video = c.second->receiving_video();
+            s.mount = c.second->restream_mount_path();
             auto sub = _substreams.find(c.first);
             s.sub_fresh = sub != _substreams.end() && sub->second->fresh();
+            if(sub != _substreams.end())
+                s.sub_mount = sub->second->mount_path();
             s.storage_write_lag_ms = c.second->storage_write_lag_ms();
             s.storage_timeline_lag_ms = c.second->storage_timeline_lag_ms();
             s.has_camera_events = c.second->has_camera_events();
@@ -1767,6 +1775,7 @@ void r_stream_keeper::_live_restream_media_configure(GstRTSPMediaFactory* factor
 {
     ((r_recording_context*)user_data)->live_restream_media_configure(factory, media);
 }
+
 
 void r_stream_keeper::_stop(const string& camera_id)
 {

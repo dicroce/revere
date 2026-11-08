@@ -16,8 +16,14 @@
 #include <mutex>
 #include <string>
 
+struct _GstRTSPMediaFactory;
+struct _GstRTSPMedia;
+
 namespace r_vss
 {
+
+class r_live_restream_host;
+class r_live_video_fanout;
 
 // The substream ring: a small storage file of its own beside the camera's recording, kept only for live view.
 // 13 blocks of 10 MiB, about 17 minutes at 1 Mbit/s.
@@ -32,6 +38,12 @@ constexpr int64_t SUBSTREAM_DEAD_MS = 20000;
 // The substream ring's path for a camera recording to record_file_path: "front_door.nts" records its substream to
 // "front_door_sub.nts" in the same directory.
 R_API std::string substream_ring_path(const std::string& record_file_path);
+
+// The path of a camera's substream restream mount, next to its main one ("/<name>", spaces as underscores):
+// "/<name>/sub". It is only mounted while the camera's substream recorder is up, and a request for it at any other
+// time can reach the main stream (the server takes the longest mount that is a prefix of the path), so consumers
+// look at /cameras' sub_mount and sub_fresh first, and check the stream's size.
+R_API std::string substream_mount_path(const r_disco::r_camera& camera);
 
 // What r_stream_keeper does about a camera's substream recorder on a pass.
 enum class substream_step { none, start, stop };
@@ -128,7 +140,8 @@ class r_substream_recorder final
 {
 public:
     // feeds: where the frames also go, as the camera's "sub" stream (r_frame_feeds); null for none.
-    R_API r_substream_recorder(const r_disco::r_camera& camera, const std::string& ring_path, const std::string& rtsp_protocols, r_frame_feeds* feeds = nullptr);
+    // host: where its restream mount is added and its viewers are found (null for none: it only records).
+    R_API r_substream_recorder(const r_disco::r_camera& camera, const std::string& ring_path, const std::string& rtsp_protocols, r_frame_feeds* feeds = nullptr, r_live_restream_host* host = nullptr);
     R_API ~r_substream_recorder() noexcept;
     R_API r_substream_recorder(const r_substream_recorder&) = delete;
     R_API r_substream_recorder& operator=(const r_substream_recorder&) = delete;
@@ -143,6 +156,11 @@ public:
     R_API int64_t frames_written() const { return _frames_written; }
     // Where it writes.
     R_API const std::string& ring_path() const { return _ring_path; }
+    // The path of its live restream mount once it has one (it has video caps from its first frame); empty before.
+    R_API std::string mount_path() const;
+
+    // One viewer connected to its mount (the keeper's media-configure callback calls this).
+    R_API void live_restream_media_configure(_GstRTSPMediaFactory* factory, _GstRTSPMedia* media);
 
 private:
     int64_t _ms_since_video() const;
@@ -150,6 +168,11 @@ private:
     r_disco::r_camera _camera;
     std::string _ring_path;
     r_frame_feeds* _feeds;
+    r_live_restream_host* _sk;
+    std::unique_ptr<r_live_video_fanout> _fanout;
+    mutable std::mutex _mount_lock;
+    std::string _mount_path;
+    r_utils::r_nullable<r_pipeline::r_gst_caps> _video_caps;
     r_storage::r_storage_file _ring;
     r_utils::r_nullable<r_storage::r_storage_write_context> _write_context;
     std::mutex _sdp_lock;

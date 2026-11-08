@@ -20,6 +20,7 @@
 #include "r_vss/r_teardown_queue.h"
 #include "r_vss/r_frame_tap.h"
 #include "r_vss/r_substream_recorder.h"
+#include "r_vss/r_live_restream_host.h"
 #include <functional>
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
@@ -119,6 +120,10 @@ struct r_stream_status
     r_disco::r_camera camera;
     uint32_t bytes_per_second;
     bool receiving_video {false};
+    // The camera's live restream mounts, empty until each is up: the main stream's, and the substream's (only while
+    // its recorder is up). A request for the substream's path when it isn't mounted can reach main's.
+    std::string mount;
+    std::string sub_mount;
     // Its substream recorder wrote a frame within SUBSTREAM_FRESH_MS (r_substream_recorder::fresh).
     bool sub_fresh {false};
     int64_t storage_write_lag_ms {0}; // how far storage persistence trails reception
@@ -220,7 +225,7 @@ struct r_stream_keeper_result
 
 class r_recording_context;
 
-class r_stream_keeper final
+class r_stream_keeper final : public r_live_restream_host
 {
 public:
     // rtsp_port: where the restream (live and playback video) is served.
@@ -252,7 +257,10 @@ public:
     R_API r_tier_status motion_tier_status(const std::string& camera_id) const;
 
     R_API std::string add_restream_mount(const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, const r_disco::r_camera& camera, r_recording_context* rc, r_utils::r_nullable<r_pipeline::r_encoding> video_encoding, r_utils::r_nullable<r_pipeline::r_encoding> audio_encoding);
-    R_API void remove_restream_mount(const std::string& path);   // and its <path>/opus
+    R_API void remove_restream_mount(const std::string& path) override;   // and its <path>/opus
+    // The camera's substream mount ("<main mount>/sub", video only) for its substream recorder; the recorder removes
+    // it with remove_restream_mount. Throws when the SDP has no video.
+    R_API std::string add_substream_mount(const r_disco::r_camera& camera, const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, r_utils::r_nullable<r_pipeline::r_encoding> video_encoding, r_substream_recorder* recorder) override;
 
     R_API void post_frame_to_motion_engine(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_params, const std::string& camera_id, bool is_key_frame, int64_t ingest_lag_ms = 0);
 
@@ -332,9 +340,9 @@ public:
     R_API r_keep_awake& keep_awake() { return _keep_awake; }
 
     // Live restreaming state management (owned by r_stream_keeper for safe cleanup)
-    R_API void add_live_restreaming_state(GstRTSPMedia* media, std::shared_ptr<live_restreaming_state> lrs);
-    R_API void remove_live_restreaming_state(GstRTSPMedia* media);
-    R_API void iterate_live_restreaming_states(const std::string& camera_id, std::function<void(live_restreaming_state&)> fn);
+    R_API void add_live_restreaming_state(GstRTSPMedia* media, std::shared_ptr<live_restreaming_state> lrs) override;
+    R_API void remove_live_restreaming_state(GstRTSPMedia* media) override;
+    R_API void iterate_live_restreaming_states(const std::string& camera_id, std::function<void(live_restreaming_state&)> fn) override;
 
     // Queue overflow monitoring
     R_API size_t get_motion_engine_dropped_count();

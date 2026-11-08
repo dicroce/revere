@@ -5,6 +5,7 @@
 #include "r_vss/r_restream_track.h"
 #include "r_vss/r_lag_watchdog.h"
 #include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_live_restream_host.h"
 #include "r_vss/r_ws.h"
 #include "r_disco/r_camera.h"
 #include "r_pipeline/r_gst_source.h"
@@ -16,6 +17,7 @@
 #include "r_utils/r_blocking_q.h"
 #include "r_utils/r_macro.h"
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <chrono>
 #include <deque>
@@ -120,7 +122,7 @@ struct _gop_cache_entry
 struct live_restreaming_state
 {
     r_recording_context* rc {nullptr};
-    r_stream_keeper* sk {nullptr};  // For cleanup callback to safely access the map
+    r_live_restream_host* sk {nullptr};  // For cleanup callback to safely access the map
     GstRTSPMedia* media {nullptr};
     std::string camera_id;  // To identify which camera this state belongs to
 
@@ -164,6 +166,31 @@ struct live_restreaming_state
     r_utils::r_blocking_q<struct _frame_context> video_samples{LIVE_RESTREAM_MAX_QUEUE_SIZE};
     r_utils::r_blocking_q<struct _frame_context> audio_samples{LIVE_RESTREAM_MAX_QUEUE_SIZE};
 };
+
+// One camera stream's video to its live restream viewers: a cache of the newest GOP, which a viewer that connects is
+// brought up to date from (a burst of compressed timestamps, so it plays them as fast as it can and doesn't stay a GOP
+// behind), then each frame to every viewer's queue with the catch-up slew. Used by a recording context for the main
+// stream and by a substream recorder for the smaller one. Called from the stream's source thread only.
+class r_live_video_fanout final
+{
+public:
+    // Calls fn on each viewer of the stream.
+    typedef std::function<void(const std::function<void(live_restreaming_state&)>& fn)> for_each_viewer_t;
+
+    // A frame as the source delivered it (pts in ms): into the cache, and to every viewer.
+    R_API void post(int64_t pts, bool key, const r_pipeline::r_gst_buffer& buffer, const for_each_viewer_t& for_each_viewer);
+
+    // Frames in the cache.
+    R_API size_t cached_frames() const { return _gop_cache.size(); }
+
+private:
+    std::deque<_gop_cache_entry> _gop_cache;
+};
+
+// Sets up one viewer session of a video-only live restream mount (a substream's): its appsrc with `caps`, and its
+// state, registered with the keeper under `key` (the camera's id and "/sub", so r_live_video_fanout finds it). `name`
+// names the session in logs.
+R_API void live_restream_configure_video_only(r_live_restream_host* sk, GstRTSPMedia* media, const std::string& key, const std::string& name, const r_pipeline::r_gst_caps& caps);
 
 struct playback_restreaming_state
 {
@@ -236,6 +263,8 @@ public:
     R_API int32_t bytes_per_second() const;
 
     R_API bool receiving_video() const;
+    // The path of the camera's live restream mount ("/<name>"), once it has one; empty before.
+    R_API std::string restream_mount_path() const { std::lock_guard<std::mutex> g(_restream_mount_lock); return _restream_mount_path; }
     // Milliseconds since the newest video frame arrived; a very large number when none has.
     R_API int64_t video_age_ms() const;
 
@@ -327,6 +356,7 @@ private:
     std::map<std::string, r_pipeline::r_sdp_media> _sdp_medias;
     r_utils::r_nullable<r_pipeline::r_gst_caps> _video_caps;
     r_utils::r_nullable<r_pipeline::r_gst_caps> _audio_caps;
+    mutable std::mutex _restream_mount_lock;
     std::string _restream_mount_path;
     std::mutex _playback_restreaming_states_lok;
     std::map<GstRTSPMedia*, std::shared_ptr<playback_restreaming_state>> _playback_restreaming_states;
@@ -353,7 +383,7 @@ private:
     // Only touched by the source thread inside the video sample callback —
     // no mutex needed. Drained into a new live RTSP viewer's queue when
     // their LRS appears with needs_gop_replay set.
-    std::deque<_gop_cache_entry> _video_gop_cache;
+    r_live_video_fanout _video_fanout;
     std::unique_ptr<r_cameras::r_camera_events> _camera_events;
 
     std::mutex _camera_motion_lock;

@@ -9,6 +9,8 @@ public:
       TEST(test_r_substream_recorder::test_records_into_its_ring);
       TEST(test_r_substream_recorder::test_no_camera);
       TEST(test_r_substream_recorder::test_posts_to_the_frame_feeds);
+      TEST(test_r_substream_recorder::test_mount_path);
+      TEST(test_r_substream_recorder::test_serves_its_sub_mount);
       TEST(test_r_substream_recorder::test_governor_starts_after_main_and_backs_off);
       TEST(test_r_substream_recorder::test_governor_counts_a_refusal_at_setup);
       TEST(test_r_substream_recorder::test_governor_holds_a_given_up_camera_until_its_context_changes);
@@ -26,6 +28,8 @@ public:
     void test_records_into_its_ring();
     void test_no_camera();
     void test_posts_to_the_frame_feeds();
+    void test_mount_path();
+    void test_serves_its_sub_mount();
     void test_governor_starts_after_main_and_backs_off();
     void test_governor_counts_a_refusal_at_setup();
     void test_governor_holds_a_given_up_camera_until_its_context_changes();

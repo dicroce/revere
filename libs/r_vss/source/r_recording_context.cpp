@@ -255,7 +255,11 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 this->_audio_caps = _source.get_audio_caps();
 
             if(!this->_video_caps.is_null() && this->_restream_mount_path.empty())
-                this->_restream_mount_path = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), sc.audio_encoding());
+            {
+                auto mount = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), sc.audio_encoding());
+                std::lock_guard<std::mutex> g(_restream_mount_lock);
+                this->_restream_mount_path = mount;
+            }
 
             auto ts = (sc.stream_start_ts() + pts);
             this->_storage_file.write_frame(
@@ -381,7 +385,11 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             {
                 this->_video_caps = _source.get_video_caps();
                 if(!this->_has_audio)
-                    this->_restream_mount_path = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), sc.audio_encoding());
+                {
+                    auto mount = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), sc.audio_encoding());
+                    std::lock_guard<std::mutex> g(_restream_mount_lock);
+                    this->_restream_mount_path = mount;
+                }
             }
 
             auto ts = (sc.stream_start_ts() + pts);
@@ -392,119 +400,9 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             // forwarding — measured client-side as frames arriving in pairs —
             // and the restream path needs nothing from the write.
 
-            // Maintain the per-camera GOP cache so a freshly-connected viewer can
-            // get frames immediately rather than waiting for the next IDR. Clear
-            // on every key so the cache always starts with a keyframe (until the
-            // safety cap kicks in for a misbehaving source).
-            if(key)
-                _video_gop_cache.clear();
-            _video_gop_cache.push_back({pts, key, buffer});
-            while(_video_gop_cache.size() > GOP_CACHE_MAX_FRAMES)
-                _video_gop_cache.pop_front();
-
-            this->_sk->iterate_live_restreaming_states(this->_camera.id, [&](live_restreaming_state& lrs) {
-                // Fast-start path: a new viewer just connected. Burst the cached
-                // GOP into their queue with COMPRESSED timestamps (1ms apart) so
-                // the client decodes and plays them as fast as possible instead
-                // of pacing them out at the source's 33ms rhythm (which would
-                // leave the viewer permanently a GOP behind live).
-                //
-                // After the burst, we shift first_restream_v_pts so that the
-                // next live frame (this current frame's successor) lands exactly
-                // one source frame-interval after the last burst frame's
-                // (compressed) gst_pts — and live cadence resumes naturally.
-                if(lrs.needs_gop_replay)
-                {
-                    lrs.needs_gop_replay = false;
-
-                    if(!_video_gop_cache.empty() && _video_gop_cache.front().key)
-                    {
-                        constexpr uint64_t BURST_INTERVAL_NS = 1000000; // 1ms
-
-                        size_t n = _video_gop_cache.size();
-                        size_t i = 0;
-                        for(auto& e : _video_gop_cache)
-                        {
-                            _frame_context fc;
-                            fc.gst_pts = i * BURST_INTERVAL_NS;
-                            fc.gst_dts = i * BURST_INTERVAL_NS;
-                            fc.key = e.key;
-                            fc.buffer = e.buffer;
-                            lrs.video_samples.post(fc);
-                            ++i;
-                        }
-
-                        // Anchor live so the next live frame's gst_pts =
-                        //   last_burst_gst_pts + (p_next - p_last_burst)*1e6
-                        // i.e. natural source-rate continuation from the end
-                        // of the compressed burst.
-                        auto last_burst_gst_pts = (n - 1) * BURST_INTERVAL_NS;
-                        auto last_burst_source_pts_ns = (uint64_t)_video_gop_cache.back().pts * 1000000;
-                        auto anchor_ns = last_burst_source_pts_ns - last_burst_gst_pts;
-
-                        lrs.first_restream_v_times_set = true;
-                        lrs.first_restream_v_pts = anchor_ns;
-                        lrs.first_restream_v_dts = anchor_ns;
-                        lrs.first_restream_a_times_set = true;
-                        lrs.first_restream_a_pts = anchor_ns;
-                        lrs.first_restream_a_dts = anchor_ns;
-                        lrs.live_restream_key_sent = true;
-
-                        return;  // current frame already included via cache tail
-                    }
-                    // Cache doesn't start with a key (cap blew past it). Fall
-                    // through to the key-gated path below.
-                }
-
-                if(lrs.live_restream_key_sent || key)
-                {
-                    lrs.live_restream_key_sent = true;
-
-                    if(!lrs.first_restream_v_times_set)
-                    {
-                        lrs.first_restream_v_times_set = true;
-                        lrs.first_restream_v_pts = pts * 1000000;
-                        lrs.first_restream_v_dts = pts * 1000000;
-                    }
-
-                    // Live-edge catch-up: while this viewer's standing queue is
-                    // deep, grow the skew by CATCHUP_RATE of each source frame
-                    // interval. Outgoing deltas shrink to (1 - rate) of the
-                    // source's, so the sink transmits — and the client plays —
-                    // slightly fast until the backlog drains. Timestamps stay
-                    // monotonic because the skew grows by strictly less than
-                    // each source delta.
-                    auto src_pts_ns = (uint64_t)pts * 1000000ULL;
-                    auto depth = lrs.video_samples.size();
-                    if(!lrs.catching_up && depth >= LIVE_RESTREAM_CATCHUP_HIGH_WATER_FRAMES)
-                    {
-                        lrs.catching_up = true;
-                        R_LOG_INFO("live restream[%s]: catch-up slew engaged (viewer queue depth %zu)", lrs.camera_id.c_str(), depth);
-                    }
-                    else if(lrs.catching_up && depth <= LIVE_RESTREAM_CATCHUP_LOW_WATER_FRAMES)
-                    {
-                        lrs.catching_up = false;
-                        R_LOG_INFO("live restream[%s]: catch-up slew done (viewer queue depth %zu, total skew %llums)",
-                            lrs.camera_id.c_str(), depth,
-                            (unsigned long long)(lrs.catchup_skew_ns.load(std::memory_order_relaxed) / 1000000ULL));
-                    }
-                    if(lrs.catching_up && lrs.last_catchup_v_pts_set && src_pts_ns > lrs.last_catchup_v_pts_ns)
-                    {
-                        auto delta_ns = src_pts_ns - lrs.last_catchup_v_pts_ns;
-                        if(delta_ns < 1000000000ULL) // ignore pts discontinuities
-                            lrs.catchup_skew_ns.fetch_add((uint64_t)(delta_ns * LIVE_RESTREAM_CATCHUP_RATE), std::memory_order_relaxed);
-                    }
-                    lrs.last_catchup_v_pts_set = true;
-                    lrs.last_catchup_v_pts_ns = src_pts_ns;
-
-                    auto skew = lrs.catchup_skew_ns.load(std::memory_order_relaxed);
-                    _frame_context fc;
-                    fc.gst_pts = (pts*1000000) - lrs.first_restream_v_pts - skew;
-                    fc.gst_dts = (pts*1000000) - lrs.first_restream_v_dts - skew;
-                    fc.key = key;
-                    fc.buffer = buffer;
-                    lrs.video_samples.post(fc);
-                }
+            // Live restream forwarding (r_live_video_fanout): the GOP cache and every viewer's queue.
+            _video_fanout.post(pts, key, buffer, [&](const std::function<void(live_restreaming_state&)>& fn) {
+                this->_sk->iterate_live_restreaming_states(this->_camera.id, fn);
             });
 
             // The ts the frame is stored at. It differs from ts once storage has
@@ -804,6 +702,160 @@ static void _need_live_data_cbs(GstElement* appsrc, guint, live_restreaming_stat
     if(appsrc == lrs->v_appsrc)
         restream_feed(appsrc, lrs->video_samples, lrs->video_gate);
     else restream_feed(appsrc, lrs->audio_samples, lrs->audio_gate);
+}
+
+void r_live_video_fanout::post(int64_t pts, bool key, const r_pipeline::r_gst_buffer& buffer, const for_each_viewer_t& for_each_viewer)
+{
+    // Maintain the per-camera GOP cache so a freshly-connected viewer can
+    // get frames immediately rather than waiting for the next IDR. Clear
+    // on every key so the cache always starts with a keyframe (until the
+    // safety cap kicks in for a misbehaving source).
+    if(key)
+        _gop_cache.clear();
+    _gop_cache.push_back({pts, key, buffer});
+    while(_gop_cache.size() > GOP_CACHE_MAX_FRAMES)
+        _gop_cache.pop_front();
+
+    for_each_viewer([&](live_restreaming_state& lrs) {
+        // Fast-start path: a new viewer just connected. Burst the cached
+        // GOP into their queue with COMPRESSED timestamps (1ms apart) so
+        // the client decodes and plays them as fast as possible instead
+        // of pacing them out at the source's 33ms rhythm (which would
+        // leave the viewer permanently a GOP behind live).
+        //
+        // After the burst, we shift first_restream_v_pts so that the
+        // next live frame (this current frame's successor) lands exactly
+        // one source frame-interval after the last burst frame's
+        // (compressed) gst_pts — and live cadence resumes naturally.
+        if(lrs.needs_gop_replay)
+        {
+            lrs.needs_gop_replay = false;
+
+            if(!_gop_cache.empty() && _gop_cache.front().key)
+            {
+                constexpr uint64_t BURST_INTERVAL_NS = 1000000; // 1ms
+
+                size_t n = _gop_cache.size();
+                size_t i = 0;
+                for(auto& e : _gop_cache)
+                {
+                    _frame_context fc;
+                    fc.gst_pts = i * BURST_INTERVAL_NS;
+                    fc.gst_dts = i * BURST_INTERVAL_NS;
+                    fc.key = e.key;
+                    fc.buffer = e.buffer;
+                    lrs.video_samples.post(fc);
+                    ++i;
+                }
+
+                // Anchor live so the next live frame's gst_pts =
+                //   last_burst_gst_pts + (p_next - p_last_burst)*1e6
+                // i.e. natural source-rate continuation from the end
+                // of the compressed burst.
+                auto last_burst_gst_pts = (n - 1) * BURST_INTERVAL_NS;
+                auto last_burst_source_pts_ns = (uint64_t)_gop_cache.back().pts * 1000000;
+                auto anchor_ns = last_burst_source_pts_ns - last_burst_gst_pts;
+
+                lrs.first_restream_v_times_set = true;
+                lrs.first_restream_v_pts = anchor_ns;
+                lrs.first_restream_v_dts = anchor_ns;
+                lrs.first_restream_a_times_set = true;
+                lrs.first_restream_a_pts = anchor_ns;
+                lrs.first_restream_a_dts = anchor_ns;
+                lrs.live_restream_key_sent = true;
+
+                return;  // current frame already included via cache tail
+            }
+            // Cache doesn't start with a key (cap blew past it). Fall
+            // through to the key-gated path below.
+        }
+
+        if(lrs.live_restream_key_sent || key)
+        {
+            lrs.live_restream_key_sent = true;
+
+            if(!lrs.first_restream_v_times_set)
+            {
+                lrs.first_restream_v_times_set = true;
+                lrs.first_restream_v_pts = pts * 1000000;
+                lrs.first_restream_v_dts = pts * 1000000;
+            }
+
+            // Live-edge catch-up: while this viewer's standing queue is
+            // deep, grow the skew by CATCHUP_RATE of each source frame
+            // interval. Outgoing deltas shrink to (1 - rate) of the
+            // source's, so the sink transmits — and the client plays —
+            // slightly fast until the backlog drains. Timestamps stay
+            // monotonic because the skew grows by strictly less than
+            // each source delta.
+            auto src_pts_ns = (uint64_t)pts * 1000000ULL;
+            auto depth = lrs.video_samples.size();
+            if(!lrs.catching_up && depth >= LIVE_RESTREAM_CATCHUP_HIGH_WATER_FRAMES)
+            {
+                lrs.catching_up = true;
+                R_LOG_INFO("live restream[%s]: catch-up slew engaged (viewer queue depth %zu)", lrs.camera_id.c_str(), depth);
+            }
+            else if(lrs.catching_up && depth <= LIVE_RESTREAM_CATCHUP_LOW_WATER_FRAMES)
+            {
+                lrs.catching_up = false;
+                R_LOG_INFO("live restream[%s]: catch-up slew done (viewer queue depth %zu, total skew %llums)",
+                    lrs.camera_id.c_str(), depth,
+                    (unsigned long long)(lrs.catchup_skew_ns.load(std::memory_order_relaxed) / 1000000ULL));
+            }
+            if(lrs.catching_up && lrs.last_catchup_v_pts_set && src_pts_ns > lrs.last_catchup_v_pts_ns)
+            {
+                auto delta_ns = src_pts_ns - lrs.last_catchup_v_pts_ns;
+                if(delta_ns < 1000000000ULL) // ignore pts discontinuities
+                    lrs.catchup_skew_ns.fetch_add((uint64_t)(delta_ns * LIVE_RESTREAM_CATCHUP_RATE), std::memory_order_relaxed);
+            }
+            lrs.last_catchup_v_pts_set = true;
+            lrs.last_catchup_v_pts_ns = src_pts_ns;
+
+            auto skew = lrs.catchup_skew_ns.load(std::memory_order_relaxed);
+            _frame_context fc;
+            fc.gst_pts = (pts*1000000) - lrs.first_restream_v_pts - skew;
+            fc.gst_dts = (pts*1000000) - lrs.first_restream_v_dts - skew;
+            fc.key = key;
+            fc.buffer = buffer;
+            lrs.video_samples.post(fc);
+        }
+    });
+}
+
+static void _video_only_cleanup(live_restreaming_state* lrs)
+{
+    if(lrs->v_appsrc) { gst_object_unref(lrs->v_appsrc); lrs->v_appsrc = nullptr; }
+    lrs->sk->remove_live_restreaming_state(lrs->media);
+}
+
+void r_vss::live_restream_configure_video_only(r_live_restream_host* sk, GstRTSPMedia* media, const string& key, const string& name, const r_pipeline::r_gst_caps& caps)
+{
+    auto lrs = make_shared<live_restreaming_state>();
+    lrs->sk = sk;
+    lrs->media = media;
+    lrs->camera_id = key;
+    static std::atomic<uint64_t> next_session {1};
+    lrs->session_id = next_session++;
+    lrs->camera_name = name;
+
+    auto element = gst_rtsp_media_get_element(media);
+    if(!element)
+        R_THROW(("Failed to get element from media in restream media configure."));
+    std::shared_ptr<GstElement> element_guard(element, [](GstElement* e){ if(e) gst_object_unref(e); });
+
+    // As the main mount's: the state goes away with the media, and the video's appsrc is fed from the state's queue.
+    g_object_set_data_full(G_OBJECT(media), "rtsp-extra-data", lrs.get(), (GDestroyNotify)_video_only_cleanup);
+
+    lrs->v_appsrc = gst_bin_get_by_name_recurse_up(GST_BIN(element), "videosrc");
+    if(!lrs->v_appsrc)
+        R_THROW(("Failed to get videosrc from element in restream media configure."));
+
+    gst_util_set_object_arg(G_OBJECT(lrs->v_appsrc), "format", "time");
+    g_object_set(G_OBJECT(lrs->v_appsrc), "caps", (GstCaps*)caps, NULL);
+    g_object_set(G_OBJECT(lrs->v_appsrc), "is-live", TRUE, NULL);
+    g_signal_connect(lrs->v_appsrc, "need-data", (GCallback)_need_live_data_cbs, lrs.get());
+
+    sk->add_live_restreaming_state(media, lrs);
 }
 
 void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, GstRTSPMedia* media)
