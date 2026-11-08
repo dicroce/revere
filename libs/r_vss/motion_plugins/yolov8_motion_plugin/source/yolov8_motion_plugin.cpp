@@ -573,8 +573,21 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
         }
     }
 
-    const auto is_static_detection = [&static_anchors](const Detection& detection) {
+    // What the start frame showed: a learnt vehicle anchor only drops a car that was already parked then.
+    std::vector<r_vss::r_early_alerts::r_seen> start_seen;
+    {
+        auto sf_it = _camera_start_frame_detections.find(camera_id);
+        if(sf_it != _camera_start_frame_detections.end())
+            for(const auto& d : sf_it->second)
+                start_seen.push_back({get_class_name(d.class_id), {d.x1, d.y1, d.x2, d.y2}});
+    }
+
+    const auto is_static_detection = [this, &static_anchors, &start_seen, &camera_id, end_time_ms](const Detection& detection) {
         const float static_iou_threshold = 0.85f;
+        // A parked car the camera has seen sit still in earlier events, even if this event's first and last frames
+        // missed it (night, IR): left out of the record, so a raccoon's event isn't a vehicle's.
+        if(_early.is_parked_vehicle(camera_id, get_class_name(detection.class_id), {detection.x1, detection.y1, detection.x2, detection.y2}, end_time_ms, start_seen))
+            return true;
         for(const auto& anchor : static_anchors) {
             if(anchor.class_id != detection.class_id) continue;
             const float ix1 = std::max(anchor.x1, detection.x1);

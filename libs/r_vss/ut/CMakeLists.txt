@@ -27,6 +27,8 @@ add_executable(
     source/test_r_motion_plugin_abi.cpp
     include/test_r_early_alerts.h
     source/test_r_early_alerts.cpp
+    include/test_r_recap.h
+    source/test_r_recap.cpp
     include/test_r_event_timing.h
     source/test_r_event_timing.cpp
     include/test_r_detection_cap.h

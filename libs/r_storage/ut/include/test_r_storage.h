@@ -12,6 +12,8 @@ public:
       TEST(test_r_storage::test_r_storage_file_query_key_gap);
       TEST(test_r_storage::test_r_storage_file_query_key_across_blocks);
       TEST(test_r_storage::test_r_storage_file_query_key_empty);
+      TEST(test_r_storage::test_r_storage_file_query_all_has_audio);
+      TEST(test_r_storage::test_r_storage_read_stream_or_warn);
 #if 0
       TEST(test_r_storage::test_r_dumbdex_writing);
       TEST(test_r_storage::test_r_dumbdex_consistency);
@@ -53,6 +55,8 @@ public:
     void test_r_storage_file_query_key_gap();
     void test_r_storage_file_query_key_across_blocks();
     void test_r_storage_file_query_key_empty();
+    void test_r_storage_file_query_all_has_audio();
+    void test_r_storage_read_stream_or_warn();
 
 #if 0
     void test_r_dumbdex_writing();

@@ -34,6 +34,8 @@
 
 #include <string>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <chrono>
 #include <fstream>
 #include <cmath>
@@ -338,22 +340,111 @@ static string _make_file_name(string name)
 }
 
 // Resolution and framerate from a camera's recording file (the same reading
-// /cameras reports), re-read at most once a minute per camera since it means
-// opening the file.
+// /cameras reports). Reading it opens the recording file and its catalog and
+// reads a key frame, which on a busy recording disk can take seconds, so it
+// never runs on the UI thread: the UI shows the last value read, and an entry
+// over a minute old is re-read on a background thread, at most one read per
+// camera at a time. (Every camera's entry goes stale in the same frame, so
+// reading inline stacked one slow read per camera into a single frame — long
+// enough for Windows to call the app hung and close it.)
+namespace
+{
+struct source_info_entry
+{
+    chrono::steady_clock::time_point read_at {};
+    bool read_once {false};
+    bool reading {false};
+    bool stopped {false};  // its files are being deleted: no more reads
+    bool drop_when_read {false};  // the delete finished first: the read drops the entry
+    r_vss::camera_source_info info;
+};
+
+// Never destroyed: a read thread may still be finishing when the app exits.
+struct source_info_cache
+{
+    mutex lock;
+    condition_variable read_done;
+    map<string, source_info_entry> entries;
+};
+
+source_info_cache& _source_info_cache()
+{
+    static auto* c = new source_info_cache();
+    return *c;
+}
+}
+
 static r_vss::camera_source_info _cached_source_info(const r_disco::r_camera& cam)
 {
-    static map<string, pair<chrono::steady_clock::time_point, r_vss::camera_source_info>> cache;
-    auto now = chrono::steady_clock::now();
-    auto it = cache.find(cam.id);
-    if(it != cache.end() && (now - it->second.first) < chrono::seconds(60))
-        return it->second.second;
-
-    r_vss::camera_source_info info;
-    if(!cam.record_file_path.is_null())
-        info = r_vss::read_camera_source_info(_get_storage_path(cam.record_file_path.value()));
-    cache[cam.id] = {now, info};
-    return info;
+    auto& c = _source_info_cache();
+    lock_guard<mutex> g(c.lock);
+    auto& e = c.entries[cam.id];
+    auto stale = !e.read_once || (chrono::steady_clock::now() - e.read_at) >= chrono::seconds(60);
+    if(stale && !e.reading && !e.stopped && !cam.record_file_path.is_null())
+    {
+        e.reading = true;
+        try
+        {
+            thread([id = cam.id, path = _get_storage_path(cam.record_file_path.value())]() {
+                auto info = r_vss::read_camera_source_info(path);  // swallows its own errors
+                auto& c = _source_info_cache();
+                {
+                    lock_guard<mutex> g(c.lock);
+                    auto& e = c.entries[id];
+                    if(e.drop_when_read)
+                        c.entries.erase(id);
+                    else
+                    {
+                        e.info = info;
+                        e.read_at = chrono::steady_clock::now();
+                        e.read_once = true;
+                        e.reading = false;
+                    }
+                }
+                c.read_done.notify_all();
+            }).detach();
+        }
+        catch(const std::exception& ex)
+        {
+            // No thread: leave the entry stale so a later frame tries again.
+            e.reading = false;
+            R_LOG_ERROR("Unable to start a source info read for camera %s: %s", cam.id.c_str(), ex.what());
+        }
+    }
+    return e.info;
 }
+
+// While a camera's files are deleted: no source info reads of it, and none in
+// flight (a read keeps the .nts open, and on Windows an open file can't be
+// deleted). Afterwards its entry is dropped, so a camera added back starts fresh.
+class source_info_reads_stopped
+{
+public:
+    explicit source_info_reads_stopped(const string& camera_id) : _camera_id(camera_id)
+    {
+        auto& c = _source_info_cache();
+        unique_lock<mutex> g(c.lock);
+        c.entries[_camera_id].stopped = true;
+        if(!c.read_done.wait_for(g, chrono::seconds(30), [&]() { return !c.entries[_camera_id].reading; }))
+            R_LOG_ERROR("Source info read of camera %s still running after 30s", _camera_id.c_str());
+    }
+    ~source_info_reads_stopped()
+    {
+        auto& c = _source_info_cache();
+        lock_guard<mutex> g(c.lock);
+        auto it = c.entries.find(_camera_id);
+        if(it == c.entries.end())
+            return;
+        // A read that outlived the wait drops the entry itself when it ends.
+        if(it->second.reading)
+            it->second.drop_when_read = true;
+        else c.entries.erase(it);
+    }
+    source_info_reads_stopped(const source_info_reads_stopped&) = delete;
+    source_info_reads_stopped& operator=(const source_info_reads_stopped&) = delete;
+private:
+    string _camera_id;
+};
 
 void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_vss::r_stream_keeper& streamKeeper)
 {
@@ -542,6 +633,8 @@ static std::string _get_storage_path(const std::string& record_file_path)
 
 void _delete_camera_files(const r_disco::r_camera& camera)
 {
+    source_info_reads_stopped no_reads(camera.id);
+
     // Delete the main storage file (.nts)
     if(!camera.record_file_path.is_null())
     {

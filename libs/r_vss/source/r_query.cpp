@@ -1,6 +1,7 @@
 #include "r_vss/r_query.h"
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_snapshot_cache.h"
+#include "r_vss/r_recap.h"
 #include "r_vss/r_storage_ops.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_file.h"
@@ -168,8 +169,8 @@ struct key_frame
     vector<uint8_t> data;
 };
 
-// The key frame query_key picks for ts (the one at or before it).
-key_frame _find_key_frame(const string& top_dir, r_devices& devices, const string& camera_id, system_clock::time_point ts)
+// The recording file of camera_id.
+string _recording_path(const string& top_dir, r_devices& devices, const string& camera_id)
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
 
@@ -179,9 +180,21 @@ key_frame _find_key_frame(const string& top_dir, r_devices& devices, const strin
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
+    return _get_storage_path(maybe_camera.value().record_file_path.value(), top_dir);
+}
 
-    auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, r_time_utils::tp_to_epoch_millis(ts));
+key_frame _find_key_frame(r_storage_file_reader& sf, int64_t ts_ms);
+
+// The key frame query_key picks for ts (the one at or before it).
+key_frame _find_key_frame(const string& top_dir, r_devices& devices, const string& camera_id, system_clock::time_point ts)
+{
+    r_storage_file_reader sf(_recording_path(top_dir, devices, camera_id));
+    return _find_key_frame(sf, r_time_utils::tp_to_epoch_millis(ts));
+}
+
+key_frame _find_key_frame(r_storage_file_reader& sf, int64_t ts_ms)
+{
+    auto key_bt = sf.query_key(R_STORAGE_MEDIA_TYPE_VIDEO, ts_ms);
 
     uint32_t version = 0;
     auto bt = r_blob_tree::deserialize(&key_bt[0], key_bt.size(), version);
@@ -1048,5 +1061,176 @@ string r_vss::r_failure_reason(const string& what)
     }
     while(!result.empty() && result.back() == ' ')
         result.pop_back();
+    return result;
+}
+
+recap_result r_vss::query_get_recap(const string& top_dir, r_devices& devices, const string& camera_id, system_clock::time_point start, system_clock::time_point end)
+{
+    const int64_t start_ms = r_time_utils::tp_to_epoch_millis(start);
+    const int64_t end_ms = r_time_utils::tp_to_epoch_millis(end);
+    if(end_ms < start_ms)
+        R_THROW(("A recap's end is before its start."));
+    if(end_ms - start_ms > RECAP_MAX_SPAN_MS)
+        R_THROW(("A recap covers at most an hour."));
+
+    r_storage_file_reader sf(_recording_path(top_dir, devices, camera_id));
+
+    auto plan = plan_recap(sf.key_frame_start_times(R_STORAGE_MEDIA_TYPE_VIDEO, start_ms, end_ms + 1), start_ms, end_ms);
+
+    // Each picture fits inside the recap's size, keeping its shape, on a black canvas of it.
+    vector<vector<uint8_t>> pictures;
+    auto add_picture = [&](const uint8_t* yuv, uint16_t w, uint16_t h) {
+        vector<uint8_t> canvas((size_t)RECAP_WIDTH * RECAP_HEIGHT * 3 / 2);
+        recap_pad_yuv420p(yuv, w, h, canvas.data(), RECAP_WIDTH, RECAP_HEIGHT);
+        pictures.push_back(std::move(canvas));
+    };
+
+    if(!plan.decode_all)
+    {
+        // No key frame in the span: the one showing at its start, if the recording has one
+        // there (query_key otherwise falls back to a key frame anywhere).
+        const bool showing_at_start = plan.times.empty();
+        auto times = plan.times;
+        if(showing_at_start)
+            times.push_back(start_ms);
+        for(auto t : times)
+        {
+            try
+            {
+                auto kf = _find_key_frame(sf, t);
+                if(showing_at_start && (kf.ts > end_ms || kf.ts < start_ms - RECAP_DECODE_ALL_MAX_MS))
+                    continue;
+                uint16_t w = RECAP_WIDTH, h = RECAP_HEIGHT;
+                auto decoded = _decode_single_frame(kf.codec_name, kf.codec_parameters, kf.data, AV_PIX_FMT_YUV420P, w, h, true);
+                if(decoded)
+                    add_picture(decoded->data(), w, h);
+            }
+            catch(const exception& ex)
+            {
+                R_LOG_WARNING("recap %s: key frame at %lld not decoded: %s", camera_id.c_str(), (long long)t, ex.what());
+            }
+        }
+    }
+    else
+    {
+        // From the key frame before the start (query backs up to it), every frame decoded; the
+        // first at or after each planned time kept.
+        auto bt_bytes = sf.query(R_STORAGE_MEDIA_TYPE_VIDEO, start_ms, end_ms + 1);
+        uint32_t version = 0;
+        auto bt = r_blob_tree::deserialize(bt_bytes.data(), bt_bytes.size(), version);
+        const size_t n = bt.has_key("frames") ? bt["frames"].size() : 0;
+        if(n > 0)
+        {
+            auto codec_name = bt["video_codec_name"].get_string();
+            auto codec_params = bt["video_codec_parameters"].get_string();
+            // Each stored frame is one whole access unit, so no parser: with one, a frame comes out only when
+            // the next goes in, a frame behind, and the last never does.
+            r_video_decoder decoder(r_av::encoding_to_av_codec_id(codec_name), r_av::r_hw_accel::none, false);
+            // Each frame out as it's decoded, so it's kept against its own time.
+            decoder.set_low_latency();
+            bool extradata_checked = false;
+            size_t next = 0;
+            // A decoded frame, at the time of the stored frame that made it: kept if it reaches the next planned time.
+            auto consider = [&](int64_t ts) {
+                if(next >= plan.times.size() || ts < plan.times[next])
+                    return;
+                uint16_t w = RECAP_WIDTH, h = RECAP_HEIGHT;
+                _fit_inside(decoder.input_width(), decoder.input_height(), w, h);
+                auto decoded = decoder.get(AV_PIX_FMT_YUV420P, w, h, 1);
+                if(decoded)
+                    add_picture(decoded->data(), w, h);
+                while(next < plan.times.size() && plan.times[next] <= ts)
+                    ++next;
+            };
+            const auto has_output = [](r_codec_state ds) { return ds == R_CODEC_STATE_HAS_OUTPUT || ds == R_CODEC_STATE_AGAIN_HAS_OUTPUT; };
+            int64_t last_ts = 0;
+            for(size_t fi = 0; fi < n && next < plan.times.size(); ++fi)
+            {
+                auto data = bt["frames"][fi]["data"].get_blob();
+                auto ts = r_string_utils::s_to_int64(bt["frames"][fi]["ts"].get_string());
+                last_ts = ts;
+                if(!extradata_checked)
+                {
+                    if(!_has_inline_sps(data))
+                        decoder.set_extradata(r_pipeline::get_video_codec_extradata(codec_name, codec_params));
+                    extradata_checked = true;
+                }
+                decoder.attach_buffer(data.data(), data.size());
+                for(int calls = 0; calls < RECAP_DECODE_CALLS; ++calls)
+                {
+                    auto ds = decoder.decode();
+                    if(!has_output(ds))
+                        break;
+                    consider(ts);
+                }
+            }
+            // What the decoder still holds, at the last frame's time.
+            for(int calls = 0; calls < RECAP_DECODE_CALLS && next < plan.times.size(); ++calls)
+            {
+                auto ds = decoder.flush();
+                if(!has_output(ds))
+                    break;
+                consider(last_ts);
+            }
+        }
+    }
+
+    if(pictures.empty())
+        R_STHROW(r_not_found_exception, ("No recording to make a recap of."));
+
+    recap_result result;
+    result.frames = pictures.size();
+    result.fps = plan.fps;
+    result.decode_all = plan.decode_all;
+
+    // Software encode: a recap is a few dozen 640x360 frames, and a hardware encoder would
+    // open and close a device per recap.
+    const AVRational framerate {plan.fps, 1};
+    r_video_encoder encoder(AV_CODEC_ID_H264, RECAP_BITRATE, RECAP_WIDTH, RECAP_HEIGHT, framerate, AV_PIX_FMT_YUV420P, 0, (uint16_t)(plan.fps * 2), AV_PROFILE_H264_MAIN, 30, "veryfast");
+
+    auto exports_path = top_dir + PATH_SLASH + "exports";
+    if(!r_fs::file_exists(exports_path))
+        r_fs::mkdir(exports_path);
+    auto temp_path = r_fs::temp_file_name(exports_path, "recap_") + ".mp4";
+
+    try
+    {
+        {
+            r_muxer muxer(temp_path);
+            muxer.add_video_stream(framerate, AV_CODEC_ID_H264, RECAP_WIDTH, RECAP_HEIGHT, AV_PROFILE_H264_MAIN, 30);
+            muxer.set_video_extradata(encoder.get_extradata());
+            muxer.enable_faststart();
+            muxer.open();
+
+            auto write = [&](r_codec_state state, auto next_state) {
+                while(state == R_CODEC_STATE_HAS_OUTPUT)
+                {
+                    auto pi = encoder.get();
+                    muxer.write_video_frame(pi.data, pi.size, pi.pts, max((int64_t)0, pi.dts), pi.time_base, pi.key);
+                    state = next_state();
+                }
+            };
+
+            int64_t pts = 0;
+            for(auto& p : pictures)
+            {
+                encoder.attach_buffer(p.data(), p.size(), pts++);
+                write(encoder.encode(), [&]() { return encoder.encode(); });
+            }
+            write(encoder.flush(), [&]() { return encoder.flush(); });
+
+            muxer.finalize();
+        }
+
+        result.mp4 = r_fs::read_file(temp_path);
+        r_fs::remove_file(temp_path);
+    }
+    catch(...)
+    {
+        if(r_fs::file_exists(temp_path))
+            r_fs::remove_file(temp_path);
+        throw;
+    }
+
     return result;
 }

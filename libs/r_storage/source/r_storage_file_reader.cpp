@@ -15,6 +15,21 @@ using namespace r_storage;
 using namespace std;
 using namespace std::chrono;
 
+bool r_storage::read_stream_or_warn(const char* stream_tag, int64_t start_ts, int64_t end_ts, const function<void()>& read)
+{
+    try
+    {
+        read();
+        return true;
+    }
+    catch (const nanots_exception& e)
+    {
+        R_LOG_WARNING("storage query: the %s stream failed to read for %lld to %lld (%s); the reply has what was read before it",
+                      stream_tag, (long long)start_ts, (long long)end_ts, e.what());
+        return false;
+    }
+}
+
 r_storage_file_reader::r_storage_file_reader(const string& file_name) :
     _file_name(file_name)
 {
@@ -65,9 +80,10 @@ vector<uint8_t> r_storage_file_reader::query(r_storage_media_type media_type, in
     // Track where the video keyframe backup landed so audio can be aligned to it.
     int64_t video_actual_start_ts = start_ts;
 
-    try {
-        // Query video frames if needed
-        if (media_type == R_STORAGE_MEDIA_TYPE_VIDEO || media_type == R_STORAGE_MEDIA_TYPE_ALL) {
+    // Each stream is read in its own try: a nanots error in one costs that stream only, and is logged. With a shared
+    // try, an error while reading the video skipped the audio, and the reply said has_audio false with no trace.
+    if (media_type == R_STORAGE_MEDIA_TYPE_VIDEO || media_type == R_STORAGE_MEDIA_TYPE_ALL) {
+        read_stream_or_warn("video", start_ts, end_ts, [&]() {
             nanots_iterator video_iterator(nanots_file_name, "video");
             video_iterator.find(start_ts);
 
@@ -105,13 +121,15 @@ vector<uint8_t> r_storage_file_reader::query(r_storage_media_type media_type, in
 
                 ++video_iterator;
             }
-        }
+        });
+    }
 
-        // Query audio frames if needed.
-        // Start audio at the same timestamp as the video keyframe so both streams
-        // are aligned — without this, audio starts at start_ts while video starts
-        // potentially seconds earlier, producing a black-video / audio-only gap.
-        if (media_type == R_STORAGE_MEDIA_TYPE_AUDIO || media_type == R_STORAGE_MEDIA_TYPE_ALL) {
+    // Query audio frames if needed.
+    // Start audio at the same timestamp as the video keyframe so both streams
+    // are aligned — without this, audio starts at start_ts while video starts
+    // potentially seconds earlier, producing a black-video / audio-only gap.
+    if (media_type == R_STORAGE_MEDIA_TYPE_AUDIO || media_type == R_STORAGE_MEDIA_TYPE_ALL) {
+        read_stream_or_warn("audio", start_ts, end_ts, [&]() {
             nanots_iterator audio_iterator(nanots_file_name, "audio");
             audio_iterator.find(video_actual_start_ts);
             
@@ -140,10 +158,7 @@ vector<uint8_t> r_storage_file_reader::query(r_storage_media_type media_type, in
                 
                 ++audio_iterator;
             }
-        }
-    } catch (const nanots_exception&) {
-        // Handle case where stream doesn't exist
-        // Continue with empty results for that stream
+        });
     }
     
     // Merge frames in timestamp order
