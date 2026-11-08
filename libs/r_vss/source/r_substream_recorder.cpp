@@ -31,6 +31,17 @@ string r_vss::substream_ring_path(const string& record_file_path)
     return record_file_path.substr(0, dot) + "_sub" + record_file_path.substr(dot);
 }
 
+string r_vss::view_mount_path(const string& label, const string& main_mount, const string& sub_mount, bool sub_fresh, bool grid_tile)
+{
+    if(grid_tile && sub_fresh && !sub_mount.empty())
+        return sub_mount;
+    if(!main_mount.empty())
+        return main_mount;
+    string name = label;
+    replace(begin(name), end(name), ' ', '_');
+    return "/" + name;
+}
+
 string r_vss::substream_mount_path(const r_camera& camera)
 {
     // As the main mount is named (r_stream_keeper::add_restream_mount): the friendly name, spaces as underscores.

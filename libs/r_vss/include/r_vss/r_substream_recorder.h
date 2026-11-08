@@ -45,6 +45,12 @@ R_API std::string substream_ring_path(const std::string& record_file_path);
 // look at /cameras' sub_mount and sub_fresh first, and check the stream's size.
 R_API std::string substream_mount_path(const r_disco::r_camera& camera);
 
+// The path a viewer plays for a camera: the smaller stream's mount for a tile in a grid when revere says it is up
+// and fresh (sub_mount and sub_fresh from /cameras), otherwise the main stream's. main_mount is /cameras' `mount`;
+// an older revere doesn't send it, and the main path is then the label with its spaces as underscores. The single
+// view and anything that isn't a small grid tile play main: they show enough of the picture to want it.
+R_API std::string view_mount_path(const std::string& label, const std::string& main_mount, const std::string& sub_mount, bool sub_fresh, bool grid_tile);
+
 // What r_stream_keeper does about a camera's substream recorder on a pass.
 enum class substream_step { none, start, stop };
 

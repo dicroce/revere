@@ -426,6 +426,23 @@ void test_r_substream_recorder::test_mount_path()
     RTF_ASSERT(substream_mount_path(unnamed) == "/cam-2/sub");
 }
 
+// Which mount a viewer plays: the smaller stream's only for a grid tile, and only when it is up and fresh.
+void test_r_substream_recorder::test_view_mount_path()
+{
+    // A grid tile with a fresh smaller stream plays it.
+    RTF_ASSERT(view_mount_path("Front Door", "/Front_Door", "/Front_Door/sub", true, true) == "/Front_Door/sub");
+    // A single view plays main, whatever is up.
+    RTF_ASSERT(view_mount_path("Front Door", "/Front_Door", "/Front_Door/sub", true, false) == "/Front_Door");
+    // A smaller stream that isn't fresh (or isn't mounted) isn't used: main's.
+    RTF_ASSERT(view_mount_path("Front Door", "/Front_Door", "/Front_Door/sub", false, true) == "/Front_Door");
+    RTF_ASSERT(view_mount_path("Front Door", "/Front_Door", "", true, true) == "/Front_Door");
+    // An older revere sends no mounts: the label with underscores, as before.
+    RTF_ASSERT(view_mount_path("Front Door", "", "", false, true) == "/Front_Door");
+    RTF_ASSERT(view_mount_path("Front Door", "", "", false, false) == "/Front_Door");
+    // The path revere gives wins over the label's.
+    RTF_ASSERT(view_mount_path("Front Door", "/cam/abc", "", false, true) == "/cam/abc");
+}
+
 namespace
 {
 // A bare RTSP server standing in for the stream keeper, so the recorder's mount and viewers are the real thing
