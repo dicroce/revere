@@ -1,5 +1,6 @@
 
 #include "r_crypto/r_srp6a.h"
+#include "r_crypto/r_random.h"
 #include "r_utils/r_exception.h"
 #include <mbedtls/bignum.h>
 // constant_time.h has no extern "C" of its own in mbedtls 3.6.
@@ -7,11 +8,8 @@ extern "C"
 {
 #include <mbedtls/constant_time.h>
 }
-#include <mbedtls/ctr_drbg.h>
-#include <mbedtls/entropy.h>
 #include <mbedtls/md.h>
 #include <mbedtls/platform_util.h>
-#include <cstring>
 #include <initializer_list>
 
 using namespace r_crypto;
@@ -115,24 +113,6 @@ void wipe(vector<uint8_t>& v)
     if(!v.empty())
         mbedtls_platform_zeroize(v.data(), v.size());
     v.clear();
-}
-
-vector<uint8_t> random_bytes(size_t size)
-{
-    vector<uint8_t> output(size);
-    mbedtls_ctr_drbg_context ctr_drbg;
-    mbedtls_entropy_context entropy;
-    mbedtls_entropy_init(&entropy);
-    mbedtls_ctr_drbg_init(&ctr_drbg);
-    const char* pers = "r_srp6a";
-    int r = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char*)pers, strlen(pers));
-    if(r == 0)
-        r = mbedtls_ctr_drbg_random(&ctr_drbg, output.data(), output.size());
-    mbedtls_ctr_drbg_free(&ctr_drbg);
-    mbedtls_entropy_free(&entropy);
-    if(r != 0)
-        R_STHROW(r_internal_exception, ("Random bytes failed: -0x%04x", -r));
-    return output;
 }
 
 }
