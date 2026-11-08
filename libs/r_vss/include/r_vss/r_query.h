@@ -1,6 +1,7 @@
 #ifndef __revere_query_h
 #define __revere_query_h
 
+#include "r_vss/r_live_key_frame.h"
 #include "r_utils/r_macro.h"
 #include "r_utils/r_nullable.h"
 #include "r_disco/r_devices.h"
@@ -45,6 +46,13 @@ struct measured_camera
 // frame_ts, if given, gets the epoch-ms ts of the key frame decoded: the one
 // r_storage_file_reader::query_key picks for ts. That isn't always at or before
 // ts: before the first frame it's the first key frame.
+// A key frame as a JPEG that fits w x h (a bounding box: the picture's aspect is kept).
+R_API std::vector<uint8_t> encode_key_frame_jpg(const std::string& codec_name, const std::string& codec_parameters, const std::vector<uint8_t>& data, uint16_t w, uint16_t h);
+
+// The same for a key frame held in memory (a substream's newest), cached like query_get_jpg's by the camera, the
+// frame's ts and the box.
+R_API std::vector<uint8_t> jpg_from_live_key_frame(const std::string& camera_id, const r_live_key_frame& key_frame, uint16_t w, uint16_t h);
+
 R_API std::vector<uint8_t> query_get_jpg(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h, int64_t* frame_ts = nullptr);
 
 // frame_ts as for query_get_jpg.

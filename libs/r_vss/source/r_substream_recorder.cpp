@@ -8,6 +8,7 @@
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
 #include <algorithm>
+#include <cmath>
 
 using namespace r_vss;
 using namespace r_disco;
@@ -20,6 +21,21 @@ using namespace std::chrono;
 static int64_t _steady_ms()
 {
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+bool r_vss::substream_snapshot_fits(int w, int h, int sub_w, int sub_h, int main_w, int main_h)
+{
+    if(w <= 0 || h <= 0 || sub_w <= 0 || sub_h <= 0 || main_w <= 0 || main_h <= 0)
+        return false;
+    const double sub_aspect = (double)sub_w / sub_h;
+    const double main_aspect = (double)main_w / main_h;
+    constexpr double ROUNDING = 1.04;
+    if(fabs(sub_aspect - main_aspect) / main_aspect > ROUNDING - 1.0)
+        return false;
+    // main's picture in the box, shape kept
+    const double out_w = std::min((double)w, h * main_aspect);
+    const double out_h = std::min((double)h, w / main_aspect);
+    return out_w <= sub_w * ROUNDING && out_h <= sub_h * ROUNDING;
 }
 
 string r_vss::substream_ring_path(const string& record_file_path)
@@ -63,7 +79,7 @@ void r_vss::ensure_substream_ring(const string& ring_path)
         r_storage_file::allocate(ring_path, SUBSTREAM_RING_BLOCK_SIZE, SUBSTREAM_RING_BLOCKS);
 }
 
-r_substream_recorder::r_substream_recorder(const r_camera& camera, const string& ring_path, const string& rtsp_protocols, r_frame_feeds* feeds, r_live_restream_host* sk) :
+r_substream_recorder::r_substream_recorder(const r_camera& camera, const string& ring_path, const string& rtsp_protocols, r_frame_feeds* feeds, r_live_restream_host* sk, function<void(const r_live_key_frame&)> on_key_frame) :
     _camera(camera),
     _ring_path(ring_path),
     _feeds(feeds),
@@ -72,6 +88,7 @@ r_substream_recorder::r_substream_recorder(const r_camera& camera, const string&
     _mount_lock(),
     _mount_path(),
     _video_caps(),
+    _on_key_frame(std::move(on_key_frame)),
     _ring(ring_path),
     _write_context(),
     _sdp_lock(),
@@ -150,11 +167,21 @@ r_substream_recorder::r_substream_recorder(const r_camera& camera, const string&
             }
 
             auto mi = buffer.map(r_pipeline::r_gst_buffer::MT_READ);
-            auto stored_ts = sc.stream_start_ts() + pts;
+            const auto stored_ts = sc.stream_start_ts() + pts;
             _ring.write_frame(_write_context.value(), R_STORAGE_MEDIA_TYPE_VIDEO, mi.data(), mi.size(), key, stored_ts, pts);
             // Plugins' frame feeds on "sub": one atomic load while none is open.
             if(_feeds)
                 _feeds->post_video(_camera.id, "sub", mi.data(), mi.size(), key, stored_ts, _write_context->codec_name, _write_context->codec_parameters);
+            // The newest key frame, kept in memory for "now" snapshots.
+            if(key && _on_key_frame)
+            {
+                r_live_key_frame kf;
+                kf.ts = stored_ts;
+                kf.codec_name = _write_context->codec_name;
+                kf.codec_parameters = _write_context->codec_parameters;
+                kf.data.assign(mi.data(), mi.data() + mi.size());
+                _on_key_frame(kf);
+            }
             ++_frames_written;
             _last_video_ms = _steady_ms();
         }

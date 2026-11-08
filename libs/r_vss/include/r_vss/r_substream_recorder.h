@@ -5,12 +5,14 @@
 #include "r_pipeline/r_gst_source.h"
 #include "r_pipeline/r_stream_info.h"
 #include "r_vss/r_frame_feeds.h"
+#include "r_vss/r_live_key_frame.h"
 #include "r_storage/r_storage_file.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -50,6 +52,19 @@ R_API std::string substream_mount_path(const r_disco::r_camera& camera);
 // an older revere doesn't send it, and the main path is then the label with its spaces as underscores. The single
 // view and anything that isn't a small grid tile play main: they show enough of the picture to want it.
 R_API std::string view_mount_path(const std::string& label, const std::string& main_mount, const std::string& sub_mount, bool sub_fresh, bool grid_tile);
+// A substream's newest key frame is good for a "now" snapshot for this long after it arrived (a keyframe comes at
+// least every 4 s, the longest key interval a substream may have).
+constexpr int64_t SUBSTREAM_SNAPSHOT_MAX_AGE_MS = 6000;
+// A /jpg for a time within this long of now is a "now" snapshot.
+constexpr int64_t SNAPSHOT_NOW_MS = 5000;
+
+// Whether a snapshot in the box w x h can be made from a substream of sub_w x sub_h instead of main (main_w x
+// main_h; 0 when unknown). The box bounds the picture, which keeps main's shape, so what main would produce is that
+// shape fitted into the box. The substream must be at least that big (give or take the few percent its size is
+// rounded to a macroblock by), or the snapshot would be upscaled from the smaller stream; and its own shape must be
+// main's (within 4%, the same rounding: 640 x 352 for a 16:9 main is 2.3% off): a squeezed (anamorphic) one, which is
+// off by tens of percent, would come out the wrong shape.
+R_API bool substream_snapshot_fits(int w, int h, int sub_w, int sub_h, int main_w, int main_h);
 
 // What r_stream_keeper does about a camera's substream recorder on a pass.
 enum class substream_step { none, start, stop };
@@ -147,7 +162,8 @@ class r_substream_recorder final
 public:
     // feeds: where the frames also go, as the camera's "sub" stream (r_frame_feeds); null for none.
     // host: where its restream mount is added and its viewers are found (null for none: it only records).
-    R_API r_substream_recorder(const r_disco::r_camera& camera, const std::string& ring_path, const std::string& rtsp_protocols, r_frame_feeds* feeds = nullptr, r_live_restream_host* host = nullptr);
+    // on_key_frame: called with each key frame it records, on its source thread (null for none).
+    R_API r_substream_recorder(const r_disco::r_camera& camera, const std::string& ring_path, const std::string& rtsp_protocols, r_frame_feeds* feeds = nullptr, r_live_restream_host* host = nullptr, std::function<void(const r_live_key_frame&)> on_key_frame = std::function<void(const r_live_key_frame&)>());
     R_API ~r_substream_recorder() noexcept;
     R_API r_substream_recorder(const r_substream_recorder&) = delete;
     R_API r_substream_recorder& operator=(const r_substream_recorder&) = delete;
@@ -179,6 +195,7 @@ private:
     mutable std::mutex _mount_lock;
     std::string _mount_path;
     r_utils::r_nullable<r_pipeline::r_gst_caps> _video_caps;
+    std::function<void(const r_live_key_frame&)> _on_key_frame;
     r_storage::r_storage_file _ring;
     r_utils::r_nullable<r_storage::r_storage_write_context> _write_context;
     std::mutex _sdp_lock;

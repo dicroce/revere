@@ -12,6 +12,8 @@ public:
       TEST(test_r_substream_recorder::test_mount_path);
       TEST(test_r_substream_recorder::test_view_mount_path);
       TEST(test_r_substream_recorder::test_serves_its_sub_mount);
+      TEST(test_r_substream_recorder::test_snapshot_fits);
+      TEST(test_r_substream_recorder::test_keeps_its_newest_key_frame_for_snapshots);
       TEST(test_r_substream_recorder::test_governor_starts_after_main_and_backs_off);
       TEST(test_r_substream_recorder::test_governor_counts_a_refusal_at_setup);
       TEST(test_r_substream_recorder::test_governor_holds_a_given_up_camera_until_its_context_changes);
@@ -32,6 +34,8 @@ public:
     void test_mount_path();
     void test_view_mount_path();
     void test_serves_its_sub_mount();
+    void test_snapshot_fits();
+    void test_keeps_its_newest_key_frame_for_snapshots();
     void test_governor_starts_after_main_and_backs_off();
     void test_governor_counts_a_refusal_at_setup();
     void test_governor_holds_a_given_up_camera_until_its_context_changes();

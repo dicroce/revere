@@ -1411,6 +1411,7 @@ void r_stream_keeper::_entry_point()
                     _substream_governor.forget(cmd.first.id);
                     _substreams.erase(cmd.first.id);
                     _frame_feeds.substream_fresh(cmd.first.id, false);
+                    _forget_substream_key_frame(cmd.first.id);
 
                     if(rc)
                     {
@@ -1596,6 +1597,7 @@ void r_stream_keeper::_tend_substreams()
         if(recording.count(it->first) == 0)
         {
             _frame_feeds.substream_fresh(it->first, false);
+            _forget_substream_key_frame(it->first);
             _substream_governor.forget(it->first);
             doomed.push_back(std::move(it->second));
             it = _substreams.erase(it);
@@ -1629,6 +1631,7 @@ void r_stream_keeper::_tend_substreams()
         auto d = _substream_governor.pass(id, in);
         if(d.step == substream_step::stop)
         {
+            _forget_substream_key_frame(id);
             doomed.push_back(std::move(running->second));
             _substreams.erase(running);
         }
@@ -1638,7 +1641,14 @@ void r_stream_keeper::_tend_substreams()
             {
                 auto ring = substream_ring_path(storage_path(_top_dir, cam.record_file_path.value()));
                 ensure_substream_ring(ring);
-                _substreams[id] = make_unique<r_substream_recorder>(cam, ring, c.protocols, &_frame_feeds, this);
+                _substreams[id] = make_unique<r_substream_recorder>(cam, ring, c.protocols, &_frame_feeds, this, [this, id](const r_live_key_frame& kf) {
+                    // On the recorder's source thread: kept for "now" snapshots (latest_substream_key_frame).
+                    auto at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                    std::lock_guard<std::mutex> g(_sub_key_frames_lock);
+                    auto& slot = _sub_key_frames[id];
+                    slot.key_frame = kf;
+                    slot.at_ms = at_ms;
+                });
                 R_LOG_INFO("substream of %s: recording to %s", id.c_str(), ring.c_str());
             }
             catch(const exception& e)
@@ -1659,6 +1669,23 @@ void r_stream_keeper::_tend_substreams()
 
     // Stopped outside any lock: a recorder whose camera stopped answering can take a while to wind down.
     doomed.clear();
+}
+
+r_nullable<r_live_key_frame> r_stream_keeper::latest_substream_key_frame(const std::string& camera_id) const
+{
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    r_nullable<r_live_key_frame> out;
+    std::lock_guard<std::mutex> g(_sub_key_frames_lock);
+    auto it = _sub_key_frames.find(camera_id);
+    if(it != _sub_key_frames.end() && now_ms - it->second.at_ms <= SUBSTREAM_SNAPSHOT_MAX_AGE_MS)
+        out.set_value(it->second.key_frame);
+    return out;
+}
+
+void r_stream_keeper::_forget_substream_key_frame(const std::string& camera_id)
+{
+    std::lock_guard<std::mutex> g(_sub_key_frames_lock);
+    _sub_key_frames.erase(camera_id);
 }
 
 // The camera allows one stream at a time (or closes its older session when a second opens): saved, so the substream

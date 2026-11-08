@@ -7,6 +7,7 @@
 #include "r_pipeline/r_stream_probe.h"
 #include <gst/rtsp-server/rtsp-server.h>
 #include <thread>
+#include "r_vss/r_query.h"
 #include "r_fakey/r_fake_camera.h"
 #include "r_storage/r_storage_file_reader.h"
 #include "r_vss/r_query.h"
@@ -597,4 +598,96 @@ void test_r_substream_recorder::test_serves_its_sub_mount()
     RTF_ASSERT(!after.received_video);
     RTF_ASSERT(!host.has_mount(mount));      // unmounted with the recorder
     fc->quit();
+}
+
+// ---- "now" snapshots from the substream ----
+
+void test_r_substream_recorder::test_snapshot_fits()
+{
+    // main 2560 x 1920 (4:3), substream 640 x 480.
+    RTF_ASSERT(substream_snapshot_fits(640, 480, 640, 480, 2560, 1920));      // the default box: exactly the substream
+    RTF_ASSERT(substream_snapshot_fits(320, 240, 640, 480, 2560, 1920));      // smaller: scaled down, fine
+    RTF_ASSERT(!substream_snapshot_fits(1280, 960, 640, 480, 2560, 1920));    // main's picture in the box is bigger than the substream
+    RTF_ASSERT(!substream_snapshot_fits(700, 700, 640, 480, 2560, 1920));     // 700 x 525 once its shape is kept
+    // The box bounds the picture, whose shape is main's: extra room in one direction changes nothing.
+    RTF_ASSERT(substream_snapshot_fits(641, 480, 640, 480, 2560, 1920));      // still 640 x 480
+    RTF_ASSERT(substream_snapshot_fits(1000, 300, 640, 480, 2560, 1920));     // 400 x 300
+    RTF_ASSERT(!substream_snapshot_fits(1000, 700, 640, 480, 2560, 1920));    // 933 x 700
+    // A squeezed substream (704 x 576 for a 16:9 main) is the wrong shape: main's picture is used.
+    RTF_ASSERT(!substream_snapshot_fits(640, 360, 704, 576, 2560, 1440));
+    RTF_ASSERT(substream_snapshot_fits(640, 360, 640, 360, 2560, 1440));      // 16:9 on 16:9
+    RTF_ASSERT(substream_snapshot_fits(640, 360, 640, 352, 2560, 1440));      // a macroblock row short: within the rounding
+    RTF_ASSERT(!substream_snapshot_fits(640, 360, 480, 270, 2560, 1440));     // a smaller substream than the box asks
+    // A substream a few percent off main's shape is still main's shape, but each direction has to hold on its own:
+    RTF_ASSERT(!substream_snapshot_fits(645, 363, 616, 360, 2560, 1440));     // 645 wide asked of 616 (height alone would pass)
+    RTF_ASSERT(!substream_snapshot_fits(651, 366, 640, 350, 2560, 1440));     // 366 high asked of 350 (width alone would pass)
+    RTF_ASSERT(substream_snapshot_fits(640, 360, 616, 360, 2560, 1440));      // 640 wide of 616 is within the rounding
+    // Anything unknown: main's.
+    RTF_ASSERT(!substream_snapshot_fits(640, 480, 640, 480, 0, 0));
+    RTF_ASSERT(!substream_snapshot_fits(640, 480, 0, 0, 2560, 1920));
+    RTF_ASSERT(!substream_snapshot_fits(0, 0, 640, 480, 2560, 1920));
+}
+
+// The width and height a baseline or progressive JPEG says (its SOF marker); 0 x 0 for anything else.
+static pair<int, int> _jpeg_size(const vector<uint8_t>& jpg)
+{
+    if(jpg.size() < 4 || jpg[0] != 0xFF || jpg[1] != 0xD8)
+        return {0, 0};
+    for(size_t i = 2; i + 9 < jpg.size(); ++i)
+    {
+        if(jpg[i] == 0xFF && (jpg[i + 1] == 0xC0 || jpg[i + 1] == 0xC1 || jpg[i + 1] == 0xC2))
+            return {(jpg[i + 7] << 8) | jpg[i + 8], (jpg[i + 5] << 8) | jpg[i + 6]};
+    }
+    return {0, 0};
+}
+
+// Each key frame it records is handed on, whole and decodable: a snapshot made from it is a JPEG in the box asked for.
+void test_r_substream_recorder::test_keeps_its_newest_key_frame_for_snapshots()
+{
+    auto fc = _substream_camera();
+    if(!fc)
+        return;
+    while(fc->bound_port() < 0)
+        this_thread::sleep_for(milliseconds(10));
+
+    auto ring = RING_DIR + PATH_SLASH + "front_sub.nts";
+    ensure_substream_ring(ring);
+
+    mutex lock;
+    r_live_key_frame newest;
+    int key_frames = 0;
+    {
+        r_substream_recorder rec(_camera(r_string_utils::format("rtsp://127.0.0.1:%d/sub", fc->bound_port())), ring, "tcp", nullptr, nullptr,
+            [&](const r_live_key_frame& kf) {
+                lock_guard<mutex> g(lock);
+                newest = kf;
+                ++key_frames;
+            });
+        auto deadline = steady_clock::now() + seconds(15);
+        while(rec.frames_written() < 40 && steady_clock::now() < deadline)    // 15 fps, a key frame every 15 frames
+            this_thread::sleep_for(milliseconds(50));
+    }
+    fc->quit();
+
+    lock_guard<mutex> g(lock);
+    RTF_ASSERT(key_frames >= 2);
+    RTF_ASSERT(newest.ts > 0);
+    RTF_ASSERT(newest.codec_name == "h264");
+    RTF_ASSERT(!newest.codec_parameters.empty());
+    RTF_ASSERT(newest.data.size() > 100);
+
+    auto jpg = encode_key_frame_jpg(newest.codec_name, newest.codec_parameters, newest.data, 160, 120);
+    auto size = _jpeg_size(jpg);
+    RTF_ASSERT_EQUAL(size.first, 160);        // the 320 x 240 picture scaled into the 160 x 120 box
+    RTF_ASSERT_EQUAL(size.second, 120);
+
+    // Cached by camera, key frame and box: the same bytes the second time.
+    auto first = jpg_from_live_key_frame("cam-sub", newest, 160, 120);
+    auto second = jpg_from_live_key_frame("cam-sub", newest, 160, 120);
+    RTF_ASSERT(first == second);
+    RTF_ASSERT_EQUAL(_jpeg_size(first).first, 160);
+    // And a different box is a different picture, not the cached one.
+    auto small = jpg_from_live_key_frame("cam-sub", newest, 80, 60);
+    RTF_ASSERT_EQUAL(_jpeg_size(small).first, 80);
+    RTF_ASSERT_EQUAL(_jpeg_size(small).second, 60);
 }

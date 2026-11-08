@@ -238,7 +238,10 @@ public:
     // freeing anything more.
     R_API bool stop();
 
-    R_API std::vector<r_stream_status> fetch_stream_status();
+    R_API std::vector<r_stream_status> fetch_stream_status();    // The camera's substream's newest key frame, when it arrived recently enough for a "now" snapshot
+    // (SUBSTREAM_SNAPSHOT_MAX_AGE_MS); null when the camera has none. Callable from any thread.
+    R_API r_utils::r_nullable<r_live_key_frame> latest_substream_key_frame(const std::string& camera_id) const;
+
 
     R_API bool is_recording(const std::string& id);
 
@@ -366,6 +369,7 @@ private:
     std::vector<std::shared_ptr<r_recording_context>> _remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras);
     void _tend_substreams();
     void _give_up_substream(const std::string& camera_id);
+    void _forget_substream_key_frame(const std::string& camera_id);
     std::vector<r_stream_status> _fetch_stream_status() const;
     void _update_status_cache();
     void _update_retention_cache();
@@ -391,6 +395,11 @@ private:
     // them; keeper thread only.
     std::map<std::string, std::unique_ptr<r_substream_recorder>> _substreams;
     r_substream_governor _substream_governor;
+    // Each camera's substream recorder's newest key frame and when it arrived (steady ms), for "now" snapshots; the
+    // recorders write them on their source threads, the web server reads them.
+    struct _sub_key_slot { r_live_key_frame key_frame; int64_t at_ms {0}; };
+    mutable std::mutex _sub_key_frames_lock;
+    std::map<std::string, _sub_key_slot> _sub_key_frames;
 
     // Last-seen set of assigned camera ids, to notify system plugins only when
     // the assignment actually changes (a camera added or forgotten) — not on the

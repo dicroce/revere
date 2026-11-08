@@ -3,6 +3,7 @@
 #define __r_vss_r_recording_context_h
 
 #include "r_vss/r_restream_track.h"
+#include "r_vss/r_live_key_frame.h"
 #include "r_vss/r_lag_watchdog.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_live_restream_host.h"
@@ -103,14 +104,7 @@ R_API void restream_feed(GstElement* appsrc, r_utils::r_blocking_q<_frame_contex
 // One entry in the per-camera GOP cache. Stores the original source pts
 // (in milliseconds, as delivered by the gst source) so the relative spacing
 // can be reconstructed when bursting into a newly-connected viewer's queue.
-// The newest video key frame as received, for the detection pass's first look.
-struct r_live_key_frame
-{
-    int64_t ts {0};
-    std::string codec_name;
-    std::string codec_parameters;
-    std::vector<uint8_t> data;
-};
+// (The newest video key frame as received, for the detection pass's first look, is r_live_key_frame.)
 
 struct _gop_cache_entry
 {

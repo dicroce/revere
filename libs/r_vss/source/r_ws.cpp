@@ -1,4 +1,6 @@
 
+#include "r_vss/r_substream_recorder.h"
+#include "r_disco/r_substream.h"
 #include "r_vss/r_ws.h"
 #include "r_vss/r_recap.h"
 #include "r_vss/r_stream_keeper.h"
@@ -490,11 +492,50 @@ r_http::r_server_response r_ws::_get_jpg(r_utils::r_socket_base&, const r_http::
 
         auto t_start = steady_clock::now();
         int64_t frame_ts = 0;
+
+        // A "now" picture can come from the camera's smaller stream: its newest key frame is held in memory, so
+        // there is no disk read, and the decode is of a fraction of the pixels. Only when the box fits inside that
+        // stream and has main's shape; anything else (a picture at a time, a bigger box) is main's, as before.
+        const auto requested_tp = r_time_utils::iso_8601_to_tp(args["start_time"]);
+        {
+            const auto off_now_ms = duration_cast<milliseconds>(system_clock::now() - requested_tp).count();
+            if(off_now_ms >= -SNAPSHOT_NOW_MS && off_now_ms <= SNAPSHOT_NOW_MS)
+            {
+                try
+                {
+                    auto sub_kf = _stream_keeper.latest_substream_key_frame(args["camera_id"]);
+                    auto maybe_camera = sub_kf.is_null() ? r_nullable<r_disco::r_camera>() : _devices.get_camera_by_id(args["camera_id"]);
+                    if(!maybe_camera.is_null() && r_disco::substream_on(maybe_camera.value()))
+                    {
+                        const auto& cam = maybe_camera.value();
+                        auto main_size = (cam.video_codec.is_null() || cam.video_codec_parameters.is_null()) ?
+                            std::pair<uint16_t, uint16_t>(0, 0) : r_disco::main_picture_size(cam.video_codec.value(), cam.video_codec_parameters.value());
+                        if(!cam.sub_width.is_null() && !cam.sub_height.is_null() &&
+                           substream_snapshot_fits(w, h, cam.sub_width.value(), cam.sub_height.value(), main_size.first, main_size.second))
+                        {
+                            auto jpeg = jpg_from_live_key_frame(args["camera_id"], sub_kf.value(), w, h);
+                            r_server_response sub_response;
+                            sub_response.set_content_type("image/jpeg");
+                            sub_response.set_body(jpeg.size(), jpeg.data());
+                            sub_response.add_additional_header("X-Frame-Ts", std::to_string(sub_kf.value().ts));
+                            sub_response.add_additional_header("X-Stream", "sub");
+                            return sub_response;
+                        }
+                    }
+                }
+                catch(const std::exception& ex)
+                {
+                    // Main's picture is still there.
+                    R_LOG_INFO("[JPG] the substream's picture for %s didn't work (%s); using main's", args["camera_id"].c_str(), ex.what());
+                }
+            }
+        }
+
         auto result = query_get_jpg(
             _top_dir,
             _devices,
             args["camera_id"],
-            r_time_utils::iso_8601_to_tp(args["start_time"]),
+            requested_tp,
             w,
             h,
             &frame_ts
