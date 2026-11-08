@@ -90,6 +90,17 @@ R_API bool substream_follow(r_camera& camera, const std::string& url, const std:
 // as interrogate_camera picks it. 0 when there are no profiles.
 R_API size_t main_profile_index(const std::vector<r_onvif::onvif_profile_info>& profiles, const r_utils::r_nullable<std::string>& token);
 
+// A stream as the camera's settings name it, e.g. "H.264", a middle dot, then "640 x 480". The codec is the SDP's name
+// ("H264", "H265"; others in capitals); a size of 0 is left out, and so is an empty codec.
+R_API std::string stream_title(const std::string& codec, int width, int height);
+
+// The camera's substream as stream_title: its codec and size; empty when it has neither.
+R_API std::string substream_title(const r_camera& camera);
+
+// Why the camera has no substream, from its sub_status ("none: <reason>", with or without the space after the
+// colon): the reason; empty when the status isn't a "none".
+R_API std::string substream_none_reason(const r_camera& camera);
+
 // Copies the substream fields (all sub_*) from one camera record to another.
 R_API void substream_copy(const r_camera& from, r_camera& to);
 

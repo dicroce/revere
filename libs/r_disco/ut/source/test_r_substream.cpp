@@ -387,3 +387,47 @@ void test_r_substream::test_main_picture_size()
     RTF_ASSERT_EQUAL(main_picture_size("MJPEG", params).first, 0);
     RTF_ASSERT_EQUAL(main_picture_size("H265", params).first, 0);  // an H.264 SPS isn't an H.265 one
 }
+
+// How a stream reads in the camera's settings.
+void test_r_substream::test_stream_titles()
+{
+    const string dot = "  \xC2\xB7  ", times = " \xC3\x97 ";
+    RTF_ASSERT(stream_title("H264", 2560, 1440) == "H.264" + dot + "2560" + times + "1440");
+    RTF_ASSERT(stream_title("H265", 640, 480) == "H.265" + dot + "640" + times + "480");
+    RTF_ASSERT(stream_title("mjpeg", 640, 480) == "MJPEG" + dot + "640" + times + "480");
+    RTF_ASSERT(stream_title("H264", 0, 0) == "H.264");                    // no size known
+    RTF_ASSERT(stream_title("H264", 640, 0) == "H.264");
+    RTF_ASSERT(stream_title("", 640, 480) == "640" + times + "480");     // no codec known
+    RTF_ASSERT(stream_title("", 0, 0).empty());
+
+    r_camera camera;
+    RTF_ASSERT(substream_title(camera).empty());
+    r_substream_choice choice;
+    choice.found = true;
+    choice.profile = _profile("sub_1", 640, 360);
+    choice.rtsp_url = "rtsp://10.0.0.5/sub";
+    choice.probe = _good(640, 352);
+    substream_set(camera, choice, "H264", "p", 90000);
+    RTF_ASSERT(substream_title(camera) == "H.264" + dot + "640" + times + "352");
+}
+
+// The reason a camera has no substream, from its status.
+void test_r_substream::test_none_reason()
+{
+    r_camera camera;
+    RTF_ASSERT(substream_none_reason(camera).empty());                    // never checked
+    substream_clear(camera, "uses B-frames");
+    RTF_ASSERT(substream_none_reason(camera) == "uses B-frames");
+    camera.sub_status = string("none:camera allows one stream at a time");   // without the space
+    RTF_ASSERT(substream_none_reason(camera) == "camera allows one stream at a time");
+    camera.sub_status = string("ok");
+    RTF_ASSERT(substream_none_reason(camera).empty());
+    camera.sub_status = string("pending");
+    RTF_ASSERT(substream_none_reason(camera).empty());
+    camera.sub_status = string("none: ");
+    RTF_ASSERT(substream_none_reason(camera).empty());
+    camera.sub_status = string("note: not a none");        // starts like one, isn't
+    RTF_ASSERT(substream_none_reason(camera).empty());
+    camera.sub_status = string("none");                    // no colon
+    RTF_ASSERT(substream_none_reason(camera).empty());
+}

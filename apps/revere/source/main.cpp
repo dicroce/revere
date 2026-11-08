@@ -317,12 +317,7 @@ static std::string _get_storage_path(const std::string& record_file_path);
 // "H.264 \xC2\xB7 640 \xC3\x97 480", for a camera's substream or a profile.
 static std::string _stream_title(const std::string& codec, int width, int height)
 {
-    std::string out = codec.empty() ? std::string("Video") : codec;
-    for(auto& ch : out)
-        ch = (char)toupper((unsigned char)ch);
-    if(width > 0 && height > 0)
-        out += "  \xC2\xB7  " + std::to_string(width) + " \xC3\x97 " + std::to_string(height);
-    return out;
+    return r_disco::stream_title(codec, width, height);
 }
 
 static std::string _stream_summary(const r_disco::r_camera& camera)

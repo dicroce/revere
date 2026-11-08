@@ -197,3 +197,45 @@ size_t r_disco::main_profile_index(const vector<r_onvif::onvif_profile_info>& pr
     }
     return best_idx;
 }
+
+string r_disco::stream_title(const string& codec, int width, int height)
+{
+    string name;
+    if(codec == "H264")
+        name = "H.264";
+    else if(codec == "H265")
+        name = "H.265";
+    else
+    {
+        name = codec;
+        for(auto& ch : name)
+            ch = (char)toupper((unsigned char)ch);
+    }
+    string size;
+    if(width > 0 && height > 0)
+        size = to_string(width) + " \xC3\x97 " + to_string(height);
+    if(name.empty())
+        return size;
+    return size.empty() ? name : name + "  \xC2\xB7  " + size;
+}
+
+string r_disco::substream_title(const r_camera& camera)
+{
+    return stream_title(
+        camera.sub_video_codec.is_null() ? string() : camera.sub_video_codec.value(),
+        camera.sub_width.is_null() ? 0 : camera.sub_width.value(),
+        camera.sub_height.is_null() ? 0 : camera.sub_height.value()
+    );
+}
+
+string r_disco::substream_none_reason(const r_camera& camera)
+{
+    if(camera.sub_status.is_null())
+        return string();
+    const auto& status = camera.sub_status.value();
+    if(status.rfind("none:", 0) != 0)
+        return string();
+    auto reason = status.substr(5);
+    reason.erase(0, reason.find_first_not_of(' '));
+    return reason;
+}

@@ -495,50 +495,74 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
         return;
     }
 
-    if(!recording.empty())
-    {
-        d.label("Recording");
-        d.body(recording);
-        d.gap(4.0f);
-    }
-
     const bool on = r_disco::substream_on(sub);
     const std::string token = sub.sub_onvif_profile_token.is_null() ? std::string() : sub.sub_onvif_profile_token.value();
     const std::string status = sub.sub_status.is_null() ? std::string() : sub.sub_status.value();
+    const std::string reason = r_disco::substream_none_reason(sub);
+    const std::string dot = "  \xC2\xB7  ";
 
     d.label("Live view and analysis");
     d.gap(2.0f);
+
+    // The smaller streams to choose from: what the camera offers, and the one in use if it isn't among them
+    // (the list is still coming, or the camera no longer lists it).
+    struct card { std::string token; std::string title; bool in_use; };
+    std::vector<card> cards;
+    bool in_use_listed = false;
+    for(auto& c : candidates)
+    {
+        const bool mine = on && token == c.token;
+        in_use_listed = in_use_listed || mine;
+        // The one in use shows the stream's own size, which can differ a little from what the camera listed.
+        cards.push_back({c.token, mine && !r_disco::substream_title(sub).empty() ? r_disco::substream_title(sub) : c.title, mine});
+    }
+    if(on && !in_use_listed)
+        cards.push_back({token, r_disco::substream_title(sub), true});
+
     ImGui::BeginDisabled(working);
-    if(d.option("##sub_off", "The recording stream", "One stream from the camera. Nothing else is opened on it.", !on))
-        streams_cb(std::string("off"), std::string());
-    for(int i = 0; i < (int)candidates.size(); ++i)
+    {
+        std::string title = "Use the recording stream";
+        if(!recording.empty())
+            title += dot + recording;
+        if(!on)
+            title += "   (in use)";
+        if(d.option("##sub_off", title.c_str(), "Live view and analysis use the stream that's recorded. No extra connection to the camera.", !on))
+            streams_cb(std::string("off"), std::string());
+    }
+    for(int i = 0; i < (int)cards.size(); ++i)
     {
         d.gap(2.0f);
         ImGui::PushID(i);
-        if(d.option("##sub_use", ("A smaller stream  \xC2\xB7  " + candidates[i].title).c_str(), "", on && token == candidates[i].token))
-            streams_cb(std::string("use"), candidates[i].token);
+        std::string title = "Use the smaller stream";
+        if(!cards[i].title.empty())
+            title += dot + cards[i].title;
+        if(cards[i].in_use)
+            title += "   (in use)";
+        if(d.option("##sub_use", title.c_str(), "Faster live view and analysis, less CPU. Recording stays full quality.", cards[i].in_use))
+            streams_cb(std::string("use"), cards[i].token);
         ImGui::PopID();
     }
     ImGui::EndDisabled();
 
+    // What each part is doing now, so a smaller stream doesn't read as the recording having shrunk.
     d.gap(2.0f);
+    d.body("Recording: full quality" + (recording.empty() ? std::string() : ", " + recording));
+    if(on)
+        d.body("Live view and analysis: smaller stream" + (r_disco::substream_title(sub).empty() ? std::string() : ", " + r_disco::substream_title(sub)));
+    else
+        d.body("Live view and analysis: recording stream");
+
+    // And, when it helps, why.
     if(working)
         d.body("Checking the camera...");
     else if(loading)
         d.body("Looking at the camera's streams...");
-    else if(on)
-    {
-        std::string line = "Using " + (sub.sub_video_codec.is_null() ? std::string("video") : main_window_detail::upper(sub.sub_video_codec.value()));
-        if(!sub.sub_width.is_null() && !sub.sub_height.is_null())
-            line += "  \xC2\xB7  " + std::to_string(sub.sub_width.value()) + " \xC3\x97 " + std::to_string(sub.sub_height.value());
-        if(!sub.sub_key_interval_ms.is_null())
-            line += "  \xC2\xB7  a keyframe every " + std::to_string((sub.sub_key_interval_ms.value() + 500) / 1000) + " s";
-        d.body(line);
-    }
-    else if(status.rfind("none: ", 0) == 0)
-        d.body("Uses the recording stream: " + status.substr(6) + ".");
-    else if(candidates.empty())
-        d.body("Uses the recording stream.");
+    else if(!on && !reason.empty())
+        d.body("No smaller stream found: " + reason + ".");
+    else if(!on && cards.empty())
+        d.body("No smaller stream found. This camera doesn't offer one Revere can use.");
+    else if(!on)
+        d.body("This camera offers a smaller stream: choose it above to try it.");
 
     ImGui::BeginDisabled(working || loading);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
@@ -547,7 +571,6 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
     ImGui::PopStyleVar();
     ImGui::EndDisabled();
 }
-
 
 // Detection settings first (each a switch with a line saying what it does),
 // then a Storage section with where the recording lives and the two storage
