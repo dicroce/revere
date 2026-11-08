@@ -233,6 +233,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
         ${GST_TOP_DIR}/bin/ffi-7.dll
         ${GST_TOP_DIR}/bin/z-1.dll
         ${GST_TOP_DIR}/bin/orc-0.4-0.dll
+        ${GST_TOP_DIR}/bin/opus-0.dll
         DESTINATION revere
     )
     
@@ -290,7 +291,24 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
         ${GST_TOP_DIR}/lib/gstreamer-1.0/gstudp.pdb
         ${GST_TOP_DIR}/lib/gstreamer-1.0/gstvideoparsersbad.dll
         ${GST_TOP_DIR}/lib/gstreamer-1.0/gstvideoparsersbad.pdb
+        # The Opus restream's audio (restream_opus_audio_branch): G.711 decoders,
+        # conversion and resampling, and the Opus encoder.
+        ${GST_TOP_DIR}/lib/gstreamer-1.0/gstalaw.dll
+        ${GST_TOP_DIR}/lib/gstreamer-1.0/gstaudioconvert.dll
+        ${GST_TOP_DIR}/lib/gstreamer-1.0/gstaudioresample.dll
+        ${GST_TOP_DIR}/lib/gstreamer-1.0/gstmulaw.dll
+        ${GST_TOP_DIR}/lib/gstreamer-1.0/gstopus.dll
         DESTINATION revere/gstreamer_plugins
+    )
+    install(
+        FILES
+        ${GST_TOP_DIR}/lib/gstreamer-1.0/gstalaw.pdb
+        ${GST_TOP_DIR}/lib/gstreamer-1.0/gstaudioconvert.pdb
+        ${GST_TOP_DIR}/lib/gstreamer-1.0/gstaudioresample.pdb
+        ${GST_TOP_DIR}/lib/gstreamer-1.0/gstmulaw.pdb
+        ${GST_TOP_DIR}/lib/gstreamer-1.0/gstopus.pdb
+        DESTINATION revere/gstreamer_plugins
+        OPTIONAL
     )
 
     # Install system plugins if they were built
@@ -384,9 +402,14 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 
     install(
         FILES
+        ${GSTREAMER_PLUGIN_DIR}/libgstalaw.so
         ${GSTREAMER_PLUGIN_DIR}/libgstapp.so
+        ${GSTREAMER_PLUGIN_DIR}/libgstaudioconvert.so
         ${GSTREAMER_PLUGIN_DIR}/libgstaudioparsers.so
+        ${GSTREAMER_PLUGIN_DIR}/libgstaudioresample.so
         ${GSTREAMER_PLUGIN_DIR}/libgstcoreelements.so
+        ${GSTREAMER_PLUGIN_DIR}/libgstmulaw.so
+        ${GSTREAMER_PLUGIN_DIR}/libgstopus.so
         ${GSTREAMER_PLUGIN_DIR}/libgstrtp.so
         ${GSTREAMER_PLUGIN_DIR}/libgstrtpmanager.so
         ${GSTREAMER_PLUGIN_DIR}/libgstrtsp.so
