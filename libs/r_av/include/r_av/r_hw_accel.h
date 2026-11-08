@@ -54,10 +54,20 @@ R_API int r_hw_device_create(AVBufferRef** device_ctx, AVHWDeviceType device_typ
 // av_hwdevice_ctx_create (nullptr restores it).
 R_API void r_hw_device_create_override(int (*create)(AVBufferRef**, AVHWDeviceType));
 
+// Opens an encoder (avcodec_open2) and returns its result. On failure `why` gets
+// the lines FFmpeg logged during the attempt, as for r_hw_device_create: a hardware
+// encoder says why it refused (no session left, driver, memory) only there, the
+// return code is AVERROR_EXTERNAL.
+R_API int r_hw_encoder_open(AVCodecContext* context, const AVCodec* codec, AVDictionary** opts, std::string& why);
+
+// Tests only: r_hw_encoder_open calls `open` instead of avcodec_open2
+// (nullptr restores it).
+R_API void r_hw_encoder_open_override(int (*open)(AVCodecContext*, const AVCodec*, AVDictionary**));
+
 // Returns the FFmpeg encoder codec name for a given hw backend and codec id
 // (e.g. qsv + H264 → "h264_qsv"). Returns nullptr for unsupported combinations
 // (d3d11va, none, or unknown codec_id).
-const char* r_hw_accel_encoder_name(r_hw_accel accel, AVCodecID codec_id);
+R_API const char* r_hw_accel_encoder_name(r_hw_accel accel, AVCodecID codec_id);
 
 // Returns the pixel format the hw encoder expects as input. Used by
 // r_video_encoder to decide whether a YUV420P→NV12 conversion is needed.

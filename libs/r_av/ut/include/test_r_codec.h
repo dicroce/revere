@@ -12,6 +12,9 @@ public:
       TEST(test_r_codec::test_decode_again_after_its_input_sends_nothing);
       TEST(test_r_codec::test_hw_device_failure_decodes_in_software);
       TEST(test_r_codec::test_hw_accel_without_a_decoder_decodes_in_software);
+      TEST(test_r_codec::test_hw_encoder_open_failure_encodes_in_software);
+      TEST(test_r_codec::test_hw_encoder_missing_encodes_in_software);
+      TEST(test_r_codec::test_software_encoder_failure_still_throws);
       TEST(test_r_codec::test_hw_decode_failure_is_remembered);
     RTF_FIXTURE_END();
 
@@ -27,5 +30,8 @@ public:
     void test_decode_again_after_its_input_sends_nothing();
     void test_hw_device_failure_decodes_in_software();
     void test_hw_accel_without_a_decoder_decodes_in_software();
+    void test_hw_encoder_open_failure_encodes_in_software();
+    void test_hw_encoder_missing_encodes_in_software();
+    void test_software_encoder_failure_still_throws();
     void test_hw_decode_failure_is_remembered();
 };
