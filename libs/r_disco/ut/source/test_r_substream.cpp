@@ -183,9 +183,9 @@ void test_r_substream::test_set_records_the_pick()
 {
     r_substream_choice choice;
     choice.found = true;
-    choice.profile = _profile("sub_1", 640, 360);
+    choice.profile = _profile("sub_1", 704, 396);  // what ONVIF said
     choice.rtsp_url = "rtsp://10.0.0.5/sub";
-    choice.probe = _good(640, 352);
+    choice.probe = _good(640, 352);                 // what the stream really is
     choice.probe.key_interval_ms = 2000;
 
     r_camera camera;
@@ -332,6 +332,12 @@ void test_r_substream::test_main_picture_size()
     auto size = main_picture_size("H264", params);
     RTF_ASSERT_EQUAL(size.first, expected.width);
     RTF_ASSERT_EQUAL(size.second, expected.height);
+
+    // An H.265 stream's size comes from its own SPS (a 640 x 360 one, from x265).
+    auto h265 = main_picture_size("H265", "sprop-sps=QgEBBAgAAAMAnggAAAMAAD+QAKBALSyys0kmV4C3AgIABAAAAwAEAAADADwg");
+    RTF_ASSERT_EQUAL(h265.first, 640);
+    RTF_ASSERT_EQUAL(h265.second, 360);
+    RTF_ASSERT_EQUAL(main_picture_size("H264", "sprop-sps=QgEBBAgAAAMAnggAAAMAAD+QAKBALSyys0kmV4C3AgIABAAAAwAEAAADADwg").first, 0);
 
     RTF_ASSERT_EQUAL(main_picture_size("H264", "").first, 0);
     RTF_ASSERT_EQUAL(main_picture_size("H264", "nothing here").second, 0);
