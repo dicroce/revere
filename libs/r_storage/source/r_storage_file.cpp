@@ -24,6 +24,7 @@ r_storage_file::r_storage_file(const string& file_name) :
 
 r_storage_file::~r_storage_file() noexcept
 {
+    stop_async_writes();
 }
 
 r_storage_write_context r_storage_file::create_write_context(
@@ -131,19 +132,145 @@ int64_t r_storage_file::write_frame(const r_storage_write_context& ctx, r_storag
         }
     }
 
-    uint8_t flags = key ? 1 : 0;
+    uint32_t flags = key ? 1 : 0;
+    const int64_t arrival_ms = _now_epoch_ms();
 
-    // Instrumentation: a write is normally a memcpy into a mapped block
-    // (microseconds). A slow write is almost certainly a block transition
-    // stalled in acquisition (e.g. waiting on readers to unpin reclaim
-    // victims) — the mechanism behind storage falling behind realtime.
-    auto write_start = std::chrono::steady_clock::now();
-    _writer->write(*ctx.wc, p, size, flags, corrected);
-    auto write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - write_start).count();
-    if(write_ms > 50)
-        R_LOG_WARNING("slow nanots write: %lld ms (media_type=%d, ts=%lld) — likely block acquisition waiting on readers", (long long)write_ms, (int)media_type, (long long)corrected);
+    {
+        unique_lock<mutex> g(_q_lock);
+
+        // While the queue is full, wait for the writer (never drop). While a
+        // stop is still writing the queue, wait too: a synchronous write must
+        // not overtake queued frames.
+        auto room = [&]() { return _async && (_q.empty() || _q_bytes + size <= _q_max_bytes); };
+        if(_writer_running && !room())
+        {
+            if(_async && !_q_full_logged)
+            {
+                _q_full_logged = true;
+                R_LOG_WARNING("storage writes to %s are %zu bytes behind (queue full); recording waits for the disk",
+                              _file_name.c_str(), _q_bytes);
+            }
+            _q_room.wait(g, [&]() { return room() || !_writer_running; });
+        }
+
+        if(_async)
+        {
+            _queued_frame f;
+            f.wc = ctx.wc.get();
+            f.media_type = media_type;
+            f.data.assign(p, p + size);
+            f.flags = flags;
+            f.ts = corrected;
+            f.arrival_ms = arrival_ms;
+            _q_bytes += size;
+            _q.push_back(std::move(f));
+            g.unlock();
+            _q_work.notify_one();
+            return corrected;
+        }
+    }
+
+    _write(*ctx.wc, media_type, p, size, flags, corrected, arrival_ms, 0);
 
     return corrected;
+}
+
+void r_storage_file::_write(write_context& wc, r_storage_media_type media_type, const uint8_t* p, size_t size, uint32_t flags, int64_t ts, int64_t arrival_ms, size_t queued_bytes)
+{
+    // A write is normally a memcpy into a mapped block (microseconds). A slow
+    // one is a block transition or a page that had to come from disk — on a
+    // busy recording disk, hundreds of ms.
+    auto write_start = std::chrono::steady_clock::now();
+    _writer->write(wc, p, size, flags, ts);
+    auto write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - write_start).count();
+    if(write_ms > 50)
+        R_LOG_WARNING("slow nanots write: %lld ms (media_type=%d, ts=%lld, %zu bytes queued behind it)",
+                      (long long)write_ms, (int)media_type, (long long)ts, queued_bytes);
+
+    if(media_type == R_STORAGE_MEDIA_TYPE_VIDEO)
+    {
+        _written_video_ts.store(ts, std::memory_order_release);
+        _written_video_arrival_ms.store(arrival_ms, std::memory_order_release);
+    }
+}
+
+void r_storage_file::start_async_writes(size_t max_queued_bytes)
+{
+    lock_guard<mutex> g(_q_lock);
+    if(_writer_running)
+        return;
+    _q_max_bytes = max_queued_bytes;
+    _q_stop = false;
+    _q_full_logged = false;
+    _writer_thread = thread(&r_storage_file::_writer_entry, this);
+    _writer_running = true;
+    _async = true;
+}
+
+void r_storage_file::stop_async_writes() noexcept
+{
+    {
+        lock_guard<mutex> g(_q_lock);
+        if(!_writer_running)
+            return;
+        _async = false;
+        _q_stop = true;
+    }
+    _q_work.notify_one();
+
+    try
+    {
+        if(_writer_thread.joinable())
+            _writer_thread.join();
+    }
+    catch(...) {}
+
+    {
+        lock_guard<mutex> g(_q_lock);
+        _writer_running = false;
+        _q_stop = false;
+    }
+    _q_room.notify_all();
+}
+
+void r_storage_file::_writer_entry()
+{
+    for(;;)
+    {
+        _queued_frame f;
+        size_t behind = 0;
+        {
+            unique_lock<mutex> g(_q_lock);
+            _q_work.wait(g, [&]() { return !_q.empty() || _q_stop; });
+            if(_q.empty())
+                return;  // stopping, and everything is written
+            f = std::move(_q.front());
+            _q.pop_front();
+            _q_bytes -= f.data.size();
+            behind = _q_bytes;
+            if(_q.empty() && _q_full_logged)
+            {
+                _q_full_logged = false;
+                R_LOG_INFO("storage writes to %s caught up", _file_name.c_str());
+            }
+        }
+        _q_room.notify_all();
+
+        try
+        {
+            _write(*f.wc, f.media_type, f.data.data(), f.data.size(), f.flags, f.ts, f.arrival_ms, behind);
+        }
+        catch(const std::exception& e)
+        {
+            R_LOG_ERROR("storage write to %s failed (media_type=%d, ts=%lld): %s",
+                        _file_name.c_str(), (int)f.media_type, (long long)f.ts, e.what());
+        }
+        catch(...)
+        {
+            R_LOG_ERROR("storage write to %s failed (media_type=%d, ts=%lld): unknown error",
+                        _file_name.c_str(), (int)f.media_type, (long long)f.ts);
+        }
+    }
 }
 
 size_t r_storage_file::remove_blocks(const std::string& file_name, int64_t start_ts, int64_t end_ts)

@@ -44,6 +44,11 @@ using namespace r_utils;
 using namespace std;
 using namespace std::chrono;
 
+// Most one camera's storage queue holds before write_frame() waits for the
+// disk: ~60 s of a 4 Mbps stream, ~15 s at 16 Mbps. The longest single write
+// stall seen on a busy disk was ~3.5 s.
+static const size_t STORAGE_WRITE_QUEUE_BYTES = 32 * 1024 * 1024;
+
 // Helper to get storage file path - handles both legacy (filename only) and new (full path) formats
 static string _get_storage_path(const string& record_file_path, const string& top_dir)
 {
@@ -91,6 +96,12 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     _die(false),
     _ws(ws)
 {
+    // Frames go to disk on the storage file's own writer thread, so a slow or
+    // busy recording disk doesn't stall this camera's pipeline (and with it
+    // motion, frame taps and plugin feeds). The queue covers tens of seconds
+    // of a typical stream; past that, writes wait for the disk as before.
+    _storage_file.start_async_writes(STORAGE_WRITE_QUEUE_BYTES);
+
     // Only create metadata storage if motion detection is enabled
     if(!_camera.do_motion_detection.is_null() && _camera.do_motion_detection.value())
     {
@@ -502,10 +513,6 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 pts
             );
 
-            // Only reached if write_frame did not throw — records that this
-            // frame actually reached storage (see storage_write_lag_ms()).
-            _last_v_write_time = system_clock::now();
-
             if(key)
             {
                 std::lock_guard<std::mutex> g(_latest_key_lock);
@@ -612,6 +619,10 @@ r_recording_context::~r_recording_context() noexcept
 
     R_LOG_INFO("teardown %s: storage", id.c_str());
 
+    // The source is stopped, so nothing more is queued: write what is, and
+    // stop the writer thread before the write contexts it refers to go.
+    _storage_file.stop_async_writes();
+
     // Explicitly clear write contexts BEFORE _storage_file is destroyed
     // This ensures nanots write_context unique_ptrs are destroyed immediately,
     // releasing the stream tags ("video" and "audio") before a new recording
@@ -668,7 +679,11 @@ int64_t r_recording_context::storage_write_lag_ms() const
 {
     if(!_got_first_video_sample)
         return 0;
-    auto lag = _last_v_time - _last_v_write_time;
+    // Writes happen on the storage file's writer thread: compare the newest
+    // frame received with when the newest frame written was received (before
+    // any is written, this context's creation).
+    auto written_arrival = (std::max)(_last_v_write_time, _storage_file.written_video_arrival_time());
+    auto lag = _last_v_time - written_arrival;
     if(lag < system_clock::duration::zero())
         return 0;
     return duration_cast<milliseconds>(lag).count();
@@ -678,7 +693,7 @@ int64_t r_recording_context::storage_timeline_lag_ms() const
 {
     if(!_got_first_video_sample)
         return 0;
-    auto last_written = _storage_file.last_video_ts();
+    auto last_written = _storage_file.written_video_ts();
     if(last_written < 0)
         return 0;
     auto now_ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
