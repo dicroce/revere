@@ -67,7 +67,7 @@ R_API void r_hw_encoder_open_override(int (*open)(AVCodecContext*, const AVCodec
 // Returns the FFmpeg encoder codec name for a given hw backend and codec id
 // (e.g. qsv + H264 → "h264_qsv"). Returns nullptr for unsupported combinations
 // (d3d11va, none, or unknown codec_id).
-const char* r_hw_accel_encoder_name(r_hw_accel accel, AVCodecID codec_id);
+R_API const char* r_hw_accel_encoder_name(r_hw_accel accel, AVCodecID codec_id);
 
 // Returns the pixel format the hw encoder expects as input. Used by
 // r_video_encoder to decide whether a YUV420P→NV12 conversion is needed.
