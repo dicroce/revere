@@ -1,5 +1,6 @@
 #include "test_r_substream_recorder.h"
 #include "r_vss/r_substream_recorder.h"
+#include "r_vss/r_frame_feeds.h"
 #include "r_fakey/r_fake_camera.h"
 #include "r_storage/r_storage_file_reader.h"
 #include "r_vss/r_query.h"
@@ -359,4 +360,48 @@ void test_r_substream_recorder::test_governor_forget()
     RTF_ASSERT(g.pass("a", _pass(ctx, 1000)).step == substream_step::none);   // backoff
     g.forget("a");
     RTF_ASSERT(g.pass("a", _pass(ctx, 2000)).step == substream_step::start);  // a suspended camera starts fresh
+}
+
+// The frames it records also go to plugins' "sub" feeds, from a key frame, each saying it came from the substream.
+void test_r_substream_recorder::test_posts_to_the_frame_feeds()
+{
+    auto fc = _substream_camera();
+    if(!fc)
+        return;
+    while(fc->bound_port() < 0)
+        this_thread::sleep_for(milliseconds(10));
+
+    r_frame_feeds feeds;
+    auto feed = feeds.subscribe("cam-sub", "sub", r_frame_feeds::VIDEO, 0);
+    feeds.substream_fresh("cam-sub", true);
+
+    auto ring = RING_DIR + PATH_SLASH + "front_sub.nts";
+    ensure_substream_ring(ring);
+    int64_t first_ts = 0;
+    int frames = 0;
+    bool first_is_key = false, all_sub = true, codec_ok = true;
+    {
+        r_substream_recorder rec(_camera(r_string_utils::format("rtsp://127.0.0.1:%d/sub", fc->bound_port())), ring, "tcp", &feeds);
+        auto deadline = steady_clock::now() + seconds(15);
+        while(frames < 20 && steady_clock::now() < deadline)
+        {
+            r_feed_frame fr;
+            if(feeds.next(feed, 200, fr) != 1)
+                continue;
+            if(frames == 0)
+            {
+                first_is_key = (fr.flags & r_frame_feeds::KEY) != 0;
+                first_ts = fr.ts;
+            }
+            all_sub = all_sub && fr.stream == "sub";
+            codec_ok = codec_ok && fr.codec_name == "h264" && !fr.codec_params.empty() && !fr.data.empty();
+            ++frames;
+        }
+    }
+    fc->quit();
+    RTF_ASSERT(frames >= 20);
+    RTF_ASSERT(first_is_key);
+    RTF_ASSERT(first_ts > 0);
+    RTF_ASSERT(all_sub);
+    RTF_ASSERT(codec_ok);
 }

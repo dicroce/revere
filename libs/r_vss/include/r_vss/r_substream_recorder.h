@@ -4,6 +4,7 @@
 #include "r_disco/r_camera.h"
 #include "r_pipeline/r_gst_source.h"
 #include "r_pipeline/r_stream_info.h"
+#include "r_vss/r_frame_feeds.h"
 #include "r_storage/r_storage_file.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
@@ -126,7 +127,8 @@ R_API void ensure_substream_ring(const std::string& ring_path);
 class r_substream_recorder final
 {
 public:
-    R_API r_substream_recorder(const r_disco::r_camera& camera, const std::string& ring_path, const std::string& rtsp_protocols);
+    // feeds: where the frames also go, as the camera's "sub" stream (r_frame_feeds); null for none.
+    R_API r_substream_recorder(const r_disco::r_camera& camera, const std::string& ring_path, const std::string& rtsp_protocols, r_frame_feeds* feeds = nullptr);
     R_API ~r_substream_recorder() noexcept;
     R_API r_substream_recorder(const r_substream_recorder&) = delete;
     R_API r_substream_recorder& operator=(const r_substream_recorder&) = delete;
@@ -147,6 +149,7 @@ private:
 
     r_disco::r_camera _camera;
     std::string _ring_path;
+    r_frame_feeds* _feeds;
     r_storage::r_storage_file _ring;
     r_utils::r_nullable<r_storage::r_storage_write_context> _write_context;
     std::mutex _sdp_lock;

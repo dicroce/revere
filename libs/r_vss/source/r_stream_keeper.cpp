@@ -1405,6 +1405,7 @@ void r_stream_keeper::_entry_point()
                     // reset) may move or delete the ring next.
                     _substream_governor.forget(cmd.first.id);
                     _substreams.erase(cmd.first.id);
+                    _frame_feeds.substream_fresh(cmd.first.id, false);
 
                     if(rc)
                     {
@@ -1589,6 +1590,7 @@ void r_stream_keeper::_tend_substreams()
     {
         if(recording.count(it->first) == 0)
         {
+            _frame_feeds.substream_fresh(it->first, false);
             _substream_governor.forget(it->first);
             doomed.push_back(std::move(it->second));
             it = _substreams.erase(it);
@@ -1631,7 +1633,7 @@ void r_stream_keeper::_tend_substreams()
             {
                 auto ring = substream_ring_path(storage_path(_top_dir, cam.record_file_path.value()));
                 ensure_substream_ring(ring);
-                _substreams[id] = make_unique<r_substream_recorder>(cam, ring, c.protocols);
+                _substreams[id] = make_unique<r_substream_recorder>(cam, ring, c.protocols, &_frame_feeds);
                 R_LOG_INFO("substream of %s: recording to %s", id.c_str(), ring.c_str());
             }
             catch(const exception& e)
@@ -1641,6 +1643,13 @@ void r_stream_keeper::_tend_substreams()
         }
         if(d.gave_up)
             _give_up_substream(id);
+    }
+
+    // Plugins' "sub" feeds follow the substream: on it while its recorder is getting frames, on main otherwise.
+    for(auto& [id, c] : recording)
+    {
+        auto running = _substreams.find(id);
+        _frame_feeds.substream_fresh(id, running != _substreams.end() && running->second->fresh());
     }
 
     // Stopped outside any lock: a recorder whose camera stopped answering can take a while to wind down.
