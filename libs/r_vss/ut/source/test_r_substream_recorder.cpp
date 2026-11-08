@@ -72,6 +72,8 @@ void test_r_substream_recorder::test_next_step()
 // A live H.264 substream on loopback: 320x240 at 15 fps, a keyframe every 15 frames. Null without x264enc.
 static shared_ptr<r_fakey::r_fake_camera> _substream_camera()
 {
+    // Nothing has started GStreamer yet in this process; without it the factory is never found and the test skips.
+    gst_init(nullptr, nullptr);
     auto x264 = gst_element_factory_find("x264enc");
     if(!x264)
         return nullptr;
