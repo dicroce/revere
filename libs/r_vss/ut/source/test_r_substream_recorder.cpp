@@ -319,15 +319,20 @@ void test_r_substream_recorder::test_governor_counts_main_drops_soon_after_a_sta
     RTF_ASSERT(!h.main_dropped("b", 31000, 20500));                    // 10.5 s: counted once
     RTF_ASSERT(h.main_dropped("b", 31000, 22000));                     // 9 s, within the slack before the start: twice
 
-    // The substream being up past the window doesn't clear a drop while main has had no video: main is still the
-    // one that was cut (main_receiving stays true once it has had its first frame, so it can't tell).
+    // An earlier drop stands while the recorder isn't running, even with main back and sending: a camera that kicks
+    // main each time the recorder starts is told by the second kick, not the first.
     r_substream_governor m;
     RTF_ASSERT(m.pass("m", _pass(ctx, 10000)).step == substream_step::start);
-    auto stale = _pass(ctx, 25000);
-    stale.running = true; stale.frames_written = 100; stale.main_video_age_ms = 14500;   // main's last frame: 10.5 s
-    RTF_ASSERT(m.pass("m", stale).step == substream_step::none);
-    RTF_ASSERT(!m.main_dropped("m", 31000, 20500));                    // once, and not forgotten by the pass above
+    RTF_ASSERT(!m.main_dropped("m", 31000, 20500));                    // once
+    auto back = _pass(ctx, 35000);
+    back.main_video_age_ms = 100;                                      // main has reconnected; backoff still running
+    RTF_ASSERT(m.pass("m", back).step == substream_step::none);
     RTF_ASSERT(m.pass("m", _pass(ctx, 50000)).step == substream_step::start);
+    // The recorder is up past the window and main has had no video since 50.5 s: that doesn't clear the drop
+    // (receiving_video stays true once main has had its first frame, so it can't tell).
+    auto stale = _pass(ctx, 65000);
+    stale.running = true; stale.frames_written = 100; stale.main_video_age_ms = 14500;
+    RTF_ASSERT(m.pass("m", stale).step == substream_step::none);
     RTF_ASSERT(m.main_dropped("m", 71000, 20500));                     // 50.5 s: twice
 
     // A camera whose recorder never started is not a suspect.
