@@ -45,7 +45,7 @@ R_API substream_step substream_next_step(bool wanted, bool main_receiving, bool 
 constexpr int64_t SUBSTREAM_RESTART_BACKOFF_MS = 30000;
 // After this many recorders in a row ended without the camera answering, it's taken to allow one stream at a time.
 constexpr int SUBSTREAM_REFUSALS_TO_GIVE_UP = 2;
-constexpr const char* SUBSTREAM_REFUSED_STATUS = "none:camera allows one stream at a time";
+constexpr const char* SUBSTREAM_REFUSED_STATUS = "none: camera allows one stream at a time";
 
 // Allocates the ring at ring_path unless a file is already there.
 R_API void ensure_substream_ring(const std::string& ring_path);
