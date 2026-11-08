@@ -1272,7 +1272,7 @@ void r_stream_keeper::_entry_point()
                             // The next pass starts it again: a reconnect.
                             _reconnects.record(it->first);
                             _frame_feeds.camera_restarted(it->first);
-                            if(_substream_governor.main_dropped(it->first, now_steady_ms))
+                            if(_substream_governor.main_dropped(it->first, now_steady_ms, it->second->video_age_ms()))
                                 substreams_to_give_up.push_back(it->first);
                             doomed.push_back(it->second);
                             it = _streams.erase(it);
@@ -1281,7 +1281,7 @@ void r_stream_keeper::_entry_point()
                         {
                             _reconnects.record(it->first);
                             _frame_feeds.camera_restarted(it->first);
-                            if(_substream_governor.main_dropped(it->first, now_steady_ms))
+                            if(_substream_governor.main_dropped(it->first, now_steady_ms, it->second->video_age_ms()))
                                 substreams_to_give_up.push_back(it->first);
                             doomed.push_back(it->second);
                             it = _streams.erase(it);
@@ -1572,12 +1572,13 @@ void r_stream_keeper::_tend_substreams()
         r_camera camera;
         bool main_receiving {false};
         string protocols;
+        int64_t video_age_ms {0};
     };
     map<string, camera_now> recording;
     {
         std::lock_guard<std::mutex> lock(_streams_mutex);
         for(auto& s : _streams)
-            recording[s.first] = {s.second, s.second->camera(), s.second->receiving_video(), s.second->rtsp_protocols()};
+            recording[s.first] = {s.second, s.second->camera(), s.second->receiving_video(), s.second->rtsp_protocols(), s.second->video_age_ms()};
     }
 
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -1615,6 +1616,7 @@ void r_stream_keeper::_tend_substreams()
         in.frames_written = is_running ? running->second->frames_written() : 0;
         in.ring_moved = is_running && !cam.record_file_path.is_null() &&
                         running->second->ring_path() != substream_ring_path(storage_path(_top_dir, cam.record_file_path.value()));
+        in.main_video_age_ms = c.video_age_ms;
         in.now_ms = now_ms;
 
         auto d = _substream_governor.pass(id, in);

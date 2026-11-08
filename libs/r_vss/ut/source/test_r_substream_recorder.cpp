@@ -286,35 +286,53 @@ void test_r_substream_recorder::test_governor_holds_a_given_up_camera_until_its_
     RTF_ASSERT(h.pass("b", _pass(make_shared<int>(0), 700000)).step == substream_step::start);
 }
 
-// A camera that closes its older session when a second opens drops main's recording as the substream starts.
+// A camera that closes its older session when a second opens stops sending main's video as the substream starts.
+// The keeper only notices ~20 s later (main has had no video for 20 s), so what counts is when main's last frame came
+// against when the recorder started, not when the drop was noticed.
 void test_r_substream_recorder::test_governor_counts_main_drops_soon_after_a_start()
 {
     r_substream_governor g;
     auto ctx = make_shared<int>(0);
 
-    RTF_ASSERT(!g.main_dropped("a", 5000));                           // nothing started yet
+    RTF_ASSERT(!g.main_dropped("a", 5000, 100));                       // nothing started yet
     RTF_ASSERT(g.pass("a", _pass(ctx, 10000)).step == substream_step::start);
-    RTF_ASSERT(!g.main_dropped("a", 14000));                          // once: 4 s after the start
+    // Noticed at 31 s, main's newest frame 20.5 s old: it came at 10.5 s, half a second after the start.
+    RTF_ASSERT(!g.main_dropped("a", 31000, 20500));                    // once
     RTF_ASSERT(g.pass("a", _pass(ctx, 50000)).step == substream_step::start);
-    auto up = _pass(ctx, 61000);                                      // it has been up past the window, main with it
-    up.running = true; up.frames_written = 100;
-    RTF_ASSERT(g.pass("a", up).step == substream_step::none);
-    RTF_ASSERT(!g.main_dropped("a", 61500));                          // 11 s after the start: not its doing
+    // This time main kept sending until 60.5 s, past the window (50 s + 10 s), with the recorder up: not its doing.
+    auto up = _pass(ctx, 61000);
+    up.running = true; up.frames_written = 100; up.main_video_age_ms = 500;
+    RTF_ASSERT(g.pass("a", up).step == substream_step::none);          // the earlier drop is forgotten
+    RTF_ASSERT(!g.main_dropped("a", 90000, 20000));                    // its last frame came at 70 s: not in the window
     RTF_ASSERT(g.pass("a", _pass(ctx, 100000)).step == substream_step::start);
-    RTF_ASSERT(!g.main_dropped("a", 104000));                         // the first in a new run
+    RTF_ASSERT(!g.main_dropped("a", 121000, 20800));                   // 100.2 s: the first of a new run
     RTF_ASSERT(g.pass("a", _pass(ctx, 140000)).step == substream_step::start);
-    RTF_ASSERT(g.main_dropped("a", 143000));                          // twice in a row: given up
-    RTF_ASSERT(!g.main_dropped("a", 144000));                         // the count starts again
+    RTF_ASSERT(g.main_dropped("a", 161000, 20900));                    // 140.1 s: twice in a row, given up
+    RTF_ASSERT(!g.main_dropped("a", 162000, 20500));                   // the count starts again
 
-    // A substream that has run well past the window with main up clears earlier drops.
+    // Main's video that stopped before the recorder started (more than the slack) wasn't cut by it; a frame within
+    // the slack before it may have been (the camera's frames arrive a little ahead of the start).
     r_substream_governor h;
-    RTF_ASSERT(h.pass("b", _pass(ctx, 0)).step == substream_step::start);
-    RTF_ASSERT(!h.main_dropped("b", 3000));
-    auto in = _pass(ctx, 40000);
-    in.running = true; in.frames_written = 100;
-    RTF_ASSERT(h.pass("b", in).step == substream_step::none);
-    RTF_ASSERT(h.pass("b", _pass(ctx, 80000)).step == substream_step::start);
-    RTF_ASSERT(!h.main_dropped("b", 82000));                          // not the second
+    RTF_ASSERT(h.pass("b", _pass(ctx, 10000)).step == substream_step::start);
+    RTF_ASSERT(!h.main_dropped("b", 31000, 25000));                    // last frame at 6 s: 4 s before the start
+    RTF_ASSERT(!h.main_dropped("b", 31000, 25000));                    // and again: still not counted
+    RTF_ASSERT(!h.main_dropped("b", 31000, 20500));                    // 10.5 s: counted once
+    RTF_ASSERT(h.main_dropped("b", 31000, 22000));                     // 9 s, within the slack before the start: twice
+
+    // The substream being up past the window doesn't clear a drop while main has had no video: main is still the
+    // one that was cut (main_receiving stays true once it has had its first frame, so it can't tell).
+    r_substream_governor m;
+    RTF_ASSERT(m.pass("m", _pass(ctx, 10000)).step == substream_step::start);
+    auto stale = _pass(ctx, 25000);
+    stale.running = true; stale.frames_written = 100; stale.main_video_age_ms = 14500;   // main's last frame: 10.5 s
+    RTF_ASSERT(m.pass("m", stale).step == substream_step::none);
+    RTF_ASSERT(!m.main_dropped("m", 31000, 20500));                    // once, and not forgotten by the pass above
+    RTF_ASSERT(m.pass("m", _pass(ctx, 50000)).step == substream_step::start);
+    RTF_ASSERT(m.main_dropped("m", 71000, 20500));                     // 50.5 s: twice
+
+    // A camera whose recorder never started is not a suspect.
+    r_substream_governor k;
+    RTF_ASSERT(!k.main_dropped("c", 31000, 20500));
 }
 
 void test_r_substream_recorder::test_governor_stops_a_moved_ring()

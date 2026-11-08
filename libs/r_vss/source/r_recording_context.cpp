@@ -684,6 +684,13 @@ bool r_recording_context::receiving_video() const
     return _got_first_video_sample;
 }
 
+int64_t r_recording_context::video_age_ms() const
+{
+    if(!_got_first_video_sample)
+        return INT64_MAX / 2;
+    return duration_cast<milliseconds>(system_clock::now() - _last_v_time).count();
+}
+
 int64_t r_recording_context::storage_write_lag_ms() const
 {
     if(!_got_first_video_sample)

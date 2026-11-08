@@ -48,8 +48,11 @@ constexpr int64_t SUBSTREAM_RESTART_BACKOFF_MS = 30000;
 // SETUP), or this many times main's recording was dropped soon after one started (a camera that closes its older
 // session), the camera is taken to allow one stream at a time and the substream is given up.
 constexpr int SUBSTREAM_REFUSALS_TO_GIVE_UP = 2;
-// A drop of main's recording this soon after a substream recorder started counts against it.
+// Main's recording is taken to have been cut by a substream recorder when its newest video frame arrived no sooner
+// than SUBSTREAM_MAIN_DROP_SLACK_MS before the recorder started and less than SUBSTREAM_MAIN_DROP_WINDOW_MS after.
+// (It isn't noticed until main has had no video for 20 s, so the time it is noticed says nothing.)
 constexpr int64_t SUBSTREAM_MAIN_DROP_WINDOW_MS = 10000;
+constexpr int64_t SUBSTREAM_MAIN_DROP_SLACK_MS = 2000;
 // What the camera's settings say when it's given up (r_disco::substream_clear adds "none: ").
 constexpr const char* SUBSTREAM_REFUSED_REASON = "camera allows one stream at a time";
 
@@ -69,6 +72,8 @@ struct r_substream_pass
     int64_t frames_written {0};
     // The recorder's ring isn't where the camera's recording file now says it should be (it was moved).
     bool ring_moved {false};
+    // Milliseconds since main's newest video frame (r_recording_context::video_age_ms).
+    int64_t main_video_age_ms {0};
     int64_t now_ms {0};
 };
 
@@ -90,10 +95,11 @@ class r_substream_governor final
 public:
     R_API r_substream_decision pass(const std::string& camera_id, const r_substream_pass& in);
 
-    // Main's recording for the camera ended (a reconnect). True when it ended soon after a substream recorder
-    // started, again: the camera closes its older session, which would cut gaps into main's recording. The caller
-    // saves the give-up before main's context is built again.
-    R_API bool main_dropped(const std::string& camera_id, int64_t now_ms);
+    // Main's recording for the camera ended (a reconnect), noticed at now_ms, whose newest video frame was
+    // main_video_age_ms old. True when its video stopped soon after a substream recorder started, again: the camera
+    // closes its older session, which would cut gaps into main's recording. The caller saves the give-up before
+    // main's context is built again.
+    R_API bool main_dropped(const std::string& camera_id, int64_t now_ms, int64_t main_video_age_ms);
 
     // The camera is no longer recording here, or was suspended.
     R_API void forget(const std::string& camera_id);

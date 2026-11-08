@@ -177,18 +177,23 @@ r_substream_decision r_substream_governor::pass(const string& camera_id, const r
         st.started_ms = in.now_ms;
     }
 
-    // It has been up past the window with main still going: main's drops since weren't its doing.
-    if(in.running && !dead && st.started && in.now_ms - st.started_ms > SUBSTREAM_MAIN_DROP_WINDOW_MS)
+    // Main delivered video well past the window after the recorder started, with the recorder still up: it wasn't
+    // cut by it, and earlier drops weren't the recorder's doing.
+    if(in.running && !dead && st.started && in.now_ms - in.main_video_age_ms > st.started_ms + SUBSTREAM_MAIN_DROP_WINDOW_MS)
         st.main_drops = 0;
     return d;
 }
 
-bool r_substream_governor::main_dropped(const string& camera_id, int64_t now_ms)
+bool r_substream_governor::main_dropped(const string& camera_id, int64_t now_ms, int64_t main_video_age_ms)
 {
     auto it = _cameras.find(camera_id);
-    if(it == _cameras.end() || !it->second.started || now_ms - it->second.started_ms >= SUBSTREAM_MAIN_DROP_WINDOW_MS)
+    if(it == _cameras.end() || !it->second.started)
         return false;
     auto& st = it->second;
+    // When main's video stopped, against when the recorder started.
+    const int64_t last_video_ms = now_ms - main_video_age_ms;
+    if(last_video_ms < st.started_ms - SUBSTREAM_MAIN_DROP_SLACK_MS || last_video_ms >= st.started_ms + SUBSTREAM_MAIN_DROP_WINDOW_MS)
+        return false;
     if(++st.main_drops < SUBSTREAM_REFUSALS_TO_GIVE_UP)
         return false;
     st.main_drops = 0;

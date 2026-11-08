@@ -236,6 +236,8 @@ public:
     R_API int32_t bytes_per_second() const;
 
     R_API bool receiving_video() const;
+    // Milliseconds since the newest video frame arrived; a very large number when none has.
+    R_API int64_t video_age_ms() const;
 
     // The camera answered: its SDP arrived, so it is reachable and speaks RTSP
     R_API bool answered() const { return _answered; }
