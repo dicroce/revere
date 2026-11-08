@@ -79,11 +79,16 @@ R_API void substream_set(
 R_API void substream_clear(r_camera& camera, const std::string& reason);
 
 // After the camera's address changed: the substream's stream address, codec and codec parameters as the camera gives
-// them now. When it is still the same stream (the same codec and picture size), the stored address and parameters
+// them now. When it is still the same stream (the same codec, and the same picture size when the parameters say
+// one: a description without the SPS can't, and isn't taken as a change), the stored address and parameters
 // are updated and this returns true. When the camera changed it, the substream goes back to "none: camera changed the
 // stream" (substream_clear) and this returns false; the pick doesn't rerun by itself. A camera whose substream is off
 // is left alone.
 R_API bool substream_follow(r_camera& camera, const std::string& url, const std::string& codec, const std::string& parameters);
+
+// The camera's main profile among its ONVIF profiles: the one with `token`, else the largest (the first of equals),
+// as interrogate_camera picks it. 0 when there are no profiles.
+R_API size_t main_profile_index(const std::vector<r_onvif::onvif_profile_info>& profiles, const r_utils::r_nullable<std::string>& token);
 
 // Copies the substream fields (all sub_*) from one camera record to another.
 R_API void substream_copy(const r_camera& from, r_camera& to);

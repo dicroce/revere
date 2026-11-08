@@ -74,31 +74,6 @@ vector<r_onvif::onvif_profile_info> r_agent::get_camera_profiles(
     return _onvif_provider->get_camera_profiles(ipv4, xaddrs, username, password, onvif_port, onvif_protocol);
 }
 
-// Main is what recording uses: the stored token, else the largest profile, as interrogate_camera picks it.
-static size_t _main_profile_index(const vector<r_onvif::onvif_profile_info>& profiles, const r_nullable<string>& token)
-{
-    if(!token.is_null())
-    {
-        for(size_t i = 0; i < profiles.size(); ++i)
-        {
-            if(profiles[i].token == token.value())
-                return i;
-        }
-    }
-    size_t best_idx = 0;
-    uint32_t best = 0;
-    for(size_t i = 0; i < profiles.size(); ++i)
-    {
-        uint32_t pixels = (uint32_t)profiles[i].width * (uint32_t)profiles[i].height;
-        if(pixels > best)
-        {
-            best = pixels;
-            best_idx = i;
-        }
-    }
-    return best_idx;
-}
-
 namespace
 {
 struct onvif_media
@@ -136,7 +111,7 @@ r_substream_candidate_list r_agent::list_substream_candidates(
 {
     auto m = _ask_camera(camera, username, password);
     r_substream_candidate_list list;
-    list.main = m.profiles[_main_profile_index(m.profiles, camera.onvif_profile_token)];
+    list.main = m.profiles[main_profile_index(m.profiles, camera.onvif_profile_token)];
     list.candidates = r_onvif::substream_candidates(m.profiles, list.main);
     return list;
 }
@@ -154,7 +129,7 @@ r_substream_choice r_agent::find_camera_substream(
     try
     {
         auto m = _ask_camera(camera, username, password);
-        const auto main = m.profiles[_main_profile_index(m.profiles, camera.onvif_profile_token)];
+        const auto main = m.profiles[main_profile_index(m.profiles, camera.onvif_profile_token)];
         if(main_width == 0 || main_height == 0)
         {
             main_width = (uint16_t)main.width;
@@ -754,7 +729,8 @@ void r_agent::_maybe_schedule_reinterrogation(const r_stream_config& new_sc)
 }
 
 // The camera moved, so its substream's address did too: ask for the chosen profile's address again and check
-// it's still the same stream. A substream that can't be checked now (the camera didn't answer) is left as it was.
+// it's still the same stream. A substream that can't be followed (the camera didn't answer) is dropped, with the
+// reason, rather than kept at the old address.
 static void _follow_substream(r_camera& camera)
 {
     if(!substream_on(camera) || camera.sub_onvif_profile_token.is_null())
@@ -782,7 +758,10 @@ static void _follow_substream(r_camera& camera)
     }
     catch(const exception& e)
     {
+        // The stored address is the old one's. It isn't kept as "ok" for something to open and fail on: the
+        // camera uses its main stream, and its settings can look again.
         R_LOG_INFO("substream: couldn't follow %s to its new address: %s", camera.id.c_str(), e.what());
+        substream_clear(camera, "couldn't follow the camera to its new address");
     }
 }
 

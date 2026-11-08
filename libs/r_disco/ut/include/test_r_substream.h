@@ -17,6 +17,8 @@ public:
       TEST(test_r_substream::test_copy_takes_only_the_substream);
       TEST(test_r_substream::test_follow_keeps_the_same_stream);
       TEST(test_r_substream::test_follow_drops_a_resized_stream);
+      TEST(test_r_substream::test_follow_without_an_sps_is_not_a_change);
+      TEST(test_r_substream::test_main_profile_index);
     RTF_FIXTURE_END();
 
     virtual ~test_r_substream() throw() {}
@@ -36,4 +38,6 @@ public:
     void test_copy_takes_only_the_substream();
     void test_follow_keeps_the_same_stream();
     void test_follow_drops_a_resized_stream();
+    void test_follow_without_an_sps_is_not_a_change();
+    void test_main_profile_index();
 };

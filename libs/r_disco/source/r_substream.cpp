@@ -154,11 +154,13 @@ bool r_disco::substream_follow(r_camera& camera, const string& url, const string
     if(!substream_on(camera))
         return true;
 
+    // A description that doesn't carry the SPS has no size to compare (0 x 0): that isn't a change.
     auto size = main_picture_size(codec, parameters);
+    const bool size_known = size.first > 0 && size.second > 0;
     const bool same =
         !camera.sub_video_codec.is_null() && camera.sub_video_codec.value() == codec &&
-        !camera.sub_width.is_null() && camera.sub_width.value() == size.first &&
-        !camera.sub_height.is_null() && camera.sub_height.value() == size.second;
+        (!size_known || (!camera.sub_width.is_null() && camera.sub_width.value() == size.first &&
+                         !camera.sub_height.is_null() && camera.sub_height.value() == size.second));
     if(!same)
     {
         substream_clear(camera, "camera changed the stream");
@@ -166,6 +168,32 @@ bool r_disco::substream_follow(r_camera& camera, const string& url, const string
     }
 
     camera.sub_rtsp_url.set_value(url);
-    camera.sub_video_codec_parameters.set_value(parameters);
+    // Parameters without the SPS don't replace ones that have it.
+    if(size_known || camera.sub_video_codec_parameters.is_null())
+        camera.sub_video_codec_parameters.set_value(parameters);
     return true;
+}
+
+size_t r_disco::main_profile_index(const vector<r_onvif::onvif_profile_info>& profiles, const r_utils::r_nullable<string>& token)
+{
+    if(!token.is_null())
+    {
+        for(size_t i = 0; i < profiles.size(); ++i)
+        {
+            if(profiles[i].token == token.value())
+                return i;
+        }
+    }
+    size_t best_idx = 0;
+    uint32_t best = 0;
+    for(size_t i = 0; i < profiles.size(); ++i)
+    {
+        uint32_t pixels = (uint32_t)profiles[i].width * (uint32_t)profiles[i].height;
+        if(pixels > best)
+        {
+            best = pixels;
+            best_idx = i;
+        }
+    }
+    return best_idx;
 }

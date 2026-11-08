@@ -992,9 +992,11 @@ void profile_selection_modal(
     }
     else if(have && (a == 1 || d.enter()))
     {
-        // Auto leaves the token empty: interrogation then takes the largest stream.
+        // Auto is the largest stream the list shows (it is sorted largest first, and only has streams Revere can
+        // record), by its token: an empty token would let interrogation pick among all the camera's profiles,
+        // including ones this list left out, and leave the camera with no stored profile.
         const int idx = std::clamp(as.selected_profile_idx, 0, (int)as.available_profiles.size());
-        as.selected_profile_token = idx == 0 ? std::string() : as.available_profiles[idx - 1].token;
+        as.selected_profile_token = as.available_profiles[idx == 0 ? 0 : idx - 1].token;
         d.close();
         next_cb();
     }

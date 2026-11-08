@@ -322,6 +322,49 @@ void test_r_substream::test_follow_drops_a_resized_stream()
     RTF_ASSERT(camera.sub_status.value() == "none: camera changed the stream");
 }
 
+// A camera whose description carries no SPS (no sprop) can't say its size: that isn't a change. The address follows,
+// the stored parameters (which have the SPS) stay, and a different codec is still a change.
+void test_r_substream::test_follow_without_an_sps_is_not_a_change()
+{
+    const string params = "sprop-parameter-sets=Z2QACqzZRifmwFqAgICgAAB9IAAXcAHiRLLA,aOvjyyLA";
+    auto size = main_picture_size("H264", params);
+
+    r_substream_choice choice;
+    choice.found = true;
+    choice.profile = _profile("sub_1", size.first, size.second);
+    choice.rtsp_url = "rtsp://10.0.0.5/sub";
+    choice.probe = _good(size.first, size.second);
+
+    r_camera camera;
+    substream_set(camera, choice, "H264", params, 90000);
+
+    RTF_ASSERT(substream_follow(camera, "rtsp://10.0.0.9/sub", "H264", "packetization-mode=1"));
+    RTF_ASSERT(substream_on(camera));
+    RTF_ASSERT(camera.sub_rtsp_url.value() == "rtsp://10.0.0.9/sub");
+    RTF_ASSERT(camera.sub_video_codec_parameters.value() == params);
+    RTF_ASSERT_EQUAL(camera.sub_width.value(), size.first);
+
+    RTF_ASSERT(!substream_follow(camera, "rtsp://10.0.0.9/sub", "H265", ""));
+    RTF_ASSERT(!substream_on(camera));
+}
+
+// Which profile is main: the one with the stored token; else the largest, the first of equals.
+void test_r_substream::test_main_profile_index()
+{
+    vector<onvif_profile_info> profiles = {
+        _profile("small", 640, 480),
+        _profile("big_a", 2560, 1920),
+        _profile("big_b", 2560, 1920),
+        _profile("mid", 1280, 720)
+    };
+    r_utils::r_nullable<string> none;
+    RTF_ASSERT_EQUAL(main_profile_index(profiles, none), (size_t)1);      // the largest; a tie goes to the first
+    RTF_ASSERT_EQUAL(main_profile_index(profiles, r_utils::r_nullable<string>(string("mid"))), (size_t)3);   // the stored token
+    RTF_ASSERT_EQUAL(main_profile_index(profiles, r_utils::r_nullable<string>(string("small"))), (size_t)0);
+    RTF_ASSERT_EQUAL(main_profile_index(profiles, r_utils::r_nullable<string>(string("gone"))), (size_t)1);  // not there: the largest
+    RTF_ASSERT_EQUAL(main_profile_index({}, none), (size_t)0);
+}
+
 // Main's size comes from the SPS in its codec parameters, for either codec; junk reads as 0 x 0.
 void test_r_substream::test_main_picture_size()
 {
