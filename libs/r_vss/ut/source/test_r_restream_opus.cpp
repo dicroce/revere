@@ -73,7 +73,7 @@ void test_r_restream_opus::test_no_opus_without_audio_it_decodes()
 }
 
 // The branch run on real audio: Opus RTP comes out, at 16 kHz mono in 20 ms frames.
-// With pcm, the source is an appsrc it is pushed into, as the restream's pcmsrc.
+// With pcm, the source is an appsrc it is pushed into, as the restream's pcmsrc or audiosrc.
 static int _opus_packets_from(const string& source, const string& branch, const vector<uint8_t>* pcm = nullptr)
 {
     if(branch.empty())
@@ -166,12 +166,38 @@ void test_r_restream_opus::test_aac_becomes_opus()
     RTF_ASSERT(n >= 85 && n <= 110);
 }
 
+// G.711 mu-law, as a camera sends it (ITU-T G.711, with the usual bias and clip).
+static uint8_t _mulaw(int16_t sample)
+{
+    const int bias = 0x84, clip = 32635;
+    int sign = (sample >> 8) & 0x80;
+    int v = sign ? -(int)sample : (int)sample;
+    if(v > clip)
+        v = clip;
+    v += bias;
+    int exponent = 7;
+    for(int mask = 0x4000; (v & mask) == 0 && exponent > 0; mask >>= 1)
+        --exponent;
+    int mantissa = (v >> (exponent + 3)) & 0x0F;
+    return (uint8_t)~(sign | (exponent << 4) | mantissa);
+}
+
 void test_r_restream_opus::test_mulaw_becomes_opus()
 {
-    if(restream_opus_audio_branch(r_encoding::PCMU_ENCODING).empty() || !_have({"mulawenc"}))
+    auto branch = restream_opus_audio_branch(r_encoding::PCMU_ENCODING);
+    if(branch.empty())
         return;
-    auto n = _opus_packets_from("audiotestsrc num-buffers=16 samplesperbuffer=1000 ! audio/x-raw,rate=8000,channels=1 ! mulawenc",
-                                restream_opus_audio_branch(r_encoding::PCMU_ENCODING));
+
+    // 2 s of tone at 8 kHz mono as mu-law, made here rather than by GStreamer's test
+    // source and encoder: revere doesn't ship those, so the branch is run with only
+    // the plugins it ships. It goes into the branch as the restream's audiosrc.
+    const int rate = 8000;
+    vector<uint8_t> mulaw(2 * rate);
+    for(size_t i = 0; i < mulaw.size(); ++i)
+        mulaw[i] = _mulaw((int16_t)(8000.0 * sin(2 * 3.14159265358979 * 1000.0 * i / rate)));
+
+    // About 100 Opus packets of 20 ms.
+    auto n = _opus_packets_from("appsrc name=in format=time caps=audio/x-mulaw,rate=8000,channels=1", branch, &mulaw);
     RTF_ASSERT(n >= 90 && n <= 110);
 }
 
