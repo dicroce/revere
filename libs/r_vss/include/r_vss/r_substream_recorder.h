@@ -6,6 +6,8 @@
 #include "r_pipeline/r_stream_info.h"
 #include "r_vss/r_frame_feeds.h"
 #include "r_vss/r_live_key_frame.h"
+#include "r_pipeline/r_gst_buffer.h"
+#include "r_vss/r_key_interval.h"
 #include "r_storage/r_storage_file.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
@@ -65,6 +67,63 @@ constexpr int64_t SNAPSHOT_NOW_MS = 5000;
 // main's (within 4%, the same rounding: 640 x 352 for a 16:9 main is 2.3% off): a squeezed (anamorphic) one, which is
 // off by tens of percent, would come out the wrong shape.
 R_API bool substream_snapshot_fits(int w, int h, int sub_w, int sub_h, int main_w, int main_h);
+// ---- motion detection on the substream ----
+//
+// Revere finds motion in key frames only. With a camera's sub_analysis on, the smaller stream's key frames can feed
+// the motion engine instead of main's, which costs the gateway a fraction of the decoding. The stream keeper asks
+// r_motion_source_governor which stream feeds the engine, and moves it when the answer changes.
+
+enum class motion_source { main, sub };
+
+// How much longer than main's the substream's key frames may be apart and still be taken as keeping up.
+constexpr int64_t MOTION_KEY_INTERVAL_SLACK_MS = 500;
+// The substream must have been usable this long before motion moves to it. It moves back to main at once.
+constexpr int64_t MOTION_SUB_STEADY_MS = 10000;
+
+struct motion_source_inputs
+{
+    // The camera's setting, and whether its smaller stream is in use and getting frames.
+    bool sub_analysis {false};
+    bool sub_in_use {false};
+    bool sub_fresh {false};
+    // Motion detection is on, and Revere is the one finding the motion (tier 1; tiers 2 and 3 use the camera's).
+    bool do_motion {false};
+    bool tier_1 {false};
+    // Both pictures' sizes (0 when unknown): the boxes motion finds are in the picture's letterbox, so the smaller
+    // stream must have main's shape (within 4%, the macroblock rounding) for them to mean the same on main.
+    int sub_w {0};
+    int sub_h {0};
+    int main_w {0};
+    int main_h {0};
+    // How far apart each stream's key frames come (r_key_interval); negative when not known. Motion runs on key
+    // frames, so the smaller stream's must not be further apart than main's, or detection would slow down.
+    int64_t sub_key_interval_ms {-1};
+    int64_t main_key_interval_ms {-1};
+};
+
+// Whether motion could be found in the smaller stream right now. Anything missing or doubtful is main.
+R_API bool motion_on_sub_possible(const motion_source_inputs& in);
+
+// Decides, a pass at a time, which stream feeds a camera's motion engine. It moves to the substream once that has
+// been possible for MOTION_SUB_STEADY_MS in a row (a substream that comes and goes would otherwise reset the motion
+// engine every time), and back to main the moment it isn't possible. Keeper thread only; no I/O.
+class r_motion_source_governor final
+{
+public:
+    R_API motion_source pass(const std::string& camera_id, const motion_source_inputs& in, int64_t now_ms);
+
+    // The camera is no longer recording here.
+    R_API void forget(const std::string& camera_id);
+
+private:
+    struct state
+    {
+        motion_source current {motion_source::main};
+        bool possible {false};
+        int64_t possible_since_ms {0};
+    };
+    std::map<std::string, state> _cameras;
+};
 
 // What r_stream_keeper does about a camera's substream recorder on a pass.
 enum class substream_step { none, start, stop };
@@ -163,7 +222,10 @@ public:
     // feeds: where the frames also go, as the camera's "sub" stream (r_frame_feeds); null for none.
     // host: where its restream mount is added and its viewers are found (null for none: it only records).
     // on_key_frame: called with each key frame it records, on its source thread (null for none).
-    R_API r_substream_recorder(const r_disco::r_camera& camera, const std::string& ring_path, const std::string& rtsp_protocols, r_frame_feeds* feeds = nullptr, r_live_restream_host* host = nullptr, std::function<void(const r_live_key_frame&)> on_key_frame = std::function<void(const r_live_key_frame&)>());
+    // on_motion_key_frame: called with each key frame it records (the buffer, its stored time, the codec's name and
+    // parameters) while set_feeds_motion(true), on its source thread: the motion engine is fed from here then.
+    typedef std::function<void(const r_pipeline::r_gst_buffer&, int64_t, const std::string&, const std::string&)> motion_key_frame_cb;
+    R_API r_substream_recorder(const r_disco::r_camera& camera, const std::string& ring_path, const std::string& rtsp_protocols, r_frame_feeds* feeds = nullptr, r_live_restream_host* host = nullptr, std::function<void(const r_live_key_frame&)> on_key_frame = std::function<void(const r_live_key_frame&)>(), motion_key_frame_cb on_motion_key_frame = motion_key_frame_cb());
     R_API ~r_substream_recorder() noexcept;
     R_API r_substream_recorder(const r_substream_recorder&) = delete;
     R_API r_substream_recorder& operator=(const r_substream_recorder&) = delete;
@@ -183,6 +245,10 @@ public:
 
     // One viewer connected to its mount (the keeper's media-configure callback calls this).
     R_API void live_restream_media_configure(_GstRTSPMediaFactory* factory, _GstRTSPMedia* media);
+    // Whether its key frames go to the motion engine, and how far apart they come (r_key_interval).
+    R_API void set_feeds_motion(bool feeds) { _feeds_motion = feeds; }
+    R_API bool feeds_motion() const { return _feeds_motion; }
+    R_API int64_t key_interval_ms() const { return _key_interval.interval_ms(); }
 
 private:
     int64_t _ms_since_video() const;
@@ -204,6 +270,9 @@ private:
     std::atomic<int64_t> _frames_written {0};
     // steady_clock ms of the newest frame written, or of the start before there is one.
     std::atomic<int64_t> _last_video_ms {0};
+    motion_key_frame_cb _on_motion_key_frame;
+    std::atomic<bool> _feeds_motion {false};
+    r_key_interval _key_interval;
     // Last, so it's destroyed first: its callbacks stop before the write context and ring go.
     r_pipeline::r_gst_source _source;
 };

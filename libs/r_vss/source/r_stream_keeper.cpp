@@ -1409,6 +1409,8 @@ void r_stream_keeper::_entry_point()
                     // Its substream recorder too, before the ack: whatever suspended the camera (a storage move, a
                     // reset) may move or delete the ring next.
                     _substream_governor.forget(cmd.first.id);
+                    _motion_governor.forget(cmd.first.id);
+                    _motion_applied.erase(cmd.first.id);
                     _substreams.erase(cmd.first.id);
                     _frame_feeds.substream_fresh(cmd.first.id, false);
                     _forget_substream_key_frame(cmd.first.id);
@@ -1599,6 +1601,9 @@ void r_stream_keeper::_tend_substreams()
             _frame_feeds.substream_fresh(it->first, false);
             _forget_substream_key_frame(it->first);
             _substream_governor.forget(it->first);
+            _motion_governor.forget(it->first);
+            _motion_applied.erase(it->first);
+            it->second->set_feeds_motion(false);
             doomed.push_back(std::move(it->second));
             it = _substreams.erase(it);
         }
@@ -1632,6 +1637,7 @@ void r_stream_keeper::_tend_substreams()
         if(d.step == substream_step::stop)
         {
             _forget_substream_key_frame(id);
+            running->second->set_feeds_motion(false);
             doomed.push_back(std::move(running->second));
             _substreams.erase(running);
         }
@@ -1648,7 +1654,12 @@ void r_stream_keeper::_tend_substreams()
                     auto& slot = _sub_key_frames[id];
                     slot.key_frame = kf;
                     slot.at_ms = at_ms;
-                });
+                },
+                    [this, id](const r_pipeline::r_gst_buffer& buffer, int64_t ts, const string& codec_name, const string& codec_parameters) {
+                        // Only while the motion engine is fed from the smaller stream (set_feeds_motion), on the
+                        // recorder's source thread; its frames are key frames.
+                        post_frame_to_motion_engine(buffer, ts, codec_name, codec_parameters, id, true, 0);
+                    });
                 R_LOG_INFO("substream of %s: recording to %s", id.c_str(), ring.c_str());
             }
             catch(const exception& e)
@@ -1658,6 +1669,58 @@ void r_stream_keeper::_tend_substreams()
         }
         if(d.gave_up)
             _give_up_substream(id);
+
+        // Which stream feeds this camera's motion engine: main's key frames, or the smaller stream's when the camera
+        // asks for that and it can be trusted to (r_motion_source_governor).
+        {
+            auto sub_rec = _substreams.find(id);
+            const bool have_rec = sub_rec != _substreams.end();
+            motion_source_inputs mi;
+            mi.sub_analysis = !cam.sub_analysis.is_null() && cam.sub_analysis.value() != 0;
+            mi.sub_in_use = r_disco::substream_on(cam) && !cam.sub_status.is_null() && cam.sub_status.value() == "ok";
+            mi.sub_fresh = have_rec && sub_rec->second->fresh();
+            mi.do_motion = !cam.do_motion_detection.is_null() && cam.do_motion_detection.value();
+            mi.tier_1 = motion_tier(id) == motion_tier_1;
+            mi.sub_w = cam.sub_width.is_null() ? 0 : cam.sub_width.value();
+            mi.sub_h = cam.sub_height.is_null() ? 0 : cam.sub_height.value();
+            if(!cam.video_codec.is_null() && !cam.video_codec_parameters.is_null())
+            {
+                auto main_size = r_disco::main_picture_size(cam.video_codec.value(), cam.video_codec_parameters.value());
+                mi.main_w = main_size.first;
+                mi.main_h = main_size.second;
+            }
+            mi.sub_key_interval_ms = have_rec ? sub_rec->second->key_interval_ms() : -1;
+            mi.main_key_interval_ms = c.context->key_interval_ms();
+
+            const auto want = _motion_governor.pass(id, mi, now_ms);
+            auto applied = _motion_applied.find(id);
+            const auto was = applied == _motion_applied.end() ? motion_source::main : applied->second;
+
+            // Each pass makes both ends say the same thing (a new recording context starts on main's); the motion
+            // engine starts over only when the source changes: it builds its decoder from the first frame it gets.
+            if(want == motion_source::sub && have_rec)
+            {
+                c.context->set_motion_from_sub(true);          // main stops posting first
+                if(was != want)
+                {
+                    _motionEngine.remove_work_context(id);
+                    R_LOG_INFO("motion of %s: now found in its smaller stream", id.c_str());
+                }
+                sub_rec->second->set_feeds_motion(true);
+            }
+            else
+            {
+                if(have_rec)
+                    sub_rec->second->set_feeds_motion(false);   // the smaller stream stops posting first
+                if(was != motion_source::main)
+                {
+                    _motionEngine.remove_work_context(id);
+                    R_LOG_INFO("motion of %s: back in its main stream", id.c_str());
+                }
+                c.context->set_motion_from_sub(false);
+            }
+            _motion_applied[id] = (want == motion_source::sub && have_rec) ? motion_source::sub : motion_source::main;
+        }
     }
 
     // Plugins' "sub" feeds follow the substream: on it while its recorder is getting frames, on main otherwise.

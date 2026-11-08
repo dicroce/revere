@@ -691,3 +691,148 @@ void test_r_substream_recorder::test_keeps_its_newest_key_frame_for_snapshots()
     RTF_ASSERT_EQUAL(_jpeg_size(small).first, 80);
     RTF_ASSERT_EQUAL(_jpeg_size(small).second, 60);
 }
+
+// ---- motion detection on the substream ----
+
+void test_r_substream_recorder::test_key_interval()
+{
+    r_key_interval k;
+    RTF_ASSERT(k.interval_ms() < 0);          // nothing yet
+    k.record(1000);
+    RTF_ASSERT(k.interval_ms() < 0);          // one key frame has no gap
+    k.record(2000);
+    RTF_ASSERT_EQUAL(k.interval_ms(), (int64_t)1000);
+    k.record(6000);                           // a long GOP: the longest of the gaps is what to rely on
+    RTF_ASSERT_EQUAL(k.interval_ms(), (int64_t)4000);
+    k.record(7000); k.record(8000); k.record(9000);
+    RTF_ASSERT_EQUAL(k.interval_ms(), (int64_t)4000);  // still one of the last four gaps
+    k.record(10000);                                   // the fourth gap since: the 4 s one is out
+    RTF_ASSERT_EQUAL(k.interval_ms(), (int64_t)1000);
+}
+
+static motion_source_inputs _motion_ok()
+{
+    motion_source_inputs in;
+    in.sub_analysis = true;
+    in.sub_in_use = true;
+    in.sub_fresh = true;
+    in.do_motion = true;
+    in.tier_1 = true;
+    in.sub_w = 640; in.sub_h = 480;
+    in.main_w = 2560; in.main_h = 1920;
+    in.sub_key_interval_ms = 1000;
+    in.main_key_interval_ms = 2000;
+    return in;
+}
+
+void test_r_substream_recorder::test_motion_on_sub_possible()
+{
+    RTF_ASSERT(motion_on_sub_possible(_motion_ok()));
+    auto in = _motion_ok(); in.sub_analysis = false;            RTF_ASSERT(!motion_on_sub_possible(in));    // not asked for
+    in = _motion_ok(); in.sub_in_use = false;                   RTF_ASSERT(!motion_on_sub_possible(in));    // no substream
+    in = _motion_ok(); in.sub_fresh = false;                    RTF_ASSERT(!motion_on_sub_possible(in));    // it stalled
+    in = _motion_ok(); in.do_motion = false;                    RTF_ASSERT(!motion_on_sub_possible(in));    // no motion detection
+    in = _motion_ok(); in.tier_1 = false;                       RTF_ASSERT(!motion_on_sub_possible(in));    // the camera's own motion
+    // The shape: a squeezed substream's boxes would mean something else on main.
+    in = _motion_ok(); in.sub_w = 704; in.sub_h = 576; in.main_w = 2560; in.main_h = 1440;
+    RTF_ASSERT(!motion_on_sub_possible(in));
+    in = _motion_ok(); in.sub_w = 640; in.sub_h = 352; in.main_w = 2560; in.main_h = 1440;                  // 2.3%: rounding
+    RTF_ASSERT(motion_on_sub_possible(in));
+    in = _motion_ok(); in.sub_w = 0;                            RTF_ASSERT(!motion_on_sub_possible(in));    // sizes unknown
+    in = _motion_ok(); in.main_w = 0;                           RTF_ASSERT(!motion_on_sub_possible(in));
+    in = _motion_ok(); in.sub_w = 0; in.sub_h = 0;              RTF_ASSERT(!motion_on_sub_possible(in));    // 0/0 is no shape at all
+    in = _motion_ok(); in.main_w = 0; in.main_h = 0;            RTF_ASSERT(!motion_on_sub_possible(in));
+    // The cadence: its key frames no further apart than main's (give or take half a second).
+    in = _motion_ok(); in.sub_key_interval_ms = 2500;           RTF_ASSERT(motion_on_sub_possible(in));
+    in = _motion_ok(); in.sub_key_interval_ms = 2501;           RTF_ASSERT(!motion_on_sub_possible(in));
+    in = _motion_ok(); in.sub_key_interval_ms = -1;             RTF_ASSERT(!motion_on_sub_possible(in));    // not known yet
+    in = _motion_ok(); in.main_key_interval_ms = -1;            RTF_ASSERT(!motion_on_sub_possible(in));
+}
+
+void test_r_substream_recorder::test_motion_source_governor()
+{
+    r_motion_source_governor g;
+    // Possible, but not steady yet: still main's.
+    RTF_ASSERT(g.pass("a", _motion_ok(), 0) == motion_source::main);
+    RTF_ASSERT(g.pass("a", _motion_ok(), MOTION_SUB_STEADY_MS - 1) == motion_source::main);
+    RTF_ASSERT(g.pass("a", _motion_ok(), MOTION_SUB_STEADY_MS) == motion_source::sub);
+    RTF_ASSERT(g.pass("a", _motion_ok(), MOTION_SUB_STEADY_MS + 60000) == motion_source::sub);
+
+    // Back to main the moment it isn't possible, and the wait starts over.
+    auto stalled = _motion_ok(); stalled.sub_fresh = false;
+    RTF_ASSERT(g.pass("a", stalled, 100000) == motion_source::main);
+    RTF_ASSERT(g.pass("a", _motion_ok(), 100001) == motion_source::main);
+    RTF_ASSERT(g.pass("a", _motion_ok(), 100001 + MOTION_SUB_STEADY_MS - 1) == motion_source::main);
+    RTF_ASSERT(g.pass("a", _motion_ok(), 100001 + MOTION_SUB_STEADY_MS) == motion_source::sub);
+
+    // A substream that comes and goes every few seconds never gets motion: that would reset the engine each time.
+    r_motion_source_governor flicker;
+    int64_t t = 0;
+    for(int i = 0; i < 20; ++i)
+    {
+        RTF_ASSERT(flicker.pass("b", _motion_ok(), t) == motion_source::main);
+        RTF_ASSERT(flicker.pass("b", stalled, t + 4000) == motion_source::main);
+        t += 8000;
+    }
+
+    // Cameras are separate, and a forgotten one starts again.
+    RTF_ASSERT(g.pass("other", _motion_ok(), 200000) == motion_source::main);
+    g.forget("a");
+    RTF_ASSERT(g.pass("a", _motion_ok(), 300000) == motion_source::main);
+}
+
+// While the motion engine is fed from the smaller stream the recorder hands each key frame on, and only then.
+void test_r_substream_recorder::test_feeds_motion_key_frames_only_when_told()
+{
+    auto fc = _substream_camera();
+    if(!fc)
+        return;
+    while(fc->bound_port() < 0)
+        this_thread::sleep_for(milliseconds(10));
+
+    auto ring = RING_DIR + PATH_SLASH + "front_sub.nts";
+    ensure_substream_ring(ring);
+
+    mutex lock;
+    int posted = 0;
+    int64_t last_ts = 0;
+    string codec;
+    int64_t interval = -1;
+    int posted_while_off = -1;
+    bool empty_frame = false;
+    {
+        r_substream_recorder rec(_camera(r_string_utils::format("rtsp://127.0.0.1:%d/sub", fc->bound_port())), ring, "tcp", nullptr, nullptr, nullptr,
+            [&](const r_pipeline::r_gst_buffer& buffer, int64_t ts, const string& codec_name, const string&) {
+                lock_guard<mutex> g(lock);
+                empty_frame = empty_frame || buffer.size() == 0;
+                ++posted;
+                last_ts = ts;
+                codec = codec_name;
+            });
+        RTF_ASSERT(!rec.feeds_motion());
+        // Off by default: key frames pass and nothing is posted.
+        auto deadline = steady_clock::now() + seconds(15);
+        while(rec.frames_written() < 40 && steady_clock::now() < deadline)
+            this_thread::sleep_for(milliseconds(50));
+        {
+            lock_guard<mutex> g(lock);
+            posted_while_off = posted;
+        }
+        interval = rec.key_interval_ms();
+
+        rec.set_feeds_motion(true);
+        auto from = rec.frames_written();
+        deadline = steady_clock::now() + seconds(15);
+        while(rec.frames_written() < from + 40 && steady_clock::now() < deadline)    // 15 fps, a key frame every 15 frames
+            this_thread::sleep_for(milliseconds(50));
+    }
+    fc->quit();
+
+    lock_guard<mutex> g(lock);
+    RTF_ASSERT_EQUAL(posted_while_off, 0);
+    RTF_ASSERT(!empty_frame);
+    RTF_ASSERT(interval >= 500 && interval <= 2500);       // about one second
+    RTF_ASSERT(posted >= 2 && posted <= 5);                // ~40 frames of a 15-frame GOP: key frames, not every frame
+    RTF_ASSERT(last_ts > 0);
+    RTF_ASSERT(codec == "h264");
+}

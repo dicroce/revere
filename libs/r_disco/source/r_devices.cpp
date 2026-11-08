@@ -572,10 +572,12 @@ const camera_column CAMERA_COLUMNS[] = {
     {10, "sub_video_timebase", "INTEGER"},
     {10, "sub_width", "INTEGER"},
     {10, "sub_height", "INTEGER"},
-    {10, "sub_key_interval_ms", "INTEGER"}
+    {10, "sub_key_interval_ms", "INTEGER"},
+    // Motion detection on the substream (r_camera::sub_analysis); existing cameras read as off.
+    {11, "sub_analysis", "INTEGER DEFAULT 0"}
 };
 
-const int CAMERA_DB_VERSION = 10;
+const int CAMERA_DB_VERSION = 11;
 }
 
 void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
@@ -833,6 +835,7 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
     number("sub_width", camera.sub_width);
     number("sub_height", camera.sub_height);
     number("sub_key_interval_ms", camera.sub_key_interval_ms);
+    number("sub_analysis", camera.sub_analysis);
 
     camera.stream_config_hash = row.at("stream_config_hash").value();
     return camera;
@@ -1065,7 +1068,7 @@ void r_devices::_save_substream(const r_sqlite_conn& conn, const r_camera& camer
     auto stmt = conn.prepare(
         "UPDATE cameras SET sub_mode = ?, sub_status = ?, sub_onvif_profile_token = ?, sub_rtsp_url = ?, "
         "sub_video_codec = ?, sub_video_codec_parameters = ?, sub_video_timebase = ?, sub_width = ?, sub_height = ?, "
-        "sub_key_interval_ms = ? WHERE id = ?;"
+        "sub_key_interval_ms = ?, sub_analysis = ? WHERE id = ?;"
     );
     int i = 1;
     auto text = [&](const r_nullable<string>& v){
@@ -1086,6 +1089,7 @@ void r_devices::_save_substream(const r_sqlite_conn& conn, const r_camera& camer
     number(camera.sub_width);
     number(camera.sub_height);
     number(camera.sub_key_interval_ms);
+    number(camera.sub_analysis);
     stmt.bind(i++, camera.id);
     stmt.exec_no_result();
 }

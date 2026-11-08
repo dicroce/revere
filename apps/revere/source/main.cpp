@@ -1849,6 +1849,13 @@ void configure_camera_setup_wizard(
                     auto cid = ui_state.selected_camera_id();
                     if(cid.is_null())
                         return;
+                    if(op == "analysis")
+                    {
+                        std::lock_guard<std::mutex> g(streams.m);
+                        streams.sub.sub_analysis.set_value(token == "1" ? 1 : 0);
+                        streams.changed = true;
+                        return;
+                    }
                     if(op == "off")
                     {
                         std::lock_guard<std::mutex> g(streams.m);

@@ -14,6 +14,10 @@ public:
       TEST(test_r_substream_recorder::test_serves_its_sub_mount);
       TEST(test_r_substream_recorder::test_snapshot_fits);
       TEST(test_r_substream_recorder::test_keeps_its_newest_key_frame_for_snapshots);
+      TEST(test_r_substream_recorder::test_key_interval);
+      TEST(test_r_substream_recorder::test_motion_on_sub_possible);
+      TEST(test_r_substream_recorder::test_motion_source_governor);
+      TEST(test_r_substream_recorder::test_feeds_motion_key_frames_only_when_told);
       TEST(test_r_substream_recorder::test_governor_starts_after_main_and_backs_off);
       TEST(test_r_substream_recorder::test_governor_counts_a_refusal_at_setup);
       TEST(test_r_substream_recorder::test_governor_holds_a_given_up_camera_until_its_context_changes);
@@ -36,6 +40,10 @@ public:
     void test_serves_its_sub_mount();
     void test_snapshot_fits();
     void test_keeps_its_newest_key_frame_for_snapshots();
+    void test_key_interval();
+    void test_motion_on_sub_possible();
+    void test_motion_source_governor();
+    void test_feeds_motion_key_frames_only_when_told();
     void test_governor_starts_after_main_and_backs_off();
     void test_governor_counts_a_refusal_at_setup();
     void test_governor_holds_a_given_up_camera_until_its_context_changes();

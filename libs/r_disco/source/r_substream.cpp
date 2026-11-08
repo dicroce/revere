@@ -133,6 +133,8 @@ void r_disco::substream_clear(r_camera& camera, const string& reason)
     camera.sub_width.clear();
     camera.sub_height.clear();
     camera.sub_key_interval_ms.clear();
+    // Without a substream there is nothing to analyse on.
+    camera.sub_analysis.set_value(0);
 }
 
 void r_disco::substream_copy(const r_camera& from, r_camera& to)
@@ -147,6 +149,7 @@ void r_disco::substream_copy(const r_camera& from, r_camera& to)
     to.sub_width = from.sub_width;
     to.sub_height = from.sub_height;
     to.sub_key_interval_ms = from.sub_key_interval_ms;
+    to.sub_analysis = from.sub_analysis;
 }
 
 bool r_disco::substream_follow(r_camera& camera, const string& url, const string& codec, const string& parameters)

@@ -190,7 +190,9 @@ void test_r_substream::test_set_records_the_pick()
 
     r_camera camera;
     substream_clear(camera, "no smaller stream");  // an earlier answer is replaced
+    camera.sub_analysis = 1;                       // chosen earlier: finding the substream again keeps it
     substream_set(camera, choice, "H264", "sprop-parameter-sets=AAAA,BBBB", 90000);
+    RTF_ASSERT_EQUAL(camera.sub_analysis.value(), 1);
 
     RTF_ASSERT(substream_on(camera));
     RTF_ASSERT(camera.sub_status.value() == "ok");
@@ -220,6 +222,7 @@ void test_r_substream::test_clear_goes_back_to_main()
 
     r_camera camera;
     substream_set(camera, choice, "H264", "p", 90000);
+    camera.sub_analysis = 1;                                // asked for; gone with the substream
     substream_clear(camera, "uses B-frames");
 
     RTF_ASSERT(!substream_on(camera));
@@ -233,6 +236,8 @@ void test_r_substream::test_clear_goes_back_to_main()
     RTF_ASSERT(camera.sub_width.is_null());
     RTF_ASSERT(camera.sub_height.is_null());
     RTF_ASSERT(camera.sub_key_interval_ms.is_null());
+    RTF_ASSERT(!camera.sub_analysis.is_null());
+    RTF_ASSERT_EQUAL(camera.sub_analysis.value(), 0);       // nothing to find motion in
 }
 
 // A copy takes every substream field and nothing else of the camera.
@@ -247,10 +252,12 @@ void test_r_substream::test_copy_takes_only_the_substream()
     from.friendly_name = string("from");
     substream_set(from, choice, "H264", "p", 90000);
 
+    from.sub_analysis = 1;
     r_camera to;
     to.friendly_name = string("to");
     substream_clear(to, "uses B-frames");
     substream_copy(from, to);
+    RTF_ASSERT_EQUAL(to.sub_analysis.value(), 1);
 
     RTF_ASSERT(to.friendly_name.value() == "to");
     RTF_ASSERT(substream_on(to));

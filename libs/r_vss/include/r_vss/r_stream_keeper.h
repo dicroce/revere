@@ -400,6 +400,9 @@ private:
     struct _sub_key_slot { r_live_key_frame key_frame; int64_t at_ms {0}; };
     mutable std::mutex _sub_key_frames_lock;
     std::map<std::string, _sub_key_slot> _sub_key_frames;
+    // Which stream feeds each camera's motion engine (r_motion_source_governor) and which has been applied to it.
+    r_motion_source_governor _motion_governor;
+    std::map<std::string, motion_source> _motion_applied;
 
     // Last-seen set of assigned camera ids, to notify system plugins only when
     // the assignment actually changes (a camera added or forgotten) — not on the

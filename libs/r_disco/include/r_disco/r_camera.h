@@ -78,6 +78,9 @@ struct r_camera
     r_utils::r_nullable<int> sub_width;
     r_utils::r_nullable<int> sub_height;
     r_utils::r_nullable<int> sub_key_interval_ms;
+    // Motion is found in the smaller stream's key frames instead of main's (1), which costs the gateway a fraction of
+    // the decoding. Off (0, or null) until chosen, and off whenever the camera has no substream in use.
+    r_utils::r_nullable<int> sub_analysis;
 
     std::string stream_config_hash;
 };

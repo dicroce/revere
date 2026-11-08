@@ -380,6 +380,8 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             auto ingest_lag_ms = _watch_lag(pts);
             auto mi = buffer.map(r_gst_buffer::MT_READ);
             _v_bytes_received += mi.size();
+            if(key)
+                _key_interval.record(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
             _record_byte_sample();
             if(this->_video_caps.is_null())
             {
@@ -461,15 +463,20 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 if(this->_sk->motion_tier(this->_camera.id) == motion_tier_1)
                 {
                     _close_camera_motion_ring();
-                    this->_sk->post_frame_to_motion_engine(
-                        buffer,
-                        stored_ts,
-                        this->_maybe_video_storage_write_context.value().codec_name,
-                        this->_maybe_video_storage_write_context.value().codec_parameters,
-                        this->_camera.id,
-                        key,
-                        ingest_lag_ms
-                    );
+                    // When the smaller stream's key frames feed the motion engine (r_motion_source_governor), main's
+                    // are not posted.
+                    if(!this->_motion_from_sub)
+                    {
+                        this->_sk->post_frame_to_motion_engine(
+                            buffer,
+                            stored_ts,
+                            this->_maybe_video_storage_write_context.value().codec_name,
+                            this->_maybe_video_storage_write_context.value().codec_parameters,
+                            this->_camera.id,
+                            key,
+                            ingest_lag_ms
+                        );
+                    }
                 }
                 else if(key)
                     _camera_motion_tick(stored_ts);

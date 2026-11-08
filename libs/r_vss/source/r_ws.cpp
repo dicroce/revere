@@ -946,6 +946,8 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     {"sub_codec", (c.sub_video_codec.is_null())?"":c.sub_video_codec.value()},
                     {"sub_width", (c.sub_width.is_null())?0:c.sub_width.value()},
                     {"sub_height", (c.sub_height.is_null())?0:c.sub_height.value()},
+                    // Motion is found in the smaller stream (r_camera::sub_analysis).
+                    {"sub_analysis", !c.sub_analysis.is_null() && c.sub_analysis.value() != 0},
                     // The substream ring got a frame within the last few seconds (r_substream_recorder::fresh):
                     // /video?stream=sub has live video.
                     {"sub_fresh", sub_fresh},

@@ -66,6 +66,48 @@ string r_vss::substream_mount_path(const r_camera& camera)
     return "/" + name + "/sub";
 }
 
+bool r_vss::motion_on_sub_possible(const motion_source_inputs& in)
+{
+    if(!in.sub_analysis || !in.sub_in_use || !in.sub_fresh || !in.do_motion || !in.tier_1)
+        return false;
+    // The boxes motion finds are in the picture's letterbox: main's shape, or they mean something else on main.
+    if(in.sub_w <= 0 || in.sub_h <= 0 || in.main_w <= 0 || in.main_h <= 0)
+        return false;
+    const double sub_aspect = (double)in.sub_w / in.sub_h;
+    const double main_aspect = (double)in.main_w / in.main_h;
+    if(fabs(sub_aspect - main_aspect) / main_aspect > 0.04)
+        return false;
+    // Key frames at least as often as main's, or detection would slow down; both known.
+    if(in.sub_key_interval_ms < 0 || in.main_key_interval_ms < 0)
+        return false;
+    return in.sub_key_interval_ms <= in.main_key_interval_ms + MOTION_KEY_INTERVAL_SLACK_MS;
+}
+
+motion_source r_motion_source_governor::pass(const string& camera_id, const motion_source_inputs& in, int64_t now_ms)
+{
+    auto& st = _cameras[camera_id];
+    const bool possible = motion_on_sub_possible(in);
+    if(!possible)
+    {
+        st.possible = false;
+        st.current = motion_source::main;       // at once
+        return st.current;
+    }
+    if(!st.possible)
+    {
+        st.possible = true;
+        st.possible_since_ms = now_ms;
+    }
+    if(st.current == motion_source::main && now_ms - st.possible_since_ms >= MOTION_SUB_STEADY_MS)
+        st.current = motion_source::sub;
+    return st.current;
+}
+
+void r_motion_source_governor::forget(const string& camera_id)
+{
+    _cameras.erase(camera_id);
+}
+
 substream_step r_vss::substream_next_step(bool wanted, bool main_receiving, bool running, bool running_dead, bool backoff_over)
 {
     if(running)
@@ -79,7 +121,7 @@ void r_vss::ensure_substream_ring(const string& ring_path)
         r_storage_file::allocate(ring_path, SUBSTREAM_RING_BLOCK_SIZE, SUBSTREAM_RING_BLOCKS);
 }
 
-r_substream_recorder::r_substream_recorder(const r_camera& camera, const string& ring_path, const string& rtsp_protocols, r_frame_feeds* feeds, r_live_restream_host* sk, function<void(const r_live_key_frame&)> on_key_frame) :
+r_substream_recorder::r_substream_recorder(const r_camera& camera, const string& ring_path, const string& rtsp_protocols, r_frame_feeds* feeds, r_live_restream_host* sk, function<void(const r_live_key_frame&)> on_key_frame, motion_key_frame_cb on_motion_key_frame) :
     _camera(camera),
     _ring_path(ring_path),
     _feeds(feeds),
@@ -93,6 +135,7 @@ r_substream_recorder::r_substream_recorder(const r_camera& camera, const string&
     _write_context(),
     _sdp_lock(),
     _sdp_medias(),
+    _on_motion_key_frame(std::move(on_motion_key_frame)),
     _source(recording_source_name_prefix(camera) + "sub_")
 {
     _last_video_ms = _steady_ms();
@@ -172,15 +215,22 @@ r_substream_recorder::r_substream_recorder(const r_camera& camera, const string&
             // Plugins' frame feeds on "sub": one atomic load while none is open.
             if(_feeds)
                 _feeds->post_video(_camera.id, "sub", mi.data(), mi.size(), key, stored_ts, _write_context->codec_name, _write_context->codec_parameters);
-            // The newest key frame, kept in memory for "now" snapshots.
-            if(key && _on_key_frame)
+            if(key)
             {
-                r_live_key_frame kf;
-                kf.ts = stored_ts;
-                kf.codec_name = _write_context->codec_name;
-                kf.codec_parameters = _write_context->codec_parameters;
-                kf.data.assign(mi.data(), mi.data() + mi.size());
-                _on_key_frame(kf);
+                _key_interval.record(_steady_ms());
+                // Motion is found in key frames only: when the motion engine is fed from here, this is its frame.
+                if(_feeds_motion && _on_motion_key_frame)
+                    _on_motion_key_frame(buffer, stored_ts, _write_context->codec_name, _write_context->codec_parameters);
+                // The newest key frame, kept in memory for "now" snapshots.
+                if(_on_key_frame)
+                {
+                    r_live_key_frame kf;
+                    kf.ts = stored_ts;
+                    kf.codec_name = _write_context->codec_name;
+                    kf.codec_parameters = _write_context->codec_parameters;
+                    kf.data.assign(mi.data(), mi.data() + mi.size());
+                    _on_key_frame(kf);
+                }
             }
             ++_frames_written;
             _last_video_ms = _steady_ms();

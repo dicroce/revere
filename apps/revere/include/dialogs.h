@@ -564,6 +564,20 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
     else if(!on)
         d.body("This camera offers a smaller stream: choose it above to try it.");
 
+    // Motion found in the smaller stream: much less decoding. Only with a smaller stream in use; off until chosen.
+    if(on)
+    {
+        d.gap(4.0f);
+        bool analysis = !sub.sub_analysis.is_null() && sub.sub_analysis.value() != 0;
+        ImGui::BeginDisabled(working);
+        if(d.toggle("##sub_analysis", "Find motion in the smaller stream (experimental)",
+            "Uses much less of this computer's processor. Recording, and the pictures you watch, stay full quality. If the smaller stream stops, motion is found in the recording stream again.",
+            &analysis))
+            streams_cb(std::string("analysis"), std::string(analysis ? "1" : "0"));
+        ImGui::EndDisabled();
+        d.gap(4.0f);
+    }
+
     ImGui::BeginDisabled(working || loading);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
     if(styled_button(status.empty() && !on ? "Add substream" : "Find again"))
@@ -582,7 +596,8 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
 // rtsp_transport is "TCP" or "UDP"; transport_status, when not empty, says
 // the camera is on UDP because it refused TCP.
 // streams is the Streams section's state (see streams_state); streams_cb(op, token) is called for a click in it:
-// op "off" (use the recording stream), "use" (the smaller stream with that profile token) or "find" (look again).
+// op "off" (use the recording stream), "use" (the smaller stream with that profile token), "find" (look again) or
+// "analysis" (token "1" or "0": find motion in the smaller stream).
 template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB, typename STREAMS_CB>
 void camera_properties_modal(
     const char* popup_name,

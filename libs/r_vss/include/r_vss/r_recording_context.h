@@ -4,6 +4,7 @@
 
 #include "r_vss/r_restream_track.h"
 #include "r_vss/r_live_key_frame.h"
+#include "r_vss/r_key_interval.h"
 #include "r_vss/r_lag_watchdog.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_live_restream_host.h"
@@ -259,6 +260,12 @@ public:
     R_API bool receiving_video() const;
     // The path of the camera's live restream mount ("/<name>"), once it has one; empty before.
     R_API std::string restream_mount_path() const { std::lock_guard<std::mutex> g(_restream_mount_lock); return _restream_mount_path; }
+    // Motion detection's key frames come from the camera's smaller stream, not from here (the stream keeper decides:
+    // see r_motion_source_governor). This context then posts none to the motion engine.
+    R_API void set_motion_from_sub(bool from_sub) { _motion_from_sub = from_sub; }
+    R_API bool motion_from_sub() const { return _motion_from_sub; }
+    // How far apart its key frames come (r_key_interval); negative until it has had two.
+    R_API int64_t key_interval_ms() const { return _key_interval.interval_ms(); }
     // Milliseconds since the newest video frame arrived; a very large number when none has.
     R_API int64_t video_age_ms() const;
 
@@ -356,6 +363,8 @@ private:
     std::map<GstRTSPMedia*, std::shared_ptr<playback_restreaming_state>> _playback_restreaming_states;
     bool _got_first_audio_sample;
     std::atomic<bool> _got_first_video_sample;
+    std::atomic<bool> _motion_from_sub {false};
+    r_key_interval _key_interval;
     std::atomic<bool> _answered {false};
     std::string _rtsp_protocols;
 

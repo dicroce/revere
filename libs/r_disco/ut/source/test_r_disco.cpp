@@ -421,7 +421,7 @@ void test_r_disco::test_db_upgrade_from_mac_at_version_8()
     RTF_ASSERT(camera.value().firmware_version.value() == "1.3.7");
     RTF_ASSERT(camera.value().mac.value() == "aa:bb:cc:dd:ee:ff");
 
-    RTF_ASSERT_EQUAL(db_version(), 10);
+    RTF_ASSERT_EQUAL(db_version(), 11);
     auto columns = db_columns();
     for(auto c : {"manufacturer", "model", "firmware_version", "mac"})
         RTF_ASSERT(columns.count(c) == 1);
@@ -433,7 +433,7 @@ void test_r_disco::test_db_upgrade_from_device_info_at_version_8()
     make_cameras_db(8, {"manufacturer TEXT", "model TEXT", "firmware_version TEXT"});
     auto camera = start_and_save_device_info();
     RTF_ASSERT(camera.value().model.value() == "C500");
-    RTF_ASSERT_EQUAL(db_version(), 10);
+    RTF_ASSERT_EQUAL(db_version(), 11);
     RTF_ASSERT(db_columns().count("mac") == 1);
 }
 
@@ -445,7 +445,7 @@ void test_r_disco::test_db_upgrade_repairs_a_missing_column()
     auto camera = start_and_save_device_info();
     RTF_ASSERT(camera.value().model.value() == "C500");
     RTF_ASSERT(db_columns().count("model") == 1);
-    RTF_ASSERT_EQUAL(db_version(), 10);
+    RTF_ASSERT_EQUAL(db_version(), 11);
 }
 
 void test_r_disco::test_db_upgrade_keeps_a_newer_version()
@@ -462,12 +462,12 @@ void test_r_disco::test_db_upgrade_twice()
     // A new database, then a second start on it: nothing to add, nothing fails.
     auto first = start_and_save_device_info();
     RTF_ASSERT(first.value().manufacturer.value() == "TP-Link");
-    RTF_ASSERT_EQUAL(db_version(), 10);
+    RTF_ASSERT_EQUAL(db_version(), 11);
     auto columns = db_columns();
     auto second = start_and_save_device_info();
     RTF_ASSERT(second.value().manufacturer.value() == "TP-Link");
     RTF_ASSERT(db_columns() == columns);
-    RTF_ASSERT_EQUAL(db_version(), 10);
+    RTF_ASSERT_EQUAL(db_version(), 11);
 }
 
 void test_r_disco::test_db_upgrade_from_version_7()
@@ -482,7 +482,7 @@ void test_r_disco::test_db_upgrade_from_version_7()
     auto camera = start_and_save_device_info();
     RTF_ASSERT(camera.value().manufacturer.value() == "TP-Link");
     RTF_ASSERT(camera.value().firmware_version.value() == "1.3.7");
-    RTF_ASSERT_EQUAL(db_version(), 10);
+    RTF_ASSERT_EQUAL(db_version(), 11);
     auto after = db_columns();
     for(auto c : {"manufacturer", "model", "firmware_version", "mac"})
         RTF_ASSERT(after.count(c) == 1);
@@ -522,7 +522,7 @@ void test_r_disco::test_startup_logs_the_database()
     auto lines = log.lines();
     RTF_ASSERT_EQUAL(lines.size(), (size_t)1);
     RTF_ASSERT(lines[0].find(string("top_dir") + PATH_SLASH + "db" + PATH_SLASH + "cameras.db") != string::npos);
-    RTF_ASSERT(lines[0].find("(schema version 10, was 0)") != string::npos);
+    RTF_ASSERT(lines[0].find("(schema version 11, was 0)") != string::npos);
 }
 
 void test_r_disco::test_failed_writes_are_logged()
@@ -585,6 +585,7 @@ void test_r_disco::test_substream_saved_and_loaded()
     auto c = substream_camera(devices);
     RTF_ASSERT(c.sub_mode.value() == "off");   // a new camera has none
     RTF_ASSERT(c.sub_rtsp_url.is_null());
+    RTF_ASSERT(c.sub_analysis.is_null() || c.sub_analysis.value() == 0);     // and finds no motion in it
 
     c.sub_mode = string("on");
     c.sub_status = string("ok");
@@ -596,6 +597,7 @@ void test_r_disco::test_substream_saved_and_loaded()
     c.sub_width = 640;
     c.sub_height = 480;
     c.sub_key_interval_ms = 1000;
+    c.sub_analysis = 1;
     devices.save_camera(c);
 
     auto r = devices.get_camera_by_id("cam-1").value();
@@ -609,6 +611,7 @@ void test_r_disco::test_substream_saved_and_loaded()
     RTF_ASSERT_EQUAL(r.sub_width.value(), 640);
     RTF_ASSERT_EQUAL(r.sub_height.value(), 480);
     RTF_ASSERT_EQUAL(r.sub_key_interval_ms.value(), 1000);
+    RTF_ASSERT_EQUAL(r.sub_analysis.value(), 1);
 
     // Rediscovery updates the camera's own fields and keeps its substream.
     r_stream_config sc;
@@ -620,6 +623,7 @@ void test_r_disco::test_substream_saved_and_loaded()
     RTF_ASSERT(moved.ipv4.value() == "10.0.0.6");
     RTF_ASSERT(moved.sub_rtsp_url.value() == "rtsp://10.0.0.5/stream2?it's=bound");
     RTF_ASSERT_EQUAL(moved.sub_width.value(), 640);
+    RTF_ASSERT_EQUAL(moved.sub_analysis.value(), 1);
 
     // Turned off: null clears every field, and anything but "on" is stored as off.
     r_camera off = moved;
@@ -660,10 +664,11 @@ void test_r_disco::test_db_upgrade_existing_camera_has_no_substream()
     RTF_ASSERT(c.sub_mode.value() == "off");
     RTF_ASSERT(c.sub_status.is_null());
     RTF_ASSERT(c.sub_rtsp_url.is_null());
+    RTF_ASSERT(c.sub_analysis.is_null() || c.sub_analysis.value() == 0);   // an existing camera finds motion where it did
     devices.stop();
-    RTF_ASSERT_EQUAL(db_version(), 10);
+    RTF_ASSERT_EQUAL(db_version(), 11);
     auto columns = db_columns();
     for(auto col : {"sub_mode", "sub_status", "sub_onvif_profile_token", "sub_rtsp_url", "sub_video_codec",
-                    "sub_video_codec_parameters", "sub_video_timebase", "sub_width", "sub_height", "sub_key_interval_ms"})
+                    "sub_video_codec_parameters", "sub_video_timebase", "sub_width", "sub_height", "sub_key_interval_ms", "sub_analysis"})
         RTF_ASSERT(columns.count(col) == 1);
 }
