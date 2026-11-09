@@ -9,6 +9,7 @@
 #include "r_pipeline/r_gst_buffer.h"
 #include "r_pipeline/r_gst_source.h"
 #include "r_utils/r_file.h"
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <mutex>
@@ -299,6 +300,73 @@ void test_r_motion_engine::test_real_frames_trigger_motion()
     }
     RTF_ASSERT(has_start);
     RTF_ASSERT_EQUAL(engine.skipped_count(), (size_t)0);
+}
+
+namespace
+{
+
+// Posts bad_guy.mp4's first `count` key frames one at a time (each processed before the next), the first `first_n` of
+// them as the stream `params_a` and the rest as `params_b`; returns how many work contexts the factory was asked for.
+int _factory_calls_for(int count, int first_n, const std::string& params_a, const std::string& params_b)
+{
+    r_pipeline::gstreamer_init();
+    r_fs::write_file(bad_guy_mp4, bad_guy_mp4_len, "bad_guy.mp4");
+
+    AVCodecID codec_id;
+    vector<uint8_t> extradata;
+    int vsi;
+    {
+        r_demuxer d("bad_guy.mp4", false);
+        vsi = d.get_video_stream_index();
+        codec_id = d.get_stream_info(vsi).codec_id;
+        extradata = d.get_extradata(vsi);
+    }
+
+    capturing_event_sink sink;
+    std::atomic<int> calls {0};
+    auto factory = [&](const r_motion_work_item& item) -> std::shared_ptr<r_motion_work_context> {
+        ++calls;
+        return make_shared<r_motion_work_context>(codec_id, item.id, extradata, make_unique<null_storage_sink>());
+    };
+
+    r_motion_engine engine(factory, sink);
+    engine.start();
+    {
+        r_demuxer d("bad_guy.mp4", false);
+        int64_t ts_ms = 0;
+        int posted = 0;
+        while(posted < count && d.read_frame())
+        {
+            auto fi = d.get_frame_info();
+            if(fi.index == vsi && fi.key)
+            {
+                r_pipeline::r_gst_buffer buf(fi.data, fi.size);
+                engine.post_frame(buf, ts_ms, "h264", posted < first_n ? params_a : params_b, "cam", true);
+                ts_ms += 1000;
+                ++posted;
+                for(int i = 0; i < 500 && engine.processed_count() < (size_t)posted; ++i)
+                    rtf_usleep(10000);
+            }
+        }
+    }
+    engine.stop();
+    r_fs::remove_file("bad_guy.mp4");
+    return calls.load();
+}
+
+}
+
+void test_r_motion_engine::test_other_stream_frame_rebuilds_context()
+{
+    // A frame that carries other codec parameters than the ones the decoder was built for is from another stream: the
+    // context is built again from it (a frame in flight across a move between the camera's streams, or one that
+    // arrives after a removal request the full queue dropped).
+    RTF_ASSERT_EQUAL(_factory_calls_for(4, 2, "main-params", "sub-params"), 2);
+}
+
+void test_r_motion_engine::test_same_stream_keeps_context()
+{
+    RTF_ASSERT_EQUAL(_factory_calls_for(4, 4, "main-params", "main-params"), 1);
 }
 
 namespace
