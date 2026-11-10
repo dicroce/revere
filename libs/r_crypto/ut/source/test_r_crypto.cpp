@@ -15,6 +15,7 @@
 #include <cstring>
 #include <string>
 #include <memory>
+#include <set>
 #include <vector>
 
 using namespace std;
@@ -354,6 +355,20 @@ void test_r_crypto::test_srp6a_random_b()
     RTF_ASSERT_EQUAL(one.public_key().size(), (size_t)384);
     RTF_ASSERT(one.public_key()[0] != 0);
     RTF_ASSERT(two.public_key()[0] != 0);
+}
+
+void test_r_crypto::test_srp6a_random_b_is_full_length()
+{
+    // The random b passes the same check as a known-answer test's b (at least
+    // 32 bytes, 0 < b < N), so a b drawn short throws here. Each of these servers
+    // gets its own B.
+    auto& v = SRP6A_VECTORS[1];
+    set<vector<uint8_t>> seen;
+    for(int i = 0; i < 16; ++i)
+    {
+        r_srp6a_server server(srp_group(v), srp_hash(v), v.username, unhex(v.salt), unhex(v.verifier));
+        RTF_ASSERT(seen.insert(server.public_key()).second);
+    }
 }
 
 void test_r_crypto::test_srp6a_refuses_A_plus_N()
