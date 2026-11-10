@@ -3577,10 +3577,13 @@ int main(int argc, char** argv)
             {
                 std::thread([&agent, &devices, &streams, camera, gen](){
                     std::vector<revere::streams_state::candidate> list;
+                    std::string main_title;
                     try
                     {
                         auto creds = devices.get_credentials(camera.id);
                         auto found = agent.list_substream_candidates(camera, creds.first, creds.second);
+                        // The profile Revere recorded from, for when the camera record has no stream parameters to read.
+                        main_title = _stream_title(found.main.encoding, found.main.width, found.main.height);
                         for(auto& c : found.candidates)
                             list.push_back({c.token, _stream_title(c.encoding, c.width, c.height)});
                     }
@@ -3592,6 +3595,8 @@ int main(int argc, char** argv)
                     if(streams.generation != gen)
                         return;
                     streams.candidates = list;
+                    if(streams.recording.empty())
+                        streams.recording = main_title;
                     streams.loading = false;
                 }).detach();
             }

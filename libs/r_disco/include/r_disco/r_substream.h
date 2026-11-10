@@ -101,6 +101,10 @@ R_API std::string substream_title(const r_camera& camera);
 // colon): the reason; empty when the status isn't a "none".
 R_API std::string substream_none_reason(const r_camera& camera);
 
+// What to change on the camera for a substream_none_reason, in a few words ("set the camera's sub-stream I-frame
+// interval to about 1 s"); empty when there is nothing for the user to change or the reason isn't known.
+R_API std::string substream_reason_hint(const std::string& reason);
+
 // Copies the substream fields (all sub_*) from one camera record to another.
 R_API void substream_copy(const r_camera& from, r_camera& to);
 

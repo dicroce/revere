@@ -519,6 +519,9 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
     if(on && !in_use_listed)
         cards.push_back({token, r_disco::substream_title(sub), true});
 
+    // A check that failed: the smaller stream can't be chosen until the camera is changed and the check is run
+    // again with Find again, so it is shown greyed with why and what to change, not as something that flips back.
+    const bool failed = !on && !reason.empty() && !working;
     ImGui::BeginDisabled(working);
     {
         std::string title = "Use the recording stream";
@@ -529,18 +532,33 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
         if(d.option("##sub_off", title.c_str(), "Live view and analysis use the stream that's recorded. No extra connection to the camera.", !on))
             streams_cb(std::string("off"), std::string());
     }
-    for(int i = 0; i < (int)cards.size(); ++i)
+    if(failed)
     {
         d.gap(2.0f);
-        ImGui::PushID(i);
-        std::string title = "Use the smaller stream";
-        if(!cards[i].title.empty())
-            title += dot + cards[i].title;
-        if(cards[i].in_use)
-            title += "   (in use)";
-        if(d.option("##sub_use", title.c_str(), "Faster live view and analysis, less CPU. Recording stays full quality.", cards[i].in_use))
-            streams_cb(std::string("use"), cards[i].token);
-        ImGui::PopID();
+        const auto hint = r_disco::substream_reason_hint(reason);
+        ImGui::BeginDisabled();
+        d.option("##sub_failed", ("No usable smaller stream: " + reason).c_str(),
+                 hint.empty() ? "Change the camera's sub-stream settings, then choose Find again." :
+                                ("Set the camera's sub-stream, then choose Find again: " + hint + ".").c_str(), false);
+        ImGui::EndDisabled();
+    }
+    else
+    {
+        for(int i = 0; i < (int)cards.size(); ++i)
+        {
+            d.gap(2.0f);
+            ImGui::PushID(i);
+            std::string title = "Use the smaller stream";
+            if(!cards[i].title.empty())
+                title += dot + cards[i].title;
+            if(working)
+                title += "   (checking...)";
+            else if(cards[i].in_use)
+                title += "   (in use)";
+            if(d.option("##sub_use", title.c_str(), "Faster live view and analysis, less CPU. Recording stays full quality.", cards[i].in_use))
+                streams_cb(std::string("use"), cards[i].token);
+            ImGui::PopID();
+        }
     }
     ImGui::EndDisabled();
 
@@ -557,8 +575,8 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
         d.body("Checking the camera...");
     else if(loading)
         d.body("Looking at the camera's streams...");
-    else if(!on && !reason.empty())
-        d.body("No smaller stream found: " + reason + ".");
+    else if(failed)
+        d.body("Live view and analysis keep using the recording stream.");
     else if(!on && cards.empty())
         d.body("No smaller stream found. This camera doesn't offer one Revere can use.");
     else if(!on)

@@ -438,3 +438,14 @@ void test_r_substream::test_none_reason()
     camera.sub_status = string("none");                    // no colon
     RTF_ASSERT(substream_none_reason(camera).empty());
 }
+
+// What the camera's settings should say for each reason check_substream gives.
+void test_r_substream::test_reason_hints()
+{
+    for(auto reason : {"keyframes too far apart", "uses B-frames", "frame rate too low", "too large", "not H.264 or H.265",
+                       "no video", "camera didn't answer", "no smaller stream"})
+        RTF_ASSERT(!substream_reason_hint(reason).empty());
+    RTF_ASSERT(substream_reason_hint("keyframes too far apart").find("I-frame interval") != string::npos);
+    RTF_ASSERT(substream_reason_hint("").empty());
+    RTF_ASSERT(substream_reason_hint("something new").empty());      // nothing made up for an unknown reason
+}

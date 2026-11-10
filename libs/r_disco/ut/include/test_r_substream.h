@@ -21,6 +21,7 @@ public:
       TEST(test_r_substream::test_main_profile_index);
       TEST(test_r_substream::test_stream_titles);
       TEST(test_r_substream::test_none_reason);
+      TEST(test_r_substream::test_reason_hints);
     RTF_FIXTURE_END();
 
     virtual ~test_r_substream() throw() {}
@@ -44,4 +45,5 @@ public:
     void test_main_profile_index();
     void test_stream_titles();
     void test_none_reason();
+    void test_reason_hints();
 };
