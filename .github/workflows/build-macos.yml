@@ -5,11 +5,29 @@ name: Build & Release macOS
 #                          PUBLIC GitHub Release for that tag
 #   - workflow_dispatch -> build only (assets named with the short git hash)
 #
-# Target: Apple Silicon (arm64) on macos-15. Unsigned (users clear quarantine).
-# The app needs at least the runner's macOS (Homebrew's bottles target it).
-# Homebrew bottles only its three newest supported macOS versions; on an older
-# runner it compiles every updated formula (llvm, vtk, opencv, ...) and the job
-# hits the 6-hour limit in brew install, as macos-14 did from v0.0.30 on.
+# Two builds, unsigned (users clear quarantine):
+#   - Apple Silicon (arm64) on macos-15: revere-<ver>-macos-app.dmg and
+#     revere-<ver>-macos-cloud.command, the names earlier releases used.
+#   - Intel (x86_64) on macos-15-intel: revere-<ver>-macos-intel-app.dmg and
+#     revere-<ver>-macos-intel-cloud.command.
+# Each sets its minimum macOS (min_macos) as the deployment target, and "Verify
+# the minimum macOS and architecture" fails the build if anything bundled needs
+# a newer one, so the minimum is the one stated here, not the runner's.
+#
+# The minimum can't be below what the Homebrew libraries were built for: arm64
+# bottles on macos-15 are Sequoia's (15), and so are the formulae already on
+# the macos-15-intel image, which the Intel build keeps: both are 15. Homebrew bottles only its three newest
+# supported macOS versions; on an older runner it compiles every updated formula
+# (llvm, vtk, opencv, ...) and the job hits the 6-hour limit in brew install, as
+# macos-14 did from v0.0.30 on.
+#
+# Intel: Homebrew stopped building Intel bottles in 2026 (Intel macOS is its
+# Tier 3), and its last ones are Sonoma's (14). Today's formulae mostly have
+# none, so brew would compile opencv, gstreamer, vtk, qt, ... from source. The
+# Intel build pins Homebrew and homebrew-core (brew_version, brew_core_pin) to
+# August 2026, when every formula revere needs still had a Sonoma bottle. Its
+# dependencies stay at those versions; move the pin only to a commit whose whole
+# dependency tree still has Intel bottles.
 on:
   push:
     tags: ['v*']
@@ -25,7 +43,28 @@ env:
 
 jobs:
   build-macos:
-    runs-on: macos-15   # Apple Silicon (arm64)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            min_macos: '15.0'
+            asset: macos           # revere-<ver>-macos-app.dmg, as before
+            brew_version: ''       # current Homebrew
+            brew_core_pin: ''
+            extra_brew: ''
+          - arch: x86_64
+            runner: macos-15-intel
+            min_macos: '15.0'      # the runner image's own formulae (pcre2, gcc, xz, spirv-tools) are Sequoia's
+            asset: macos-intel     # revere-<ver>-macos-intel-app.dmg
+            brew_version: '6.0.17'                                       # 11 Aug 2026
+            brew_core_pin: 'fbb6990e8a9d2d0409e14eb9d0c6d728ddf4b1ab'   # homebrew-core, 14 Aug 2026
+            extra_brew: 'nasm'     # FFmpeg's x86 assembly
+    runs-on: ${{ matrix.runner }}
+    env:
+      # Read by clang and by FFmpeg's configure: the oldest macOS the binaries run on.
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.min_macos }}
 
     steps:
       - name: Checkout revere
@@ -64,10 +103,35 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.REVERE_CLOUD_TOKEN }}
 
+      # The Intel build's pinned Homebrew (see the top of this file): brew and
+      # homebrew-core at fixed commits, formulae read from the tap rather than the
+      # API (which is today's), and nothing updated behind our back.
+      - name: Pin Homebrew (Intel)
+        if: matrix.brew_core_pin != ''
+        run: |
+          set -euo pipefail
+          {
+            echo "HOMEBREW_NO_AUTO_UPDATE=1"
+            echo "HOMEBREW_NO_INSTALL_FROM_API=1"
+            echo "HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1"
+            echo "HOMEBREW_NO_INSTALL_UPGRADE=1"
+          } >> "$GITHUB_ENV"
+          export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1
+          brew_repo="$(brew --repository)"
+          git -C "$brew_repo" fetch --quiet --tags origin
+          git -C "$brew_repo" checkout --quiet "${{ matrix.brew_version }}"
+          brew tap --force homebrew/core
+          core="$(brew --repository homebrew/core)"
+          git -C "$core" fetch --quiet origin "${{ matrix.brew_core_pin }}"
+          git -C "$core" checkout --quiet "${{ matrix.brew_core_pin }}"
+          brew --version
+          git -C "$core" log -1 --format='homebrew-core %H %cI'
+
       - name: Install dependencies
         run: |
           set -euo pipefail
-          brew update
+          # The pinned Intel Homebrew stays where it is.
+          [ -n "${{ matrix.brew_core_pin }}" ] || brew update
           # Runtime/build deps via Homebrew. ncnn is in brew (arm64) so the
           # yolov8 plugin builds without a from-source NCNN. dylibbundler gathers
           # the non-system dylibs into the .app and rewrites their load paths.
@@ -78,7 +142,8 @@ jobs:
             opencv \
             gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad \
             glfw sqlite ncnn \
-            openh264 webp opus
+            openh264 webp opus \
+            ${{ matrix.extra_brew }}
           # Homebrew's opencv and gstreamer still pull in its ffmpeg, a GPL build
           # (x264/x265). Unlink it so its headers, libs and .pc files leave the
           # Homebrew prefix: nothing can build or link against it by accident.
@@ -87,7 +152,7 @@ jobs:
           # Our FFmpeg links these by versioned name, so a cached build is only
           # good for the versions it was built against.
           echo "FFMPEG_DEPS_KEY=$(brew list --versions openh264 webp opus | tr ' \n' '-_')" >> "$GITHUB_ENV"
-          # Make sure pkg-config sees the Homebrew prefix (Apple Silicon).
+          # Make sure pkg-config sees the Homebrew prefix (/opt/homebrew or /usr/local).
           echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix)/share/pkgconfig" >> "$GITHUB_ENV"
 
       # FFmpeg, LGPL. The closed Revere Cloud and HomeKit plugins load into
@@ -101,7 +166,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ffmpeg-lgpl
-          key: ffmpeg-lgpl-${{ env.FFMPEG_VERSION }}-macos-15-arm64-v1-${{ env.FFMPEG_DEPS_KEY }}
+          key: ffmpeg-lgpl-${{ env.FFMPEG_VERSION }}-macos-${{ matrix.arch }}-min${{ matrix.min_macos }}-v1-${{ env.FFMPEG_DEPS_KEY }}
 
       - name: Build FFmpeg (LGPL, cache miss only)
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
@@ -116,7 +181,9 @@ jobs:
             --disable-avdevice --disable-avfilter \
             --disable-sdl2 --disable-xlib --disable-libxcb \
             --enable-videotoolbox --enable-audiotoolbox \
-            --enable-libopenh264 --enable-libwebp --enable-libopus
+            --enable-libopenh264 --enable-libwebp --enable-libopus \
+            --extra-cflags="-mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}" \
+            --extra-ldflags="-mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}"
           grep -E "^#define CONFIG_(GPL|NONFREE) 0" config.h | wc -l | grep -q 2 || { echo "::error::FFmpeg configured with GPL or nonfree parts"; exit 1; }
           make -j"$(sysctl -n hw.ncpu)"
           make install
@@ -132,6 +199,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DEXTERNAL_PLUGIN_REPOS="${GITHUB_WORKSPACE}/revere_cloud" \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/macos-install" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.min_macos }}" \
+            -DCMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
             -DNCNN_TOP_DIR="$(brew --prefix ncnn)"
 
       - name: Build
@@ -343,6 +412,33 @@ jobs:
           [ "$fail" -eq 0 ] || exit 1
           echo "OK: one LGPL FFmpeg per app bundle, no GPL libraries or plugins"
 
+      # Every Mach-O in the bundles, and the cloud plugin, must be this build's
+      # architecture and need no macOS newer than min_macos: a Homebrew dylib built
+      # for a newer macOS would make the stated minimum untrue.
+      - name: Verify the minimum macOS and architecture
+        run: |
+          set -uo pipefail
+          want="${{ matrix.min_macos }}"
+          arch="${{ matrix.arch }}"
+          newer() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" != "$2" ]; }  # $1 newer than $2
+          minos_of() {  # LC_BUILD_VERSION minos, or LC_VERSION_MIN_MACOSX version
+            otool -l "$1" 2>/dev/null | awk '/LC_BUILD_VERSION/{b=1} /LC_VERSION_MIN_MACOSX/{v=1} b&&$1=="minos"{print $2; exit} v&&$1=="version"{print $2; exit}'
+          }
+          checked=0; bad=0
+          plugin="$(find build -name 'revere_cloud_system_plugin.dylib' -type f | head -1)"
+          while IFS= read -r f; do
+            file -b "$f" | grep -q 'Mach-O' || continue
+            checked=$((checked+1))
+            archs="$(lipo -archs "$f" 2>/dev/null)"
+            case " $archs " in *" $arch "*) ;; *) echo "::error::$f is $archs, not $arch"; bad=$((bad+1)); continue;; esac
+            m="$(minos_of "$f")"
+            if [ -z "$m" ]; then echo "::warning::no minimum macOS recorded in $f"; continue; fi
+            if newer "$m" "$want"; then echo "::error::$f needs macOS $m (the build's minimum is $want)"; bad=$((bad+1)); fi
+          done < <(find macos-install/Revere.app macos-install/Vision.app $plugin -type f 2>/dev/null)
+          echo "checked $checked Mach-O files for $arch, macOS $want or older; $bad wrong"
+          [ "$checked" -gt 0 ] || { echo "::error::no Mach-O files found to check"; exit 1; }
+          [ "$bad" -eq 0 ] || exit 1
+
       - name: Determine version
         id: ver
         run: |
@@ -386,7 +482,7 @@ jobs:
           ln -s /Applications dmgroot/Applications
           # hdiutil intermittently fails with "Resource busy" on CI runners (disk
           # automount race), unrelated to bundle contents. Retry a few times.
-          out="dist/revere-${ver}-macos-app.dmg"
+          out="dist/revere-${ver}-${{ matrix.asset }}-app.dmg"
           ok=0
           for attempt in 1 2 3 4 5; do
             if hdiutil create -volname "Revere" -srcfolder dmgroot -ov -format UDBZ "$out"; then
@@ -474,13 +570,23 @@ jobs:
           plugin="$(find build -name 'revere_cloud_system_plugin.dylib' -type f | head -1)"
           if [ -z "$plugin" ]; then echo "::error::cloud plugin dylib not found"; exit 1; fi
           echo "plugin: $plugin"
-          out="dist/revere-${ver}-macos-cloud.command"
-          cat > "$out" <<'HDR'
-          #!/bin/bash
+          out="dist/revere-${ver}-${{ matrix.asset }}-cloud.command"
+          echo '#!/bin/bash' > "$out"
+          # The plugin only loads into a Revere of its own architecture.
+          echo 'PLUGIN_ARCH="${{ matrix.arch }}"' >> "$out"
+          cat >> "$out" <<'HDR'
           set -e
           PLUGIN_DIR="$HOME/Library/Application Support/Revere/revere/system_plugins"
           PLUGIN_NAME="revere_cloud_system_plugin.dylib"
           echo "Revere Cloud Plugin Installer"; echo "=============================="; echo ""
+          if [ "$(uname -m)" != "$PLUGIN_ARCH" ]; then
+            if [ "$PLUGIN_ARCH" = "x86_64" ]; then
+              echo "Error: this installer is for Intel Macs. This Mac has Apple silicon: use revere-<version>-macos-cloud.command."
+            else
+              echo "Error: this installer is for Macs with Apple silicon. On an Intel Mac use revere-<version>-macos-intel-cloud.command."
+            fi
+            read -p "Press Enter to exit..."; exit 1
+          fi
           if [ ! -d "$HOME/Library/Application Support/Revere/revere" ]; then
             echo "Error: Revere does not appear to be installed."
             echo "Please run Revere at least once before installing the plugin."
@@ -518,7 +624,7 @@ jobs:
       - name: Upload macOS assets
         uses: actions/upload-artifact@v4
         with:
-          name: macos-assets
+          name: macos-assets-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
 
@@ -530,7 +636,8 @@ jobs:
       - name: Download macOS assets
         uses: actions/download-artifact@v4
         with:
-          name: macos-assets
+          pattern: macos-assets-*
+          merge-multiple: true
           path: dist
 
       - name: Verify asset versions match the tag
@@ -538,13 +645,14 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"; version="${tag#v}"
           echo "Tag: $tag -> expected version: $version"; ls -1 dist
-          for expected in "revere-v${version}-macos-app.dmg" "revere-v${version}-macos-cloud.command"; do
+          for expected in "revere-v${version}-macos-app.dmg" "revere-v${version}-macos-cloud.command" \
+                          "revere-v${version}-macos-intel-app.dmg" "revere-v${version}-macos-intel-cloud.command"; do
             if [ ! -f "dist/${expected}" ]; then
               echo "::error::Expected asset '${expected}' not found — refusing to release."
               exit 1
             fi
           done
-          echo "Version guard passed: both macOS assets match $tag."
+          echo "Version guard passed: all four macOS assets match $tag."
 
       - name: Create/update public release and upload macOS assets
         env:
