@@ -15,6 +15,9 @@ add_executable(
     source/test_plugin_status_line.cpp
     ../source/tray_status.cpp
     ../source/browser_url.cpp
+    include/test_cloud_download.h
+    source/test_cloud_download.cpp
+    ../source/cloud_download.cpp
 )
 
 target_include_directories(
