@@ -1,7 +1,7 @@
-
 #include "test_r_disco.h"
 #include "r_disco/r_agent.h"
 #include "r_disco/r_devices.h"
+#include "r_utils/r_secure_store.h"
 #include "r_disco/r_camera_move.h"
 #include <chrono>
 #include <map>
@@ -16,6 +16,8 @@ using namespace r_utils;
 
 REGISTER_TEST_FIXTURE(test_r_disco);
 
+static const char* TEST_KEY_DIR = "top_dir_keys";
+
 using namespace r_disco;
 
 void test_r_disco::setup()
@@ -25,6 +27,13 @@ void test_r_disco::setup()
 
 void test_r_disco::teardown()
 {
+    // test_sql_in_a_camera_id's encryption key.
+    r_secure_store::set_key_dir(string());
+    auto key = string(TEST_KEY_DIR) + PATH_SLASH + "encryption.key";
+    if(r_fs::file_exists(key))
+        r_fs::remove_file(key);
+    if(r_fs::file_exists(TEST_KEY_DIR))
+        r_fs::rmdir(TEST_KEY_DIR);
     // The cameras.db tests leave a database behind.
     r_logger::clear_log_callback();
     // The r_devices tests leave a database behind.
@@ -559,4 +568,156 @@ void test_r_disco::test_failed_writes_are_logged()
     RTF_ASSERT(lines[0].find("10.0.0.5") == string::npos);
     RTF_ASSERT(lines[0].find("secret-user") == string::npos);
     RTF_ASSERT(lines[0].find("INSERT") == string::npos);
+}
+
+// A discovered camera, as the agent writes it from a WS-Discovery reply: the
+// name is whatever the camera on the network sent.
+static r_stream_config discovered(const string& id, const string& name)
+{
+    r_stream_config sc;
+    sc.id = id;
+    sc.camera_name = name;
+    sc.ipv4 = "10.0.0.5";
+    sc.rtsp_url = "rtsp://10.0.0.5/stream1";
+    return sc;
+}
+
+void test_r_disco::test_quote_in_a_discovered_name()
+{
+    r_devices devices("top_dir");
+    devices.start();
+
+    // Inserted, then updated: both used to build their SQL from the name.
+    auto sc = discovered("cam-1", "Bob's Camera");
+    devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
+    auto camera = devices.get_camera_by_id("cam-1");
+    RTF_ASSERT(!camera.is_null());
+    RTF_ASSERT(camera.value().camera_name.value() == "Bob's Camera");
+    RTF_ASSERT(camera.value().state == "discovered");
+
+    sc.camera_name = "O'Brien's \"Porch\"";
+    devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
+    camera = devices.get_camera_by_id("cam-1");
+    RTF_ASSERT(camera.value().camera_name.value() == "O'Brien's \"Porch\"");
+    RTF_ASSERT(camera.value().stream_config_hash == hash_stream_config(sc));
+
+    devices.stop();
+}
+
+void test_r_disco::test_sql_in_a_discovered_name()
+{
+    r_devices devices("top_dir");
+    devices.start();
+
+    auto other = discovered("cam-other", "Garage");
+    devices.insert_or_update_devices({{other, hash_stream_config(other)}});
+
+    // On the update path, this name used to set the camera's own state: a camera
+    // on the network could assign itself.
+    auto sc = discovered("cam-1", "Front");
+    devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
+    const string assign_itself = "x', state='assigned', camera_name='x";
+    sc.camera_name = assign_itself;
+    devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
+    auto camera = devices.get_camera_by_id("cam-1");
+    RTF_ASSERT(camera.value().state == "discovered");
+    RTF_ASSERT(camera.value().camera_name.value() == assign_itself);
+    RTF_ASSERT(devices.get_assigned_cameras().empty());
+
+    // A new camera whose name ends the statement and starts another.
+    const string drop_rows = "x'); DELETE FROM cameras; --";
+    auto evil = discovered("cam-evil", drop_rows);
+    devices.insert_or_update_devices({{evil, hash_stream_config(evil)}});
+    RTF_ASSERT(devices.get_all_cameras().size() == 3);
+    RTF_ASSERT(devices.get_camera_by_id("cam-evil").value().camera_name.value() == drop_rows);
+    RTF_ASSERT(devices.get_camera_by_id("cam-other").value().camera_name.value() == "Garage");
+
+    devices.stop();
+}
+
+void test_r_disco::test_sql_in_a_camera_id()
+{
+    r_devices devices("top_dir");
+    devices.start();
+
+    auto sc = discovered("cam-1", "Front");
+    devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
+
+    // An id that matched every row when formatted into the WHERE.
+    const string any_row = "x' OR '1'='1";
+    RTF_ASSERT(devices.get_camera_by_id(any_row).is_null());
+
+    // cam-1's credentials, under a key of this test's own (never the user's).
+    r_fs::mkdir_p(TEST_KEY_DIR);
+    r_secure_store::set_key_dir(TEST_KEY_DIR);
+    auto with_creds = devices.get_camera_by_id("cam-1").value();
+    with_creds.rtsp_username = "admin";
+    with_creds.rtsp_password = "s3cret";
+    devices.save_camera(with_creds);
+    RTF_ASSERT(devices.get_credentials("cam-1").first.value() == "admin");
+    RTF_ASSERT(devices.get_credentials("cam-1").second.value() == "s3cret");
+
+    auto creds = devices.get_credentials(any_row);
+    RTF_ASSERT(creds.first.is_null());
+    RTF_ASSERT(creds.second.is_null());
+
+    r_camera stale;
+    stale.id = "x\" OR \"1\"=\"1";
+    stale.stream_config_hash = "none";
+    RTF_ASSERT(devices.get_modified_cameras({stale}).empty());
+
+    r_camera gone;
+    gone.id = any_row;
+    devices.remove_camera(gone);
+    RTF_ASSERT(devices.get_all_cameras().size() == 1);
+
+    // An id with a quote is a camera like any other.
+    auto quoted = discovered("cam-'2'", "Back");
+    devices.insert_or_update_devices({{quoted, hash_stream_config(quoted)}});
+    RTF_ASSERT(devices.get_camera_by_id("cam-'2'").value().camera_name.value() == "Back");
+    r_camera remove_quoted;
+    remove_quoted.id = "cam-'2'";
+    devices.remove_camera(remove_quoted);
+    RTF_ASSERT(devices.get_camera_by_id("cam-'2'").is_null());
+    RTF_ASSERT(devices.get_all_cameras().size() == 1);
+
+    devices.stop();
+}
+
+void test_r_disco::test_saved_camera_round_trips()
+{
+    r_devices devices("top_dir");
+    devices.start();
+
+    auto sc = discovered("cam-'1'", "Front");
+    devices.insert_or_update_devices({{sc, hash_stream_config(sc)}});
+
+    auto camera = devices.get_camera_by_id("cam-'1'").value();
+    camera.friendly_name = "Bob's \"Front\" Door'); DELETE FROM cameras; --";
+    camera.record_file_path = "/data/it's here/cam-1.nts";
+    camera.n_record_file_blocks = 2016;
+    camera.record_file_block_size = 10485760;
+    camera.do_motion_detection = true;
+    camera.motion_tier = "a'b";
+    camera.state = "assigned";
+    devices.save_camera(camera);
+
+    auto saved = devices.get_camera_by_id("cam-'1'");
+    RTF_ASSERT(!saved.is_null());
+    RTF_ASSERT(saved.value().friendly_name.value() == camera.friendly_name.value());
+    RTF_ASSERT(saved.value().record_file_path.value() == "/data/it's here/cam-1.nts");
+    RTF_ASSERT(saved.value().n_record_file_blocks.value() == 2016);
+    RTF_ASSERT(saved.value().record_file_block_size.value() == 10485760);
+    RTF_ASSERT(saved.value().do_motion_detection.value());
+    RTF_ASSERT(saved.value().motion_tier.value() == "a'b");
+    RTF_ASSERT(saved.value().camera_name.value() == "Front");
+    RTF_ASSERT(saved.value().state == "assigned");
+    RTF_ASSERT(devices.get_assigned_cameras().size() == 1);
+
+    // Read back by id again for the cameras newly assigned since a snapshot.
+    auto added = devices.get_assigned_cameras_added({});
+    RTF_ASSERT(added.size() == 1);
+    RTF_ASSERT(added.front().id == "cam-'1'");
+
+    devices.stop();
 }
