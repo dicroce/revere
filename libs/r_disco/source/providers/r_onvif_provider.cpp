@@ -46,14 +46,19 @@ r_onvif_provider::~r_onvif_provider()
 r_nullable<int64_t> r_disco::ptz_timeout_ms(const string& timeout)
 {
     r_nullable<int64_t> ms;
+    // The text comes from the request as is: bound it before the pattern runs, so stod can't overflow
+    // and the deadline below stays in range.
+    if(timeout.size() <= 2 || timeout.size() > PTZ_TIMEOUT_MAX_CHARS)
+        return ms;
     static const regex duration(R"(^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$)");
     smatch m;
-    if(timeout.size() <= 2 || !regex_match(timeout, m, duration))
+    if(!regex_match(timeout, m, duration))
         return ms;
     double total = (m[1].matched ? stod(m[1].str()) * 3600.0 : 0.0) + (m[2].matched ? stod(m[2].str()) * 60.0 : 0.0)
                  + (m[3].matched ? stod(m[3].str()) : 0.0);
-    if(total > 0.0)
-        ms.set_value((int64_t)(total * 1000.0 + 0.5));
+    auto total_ms = total * 1000.0 + 0.5;
+    if(total_ms >= 1.0 && total_ms <= (double)PTZ_TIMEOUT_MAX_MS + 0.5)
+        ms.set_value((int64_t)total_ms);
     return ms;
 }
 

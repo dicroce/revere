@@ -21,6 +21,10 @@ public:
       TEST(test_r_disco::test_db_upgrade_from_version_7);
       TEST(test_r_disco::test_startup_logs_the_database);
       TEST(test_r_disco::test_failed_writes_are_logged);
+      TEST(test_r_disco::test_quote_in_a_discovered_name);
+      TEST(test_r_disco::test_sql_in_a_discovered_name);
+      TEST(test_r_disco::test_sql_in_a_camera_id);
+      TEST(test_r_disco::test_saved_camera_round_trips);
       TEST(test_r_disco::test_substream_saved_and_loaded);
       TEST(test_r_disco::test_db_upgrade_existing_camera_has_no_substream);
     RTF_FIXTURE_END();
@@ -46,6 +50,10 @@ public:
     void test_db_upgrade_from_version_7();
     void test_startup_logs_the_database();
     void test_failed_writes_are_logged();
+    void test_quote_in_a_discovered_name();
+    void test_sql_in_a_discovered_name();
+    void test_sql_in_a_camera_id();
+    void test_saved_camera_round_trips();
     void test_substream_saved_and_loaded();
     void test_db_upgrade_existing_camera_has_no_substream();
 };

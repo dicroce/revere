@@ -631,104 +631,142 @@ void r_devices::_set_db_version(const r_db::r_sqlite_conn& conn, int version) co
     conn.exec("PRAGMA user_version=" + to_string(version) + ";");
 }
 
-string r_devices::_create_insert_or_update_query(const r_db::r_sqlite_conn& conn, const r_stream_config& stream_config, const std::string& hash) const
+namespace
+{
+
+// The columns of one INSERT, UPDATE or REPLACE and their values, bound rather
+// than formatted into the SQL. The values come from cameras on the network (a
+// WS-Discovery reply's name, ONVIF answers) and from the API, so any of them may
+// hold a quote or SQL. A null value leaves its column out. Column names are
+// always literals from this file.
+class r_bound_columns
+{
+public:
+    void add(const char* column, const r_nullable<string>& v) { if(!v.is_null()) add(column, v.value()); }
+    void add(const char* column, const r_nullable<int>& v) { if(!v.is_null()) _add_int(column, v.value()); }
+    void add(const char* column, const r_nullable<int64_t>& v) { if(!v.is_null()) _add_int(column, v.value()); }
+    void add(const char* column, const r_nullable<bool>& v) { if(!v.is_null()) _add_int(column, v.value() ? 1 : 0); }
+    void add(const char* column, const string& v)
+    {
+        _value val;
+        val.column = column;
+        val.text = v;
+        _values.push_back(val);
+    }
+
+    // "a, b, c, "
+    string names() const
+    {
+        string out;
+        for(auto& v : _values)
+            out += v.column + ", ";
+        return out;
+    }
+
+    // "?, ?, ?, "
+    string placeholders() const
+    {
+        string out;
+        for(size_t i = 0; i < _values.size(); ++i)
+            out += "?, ";
+        return out;
+    }
+
+    // "a=?, b=?, c=?, "
+    string assignments() const
+    {
+        string out;
+        for(auto& v : _values)
+            out += v.column + "=?, ";
+        return out;
+    }
+
+    // Binds the values in order from parameter `first`, and returns the next free one.
+    int bind(r_sqlite_stmt& stmt, int first) const
+    {
+        int i = first;
+        for(auto& v : _values)
+        {
+            if(v.is_int)
+                stmt.bind(i++, v.number);
+            else stmt.bind(i++, v.text);
+        }
+        return i;
+    }
+
+private:
+    struct _value
+    {
+        string column;
+        bool is_int {false};
+        int64_t number {0};
+        string text;
+    };
+
+    void _add_int(const char* column, int64_t n)
+    {
+        _value val;
+        val.column = column;
+        val.is_int = true;
+        val.number = n;
+        _values.push_back(val);
+    }
+
+    vector<_value> _values;
+};
+
+// The rows for one camera id.
+vector<map<string, r_nullable<string>>> _select_camera(const r_sqlite_conn& conn, const string& id)
+{
+    auto stmt = conn.prepare("SELECT * FROM cameras WHERE id=?;");
+    stmt.bind(1, id);
+    return stmt.exec();
+}
+
+}
+
+void r_devices::_insert_or_update_device(const r_db::r_sqlite_conn& conn, const r_stream_config& stream_config, const std::string& hash) const
 {
     // Why not replace into? Because replace into replaces the whole row, and for the update case here we need
     // to make sure we only update the columns we have values for.
-    auto result = conn.exec("SELECT * FROM cameras WHERE id='" + stream_config.id + "';");
+    auto existing = _select_camera(conn, stream_config.id);
 
-    string query;
+    r_bound_columns cols;
+    cols.add("camera_name", stream_config.camera_name);
+    cols.add("ipv4", stream_config.ipv4);
+    cols.add("xaddrs", stream_config.xaddrs);
+    cols.add("manufacturer", stream_config.manufacturer);
+    cols.add("model", stream_config.model);
+    cols.add("firmware_version", stream_config.firmware_version);
+    cols.add("onvif_port", stream_config.port);
+    cols.add("onvif_protocol", stream_config.protocol);
+    cols.add("address", stream_config.address);
+    cols.add("rtsp_url", stream_config.rtsp_url);
+    cols.add("video_codec", stream_config.video_codec);
+    cols.add("video_codec_parameters", stream_config.video_codec_parameters);
+    cols.add("video_timebase", stream_config.video_timebase);
+    cols.add("audio_codec", stream_config.audio_codec);
+    cols.add("audio_codec_parameters", stream_config.audio_codec_parameters);
+    cols.add("audio_timebase", stream_config.audio_timebase);
+    cols.add("stream_config_hash", hash);
 
-    if(result.empty())
+    if(existing.empty())
     {
-        query = r_string_utils::format(
-            "INSERT INTO cameras (id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, last_update_time, stream_config_hash) "
-            "VALUES('%s', %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s'discovered', %s, '%s');",
-
-            (!stream_config.camera_name.is_null())?"camera_name, ":"",
-            (!stream_config.ipv4.is_null())?"ipv4, ":"",
-            (!stream_config.xaddrs.is_null())?"xaddrs, ":"",
-            (!stream_config.manufacturer.is_null())?"manufacturer, ":"",
-            (!stream_config.model.is_null())?"model, ":"",
-            (!stream_config.firmware_version.is_null())?"firmware_version, ":"",
-            (!stream_config.port.is_null())?"onvif_port, ":"",
-            (!stream_config.protocol.is_null())?"onvif_protocol, ":"",
-            (!stream_config.address.is_null())?"address, ":"",
-            (!stream_config.rtsp_url.is_null())?"rtsp_url, ":"",
-            (!stream_config.video_codec.is_null())?"video_codec, ":"",
-            (!stream_config.video_codec_parameters.is_null())?"video_codec_parameters, ":"",
-            (!stream_config.video_timebase.is_null())?"video_timebase, ":"",
-            (!stream_config.audio_codec.is_null())?"audio_codec, ":"",
-            (!stream_config.audio_codec_parameters.is_null())?"audio_codec_parameters, ":"",
-            (!stream_config.audio_timebase.is_null())?"audio_timebase, ":"",
-
-            stream_config.id.c_str(),
-            (!stream_config.camera_name.is_null())?r_string_utils::format("'%s', ", stream_config.camera_name.value().c_str()).c_str():"",
-            (!stream_config.ipv4.is_null())?r_string_utils::format("'%s', ", stream_config.ipv4.value().c_str()).c_str():"",
-            (!stream_config.xaddrs.is_null())?r_string_utils::format("'%s', ", stream_config.xaddrs.value().c_str()).c_str():"",
-            (!stream_config.manufacturer.is_null())?r_string_utils::format("'%s', ", stream_config.manufacturer.value().c_str()).c_str():"",
-            (!stream_config.model.is_null())?r_string_utils::format("'%s', ", stream_config.model.value().c_str()).c_str():"",
-            (!stream_config.firmware_version.is_null())?r_string_utils::format("'%s', ", stream_config.firmware_version.value().c_str()).c_str():"",
-            (!stream_config.port.is_null())?r_string_utils::format("%d, ", stream_config.port.value()).c_str():"",
-            (!stream_config.protocol.is_null())?r_string_utils::format("'%s', ", stream_config.protocol.value().c_str()).c_str():"",
-            (!stream_config.address.is_null())?r_string_utils::format("'%s', ", stream_config.address.value().c_str()).c_str():"",
-            (!stream_config.rtsp_url.is_null())?r_string_utils::format("'%s', ", stream_config.rtsp_url.value().c_str()).c_str():"",
-            (!stream_config.video_codec.is_null())?r_string_utils::format("'%s', ", stream_config.video_codec.value().c_str()).c_str():"",
-            (!stream_config.video_codec_parameters.is_null())?r_string_utils::format("'%s', ", stream_config.video_codec_parameters.value().c_str()).c_str():"",
-            (!stream_config.video_timebase.is_null())?r_string_utils::format("'%d', ", stream_config.video_timebase.value()).c_str():"",
-            (!stream_config.audio_codec.is_null())?r_string_utils::format("'%s', ", stream_config.audio_codec.value().c_str()).c_str():"",
-            (!stream_config.audio_codec_parameters.is_null())?r_string_utils::format("'%s', ", stream_config.audio_codec_parameters.value().c_str()).c_str():"",
-            (!stream_config.audio_timebase.is_null())?r_string_utils::format("'%d', ", stream_config.audio_timebase.value()).c_str():"",
-            "unixepoch()",
-            hash.c_str()
+        auto stmt = conn.prepare(
+            "INSERT INTO cameras (id, " + cols.names() + "state, last_update_time) "
+            "VALUES(?, " + cols.placeholders() + "'discovered', unixepoch());"
         );
+        stmt.bind(1, stream_config.id);
+        cols.bind(stmt, 2);
+        stmt.exec_no_result();
     }
     else
     {
-        query = r_string_utils::format(
-            "UPDATE cameras SET "
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "last_update_time=%s, "
-                "stream_config_hash='%s' "
-            "WHERE id='%s';",
-            (!stream_config.camera_name.is_null())?r_string_utils::format("camera_name='%s', ", stream_config.camera_name.value().c_str()).c_str():"",
-            (!stream_config.ipv4.is_null())?r_string_utils::format("ipv4='%s', ", stream_config.ipv4.value().c_str()).c_str():"",
-            (!stream_config.xaddrs.is_null())?r_string_utils::format("xaddrs='%s', ", stream_config.xaddrs.value().c_str()).c_str():"",
-            (!stream_config.manufacturer.is_null())?r_string_utils::format("manufacturer='%s', ", stream_config.manufacturer.value().c_str()).c_str():"",
-            (!stream_config.model.is_null())?r_string_utils::format("model='%s', ", stream_config.model.value().c_str()).c_str():"",
-            (!stream_config.firmware_version.is_null())?r_string_utils::format("firmware_version='%s', ", stream_config.firmware_version.value().c_str()).c_str():"",
-            (!stream_config.port.is_null())?r_string_utils::format("onvif_port=%d, ", stream_config.port.value()).c_str():"",
-            (!stream_config.protocol.is_null())?r_string_utils::format("onvif_protocol='%s', ", stream_config.protocol.value().c_str()).c_str():"",
-            (!stream_config.address.is_null())?r_string_utils::format("address='%s', ", stream_config.address.value().c_str()).c_str():"",
-            (!stream_config.rtsp_url.is_null())?r_string_utils::format("rtsp_url='%s', ", stream_config.rtsp_url.value().c_str()).c_str():"",
-            (!stream_config.video_codec.is_null())?r_string_utils::format("video_codec='%s', ", stream_config.video_codec.value().c_str()).c_str():"",
-            (!stream_config.video_codec_parameters.is_null())?r_string_utils::format("video_codec_parameters='%s', ", stream_config.video_codec_parameters.value().c_str()).c_str():"",
-            (!stream_config.video_timebase.is_null())?r_string_utils::format("video_timebase='%d', ", stream_config.video_timebase.value()).c_str():"",
-            (!stream_config.audio_codec.is_null())?r_string_utils::format("audio_codec='%s', ", stream_config.audio_codec.value().c_str()).c_str():"",
-            (!stream_config.audio_codec_parameters.is_null())?r_string_utils::format("audio_codec_parameters='%s', ", stream_config.audio_codec_parameters.value().c_str()).c_str():"",
-            (!stream_config.audio_timebase.is_null())?r_string_utils::format("audio_timebase='%d', ", stream_config.audio_timebase.value()).c_str():"",
-            "unixepoch()",
-            hash.c_str(),
-            stream_config.id.c_str()
-        );
+        auto stmt = conn.prepare("UPDATE cameras SET " + cols.assignments() + "last_update_time=unixepoch() WHERE id=?;");
+        auto next = cols.bind(stmt, 1);
+        stmt.bind(next, stream_config.id);
+        stmt.exec_no_result();
     }
-
-    return query;
 }
 
 r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) const
@@ -846,8 +884,7 @@ r_devices_cmd_result r_devices::_insert_or_update_devices(const r_db::r_sqlite_c
     r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
         for(auto& sc : stream_configs)
         {
-            auto q = _create_insert_or_update_query(conn, sc.first, sc.second);
-            conn.exec(q);
+            _insert_or_update_device(conn, sc.first, sc.second);
         }
     });
 
@@ -858,7 +895,7 @@ r_devices_cmd_result r_devices::_get_camera_by_id(const r_sqlite_conn& conn, con
 {
     r_devices_cmd_result result;
     r_sqlite_transaction(conn, false, [&](const r_sqlite_conn& conn){
-        auto qr = conn.exec("SELECT * FROM cameras WHERE id='" + id + "';");
+        auto qr = _select_camera(conn, id);
         if(!qr.empty())
             result.cameras.push_back(_create_camera(qr.front()));
     });
@@ -911,13 +948,12 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
     r_devices_cmd_result result;
 
     // Encrypt credentials before saving
-    // Only "TCP" or "UDP" reach the SQL below (it's formatted, not bound):
-    // anything else is stored as TCP, the default.
+    // Only "TCP" or "UDP" is stored: anything else is stored as TCP, the default.
     r_nullable<string> rtsp_transport;
     if(!camera.rtsp_transport.is_null())
         rtsp_transport.set_value(camera.rtsp_transport.value() == "UDP" ? string("UDP") : string("TCP"));
 
-    // Only a well-formed MAC reaches the SQL below (formatted, not bound).
+    // Only a well-formed MAC is stored.
     r_nullable<string> mac;
     if(!camera.mac.is_null())
         mac = r_utils::r_networking::r_normalize_mac(camera.mac.value());
@@ -942,118 +978,46 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
         }
     }
 
-    auto query = r_string_utils::format(
-            "REPLACE INTO cameras("
-                "id, %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%sstate, %s%s%s%s%s%s%s%s%s%s%slast_update_time, stream_config_hash) "
-            "VALUES("
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-                "%s"
-            ");",
-            (!camera.camera_name.is_null())?"camera_name, ":"",
-            (!camera.friendly_name.is_null())?"friendly_name, ":"",
-            (!camera.ipv4.is_null())?"ipv4, ":"",
-            (!camera.xaddrs.is_null())?"xaddrs, ":"",
-            (!camera.manufacturer.is_null())?"manufacturer, ":"",
-            (!camera.model.is_null())?"model, ":"",
-            (!camera.firmware_version.is_null())?"firmware_version, ":"",
-            (!camera.onvif_port.is_null())?"onvif_port, ":"",
-            (!camera.onvif_protocol.is_null())?"onvif_protocol, ":"",
-            (!camera.address.is_null())?"address, ":"",
-            (!camera.rtsp_url.is_null())?"rtsp_url, ":"",
-            (!camera.onvif_profile_token.is_null())?"onvif_profile_token, ":"",
-            (!camera.rtsp_username.is_null())?"rtsp_username, ":"",
-            (!camera.rtsp_password.is_null())?"rtsp_password, ":"",
-            (!camera.video_codec.is_null())?"video_codec, ":"",
-            (!camera.video_codec_parameters.is_null())?"video_codec_parameters, ":"",
-            (!camera.video_timebase.is_null())?"video_timebase, ":"",
-            (!camera.audio_codec.is_null())?"audio_codec, ":"",
-            (!camera.audio_codec_parameters.is_null())?"audio_codec_parameters, ":"",
-            (!camera.audio_timebase.is_null())?"audio_timebase, ":"",
-            (!camera.record_file_path.is_null())?"record_file_path, ":"",
-            (!camera.n_record_file_blocks.is_null())?"n_record_file_blocks, ":"",
-            (!camera.record_file_block_size.is_null())?"record_file_block_size, ":"",
-            (!camera.do_motion_detection.is_null())?"do_motion_detection, ":"",
-            (!camera.motion_detection_file_path.is_null())?"motion_detection_file_path, ":"",
-            (!camera.do_motion_pruning.is_null())?"do_motion_pruning, ":"",
-            (!camera.min_continuous_recording_hours.is_null())?"min_continuous_recording_hours, ":"",
-            (!camera.motion_tier.is_null())?"motion_tier, ":"",
-            (!camera.motion_tier_verified.is_null())?"motion_tier_verified, ":"",
-            (!rtsp_transport.is_null())?"rtsp_transport, ":"",
-            (!mac.is_null())?"mac, ":"",
-
-            r_string_utils::format("'%s', ", camera.id.c_str()).c_str(),
-            (!camera.camera_name.is_null())?r_string_utils::format("'%s', ", camera.camera_name.value().c_str()).c_str():"",
-            (!camera.friendly_name.is_null())?r_string_utils::format("'%s', ", camera.friendly_name.value().c_str()).c_str():"",
-            (!camera.ipv4.is_null())?r_string_utils::format("'%s', ", camera.ipv4.value().c_str()).c_str():"",
-            (!camera.xaddrs.is_null())?r_string_utils::format("'%s', ", camera.xaddrs.value().c_str()).c_str():"",
-            (!camera.manufacturer.is_null())?r_string_utils::format("'%s', ", camera.manufacturer.value().c_str()).c_str():"",
-            (!camera.model.is_null())?r_string_utils::format("'%s', ", camera.model.value().c_str()).c_str():"",
-            (!camera.firmware_version.is_null())?r_string_utils::format("'%s', ", camera.firmware_version.value().c_str()).c_str():"",
-            (!camera.onvif_port.is_null())?r_string_utils::format("%d, ", camera.onvif_port.value()).c_str():"",
-            (!camera.onvif_protocol.is_null())?r_string_utils::format("'%s', ", camera.onvif_protocol.value().c_str()).c_str():"",
-            (!camera.address.is_null())?r_string_utils::format("'%s', ", camera.address.value().c_str()).c_str():"",
-            (!camera.rtsp_url.is_null())?r_string_utils::format("'%s', ", camera.rtsp_url.value().c_str()).c_str():"",
-            (!camera.onvif_profile_token.is_null())?r_string_utils::format("'%s', ", camera.onvif_profile_token.value().c_str()).c_str():"",
-            (!encrypted_camera.rtsp_username.is_null())?r_string_utils::format("'%s', ", encrypted_camera.rtsp_username.value().c_str()).c_str():"",
-            (!encrypted_camera.rtsp_password.is_null())?r_string_utils::format("'%s', ", encrypted_camera.rtsp_password.value().c_str()).c_str():"",
-            (!camera.video_codec.is_null())?r_string_utils::format("'%s', ", camera.video_codec.value().c_str()).c_str():"",
-            (!camera.video_codec_parameters.is_null())?r_string_utils::format("'%s', ", camera.video_codec_parameters.value().c_str()).c_str():"",
-            (!camera.video_timebase.is_null())?r_string_utils::format("%d, ", camera.video_timebase.value()).c_str():"",
-            (!camera.audio_codec.is_null())?r_string_utils::format("'%s', ", camera.audio_codec.value().c_str()).c_str():"",
-            (!camera.audio_codec_parameters.is_null())?r_string_utils::format("'%s', ", camera.audio_codec_parameters.value().c_str()).c_str():"",
-            (!camera.audio_timebase.is_null())?r_string_utils::format("%d, ", camera.audio_timebase.value()).c_str():"",
-            r_string_utils::format("'%s', ", camera.state.c_str()).c_str(),
-            (!camera.record_file_path.is_null())?r_string_utils::format("'%s', ", camera.record_file_path.value().c_str()).c_str():"",
-            (!camera.n_record_file_blocks.is_null())?r_string_utils::format("%d, ", camera.n_record_file_blocks.value()).c_str():"",
-            (!camera.record_file_block_size.is_null())?r_string_utils::format("%d, ", camera.record_file_block_size.value()).c_str():"",
-            (!camera.do_motion_detection.is_null())?r_string_utils::format("%d, ", (camera.do_motion_detection.value()==true)?1:0).c_str():"",
-            (!camera.motion_detection_file_path.is_null())?r_string_utils::format("'%s', ", camera.motion_detection_file_path.value().c_str()).c_str():"",
-            (!camera.do_motion_pruning.is_null())?r_string_utils::format("%d, ", (camera.do_motion_pruning.value()==true)?1:0).c_str():"",
-            (!camera.min_continuous_recording_hours.is_null())?r_string_utils::format("%d, ", camera.min_continuous_recording_hours.value()).c_str():"",
-            (!camera.motion_tier.is_null())?r_string_utils::format("'%s', ", camera.motion_tier.value().c_str()).c_str():"",
-            (!camera.motion_tier_verified.is_null())?r_string_utils::format("%d, ", camera.motion_tier_verified.value()).c_str():"",
-            (!rtsp_transport.is_null())?r_string_utils::format("'%s', ", rtsp_transport.value().c_str()).c_str():"",
-            (!mac.is_null())?r_string_utils::format("'%s', ", mac.value().c_str()).c_str():"",
-
-            "unixepoch(), ",
-            r_string_utils::format("'%s'", hash.c_str()).c_str()
-        );
+    r_bound_columns cols;
+    cols.add("id", camera.id);
+    cols.add("camera_name", camera.camera_name);
+    cols.add("friendly_name", camera.friendly_name);
+    cols.add("ipv4", camera.ipv4);
+    cols.add("xaddrs", camera.xaddrs);
+    cols.add("manufacturer", camera.manufacturer);
+    cols.add("model", camera.model);
+    cols.add("firmware_version", camera.firmware_version);
+    cols.add("onvif_port", camera.onvif_port);
+    cols.add("onvif_protocol", camera.onvif_protocol);
+    cols.add("address", camera.address);
+    cols.add("rtsp_url", camera.rtsp_url);
+    cols.add("onvif_profile_token", camera.onvif_profile_token);
+    cols.add("rtsp_username", encrypted_camera.rtsp_username);
+    cols.add("rtsp_password", encrypted_camera.rtsp_password);
+    cols.add("video_codec", camera.video_codec);
+    cols.add("video_codec_parameters", camera.video_codec_parameters);
+    cols.add("video_timebase", camera.video_timebase);
+    cols.add("audio_codec", camera.audio_codec);
+    cols.add("audio_codec_parameters", camera.audio_codec_parameters);
+    cols.add("audio_timebase", camera.audio_timebase);
+    cols.add("state", camera.state);
+    cols.add("record_file_path", camera.record_file_path);
+    cols.add("n_record_file_blocks", camera.n_record_file_blocks);
+    cols.add("record_file_block_size", camera.record_file_block_size);
+    cols.add("do_motion_detection", camera.do_motion_detection);
+    cols.add("motion_detection_file_path", camera.motion_detection_file_path);
+    cols.add("do_motion_pruning", camera.do_motion_pruning);
+    cols.add("min_continuous_recording_hours", camera.min_continuous_recording_hours);
+    cols.add("motion_tier", camera.motion_tier);
+    cols.add("motion_tier_verified", camera.motion_tier_verified);
+    cols.add("rtsp_transport", rtsp_transport);
+    cols.add("mac", mac);
+    cols.add("stream_config_hash", hash);
 
     r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
-        conn.exec(query);
+        auto stmt = conn.prepare("REPLACE INTO cameras(" + cols.names() + "last_update_time) VALUES(" + cols.placeholders() + "unixepoch());");
+        cols.bind(stmt, 1);
+        stmt.exec_no_result();
         _save_substream(conn, camera);
     });
 
@@ -1097,7 +1061,9 @@ void r_devices::_save_substream(const r_sqlite_conn& conn, const r_camera& camer
 r_devices_cmd_result r_devices::_remove_camera(const r_sqlite_conn& conn, const r_camera& camera) const
 {
     r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
-        conn.exec("DELETE FROM cameras WHERE id='" + camera.id + "';");
+        auto stmt = conn.prepare("DELETE FROM cameras WHERE id=?;");
+        stmt.bind(1, camera.id);
+        stmt.exec_no_result();
     });
 
     return r_devices_cmd_result();
@@ -1109,13 +1075,10 @@ r_devices_cmd_result r_devices::_get_modified_cameras(const r_sqlite_conn& conn,
     r_sqlite_transaction(conn, false, [&](const r_sqlite_conn& conn){
         for(auto& c : cameras)
         {
-            auto query = r_string_utils::format(
-                "SELECT * FROM cameras WHERE id=\"%s\" AND stream_config_hash != \"%s\";",
-                c.id.c_str(),
-                c.stream_config_hash.c_str()
-            );
-
-            auto modified = conn.exec(query);
+            auto stmt = conn.prepare("SELECT * FROM cameras WHERE id=? AND stream_config_hash != ?;");
+            stmt.bind(1, c.id);
+            stmt.bind(2, c.stream_config_hash);
+            auto modified = stmt.exec();
             if(!modified.empty())
                 out_cameras.push_back(_create_camera(modified.front()));
         }
@@ -1144,7 +1107,7 @@ r_devices_cmd_result r_devices::_get_assigned_cameras_added(const r_sqlite_conn&
 
     for(auto added_id : added_ids)
     {
-        qr = conn.exec("SELECT * FROM cameras WHERE id='" + added_id + "';");
+        qr = _select_camera(conn, added_id);
         if(!qr.empty())
             result.cameras.push_back(_create_camera(qr.front()));
     }
@@ -1179,7 +1142,9 @@ r_devices_cmd_result r_devices::_get_credentials(const r_sqlite_conn& conn, cons
 {
     r_devices_cmd_result result;
     r_sqlite_transaction(conn, false, [&](const r_sqlite_conn& conn){
-        auto qr = conn.exec("SELECT rtsp_username, rtsp_password FROM cameras WHERE id='" + id + "';");
+        auto stmt = conn.prepare("SELECT rtsp_username, rtsp_password FROM cameras WHERE id=?;");
+        stmt.bind(1, id);
+        auto qr = stmt.exec();
         if(!qr.empty())
         {
             auto row = qr.front();

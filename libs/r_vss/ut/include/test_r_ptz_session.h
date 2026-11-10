@@ -33,6 +33,7 @@ public:
       TEST(test_r_ptz_session::test_flip_reboot);
       TEST(test_r_ptz_session::test_flip_extension_keeps_the_cameras_namespaces);
       TEST(test_r_ptz_session::test_flip_extension_added_where_missing);
+      TEST(test_r_ptz_session::test_flip_extension_depth_is_capped);
       TEST(test_r_ptz_session::test_shutdown_drops_pending_stops);
     RTF_FIXTURE_END();
 
@@ -69,5 +70,6 @@ public:
     void test_flip_reboot();
     void test_flip_extension_keeps_the_cameras_namespaces();
     void test_flip_extension_added_where_missing();
+    void test_flip_extension_depth_is_capped();
     void test_shutdown_drops_pending_stops();
 };

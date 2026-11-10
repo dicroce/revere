@@ -111,7 +111,7 @@ private:
     int _get_db_version(const r_db::r_sqlite_conn& conn) const;
     void _set_db_version(const r_db::r_sqlite_conn& conn, int version) const;
 
-    std::string _create_insert_or_update_query(const r_db::r_sqlite_conn& conn, const r_stream_config& stream_config, const std::string& hash) const;
+    void _insert_or_update_device(const r_db::r_sqlite_conn& conn, const r_stream_config& stream_config, const std::string& hash) const;
     r_camera _create_camera(const std::map<std::string, r_utils::r_nullable<std::string>>& row) const;
 
     r_devices_cmd_result _insert_or_update_devices(const r_db::r_sqlite_conn& conn, const std::vector<std::pair<r_stream_config, std::string>>& stream_configs) const;

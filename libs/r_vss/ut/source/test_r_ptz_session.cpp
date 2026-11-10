@@ -480,6 +480,16 @@ void test_r_ptz_session::test_timeout_read()
     RTF_ASSERT_EQUAL(ptz_timeout_ms("PT1H1M1.5S").value(), (int64_t)3661500);
     for(auto bad : {"", "PT", "PT0S", "1S", "PT1D", "PTxS", "P1S", "PT1S1M", "PT1.5H"})
         RTF_ASSERT(ptz_timeout_ms(bad).is_null());
+
+    // The bounds: a request's timeout is read as it came.
+    RTF_ASSERT_EQUAL(ptz_timeout_ms("PT24H").value(), PTZ_TIMEOUT_MAX_MS);
+    RTF_ASSERT_EQUAL(ptz_timeout_ms("PT0.001S").value(), (int64_t)1);
+    for(auto bad : {"PT24H0.001S", "PT25H", "PT1441M", "PT0.0001S", "PT99999999999999999999H"})
+        RTF_ASSERT(ptz_timeout_ms(bad).is_null());
+    // Too long to read at all: a run that overflowed stod (out_of_range), and one padded past the limit.
+    RTF_ASSERT(ptz_timeout_ms("PT" + string(400, '9') + "S").is_null());
+    RTF_ASSERT(ptz_timeout_ms("PT" + string(PTZ_TIMEOUT_MAX_CHARS, '0') + "1S").is_null());
+    RTF_ASSERT(ptz_timeout_ms("PT" + string(PTZ_TIMEOUT_MAX_CHARS - 4, '0') + "1S").value() == 1000);
 }
 
 void test_r_ptz_session::test_move_stopped_at_its_timeout()
@@ -772,4 +782,30 @@ void test_r_ptz_session::test_flip_extension_added_where_missing()
     // A Rotate without Mode gets it first; a Degree is set to 180 only when turned on.
     auto r = _flip_extension(_profile_head + "<ns2:Extension><ns2:Rotate><ns2:Degree>90</ns2:Degree></ns2:Rotate></ns2:Extension>" + _profile_tail, false);
     RTF_ASSERT(r.find("<ns2:Rotate><tt:Mode>OFF</tt:Mode><ns2:Degree>90</ns2:Degree></ns2:Rotate>") != string::npos);
+}
+
+namespace
+{
+// A profile whose Extension holds `levels` elements nested one in another, the innermost with text.
+string _nested_extension(int levels)
+{
+    string open, close;
+    for(int i = 0; i < levels; ++i)
+    {
+        open += "<ns2:Extension>";
+        close += "</ns2:Extension>";
+    }
+    return _profile_head + open + "x" + close + _profile_tail;
+}
+}
+
+void test_r_ptz_session::test_flip_extension_depth_is_capped()
+{
+    // The copy recurses once a level, and the XML is the camera's: 32 levels copy, 33 are refused.
+    auto ok = _flip_extension(_nested_extension(32), true);
+    RTF_ASSERT(ok.find("<tt:Mode>ON</tt:Mode>") != string::npos);
+    RTF_ASSERT(ok.find(">x</ns2:Extension>") != string::npos);
+    RTF_ASSERT_THROWS(_flip_extension(_nested_extension(33), true), std::runtime_error);
+    // Deep enough to run out of stack with no cap: refused the same way.
+    RTF_ASSERT_THROWS(_flip_extension(_nested_extension(200000), true), std::runtime_error);
 }

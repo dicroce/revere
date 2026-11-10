@@ -16,6 +16,7 @@ public:
       TEST(test_r_codec::test_hw_encoder_missing_encodes_in_software);
       TEST(test_r_codec::test_software_encoder_failure_still_throws);
       TEST(test_r_codec::test_hw_decode_failure_is_remembered);
+      TEST(test_r_codec::test_hw_failure_on_one_format_keeps_others_in_hardware);
     RTF_FIXTURE_END();
 
     virtual ~test_r_codec() throw() {}
@@ -34,4 +35,5 @@ public:
     void test_hw_encoder_missing_encodes_in_software();
     void test_software_encoder_failure_still_throws();
     void test_hw_decode_failure_is_remembered();
+    void test_hw_failure_on_one_format_keeps_others_in_hardware();
 };

@@ -222,8 +222,13 @@ private:
     bool _ptz_stopper_done {false};
 };
 
+// The longest ContinuousMove Timeout taken, and its longest text.
+constexpr int64_t PTZ_TIMEOUT_MAX_MS = 24LL * 60 * 60 * 1000;
+constexpr size_t PTZ_TIMEOUT_MAX_CHARS = 32;
+
 // A ContinuousMove Timeout ("PT1S", "PT1.5S", "PT1M2S", "PT1H") in milliseconds; null
-// for an empty or unreadable one, or zero.
+// for an empty or unreadable one, one under a millisecond or over PTZ_TIMEOUT_MAX_MS,
+// or one longer than PTZ_TIMEOUT_MAX_CHARS.
 R_API r_utils::r_nullable<int64_t> ptz_timeout_ms(const std::string& timeout);
 
 }

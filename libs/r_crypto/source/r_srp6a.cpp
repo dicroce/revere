@@ -186,6 +186,19 @@ static unique_ptr<r_srp6a_server::state> _new_state(
     return s;
 }
 
+// The random b and a known-answer test's b pass the same check, so a short
+// draw throws rather than quietly weakening every exchange.
+static const size_t B_BYTES = 32;
+
+static void _set_b(r_srp6a_server::state& s, const vector<uint8_t>& b)
+{
+    if(b.size() < B_BYTES)
+        R_STHROW(r_invalid_argument_exception, ("An SRP b is at least %zu bytes, not %zu.", B_BYTES, b.size()));
+    MPI_CHECK(mbedtls_mpi_read_binary(&s.b.v, b.data(), b.size()));
+    if(mbedtls_mpi_cmp_int(&s.b.v, 0) == 0 || mbedtls_mpi_cmp_mpi(&s.b.v, &s.group.N.v) >= 0)
+        R_STHROW(r_invalid_argument_exception, ("An SRP b must be above 0 and below N."));
+}
+
 r_srp6a_server::r_srp6a_server(
     r_srp6a_group group,
     r_srp6a_hash hash,
@@ -197,8 +210,8 @@ r_srp6a_server::r_srp6a_server(
 {
     do
     {
-        auto b = random_bytes(32);
-        MPI_CHECK(mbedtls_mpi_read_binary(&_state->b.v, b.data(), b.size()));
+        auto b = random_bytes(B_BYTES);
+        _set_b(*_state, b);
         wipe(b);
         _make_B(*_state);
     } while(_state->B[0] == 0);
@@ -219,11 +232,7 @@ unique_ptr<r_srp6a_server> r_srp6a_server::for_known_answer_test(
 )
 {
     auto s = _new_state(group, hash, username, salt, verifier);
-    if(b.size() < 32)
-        R_STHROW(r_invalid_argument_exception, ("An SRP b is at least 32 bytes, not %zu.", b.size()));
-    MPI_CHECK(mbedtls_mpi_read_binary(&s->b.v, b.data(), b.size()));
-    if(mbedtls_mpi_cmp_int(&s->b.v, 0) == 0 || mbedtls_mpi_cmp_mpi(&s->b.v, &s->group.N.v) >= 0)
-        R_STHROW(r_invalid_argument_exception, ("An SRP b must be above 0 and below N."));
+    _set_b(*s, b);
     _make_B(*s);
     return unique_ptr<r_srp6a_server>(new r_srp6a_server(std::move(s)));
 }
