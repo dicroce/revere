@@ -29,11 +29,16 @@ enum class r_hw_accel
 // backend that can decode codec_id, or r_hw_accel::none for software fallback.
 R_API r_hw_accel r_find_best_hw_accel(AVCodecID codec_id);
 
-// A decoder found that r_find_best_hw_accel's choice can't decode codec_id after
-// all: the device opened, but the driver refused the stream (e.g. a VAAPI driver
-// without H.264). From now on r_find_best_hw_accel returns none for codec_id, so
-// later decoders start in software instead of failing the same way.
-R_API void r_hw_accel_decode_failed(AVCodecID codec_id);
+// A decoder found that its hardware can't decode its stream after all: the device
+// opened, but the driver refused the stream's format (a VAAPI driver without H.264,
+// or without this profile or chroma format). It is remembered for that format only
+// (codec, profile and software pixel format): a later stream in the same format
+// decodes in software from the start instead of failing the same way, while other
+// formats, and so other cameras, keep the hardware. r_find_best_hw_accel is unchanged.
+R_API void r_hw_accel_format_failed(AVCodecID codec_id, int profile, AVPixelFormat sw_pix_fmt);
+
+// True once r_hw_accel_format_failed has been called for this format.
+R_API bool r_hw_accel_format_failed_before(AVCodecID codec_id, int profile, AVPixelFormat sw_pix_fmt);
 
 // Probes available hardware encoders and returns the best backend, or none.
 // Note: D3D11VA is decode-only and is never returned by this function.

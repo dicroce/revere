@@ -18,6 +18,7 @@
 #include "r_utils/r_qr_code.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_disco/r_camera.h"
+#include "r_disco/providers/r_onvif_provider.h"
 #include "r_storage/r_storage_file.h"
 #include "r_storage/r_storage_file_reader.h"
 #include "r_storage/r_ring.h"
@@ -3371,6 +3372,9 @@ r_http::r_server_response r_ws::_post_ptz(r_utils::r_socket_base&, const r_http:
             cmd.tilt = req.value("tilt", 0.0f);
             cmd.zoom = req.value("zoom", 0.0f);
             cmd.timeout = req.value("timeout", string());
+            // Sent to the camera as is, and read for Revere's own Stop: only a duration it can read.
+            if(!cmd.timeout.empty() && r_disco::ptz_timeout_ms(cmd.timeout).is_null())
+                return failure(response_bad_request, "bad_request", "timeout must be an ONVIF duration from PT0.001S to PT24H, such as PT1S.");
         }
         else if(action == "stop")
             cmd.op = r_disco::r_ptz_command::op_t::stop;

@@ -997,6 +997,28 @@ string r_vss::r_failure_reason(const string& what)
     // the URL is dropped, and a secret passed in the query (password=..., token=...) is hidden.
     static const regex url(R"([A-Za-z][A-Za-z0-9+.\-]*://\S+)");
     static const regex credentials(R"(^([A-Za-z][A-Za-z0-9+.\-]*://)\S*@)");
+    // "user:pass@" can hold a space too ("rtsp://admin:my pass@cam/"), which ends the URL pattern above part way
+    // through the password. So first, for each "scheme://", everything up to the last "@" before the next one (or
+    // the end) goes. That may take more than the credentials when the text has an "@" after the URL; it never
+    // leaves part of them.
+    {
+        static const regex scheme(R"([A-Za-z][A-Za-z0-9+.\-]*://)");
+        vector<pair<size_t, size_t>> schemes; // where each starts, and where its userinfo would start
+        for(auto it = sregex_iterator(reason.begin(), reason.end(), scheme); it != sregex_iterator(); ++it)
+            schemes.push_back({(size_t)it->position(), (size_t)(it->position() + it->length())});
+        string without;
+        size_t at = 0;
+        for(size_t i = 0; i < schemes.size(); ++i)
+        {
+            auto from = schemes[i].second;
+            auto to = (i + 1 < schemes.size()) ? schemes[i + 1].first : reason.size();
+            auto last_at = (to > from) ? reason.rfind('@', to - 1) : string::npos;
+            without.append(reason, at, from - at);
+            at = (last_at != string::npos && last_at >= from) ? last_at + 1 : from;
+        }
+        without.append(reason, at, string::npos);
+        reason = without;
+    }
     static const regex secret(R"(([?&;,\s]|^)(pass(?:word|wd)?|pwd|token|secret|(?:api_?)?key)=[^&\s]*)", regex::icase);
     vector<string> urls;
     {

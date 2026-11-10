@@ -338,17 +338,24 @@ void r_video_decoder::set_extradata(const vector<uint8_t>& ed)
 AVPixelFormat r_video_decoder::_get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts)
 {
     auto* target = static_cast<AVPixelFormat*>(ctx->opaque);
-    for(const AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p)
-        if(*p == *target)
-            return *p;
+
+    // A format the hardware already failed on (FFmpeg has set the stream's profile and software format by now)
+    // goes straight to software, without failing the same way again.
+    bool failed_before = *target != AV_PIX_FMT_NONE && r_hw_accel_format_failed_before(ctx->codec_id, ctx->profile, ctx->sw_pix_fmt);
+    if(!failed_before)
+        for(const AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p)
+            if(*p == *target)
+                return *p;
 
     // The hardware format isn't offered: FFmpeg calls again without it when the
-    // hwaccel failed to set up (a VAAPI driver that opens but has no H.264, say).
-    // Take a software format so this stream keeps decoding (get() handles
-    // software frames), and stop later decoders trying the same hardware.
+    // hwaccel failed to set up (a VAAPI driver that opens but has no H.264, or
+    // not this profile or chroma format). Take a software format so this stream
+    // keeps decoding (get() handles software frames), and remember the format, so
+    // later streams in it start in software. Other formats keep the hardware.
     if(*target != AV_PIX_FMT_NONE)
     {
-        r_hw_accel_decode_failed(ctx->codec_id);
+        if(!failed_before)
+            r_hw_accel_format_failed(ctx->codec_id, ctx->profile, ctx->sw_pix_fmt);
         *target = AV_PIX_FMT_NONE;
     }
     for(const AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p)
