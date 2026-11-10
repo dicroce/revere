@@ -52,12 +52,14 @@ jobs:
             asset: macos           # revere-<ver>-macos-app.dmg, as before
             brew_version: ''       # current Homebrew
             brew_core_pin: ''
+            extra_brew: ''
           - arch: x86_64
             runner: macos-15-intel
             min_macos: '14.0'
             asset: macos-intel     # revere-<ver>-macos-intel-app.dmg
             brew_version: '6.0.17'                                       # 11 Aug 2026
             brew_core_pin: 'fbb6990e8a9d2d0409e14eb9d0c6d728ddf4b1ab'   # homebrew-core, 14 Aug 2026
+            extra_brew: 'nasm'     # FFmpeg's x86 assembly
     runs-on: ${{ matrix.runner }}
     env:
       # Read by clang and by FFmpeg's configure: the oldest macOS the binaries run on.
@@ -139,7 +141,8 @@ jobs:
             opencv \
             gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad \
             glfw sqlite ncnn \
-            openh264 webp opus
+            openh264 webp opus \
+            ${{ matrix.extra_brew }}
           # Homebrew's opencv and gstreamer still pull in its ffmpeg, a GPL build
           # (x264/x265). Unlink it so its headers, libs and .pc files leave the
           # Homebrew prefix: nothing can build or link against it by accident.
