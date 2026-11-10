@@ -11,6 +11,7 @@ public:
       TEST(test_r_transcoder_repro::test_quiet_audio_does_not_hold_video);
       TEST(test_r_transcoder_repro::test_g711_as_aac_over_srt);
       TEST(test_r_transcoder_repro::test_writes_return_once_the_output_fails);
+      TEST(test_r_transcoder_repro::test_aac_repeated_as_is_is_dropped);
     RTF_FIXTURE_END();
 
     virtual ~test_r_transcoder_repro() throw() {}
@@ -24,4 +25,5 @@ public:
     void test_quiet_audio_does_not_hold_video();
     void test_g711_as_aac_over_srt();
     void test_writes_return_once_the_output_fails();
+    void test_aac_repeated_as_is_is_dropped();
 };
