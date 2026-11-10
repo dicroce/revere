@@ -2823,7 +2823,9 @@ int main(int argc, char** argv)
     }
 #endif
 #if defined(IS_LINUX) || defined(IS_MACOS)
-    int lock_fd = open(lock_file_path.c_str(), O_CREAT | O_RDWR, 0600);
+    // O_CLOEXEC: a program Revere starts (the browser, Vision) must not inherit the
+    // lock, or Revere can't start again until that program exits.
+    int lock_fd = open(lock_file_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
     if (lock_fd >= 0 && flock(lock_fd, LOCK_EX | LOCK_NB) != 0)
     {
         fprintf(stderr, "Revere is already running.\n");

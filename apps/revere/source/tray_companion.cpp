@@ -85,7 +85,8 @@ public:
         _acquired = _mutex && GetLastError() != ERROR_ALREADY_EXISTS;
 #else
         auto path = top_dir + PATH_SLASH + "revere-tray.lock";
-        _fd = open(path.c_str(), O_CREAT | O_RDWR, 0600);
+        // O_CLOEXEC: the browser Open web UI starts must not inherit the lock.
+        _fd = open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
         _acquired = _fd >= 0 && flock(_fd, LOCK_EX | LOCK_NB) == 0;
 #endif
     }
