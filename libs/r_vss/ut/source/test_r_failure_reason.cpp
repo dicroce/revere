@@ -40,6 +40,16 @@ void test_r_failure_reason::test_url_credentials_removed()
     RTF_ASSERT(r_failure_reason("rtsp://admin:secret@10.0.0.5:554/h264 refused") == "rtsp://10.0.0.5:554/h264 refused");
     RTF_ASSERT(r_failure_reason("Failed to open rtsp://admin:p@ss/w:rd@cam.local/stream1.") == "Failed to open rtsp://cam.local/stream1.");
     RTF_ASSERT(r_failure_reason("http://user@host/x") == "http://host/x");
+    // A space in the password ended the URL part way through it: none of it is left.
+    RTF_ASSERT(r_failure_reason("rtsp://admin:my pass@10.0.0.5:554/h264 refused") == "rtsp://10.0.0.5:554/h264 refused");
+    RTF_ASSERT(r_failure_reason("Failed to open rtsp://ad min:p w@cam.local/s1 and rtsp://u:v x@cam2/s2.") ==
+               "Failed to open rtsp://cam.local/s1 and rtsp://cam2/s2.");
+    {
+        auto r = r_failure_reason("connect rtsp://john smith:hunter 2 x@10.0.0.9/live failed");
+        RTF_ASSERT(r.find("john") == string::npos);
+        RTF_ASSERT(r.find("hunter") == string::npos);
+        RTF_ASSERT(r == "connect rtsp://10.0.0.9/live failed");
+    }
     // A secret in the query, or written as name=value.
     RTF_ASSERT(r_failure_reason("GET http://cam/api?user=a&password=hunter2&x=1 failed") == "GET http://cam/api?user=a&password=***&x=1 failed");
     RTF_ASSERT(r_failure_reason("login failed, pwd=hunter2 for cam") == "login failed, pwd=*** for cam");

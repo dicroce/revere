@@ -2306,10 +2306,17 @@ static string _namespace_at(pugi::xml_node n, const string& prefix)
     return string();
 }
 
+// How deep the camera's Extension may nest. A real one is a few levels (Rotate, Mode, Degree); the copy recurses
+// once a level, and the XML comes from the camera.
+static const int COPY_ELEMENT_MAX_DEPTH = 32;
+
 // src copied under dest_parent, elements, attributes and text, each prefix it uses declared on the copy where the
-// destination doesn't already bind it to the same namespace: the camera's XML can use its own prefixes.
-static pugi::xml_node _copy_element(pugi::xml_node src, pugi::xml_node dest_parent)
+// destination doesn't already bind it to the same namespace: the camera's XML can use its own prefixes. Throws
+// for XML nested deeper than COPY_ELEMENT_MAX_DEPTH.
+static pugi::xml_node _copy_element(pugi::xml_node src, pugi::xml_node dest_parent, int depth = 0)
 {
+    if (depth >= COPY_ELEMENT_MAX_DEPTH)
+        throw std::runtime_error("The camera's profile is nested too deeply to copy");
     auto out = dest_parent.append_child(src.name());
     auto declare = [&](const string& prefix) {
         if (prefix == "xml" || prefix == "xmlns")
@@ -2333,7 +2340,7 @@ static pugi::xml_node _copy_element(pugi::xml_node src, pugi::xml_node dest_pare
     for (auto child : src.children())
     {
         if (child.type() == pugi::node_element)
-            _copy_element(child, out);
+            _copy_element(child, out, depth + 1);
         else if (child.type() == pugi::node_pcdata || child.type() == pugi::node_cdata)
             out.append_child(pugi::node_pcdata).set_value(child.value());
     }
