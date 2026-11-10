@@ -14,8 +14,9 @@ name: Build & Release macOS
 # the minimum macOS and architecture" fails the build if anything bundled needs
 # a newer one, so the minimum is the one stated here, not the runner's.
 #
-# The minimum can't be below what the Homebrew bottles were built for: arm64
-# bottles on macos-15 are Sequoia's (15). Homebrew bottles only its three newest
+# The minimum can't be below what the Homebrew libraries were built for: arm64
+# bottles on macos-15 are Sequoia's (15), and so are the formulae already on
+# the macos-15-intel image, which the Intel build keeps: both are 15. Homebrew bottles only its three newest
 # supported macOS versions; on an older runner it compiles every updated formula
 # (llvm, vtk, opencv, ...) and the job hits the 6-hour limit in brew install, as
 # macos-14 did from v0.0.30 on.
@@ -55,7 +56,7 @@ jobs:
             extra_brew: ''
           - arch: x86_64
             runner: macos-15-intel
-            min_macos: '14.0'
+            min_macos: '15.0'      # the runner image's own formulae (pcre2, gcc, xz, spirv-tools) are Sequoia's
             asset: macos-intel     # revere-<ver>-macos-intel-app.dmg
             brew_version: '6.0.17'                                       # 11 Aug 2026
             brew_core_pin: 'fbb6990e8a9d2d0409e14eb9d0c6d728ddf4b1ab'   # homebrew-core, 14 Aug 2026
