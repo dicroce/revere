@@ -2803,6 +2803,22 @@ int main(int argc, char** argv)
 #endif
     }
 
+#ifdef IS_LINUX
+    // The desktop app needs a desktop session. Without one GTK can't start, the
+    // tray icon's constructor throws, and Revere used to end there with an abort
+    // and a core dump. Say what's wrong instead, before the lock is taken or
+    // anything is started. (GTK is initialized here rather than by the tray icon
+    // a little later; the tray's own call then does nothing.)
+    if(!r_args::check_argument(args, "--headless") && gtk_init_check(nullptr, nullptr) != TRUE)
+    {
+        fprintf(stderr,
+                "Revere's desktop app needs a desktop session and couldn't connect to one\n"
+                "(check that WAYLAND_DISPLAY or DISPLAY is set in this terminal).\n"
+                "To run Revere without a desktop, use: revere --headless\n");
+        return 1;
+    }
+#endif
+
     // Single instance check: prevent multiple revere processes from running
 #ifdef IS_WINDOWS
     HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\RevereAppMutex");
@@ -3162,30 +3178,46 @@ int main(int argc, char** argv)
 
     R_LOG_INFO("icon_path=%s\n",icon_path.c_str());
 
-    Tray::Tray tray("Revere", icon_path);
-    tray.setTooltip("Revere video surveillance");
-    tray.addEntry(Tray::Button("Show", [&]{
-        SDL_ShowWindow(window);
-        SDL_RaiseWindow(window);
-    }));
-    tray.addEntry(Tray::Button("Hide", [&]{
-        SDL_HideWindow(window);
-    }));
-    tray.addEntry(Tray::Button("Launch Vision", [&]{
+    // No tray icon is not a reason to end Revere (the constructor throws when the
+    // desktop has nowhere to put one). Without it the window is the only way back
+    // in, so it is never hidden: closing it quits, and Minimize minimizes.
+    std::unique_ptr<Tray::Tray> tray;
+    try
+    {
+        tray = std::make_unique<Tray::Tray>("Revere", icon_path);
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("No system tray icon: %s. Closing the window will quit Revere.", e.what());
+    }
+    if(tray)
+    {
+        tray->setTooltip("Revere video surveillance");
+        tray->addEntry(Tray::Button("Show", [&]{
+            SDL_ShowWindow(window);
+            SDL_RaiseWindow(window);
+        }));
+        tray->addEntry(Tray::Button("Hide", [&]{
+            SDL_HideWindow(window);
+        }));
+        tray->addEntry(Tray::Button("Launch Vision", [&]{
 #ifdef IS_MACOS
-        _launch_vision({});
+            _launch_vision({});
 #else
-        if(!vision_process.running())
-            vision_process.start();
+            if(!vision_process.running())
+                vision_process.start();
 #endif
-    }));
-    tray.addEntry(Tray::Button("Open local web UI", [&]{
-        revere::open_url_in_browser("http://localhost:8088");
-    }));
-    tray.addEntry(Tray::Separator());
-    tray.addEntry(Tray::Button("Exit", [&]{
-        close_requested = true;
-    }));
+        }));
+        tray->addEntry(Tray::Button("Open local web UI", [&]{
+            // Called from the tray's own callback, which an exception can't unwind through.
+            try { revere::open_url_in_browser("http://localhost:8088"); }
+            catch(const std::exception& e) { R_LOG_ERROR("Could not open the web UI: %s", e.what()); }
+        }));
+        tray->addEntry(Tray::Separator());
+        tray->addEntry(Tray::Button("Exit", [&]{
+            close_requested = true;
+        }));
+    }
 
     // Configure Dear ImGui (context already created earlier)
     ImGuiIO& io = ImGui::GetIO(); (void)io;
@@ -3296,6 +3328,8 @@ int main(int argc, char** argv)
     revere::main_window_state main_window_state;
     if(!cfg_state.load_problem().empty())
         main_window_state.show_toast(cfg_state.load_problem(), "config_load_problem", 30.0);
+    if(!tray)
+        main_window_state.show_toast("Revere couldn't add its system tray icon, so it can't run in the background: closing this window quits Revere and stops recording.", std::string(), 30.0);
     // Sections the user closed stay closed across runs; the default is open.
     main_window_state.recording_open = cfg_state.get_section_open("recording", main_window_state.recording_open);
     main_window_state.discovered_open = cfg_state.get_section_open("discovered", main_window_state.discovered_open);
@@ -3535,8 +3569,13 @@ int main(int argc, char** argv)
                     if (event.window.event == SDL_WINDOWEVENT_CLOSE &&
                         event.window.windowID == SDL_GetWindowID(window))
                     {
-                        user_close_handled = true;
-                        ui_state.minimize_requested = true;
+                        if(tray)
+                        {
+                            user_close_handled = true;
+                            ui_state.minimize_requested = true;
+                        }
+                        else
+                            close_requested = true;     // nothing to bring a hidden window back
                     }
                     if (event.window.event == SDL_WINDOWEVENT_SHOWN)
                     {
@@ -3592,7 +3631,8 @@ int main(int argc, char** argv)
             } while (SDL_PollEvent(&event));
         }
 
-        tray.pump();
+        if(tray)
+            tray->pump();
 
         // Check for external shutdown signals (from --quit / installer)
 #ifdef IS_WINDOWS
@@ -3611,8 +3651,18 @@ int main(int argc, char** argv)
         if(maybe_start_minimized)
         {
             maybe_start_minimized = false;
-            SDL_HideWindow(window);
-            window_visible = false;
+            if(tray)
+            {
+                SDL_HideWindow(window);
+                window_visible = false;
+            }
+            else
+            {
+                // Created hidden for the tray; without one, minimized is as far out of the way as it can go.
+                SDL_ShowWindow(window);
+                SDL_MinimizeWindow(window);
+                window_visible = true;
+            }
         }
 
         if(placement_changed && chrono::steady_clock::now() - placement_changed_at >= placement_debounce)
@@ -3823,9 +3873,14 @@ int main(int argc, char** argv)
         if(ui_state.minimize_requested)
         {
             ui_state.minimize_requested = false;
-            tray_notice_pending = !_notice_dismissed("minimized_to_tray");
-            SDL_HideWindow(window);
-            window_visible = false;
+            if(tray)
+            {
+                tray_notice_pending = !_notice_dismissed("minimized_to_tray");
+                SDL_HideWindow(window);
+                window_visible = false;
+            }
+            else
+                SDL_MinimizeWindow(window);
         }
 
         ImGui::Render();
@@ -3849,7 +3904,8 @@ int main(int argc, char** argv)
     if(cfg_state.need_save())
         cfg_state.save();
 
-    tray.exit();
+    if(tray)
+        tray->exit();
 
     // Cleanup — order matters:
     // 1. Stop background workers first so they stop touching SDL textures
