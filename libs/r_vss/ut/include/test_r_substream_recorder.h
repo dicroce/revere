@@ -6,6 +6,7 @@ public:
     RTF_FIXTURE(test_r_substream_recorder);
       TEST(test_r_substream_recorder::test_ring_path);
       TEST(test_r_substream_recorder::test_next_step);
+      TEST(test_r_substream_recorder::test_off_for_the_computer_means_not_in_use);
       TEST(test_r_substream_recorder::test_records_into_its_ring);
       TEST(test_r_substream_recorder::test_no_camera);
       TEST(test_r_substream_recorder::test_posts_to_the_frame_feeds);
@@ -32,6 +33,7 @@ public:
 
     void test_ring_path();
     void test_next_step();
+    void test_off_for_the_computer_means_not_in_use();
     void test_records_into_its_ring();
     void test_no_camera();
     void test_posts_to_the_frame_feeds();

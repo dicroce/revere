@@ -125,6 +125,12 @@ private:
     std::map<std::string, state> _cameras;
 };
 
+// Whether a camera's substream is in use: smaller streams are on for this computer (Settings; off until turned on)
+// and the camera has one chosen (sub_mode on) and found (sub_status "ok"). Everything that reads a substream asks this.
+R_API bool substream_in_use(const r_disco::r_camera& camera, bool computer_on);
+// Whether a recorder should run for it: in use, with an address to read and a recording path to keep the ring by.
+R_API bool substream_wanted(const r_disco::r_camera& camera, bool computer_on);
+
 // What r_stream_keeper does about a camera's substream recorder on a pass.
 enum class substream_step { none, start, stop };
 

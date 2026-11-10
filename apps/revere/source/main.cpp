@@ -3559,6 +3559,7 @@ int main(int argc, char** argv)
                 std::lock_guard<std::mutex> g(streams.m);
                 gen = ++streams.generation;
                 streams.onvif = !camera.xaddrs.is_null() && !camera.ipv4.is_null();
+                streams.gateway_on = streamKeeper.substreams_enabled();
                 ask = streams.onvif;
                 streams.recording.clear();
                 if(!camera.video_codec.is_null() && !camera.video_codec_parameters.is_null())
@@ -3935,6 +3936,12 @@ int main(int argc, char** argv)
             },
             [&](){
                 camera_setup_wizard.next("about_revere");
+            },
+            [&]() -> bool {
+                return streamKeeper.substreams_enabled();
+            },
+            [&](bool enabled){
+                streamKeeper.set_substreams_enabled(enabled);
             }
         );
         revere::main_window_view_menu(main_window_state);

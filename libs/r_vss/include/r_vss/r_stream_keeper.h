@@ -17,6 +17,7 @@
 #include "r_vss/r_rtsp_transport.h"
 #include "r_vss/r_lag_watchdog.h"
 #include "r_vss/r_keep_awake.h"
+#include "r_vss/r_substream_setting.h"
 #include "r_vss/r_teardown_queue.h"
 #include "r_vss/r_frame_tap.h"
 #include "r_vss/r_substream_recorder.h"
@@ -342,6 +343,11 @@ public:
     // "Keep this computer awake": the setting, the OS request and power events.
     R_API r_keep_awake& keep_awake() { return _keep_awake; }
 
+    // Whether this computer uses its cameras' smaller streams at all (off until turned on in Settings; see
+    // r_substream_setting). Off, nothing records or serves a smaller stream and every consumer uses main.
+    R_API bool substreams_enabled() const { return _substream_setting.enabled(); }
+    R_API void set_substreams_enabled(bool enabled) { _substream_setting.set_enabled(enabled); }
+
     // Live restreaming state management (owned by r_stream_keeper for safe cleanup)
     R_API void add_live_restreaming_state(GstRTSPMedia* media, std::shared_ptr<live_restreaming_state> lrs) override;
     R_API void remove_live_restreaming_state(GstRTSPMedia* media) override;
@@ -466,6 +472,7 @@ private:
     r_motion_engine _motionEngine;
     r_system_plugin_host _system_plugin_host;
     r_keep_awake _keep_awake;
+    r_substream_setting _substream_setting;
     r_ws _ws;
     r_prune _prune;
 

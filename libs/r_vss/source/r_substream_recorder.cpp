@@ -58,6 +58,16 @@ string r_vss::view_mount_path(const string& label, const string& main_mount, con
     return "/" + name;
 }
 
+bool r_vss::substream_in_use(const r_camera& camera, bool computer_on)
+{
+    return computer_on && r_disco::substream_on(camera) && !camera.sub_status.is_null() && camera.sub_status.value() == "ok";
+}
+
+bool r_vss::substream_wanted(const r_camera& camera, bool computer_on)
+{
+    return substream_in_use(camera, computer_on) && !camera.sub_rtsp_url.is_null() && !camera.record_file_path.is_null();
+}
+
 string r_vss::substream_mount_path(const r_camera& camera)
 {
     // As the main mount is named (r_stream_keeper::add_restream_mount): the friendly name, spaces as underscores.

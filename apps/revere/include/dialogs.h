@@ -474,7 +474,7 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
 {
     using namespace r_ui_utils::theme;
 
-    bool onvif, loading, working;
+    bool onvif, loading, working, gateway_on;
     std::string recording;
     std::vector<streams_state::candidate> candidates;
     r_disco::r_camera sub;
@@ -483,6 +483,7 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
         onvif = streams.onvif;
         loading = streams.loading;
         working = streams.working;
+        gateway_on = streams.gateway_on;
         recording = streams.recording;
         candidates = streams.candidates;
         sub = streams.sub;
@@ -565,7 +566,9 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
     // What each part is doing now, so a smaller stream doesn't read as the recording having shrunk.
     d.gap(2.0f);
     d.body("Recording: full quality" + (recording.empty() ? std::string() : ", " + recording));
-    if(on)
+    if(on && !gateway_on)
+        d.body("Live view and analysis: recording stream. Smaller streams are off for this computer: turn them on in Settings.");
+    else if(on)
         d.body("Live view and analysis: smaller stream" + (r_disco::substream_title(sub).empty() ? std::string() : ", " + r_disco::substream_title(sub)));
     else
         d.body("Live view and analysis: recording stream");

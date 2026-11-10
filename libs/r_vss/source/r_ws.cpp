@@ -505,7 +505,7 @@ r_http::r_server_response r_ws::_get_jpg(r_utils::r_socket_base&, const r_http::
                 {
                     auto sub_kf = _stream_keeper.latest_substream_key_frame(args["camera_id"]);
                     auto maybe_camera = sub_kf.is_null() ? r_nullable<r_disco::r_camera>() : _devices.get_camera_by_id(args["camera_id"]);
-                    if(!maybe_camera.is_null() && r_disco::substream_on(maybe_camera.value()))
+                    if(!maybe_camera.is_null() && _stream_keeper.substreams_enabled() && r_disco::substream_on(maybe_camera.value()))
                     {
                         const auto& cam = maybe_camera.value();
                         auto main_size = (cam.video_codec.is_null() || cam.video_codec_parameters.is_null()) ?
@@ -940,7 +940,7 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     {"onvif_protocol", (c.onvif_protocol.is_null())?"":c.onvif_protocol.value()},
                     // The substream (r_camera::sub_*): sub_mode "on" or "off", sub_status "ok",
                     // "pending" or "none:<reason>"; "" / 0 when unknown.
-                    {"sub_mode", r_disco::substream_on(c)?"on":"off"},
+                    {"sub_mode", (_stream_keeper.substreams_enabled() && r_disco::substream_on(c))?"on":"off"},
                     {"sub_status", (c.sub_status.is_null())?"":c.sub_status.value()},
                     {"sub_profile", (c.sub_onvif_profile_token.is_null())?"":c.sub_onvif_profile_token.value()},
                     {"sub_codec", (c.sub_video_codec.is_null())?"":c.sub_video_codec.value()},
@@ -1570,7 +1570,12 @@ r_http::r_server_response r_ws::_get_video(r_utils::r_socket_base&, const r_http
         if(args.find("stream") != args.end())
         {
             if(args["stream"] == "sub")
+            {
+                // Smaller streams are off for this computer until they're turned on in Settings: nothing is recorded.
+                if(!_stream_keeper.substreams_enabled())
+                    throw r_utils::r_not_found_exception("Smaller streams are off.");
                 substream = true;
+            }
             else if(args["stream"] != "main")
                 R_THROW(("Unknown stream: %s", args["stream"].c_str()));
         }

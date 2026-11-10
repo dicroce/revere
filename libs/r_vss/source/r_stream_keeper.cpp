@@ -77,6 +77,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
     ),
     _system_plugin_host(top_dir),
     _keep_awake(top_dir),
+    _substream_setting(top_dir),
     _ws(top_dir, _devices, _agent, *this),
     _prune(_top_dir, _devices)
 {
@@ -1616,8 +1617,7 @@ void r_stream_keeper::_tend_substreams()
         auto& cam = c.camera;
         // This is the context's copy of the camera, as old as the context: a give-up saved to the camera is held off
         // by the governor until the context is replaced.
-        bool wanted = r_disco::substream_on(cam) && !cam.sub_status.is_null() && cam.sub_status.value() == "ok" &&
-                      !cam.sub_rtsp_url.is_null() && !cam.record_file_path.is_null();
+        bool wanted = substream_wanted(cam, substreams_enabled());
         auto running = _substreams.find(id);
         const bool is_running = running != _substreams.end();
 
@@ -1677,7 +1677,7 @@ void r_stream_keeper::_tend_substreams()
             const bool have_rec = sub_rec != _substreams.end();
             motion_source_inputs mi;
             mi.sub_analysis = !cam.sub_analysis.is_null() && cam.sub_analysis.value() != 0;
-            mi.sub_in_use = r_disco::substream_on(cam) && !cam.sub_status.is_null() && cam.sub_status.value() == "ok";
+            mi.sub_in_use = substream_in_use(cam, substreams_enabled());
             mi.sub_fresh = have_rec && sub_rec->second->fresh();
             mi.do_motion = !cam.do_motion_detection.is_null() && cam.do_motion_detection.value();
             mi.tier_1 = motion_tier(id) == motion_tier_1;

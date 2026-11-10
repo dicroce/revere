@@ -17,6 +17,7 @@
 #include "r_utils/r_file.h"
 #include "r_utils/r_string_utils.h"
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <thread>
 
@@ -835,4 +836,30 @@ void test_r_substream_recorder::test_feeds_motion_key_frames_only_when_told()
     RTF_ASSERT(posted >= 2 && posted <= 5);                // ~40 frames of a 15-frame GOP: key frames, not every frame
     RTF_ASSERT(last_ts > 0);
     RTF_ASSERT(codec == "h264");
+}
+
+// Smaller streams are off for a computer until Settings turns them on: a camera's own choice does nothing before that,
+// and each part of a usable choice still counts after it.
+void test_r_substream_recorder::test_off_for_the_computer_means_not_in_use()
+{
+    r_camera cam;
+    cam.sub_mode.set_value("on");
+    cam.sub_status.set_value("ok");
+    cam.sub_rtsp_url.set_value("rtsp://10.0.0.5/sub");
+    cam.record_file_path.set_value("cam.nts");
+
+    RTF_ASSERT(substream_in_use(cam, true));
+    RTF_ASSERT(substream_wanted(cam, true));
+    RTF_ASSERT(!substream_in_use(cam, false));
+    RTF_ASSERT(!substream_wanted(cam, false));
+
+    auto without = [&](function<void(r_camera&)> f){ auto c = cam; f(c); return c; };
+    RTF_ASSERT(!substream_in_use(without([](r_camera& c){ c.sub_mode.set_value("off"); }), true));
+    RTF_ASSERT(!substream_in_use(without([](r_camera& c){ c.sub_mode = r_nullable<string>(); }), true));
+    RTF_ASSERT(!substream_in_use(without([](r_camera& c){ c.sub_status.set_value("pending"); }), true));
+    RTF_ASSERT(!substream_in_use(without([](r_camera& c){ c.sub_status = r_nullable<string>(); }), true));
+    // In use, but nothing to read or nowhere to keep it: not a recorder.
+    RTF_ASSERT(substream_in_use(without([](r_camera& c){ c.sub_rtsp_url = r_nullable<string>(); }), true));
+    RTF_ASSERT(!substream_wanted(without([](r_camera& c){ c.sub_rtsp_url = r_nullable<string>(); }), true));
+    RTF_ASSERT(!substream_wanted(without([](r_camera& c){ c.record_file_path = r_nullable<string>(); }), true));
 }

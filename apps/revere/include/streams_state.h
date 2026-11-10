@@ -27,6 +27,8 @@ struct streams_state
     uint64_t generation {0};
     // The camera can be asked over ONVIF (a camera added by its RTSP address can't).
     bool onvif {false};
+    // Smaller streams are turned on for this computer (Settings); until they are, a camera's choice has no effect.
+    bool gateway_on {false};
     // The recording (main) stream, e.g. "H.264 \xC2\xB7 2560 \xC3\x97 1920"; empty until known.
     std::string recording;
     // The list of smaller streams is coming / a check of the camera is running.
