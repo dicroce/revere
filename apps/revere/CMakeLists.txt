@@ -164,13 +164,16 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     target_sources(revere PRIVATE ${APP_ICON})
 
     # Copy shared libraries into the app bundle so it can find them at runtime
-    set(REVERE_LIBS r_utils r_ui_utils r_av r_pipeline r_storage r_motion r_onvif r_http r_db r_fakey r_disco r_cameras r_vss)
+    # r_crypto: nothing in revere links it yet, but system plugins do.
+    set(REVERE_LIBS r_utils r_ui_utils r_av r_pipeline r_storage r_motion r_onvif r_http r_db r_fakey r_disco r_cameras r_vss r_crypto)
     foreach(LIB ${REVERE_LIBS})
         add_custom_command(TARGET revere POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/lib
             COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${LIB}> $<TARGET_BUNDLE_DIR:revere>/Contents/lib/
         )
     endforeach()
+    # revere doesn't link r_crypto, so nothing else makes sure it's built first.
+    add_dependencies(revere r_crypto)
 
     # Also copy SDL2 and nanots
     add_custom_command(TARGET revere POST_BUILD
