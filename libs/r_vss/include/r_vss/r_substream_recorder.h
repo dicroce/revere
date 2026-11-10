@@ -249,6 +249,11 @@ public:
     // The path of its live restream mount once it has one (it has video caps from its first frame); empty before.
     R_API std::string mount_path() const;
 
+    // Writes one video frame into the ring (ts: the camera's time for it; the write context is made from the codec on
+    // the first one) and hands it on, at the time the ring stored it. It is what the recorder's source thread calls
+    // for each frame; public so a test can give it a camera clock that jumps.
+    R_API void store_video_frame(const r_pipeline::r_gst_buffer& buffer, bool key, int64_t ts, int64_t pts, const std::string& codec_name, const std::string& codec_parameters);
+
     // One viewer connected to its mount (the keeper's media-configure callback calls this).
     R_API void live_restream_media_configure(_GstRTSPMediaFactory* factory, _GstRTSPMedia* media);
     // Whether its key frames go to the motion engine, and how far apart they come (r_key_interval).

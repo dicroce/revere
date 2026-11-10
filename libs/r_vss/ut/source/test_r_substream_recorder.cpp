@@ -188,6 +188,55 @@ void test_r_substream_recorder::test_no_camera()
     RTF_ASSERT(!rec.dead());   // not until SUBSTREAM_DEAD_MS without video
 }
 
+// After the camera's clock jumps back, the ring re-anchors the frames (as main's recording does), and the "sub" frame
+// feed, the "now" picture's key frame and motion must carry the time the ring stored them at, not the camera's.
+void test_r_substream_recorder::test_frames_go_on_at_the_time_the_ring_stored_them()
+{
+    gst_init(nullptr, nullptr);
+    auto ring = RING_DIR + PATH_SLASH + "none_sub.nts";
+    ensure_substream_ring(ring);
+
+    r_frame_feeds feeds;
+    auto feed = feeds.subscribe("cam-sub", "sub", r_frame_feeds::VIDEO, 0);
+    feeds.substream_fresh("cam-sub", true);
+    int64_t key_frame_ts = 0, motion_ts = 0;
+    // Nothing listens on port 1: the recorder never gets a frame of its own, only the ones given to it here.
+    r_substream_recorder rec(_camera("rtsp://127.0.0.1:1/sub"), ring, "tcp", &feeds, nullptr,
+        [&](const r_live_key_frame& kf){ key_frame_ts = kf.ts; },
+        [&](const r_gst_buffer&, int64_t ts, const string&, const string&){ motion_ts = ts; });
+    rec.set_feeds_motion(true);
+
+    const uint8_t data[64] = {0x65};
+    r_gst_buffer buffer(data, sizeof(data));
+    const int64_t now_ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    const int64_t base = now_ms - 10000;
+    const string params = "p";
+    for(int i = 0; i < 10; ++i)
+        rec.store_video_frame(buffer, i % 5 == 0, base + i * 33, i * 33, "h264", params);
+    RTF_ASSERT_EQUAL(key_frame_ts, base + 5 * 33);
+    RTF_ASSERT_EQUAL(motion_ts, base + 5 * 33);
+
+    // The camera's clock goes back a day; the key frame after it.
+    const int64_t jumped = base - 24LL * 60 * 60 * 1000;
+    rec.store_video_frame(buffer, true, jumped, 330, "h264", params);
+
+    RTF_ASSERT(key_frame_ts != jumped);
+    RTF_ASSERT(key_frame_ts > base + 5 * 33);                   // later than anything before it
+    RTF_ASSERT(now_ms - key_frame_ts < 60000);                  // re-anchored near now
+    RTF_ASSERT_EQUAL(motion_ts, key_frame_ts);
+
+    int64_t fed_ts = 0;
+    int frames = 0;
+    r_feed_frame fr;
+    while(feeds.next(feed, 20, fr) == 1)
+    {
+        fed_ts = fr.ts;
+        ++frames;
+    }
+    RTF_ASSERT_EQUAL(frames, 11);
+    RTF_ASSERT_EQUAL(fed_ts, key_frame_ts);
+}
+
 // ---- r_substream_governor ----
 
 static r_substream_pass _pass(shared_ptr<const void> ctx, int64_t now_ms)

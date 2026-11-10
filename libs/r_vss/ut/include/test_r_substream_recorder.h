@@ -9,6 +9,7 @@ public:
       TEST(test_r_substream_recorder::test_off_for_the_computer_means_not_in_use);
       TEST(test_r_substream_recorder::test_records_into_its_ring);
       TEST(test_r_substream_recorder::test_no_camera);
+      TEST(test_r_substream_recorder::test_frames_go_on_at_the_time_the_ring_stored_them);
       TEST(test_r_substream_recorder::test_posts_to_the_frame_feeds);
       TEST(test_r_substream_recorder::test_mount_path);
       TEST(test_r_substream_recorder::test_view_mount_path);
@@ -36,6 +37,7 @@ public:
     void test_off_for_the_computer_means_not_in_use();
     void test_records_into_its_ring();
     void test_no_camera();
+    void test_frames_go_on_at_the_time_the_ring_stored_them();
     void test_posts_to_the_frame_feeds();
     void test_mount_path();
     void test_view_mount_path();
