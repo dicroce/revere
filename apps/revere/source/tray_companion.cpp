@@ -1,11 +1,8 @@
 #include "tray_companion.h"
 #include "tray_status.h"
+#include "tray_fetch.h"
 #include "utils.h"
-#include "r_http/r_client_request.h"
-#include "r_http/r_client_response.h"
-#include "r_utils/r_socket.h"
 #include "r_utils/r_file.h"
-#include "r_utils/r_local_api_token.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_startup.h"
 #include <tray.hpp>
@@ -28,50 +25,12 @@
 
 using namespace std;
 using namespace r_utils;
-using namespace r_http;
 
 static const char* TRAY_APP_NAME = "Revere Tray";
 static const char* TRAY_ARGS = "--tray";
 static const char* WEB_UI_URL = "http://localhost:8088";
 static const int REVERE_PORT = 8088;
 static const auto POLL_INTERVAL = chrono::seconds(5);
-
-// The service's status from GET /cameras, which needs the local API token
-// Revere writes into its data directory. Re-read on every poll: Revere makes a
-// new one each time it starts.
-static revere::tray_status _poll_status(const string& top_dir)
-{
-    try
-    {
-        r_socket sok;
-        sok.set_io_timeout(3000);
-        sok.connect("127.0.0.1", REVERE_PORT);
-
-        r_client_request req("127.0.0.1", REVERE_PORT);
-        req.set_uri("/cameras");
-        auto token = r_local_api_token::read(top_dir);
-        if(!token.is_null())
-            req.add_header("Authorization", r_local_api_token::bearer(token.value()));
-        req.write_request(sok);
-
-        r_client_response resp;
-        resp.read_response(sok);
-        auto status = resp.get_status();
-        if(status == 401 || status == 403)
-            return revere::summarize_refused();
-        if(status != 200)
-            return revere::summarize_cameras(nullopt);
-
-        auto body = resp.get_body_as_string();
-        if(body.is_null())
-            return revere::summarize_cameras(nullopt);
-        return revere::summarize_cameras(body.value());
-    }
-    catch(const exception&)
-    {
-        return revere::summarize_cameras(nullopt);
-    }
-}
 
 // Keeps a second `revere --tray` from adding a second icon. Separate from
 // revere.lock, which the service or desktop app holds.
@@ -177,7 +136,7 @@ int revere::run_tray_companion(const string& icon_path)
         while(!quit_requested)
         {
             g.unlock();
-            auto st = _poll_status(top_dir);
+            auto st = summarize_reply(fetch_cameras("127.0.0.1", REVERE_PORT, top_dir));
             g.lock();
             latest = st;
             poll_wake.wait_for(g, POLL_INTERVAL, [&] { return quit_requested.load(); });

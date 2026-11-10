@@ -107,3 +107,20 @@ revere::tray_status revere::summarize_cameras(const optional<string>& cameras_js
 
     return st;
 }
+
+revere::tray_status revere::summarize_reply(const cameras_reply& reply)
+{
+    if(reply.status == 0)
+        return summarize_cameras(nullopt);
+    if(reply.status == 200)
+        return summarize_cameras(reply.body);
+    if(reply.status == 401 || reply.status == 403)
+        return summarize_refused();
+
+    tray_status st;
+    st.reachable = true;
+    st.problem = true;
+    st.summary = "Revere is running";
+    st.detail = "Couldn't read camera status";
+    return st;
+}

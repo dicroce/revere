@@ -111,5 +111,39 @@ void test_tray_status::test_refused()
     RTF_ASSERT(st.reachable);
     RTF_ASSERT(st.problem);
     RTF_ASSERT(st.summary == "Revere is running");    // not "isn't running": it answered
-    RTF_ASSERT(!st.detail.empty());
+    RTF_ASSERT(st.detail == "Can't read its status: no access to its local API token");
+}
+
+void test_tray_status::test_reply_refused()
+{
+    // 401 and 403: Revere answered, so it's running, but the tray had no token it would take.
+    for(int code : {401, 403})
+    {
+        auto st = summarize_reply(cameras_reply{code, string()});
+        RTF_ASSERT(st.reachable);
+        RTF_ASSERT(st.problem);
+        RTF_ASSERT(st.summary == "Revere is running");
+        RTF_ASSERT(st.detail == "Can't read its status: no access to its local API token");
+    }
+}
+
+void test_tray_status::test_reply_other_error()
+{
+    auto st = summarize_reply(cameras_reply{500, string()});
+    RTF_ASSERT(st.reachable);
+    RTF_ASSERT(st.problem);
+    RTF_ASSERT(st.summary == "Revere is running");
+    RTF_ASSERT(st.detail == "Couldn't read camera status");
+}
+
+void test_tray_status::test_reply_ok_and_unreachable()
+{
+    auto ok = summarize_reply(cameras_reply{200, _cameras({_camera("Porch", "assigned", true, false)})});
+    RTF_ASSERT(ok.reachable);
+    RTF_ASSERT(!ok.problem);
+    RTF_ASSERT(ok.summary == "Recording 1 camera");
+
+    auto down = summarize_reply(cameras_reply{});
+    RTF_ASSERT(!down.reachable);
+    RTF_ASSERT(down.summary == "Revere service isn't running");
 }
