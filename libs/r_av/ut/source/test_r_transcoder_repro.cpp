@@ -12,6 +12,10 @@
 #include <vector>
 #include <cstring>
 #include <thread>
+#include <random>
+#include <atomic>
+#include <future>
+#include "r_utils/r_socket.h"
 
 using namespace std;
 using namespace r_av;
@@ -366,4 +370,221 @@ void test_r_transcoder_repro::test_quiet_audio_does_not_hold_video()
     }
     RTF_ASSERT(on_disk >= 256 * 1024);
     r_fs::remove_file(path);
+}
+
+namespace
+{
+// One 16-bit sample as G.711 mu-law (bias 0x84, clipped at 32635).
+uint8_t _to_mulaw(int16_t pcm)
+{
+    int sign = (pcm >> 8) & 0x80;
+    int v = sign ? -(int)pcm : (int)pcm;
+    if(v > 32635)
+        v = 32635;
+    v += 0x84;
+    int exponent = 7;
+    for(int mask = 0x4000; (v & mask) == 0 && exponent > 0; mask >>= 1)
+        --exponent;
+    int mantissa = (v >> (exponent + 3)) & 0x0F;
+    return (uint8_t)~(sign | (exponent << 4) | mantissa);
+}
+}
+
+void test_r_transcoder_repro::test_g711_as_aac_over_srt()
+{
+    // The SRT fallback with a G.711 camera, as the cloud plugin feeds it: 20 ms mu-law packets at 8 kHz on the store's
+    // clock (epoch ms), decoded and resampled to 16 kHz, cut into the AAC encoder's frames with each frame's time
+    // carried on, encoded, and written beside the video with the time of the encoder's packets.
+    const uint16_t w = 320, h = 240;
+    const AVRational fps = {15, 1};
+    const int64_t t0 = 1794252456000LL;  // ms, as revere's store stamps frames
+    const int seconds = 3;
+
+    r_video_encoder video(AV_CODEC_ID_H264, 500000, w, h, fps, AV_PIX_FMT_YUV420P, 0, 15, AV_PROFILE_H264_MAIN, 41, "veryfast", "zerolatency");
+    vector<uint8_t> gray(w * h * 3 / 2, 128);
+    vector<pair<vector<uint8_t>, int64_t>> video_packets;
+    for (int i = 0; i < 15 * seconds; ++i)
+    {
+        video.attach_buffer(gray.data(), gray.size(), i);
+        while (video.encode() == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto p = video.get();
+            video_packets.push_back({vector<uint8_t>(p.data, p.data + p.size), t0 + (int64_t)i * 1000 / 15});
+        }
+    }
+
+    const int out_rate = 16000;
+    r_audio_decoder mulaw(AV_CODEC_ID_PCM_MULAW);
+    mulaw.set_pcm_params(8000, 1);
+    r_audio_encoder aac(AV_CODEC_ID_AAC, 32000, out_rate, 1, AV_SAMPLE_FMT_FLTP);
+    const int fs = aac.get_frame_size();
+    vector<int16_t> pending;
+    int64_t pending_start = -1;
+    vector<pair<vector<uint8_t>, int64_t>> audio_packets;
+    // The packets as cloud_stream sends them: each query after the first starts at the key frame before its window,
+    // so its first second of audio repeats the end of the last chunk's. Chunk 1 is packets 0-74 (1.5 s), chunk 2
+    // repeats from packet 25 (0.5 s) on.
+    vector<int> order;
+    for (int n = 0; n < 75; ++n)
+        order.push_back(n);
+    for (int n = 25; n < 50 * seconds; ++n)
+        order.push_back(n);
+    for (int n : order)
+    {
+        int64_t ts = t0 + n * 20;
+        vector<uint8_t> g711(160);
+        for (int i = 0; i < 160; ++i)
+            g711[i] = _to_mulaw((int16_t)(8000 * sin(2 * M_PI * 440.0 * (n * 160 + i) / 8000)));
+        mulaw.attach_buffer(g711.data(), g711.size());
+        auto st = mulaw.decode();
+        if (st != R_CODEC_STATE_HAS_OUTPUT && st != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+            continue;
+        auto pcm = mulaw.get(AV_SAMPLE_FMT_S16, out_rate, 1);
+        if (!pcm || pcm->empty())
+            continue;
+        // pcm_frames: a push far from where the collected audio ends starts again from its own time.
+        if (pending_start >= 0)
+        {
+            int64_t end_ms = pending_start + (int64_t)pending.size() * 1000 / out_rate;
+            if (ts - end_ms > 200 || end_ms - ts > 200)
+            {
+                pending.clear();
+                pending_start = -1;
+            }
+        }
+        if (pending_start < 0)
+            pending_start = ts;
+        auto s16 = reinterpret_cast<const int16_t*>(pcm->data());
+        pending.insert(pending.end(), s16, s16 + pcm->size() / sizeof(int16_t));
+        while ((int)pending.size() >= fs)
+        {
+            vector<float> f(fs);
+            for (int i = 0; i < fs; ++i)
+                f[i] = pending[i] / 32768.0f;
+            pending.erase(pending.begin(), pending.begin() + fs);
+            int64_t frame_ts = pending_start;
+            pending_start += (int64_t)fs * 1000 / out_rate;
+            aac.attach_buffer(reinterpret_cast<const uint8_t*>(f.data()), f.size() * sizeof(float), frame_ts * out_rate / 1000);
+            if (aac.encode() == R_CODEC_STATE_HAS_OUTPUT)
+            {
+                auto p = aac.get();
+                if (p.data && p.size > 0)
+                    audio_packets.push_back({vector<uint8_t>(p.data, p.data + p.size), av_rescale_q(p.pts, p.time_base, {1, 1000})});
+            }
+        }
+    }
+    RTF_ASSERT(audio_packets.size() > 30);
+
+    const string path = "transcoder_g711_srt.ts";
+    bool failed = true;
+    uint64_t dropped = 0;
+    {
+        r_transcoder t(path, "mpegts", AV_CODEC_ID_H264, video.get_extradata(), {1, 1000}, w, h, fps,
+                       500000, 1000000, 250000, false, "", r_transcoder_audio{AV_CODEC_ID_AAC, 1, (uint32_t)out_rate, aac.get_extradata()});
+        t.start();
+        size_t vi = 0, ai = 0;
+        while (vi < video_packets.size() || ai < audio_packets.size())
+        {
+            bool take_audio = ai < audio_packets.size() && (vi >= video_packets.size() || audio_packets[ai].second < video_packets[vi].second);
+            if (take_audio)
+            {
+                t.write_audio_frame(audio_packets[ai].first.data(), audio_packets[ai].first.size(), audio_packets[ai].second);
+                ++ai;
+            }
+            else
+            {
+                t.write_frame(video_packets[vi].first.data(), video_packets[vi].first.size(), video_packets[vi].second);
+                ++vi;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        failed = t.failed();
+        dropped = t.audio_frames_dropped();
+        t.stop();
+    }
+
+    // The repeated second's AAC went back in time: it's dropped, and the stream goes on with the audio after it.
+    int audio_read = 0, video_read = 0;
+    bool audio_climbs = true;
+    int64_t last_audio_pts = -1;
+    {
+        r_demuxer d(path);
+        auto ai = d.get_audio_stream_index();
+        auto vi = d.get_video_stream_index();
+        while (d.read_frame())
+        {
+            auto fi = d.get_frame_info();
+            if (fi.index == ai)
+            {
+                if (last_audio_pts >= 0 && fi.pts <= last_audio_pts)
+                    audio_climbs = false;
+                last_audio_pts = fi.pts;
+                ++audio_read;
+            }
+            else if (fi.index == vi)
+                ++video_read;
+        }
+    }
+    r_fs::remove_file(path);
+    RTF_ASSERT(!failed);
+    RTF_ASSERT(dropped > 0);
+    RTF_ASSERT(audio_read == (int)(audio_packets.size() - dropped));
+    // Audio from both chunks: past the first chunk's 1.5 s, to about the end.
+    RTF_ASSERT(audio_read > 35);
+    RTF_ASSERT(audio_climbs);
+    RTF_ASSERT(video_read == (int)video_packets.size());
+}
+
+void test_r_transcoder_repro::test_writes_return_once_the_output_fails()
+{
+    // The output closes under the transcoder (an SRT peer gone, here a TCP one on loopback): its worker stops on the
+    // error. The caller's writes used to wait for room in a queue nothing drained, for good; they return now, and
+    // failed() says why nothing goes out.
+    const uint16_t w = 320, h = 240;
+    const AVRational fps = {15, 1};
+    int port = RTF_NEXT_PORT();
+    std::atomic<bool> listening{false};
+    std::thread peer([&] {
+        r_socket listener;
+        listener.bind(port, "127.0.0.1");
+        listener.listen();
+        listening = true;
+        auto conn = listener.accept();
+        conn.close();
+        listener.close();
+    });
+    while (!listening)
+        std::this_thread::yield();
+
+    // Noise, so the output fills the muxer's buffer and reaches the closed socket.
+    r_video_encoder video(AV_CODEC_ID_H264, 2000000, w, h, fps, AV_PIX_FMT_YUV420P, 0, 15, AV_PROFILE_H264_MAIN, 41, "veryfast", "zerolatency");
+    std::mt19937 rng(7);
+    vector<pair<vector<uint8_t>, int64_t>> packets;
+    for (int i = 0; i < 300; ++i)
+    {
+        vector<uint8_t> picture(w * h * 3 / 2);
+        for (auto& b : picture)
+            b = (uint8_t)rng();
+        video.attach_buffer(picture.data(), picture.size(), i);
+        while (video.encode() == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto p = video.get();
+            packets.push_back({vector<uint8_t>(p.data, p.data + p.size), (int64_t)i * 1000 / 15});
+        }
+    }
+
+    r_transcoder t("tcp://127.0.0.1:" + to_string(port), "mpegts", AV_CODEC_ID_H264, video.get_extradata(), {1, 1000}, w, h, fps,
+                   2000000, 2000000, 2000000, false, "");
+    peer.join();
+    t.start();
+    auto writer = std::async(std::launch::async, [&] {
+        for (auto& p : packets)
+            t.write_frame(p.first.data(), p.first.size(), p.second);
+    });
+    bool returned = writer.wait_for(std::chrono::seconds(20)) == std::future_status::ready;
+    bool failed = t.failed();
+    t.stop();  // frees a writer still waiting, so the test ends either way
+    writer.wait();
+    RTF_ASSERT(failed);
+    RTF_ASSERT(returned);
 }

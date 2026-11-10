@@ -98,6 +98,10 @@ void r_transcoder::start()
     _frame_count = 0;
     _selector.reset();
     _last_decoded_frame = nullptr;
+    _worker_done = false;
+    _failed = false;
+    _audio_written = false;
+    _last_audio_pts = 0;
 
     _worker = std::thread(&r_transcoder::_worker_thread, this);
 }
@@ -117,12 +121,12 @@ void r_transcoder::write_frame(const uint8_t* data, size_t size, int64_t pts)
 {
     std::unique_lock<std::mutex> lock(_queue_mutex);
 
-    // Block if queue is full (backpressure)
+    // Block if queue is full (backpressure), but never on a worker that has stopped: nothing would drain it.
     _queue_cv.wait(lock, [this] {
-        return _input_queue.size() < _max_queue_size || !_running;
+        return _input_queue.size() < _max_queue_size || !_running || _worker_done;
     });
 
-    if (!_running)
+    if (!_running || _worker_done)
         return;
 
     queued_frame frame;
@@ -142,10 +146,10 @@ void r_transcoder::write_audio_frame(const uint8_t* data, size_t size, int64_t p
     std::unique_lock<std::mutex> lock(_queue_mutex);
 
     _queue_cv.wait(lock, [this] {
-        return _input_queue.size() < _max_queue_size || !_running;
+        return _input_queue.size() < _max_queue_size || !_running || _worker_done;
     });
 
-    if (!_running)
+    if (!_running || _worker_done)
         return;
 
     queued_frame frame;
@@ -191,10 +195,19 @@ void r_transcoder::_worker_thread()
             // Notify write_frame() that space is available
             _queue_cv.notify_one();
 
-            // Audio goes to the output as it is, in the order it came with the video.
+            // Audio goes to the output as it is, in the order it came with the video. A frame that doesn't move past
+            // the last one written is a repeat (a caller's chunks can overlap): the muxer would refuse it ("non
+            // monotonically increasing dts"), which ended the stream, so it goes here instead.
             if (frame.audio)
             {
+                if (_audio_written && frame.pts <= _last_audio_pts)
+                {
+                    ++_audio_dropped;
+                    continue;
+                }
                 _muxer.write_audio_frame(frame.data.data(), frame.data.size(), frame.pts, _input_timebase);
+                _last_audio_pts = frame.pts;
+                _audio_written = true;
                 continue;
             }
 
@@ -288,7 +301,15 @@ void r_transcoder::_worker_thread()
     catch (const std::exception& ex)
     {
         R_LOG_ERROR("Transcoder worker thread error: %s", ex.what());
+        _failed = true;
     }
+
+    // Writers waiting for room in the queue: nothing drains it now.
+    {
+        std::lock_guard<std::mutex> lock(_queue_mutex);
+        _worker_done = true;
+    }
+    _queue_cv.notify_all();
 }
 
 r_output_frame_selector::r_output_frame_selector(int64_t max_repeats) :

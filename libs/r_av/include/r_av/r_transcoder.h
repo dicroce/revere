@@ -104,11 +104,23 @@ public:
      * One encoded audio frame at its pts (the input timebase, as write_frame's), written to the output's audio stream
      * as it is. Ignored when the transcoder was made without audio. Queued with the video, so the output is written
      * from one thread.
+     *
+     * A frame whose pts isn't past the last audio frame written (a repeat: a caller's chunks can overlap) is dropped,
+     * and counts in audio_frames_dropped(): the muxer would refuse it, and that ended the stream.
      */
     R_API void write_audio_frame(const uint8_t* data, size_t size, int64_t pts);
 
     /** Whether the output has an audio stream (the constructor's audio). */
     R_API bool has_audio() const { return _has_audio; }
+
+    /** Audio frames not written because they didn't move past the last one (repeats). */
+    R_API uint64_t audio_frames_dropped() const { return _audio_dropped; }
+
+    /**
+     * True once the worker has stopped on an error (the output closed, say). Nothing more goes out, and writes return
+     * at once instead of waiting for room in a queue nothing drains.
+     */
+    R_API bool failed() const { return _failed; }
 
     // Start/stop transcoding
     R_API void start();
@@ -121,6 +133,9 @@ private:
     // Threading
     std::thread _worker;
     std::atomic<bool> _running;
+    // Set when the worker has returned, error or not: the queue is drained by no one after it.
+    std::atomic<bool> _worker_done{false};
+    std::atomic<bool> _failed{false};
 
     // Input queue
     struct queued_frame {
@@ -161,8 +176,11 @@ private:
     r_output_frame_selector _selector;
     std::shared_ptr<std::vector<uint8_t>> _last_decoded_frame;
 
-    // Audio, written as it comes (see r_transcoder_audio)
+    // Audio, written as it comes (see r_transcoder_audio and write_audio_frame)
     bool _has_audio{false};
+    int64_t _last_audio_pts{0};         // the worker's own: the last audio pts written
+    bool _audio_written{false};         // the worker's own
+    std::atomic<uint64_t> _audio_dropped{0};
 };
 
 }
