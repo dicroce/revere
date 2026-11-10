@@ -20,6 +20,11 @@ struct tray_status
 // service could not be reached at all.
 tray_status summarize_cameras(const std::optional<std::string>& cameras_json);
 
+// GET /cameras was refused (401/403): the service is up, but this process
+// couldn't authenticate, e.g. its local API token is in another user's or
+// another --data-dir's data directory.
+tray_status summarize_refused();
+
 }
 
 #endif

@@ -24,6 +24,16 @@ static string _name_list(const vector<string>& names)
     return out;
 }
 
+revere::tray_status revere::summarize_refused()
+{
+    tray_status st;
+    st.reachable = true;
+    st.problem = true;
+    st.summary = "Revere is running";
+    st.detail = "Can't read its status: no access to its local API token";
+    return st;
+}
+
 revere::tray_status revere::summarize_cameras(const optional<string>& cameras_json)
 {
     tray_status st;

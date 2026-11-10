@@ -104,3 +104,12 @@ void test_tray_status::test_many_failed_names()
     RTF_ASSERT(st.summary == "Recording 0 of 4 cameras");
     RTF_ASSERT(st.detail == "Not recording: A, B and 2 more");
 }
+
+void test_tray_status::test_refused()
+{
+    auto st = summarize_refused();
+    RTF_ASSERT(st.reachable);
+    RTF_ASSERT(st.problem);
+    RTF_ASSERT(st.summary == "Revere is running");    // not "isn't running": it answered
+    RTF_ASSERT(!st.detail.empty());
+}

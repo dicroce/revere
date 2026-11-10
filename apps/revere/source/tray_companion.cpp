@@ -5,6 +5,7 @@
 #include "r_http/r_client_response.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_file.h"
+#include "r_utils/r_local_api_token.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_startup.h"
 #include <tray.hpp>
@@ -35,7 +36,10 @@ static const char* WEB_UI_URL = "http://localhost:8088";
 static const int REVERE_PORT = 8088;
 static const auto POLL_INTERVAL = chrono::seconds(5);
 
-static optional<string> _fetch_cameras()
+// The service's status from GET /cameras, which needs the local API token
+// Revere writes into its data directory. Re-read on every poll: Revere makes a
+// new one each time it starts.
+static revere::tray_status _poll_status(const string& top_dir)
 {
     try
     {
@@ -45,21 +49,27 @@ static optional<string> _fetch_cameras()
 
         r_client_request req("127.0.0.1", REVERE_PORT);
         req.set_uri("/cameras");
+        auto token = r_local_api_token::read(top_dir);
+        if(!token.is_null())
+            req.add_header("Authorization", r_local_api_token::bearer(token.value()));
         req.write_request(sok);
 
         r_client_response resp;
         resp.read_response(sok);
-        if(resp.get_status() != 200)
-            return nullopt;
+        auto status = resp.get_status();
+        if(status == 401 || status == 403)
+            return revere::summarize_refused();
+        if(status != 200)
+            return revere::summarize_cameras(nullopt);
 
         auto body = resp.get_body_as_string();
         if(body.is_null())
-            return nullopt;
-        return body.value();
+            return revere::summarize_cameras(nullopt);
+        return revere::summarize_cameras(body.value());
     }
     catch(const exception&)
     {
-        return nullopt;
+        return revere::summarize_cameras(nullopt);
     }
 }
 
@@ -105,7 +115,8 @@ private:
 
 int revere::run_tray_companion(const string& icon_path)
 {
-    tray_instance_lock instance_lock(revere::top_dir());
+    const auto top_dir = revere::top_dir();
+    tray_instance_lock instance_lock(top_dir);
     if(!instance_lock.acquired())
     {
         fprintf(stderr, "The Revere tray icon is already running.\n");
@@ -141,7 +152,8 @@ int revere::run_tray_companion(const string& icon_path)
     auto status_entry = tray->addEntry(Tray::Label(status.summary));
     tray->addEntry(Tray::Separator());
     tray->addEntry(Tray::Button("Open web UI", [] {
-        revere::open_url_in_browser(WEB_UI_URL);
+        try { revere::open_url_in_browser(WEB_UI_URL); }
+        catch(const exception& e) { R_LOG_ERROR("Could not open %s: %s", WEB_UI_URL, e.what()); }
     }));
     if(can_autostart)
     {
@@ -165,7 +177,7 @@ int revere::run_tray_companion(const string& icon_path)
         while(!quit_requested)
         {
             g.unlock();
-            auto st = summarize_cameras(_fetch_cameras());
+            auto st = _poll_status(top_dir);
             g.lock();
             latest = st;
             poll_wake.wait_for(g, POLL_INTERVAL, [&] { return quit_requested.load(); });
