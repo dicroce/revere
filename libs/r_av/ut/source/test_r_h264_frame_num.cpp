@@ -3,6 +3,7 @@
 #include "r_av/r_video_decoder.h"
 #include "r_av/r_video_encoder.h"
 #include "r_av/r_hw_accel.h"
+#include <algorithm>
 #include <cstdlib>
 #include <vector>
 
