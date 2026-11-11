@@ -1,7 +1,7 @@
 """Compare two detector_harness CSVs (a reference plugin and a candidate),
 to pick the candidate's confidence threshold so it behaves like the reference.
 
-    python compare.py --ref yolov8.csv --cand yolox.csv [--ref-threshold 0.65]
+    python compare.py --ref ref.csv --cand cand.csv [--ref-threshold 0.65]
                       [--labels <deep_tag annotations dir>] [--group person]
 
 For each candidate threshold it reports, per group (person / vehicle / animal,

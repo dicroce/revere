@@ -248,7 +248,7 @@ The playback and analytics viewer application.
 - Load and dispatch events to AI plugins
 - Provide RTSP streams for external viewers
 
-**Motion Plugins:** Supports dynamic loading of AI-based detection plugins (YOLOv8, MobileNet, PicoDet)
+**Motion Plugins:** Supports dynamic loading of AI-based detection plugins (YOLOX)
 
 **Dependencies:** r_pipeline, r_av, r_motion, r_disco, r_storage, r_utils, FFmpeg, OpenCV, GStreamer
 
@@ -373,7 +373,7 @@ Disk (video segments + time-series index)
 6. If motion exceeds threshold → Motion Event triggered
 7. r_vss receives motion event
 8. r_motion_event_plugin_host dispatches to loaded plugins
-9. AI plugins (YOLOv8, etc.) receive frame + motion region
+9. AI plugins (YOLOX, etc.) receive frame + motion region
 10. Plugins perform object detection (e.g., person detection)
 11. Results can trigger alerts or enhanced logging
 ```
@@ -412,12 +412,11 @@ nanots is highly optimized for multiple readers + writers. See the nanots repo f
 
 **Available Plugins:**
 
-#### yolov8_motion_plugin
-**Status:** Active (enabled by default when NCNN is available)
-**Purpose:** Person detection using YOLOv8 neural network
-**Performance:** Medium speed, high accuracy
-**Use case:** Reliable person detection with good balance of speed and accuracy
-**Requirements:** NCNN, model files in `models/yolov8_motion_plugin/`
+#### yolox_motion_plugin
+**Status:** Active (built when NCNN is available)
+**Purpose:** Object detection (people, vehicles, animals and the other COCO classes) with YOLOX-s (Apache-2.0 weights). It replaced the yolov8 plugin, whose weights are AGPL-3.0.
+**Performance:** About 3x yolov8n's CPU, for better recall; runs only on frames with motion
+**Requirements:** NCNN, model files in `models/yolox/` (converted by `tools/yolox/export_yolox_ncnn.py`)
 
 #### test_plugin
 **Status:** Not built by default; `-DREVERE_BUILD_TEST_PLUGIN=ON` builds it (no NCNN required). Off, it isn't bundled or installed.

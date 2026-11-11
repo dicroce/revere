@@ -1,4 +1,4 @@
-// detector_harness: runs one object detection motion plugin (yolox, yolov8, ...)
+// detector_harness: runs one object detection motion plugin (yolox, or another built from history)
 // over a directory of images through its detect_objects C entry point, the
 // way revere does (640x640 letterboxed RGB, see r_motion_engine.cpp), and
 // writes every detection as CSV. Run it once per plugin and compare the CSVs

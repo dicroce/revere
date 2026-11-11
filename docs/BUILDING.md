@@ -232,7 +232,7 @@ Release, and produces the Windows installer.
 
 ## Optional: NCNN (AI detection)
 
-NCNN enables AI-based person/vehicle detection plugins (YOLOv8, MobileNet, PicoDet).
+NCNN enables AI-based person/vehicle detection plugin (YOLOX).
 Build and install it, then export `NCNN_TOP_DIR` before running the build script.
 
 ```bash

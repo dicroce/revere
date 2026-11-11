@@ -47,9 +47,8 @@ licence; or make the model a separate, optional download.
 
 Resolved: swapped to YOLOX-s (Apache-2.0 weights, Megvii) in
 yolox_motion_plugin, converted to ncnn by tools/yolox/export_yolox_ncnn.py.
-REVERE_DETECTOR (settings.cmake) picks the detector, yolox by default; only
-the chosen one is built and shipped. yolov8 is still buildable for comparison
-(tools/detector_harness), but a build with it ships the AGPL weights again.
+yolov8_motion_plugin and its weights are removed from the repository (they
+are still in git history, from before the switch).
 
 
 3. Windows FFmpeg carries ~60 extra libraries                                [open]

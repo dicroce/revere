@@ -35,16 +35,6 @@ option(REVERE_PORTABLE_BUILD "Build portable binaries (no -march=native) for red
 # default; turn it on to work on the plugin interface.
 option(REVERE_BUILD_TEST_PLUGIN "Build the no-op test motion plugin (not shipped by default)" OFF)
 
-# The object detection motion plugin (needs NCNN). Only one is built: the
-# host loads every plugin in motion_plugins/, and two detectors would report
-# every object twice. yolox (Apache-2.0 weights) replaces yolov8 (AGPL-3.0
-# weights, docs/licensing_todo.txt); yolov8 stays buildable for comparison.
-set(REVERE_DETECTOR "yolox" CACHE STRING "Object detection motion plugin: yolox or yolov8")
-set_property(CACHE REVERE_DETECTOR PROPERTY STRINGS yolox yolov8)
-if(NOT REVERE_DETECTOR MATCHES "^(yolox|yolov8)$")
-    message(FATAL_ERROR "REVERE_DETECTOR must be yolox or yolov8, not '${REVERE_DETECTOR}'")
-endif()
-
 # Install destinations - packaged builds (Flatpak/Snap) use standard FHS paths, portable uses single directory
 if(PACKAGED_BUILD)
     set(REVERE_INSTALL_BINDIR bin)

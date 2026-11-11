@@ -41,7 +41,7 @@ const int MODEL_INPUT_SIZE = 640;
 const int FRAME_SIZE = 640;
 const int NUM_CLASSES = 80;
 const int STRIDES[] = {8, 16, 32};
-// Score = objectness * class score. Same starting point as the yolov8
+// Score = objectness * class score. Same starting point as the old yolov8
 // plugin's 0.65 class score; to be calibrated against it.
 const float DEFAULT_CONF_THRESHOLD = 0.65f;
 const float NMS_THRESHOLD = 0.45f;

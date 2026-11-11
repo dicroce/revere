@@ -59,7 +59,7 @@ Revere `dlopen`s several kinds of modules at runtime:
 
 - **GStreamer element plugins** (`rtspsrc`, `rtp*`, `decodebin`, `libav`
   decoders) — required for RTSP camera streaming.
-- **Motion plugins** (yolov8 → NCNN).
+- **Motion plugins** (yolox → NCNN).
 - **The cloud system plugin** (shipped separately, installed into the user data
   dir).
 
