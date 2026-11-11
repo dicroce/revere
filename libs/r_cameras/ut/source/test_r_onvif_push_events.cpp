@@ -443,3 +443,24 @@ void test_r_onvif_push_events::test_push_stays_chosen_after_a_failure_and_the_su
     }
     r_onvif_events::set_termination_seconds_for_tests(120);
 }
+
+void test_r_onvif_push_events::test_two_repeats_are_not_a_heartbeat()
+{
+    // Several in a row are needed: a "no motion" and its repeat, then quiet, isn't a lost heartbeat.
+    r_onvif_events::set_heartbeat_silence_floor_for_tests(1);
+    {
+        fake_camera cam(11121);
+        cam.pull_support = "false";
+        events_rig rig(cam.port);
+        RTF_ASSERT(_until([&]() { return rig.events->status().state == "subscribed"; }));
+        for(int i = 0; i < 3; ++i)      // one, and two repeats of it
+        {
+            RTF_ASSERT_EQUAL(_post_notify(cam.consumer_url(), _notify(false), true), 200);
+            this_thread::sleep_for(chrono::milliseconds(1100));
+        }
+        this_thread::sleep_for(chrono::milliseconds(6000));
+        RTF_ASSERT_EQUAL(cam.count("Subscribe"), 1);
+        RTF_ASSERT(rig.events->status().up);
+    }
+    r_onvif_events::set_heartbeat_silence_floor_for_tests(30);
+}

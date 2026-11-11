@@ -16,6 +16,7 @@ public:
       TEST(test_r_onvif_push_events::test_a_heartbeat_that_stops_resubscribes);
       TEST(test_r_onvif_push_events::test_a_camera_that_only_sends_changes_is_left_alone);
       TEST(test_r_onvif_push_events::test_a_heartbeat_keeps_it_subscribed);
+      TEST(test_r_onvif_push_events::test_two_repeats_are_not_a_heartbeat);
       TEST(test_r_onvif_push_events::test_push_stays_chosen_after_a_failure_and_the_subscription_is_dropped);
     RTF_FIXTURE_END();
 
@@ -34,5 +35,6 @@ public:
     void test_a_heartbeat_that_stops_resubscribes();
     void test_a_camera_that_only_sends_changes_is_left_alone();
     void test_a_heartbeat_keeps_it_subscribed();
+    void test_two_repeats_are_not_a_heartbeat();
     void test_push_stays_chosen_after_a_failure_and_the_subscription_is_dropped();
 };
