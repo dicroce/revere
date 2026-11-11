@@ -40,7 +40,8 @@ struct r_camera_events_status
     std::string source;                 // where events come from: "onvif", "reolink"
     bool up {false};                    // events are flowing (subscribed, polling...)
     // The source's own word for it: for ONVIF "starting", "subscribed",
-    // "down" (retrying), "no events" (the camera has no events service), "stopped".
+    // "down" (retrying), "no events" (the camera has no events service), "not supported" (the camera said it doesn't
+    // support the subscription: asked again only every few hours), "stopped".
     std::string state {"starting"};
     int port {0};
     std::string motion_topic;           // the camera's last motion topic or field to go active; empty until one has
@@ -48,6 +49,10 @@ struct r_camera_events_status
     int64_t last_event_ms {0};          // when the camera last reported a change
     int64_t failures {0};
     std::string last_error;
+
+    // The camera has no events to give, as far as anyone can tell (no service, or it said it can't): not "down", which
+    // is a camera that is expected back.
+    bool unavailable() const { return !up && (state == "no events" || state == "not supported"); }
 };
 
 // One camera's events, on a thread of its own. start() begins; request_stop()

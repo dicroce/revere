@@ -354,3 +354,86 @@ void test_r_onvif_profiles::test_ptz_caps()
 
     RTF_ASSERT_THROWS(parse_ptz_caps("not xml <"), std::runtime_error);
 }
+
+// The configurations' answer, for a camera whose GetNodes says nothing usable.
+void test_r_onvif_profiles::test_ptz_configuration_caps()
+{
+    auto cfg = [](const string& inner) {
+        return "<tptz:GetConfigurationsResponse><tptz:PTZConfiguration token=\"c\"><tt:Name>PTZ</tt:Name>" + inner +
+               "</tptz:PTZConfiguration></tptz:GetConfigurationsResponse>";
+    };
+    auto both = parse_ptz_configuration_caps(cfg("<tt:DefaultContinuousPanTiltVelocitySpace>x</tt:DefaultContinuousPanTiltVelocitySpace>"
+                                                  "<tt:DefaultContinuousZoomVelocitySpace>x</tt:DefaultContinuousZoomVelocitySpace>"));
+    RTF_ASSERT(both.known && both.pan_tilt && both.zoom);
+    auto limits = parse_ptz_configuration_caps(cfg("<tt:PanTiltLimits/><tt:ZoomLimits/>"));
+    RTF_ASSERT(limits.known && limits.pan_tilt && limits.zoom);
+    auto pan = parse_ptz_configuration_caps(cfg("<tt:DefaultContinuousPanTiltVelocitySpace/>"));
+    RTF_ASSERT(pan.known && pan.pan_tilt && !pan.zoom);
+    // A configuration that drives nothing: known, no axis.
+    auto none = parse_ptz_configuration_caps(cfg(""));
+    RTF_ASSERT(none.known && !none.pan_tilt && !none.zoom);
+    // Other prefixes, matched by local name; and no configuration at all: unknown.
+    auto prefixed = parse_ptz_configuration_caps("<a:R xmlns:a=\"urn:a\"><a:PTZConfiguration><a:DefaultContinuousZoomVelocitySpace/></a:PTZConfiguration></a:R>");
+    RTF_ASSERT(prefixed.known && prefixed.zoom && !prefixed.pan_tilt);
+    RTF_ASSERT(!parse_ptz_configuration_caps("<GetConfigurationsResponse/>").known);
+    RTF_ASSERT_THROWS(parse_ptz_configuration_caps("not xml <"), std::runtime_error);
+}
+
+// A camera that advertises PTZ is PTZ only if a probe found a usable axis.
+void test_r_onvif_profiles::test_ptz_verdict()
+{
+    auto got = [](ptz_probe_how how, bool known = false, bool pt = false, bool zoom = false) {
+        ptz_probe_result r;
+        r.how = how;
+        r.caps.known = known;
+        r.caps.pan_tilt = pt;
+        r.caps.zoom = zoom;
+        return r;
+    };
+    const auto answered = ptz_probe_how::answered, unsupported = ptz_probe_how::unsupported, failed = ptz_probe_how::failed;
+    // Usable: either probe finds an axis.
+    RTF_ASSERT(ptz_verdict_of(got(answered, true, true), got(failed)) == ptz_verdict::usable);
+    RTF_ASSERT(ptz_verdict_of(got(answered, true, false, true), got(unsupported)) == ptz_verdict::usable);
+    RTF_ASSERT(ptz_verdict_of(got(unsupported), got(answered, true, true)) == ptz_verdict::usable);
+    RTF_ASSERT(ptz_verdict_of(got(failed), got(answered, true, false, true)) == ptz_verdict::usable);
+    // None: a node that lists spaces and none usable, or nothing said and nothing failed.
+    RTF_ASSERT(ptz_verdict_of(got(answered, true), got(unsupported)) == ptz_verdict::none);
+    RTF_ASSERT(ptz_verdict_of(got(unsupported), got(unsupported)) == ptz_verdict::none);
+    RTF_ASSERT(ptz_verdict_of(got(answered, false), got(answered, false)) == ptz_verdict::none);
+    RTF_ASSERT(ptz_verdict_of(got(answered, false), got(unsupported)) == ptz_verdict::none);
+    RTF_ASSERT(ptz_verdict_of(got(answered, true), got(failed)) == ptz_verdict::none);          // the node listed its spaces
+    // Unknown: nothing usable and a probe failed in a way that says nothing.
+    RTF_ASSERT(ptz_verdict_of(got(failed), got(failed)) == ptz_verdict::unknown);
+    RTF_ASSERT(ptz_verdict_of(got(unsupported), got(failed)) == ptz_verdict::unknown);
+    RTF_ASSERT(ptz_verdict_of(got(answered, false), got(failed)) == ptz_verdict::unknown);
+    RTF_ASSERT(ptz_verdict_of(got(failed), got(answered, true)) == ptz_verdict::none);
+    // The default probe (never run) counts as failed.
+    RTF_ASSERT(ptz_verdict_of(got(answered, false), ptz_probe_result()) == ptz_verdict::unknown);
+    RTF_ASSERT(ptz_caps_usable(onvif_ptz_caps{true, true, false}));
+    RTF_ASSERT(ptz_caps_usable(onvif_ptz_caps{true, false, true}));
+    RTF_ASSERT(!ptz_caps_usable(onvif_ptz_caps{true, false, false}));
+    RTF_ASSERT(!ptz_caps_usable(onvif_ptz_caps{false, true, true}));
+}
+
+// What a camera's own words mean: "not supported" is a definite no, anything else is a failure to say.
+void test_r_onvif_profiles::test_unsupported_action_and_events_wait()
+{
+    RTF_ASSERT(is_unsupported_action("GetNodes failed: HTTP 400 ter:ActionNotSupported | Action not supported"));
+    RTF_ASSERT(is_unsupported_action("CreatePullPointSubscription failed: HTTP 500 s:Receiver | ter:OptionalActionNotImplemented"));
+    RTF_ASSERT(is_unsupported_action("HTTP 400 ACTION NOT SUPPORTED"));
+    RTF_ASSERT(!is_unsupported_action(""));
+    RTF_ASSERT(!is_unsupported_action("HTTP 401 Unauthorized"));
+    RTF_ASSERT(!is_unsupported_action("GetPresets failed: HTTP 500 ter:InvalidArgVal"));
+    RTF_ASSERT(!is_unsupported_action("timed out"));
+    RTF_ASSERT(!is_unsupported_action("busy"));
+
+    // The events retry: 10 s doubling to 10 minutes; a camera that says it doesn't support it waits 6 hours.
+    RTF_ASSERT_EQUAL(events_wait_s(10, false), 10);
+    RTF_ASSERT_EQUAL(events_wait_s(600, false), 600);
+    RTF_ASSERT_EQUAL(events_wait_s(10, true), EVENTS_UNSUPPORTED_WAIT_S);
+    RTF_ASSERT_EQUAL(events_wait_s(600, true), EVENTS_UNSUPPORTED_WAIT_S);
+    RTF_ASSERT_EQUAL(events_next_backoff_s(10), 20);
+    RTF_ASSERT_EQUAL(events_next_backoff_s(300), 600);
+    RTF_ASSERT_EQUAL(events_next_backoff_s(600), 600);
+    RTF_ASSERT_EQUAL(EVENTS_UNSUPPORTED_WAIT_S, 21600);
+}

@@ -43,6 +43,12 @@ r_onvif_provider::~r_onvif_provider()
         _ptz_stopper.join();
 }
 
+// The steady clock in ms, never 0 (0 means "never" in _ptz_session::none_since_ms).
+static int64_t _steady_ms()
+{
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count() + 1;
+}
+
 r_nullable<int64_t> r_disco::ptz_timeout_ms(const string& timeout)
 {
     r_nullable<int64_t> ms;
@@ -252,7 +258,13 @@ r_ptz_result r_onvif_provider::ptz_control(
     {
         session->cam.reset();
         session->credentials = credentials;
+        session->none_since_ms = 0;
     }
+
+    // Found to have no PTZ: every command answers so without asking the camera again (it would answer ActionNotSupported
+    // to each), until PTZ_NONE_TTL_MS has passed.
+    if(ptz_none_valid(session->none_since_ms, _steady_ms()))
+        throw r_ptz_error("no_ptz", "Camera at " + ipv4 + " has a PTZ service but no pan, tilt or zoom axis.");
 
     bool reused = session->cam != nullptr;
     try
@@ -264,6 +276,9 @@ r_ptz_result r_onvif_provider::ptz_control(
     catch(const r_ptz_error& ex)
     {
         session->cam.reset();
+        // No PTZ is no reason to open a session again.
+        if(ex.code() == "no_ptz")
+            throw;
         // A kept session may have gone stale (the camera rebooted or moved); a new one is worth one more try.
         if(!reused)
             throw;
@@ -312,6 +327,38 @@ void r_onvif_provider::_open_ptz_session(
         if(profiles.empty())
             throw r_ptz_error("camera_error", "Camera at " + ipv4 + " exposes no media profiles for PTZ.");
 
+        // A camera advertises a PTZ service without having PTZ (a fixed camera of a PTZ family). It is PTZ only if a node
+        // (GetNodes) or a configuration (GetConfigurations) lists a pan, tilt or zoom space; one that says the action
+        // isn't supported, or lists none, is not, and is not asked again for a while (ptz_control).
+        auto probe = [&](const function<r_onvif::onvif_ptz_caps()>& ask) {
+            r_onvif::ptz_probe_result r;
+            try
+            {
+                r.caps = ask();
+                r.how = r_onvif::ptz_probe_how::answered;
+            }
+            catch(const std::exception& ex)
+            {
+                r.how = r_onvif::is_unsupported_action(ex.what()) ? r_onvif::ptz_probe_how::unsupported : r_onvif::ptz_probe_how::failed;
+                R_LOG_INFO("onvif: PTZ probe for %s: %s", ipv4.c_str(), ex.what());
+            }
+            return r;
+        };
+        auto nodes = probe([&]() { return cam->get_ptz_caps(ptz.value()); });
+        r_onvif::ptz_probe_result configurations;
+        // GetConfigurations only when the nodes didn't settle it.
+        if(!r_onvif::ptz_caps_usable(nodes.caps) || nodes.how != r_onvif::ptz_probe_how::answered)
+            configurations = probe([&]() { return cam->get_ptz_configuration_caps(ptz.value()); });
+        auto verdict = r_onvif::ptz_verdict_of(nodes, configurations);
+        if(verdict == r_onvif::ptz_verdict::none)
+        {
+            session.none_since_ms = _steady_ms();
+            R_LOG_INFO("onvif: %s advertises a PTZ service but has no pan, tilt or zoom axis; PTZ is not offered for it", ipv4.c_str());
+            throw r_ptz_error("no_ptz", "Camera at " + ipv4 + " has a PTZ service but no pan, tilt or zoom axis.");
+        }
+        // unknown: a probe failed in a way that says nothing about PTZ; the camera is treated as before (axes unknown).
+        session.caps = r_onvif::ptz_caps_usable(nodes.caps) ? nodes.caps : (r_onvif::ptz_caps_usable(configurations.caps) ? configurations.caps : r_onvif::onvif_ptz_caps());
+        session.none_since_ms = 0;
         session.ptz_service = ptz.value();
         session.profile_token = profiles.front().token;
         session.cam = std::move(cam);
@@ -344,22 +391,23 @@ r_ptz_result r_onvif_provider::_run_ptz(_ptz_session& session, const r_ptz_comma
                 session.cam->ptz_goto_preset(session.ptz_service, profile_token, cmd.preset_token);
                 break;
             case r_ptz_command::op_t::list_presets:
-                result.presets = session.cam->get_ptz_presets(session.ptz_service, profile_token);
-                // Report which axes the camera can actually drive. A fault here
-                // mustn't sink the probe (we still have a valid PTZ service and
-                // presets), so the flags stay null: unknown, not "can't".
+                // A camera with PTZ and no presets feature answers GetPresets with ActionNotSupported: no presets, still PTZ.
                 try
                 {
-                    auto caps = session.cam->get_ptz_caps(session.ptz_service);
-                    if(caps.known)
-                    {
-                        result.supports_pan_tilt.set_value(caps.pan_tilt);
-                        result.supports_zoom.set_value(caps.zoom);
-                    }
+                    result.presets = session.cam->get_ptz_presets(session.ptz_service, profile_token);
                 }
                 catch(const std::exception& ex)
                 {
-                    R_LOG_WARNING("GetNodes (PTZ caps) failed: %s", ex.what());
+                    if(!r_onvif::is_unsupported_action(ex.what()))
+                        throw;
+                    R_LOG_INFO("onvif: this camera has no presets (%s)", ex.what());
+                }
+                // Report which axes the camera can actually drive, as the session's probe found them. Unknown (the flags
+                // stay null) when it couldn't say, not "can't".
+                if(session.caps.known)
+                {
+                    result.supports_pan_tilt.set_value(session.caps.pan_tilt);
+                    result.supports_zoom.set_value(session.caps.zoom);
                 }
                 break;
         }
@@ -370,6 +418,12 @@ r_ptz_result r_onvif_provider::_run_ptz(_ptz_session& session, const r_ptz_comma
     }
     catch(const std::exception& ex)
     {
+        // The camera says it doesn't do this: it has no PTZ to speak of, and isn't asked again for a while.
+        if(r_onvif::is_unsupported_action(ex.what()))
+        {
+            session.none_since_ms = _steady_ms();
+            throw r_ptz_error("no_ptz", string("The camera doesn't support PTZ: ") + ex.what());
+        }
         throw r_ptz_error("camera_error", ex.what());
     }
     return result;

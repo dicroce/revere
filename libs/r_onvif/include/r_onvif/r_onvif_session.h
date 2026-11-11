@@ -264,6 +264,50 @@ R_API std::vector<onvif_ptz_preset> parse_ptz_presets(const std::string& xml);
 // SupportedPTZSpaces). Separate so it can be tested without a camera.
 R_API onvif_ptz_caps parse_ptz_caps(const std::string& xml);
 
+// The same from a GetConfigurationsResponse, for a camera whose GetNodes says nothing usable: a PTZConfiguration's
+// default continuous velocity spaces and its pan/tilt and zoom limits. known is true when the reply held any
+// PTZConfiguration; the axes are those some configuration drives.
+R_API onvif_ptz_caps parse_ptz_configuration_caps(const std::string& xml);
+
+// Whether a PTZ node can be driven at all: it lists a continuous pan/tilt or zoom space.
+inline bool ptz_caps_usable(const onvif_ptz_caps& caps) { return caps.known && (caps.pan_tilt || caps.zoom); }
+
+// How a PTZ probe call (GetNodes, GetConfigurations) went.
+enum class ptz_probe_how
+{
+    answered,      // a good reply (its caps may still say nothing)
+    unsupported,   // the camera said it doesn't support the action (is_unsupported_action)
+    failed         // anything else: a timeout, a refused login, a camera that is down. Says nothing about PTZ.
+};
+
+struct ptz_probe_result
+{
+    ptz_probe_how how {ptz_probe_how::failed};
+    onvif_ptz_caps caps;
+};
+
+// Whether a camera that advertises a PTZ service really has PTZ.
+enum class ptz_verdict { usable, none, unknown };
+
+// usable: some probe found a node (or configuration) with a continuous pan/tilt or zoom space. none: a probe listed
+// spaces and none is usable, or no probe could say anything and none failed (every one answered without spaces or said
+// the action isn't supported): a camera that advertises PTZ and has none. unknown: nothing usable was found, but a
+// probe failed in a way that says nothing about PTZ, so it is asked again, not remembered.
+R_API ptz_verdict ptz_verdict_of(const ptz_probe_result& nodes, const ptz_probe_result& configurations);
+
+// Whether the text of a failed ONVIF call (r_onvif_cam's errors carry the camera's own reason) says the camera
+// definitely doesn't support the action: "ActionNotSupported", "OptionalActionNotImplemented" or "Action not
+// supported", in any case. Not a timeout, not an authentication failure, not a bad argument.
+R_API bool is_unsupported_action(const std::string& what);
+
+// How long an ONVIF events subscription waits after a failed attempt. The wait doubles from 10 s to 10 minutes; a camera
+// that said the action isn't supported waits EVENTS_UNSUPPORTED_WAIT_S (6 hours) instead, since asking again every few
+// minutes only gets the same answer (a firmware update might add it).
+constexpr int EVENTS_BACKOFF_MAX_S = 600;
+constexpr int EVENTS_UNSUPPORTED_WAIT_S = 6 * 60 * 60;
+R_API int events_wait_s(int backoff_s, bool unsupported);
+R_API int events_next_backoff_s(int backoff_s);
+
 enum class soap_version
 {
     soap_1_2,   // SOAP 1.2 (default, modern)
@@ -337,6 +381,9 @@ public:
     // Used to decide whether to offer zoom controls. Throws on a SOAP fault; a
     // camera that omits SupportedPTZSpaces answers with known false.
     R_API onvif_ptz_caps get_ptz_caps(const std::string& ptz_service);
+
+    // GetConfigurations -> the same, from the PTZ configurations (parse_ptz_configuration_caps). Throws on a SOAP fault.
+    R_API onvif_ptz_caps get_ptz_configuration_caps(const std::string& ptz_service);
 
     // ContinuousMove: pan/tilt/zoom velocities, each normalized to [-1,1] (0 =
     // no motion on that axis, and that axis isn't sent: PanTilt only when pan or

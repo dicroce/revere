@@ -49,6 +49,9 @@ struct fake_camera
     std::atomic<int> fail_ptz {0};    // fail this many PTZ calls next
     std::atomic<int> fail_caps {0};   // fail this many GetCapabilities next
     string nodes {"fault"};           // how GetNodes answers (see _answer); set before the first call
+    string configs {"fault"};         // how GetConfigurations answers: "fault", "unsupported", "pan_only", "both" or "none"
+    bool presets_unsupported {false}; // GetPresets answers ActionNotSupported
+    bool move_unsupported {false};    // ContinuousMove answers ActionNotSupported
     bool offers_rotate {true};        // GetVideoSourceConfigurationOptions lists Rotate ON and OFF
     string rotate {"OFF"};            // the source's Rotate Mode, as SetVideoSourceConfiguration last set it
     string degree;                    // its Rotate Degree, likewise; empty: none
@@ -102,7 +105,7 @@ struct fake_camera
     r_server_response _answer(const string& body)
     {
         // GetProfiles before GetProfile: the first's body holds the second's name.
-        static const char* ops[] = {"GetSystemDateAndTime", "GetCapabilities", "GetProfiles", "GetPresets", "ContinuousMove", "tptz:Stop", "GotoPreset", "GetNodes",
+        static const char* ops[] = {"GetSystemDateAndTime", "GetCapabilities", "GetProfiles", "GetPresets", "ContinuousMove", "tptz:Stop", "GotoPreset", "GetNodes", "GetConfigurations",
                                     "GetVideoSourceConfigurationOptions", "SetVideoSourceConfiguration", "GetProfile"};
         string op;
         for(auto o : ops)
@@ -139,9 +142,13 @@ struct fake_camera
         if(op == "GetProfiles")
             return _soap("<trt:GetProfilesResponse><trt:Profiles token=\"profile_1\"><tt:Name>main</tt:Name></trt:Profiles>"
                          "<trt:Profiles token=\"profile_2\"><tt:Name>minor</tt:Name></trt:Profiles></trt:GetProfilesResponse>");
+        if(op == "GetPresets" && presets_unsupported)
+            return _unsupported();
         if(op == "GetPresets")
             return _soap("<tptz:GetPresetsResponse><tptz:Preset token=\"1\"><tt:Name>Gate</tt:Name></tptz:Preset>"
                          "<tptz:Preset token=\"2\"><tt:Name>Porch</tt:Name></tptz:Preset></tptz:GetPresetsResponse>");
+        if(op == "ContinuousMove" && move_unsupported)
+            return _unsupported();
         if(op == "ContinuousMove")
             return _soap("<tptz:ContinuousMoveResponse/>");
         if(op == "tptz:Stop")
@@ -174,17 +181,42 @@ struct fake_camera
         }
         if(op == "GotoPreset")
             return _soap("<tptz:GotoPresetResponse/>");
-        // GetNodes per nodes: "fault", "no_spaces" (no SupportedPTZSpaces), "pan_only" or "both".
+        // GetNodes per nodes: "fault", "unsupported" (ActionNotSupported), "no_spaces" (no SupportedPTZSpaces),
+        // "no_continuous" (spaces, none a continuous pan, tilt or zoom one), "pan_only" or "both".
         if(op == "GetNodes")
         {
             if(nodes == "fault")
                 return _soap("", response_bad_request);
+            if(nodes == "unsupported")
+                return _unsupported();
             string spaces = nodes == "no_spaces" ? string()
+                : nodes == "no_continuous" ? string("<tt:SupportedPTZSpaces><tt:AbsolutePanTiltPositionSpace/></tt:SupportedPTZSpaces>")
                 : "<tt:SupportedPTZSpaces><tt:ContinuousPanTiltVelocitySpace/>" +
                   string(nodes == "both" ? "<tt:ContinuousZoomVelocitySpace/>" : "") + "</tt:SupportedPTZSpaces>";
             return _soap("<tptz:GetNodesResponse><tptz:PTZNode token=\"n1\">" + spaces + "</tptz:PTZNode></tptz:GetNodesResponse>");
         }
+        if(op == "GetConfigurations")
+        {
+            if(configs == "fault")
+                return _soap("", response_bad_request);
+            if(configs == "unsupported")
+                return _unsupported();
+            if(configs == "none")
+                return _soap("<tptz:GetConfigurationsResponse><tptz:PTZConfiguration token=\"c1\"><tt:Name>PTZ</tt:Name>"
+                             "</tptz:PTZConfiguration></tptz:GetConfigurationsResponse>");
+            return _soap("<tptz:GetConfigurationsResponse><tptz:PTZConfiguration token=\"c1\"><tt:Name>PTZ</tt:Name>"
+                         "<tt:DefaultContinuousPanTiltVelocitySpace>x</tt:DefaultContinuousPanTiltVelocitySpace>" +
+                         string(configs == "both" ? "<tt:DefaultContinuousZoomVelocitySpace>x</tt:DefaultContinuousZoomVelocitySpace>" : "") +
+                         "</tptz:PTZConfiguration></tptz:GetConfigurationsResponse>");
+        }
         return _soap("", response_bad_request);
+    }
+
+    // What a camera answers to something it doesn't do.
+    r_server_response _unsupported()
+    {
+        return _soap("<s:Fault><s:Code><s:Value>s:Sender</s:Value><s:Subcode><s:Value>ter:ActionNotSupported</s:Value></s:Subcode></s:Code>"
+                     "<s:Reason><s:Text xml:lang=\"en\">Action not supported</s:Text></s:Reason></s:Fault>", response_bad_request);
     }
 };
 
@@ -406,6 +438,118 @@ void test_r_ptz_session::test_axes_unknown_are_null()
     r_onvif_provider p("", nullptr);
     auto moved = _run(p, cam, _cmd(r_ptz_command::op_t::move));
     RTF_ASSERT(moved.supports_pan_tilt.is_null() && moved.supports_zoom.is_null());
+}
+
+// A camera that advertises a PTZ service is PTZ only if a node (GetNodes) or a configuration (GetConfigurations) lists a
+// pan, tilt or zoom space. One that has none answers "no_ptz", and is then not asked again.
+void test_r_ptz_session::test_a_ptz_service_without_axes_is_not_ptz()
+{
+    // GetNodes lists spaces and none is a continuous one; GetConfigurations says the action isn't supported.
+    {
+        fake_camera cam;
+        cam.nodes = "no_continuous";
+        cam.configs = "unsupported";
+        r_onvif_provider p("", nullptr);
+        RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(r_ptz_command::op_t::list_presets)), string("no_ptz"));
+        RTF_ASSERT_EQUAL(cam.count("GetNodes"), 1);
+        // Every command after it answers at once, without a call to the camera.
+        for(auto op : {r_ptz_command::op_t::list_presets, r_ptz_command::op_t::move, r_ptz_command::op_t::stop, r_ptz_command::op_t::goto_preset})
+            RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(op)), string("no_ptz"));
+        RTF_ASSERT_EQUAL(cam.count("GetNodes"), 1);
+        RTF_ASSERT_EQUAL(cam.count("GetCapabilities"), 1);
+        RTF_ASSERT_EQUAL(cam.count("GetPresets") + cam.count("ContinuousMove") + cam.count("tptz:Stop") + cam.count("GotoPreset"), 0);
+    }
+    // ActionNotSupported to both probes.
+    {
+        fake_camera cam;
+        cam.nodes = "unsupported";
+        cam.configs = "unsupported";
+        r_onvif_provider p("", nullptr);
+        RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(r_ptz_command::op_t::list_presets)), string("no_ptz"));
+        RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(r_ptz_command::op_t::move)), string("no_ptz"));
+        RTF_ASSERT_EQUAL(cam.count("GetNodes"), 1);
+        RTF_ASSERT_EQUAL(cam.count("ContinuousMove"), 0);
+    }
+    // Nodes say nothing about axes and neither do the configurations.
+    {
+        fake_camera cam;
+        cam.nodes = "no_spaces";
+        cam.configs = "none";
+        r_onvif_provider p("", nullptr);
+        RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(r_ptz_command::op_t::list_presets)), string("no_ptz"));
+    }
+}
+
+// The configurations settle it when the nodes can't: a camera whose GetNodes isn't supported but whose configuration has
+// a pan/tilt space is PTZ, with the axes the configuration shows.
+void test_r_ptz_session::test_the_configurations_settle_what_the_nodes_cannot()
+{
+    fake_camera cam;
+    cam.nodes = "unsupported";
+    cam.configs = "pan_only";
+    r_onvif_provider p("", nullptr);
+    auto r = _run(p, cam, _cmd(r_ptz_command::op_t::list_presets));
+    RTF_ASSERT(!r.supports_pan_tilt.is_null() && r.supports_pan_tilt.value());
+    RTF_ASSERT(!r.supports_zoom.is_null() && !r.supports_zoom.value());
+    RTF_ASSERT_EQUAL(r.presets.size(), (size_t)2);
+    // The nodes' answer is kept: a later list is no new probe.
+    _run(p, cam, _cmd(r_ptz_command::op_t::list_presets));
+    RTF_ASSERT_EQUAL(cam.count("GetNodes"), 1);
+    RTF_ASSERT_EQUAL(cam.count("GetConfigurations"), 1);
+}
+
+// A probe that fails in a way that says nothing about PTZ (a camera that is busy, a bad login) is not "no PTZ": the
+// camera is treated as before, and asked again next time.
+void test_r_ptz_session::test_a_failed_probe_is_not_remembered()
+{
+    fake_camera cam;
+    cam.nodes = "unsupported";
+    cam.configs = "fault";
+    r_onvif_provider p("", nullptr);
+    auto r = _run(p, cam, _cmd(r_ptz_command::op_t::list_presets));
+    RTF_ASSERT_EQUAL(r.presets.size(), (size_t)2);
+    RTF_ASSERT(r.supports_pan_tilt.is_null());
+    // Nothing was remembered as "none": a move goes to the camera.
+    _run(p, cam, _cmd(r_ptz_command::op_t::move));
+    RTF_ASSERT_EQUAL(cam.count("ContinuousMove"), 1);
+}
+
+// ActionNotSupported to GetPresets is a camera with PTZ and no presets, not a camera with no PTZ.
+void test_r_ptz_session::test_no_presets_feature_is_still_ptz()
+{
+    fake_camera cam;
+    cam.nodes = "both";
+    cam.presets_unsupported = true;
+    r_onvif_provider p("", nullptr);
+    auto r = _run(p, cam, _cmd(r_ptz_command::op_t::list_presets));
+    RTF_ASSERT(r.presets.empty());
+    RTF_ASSERT(!r.supports_zoom.is_null() && r.supports_zoom.value());
+    _run(p, cam, _cmd(r_ptz_command::op_t::move));
+    RTF_ASSERT_EQUAL(cam.count("ContinuousMove"), 1);
+}
+
+// A camera that passed the probe and then says a command isn't supported has no PTZ to speak of: "no_ptz", and the calls
+// stop. How long that is remembered is a plain function of the clock.
+void test_r_ptz_session::test_an_unsupported_command_stops_the_calls()
+{
+    fake_camera cam;
+    cam.nodes = "both";
+    cam.move_unsupported = true;
+    r_onvif_provider p("", nullptr);
+    RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(r_ptz_command::op_t::move)), string("no_ptz"));
+    RTF_ASSERT_EQUAL(cam.count("ContinuousMove"), 1);
+    // Not tried again, and not for the other commands either.
+    RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(r_ptz_command::op_t::move)), string("no_ptz"));
+    RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(r_ptz_command::op_t::list_presets)), string("no_ptz"));
+    RTF_ASSERT_EQUAL(cam.count("ContinuousMove"), 1);
+    RTF_ASSERT_EQUAL(cam.count("GetPresets"), 0);
+    RTF_ASSERT_EQUAL(cam.count("GetNodes"), 1);
+
+    RTF_ASSERT(!ptz_none_valid(0, 1000));
+    RTF_ASSERT(ptz_none_valid(1000, 1000));
+    RTF_ASSERT(ptz_none_valid(1000, 1000 + PTZ_NONE_TTL_MS - 1));
+    RTF_ASSERT(!ptz_none_valid(1000, 1000 + PTZ_NONE_TTL_MS));
+    RTF_ASSERT(!ptz_none_valid(1000, 999));      // a clock that went back doesn't extend it
 }
 
 // A move sends only the axes it uses: a camera without zoom can fault on a Zoom

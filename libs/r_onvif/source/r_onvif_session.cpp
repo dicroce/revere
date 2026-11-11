@@ -6,6 +6,7 @@
 #include <sstream>
 #include <map>
 #include <algorithm>
+#include <cctype>
 #include <tuple>
 #include "r_http/r_client_request.h"
 #include "r_http/r_methods.h"
@@ -2615,6 +2616,84 @@ r_onvif::onvif_ptz_caps r_onvif::parse_ptz_caps(const string& xml)
     if (doc.select_node("//*[local-name()='SupportedPTZSpaces']/*[local-name()='ContinuousZoomVelocitySpace']"))
         caps.zoom = true;
     return caps;
+}
+
+r_onvif::onvif_ptz_caps r_onvif::parse_ptz_configuration_caps(const string& xml)
+{
+    onvif_ptz_caps caps;
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetConfigurationsResponse XML");
+    // Match by local name, as parse_ptz_caps does. A configuration that names a continuous velocity space as its default,
+    // or limits on the axis, drives that axis.
+    if (!doc.select_node("//*[local-name()='PTZConfiguration']"))
+        return caps;
+    caps.known = true;
+    if (doc.select_node("//*[local-name()='PTZConfiguration']/*[local-name()='DefaultContinuousPanTiltVelocitySpace']") ||
+        doc.select_node("//*[local-name()='PTZConfiguration']/*[local-name()='PanTiltLimits']"))
+        caps.pan_tilt = true;
+    if (doc.select_node("//*[local-name()='PTZConfiguration']/*[local-name()='DefaultContinuousZoomVelocitySpace']") ||
+        doc.select_node("//*[local-name()='PTZConfiguration']/*[local-name()='ZoomLimits']"))
+        caps.zoom = true;
+    return caps;
+}
+
+r_onvif::ptz_verdict r_onvif::ptz_verdict_of(const ptz_probe_result& nodes, const ptz_probe_result& configurations)
+{
+    const ptz_probe_result* both[] = {&nodes, &configurations};
+    bool listed_unusable = false, failed = false;
+    for (auto p : both)
+    {
+        if (p->how == ptz_probe_how::answered)
+        {
+            if (ptz_caps_usable(p->caps))
+                return ptz_verdict::usable;
+            if (p->caps.known)
+                listed_unusable = true;
+        }
+        else if (p->how == ptz_probe_how::failed)
+            failed = true;
+    }
+    if (listed_unusable)
+        return ptz_verdict::none;
+    return failed ? ptz_verdict::unknown : ptz_verdict::none;
+}
+
+bool r_onvif::is_unsupported_action(const string& what)
+{
+    string lower;
+    lower.reserve(what.size());
+    for (unsigned char c : what)
+        lower += (char)tolower(c);
+    return lower.find("actionnotsupported") != string::npos || lower.find("optionalactionnotimplemented") != string::npos ||
+           lower.find("action not supported") != string::npos;
+}
+
+int r_onvif::events_wait_s(int backoff_s, bool unsupported)
+{
+    return unsupported ? std::max(backoff_s, EVENTS_UNSUPPORTED_WAIT_S) : backoff_s;
+}
+
+int r_onvif::events_next_backoff_s(int backoff_s)
+{
+    return std::min(backoff_s * 2, EVENTS_BACKOFF_MAX_S);
+}
+
+r_onvif::onvif_ptz_caps r_onvif::r_onvif_cam::get_ptz_configuration_caps(const string& ptz_service)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(ptz_service, host, port, protocol, uri);
+    auto result = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver20/ptz/wsdl/GetConfigurations",
+        [&](pugi::xml_node& body) {
+            body.append_child("tptz:GetConfigurations");
+        },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("GetConfigurations failed", result);
+    return parse_ptz_configuration_caps(result.second);
 }
 
 r_onvif::onvif_ptz_caps r_onvif::r_onvif_cam::get_ptz_caps(const string& ptz_service)

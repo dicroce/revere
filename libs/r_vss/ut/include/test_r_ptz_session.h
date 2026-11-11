@@ -16,6 +16,11 @@ public:
       TEST(test_r_ptz_session::test_open_failure_is_camera_error);
       TEST(test_r_ptz_session::test_list_presets_reports_axes);
       TEST(test_r_ptz_session::test_axes_unknown_are_null);
+      TEST(test_r_ptz_session::test_a_ptz_service_without_axes_is_not_ptz);
+      TEST(test_r_ptz_session::test_the_configurations_settle_what_the_nodes_cannot);
+      TEST(test_r_ptz_session::test_a_failed_probe_is_not_remembered);
+      TEST(test_r_ptz_session::test_no_presets_feature_is_still_ptz);
+      TEST(test_r_ptz_session::test_an_unsupported_command_stops_the_calls);
       TEST(test_r_ptz_session::test_only_the_axes_in_use);
       TEST(test_r_ptz_session::test_stop_names_pan_tilt);
       TEST(test_r_ptz_session::test_timeout_read);
@@ -53,6 +58,11 @@ public:
     void test_open_failure_is_camera_error();
     void test_list_presets_reports_axes();
     void test_axes_unknown_are_null();
+    void test_a_ptz_service_without_axes_is_not_ptz();
+    void test_the_configurations_settle_what_the_nodes_cannot();
+    void test_a_failed_probe_is_not_remembered();
+    void test_no_presets_feature_is_still_ptz();
+    void test_an_unsupported_command_stops_the_calls();
     void test_only_the_axes_in_use();
     void test_stop_names_pan_tilt();
     void test_timeout_read();
