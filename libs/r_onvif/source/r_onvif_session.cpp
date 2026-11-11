@@ -2624,24 +2624,31 @@ r_onvif::onvif_ptz_caps r_onvif::parse_ptz_configuration_caps(const string& xml)
     pugi::xml_document doc;
     if (!doc.load_string(xml.c_str()))
         throw std::runtime_error("Failed to parse GetConfigurationsResponse XML");
-    // Match by local name, as parse_ptz_caps does. A configuration that names a continuous velocity space as its default,
-    // or limits on the axis, drives that axis.
-    if (!doc.select_node("//*[local-name()='PTZConfiguration']"))
-        return caps;
-    caps.known = true;
-    if (doc.select_node("//*[local-name()='PTZConfiguration']/*[local-name()='DefaultContinuousPanTiltVelocitySpace']") ||
-        doc.select_node("//*[local-name()='PTZConfiguration']/*[local-name()='PanTiltLimits']"))
-        caps.pan_tilt = true;
-    if (doc.select_node("//*[local-name()='PTZConfiguration']/*[local-name()='DefaultContinuousZoomVelocitySpace']") ||
-        doc.select_node("//*[local-name()='PTZConfiguration']/*[local-name()='ZoomLimits']"))
-        caps.zoom = true;
+    // Match by local name, as parse_ptz_caps does. A configuration drives an axis when it names a default velocity space
+    // for it, a default speed (DefaultPTZSpeed's PanTilt and Zoom), or limits on it. known is true only when some
+    // configuration says something about its axes: one that carries none of these (a name and a node token) says nothing,
+    // and is not a listing of no axes.
+    auto has = [&](const char* child) {
+        string xp = string("//*[local-name()='PTZConfiguration']/*[local-name()='") + child + "']";
+        return (bool)doc.select_node(xp.c_str());
+    };
+    auto speed_has = [&](const char* axis) {
+        string xp = string("//*[local-name()='PTZConfiguration']/*[local-name()='DefaultPTZSpeed']/*[local-name()='") + axis + "']";
+        return (bool)doc.select_node(xp.c_str());
+    };
+    const bool pan_tilt_info = has("DefaultContinuousPanTiltVelocitySpace") || has("PanTiltLimits") || speed_has("PanTilt");
+    const bool zoom_info = has("DefaultContinuousZoomVelocitySpace") || has("ZoomLimits") || speed_has("Zoom");
+    caps.pan_tilt = pan_tilt_info;
+    caps.zoom = zoom_info;
+    caps.known = pan_tilt_info || zoom_info || has("DefaultAbsolutePanTiltPositionSpace") || has("DefaultRelativePanTiltTranslationSpace") ||
+                 has("DefaultAbsoluteZoomPositionSpace") || has("DefaultRelativeZoomTranslationSpace");
     return caps;
 }
 
 r_onvif::ptz_verdict r_onvif::ptz_verdict_of(const ptz_probe_result& nodes, const ptz_probe_result& configurations)
 {
     const ptz_probe_result* both[] = {&nodes, &configurations};
-    bool listed_unusable = false, failed = false;
+    bool listed_unusable = false;
     for (auto p : both)
     {
         if (p->how == ptz_probe_how::answered)
@@ -2651,12 +2658,15 @@ r_onvif::ptz_verdict r_onvif::ptz_verdict_of(const ptz_probe_result& nodes, cons
             if (p->caps.known)
                 listed_unusable = true;
         }
-        else if (p->how == ptz_probe_how::failed)
-            failed = true;
     }
+    // None only when something positively listed its axes and there are none, or the camera twice said it doesn't support
+    // the question. A reply that says nothing about axes, and a probe that failed, leave it unknown: a real PTZ camera
+    // must not lose its controls because it answers in a way we don't read.
     if (listed_unusable)
         return ptz_verdict::none;
-    return failed ? ptz_verdict::unknown : ptz_verdict::none;
+    if (nodes.how == ptz_probe_how::unsupported && configurations.how == ptz_probe_how::unsupported)
+        return ptz_verdict::none;
+    return ptz_verdict::unknown;
 }
 
 bool r_onvif::is_unsupported_action(const string& what)
@@ -2667,6 +2677,13 @@ bool r_onvif::is_unsupported_action(const string& what)
         lower += (char)tolower(c);
     return lower.find("actionnotsupported") != string::npos || lower.find("optionalactionnotimplemented") != string::npos ||
            lower.find("action not supported") != string::npos || lower.find("action not implemented") != string::npos;
+}
+
+bool r_onvif::events_unsupported(const string& stage, const string& what)
+{
+    // Only the questions that set a subscription up: Renew and PullMessages failing on a subscription that worked is a
+    // camera that went wrong, not one that lacks the feature.
+    return (stage == "GetCapabilities" || stage == "CreatePullPointSubscription") && is_unsupported_action(what);
 }
 
 int r_onvif::events_wait_s(int backoff_s, bool unsupported)

@@ -418,8 +418,9 @@ r_ptz_result r_onvif_provider::_run_ptz(_ptz_session& session, const r_ptz_comma
     }
     catch(const std::exception& ex)
     {
-        // The camera says it doesn't do this: it has no PTZ to speak of, and isn't asked again for a while.
-        if(r_onvif::is_unsupported_action(ex.what()))
+        // The camera says it can't move (ContinuousMove) or stop (Stop): it has no PTZ to speak of, and isn't asked again
+        // for a while. Another command it doesn't do (GotoPreset) says nothing about moving.
+        if((cmd.op == r_ptz_command::op_t::move || cmd.op == r_ptz_command::op_t::stop) && r_onvif::is_unsupported_action(ex.what()))
         {
             session.none_since_ms = _steady_ms();
             throw r_ptz_error("no_ptz", string("The camera doesn't support PTZ: ") + ex.what());

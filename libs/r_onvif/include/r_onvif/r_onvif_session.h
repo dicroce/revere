@@ -289,10 +289,11 @@ struct ptz_probe_result
 // Whether a camera that advertises a PTZ service really has PTZ.
 enum class ptz_verdict { usable, none, unknown };
 
-// usable: some probe found a node (or configuration) with a continuous pan/tilt or zoom space. none: a probe listed
-// spaces and none is usable, or no probe could say anything and none failed (every one answered without spaces or said
-// the action isn't supported): a camera that advertises PTZ and has none. unknown: nothing usable was found, but a
-// probe failed in a way that says nothing about PTZ, so it is asked again, not remembered.
+// usable: some probe found a node (or configuration) with a pan/tilt or zoom axis. none: a probe positively listed its
+// axes and there are none (a node's SupportedPTZSpaces without a continuous space, a configuration naming only axes it
+// does not drive), or the camera said twice that it doesn't support the question. unknown: anything else (a reply that
+// says nothing about axes, a probe that failed): the camera is treated as before and asked again, not remembered. A real
+// PTZ camera must not lose its controls because it answers in a way that isn't read.
 R_API ptz_verdict ptz_verdict_of(const ptz_probe_result& nodes, const ptz_probe_result& configurations);
 
 // Whether the text of a failed ONVIF call (r_onvif_cam's errors carry the camera's own reason) says the camera
@@ -306,6 +307,9 @@ R_API bool is_unsupported_action(const std::string& what);
 constexpr int EVENTS_BACKOFF_MAX_S = 600;
 constexpr int EVENTS_UNSUPPORTED_WAIT_S = 6 * 60 * 60;
 R_API int events_wait_s(int backoff_s, bool unsupported);
+// Whether a failed events call says the camera doesn't do events: ActionNotSupported (is_unsupported_action) to one of the
+// calls that set a subscription up, GetCapabilities or CreatePullPointSubscription (`stage` as r_onvif_events names it).
+R_API bool events_unsupported(const std::string& stage, const std::string& what);
 R_API int events_next_backoff_s(int backoff_s);
 
 enum class soap_version

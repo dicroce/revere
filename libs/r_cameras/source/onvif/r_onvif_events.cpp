@@ -119,7 +119,7 @@ void r_onvif_events::_run()
             // state, starts it again if it still is).
             _apply(_tracker.close_all());
             string what = _first_line(e.what());
-            const bool not_supported = r_onvif::is_unsupported_action(e.what());
+            const bool not_supported = r_onvif::events_unsupported(stage, e.what());
             _update([&](r_camera_events_status& s) {
                 s.up = false;
                 s.state = not_supported ? "not supported" : "down";
@@ -129,7 +129,7 @@ void r_onvif_events::_run()
             // The camera said it doesn't do this (ActionNotSupported): asking every few minutes gets the same answer, so
             // it is asked again only rarely, in case a firmware update added it. Anything else (a timeout, a refused
             // login, a camera that is down) is retried as before.
-            const bool unsupported = r_onvif::is_unsupported_action(e.what());
+            const bool unsupported = not_supported;
             const int wait_s = r_onvif::events_wait_s(backoff_s, unsupported);
             R_LOG_WARNING("%sfailed %s: %s (retrying in %d s%s)", _prefix().c_str(), stage.c_str(), what.c_str(), wait_s,
                           unsupported ? ", the camera says it doesn't support it" : "");

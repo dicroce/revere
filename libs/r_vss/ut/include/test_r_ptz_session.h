@@ -19,6 +19,9 @@ public:
       TEST(test_r_ptz_session::test_a_ptz_service_without_axes_is_not_ptz);
       TEST(test_r_ptz_session::test_the_configurations_settle_what_the_nodes_cannot);
       TEST(test_r_ptz_session::test_a_failed_probe_is_not_remembered);
+      TEST(test_r_ptz_session::test_a_reply_that_says_nothing_is_not_no_ptz);
+      TEST(test_r_ptz_session::test_a_default_speed_is_ptz);
+      TEST(test_r_ptz_session::test_only_move_and_stop_unsupported_mean_no_ptz);
       TEST(test_r_ptz_session::test_no_presets_feature_is_still_ptz);
       TEST(test_r_ptz_session::test_an_unsupported_command_stops_the_calls);
       TEST(test_r_ptz_session::test_only_the_axes_in_use);
@@ -61,6 +64,9 @@ public:
     void test_a_ptz_service_without_axes_is_not_ptz();
     void test_the_configurations_settle_what_the_nodes_cannot();
     void test_a_failed_probe_is_not_remembered();
+    void test_a_reply_that_says_nothing_is_not_no_ptz();
+    void test_a_default_speed_is_ptz();
+    void test_only_move_and_stop_unsupported_mean_no_ptz();
     void test_no_presets_feature_is_still_ptz();
     void test_an_unsupported_command_stops_the_calls();
     void test_only_the_axes_in_use();

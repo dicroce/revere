@@ -369,9 +369,19 @@ void test_r_onvif_profiles::test_ptz_configuration_caps()
     RTF_ASSERT(limits.known && limits.pan_tilt && limits.zoom);
     auto pan = parse_ptz_configuration_caps(cfg("<tt:DefaultContinuousPanTiltVelocitySpace/>"));
     RTF_ASSERT(pan.known && pan.pan_tilt && !pan.zoom);
-    // A configuration that drives nothing: known, no axis.
-    auto none = parse_ptz_configuration_caps(cfg(""));
-    RTF_ASSERT(none.known && !none.pan_tilt && !none.zoom);
+    // A configuration that only has a default speed (the axes it names are the ones it drives): a real PTZ camera.
+    auto speed = parse_ptz_configuration_caps(cfg("<tt:DefaultPTZSpeed><tt:PanTilt x=\"0.5\" y=\"0.5\"/><tt:Zoom x=\"0.5\"/></tt:DefaultPTZSpeed>"));
+    RTF_ASSERT(speed.known && speed.pan_tilt && speed.zoom);
+    auto speed_pan = parse_ptz_configuration_caps(cfg("<tt:DefaultPTZSpeed><tt:PanTilt x=\"0.5\" y=\"0.5\"/></tt:DefaultPTZSpeed>"));
+    RTF_ASSERT(speed_pan.known && speed_pan.pan_tilt && !speed_pan.zoom);
+    auto speed_zoom = parse_ptz_configuration_caps(cfg("<tt:DefaultPTZSpeed><tt:Zoom x=\"0.5\"/></tt:DefaultPTZSpeed>"));
+    RTF_ASSERT(speed_zoom.known && !speed_zoom.pan_tilt && speed_zoom.zoom);
+    // Only absolute or relative spaces: it lists its axes, and none is one we drive.
+    auto other = parse_ptz_configuration_caps(cfg("<tt:DefaultAbsolutePanTiltPositionSpace>x</tt:DefaultAbsolutePanTiltPositionSpace>"));
+    RTF_ASSERT(other.known && !other.pan_tilt && !other.zoom);
+    // A configuration that names no axis at all (a name and a node token) says nothing: not a listing of no axes.
+    RTF_ASSERT(!parse_ptz_configuration_caps(cfg("<tt:NodeToken>n</tt:NodeToken>")).known);
+    RTF_ASSERT(!parse_ptz_configuration_caps(cfg("")).known);
     // Other prefixes, matched by local name; and no configuration at all: unknown.
     auto prefixed = parse_ptz_configuration_caps("<a:R xmlns:a=\"urn:a\"><a:PTZConfiguration><a:DefaultContinuousZoomVelocitySpace/></a:PTZConfiguration></a:R>");
     RTF_ASSERT(prefixed.known && prefixed.zoom && !prefixed.pan_tilt);
@@ -396,19 +406,24 @@ void test_r_onvif_profiles::test_ptz_verdict()
     RTF_ASSERT(ptz_verdict_of(got(answered, true, false, true), got(unsupported)) == ptz_verdict::usable);
     RTF_ASSERT(ptz_verdict_of(got(unsupported), got(answered, true, true)) == ptz_verdict::usable);
     RTF_ASSERT(ptz_verdict_of(got(failed), got(answered, true, false, true)) == ptz_verdict::usable);
-    // None: a node that lists spaces and none usable, or nothing said and nothing failed.
+    // None: a probe positively listed its axes and none is usable, or the camera twice said it doesn't support it.
     RTF_ASSERT(ptz_verdict_of(got(answered, true), got(unsupported)) == ptz_verdict::none);
     RTF_ASSERT(ptz_verdict_of(got(unsupported), got(unsupported)) == ptz_verdict::none);
-    RTF_ASSERT(ptz_verdict_of(got(answered, false), got(answered, false)) == ptz_verdict::none);
-    RTF_ASSERT(ptz_verdict_of(got(answered, false), got(unsupported)) == ptz_verdict::none);
     RTF_ASSERT(ptz_verdict_of(got(answered, true), got(failed)) == ptz_verdict::none);          // the node listed its spaces
-    // Unknown: nothing usable and a probe failed in a way that says nothing.
+    RTF_ASSERT(ptz_verdict_of(got(failed), got(answered, true)) == ptz_verdict::none);          // the configuration listed its axes
+    RTF_ASSERT(ptz_verdict_of(got(answered, true), got(answered, false)) == ptz_verdict::none);
+    // Unknown: nothing usable, and nothing positively said there is none. A reply that says nothing about the axes is not
+    // a "no", and neither is a probe that failed: a real PTZ camera must not lose its controls over either.
     RTF_ASSERT(ptz_verdict_of(got(failed), got(failed)) == ptz_verdict::unknown);
     RTF_ASSERT(ptz_verdict_of(got(unsupported), got(failed)) == ptz_verdict::unknown);
+    RTF_ASSERT(ptz_verdict_of(got(failed), got(unsupported)) == ptz_verdict::unknown);
     RTF_ASSERT(ptz_verdict_of(got(answered, false), got(failed)) == ptz_verdict::unknown);
-    RTF_ASSERT(ptz_verdict_of(got(failed), got(answered, true)) == ptz_verdict::none);
+    RTF_ASSERT(ptz_verdict_of(got(answered, false), got(answered, false)) == ptz_verdict::unknown);
+    RTF_ASSERT(ptz_verdict_of(got(answered, false), got(unsupported)) == ptz_verdict::unknown);
+    RTF_ASSERT(ptz_verdict_of(got(unsupported), got(answered, false)) == ptz_verdict::unknown);
     // The default probe (never run) counts as failed.
     RTF_ASSERT(ptz_verdict_of(got(answered, false), ptz_probe_result()) == ptz_verdict::unknown);
+    RTF_ASSERT(ptz_verdict_of(got(unsupported), ptz_probe_result()) == ptz_verdict::unknown);
     RTF_ASSERT(ptz_caps_usable(onvif_ptz_caps{true, true, false}));
     RTF_ASSERT(ptz_caps_usable(onvif_ptz_caps{true, false, true}));
     RTF_ASSERT(!ptz_caps_usable(onvif_ptz_caps{true, false, false}));
@@ -421,7 +436,7 @@ void test_r_onvif_profiles::test_unsupported_action_and_events_wait()
     RTF_ASSERT(is_unsupported_action("GetNodes failed: HTTP 400 ter:ActionNotSupported | Action not supported"));
     RTF_ASSERT(is_unsupported_action("CreatePullPointSubscription failed: HTTP 500 s:Receiver | ter:OptionalActionNotImplemented"));
     RTF_ASSERT(is_unsupported_action("HTTP 400 ACTION NOT SUPPORTED"));
-    // A real camera's (Garage): the subcode and the reason text both say it; either alone is enough.
+    // A real camera's fault: the subcode and the reason text both say it; either alone is enough.
     RTF_ASSERT(is_unsupported_action("GetNodes failed: HTTP 400 s:Receiver | ter:ActionNotSupported | Action Not Implemented"));
     RTF_ASSERT(is_unsupported_action("GetNodes failed: HTTP 400 s:Receiver | ter:ActionNotSupported"));
     RTF_ASSERT(is_unsupported_action("GetNodes failed: HTTP 400 s:Receiver | Action Not Implemented"));
@@ -440,5 +455,15 @@ void test_r_onvif_profiles::test_unsupported_action_and_events_wait()
     RTF_ASSERT_EQUAL(events_next_backoff_s(10), 20);
     RTF_ASSERT_EQUAL(events_next_backoff_s(300), 600);
     RTF_ASSERT_EQUAL(events_next_backoff_s(600), 600);
+
+    // Only the calls that set a subscription up say "the camera doesn't do events": a subscription that worked and then
+    // gets ActionNotSupported from Renew or PullMessages is a camera that went wrong.
+    const string fault = "HTTP 400 s:Receiver | ter:ActionNotSupported | Action Not Implemented";
+    RTF_ASSERT(events_unsupported("GetCapabilities", fault));
+    RTF_ASSERT(events_unsupported("CreatePullPointSubscription", fault));
+    RTF_ASSERT(!events_unsupported("Renew", fault));
+    RTF_ASSERT(!events_unsupported("PullMessages", fault));
+    RTF_ASSERT(!events_unsupported("finding the device service", fault));
+    RTF_ASSERT(!events_unsupported("CreatePullPointSubscription", "HTTP 401 Unauthorized"));
     RTF_ASSERT_EQUAL(EVENTS_UNSUPPORTED_WAIT_S, 21600);
 }

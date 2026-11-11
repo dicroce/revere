@@ -52,6 +52,8 @@ struct fake_camera
     string configs {"fault"};         // how GetConfigurations answers: "fault", "unsupported", "pan_only", "both" or "none"
     bool presets_unsupported {false}; // GetPresets answers ActionNotSupported
     bool move_unsupported {false};    // ContinuousMove answers ActionNotSupported
+    bool stop_unsupported {false};    // Stop answers ActionNotSupported
+    bool goto_unsupported {false};    // GotoPreset answers ActionNotSupported
     bool offers_rotate {true};        // GetVideoSourceConfigurationOptions lists Rotate ON and OFF
     string rotate {"OFF"};            // the source's Rotate Mode, as SetVideoSourceConfiguration last set it
     string degree;                    // its Rotate Degree, likewise; empty: none
@@ -151,6 +153,8 @@ struct fake_camera
             return _unsupported();
         if(op == "ContinuousMove")
             return _soap("<tptz:ContinuousMoveResponse/>");
+        if(op == "tptz:Stop" && stop_unsupported)
+            return _unsupported();
         if(op == "tptz:Stop")
             return _soap("<tptz:StopResponse/>");
         if(op == "GetProfile")
@@ -179,6 +183,8 @@ struct fake_camera
                 degree = m[1].str();
             return _soap("<trt:SetVideoSourceConfigurationResponse/>");
         }
+        if(op == "GotoPreset" && goto_unsupported)
+            return _unsupported();
         if(op == "GotoPreset")
             return _soap("<tptz:GotoPresetResponse/>");
         // GetNodes per nodes: "fault", "unsupported" (ActionNotSupported), "no_spaces" (no SupportedPTZSpaces),
@@ -201,6 +207,16 @@ struct fake_camera
                 return _soap("", response_bad_request);
             if(configs == "unsupported")
                 return _unsupported();
+            // A configuration that has only a default speed, as a real PTZ camera can.
+            if(configs == "speed")
+                return _soap("<tptz:GetConfigurationsResponse><tptz:PTZConfiguration token=\"c1\"><tt:Name>PTZ</tt:Name>"
+                             "<tt:DefaultPTZSpeed><tt:PanTilt x=\"0.5\" y=\"0.5\"/><tt:Zoom x=\"0.5\"/></tt:DefaultPTZSpeed>"
+                             "</tptz:PTZConfiguration></tptz:GetConfigurationsResponse>");
+            // A configuration that lists only axes we don't drive.
+            if(configs == "absolute_only")
+                return _soap("<tptz:GetConfigurationsResponse><tptz:PTZConfiguration token=\"c1\"><tt:Name>PTZ</tt:Name>"
+                             "<tt:DefaultAbsolutePanTiltPositionSpace>x</tt:DefaultAbsolutePanTiltPositionSpace>"
+                             "</tptz:PTZConfiguration></tptz:GetConfigurationsResponse>");
             if(configs == "none")
                 return _soap("<tptz:GetConfigurationsResponse><tptz:PTZConfiguration token=\"c1\"><tt:Name>PTZ</tt:Name>"
                              "</tptz:PTZConfiguration></tptz:GetConfigurationsResponse>");
@@ -471,13 +487,71 @@ void test_r_ptz_session::test_a_ptz_service_without_axes_is_not_ptz()
         RTF_ASSERT_EQUAL(cam.count("GetNodes"), 1);
         RTF_ASSERT_EQUAL(cam.count("ContinuousMove"), 0);
     }
-    // Nodes say nothing about axes and neither do the configurations.
+    // A configuration that positively lists only axes we don't drive.
     {
         fake_camera cam;
-        cam.nodes = "no_spaces";
-        cam.configs = "none";
+        cam.nodes = "unsupported";
+        cam.configs = "absolute_only";
         r_onvif_provider p("", nullptr);
         RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(r_ptz_command::op_t::list_presets)), string("no_ptz"));
+    }
+}
+
+// Replies that say nothing about the axes are not a "no": a real PTZ camera that answers in a way that isn't read keeps its
+// controls (axes unknown), and is not remembered as having none.
+void test_r_ptz_session::test_a_reply_that_says_nothing_is_not_no_ptz()
+{
+    for(auto how : {make_pair("no_spaces", "none"), make_pair("no_spaces", "fault"), make_pair("unsupported", "none"), make_pair("fault", "none")})
+    {
+        fake_camera cam;
+        cam.nodes = how.first;
+        cam.configs = how.second;
+        r_onvif_provider p("", nullptr);
+        auto r = _run(p, cam, _cmd(r_ptz_command::op_t::list_presets));
+        RTF_ASSERT_EQUAL(r.presets.size(), (size_t)2);
+        RTF_ASSERT(r.supports_pan_tilt.is_null());
+        _run(p, cam, _cmd(r_ptz_command::op_t::move));
+        RTF_ASSERT_EQUAL(cam.count("ContinuousMove"), 1);
+    }
+}
+
+// A configuration with only a default speed is a PTZ camera, with the axes the speed names.
+void test_r_ptz_session::test_a_default_speed_is_ptz()
+{
+    fake_camera cam;
+    cam.nodes = "unsupported";
+    cam.configs = "speed";
+    r_onvif_provider p("", nullptr);
+    auto r = _run(p, cam, _cmd(r_ptz_command::op_t::list_presets));
+    RTF_ASSERT(!r.supports_pan_tilt.is_null() && r.supports_pan_tilt.value());
+    RTF_ASSERT(!r.supports_zoom.is_null() && r.supports_zoom.value());
+    _run(p, cam, _cmd(r_ptz_command::op_t::move));
+    RTF_ASSERT_EQUAL(cam.count("ContinuousMove"), 1);
+}
+
+// Only a camera that can't move or stop has no PTZ: one that can't go to a preset is still a PTZ camera.
+void test_r_ptz_session::test_only_move_and_stop_unsupported_mean_no_ptz()
+{
+    {
+        fake_camera cam;
+        cam.nodes = "both";
+        cam.goto_unsupported = true;
+        r_onvif_provider p("", nullptr);
+        auto goto_preset = _cmd(r_ptz_command::op_t::goto_preset);
+        goto_preset.preset_token = "1";
+        RTF_ASSERT_EQUAL(_code_of(p, cam, goto_preset), string("camera_error"));
+        // Not remembered as no PTZ: it still moves.
+        RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(r_ptz_command::op_t::move)), string("none"));
+        RTF_ASSERT_EQUAL(cam.count("ContinuousMove"), 1);
+    }
+    {
+        fake_camera cam;
+        cam.nodes = "both";
+        cam.stop_unsupported = true;
+        r_onvif_provider p("", nullptr);
+        RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(r_ptz_command::op_t::stop)), string("no_ptz"));
+        RTF_ASSERT_EQUAL(_code_of(p, cam, _cmd(r_ptz_command::op_t::move)), string("no_ptz"));
+        RTF_ASSERT_EQUAL(cam.count("ContinuousMove"), 0);
     }
 }
 
