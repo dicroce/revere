@@ -4,6 +4,7 @@
 
 #include "main_window.h"
 #include "rtsp_source_camera_config.h"
+#include "streams_state.h"
 #include <initializer_list>
 
 // The desktop app's dialogs, on one frame so they share a look: a fixed
@@ -466,6 +467,146 @@ inline void rtsp_transport_options(dialog_frame& d, std::string& transport)
 
 // ---- Camera properties ----
 
+// The Streams section of camera properties: the stream recorded, and whether live view and analysis use the
+// recording stream or a smaller one the camera offers.
+template<typename STREAMS_CB>
+void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams_cb)
+{
+    using namespace r_ui_utils::theme;
+
+    bool onvif, loading, working, gateway_on;
+    std::string recording;
+    std::vector<streams_state::candidate> candidates;
+    r_disco::r_camera sub;
+    {
+        std::lock_guard<std::mutex> g(streams.m);
+        onvif = streams.onvif;
+        loading = streams.loading;
+        working = streams.working;
+        gateway_on = streams.gateway_on;
+        recording = streams.recording;
+        candidates = streams.candidates;
+        sub = streams.sub;
+    }
+
+    d.section("Streams");
+    if(!onvif)
+    {
+        d.body("This camera was added by its address, so Revere can't look for a smaller stream. Live view uses the recording stream.");
+        return;
+    }
+
+    const bool on = r_disco::substream_on(sub);
+    const std::string token = sub.sub_onvif_profile_token.is_null() ? std::string() : sub.sub_onvif_profile_token.value();
+    const std::string status = sub.sub_status.is_null() ? std::string() : sub.sub_status.value();
+    const std::string reason = r_disco::substream_none_reason(sub);
+    const std::string dot = "  \xC2\xB7  ";
+
+    d.label("Live view and analysis");
+    d.gap(2.0f);
+
+    // The smaller streams to choose from: what the camera offers, and the one in use if it isn't among them
+    // (the list is still coming, or the camera no longer lists it).
+    struct card { std::string token; std::string title; bool in_use; };
+    std::vector<card> cards;
+    bool in_use_listed = false;
+    for(auto& c : candidates)
+    {
+        const bool mine = on && token == c.token;
+        in_use_listed = in_use_listed || mine;
+        // The one in use shows the stream's own size, which can differ a little from what the camera listed.
+        cards.push_back({c.token, mine && !r_disco::substream_title(sub).empty() ? r_disco::substream_title(sub) : c.title, mine});
+    }
+    if(on && !in_use_listed)
+        cards.push_back({token, r_disco::substream_title(sub), true});
+
+    // A check that failed: the smaller stream can't be chosen until the camera is changed and the check is run
+    // again with Find again, so it is shown greyed with why and what to change, not as something that flips back.
+    const bool failed = !on && !reason.empty() && !working;
+    ImGui::BeginDisabled(working);
+    {
+        std::string title = "Use the recording stream";
+        if(!recording.empty())
+            title += dot + recording;
+        if(!on)
+            title += "   (in use)";
+        if(d.option("##sub_off", title.c_str(), "Live view and analysis use the stream that's recorded. No extra connection to the camera.", !on))
+            streams_cb(std::string("off"), std::string());
+    }
+    if(failed)
+    {
+        d.gap(2.0f);
+        const auto hint = r_disco::substream_reason_hint(reason);
+        ImGui::BeginDisabled();
+        d.option("##sub_failed", ("No usable smaller stream: " + reason).c_str(),
+                 hint.empty() ? "Change the camera's sub-stream settings, then choose Find again." :
+                                ("Set the camera's sub-stream, then choose Find again: " + hint + ".").c_str(), false);
+        ImGui::EndDisabled();
+    }
+    else
+    {
+        for(int i = 0; i < (int)cards.size(); ++i)
+        {
+            d.gap(2.0f);
+            ImGui::PushID(i);
+            std::string title = "Use the smaller stream";
+            if(!cards[i].title.empty())
+                title += dot + cards[i].title;
+            if(working)
+                title += "   (checking...)";
+            else if(cards[i].in_use)
+                title += "   (in use)";
+            if(d.option("##sub_use", title.c_str(), "Faster live view and analysis, less CPU. Recording stays full quality.", cards[i].in_use))
+                streams_cb(std::string("use"), cards[i].token);
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndDisabled();
+
+    // What each part is doing now, so a smaller stream doesn't read as the recording having shrunk.
+    d.gap(2.0f);
+    d.body("Recording: full quality" + (recording.empty() ? std::string() : ", " + recording));
+    if(on && !gateway_on)
+        d.body("Live view and analysis: recording stream. Smaller streams are off for this computer: turn them on in Settings.");
+    else if(on)
+        d.body("Live view and analysis: smaller stream" + (r_disco::substream_title(sub).empty() ? std::string() : ", " + r_disco::substream_title(sub)));
+    else
+        d.body("Live view and analysis: recording stream");
+
+    // And, when it helps, why.
+    if(working)
+        d.body("Checking the camera...");
+    else if(loading)
+        d.body("Looking at the camera's streams...");
+    else if(failed)
+        d.body("Live view and analysis keep using the recording stream.");
+    else if(!on && cards.empty())
+        d.body("No smaller stream found. This camera doesn't offer one Revere can use.");
+    else if(!on)
+        d.body("This camera offers a smaller stream: choose it above to try it.");
+
+    // Motion found in the smaller stream: much less decoding. Only with a smaller stream in use; off until chosen.
+    if(on)
+    {
+        d.gap(4.0f);
+        bool analysis = !sub.sub_analysis.is_null() && sub.sub_analysis.value() != 0;
+        ImGui::BeginDisabled(working);
+        if(d.toggle("##sub_analysis", "Find motion in the smaller stream (experimental)",
+            "Uses much less of this computer's processor. Recording, and the pictures you watch, stay full quality. If the smaller stream stops, motion is found in the recording stream again.",
+            &analysis))
+            streams_cb(std::string("analysis"), std::string(analysis ? "1" : "0"));
+        ImGui::EndDisabled();
+        d.gap(4.0f);
+    }
+
+    ImGui::BeginDisabled(working || loading);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
+    if(styled_button(status.empty() && !on ? "Add substream" : "Find again"))
+        streams_cb(std::string("find"), std::string());
+    ImGui::PopStyleVar();
+    ImGui::EndDisabled();
+}
+
 // Detection settings first (each a switch with a line saying what it does),
 // then a Storage section with where the recording lives and the two storage
 // operations. The hours field only matters when still-video pruning is on, so
@@ -475,7 +616,10 @@ inline void rtsp_transport_options(dialog_frame& d, std::string& transport)
 // tier_status says what the camera uses now and why.
 // rtsp_transport is "TCP" or "UDP"; transport_status, when not empty, says
 // the camera is on UDP because it refused TCP.
-template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB>
+// streams is the Streams section's state (see streams_state); streams_cb(op, token) is called for a click in it:
+// op "off" (use the recording stream), "use" (the smaller stream with that profile token), "find" (look again) or
+// "analysis" (token "1" or "0": find motion in the smaller stream).
+template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB, typename STREAMS_CB>
 void camera_properties_modal(
     const char* popup_name,
     const std::string& camera_name,
@@ -487,10 +631,12 @@ void camera_properties_modal(
     std::string& rtsp_transport,
     const std::string& transport_status,
     const std::string& record_file_path,
+    streams_state& streams,
     OK_CB ok_cb,
     CANCEL_CB cancel_cb,
     MOVE_STORAGE_CB move_storage_cb,
-    CHANGE_RETENTION_CB change_retention_cb
+    CHANGE_RETENTION_CB change_retention_cb,
+    STREAMS_CB streams_cb
 )
 {
     using namespace r_ui_utils::theme;
@@ -559,6 +705,8 @@ void camera_properties_modal(
     if(tried && do_motion_pruning && !hours_ok)
         d.error("Enter a whole number of hours, 1 or more.");
 
+    streams_section(d, streams, streams_cb);
+
     d.section("Network");
     rtsp_transport_options(d, rtsp_transport);
     if(!transport_status.empty())
@@ -602,7 +750,13 @@ void camera_properties_modal(
         change_retention_cb();
     }
 
-    int a = d.actions({{"Cancel"}, {"Save", button_kind::primary}});
+    // Not while the camera is being asked about its streams: that answer is what Save would write.
+    bool checking_streams;
+    {
+        std::lock_guard<std::mutex> g(streams.m);
+        checking_streams = streams.working;
+    }
+    int a = d.actions({{"Cancel"}, {"Save", button_kind::primary, !checking_streams}});
     if(closing)
         return;
     if(a == 0 || d.escape())
@@ -610,7 +764,7 @@ void camera_properties_modal(
         d.close();
         cancel_cb();
     }
-    else if(a == 1 || d.enter())
+    else if((a == 1 || d.enter()) && !checking_streams)
     {
         tried = true;
         // The hours only apply with pruning on; leave a bad value alone otherwise.
@@ -866,18 +1020,22 @@ void profile_selection_modal(
         return;
 
     d.step_heading(name);
-    d.body("Cameras usually offer a full-resolution stream and smaller ones. Pick the one to record.");
+    d.body("Cameras usually offer a full-resolution stream and smaller ones. Revere records the best one unless you pick another.");
     if(as.profiles_were_filtered)
         d.body("Streams in formats Revere can't record aren't listed.", r_ui_utils::theme::status_warning_text);
     d.gap(4.0f);
 
+    // Auto first (index 0), then each stream, the largest first. selected_profile_idx is the card chosen:
+    // 0 is Auto, n is available_profiles[n - 1].
+    if(d.option("##profile_auto", "Auto (recommended)", "The camera's highest-quality stream, which is usually its main one.", as.selected_profile_idx == 0))
+        as.selected_profile_idx = 0;
     for(int i = 0; i < (int)as.available_profiles.size(); ++i)
     {
         const auto& pr = as.available_profiles[i];
         auto title = main_window_detail::upper(pr.encoding) + "  \xC2\xB7  " + std::to_string(pr.width) + " \xC3\x97 " + std::to_string(pr.height);
         ImGui::PushID(i);
-        if(d.option("##profile", title.c_str(), i == 0 ? "Usually the main, highest-quality stream." : "", i == as.selected_profile_idx))
-            as.selected_profile_idx = i;
+        if(d.option("##profile", title.c_str(), "", i + 1 == as.selected_profile_idx))
+            as.selected_profile_idx = i + 1;
         ImGui::PopID();
     }
 
@@ -893,7 +1051,11 @@ void profile_selection_modal(
     }
     else if(have && (a == 1 || d.enter()))
     {
-        as.selected_profile_token = as.available_profiles[std::clamp(as.selected_profile_idx, 0, (int)as.available_profiles.size() - 1)].token;
+        // Auto is the largest stream the list shows (it is sorted largest first, and only has streams Revere can
+        // record), by its token: an empty token would let interrogation pick among all the camera's profiles,
+        // including ones this list left out, and leave the camera with no stored profile.
+        const int idx = std::clamp(as.selected_profile_idx, 0, (int)as.available_profiles.size());
+        as.selected_profile_token = as.available_profiles[idx == 0 ? 0 : idx - 1].token;
         d.close();
         next_cb();
     }
@@ -933,6 +1095,17 @@ void friendly_name_modal(
     fn = friendly_name;
     if(tried && fn.empty())
         d.error("Enter a name for the camera.");
+
+    // Only for a camera Revere could ask for its streams (not one added by its RTSP address).
+    if(as.sub_can_ask)
+    {
+        d.gap(6.0f);
+        d.toggle("##use_substream", "Use the camera's smaller stream",
+            "For live view and analysis. Recording still uses the main stream.",
+            &as.use_substream);
+        if(as.use_substream && !as.sub_line.empty())
+            d.body(as.sub_line);
+    }
 
     int a = d.actions({{"Cancel"}, {"Next", button_kind::primary}});
     if(a == 0 || d.escape())

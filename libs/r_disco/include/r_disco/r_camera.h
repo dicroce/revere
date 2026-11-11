@@ -62,8 +62,35 @@ struct r_camera
     // r_camera_move.h). Null until first seen.
     r_utils::r_nullable<std::string> mac;
 
+    // The camera's second, smaller stream, for live view and analysis while
+    // the main stream records. sub_mode is "on" or "off" (null reads as off):
+    // nothing opens a second stream unless it's "on". sub_status says whether
+    // it's usable: "ok", "pending" (not checked yet) or "none:<reason>". The
+    // rest describe the stream picked from the camera's ONVIF profiles (see
+    // r_onvif::substream_candidates and r_pipeline::check_substream); the credentials are main's.
+    r_utils::r_nullable<std::string> sub_mode;
+    r_utils::r_nullable<std::string> sub_status;
+    r_utils::r_nullable<std::string> sub_onvif_profile_token;
+    r_utils::r_nullable<std::string> sub_rtsp_url;
+    r_utils::r_nullable<std::string> sub_video_codec;
+    r_utils::r_nullable<std::string> sub_video_codec_parameters;
+    r_utils::r_nullable<int> sub_video_timebase;
+    r_utils::r_nullable<int> sub_width;
+    r_utils::r_nullable<int> sub_height;
+    r_utils::r_nullable<int> sub_key_interval_ms;
+    // Motion is found in the smaller stream's key frames instead of main's (1), which costs the gateway a fraction of
+    // the decoding. Off (0, or null) until chosen, and off whenever the camera has no substream in use.
+    r_utils::r_nullable<int> sub_analysis;
+
     std::string stream_config_hash;
 };
+
+// Whether the camera uses its substream: only sub_mode "on" counts; null or
+// anything else is off.
+inline bool substream_on(const r_camera& camera)
+{
+    return !camera.sub_mode.is_null() && camera.sub_mode.value() == "on";
+}
 
 }
 

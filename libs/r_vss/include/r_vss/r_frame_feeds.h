@@ -53,8 +53,10 @@ struct r_gop_frame
 // is marked CODEC_CHANGED.
 //
 // A feed for "sub" takes the camera's substream while it's fresh, and main
-// otherwise; there are no substreams yet, so it's always served from main, and
-// its audio always comes from main.
+// otherwise (substream_fresh); each frame says which it came from. A switch
+// either way is a gap: video carries on from the new stream's next key frame,
+// marked GAP and CODEC_CHANGED when its codec parameters differ. A feed's audio
+// always comes from main.
 //
 // A feed can start at the camera's newest key frame instead of its next one
 // (from_newest_key): at the next video frame of the stream it's serving, it's
@@ -111,6 +113,11 @@ public:
     // the next key frame, the first frame of each media marked GAP.
     R_API void camera_restarted(const std::string& camera_id);
 
+    // The camera's substream is fresh (frames are reaching its ring) or isn't: its "sub"
+    // feeds move to it or back to main. A feed subscribed later starts on the stream
+    // the camera is on now. Called by the stream keeper as the substream comes and goes.
+    R_API void substream_fresh(const std::string& camera_id, bool fresh);
+
     // A frame the camera recorded. stream is the stream it came from. gop, when
     // given, is that stream's newest GOP, its last frame this one, for feeds that
     // start at the newest key frame: they take it in place of this frame.
@@ -126,6 +133,7 @@ private:
     struct _feed
     {
         std::string camera_id;
+        bool wants_sub {false};         // subscribed to "sub"
         std::string serving {"main"};   // the stream its video is taken from now
         uint32_t media {0};
         size_t max_bytes {DEFAULT_MAX_BYTES};
@@ -156,6 +164,7 @@ private:
     std::atomic<size_t> _count {0};
     std::atomic<size_t> _posts_seen {0};
     std::atomic<size_t> _gop_wanted {0};
+    std::map<std::string, bool> _sub_fresh;   // by camera; _lock
 };
 
 }

@@ -12,6 +12,10 @@ public:
       TEST(test_tray_status::test_some_failed);
       TEST(test_tray_status::test_connecting);
       TEST(test_tray_status::test_many_failed_names);
+      TEST(test_tray_status::test_refused);
+      TEST(test_tray_status::test_reply_refused);
+      TEST(test_tray_status::test_reply_other_error);
+      TEST(test_tray_status::test_reply_ok_and_unreachable);
     RTF_FIXTURE_END();
 
     virtual ~test_tray_status() throw() {}
@@ -27,4 +31,8 @@ public:
     void test_some_failed();
     void test_connecting();
     void test_many_failed_names();
+    void test_refused();
+    void test_reply_refused();
+    void test_reply_other_error();
+    void test_reply_ok_and_unreachable();
 };

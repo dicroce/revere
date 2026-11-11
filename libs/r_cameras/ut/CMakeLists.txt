@@ -2,6 +2,8 @@ add_executable(
     r_cameras_ut
     include/test_r_onvif_event_tracker.h
     source/test_r_onvif_event_tracker.cpp
+    include/test_r_onvif_push_events.h
+    source/test_r_onvif_push_events.cpp
     include/test_r_reolink.h
     source/test_r_reolink.cpp
 )

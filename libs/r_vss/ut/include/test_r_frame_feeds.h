@@ -22,6 +22,8 @@ public:
       TEST(test_r_frame_feeds::test_a_post_without_a_gop_keeps_the_feed_waiting);
       TEST(test_r_frame_feeds::test_feeds_that_didnt_ask_ignore_the_gop);
       TEST(test_r_frame_feeds::test_gop_wanted_counts_waiting_feeds);
+      TEST(test_r_frame_feeds::test_a_sub_feed_follows_the_substream);
+      TEST(test_r_frame_feeds::test_a_sub_feed_subscribed_while_fresh_and_a_restart);
     RTF_FIXTURE_END();
 
     virtual ~test_r_frame_feeds() throw() {}
@@ -47,4 +49,6 @@ public:
     void test_a_post_without_a_gop_keeps_the_feed_waiting();
     void test_feeds_that_didnt_ask_ignore_the_gop();
     void test_gop_wanted_counts_waiting_feeds();
+    void test_a_sub_feed_follows_the_substream();
+    void test_a_sub_feed_subscribed_while_fresh_and_a_restart();
 };

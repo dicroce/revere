@@ -5,6 +5,7 @@
 #include "r_disco/r_stream_config.h"
 #include "r_disco/r_camera.h"
 #include "r_disco/r_camera_move.h"
+#include "r_disco/r_substream.h"
 #include "r_utils/r_timer.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
@@ -167,6 +168,29 @@ public:
         const std::string& preferred_profile_token = "",
         r_utils::r_nullable<int> onvif_port = r_utils::r_nullable<int>(),
         r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
+    );
+
+    // The camera's main profile (its onvif_profile_token, else its largest) and the profiles that could be its
+    // substream, best first (r_onvif::substream_candidates), for the settings to offer. Throws when the camera can't
+    // be asked.
+    R_API r_substream_candidate_list list_substream_candidates(
+        const r_camera& camera,
+        r_utils::r_nullable<std::string> username,
+        r_utils::r_nullable<std::string> password
+    );
+
+    // Looks for the camera's substream among its ONVIF profiles (r_disco::find_substream) and records the outcome on
+    // `camera`: substream_set when found, substream_clear with the reason when not, including when the camera can't
+    // be asked. Nothing is saved; the caller does that. main_width/main_height are main's picture size (see
+    // main_picture_size), 0 when unknown (the profile's own size is used). With only_profile_token, that profile is
+    // the only candidate. Blocks while it probes (up to SUBSTREAM_MAX_PROBES streams), so call it off the UI thread.
+    R_API r_substream_choice find_camera_substream(
+        r_camera& camera,
+        r_utils::r_nullable<std::string> username,
+        r_utils::r_nullable<std::string> password,
+        uint16_t main_width,
+        uint16_t main_height,
+        const std::string& only_profile_token = ""
     );
 
     R_API void forget(const std::string& id);

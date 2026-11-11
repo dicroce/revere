@@ -23,10 +23,17 @@ uint64_t r_frame_feeds::subscribe(const string& camera_id, const string& stream,
     f->max_bytes = max_bytes ? max_bytes : DEFAULT_MAX_BYTES;
     // Only video starts at a key frame.
     f->wants_gop = from_newest_key && (media & VIDEO) != 0;
+    f->wants_sub = stream == "sub";
 
     lock_guard<mutex> g(_lock);
     if(f->wants_gop)
         ++_gop_wanted;
+    if(f->wants_sub)
+    {
+        auto fresh = _sub_fresh.find(camera_id);
+        if(fresh != _sub_fresh.end() && fresh->second)
+            f->serving = "sub";
+    }
     auto id = _next_id++;
     _feeds[id] = f;
     _count = _feeds.size();
@@ -107,9 +114,35 @@ void r_frame_feeds::camera_restarted(const string& camera_id)
         auto& f = *p.second;
         if(f.closed || f.camera_id != camera_id)
             continue;
+        // Main's stream started again. A feed on the substream keeps its video; its audio is main's.
+        if(f.serving == "main")
+        {
+            f.need_key = true;
+            f.video_gap = f.video_seen;
+        }
+        f.audio_gap = f.audio_seen;
+    }
+}
+
+void r_frame_feeds::substream_fresh(const string& camera_id, bool fresh)
+{
+    lock_guard<mutex> g(_lock);
+    if(fresh)
+        _sub_fresh[camera_id] = true;
+    else
+        _sub_fresh.erase(camera_id);
+    for(auto& p : _feeds)
+    {
+        auto& f = *p.second;
+        if(f.closed || f.camera_id != camera_id || !f.wants_sub)
+            continue;
+        const char* target = fresh ? "sub" : "main";
+        if(f.serving == target)
+            continue;
+        // Video carries on from the new stream's next key frame.
+        f.serving = target;
         f.need_key = true;
         f.video_gap = f.video_seen;
-        f.audio_gap = f.audio_seen;
     }
 }
 

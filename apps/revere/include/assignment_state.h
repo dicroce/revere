@@ -8,6 +8,7 @@
 #include "r_pipeline/r_stream_info.h"
 #include "r_onvif/r_onvif_session.h"
 #include "r_ui_utils/texture.h"
+#include "streams_state.h"
 #include <vector>
 #include <memory>
 #include <cstdint>
@@ -51,6 +52,17 @@ struct assignment_state
     std::map<std::string, r_pipeline::r_sdp_media> sdp_medias;
     r_utils::r_nullable<std::shared_ptr<std::vector<uint8_t>>> maybe_key_frame;
     std::shared_ptr<r_ui_utils::texture> key_frame_texture;
+    // The camera's smaller stream (its substream, for live view and analysis). It's looked for while the camera is
+    // measured, and kept if the box on the name step stays ticked. sub_can_ask is false for a camera added by its
+    // RTSP address, which can't be asked over ONVIF; then the box isn't shown.
+    bool sub_can_ask {false};
+    bool use_substream {true};
+    r_disco::r_camera sub_found;   // only its sub_* fields mean anything
+    std::string sub_line;          // what the name step says under the box
+
+    // The Streams section of the camera properties dialog.
+    streams_state streams;
+
     bool do_motion_detection {true};
     std::string motion_detection_file_path;
     r_utils::r_nullable<std::string> error_message;
@@ -61,7 +73,7 @@ struct assignment_state
     // is set right before the thread is launched and is only read from the UI
     // thread once the modal is active, so it doesn't need to be atomic.
     // Phases: 0 = starting, 1 = ONVIF interrogation, 2 = RTSP probe,
-    //         3 = decoding key frame, 4 = done.
+    //         3 = decoding key frame, 4 = looking for the smaller stream, 5 = done.
     std::atomic<int> interrogation_phase {0};
     std::chrono::steady_clock::time_point interrogation_start;
 };

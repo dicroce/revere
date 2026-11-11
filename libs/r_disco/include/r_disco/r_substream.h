@@ -1,6 +1,7 @@
 #ifndef r_disco_r_substream_h
 #define r_disco_r_substream_h
 
+#include "r_disco/r_camera.h"
 #include "r_onvif/r_onvif_session.h"
 #include "r_pipeline/r_stream_probe.h"
 #include "r_utils/r_macro.h"
@@ -25,6 +26,13 @@ struct r_substream_choice
     std::string rtsp_url;
     r_pipeline::r_stream_probe_result probe;
     bool anamorphic {false};
+};
+
+// A camera's main profile and the profiles that could be its substream, best first.
+struct r_substream_candidate_list
+{
+    r_onvif::onvif_profile_info main;
+    std::vector<r_onvif::onvif_profile_info> candidates;
 };
 
 // How find_substream reaches the camera, so it runs against a real one (r_onvif_cam::get_stream_uri and
@@ -52,6 +60,53 @@ R_API r_substream_choice find_substream(
     uint16_t main_height,
     const r_substream_camera& camera
 );
+
+// Main's picture size from its stream's codec ("H264" or "H265") and parameters (the SPS in them); 0 x 0 when they
+// don't say.
+R_API std::pair<uint16_t, uint16_t> main_picture_size(const std::string& codec, const std::string& parameters);
+
+// Records a found substream on the camera: sub_mode "on", sub_status "ok", and the profile, address, codec and size
+// the camera's settings show. codec, parameters and timebase are the substream's, from its SDP.
+R_API void substream_set(
+    r_camera& camera,
+    const r_substream_choice& choice,
+    const std::string& codec,
+    const std::string& parameters,
+    int timebase
+);
+
+// No substream: sub_mode "off", sub_status "none: <reason>", and the rest cleared. The camera uses its main stream.
+R_API void substream_clear(r_camera& camera, const std::string& reason);
+
+// After the camera's address changed: the substream's stream address, codec and codec parameters as the camera gives
+// them now. When it is still the same stream (the same codec, and the same picture size when the parameters say
+// one: a description without the SPS can't, and isn't taken as a change), the stored address and parameters
+// are updated and this returns true. When the camera changed it, the substream goes back to "none: camera changed the
+// stream" (substream_clear) and this returns false; the pick doesn't rerun by itself. A camera whose substream is off
+// is left alone.
+R_API bool substream_follow(r_camera& camera, const std::string& url, const std::string& codec, const std::string& parameters);
+
+// The camera's main profile among its ONVIF profiles: the one with `token`, else the largest (the first of equals),
+// as interrogate_camera picks it. 0 when there are no profiles.
+R_API size_t main_profile_index(const std::vector<r_onvif::onvif_profile_info>& profiles, const r_utils::r_nullable<std::string>& token);
+
+// A stream as the camera's settings name it, e.g. "H.264", a middle dot, then "640 x 480". The codec is the SDP's name
+// ("H264", "H265"; others in capitals); a size of 0 is left out, and so is an empty codec.
+R_API std::string stream_title(const std::string& codec, int width, int height);
+
+// The camera's substream as stream_title: its codec and size; empty when it has neither.
+R_API std::string substream_title(const r_camera& camera);
+
+// Why the camera has no substream, from its sub_status ("none: <reason>", with or without the space after the
+// colon): the reason; empty when the status isn't a "none".
+R_API std::string substream_none_reason(const r_camera& camera);
+
+// What to change on the camera for a substream_none_reason, in a few words ("set the camera's sub-stream I-frame
+// interval to about 1 s"); empty when there is nothing for the user to change or the reason isn't known.
+R_API std::string substream_reason_hint(const std::string& reason);
+
+// Copies the substream fields (all sub_*) from one camera record to another.
+R_API void substream_copy(const r_camera& from, r_camera& to);
 
 }
 
