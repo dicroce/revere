@@ -24,6 +24,7 @@
 #endif
 
 #include "macos_activation.h"
+#include "render_policy.h"
 #include "vision_launch.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -69,6 +70,7 @@
 #include "r_ui_utils/font_catalog.h"
 #include "r_ui_utils/theme.h"
 #include "r_utils/3rdparty/json/json.h"
+#include "r_ui_utils/texture.h"
 #include "r_ui_utils/texture_loader.h"
 #include "r_ui_utils/wizard.h"
 #include "r_vss/r_rtsp_auth.h"
@@ -2700,6 +2702,84 @@ static void _emit_console_text(const std::string& text)
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 #endif
 #if defined(IS_LINUX) || defined(IS_MACOS)
+// The renderer: Metal on macOS (software if it won't start); software first on Windows and Linux, as before (Direct3D
+// and OpenGL have misbehaved on some drivers, and OpenGL is a packaging problem for AppImage and Snap). REVERE_RENDERER=
+// accelerated opts in to the GPU renderer there; =software forces software everywhere. Which was chosen is logged.
+static SDL_Renderer* _create_renderer(SDL_Window* window)
+{
+    const auto mode = revere::renderer_mode_from(getenv("REVERE_RENDERER"));
+#if defined(IS_WINDOWS)
+    const auto platform = revere::render_platform::windows;
+#elif defined(IS_MACOS)
+    const auto platform = revere::render_platform::macos;
+#else
+    const auto platform = revere::render_platform::linux_;
+#endif
+    SDL_Renderer* renderer = nullptr;
+    // No PRESENTVSYNC: SDL_RenderPresent() with vsync can block indefinitely on old/buggy GPU drivers, freezing the
+    // entire UI. The loop's SDL_WaitEventTimeout(100) paces it.
+    for(const auto& attempt : revere::renderer_attempts(mode, platform))
+    {
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, attempt.driver.empty() ? nullptr : attempt.driver.c_str());
+        renderer = SDL_CreateRenderer(window, -1, attempt.accelerated ? SDL_RENDERER_ACCELERATED : SDL_RENDERER_SOFTWARE);
+        if(renderer)
+            break;
+        R_LOG_WARNING("%s renderer%s%s did not start: %s", attempt.accelerated ? "Accelerated" : "Software",
+            attempt.driver.empty() ? "" : " ", attempt.driver.c_str(), SDL_GetError());
+    }
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, nullptr);
+    if(renderer)
+    {
+        SDL_RendererInfo info;
+        if(SDL_GetRendererInfo(renderer, &info) == 0)
+            R_LOG_INFO("Renderer: %s (%s)", info.name, (info.flags & SDL_RENDERER_ACCELERATED) ? "accelerated" : "software");
+    }
+    return renderer;
+}
+
+// A hash of what ImGui built for this frame: its vertices, indices and draw commands. The same hash as the frame
+// before means the window already shows it, so it is not drawn again.
+static uint64_t _draw_data_hash(const ImDrawData* dd)
+{
+    // Textures created or updated in place (same id, new pixels) change what a frame looks like without changing its draw data.
+    uint64_t h = revere::hash_value(r_ui_utils::texture_generation().load(std::memory_order_relaxed), 1469598103934665603ULL);
+    h = revere::hash_value(dd->DisplaySize.x, h);
+    h = revere::hash_value(dd->DisplaySize.y, h);
+    h = revere::hash_value(dd->FramebufferScale.x, h);
+    h = revere::hash_value(dd->FramebufferScale.y, h);
+    for(int n = 0; n < dd->CmdListsCount; ++n)
+    {
+        const ImDrawList* list = dd->CmdLists[n];
+        h = revere::hash_bytes(list->VtxBuffer.Data, (size_t)list->VtxBuffer.Size * sizeof(ImDrawVert), h);
+        h = revere::hash_bytes(list->IdxBuffer.Data, (size_t)list->IdxBuffer.Size * sizeof(ImDrawIdx), h);
+        for(const ImDrawCmd& cmd : list->CmdBuffer)
+        {
+            h = revere::hash_value(cmd.ClipRect, h);
+            h = revere::hash_value(cmd.TextureId, h);
+            h = revere::hash_value(cmd.VtxOffset, h);
+            h = revere::hash_value(cmd.IdxOffset, h);
+            h = revere::hash_value(cmd.ElemCount, h);
+            h = revere::hash_value(cmd.UserCallback, h);
+        }
+    }
+    return h;
+}
+
+// Whether the window can be seen. Hidden to the tray or minimised (SDL's flags), and on macOS also covered by other
+// windows, on another desktop or hidden with the app, which SDL has no event for.
+static bool _window_drawable(SDL_Window* window)
+{
+    const Uint32 flags = SDL_GetWindowFlags(window);
+    const bool shown = (flags & SDL_WINDOW_SHOWN) && !(flags & SDL_WINDOW_HIDDEN);
+    const bool minimised = (flags & SDL_WINDOW_MINIMIZED) != 0;
+#ifdef IS_MACOS
+    const bool occluded = macos_window_unseen(window);
+#else
+    const bool occluded = false;
+#endif
+    return revere::window_drawable(shown, minimised, occluded);
+}
+
 int main(int argc, char** argv)
 #endif
 {
@@ -3182,29 +3262,7 @@ int main(int argc, char** argv)
     }
 #endif
 
-    // Platform-specific renderer selection:
-    // - Windows: Use hardware-accelerated (Direct3D) - no packaging concerns
-    // - Linux: Use software renderer - for AppImage/Snap compatibility (avoids OpenGL)
-    SDL_Renderer* renderer = nullptr;
-#ifdef IS_WINDOWS
-    // Windows: Use hardware acceleration (Direct3D, not OpenGL)
-    // No PRESENTVSYNC: SDL_RenderPresent() with vsync can block indefinitely on old/buggy GPU drivers,
-    // freezing the entire UI. Frame rate is naturally limited by SDL_WaitEventTimeout(100) in the loop.
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
-    if (renderer == nullptr)
-    {
-        R_LOG_ERROR("Hardware renderer failed: %s, falling back to software", SDL_GetError());
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    }
-#else
-    // Linux/macOS: Use software renderer to avoid OpenGL packaging issues
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
-    if (renderer == nullptr)
-    {
-        R_LOG_ERROR("Software renderer failed: %s, trying hardware", SDL_GetError());
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    }
-#endif
+    SDL_Renderer* renderer = _create_renderer(window);
 
     if (renderer == nullptr)
     {
@@ -3408,6 +3466,10 @@ int main(int argc, char** argv)
 
     bool window_visible = !maybe_start_minimized;  // Start hidden if minimized flag is set
     bool need_render = true;  // Render at least once on startup
+    // Whether the window could be seen on the last pass, and what the frame on it was: nothing is built or drawn while
+    // it can't be seen, and a frame the same as the one on the window is not drawn again.
+    bool was_drawable = false;
+    revere::frame_skipper frame_skipper;
 
     // The main window's list, detail pane and log. Each action does what the
     // matching button on the old camera cards did.
@@ -3720,6 +3782,14 @@ int main(int argc, char** argv)
                         else
                             close_requested = true;     // nothing to bring a hidden window back
                     }
+                    // What is on the window is not known after these: the next frame is drawn whatever it is.
+                    if (event.window.event == SDL_WINDOWEVENT_SHOWN ||
+                        event.window.event == SDL_WINDOWEVENT_EXPOSED ||
+                        event.window.event == SDL_WINDOWEVENT_RESTORED ||
+                        event.window.event == SDL_WINDOWEVENT_MAXIMIZED ||
+                        event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                        event.window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED)
+                        frame_skipper.invalidate();
                     if (event.window.event == SDL_WINDOWEVENT_SHOWN)
                     {
                         window_visible = true;
@@ -3767,6 +3837,7 @@ int main(int argc, char** argv)
                 if (event.type == SDL_RENDER_TARGETS_RESET || event.type == SDL_RENDER_DEVICE_RESET)
                 {
                     R_LOG_WARNING("Render device reset - recreating GPU resources");
+                    frame_skipper.invalidate();
                     ImGui_ImplSDLRenderer_DestroyDeviceObjects();
                     ImGui_ImplSDLRenderer_CreateDeviceObjects();
                     force_ui_update = true;
@@ -3817,10 +3888,19 @@ int main(int argc, char** argv)
         if(cfg_state.need_save())
             cfg_state.save();
 
-        // Skip rendering when window is hidden
-        if(!window_visible)
+        // Nothing to do while the window can't be seen (hidden to the tray, minimised, covered, on another desktop):
+        // no UI is built or drawn, and the first frame after it can be seen again is drawn whatever it is.
+        if(!window_visible || !_window_drawable(window))
         {
+            was_drawable = false;
             continue;
+        }
+        if(!was_drawable)
+        {
+            was_drawable = true;
+            frame_skipper.invalidate();
+            force_ui_update = true;
+            need_render = true;
         }
 
         auto now = chrono::steady_clock::now();
@@ -4034,6 +4114,11 @@ int main(int argc, char** argv)
 
         ImGui::Render();
 
+        // The same frame as the one on the window: nothing to draw. (The UI is still built every pass so that anything
+        // that changed, a tooltip, a toast, a result from another thread, is seen at once; it is drawing that costs.)
+        if(!frame_skipper.should_render(_draw_data_hash(ImGui::GetDrawData())))
+            continue;
+
         // Clear with background color
         SDL_SetRenderDrawColor(renderer,
             (Uint8)(clear_color.x * 255),
@@ -4047,6 +4132,9 @@ int main(int argc, char** argv)
 
         SDL_RenderPresent(renderer);
     }
+
+    R_LOG_INFO("Frames drawn: %llu, skipped as unchanged: %llu",
+        (unsigned long long)frame_skipper.rendered(), (unsigned long long)frame_skipper.skipped());
 
     // Where the window is as Revere exits (unless it's in the tray: then where it was last shown).
     _record_window_placement(window, cfg_state);
