@@ -560,10 +560,24 @@ const camera_column CAMERA_COLUMNS[] = {
     {8, "model", "TEXT"},
     {8, "firmware_version", "TEXT"},
     // The camera's MAC address, filled in when it's next seen at its address.
-    {9, "mac", "TEXT"}
+    {9, "mac", "TEXT"},
+    // The substream (r_camera::sub_*). Existing cameras read as off, so an
+    // upgrade opens no second stream.
+    {10, "sub_mode", "TEXT DEFAULT 'off'"},
+    {10, "sub_status", "TEXT"},
+    {10, "sub_onvif_profile_token", "TEXT"},
+    {10, "sub_rtsp_url", "TEXT"},
+    {10, "sub_video_codec", "TEXT"},
+    {10, "sub_video_codec_parameters", "TEXT"},
+    {10, "sub_video_timebase", "INTEGER"},
+    {10, "sub_width", "INTEGER"},
+    {10, "sub_height", "INTEGER"},
+    {10, "sub_key_interval_ms", "INTEGER"},
+    // Motion detection on the substream (r_camera::sub_analysis); existing cameras read as off.
+    {11, "sub_analysis", "INTEGER DEFAULT 0"}
 };
 
-const int CAMERA_DB_VERSION = 9;
+const int CAMERA_DB_VERSION = 11;
 }
 
 void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
@@ -841,6 +855,26 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
     if(row.count("mac") && !row.at("mac").is_null())
         camera.mac = row.at("mac").value();
 
+    auto text = [&](const char* col, r_nullable<string>& out){
+        if(row.count(col) && !row.at(col).is_null())
+            out = row.at(col).value();
+    };
+    auto number = [&](const char* col, r_nullable<int>& out){
+        if(row.count(col) && !row.at(col).is_null())
+            out = s_to_int(row.at(col).value());
+    };
+    text("sub_mode", camera.sub_mode);
+    text("sub_status", camera.sub_status);
+    text("sub_onvif_profile_token", camera.sub_onvif_profile_token);
+    text("sub_rtsp_url", camera.sub_rtsp_url);
+    text("sub_video_codec", camera.sub_video_codec);
+    text("sub_video_codec_parameters", camera.sub_video_codec_parameters);
+    number("sub_video_timebase", camera.sub_video_timebase);
+    number("sub_width", camera.sub_width);
+    number("sub_height", camera.sub_height);
+    number("sub_key_interval_ms", camera.sub_key_interval_ms);
+    number("sub_analysis", camera.sub_analysis);
+
     camera.stream_config_hash = row.at("stream_config_hash").value();
     return camera;
 }
@@ -984,9 +1018,44 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
         auto stmt = conn.prepare("REPLACE INTO cameras(" + cols.names() + "last_update_time) VALUES(" + cols.placeholders() + "unixepoch());");
         cols.bind(stmt, 1);
         stmt.exec_no_result();
+        _save_substream(conn, camera);
     });
 
     return result;
+}
+
+// The substream fields, bound rather than formatted into the SQL: the URL and
+// codec parameters come from the camera. Every field is written, so a null
+// clears it; sub_mode is only ever "on" or "off".
+void r_devices::_save_substream(const r_sqlite_conn& conn, const r_camera& camera) const
+{
+    auto stmt = conn.prepare(
+        "UPDATE cameras SET sub_mode = ?, sub_status = ?, sub_onvif_profile_token = ?, sub_rtsp_url = ?, "
+        "sub_video_codec = ?, sub_video_codec_parameters = ?, sub_video_timebase = ?, sub_width = ?, sub_height = ?, "
+        "sub_key_interval_ms = ?, sub_analysis = ? WHERE id = ?;"
+    );
+    int i = 1;
+    auto text = [&](const r_nullable<string>& v){
+        if(v.is_null()) stmt.bind_null(i++);
+        else stmt.bind(i++, v.value());
+    };
+    auto number = [&](const r_nullable<int>& v){
+        if(v.is_null()) stmt.bind_null(i++);
+        else stmt.bind(i++, v.value());
+    };
+    stmt.bind(i++, string(substream_on(camera) ? "on" : "off"));
+    text(camera.sub_status);
+    text(camera.sub_onvif_profile_token);
+    text(camera.sub_rtsp_url);
+    text(camera.sub_video_codec);
+    text(camera.sub_video_codec_parameters);
+    number(camera.sub_video_timebase);
+    number(camera.sub_width);
+    number(camera.sub_height);
+    number(camera.sub_key_interval_ms);
+    number(camera.sub_analysis);
+    stmt.bind(i++, camera.id);
+    stmt.exec_no_result();
 }
 
 r_devices_cmd_result r_devices::_remove_camera(const r_sqlite_conn& conn, const r_camera& camera) const

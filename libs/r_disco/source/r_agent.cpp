@@ -1,6 +1,9 @@
 
 #include "r_disco/r_agent.h"
 #include "r_onvif/r_onvif_session.h"
+#include "r_pipeline/r_gst_source.h"
+#include "r_pipeline/r_stream_info.h"
+#include "r_pipeline/r_stream_probe.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_md5.h"
@@ -69,6 +72,115 @@ vector<r_onvif::onvif_profile_info> r_agent::get_camera_profiles(
 {
     lock_guard<mutex> lk(_interrogation_mutex);
     return _onvif_provider->get_camera_profiles(ipv4, xaddrs, username, password, onvif_port, onvif_protocol);
+}
+
+namespace
+{
+struct onvif_media
+{
+    unique_ptr<r_onvif::r_onvif_cam> cam;
+    r_onvif::onvif_media_service oms;
+    vector<r_onvif::onvif_profile_info> profiles;
+};
+
+// Asks the camera for its profiles; throws when it can't be asked.
+onvif_media _ask_camera(const r_camera& camera, const r_nullable<string>& username, const r_nullable<string>& password)
+{
+    if(camera.ipv4.is_null() || camera.xaddrs.is_null())
+        R_THROW(("The camera has no ONVIF address."));
+
+    auto ep = r_onvif::find_device_service(camera.ipv4.value(), camera.xaddrs.value(), camera.onvif_port, camera.onvif_protocol);
+    if(ep.is_null())
+        R_THROW(("No ONVIF device service answers at %s.", camera.ipv4.value().c_str()));
+
+    onvif_media m;
+    m.cam = make_unique<r_onvif::r_onvif_cam>(ep.value().host, ep.value().port, ep.value().protocol, ep.value().uri, username, password);
+    m.oms = m.cam->get_media_service(m.cam->get_camera_capabilities());
+    m.profiles = m.cam->get_profile_tokens(m.oms);
+    if(m.profiles.empty())
+        R_THROW(("The camera has no ONVIF profiles."));
+    return m;
+}
+}
+
+r_substream_candidate_list r_agent::list_substream_candidates(
+    const r_camera& camera,
+    r_nullable<string> username,
+    r_nullable<string> password
+)
+{
+    auto m = _ask_camera(camera, username, password);
+    r_substream_candidate_list list;
+    list.main = m.profiles[main_profile_index(m.profiles, camera.onvif_profile_token)];
+    list.candidates = r_onvif::substream_candidates(m.profiles, list.main);
+    return list;
+}
+
+r_substream_choice r_agent::find_camera_substream(
+    r_camera& camera,
+    r_nullable<string> username,
+    r_nullable<string> password,
+    uint16_t main_width,
+    uint16_t main_height,
+    const string& only_profile_token
+)
+{
+    r_substream_choice choice;
+    try
+    {
+        auto m = _ask_camera(camera, username, password);
+        const auto main = m.profiles[main_profile_index(m.profiles, camera.onvif_profile_token)];
+        if(main_width == 0 || main_height == 0)
+        {
+            main_width = (uint16_t)main.width;
+            main_height = (uint16_t)main.height;
+        }
+
+        // A profile the user chose is the only candidate (it still has to pass the same checks).
+        vector<r_onvif::onvif_profile_info> profiles = m.profiles;
+        if(!only_profile_token.empty())
+        {
+            profiles.clear();
+            for(auto& p : m.profiles)
+            {
+                if(p.token == main.token || p.token == only_profile_token)
+                    profiles.push_back(p);
+            }
+        }
+
+        r_substream_camera access;
+        access.stream_uri = [&](const r_onvif::onvif_profile_token& token){ return m.cam->get_stream_uri(m.oms, token); };
+        access.probe = [&](const string& url){ return r_pipeline::probe_stream(url, username, password); };
+        choice = find_substream(profiles, main, main_width, main_height, access);
+
+        if(choice.found)
+        {
+            // The substream's codec parameters and timebase come from its SDP, as main's do.
+            auto sdp_media = r_pipeline::fetch_sdp_media(choice.rtsp_url, username, password);
+            if(sdp_media.find("video") == sdp_media.end())
+            {
+                choice = r_substream_choice();
+                choice.reason = "no video in its description";
+            }
+            else
+            {
+                string codec, parameters;
+                int timebase = 0;
+                tie(codec, parameters, timebase) = r_pipeline::sdp_media_map_to_s(r_pipeline::VIDEO_MEDIA, sdp_media);
+                substream_set(camera, choice, codec, parameters, timebase);
+                return choice;
+            }
+        }
+        substream_clear(camera, choice.reason);
+    }
+    catch(const exception& e)
+    {
+        R_LOG_INFO("substream: couldn't look for it: %s", e.what());
+        choice = r_substream_choice();
+        choice.reason = "couldn't ask the camera";
+        substream_clear(camera, choice.reason);
+    }
+    return choice;
 }
 
 r_ptz_result r_agent::ptz_control(
@@ -616,6 +728,43 @@ void r_agent::_maybe_schedule_reinterrogation(const r_stream_config& new_sc)
     }).detach();
 }
 
+// The camera moved, so its substream's address did too: ask for the chosen profile's address again and check
+// it's still the same stream. A substream that can't be followed (the camera didn't answer) is dropped, with the
+// reason, rather than kept at the old address.
+static void _follow_substream(r_camera& camera)
+{
+    if(!substream_on(camera) || camera.sub_onvif_profile_token.is_null())
+        return;
+    try
+    {
+        auto m = _ask_camera(camera, camera.rtsp_username, camera.rtsp_password);
+        const auto& token = camera.sub_onvif_profile_token.value();
+        bool exists = false;
+        for(auto& p : m.profiles)
+            exists = exists || p.token == token;
+        if(!exists)
+        {
+            substream_clear(camera, "camera changed the stream");
+            return;
+        }
+        auto url = m.cam->get_stream_uri(m.oms, token);
+        auto sdp_media = r_pipeline::fetch_sdp_media(url, camera.rtsp_username, camera.rtsp_password);
+        if(sdp_media.find("video") == sdp_media.end())
+            R_THROW(("The substream has no video."));
+        string codec, parameters;
+        int timebase = 0;
+        tie(codec, parameters, timebase) = r_pipeline::sdp_media_map_to_s(r_pipeline::VIDEO_MEDIA, sdp_media);
+        substream_follow(camera, url, codec, parameters);
+    }
+    catch(const exception& e)
+    {
+        // The stored address is the old one's. It isn't kept as "ok" for something to open and fail on: the
+        // camera uses its main stream, and its settings can look again.
+        R_LOG_INFO("substream: couldn't follow %s to its new address: %s", camera.id.c_str(), e.what());
+        substream_clear(camera, "couldn't follow the camera to its new address");
+    }
+}
+
 void r_agent::_do_reinterrogation(const r_stream_config& discovered_sc, r_camera stored)
 {
     bool succeeded = false;
@@ -674,6 +823,7 @@ void r_agent::_do_reinterrogation(const r_stream_config& discovered_sc, r_camera
             if(!sc.audio_codec_parameters.is_null())    stored.audio_codec_parameters = sc.audio_codec_parameters;
             if(!sc.audio_timebase.is_null())            stored.audio_timebase = sc.audio_timebase;
             stored.stream_config_hash = hash_stream_config(sc);
+            _follow_substream(stored);
 
             _save_camera_cb(stored);
             _camera_alert_cb(discovered_sc.id, "");  // clear any prior alert

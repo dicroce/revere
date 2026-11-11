@@ -1,4 +1,5 @@
 #include "r_vss/r_query.h"
+#include "r_vss/r_substream_recorder.h"
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_snapshot_cache.h"
 #include "r_vss/r_recap.h"
@@ -230,6 +231,38 @@ string _snapshot_key(const char* format, const string& camera_id, int64_t key_ts
 
 }
 
+vector<uint8_t> r_vss::encode_key_frame_jpg(const string& codec_name, const string& codec_parameters, const vector<uint8_t>& data, uint16_t w, uint16_t h)
+{
+    // Treat w/h as a bounding box; _decode_single_frame rewrites them with the
+    // aspect-preserved output dimensions, which the encoder must then match.
+    uint16_t ow = w, oh = h;
+    auto decoded = _decode_single_frame(codec_name, codec_parameters, data, AV_PIX_FMT_YUVJ420P, ow, oh, true);
+
+    if(decoded)
+    {
+        r_video_encoder encoder(AV_CODEC_ID_MJPEG, 0 /* MJPEG is constant-quality; bitrate unused */, ow, oh, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
+        encoder.attach_buffer(decoded->data(), decoded->size(), 0);
+        auto es = encoder.encode();
+        if(es == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto pi = encoder.get();
+
+            vector<uint8_t> result(pi.size);
+            memcpy(result.data(), pi.data, pi.size);
+            return result;
+        }
+    }
+
+    R_THROW(("Unable to JPG fail."));
+}
+
+vector<uint8_t> r_vss::jpg_from_live_key_frame(const string& camera_id, const r_live_key_frame& key_frame, uint16_t w, uint16_t h)
+{
+    return _snapshots().get(_snapshot_key("jpg-live", camera_id, key_frame.ts, w, h), [&]() {
+        return encode_key_frame_jpg(key_frame.codec_name, key_frame.codec_parameters, key_frame.data, w, h);
+    });
+}
+
 vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h, int64_t* frame_ts)
 {
     auto kf = _find_key_frame(top_dir, devices, camera_id, ts);
@@ -237,27 +270,7 @@ vector<uint8_t> r_vss::query_get_jpg(const std::string& top_dir, r_devices& devi
         *frame_ts = kf.ts;
 
     return _snapshots().get(_snapshot_key("jpg", camera_id, kf.ts, w, h), [&]() {
-        // Treat w/h as a bounding box; _decode_single_frame rewrites them with the
-        // aspect-preserved output dimensions, which the encoder must then match.
-        uint16_t ow = w, oh = h;
-        auto decoded = _decode_single_frame(kf.codec_name, kf.codec_parameters, kf.data, AV_PIX_FMT_YUVJ420P, ow, oh, true);
-
-        if(decoded)
-        {
-            r_video_encoder encoder(AV_CODEC_ID_MJPEG, 0 /* MJPEG is constant-quality; bitrate unused */, ow, oh, {1,1}, AV_PIX_FMT_YUVJ420P, 0, 1, 0, 0);
-            encoder.attach_buffer(decoded->data(), decoded->size(), 0);
-            auto es = encoder.encode();
-            if(es == R_CODEC_STATE_HAS_OUTPUT)
-            {
-                auto pi = encoder.get();
-
-                vector<uint8_t> result(pi.size);
-                memcpy(result.data(), pi.data, pi.size);
-                return result;
-            }
-        }
-
-        R_THROW(("Unable to JPG fail."));
+        return encode_key_frame_jpg(kf.codec_name, kf.codec_parameters, kf.data, w, h);
     });
 }
 
@@ -641,7 +654,7 @@ vector<uint8_t> r_vss::query_get_rgb24_frame(const std::string& top_dir, r_devic
     R_THROW(("Unable to decode frame."));
 }
 
-vector<uint8_t> r_vss::query_get_video(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
+vector<uint8_t> r_vss::query_get_video(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end, bool substream)
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
 
@@ -651,7 +664,15 @@ vector<uint8_t> r_vss::query_get_video(const std::string& top_dir, r_devices& de
     if(maybe_camera.value().record_file_path.is_null())
         R_THROW(("Camera has no recording file!"));
 
-    r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
+    auto path = _get_storage_path(maybe_camera.value().record_file_path.value(), top_dir);
+    if(substream)
+    {
+        path = substream_ring_path(path);
+        if(!r_fs::file_exists(path))
+            throw r_utils::r_not_found_exception("Camera %s has no substream recording.", camera_id.c_str());
+    }
+
+    r_storage_file_reader sf(path);
 
     return sf.query(
         R_STORAGE_MEDIA_TYPE_ALL,

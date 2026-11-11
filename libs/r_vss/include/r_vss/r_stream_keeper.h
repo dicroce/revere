@@ -17,8 +17,11 @@
 #include "r_vss/r_rtsp_transport.h"
 #include "r_vss/r_lag_watchdog.h"
 #include "r_vss/r_keep_awake.h"
+#include "r_vss/r_substream_setting.h"
 #include "r_vss/r_teardown_queue.h"
 #include "r_vss/r_frame_tap.h"
+#include "r_vss/r_substream_recorder.h"
+#include "r_vss/r_live_restream_host.h"
 #include <functional>
 #include "r_disco/r_devices.h"
 #include "r_disco/r_camera.h"
@@ -118,6 +121,12 @@ struct r_stream_status
     r_disco::r_camera camera;
     uint32_t bytes_per_second;
     bool receiving_video {false};
+    // The camera's live restream mounts, empty until each is up: the main stream's, and the substream's (only while
+    // its recorder is up). A request for the substream's path when it isn't mounted can reach main's.
+    std::string mount;
+    std::string sub_mount;
+    // Its substream recorder wrote a frame within SUBSTREAM_FRESH_MS (r_substream_recorder::fresh).
+    bool sub_fresh {false};
     int64_t storage_write_lag_ms {0}; // how far storage persistence trails reception
     int64_t storage_timeline_lag_ms {0}; // how far the written timeline trails the wall clock
     r_overflow_type overflow_flags {r_overflow_type::none};
@@ -217,7 +226,7 @@ struct r_stream_keeper_result
 
 class r_recording_context;
 
-class r_stream_keeper final
+class r_stream_keeper final : public r_live_restream_host
 {
 public:
     // rtsp_port: where the restream (live and playback video) is served.
@@ -230,7 +239,10 @@ public:
     // freeing anything more.
     R_API bool stop();
 
-    R_API std::vector<r_stream_status> fetch_stream_status();
+    R_API std::vector<r_stream_status> fetch_stream_status();    // The camera's substream's newest key frame, when it arrived recently enough for a "now" snapshot
+    // (SUBSTREAM_SNAPSHOT_MAX_AGE_MS); null when the camera has none. Callable from any thread.
+    R_API r_utils::r_nullable<r_live_key_frame> latest_substream_key_frame(const std::string& camera_id) const;
+
 
     R_API bool is_recording(const std::string& id);
 
@@ -249,7 +261,10 @@ public:
     R_API r_tier_status motion_tier_status(const std::string& camera_id) const;
 
     R_API std::string add_restream_mount(const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, const r_disco::r_camera& camera, r_recording_context* rc, r_utils::r_nullable<r_pipeline::r_encoding> video_encoding, r_utils::r_nullable<r_pipeline::r_encoding> audio_encoding);
-    R_API void remove_restream_mount(const std::string& path);   // and its <path>/opus
+    R_API void remove_restream_mount(const std::string& path) override;   // and its <path>/opus
+    // The camera's substream mount ("<main mount>/sub", video only) for its substream recorder; the recorder removes
+    // it with remove_restream_mount. Throws when the SDP has no video.
+    R_API std::string add_substream_mount(const r_disco::r_camera& camera, const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, r_utils::r_nullable<r_pipeline::r_encoding> video_encoding, r_substream_recorder* recorder) override;
 
     R_API void post_frame_to_motion_engine(r_pipeline::r_gst_buffer buffer, int64_t ts, const std::string& video_codec_name, const std::string& video_codec_params, const std::string& camera_id, bool is_key_frame, int64_t ingest_lag_ms = 0);
 
@@ -328,10 +343,15 @@ public:
     // "Keep this computer awake": the setting, the OS request and power events.
     R_API r_keep_awake& keep_awake() { return _keep_awake; }
 
+    // Whether this computer uses its cameras' smaller streams at all (off until turned on in Settings; see
+    // r_substream_setting). Off, nothing records or serves a smaller stream and every consumer uses main.
+    R_API bool substreams_enabled() const { return _substream_setting.enabled(); }
+    R_API void set_substreams_enabled(bool enabled) { _substream_setting.set_enabled(enabled); }
+
     // Live restreaming state management (owned by r_stream_keeper for safe cleanup)
-    R_API void add_live_restreaming_state(GstRTSPMedia* media, std::shared_ptr<live_restreaming_state> lrs);
-    R_API void remove_live_restreaming_state(GstRTSPMedia* media);
-    R_API void iterate_live_restreaming_states(const std::string& camera_id, std::function<void(live_restreaming_state&)> fn);
+    R_API void add_live_restreaming_state(GstRTSPMedia* media, std::shared_ptr<live_restreaming_state> lrs) override;
+    R_API void remove_live_restreaming_state(GstRTSPMedia* media) override;
+    R_API void iterate_live_restreaming_states(const std::string& camera_id, std::function<void(live_restreaming_state&)> fn) override;
 
     // Queue overflow monitoring
     R_API size_t get_motion_engine_dropped_count();
@@ -353,6 +373,9 @@ private:
     // Takes the cameras' contexts out of _streams and returns them, for the
     // caller to destroy after releasing _streams_mutex.
     std::vector<std::shared_ptr<r_recording_context>> _remove_recording_contexts(const std::vector<r_disco::r_camera>& cameras);
+    void _tend_substreams();
+    void _give_up_substream(const std::string& camera_id);
+    void _forget_substream_key_frame(const std::string& camera_id);
     std::vector<r_stream_status> _fetch_stream_status() const;
     void _update_status_cache();
     void _update_retention_cache();
@@ -373,6 +396,19 @@ private:
     mutable std::mutex _streams_mutex;  // Protects _streams and _suspended_cameras
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
     std::set<std::string> _suspended_cameras;
+
+    // Each recording camera's substream recorder, when it has one (r_substream_recorder.h), and what to do about
+    // them; keeper thread only.
+    std::map<std::string, std::unique_ptr<r_substream_recorder>> _substreams;
+    r_substream_governor _substream_governor;
+    // Each camera's substream recorder's newest key frame and when it arrived (steady ms), for "now" snapshots; the
+    // recorders write them on their source threads, the web server reads them.
+    struct _sub_key_slot { r_live_key_frame key_frame; int64_t at_ms {0}; };
+    mutable std::mutex _sub_key_frames_lock;
+    std::map<std::string, _sub_key_slot> _sub_key_frames;
+    // Which stream feeds each camera's motion engine (r_motion_source_governor) and which has been applied to it.
+    r_motion_source_governor _motion_governor;
+    std::map<std::string, motion_source> _motion_applied;
 
     // Last-seen set of assigned camera ids, to notify system plugins only when
     // the assignment actually changes (a camera added or forgotten) — not on the
@@ -436,6 +472,7 @@ private:
     r_motion_engine _motionEngine;
     r_system_plugin_host _system_plugin_host;
     r_keep_awake _keep_awake;
+    r_substream_setting _substream_setting;
     r_ws _ws;
     r_prune _prune;
 

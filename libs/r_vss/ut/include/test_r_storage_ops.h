@@ -10,6 +10,7 @@ public:
       TEST(test_r_storage_ops::test_cancel_between_files);
       TEST(test_r_storage_ops::test_failed_save_puts_everything_back);
       TEST(test_r_storage_ops::test_failed_copy_leaves_no_partial_file);
+      TEST(test_r_storage_ops::test_deleting_a_camera_takes_its_substream_ring);
     RTF_FIXTURE_END();
 
     virtual ~test_r_storage_ops() throw() {}
@@ -23,4 +24,5 @@ public:
     void test_cancel_between_files();
     void test_failed_save_puts_everything_back();
     void test_failed_copy_leaves_no_partial_file();
+    void test_deleting_a_camera_takes_its_substream_ring();
 };

@@ -91,6 +91,7 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 #include "r_vss/r_camera_source_info.h"
 #include "r_vss/r_camera_stats.h"
 #include "assignment_state.h"
+#include "streams_state.h"
 #include "configure_state.h"
 #include "rtsp_source_camera_config.h"
 
@@ -314,6 +315,19 @@ extern ImGuiContext *GImGui;
 
 static std::string _get_storage_path(const std::string& record_file_path);
 
+// "H.264 \xC2\xB7 640 \xC3\x97 480", for a camera's substream or a profile.
+static std::string _stream_title(const std::string& codec, int width, int height)
+{
+    return r_disco::stream_title(codec, width, height);
+}
+
+static std::string _stream_summary(const r_disco::r_camera& camera)
+{
+    return _stream_title(camera.sub_video_codec.is_null() ? std::string() : camera.sub_video_codec.value(),
+        camera.sub_width.is_null() ? 0 : camera.sub_width.value(),
+        camera.sub_height.is_null() ? 0 : camera.sub_height.value());
+}
+
 void _assign_camera(revere::assignment_state& as, r_disco::r_devices& devices)
 {
     auto c = as.camera.value();
@@ -330,6 +344,10 @@ void _assign_camera(revere::assignment_state& as, r_disco::r_devices& devices)
         c.record_file_block_size = as.storage_file_block_size.value();
     c.do_motion_detection.set_value(as.do_motion_detection);
     c.motion_detection_file_path.set_value(as.motion_detection_file_path);
+
+    // The smaller stream, when the box was ticked. Unticked (or never asked) leaves it off, with no second stream.
+    if(as.sub_can_ask && as.use_substream)
+        r_disco::substream_copy(as.sub_found, c);
 
     devices.assign_camera(c);
 }
@@ -650,6 +668,21 @@ void _delete_camera_files(const r_disco::r_camera& camera)
             catch(const std::exception& e)
             {
                 R_LOG_ERROR("Failed to delete storage file %s: %s", storage_path.c_str(), e.what());
+            }
+        }
+
+        // The substream's ring beside it (r_substream_recorder.h).
+        auto ring_path = r_vss::substream_ring_path(storage_path);
+        if(r_fs::file_exists(ring_path))
+        {
+            try
+            {
+                r_fs::remove_file(ring_path);
+                R_LOG_INFO("Deleted camera substream file: %s", ring_path.c_str());
+            }
+            catch(const std::exception& e)
+            {
+                R_LOG_ERROR("Failed to delete substream file %s: %s", ring_path.c_str(), e.what());
             }
         }
     }
@@ -1097,6 +1130,11 @@ void configure_camera_setup_wizard(
                                     as.available_profiles.push_back(p);
                             }
                             as.profiles_were_filtered = as.available_profiles.size() < all_profiles.size();
+                            // Largest first, so the list reads the way Auto picks.
+                            std::stable_sort(as.available_profiles.begin(), as.available_profiles.end(),
+                                [](const r_onvif::onvif_profile_info& a, const r_onvif::onvif_profile_info& b){
+                                    return (uint32_t)a.width * a.height > (uint32_t)b.width * b.height;
+                                });
 
                             if(as.available_profiles.empty())
                             {
@@ -1203,7 +1241,32 @@ void configure_camera_setup_wizard(
                         );
                     }
 
-                    as.interrogation_phase.store(4);  // Done
+                    // The camera's smaller stream, for live view and analysis. Whatever happens here, the camera is
+                    // set up: it just doesn't get one (and says why).
+                    as.interrogation_phase.store(4);
+                    as.sub_can_ask = true;
+                    try
+                    {
+                        auto cam = as.camera.value();
+                        if(!as.selected_profile_token.empty())
+                            cam.onvif_profile_token = as.selected_profile_token;
+                        std::string vcodec, vparams; int vtb = 0;
+                        std::tie(vcodec, vparams, vtb) = r_pipeline::sdp_media_map_to_s(r_pipeline::VIDEO_MEDIA, cp.sdp_medias);
+                        auto main_size = r_disco::main_picture_size(vcodec, vparams);
+                        auto choice = agent.find_camera_substream(cam, as.rtsp_username, as.rtsp_password, main_size.first, main_size.second);
+                        as.sub_found = cam;
+                        as.sub_line = choice.found ?
+                            "Found: " + _stream_summary(cam) + "." :
+                            "No smaller stream to use (" + choice.reason + "). Live view uses the main stream.";
+                    }
+                    catch(const std::exception& e)
+                    {
+                        R_LOG_INFO("substream: not looked for: %s", e.what());
+                        r_disco::substream_clear(as.sub_found, "couldn't ask the camera");
+                        as.sub_line = "No smaller stream to use. Live view uses the main stream.";
+                    }
+
+                    as.interrogation_phase.store(5);  // Done
                     if(camera_setup_wizard.active())
                         camera_setup_wizard.next("friendly_name");
                 }
@@ -1276,7 +1339,7 @@ void configure_camera_setup_wizard(
                         );
                     }
 
-                    as.interrogation_phase.store(4);  // Done
+                    as.interrogation_phase.store(5);  // Done
                     if(camera_setup_wizard.active())
                         camera_setup_wizard.next("friendly_name");
                 }
@@ -1328,7 +1391,8 @@ void configure_camera_setup_wizard(
                 case 1: phase_text = "Querying camera (ONVIF)..."; break;
                 case 2: phase_text = "Probing video stream (RTSP)..."; break;
                 case 3: phase_text = "Decoding key frame..."; break;
-                case 4: phase_text = "Done."; break;
+                case 4: phase_text = "Looking for the camera's smaller stream..."; break;
+                case 5: phase_text = "Done."; break;
             }
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - as.interrogation_start).count();
@@ -1587,7 +1651,8 @@ void configure_camera_setup_wizard(
 
     camera_setup_wizard.add_step(
         "camera_properties_modal",
-        [&ui_state, &camera_setup_wizard, &rscc, &devices, &stream_keeper, &as](){
+        [&ui_state, &camera_setup_wizard, &rscc, &devices, &stream_keeper, &as, &agent](){
+            auto& streams = as.streams;
 
             // Get camera info to display record file path
             auto camera_id = ui_state.selected_camera_id();
@@ -1617,6 +1682,7 @@ void configure_camera_setup_wizard(
                 ui_state.rtsp_transport,
                 ui_state.rtsp_transport_status,
                 record_path,
+                streams,
                 [&](){
                     // OK button
                     auto camera_id = ui_state.selected_camera_id();
@@ -1647,6 +1713,12 @@ void configure_camera_setup_wizard(
                     camera.min_continuous_recording_hours.set_value(r_string_utils::s_to_int(ui_state.min_continuous_recording_hours));
                     camera.motion_tier.set_value(ui_state.motion_tier);
                     camera.rtsp_transport.set_value(ui_state.rtsp_transport);
+                    {
+                        // The Streams section's choice, when it was changed.
+                        std::lock_guard<std::mutex> g(streams.m);
+                        if(streams.changed)
+                            r_disco::substream_copy(streams.sub, camera);
+                    }
                     devices.save_camera(camera);
 
                     stream_keeper.bounce(camera_id.value());
@@ -1727,6 +1799,62 @@ void configure_camera_setup_wizard(
                         }
                     }
                     camera_setup_wizard.next("change_retention_modal");
+                },
+                [&](const std::string& op, const std::string& token){
+                    // A click in the Streams section: Off, a smaller stream, or look again.
+                    auto cid = ui_state.selected_camera_id();
+                    if(cid.is_null())
+                        return;
+                    if(op == "analysis")
+                    {
+                        std::lock_guard<std::mutex> g(streams.m);
+                        streams.sub.sub_analysis.set_value(token == "1" ? 1 : 0);
+                        streams.changed = true;
+                        return;
+                    }
+                    if(op == "off")
+                    {
+                        std::lock_guard<std::mutex> g(streams.m);
+                        if(!streams.working)
+                        {
+                            streams.sub.sub_mode.set_value("off");
+                            streams.changed = true;
+                        }
+                        return;
+                    }
+                    auto maybe_camera = devices.get_camera_by_id(cid.value());
+                    if(maybe_camera.is_null())
+                        return;
+                    uint64_t gen = 0;
+                    {
+                        std::lock_guard<std::mutex> g(streams.m);
+                        if(streams.working)
+                            return;
+                        streams.working = true;
+                        gen = streams.generation;
+                    }
+                    // Asking the camera and probing its streams takes seconds; off the UI thread.
+                    std::thread([&agent, &devices, &streams, camera = maybe_camera.value(), token, gen]() mutable {
+                        try
+                        {
+                            auto creds = devices.get_credentials(camera.id);
+                            std::pair<uint16_t, uint16_t> size {0, 0};
+                            if(!camera.video_codec.is_null() && !camera.video_codec_parameters.is_null())
+                                size = r_disco::main_picture_size(camera.video_codec.value(), camera.video_codec_parameters.value());
+                            agent.find_camera_substream(camera, creds.first, creds.second, size.first, size.second, token);
+                        }
+                        catch(const std::exception& e)
+                        {
+                            R_LOG_INFO("substream: not looked for: %s", e.what());
+                            r_disco::substream_clear(camera, "couldn't ask the camera");
+                        }
+                        std::lock_guard<std::mutex> g(streams.m);
+                        if(streams.generation != gen)
+                            return;
+                        r_disco::substream_copy(camera, streams.sub);
+                        streams.changed = true;
+                        streams.working = false;
+                    }).detach();
                 }
             );
         }
@@ -3336,6 +3464,10 @@ int main(int argc, char** argv)
         as.rtsp_transport = (!cam.rtsp_transport.is_null() && cam.rtsp_transport.value() == "UDP") ? "UDP" : "TCP";
         as.wizard_step = 1;
         as.wizard_total_steps = 9;
+        as.sub_can_ask = false;
+        as.use_substream = true;
+        as.sub_found = r_disco::r_camera();
+        as.sub_line.clear();
 
         // A manually-added RTSP camera has a stream URL but no
         // ONVIF address — skip the credentials/profile/ONVIF
@@ -3408,6 +3540,59 @@ int main(int argc, char** argv)
             if(st.camera.id == camera.id && st.rtsp_transport_fallback)
                 ui_state.rtsp_transport_status = "This camera wouldn't stream over TCP, so Revere is receiving it over UDP. "
                                                  "Choose UDP to keep it that way, or Save with TCP to try TCP again.";
+        }
+        {
+            // Streams: the stream recorded and the substream now, then (in the background) the smaller streams the
+            // camera offers.
+            auto& streams = as.streams;
+            uint64_t gen = 0;
+            bool ask = false;
+            {
+                std::lock_guard<std::mutex> g(streams.m);
+                gen = ++streams.generation;
+                streams.onvif = !camera.xaddrs.is_null() && !camera.ipv4.is_null();
+                streams.gateway_on = streamKeeper.substreams_enabled();
+                ask = streams.onvif;
+                streams.recording.clear();
+                if(!camera.video_codec.is_null() && !camera.video_codec_parameters.is_null())
+                {
+                    auto size = r_disco::main_picture_size(camera.video_codec.value(), camera.video_codec_parameters.value());
+                    streams.recording = _stream_title(camera.video_codec.value(), size.first, size.second);
+                }
+                streams.candidates.clear();
+                streams.sub = r_disco::r_camera();
+                r_disco::substream_copy(camera, streams.sub);
+                streams.changed = false;
+                streams.working = false;
+                streams.loading = ask;
+            }
+            if(ask)
+            {
+                std::thread([&agent, &devices, &streams, camera, gen](){
+                    std::vector<revere::streams_state::candidate> list;
+                    std::string main_title;
+                    try
+                    {
+                        auto creds = devices.get_credentials(camera.id);
+                        auto found = agent.list_substream_candidates(camera, creds.first, creds.second);
+                        // The profile Revere recorded from, for when the camera record has no stream parameters to read.
+                        main_title = _stream_title(found.main.encoding, found.main.width, found.main.height);
+                        for(auto& c : found.candidates)
+                            list.push_back({c.token, _stream_title(c.encoding, c.width, c.height)});
+                    }
+                    catch(const std::exception& e)
+                    {
+                        R_LOG_INFO("substream: couldn't list the camera's streams: %s", e.what());
+                    }
+                    std::lock_guard<std::mutex> g(streams.m);
+                    if(streams.generation != gen)
+                        return;
+                    streams.candidates = list;
+                    if(streams.recording.empty())
+                        streams.recording = main_title;
+                    streams.loading = false;
+                }).detach();
+            }
         }
         camera_setup_wizard.next("camera_properties_modal");
     };
@@ -3759,6 +3944,12 @@ int main(int argc, char** argv)
             },
             [&](){
                 camera_setup_wizard.next("about_revere");
+            },
+            [&]() -> bool {
+                return streamKeeper.substreams_enabled();
+            },
+            [&](bool enabled){
+                streamKeeper.set_substreams_enabled(enabled);
             }
         );
         revere::main_window_view_menu(main_window_state);
