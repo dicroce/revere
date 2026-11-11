@@ -231,3 +231,62 @@ void test_r_restream_track::test_audio_restream_stamps_by_samples()
     RTF_ASSERT(passed[2].first - passed[1].first == 640);
     RTF_ASSERT(passed[2].second == 1);
 }
+
+void test_r_restream_track::test_audio_restream_drops_camera_resync()
+{
+    // A camera that sets the RTP marker on every packet gets every buffer flagged RESYNC by rtppcmadepay ("start of a
+    // talkspurt"), and GStreamer 1.28's audio payloader takes RESYNC as a discontinuity, as it does DISCONT. The
+    // restream's audio buffers carry neither, after the first.
+    r_pipeline::gstreamer_init();
+    GError* err = nullptr;
+    GstElement* pipeline = gst_parse_launch("appsrc name=src is-live=true format=time caps=audio/x-alaw,rate=8000,channels=1 ! "
+                                            "appsink name=sink sync=false", &err);
+    RTF_ASSERT(pipeline != nullptr);
+    GstElement* src = gst_bin_get_by_name(GST_BIN(pipeline), "src");
+    GstElement* sink = gst_bin_get_by_name(GST_BIN(pipeline), "sink");
+
+    struct ctx_t
+    {
+        r_blocking_q<_frame_context> q {300};
+        r_restream_track_gate gate;
+    } ctx;
+    g_signal_connect(src, "need-data", G_CALLBACK(+[](GstElement* appsrc, guint, ctx_t* c) {
+        restream_feed(appsrc, c->q, c->gate, true);
+    }), &ctx);
+
+    for(int i = 0; i < 8; ++i)
+    {
+        vector<uint8_t> samples(320, 0xD5);
+        _frame_context fc;
+        fc.gst_pts = (uint64_t)i * 40 * GST_MSECOND;
+        fc.gst_dts = fc.gst_pts;
+        fc.key = true;
+        fc.buffer = r_pipeline::r_gst_buffer(samples.data(), samples.size());
+        GST_BUFFER_DURATION(fc.buffer.get()) = 40 * GST_MSECOND;
+        GST_BUFFER_FLAG_SET(fc.buffer.get(), GST_BUFFER_FLAG_RESYNC);
+        ctx.q.post(fc);
+    }
+
+    gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    vector<guint> flags;
+    while(flags.size() < 8)
+    {
+        GstSample* sample = nullptr;
+        g_signal_emit_by_name(sink, "try-pull-sample", (GstClockTime)(3 * GST_SECOND), &sample);
+        if(!sample)
+            break;
+        flags.push_back(GST_BUFFER_FLAGS(gst_sample_get_buffer(sample)));
+        gst_sample_unref(sample);
+    }
+    gst_element_set_state(pipeline, GST_STATE_NULL);
+    gst_object_unref(src);
+    gst_object_unref(sink);
+    gst_object_unref(pipeline);
+
+    RTF_ASSERT(flags.size() == 8);
+    for(size_t i = 1; i < flags.size(); ++i)
+    {
+        RTF_ASSERT((flags[i] & GST_BUFFER_FLAG_RESYNC) == 0);
+        RTF_ASSERT((flags[i] & GST_BUFFER_FLAG_DISCONT) == 0);
+    }
+}
