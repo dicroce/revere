@@ -23,6 +23,7 @@ bool r_g711_header_filter::_matches(const uint8_t* data, size_t size) const
 size_t r_g711_header_filter::header_to_strip(const uint8_t* data, size_t size)
 {
     _just_confirmed = false;
+    _just_paused = false;
     _just_stopped = false;
 
     switch(_state)
@@ -53,9 +54,25 @@ size_t r_g711_header_filter::header_to_strip(const uint8_t* data, size_t size)
         case state::stripping:
             if(!_matches(data, size))
             {
+                // One odd packet: left as it is, and the stream is judged again.
+                _state = state::rejudging;
+                _matched = 0;
+                _just_paused = true;
+                return 0;
+            }
+            return G711_VENDOR_HEADER_SIZE;
+        case state::rejudging:
+            if(!_matches(data, size))
+            {
                 _state = state::plain;
                 _just_stopped = true;
                 return 0;
+            }
+            if(++_matched >= DETECT_PACKETS)
+            {
+                _state = state::stripping;
+                _just_confirmed = true;
+                ++_resumes;
             }
             return G711_VENDOR_HEADER_SIZE;
     }

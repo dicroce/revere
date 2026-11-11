@@ -1252,9 +1252,17 @@ GstFlowReturn r_gst_source::_new_audio_sample(GstElement* elt, r_gst_source* src
                 header = src->_g711_filter.header_to_strip(peek.data(), total);
             }
             if(src->_g711_filter.just_confirmed())
-                R_LOG_INFO("%sG.711 audio with a %d-byte vendor header before its samples: removing it", src->_name_prefix.c_str(), (int)header);
+            {
+                if(src->_g711_filter.resumes() == 0)
+                    R_LOG_INFO("%sG.711 audio with a %d-byte vendor header before its samples: removing it", src->_name_prefix.c_str(), (int)header);
+                else if(src->_g711_filter.resumes() <= 3)
+                    R_LOG_INFO("%sG.711 audio: the vendor header is back on every packet; removing it again", src->_name_prefix.c_str());
+            }
+            // A camera that keeps sending odd packets is said three times, not every few seconds.
+            if(src->_g711_filter.just_paused() && src->_g711_filter.resumes() < 3)
+                R_LOG_WARNING("%sG.711 audio: a packet without the vendor header; judging the stream again", src->_name_prefix.c_str());
             if(src->_g711_filter.just_stopped())
-                R_LOG_WARNING("%sG.711 audio: a packet without the vendor header; no longer removing it", src->_name_prefix.c_str());
+                R_LOG_WARNING("%sG.711 audio: packets without the vendor header again; no longer removing it", src->_name_prefix.c_str());
             if(header > 0)
             {
                 GstBuffer* stripped = gst_buffer_copy_region(buffer.get(), GST_BUFFER_COPY_ALL, header, total - header);

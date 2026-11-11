@@ -27,11 +27,13 @@ R_API bool g711_vendor_header_candidate(const uint8_t* data, size_t size);
 // - While judging (the first DETECT_PACKETS), each packet that matches loses its header at once, and the first that
 //   doesn't ends it: that stream is never touched again. A normal stream is decided on its first or second packet.
 // - When DETECT_PACKETS in a row matched, the stream is stripped from then on.
-// - A later packet that doesn't match turns stripping off for good.
+// - A later packet that doesn't match pauses it: that packet is left as it is, and the stream is judged again with
+//   the same header, matching packets losing it as before. DETECT_PACKETS in a row resume stripping; another odd
+//   packet while judging again ends it for good.
 class r_g711_header_filter final
 {
 public:
-    enum class state { judging, stripping, plain };
+    enum class state { judging, stripping, rejudging, plain };
 
     static constexpr int DETECT_PACKETS = 8;
 
@@ -40,10 +42,14 @@ public:
 
     R_API state current() const { return _state; }
 
-    // True once, on the packet that made the verdict "stripping" (so a caller logs it once).
+    // True on the packet that made the verdict "stripping": the first time, and on resuming after a pause.
     R_API bool just_confirmed() const { return _just_confirmed; }
-    // True once, on the packet that turned stripping off after it was confirmed.
+    // True on the odd packet that paused stripping after it was confirmed.
+    R_API bool just_paused() const { return _just_paused; }
+    // True on the odd packet, while judging again, that ended it for good.
     R_API bool just_stopped() const { return _just_stopped; }
+    // How many times it has resumed after a pause.
+    R_API int resumes() const { return _resumes; }
 
 private:
     bool _matches(const uint8_t* data, size_t size) const;
@@ -52,7 +58,9 @@ private:
     int _matched {0};
     std::array<uint8_t, G711_VENDOR_HEADER_SIZE> _header {};
     bool _just_confirmed {false};
+    bool _just_paused {false};
     bool _just_stopped {false};
+    int _resumes {0};
 };
 
 }

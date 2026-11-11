@@ -592,6 +592,18 @@ void test_r_pipeline::test_g711_vendor_header_candidate()
     // HiSilicon's form over 255 words: the length's high byte.
     p = g711_packet({0x00, 0x01, 0x40, 0x01}, 640);
     RTF_ASSERT(g711_vendor_header_candidate(p.data(), p.size()));
+    // HiSilicon's form takes the length exactly, where the other form doesn't apply (byte 3 isn't 00, or what follows
+    // isn't whole 20 ms frames): one word more or less is no header.
+    p = g711_packet({0x00, 0x01, 0x41, 0x01}, 640);
+    RTF_ASSERT(!g711_vendor_header_candidate(p.data(), p.size()));
+    p = g711_packet({0x00, 0x01, 0x3F, 0x01}, 640);
+    RTF_ASSERT(!g711_vendor_header_candidate(p.data(), p.size()));
+    p = g711_packet({0x00, 0x01, 0x64, 0x00}, 200); // 100 words, 25 ms: only the exact length makes it one
+    RTF_ASSERT(g711_vendor_header_candidate(p.data(), p.size()));
+    p = g711_packet({0x00, 0x01, 0x65, 0x00}, 200);
+    RTF_ASSERT(!g711_vendor_header_candidate(p.data(), p.size()));
+    p = g711_packet({0x00, 0x01, 0x63, 0x00}, 200);
+    RTF_ASSERT(!g711_vendor_header_candidate(p.data(), p.size()));
 
     // Plain G.711, and lengths that aren't whole 20 ms frames after 4 bytes.
     p = g711_packet({}, 320);
@@ -659,7 +671,8 @@ void test_r_pipeline::test_g711_header_filter_normal_stream_starting_with_00()
 
 void test_r_pipeline::test_g711_header_filter_mixed_stream()
 {
-    // Confirmed, then a packet without the header: stripping stops for good, said once.
+    // Confirmed, then one packet without the header: that packet is left as it is, and the stream is judged again.
+    // Matching packets keep losing the header meanwhile, and DETECT_PACKETS in a row resume stripping.
     r_g711_header_filter f;
     auto h = g711_packet(VENDOR, 320);
     auto plain = g711_packet({}, 320);
@@ -667,7 +680,22 @@ void test_r_pipeline::test_g711_header_filter_mixed_stream()
         f.header_to_strip(h.data(), h.size());
     RTF_ASSERT(f.current() == r_g711_header_filter::state::stripping);
     RTF_ASSERT(f.header_to_strip(plain.data(), plain.size()) == 0);
-    RTF_ASSERT(f.just_stopped());
+    RTF_ASSERT(f.just_paused() && !f.just_stopped());
+    RTF_ASSERT(f.current() == r_g711_header_filter::state::rejudging);
+    for(int i = 1; i <= r_g711_header_filter::DETECT_PACKETS; ++i)
+    {
+        RTF_ASSERT(f.header_to_strip(h.data(), h.size()) == 4);
+        RTF_ASSERT(f.just_confirmed() == (i == r_g711_header_filter::DETECT_PACKETS));
+    }
+    RTF_ASSERT(f.current() == r_g711_header_filter::state::stripping);
+    RTF_ASSERT(f.resumes() == 1);
+
+    // Paused again, and another odd packet while judging again: not a header stream after all, for good.
+    RTF_ASSERT(f.header_to_strip(plain.data(), plain.size()) == 0);
+    RTF_ASSERT(f.just_paused());
+    RTF_ASSERT(f.header_to_strip(h.data(), h.size()) == 4);
+    RTF_ASSERT(f.header_to_strip(plain.data(), plain.size()) == 0);
+    RTF_ASSERT(f.just_stopped() && !f.just_paused());
     RTF_ASSERT(f.current() == r_g711_header_filter::state::plain);
     RTF_ASSERT(f.header_to_strip(h.data(), h.size()) == 0);
     RTF_ASSERT(!f.just_stopped());
@@ -799,6 +827,7 @@ void test_r_pipeline::test_gst_source_strips_g711_vendor_header()
 
     std::mutex lock;
     vector<pair<size_t, int64_t>> got;
+    vector<GstClockTime> durations;
     vector<uint8_t> first_bytes;
     src.set_audio_sample_cb([&](const sample_context&, const r_gst_buffer& buffer, bool, int64_t pts){
         auto info = buffer.map(r_gst_buffer::MT_READ);
@@ -806,6 +835,7 @@ void test_r_pipeline::test_gst_source_strips_g711_vendor_header()
         if(first_bytes.empty())
             first_bytes.assign(info.data(), info.data() + std::min<size_t>(4, info.size()));
         got.push_back({info.size(), pts});
+        durations.push_back(GST_BUFFER_DURATION(buffer.get()));
     });
     src.play();
 
@@ -828,4 +858,7 @@ void test_r_pipeline::test_gst_source_strips_g711_vendor_header()
     RTF_ASSERT(first_bytes == vector<uint8_t>({0xD5, 0xD5, 0xD5, 0xD5}));
     for(size_t i = 1; i < got.size(); ++i)
         RTF_ASSERT(got[i].second - got[i - 1].second == 40);
+    // The depayloader timed 324 bytes as 40.5 ms; the 320 samples left last 40 ms.
+    for(auto d : durations)
+        RTF_ASSERT(d == 40 * GST_MSECOND);
 }
