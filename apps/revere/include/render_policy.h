@@ -10,7 +10,7 @@
 // How the window is drawn, and when it isn't. No SDL or ImGui here, so it is tested on its own (ut/test_render_policy).
 //
 // Drawing the whole window is the app's one real cost when it is idle: with SDL's software renderer every frame is
-// rasterised on the CPU. So the renderer is a GPU one where there is one (software is the fallback), nothing is drawn
+// rasterised on the CPU. So on macOS the renderer is Metal (software is the fallback; elsewhere software stays the default), nothing is drawn
 // while the window can't be seen, and a frame that came out the same as the last one is not drawn again.
 
 namespace revere
@@ -40,24 +40,37 @@ struct renderer_attempt
     std::string driver;
 };
 
-// What to try, in order. Automatic: the platform's GPU renderer (Metal on macOS, Direct3D on Windows, OpenGL on Linux),
-// then SDL's own accelerated pick, then software. Forced software is software alone; forced accelerated is the GPU
-// attempts without the software fallback.
+// What to try, in order. macOS: Metal, then SDL's own accelerated pick, then software. Windows and Linux stay
+// software-first (Direct3D and OpenGL have misbehaved on some drivers, and OpenGL is a packaging problem for AppImage
+// and Snap): software, then an accelerated renderer only if software can't start. REVERE_RENDERER=accelerated opts in
+// there to the GPU attempts (Direct3D on Windows, OpenGL on Linux) with no software fallback, and =software is software
+// alone everywhere.
 inline std::vector<renderer_attempt> renderer_attempts(renderer_mode mode, render_platform platform)
 {
     if(mode == renderer_mode::software)
         return { {false, "software"} };
 
-    std::vector<renderer_attempt> out;
+    std::vector<renderer_attempt> gpu;
     switch(platform)
     {
-        case render_platform::macos: out.push_back({true, "metal"}); break;
-        case render_platform::windows: out.push_back({true, "direct3d11"}); out.push_back({true, "direct3d"}); break;
-        case render_platform::linux_: out.push_back({true, "opengl"}); break;
+        case render_platform::macos: gpu.push_back({true, "metal"}); break;
+        case render_platform::windows: gpu.push_back({true, "direct3d11"}); gpu.push_back({true, "direct3d"}); break;
+        case render_platform::linux_: gpu.push_back({true, "opengl"}); break;
     }
+    gpu.push_back({true, ""});
+
+    if(mode == renderer_mode::accelerated)
+        return gpu;
+
+    // Automatic.
+    if(platform == render_platform::macos)
+    {
+        gpu.push_back({false, "software"});
+        return gpu;
+    }
+    std::vector<renderer_attempt> out;
+    out.push_back({false, "software"});
     out.push_back({true, ""});
-    if(mode == renderer_mode::automatic)
-        out.push_back({false, "software"});
     return out;
 }
 

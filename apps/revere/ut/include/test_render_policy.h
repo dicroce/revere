@@ -11,6 +11,7 @@ public:
       TEST(test_render_policy::test_hash_tells_frames_apart);
       TEST(test_render_policy::test_frame_skipper);
       TEST(test_render_policy::test_frame_skipper_invalidate);
+      TEST(test_render_policy::test_texture_generation_moves);
     RTF_FIXTURE_END();
 
     virtual ~test_render_policy() throw() {}
@@ -25,4 +26,5 @@ public:
     void test_hash_tells_frames_apart();
     void test_frame_skipper();
     void test_frame_skipper_invalidate();
+    void test_texture_generation_moves();
 };

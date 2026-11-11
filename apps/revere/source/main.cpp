@@ -70,6 +70,7 @@
 #include "r_ui_utils/font_catalog.h"
 #include "r_ui_utils/theme.h"
 #include "r_utils/3rdparty/json/json.h"
+#include "r_ui_utils/texture.h"
 #include "r_ui_utils/texture_loader.h"
 #include "r_ui_utils/wizard.h"
 #include "r_vss/r_rtsp_auth.h"
@@ -2573,9 +2574,9 @@ static void _emit_console_text(const std::string& text)
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 #endif
 #if defined(IS_LINUX) || defined(IS_MACOS)
-// The renderer: a GPU one where the platform has one (Metal, Direct3D, OpenGL), software if none will start. SDL's
-// software renderer rasterises every frame on the CPU, which is most of what an idle window costs (render_policy.h).
-// REVERE_RENDERER=software or accelerated forces one. Which was chosen is logged.
+// The renderer: Metal on macOS (software if it won't start); software first on Windows and Linux, as before (Direct3D
+// and OpenGL have misbehaved on some drivers, and OpenGL is a packaging problem for AppImage and Snap). REVERE_RENDERER=
+// accelerated opts in to the GPU renderer there; =software forces software everywhere. Which was chosen is logged.
 static SDL_Renderer* _create_renderer(SDL_Window* window)
 {
     const auto mode = revere::renderer_mode_from(getenv("REVERE_RENDERER"));
@@ -2612,7 +2613,9 @@ static SDL_Renderer* _create_renderer(SDL_Window* window)
 // before means the window already shows it, so it is not drawn again.
 static uint64_t _draw_data_hash(const ImDrawData* dd)
 {
-    uint64_t h = revere::hash_value(dd->DisplaySize.x, 1469598103934665603ULL);
+    // Textures created or updated in place (same id, new pixels) change what a frame looks like without changing its draw data.
+    uint64_t h = revere::hash_value(r_ui_utils::texture_generation().load(std::memory_order_relaxed), 1469598103934665603ULL);
+    h = revere::hash_value(dd->DisplaySize.x, h);
     h = revere::hash_value(dd->DisplaySize.y, h);
     h = revere::hash_value(dd->FramebufferScale.x, h);
     h = revere::hash_value(dd->FramebufferScale.y, h);

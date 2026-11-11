@@ -6,12 +6,17 @@
 #include <SDL.h>
 #include <memory>
 #include <cstdint>
+#include <atomic>
 
 namespace r_ui_utils
 {
 
 // Forward declaration for ImGui compatibility
 struct ImTextureID;
+
+// Counts every texture that is created or whose pixels are replaced. A window that skips drawing a frame it has already
+// drawn includes this in what it compares, so an image that changes in place (same texture, new pixels) is redrawn.
+std::atomic<uint64_t>& texture_generation();
 
 class texture final
 {
