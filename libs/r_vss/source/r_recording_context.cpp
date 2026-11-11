@@ -424,7 +424,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
             // The cache's last frame is this one (pushed above): its stored time, for a feed
             // that starts at the newest key frame.
-            stamp_newest_gop_frame(_video_gop_cache, stored_ts);
+            _video_fanout.stamp_newest(stored_ts);
 
             if(key)
             {
@@ -456,7 +456,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             std::vector<r_gop_frame> gop;
             std::vector<r_pipeline::r_gst_buffer::r_map_info> gop_maps;
             if(this->_sk->feeds_want_gop(this->_camera.id))
-                gop = gop_for_feeds(_video_gop_cache, gop_maps);
+                gop = _video_fanout.gop_for_feeds(gop_maps);
             this->_sk->post_video_to_feeds(
                 this->_camera.id,
                 mi.data(),

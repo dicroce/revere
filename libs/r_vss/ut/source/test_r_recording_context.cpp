@@ -86,15 +86,15 @@ void test_r_recording_context::test_the_video_callback_stamps_the_gop_cache()
     auto src = ss.str();
     auto write = src.find("R_STORAGE_MEDIA_TYPE_VIDEO,\n                mi.data(),");
     RTF_ASSERT(write != std::string::npos);
-    auto stamp = src.find("stamp_newest_gop_frame(_video_gop_cache, stored_ts);", write);
+    auto stamp = src.find("_video_fanout.stamp_newest(stored_ts);", write);
     auto wanted = src.find("if(this->_sk->feeds_want_gop(this->_camera.id))", write);
-    auto built = src.find("gop = gop_for_feeds(_video_gop_cache, gop_maps);", write);
+    auto built = src.find("gop = _video_fanout.gop_for_feeds(gop_maps);", write);
     auto post = src.find("this->_sk->post_video_to_feeds(", write);
     auto passed = src.find("gop.empty() ? nullptr : &gop", write);
     RTF_ASSERT(stamp != std::string::npos && wanted != std::string::npos && built != std::string::npos);
     RTF_ASSERT(post != std::string::npos && passed != std::string::npos);
     RTF_ASSERT(stamp < wanted && wanted < built && built < post && post < passed);
-    // And the push to the cache comes before the write, so the stamp lands on this frame.
-    auto pushed = src.find("_video_gop_cache.push_back({pts, key, buffer});");
+    // And the push to the cache (r_live_video_fanout::post) comes before the write, so the stamp lands on this frame.
+    auto pushed = src.find("_video_fanout.post(pts, key, buffer,");
     RTF_ASSERT(pushed != std::string::npos && pushed < write);
 }

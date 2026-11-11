@@ -472,6 +472,8 @@ void test_r_frame_feeds::test_gop_wanted_counts_waiting_feeds()
     RTF_ASSERT(!f.gop_wanted());
     f.unsubscribe(c);
     RTF_ASSERT(!f.gop_wanted());
+}
+
 // A "sub" feed is on main until the camera's substream is fresh, then on the substream, and back on main when it stops.
 // Each switch waits for the new stream's key frame and is a gap; the frames say which stream they came from, and the
 // audio stays main's. A "main" feed never moves.

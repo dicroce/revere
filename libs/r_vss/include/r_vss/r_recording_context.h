@@ -191,6 +191,14 @@ public:
     // Frames in the cache.
     R_API size_t cached_frames() const { return _gop_cache.size(); }
 
+    // For frame feeds that start at the newest key frame (r_frame_feeds): the newest cached frame (the one just
+    // written) gets the time storage gave it, and the cached GOP as a feed takes it (gop_for_feeds()).
+    void stamp_newest(int64_t stored_ts) { stamp_newest_gop_frame(_gop_cache, stored_ts); }
+    std::vector<r_gop_frame> gop_for_feeds(std::vector<r_pipeline::r_gst_buffer::r_map_info>& maps) const
+    {
+        return r_vss::gop_for_feeds(_gop_cache, maps);
+    }
+
 private:
     std::deque<_gop_cache_entry> _gop_cache;
 };
