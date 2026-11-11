@@ -17,6 +17,11 @@ public:
       TEST(test_r_frame_feeds::test_a_wait_times_out);
       TEST(test_r_frame_feeds::test_two_feeds_get_their_own_copies);
       TEST(test_r_frame_feeds::test_a_restarted_stream_is_a_gap);
+      TEST(test_r_frame_feeds::test_a_feed_starts_at_the_newest_key_frame);
+      TEST(test_r_frame_feeds::test_a_gop_that_cant_start_a_feed);
+      TEST(test_r_frame_feeds::test_a_post_without_a_gop_keeps_the_feed_waiting);
+      TEST(test_r_frame_feeds::test_feeds_that_didnt_ask_ignore_the_gop);
+      TEST(test_r_frame_feeds::test_gop_wanted_counts_waiting_feeds);
     RTF_FIXTURE_END();
 
     virtual ~test_r_frame_feeds() throw() {}
@@ -37,4 +42,9 @@ public:
     void test_a_wait_times_out();
     void test_two_feeds_get_their_own_copies();
     void test_a_restarted_stream_is_a_gap();
+    void test_a_feed_starts_at_the_newest_key_frame();
+    void test_a_gop_that_cant_start_a_feed();
+    void test_a_post_without_a_gop_keeps_the_feed_waiting();
+    void test_feeds_that_didnt_ask_ignore_the_gop();
+    void test_gop_wanted_counts_waiting_feeds();
 };

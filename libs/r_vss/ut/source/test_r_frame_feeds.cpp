@@ -316,3 +316,141 @@ void test_r_frame_feeds::test_a_restarted_stream_is_a_gap()
     RTF_ASSERT_EQUAL(b.size(), (size_t)1);
     RTF_ASSERT_EQUAL(b[0].flags, (uint32_t)F::VIDEO);
 }
+
+// A GOP as a recording context passes it: frames (size, key, stored ts), the last one the
+// frame being posted. The bytes live in `store`, which outlives the post.
+struct gop_of
+{
+    vector<vector<uint8_t>> store;
+    vector<r_gop_frame> frames;
+    gop_of& add(size_t n, bool key, int64_t ts, bool stored = true)
+    {
+        store.push_back(bytes_of(n, (uint8_t)ts));
+        frames.push_back({nullptr, n, key, ts, stored});
+        for(size_t i = 0; i < frames.size(); ++i)
+            frames[i].data = store[i].data();
+        return *this;
+    }
+};
+
+// Posts the GOP's last frame with the GOP, as the recording context does.
+static void video_with_gop(F& f, const string& cam, gop_of& g, const string& stream = "main")
+{
+    auto& last = g.frames.back();
+    f.post_video(cam, stream, last.data, last.size, last.key, last.ts, "h264", "sps1", &g.frames);
+}
+
+void test_r_frame_feeds::test_a_feed_starts_at_the_newest_key_frame()
+{
+    F f;
+    auto id = f.subscribe("cam1", "", F::VIDEO, 0, true);
+    RTF_ASSERT(id != 0);
+    RTF_ASSERT(f.gop_wanted());
+    // Mid-GOP: the key frame at 10 and the two after it, the last the frame being posted.
+    gop_of g;
+    g.add(100, true, 10).add(50, false, 11).add(40, false, 12);
+    video_with_gop(f, "cam1", g);
+    RTF_ASSERT(!f.gop_wanted());
+    video(f, "cam1", 30, false, 13);
+    auto got = drain(f, id);
+    RTF_ASSERT_EQUAL(got.size(), (size_t)4);
+    RTF_ASSERT(got[0].ts == 10 && (got[0].flags & F::KEY) && (got[0].flags & F::CODEC_CHANGED) && !(got[0].flags & F::GAP));
+    RTF_ASSERT(got[1].ts == 11 && got[1].data.size() == 50 && got[1].data[0] == 11);
+    // The frame being posted comes once, as the GOP's last, not again as itself.
+    RTF_ASSERT(got[2].ts == 12 && got[3].ts == 13);
+    // The stored times, as each frame came: not re-stamped.
+    RTF_ASSERT(got[0].stream == "main" && got[3].stream == "main");
+
+    // A "sub" feed served from main starts from main's GOP: by the stream it's serving.
+    auto sub = f.subscribe("cam1", "sub", F::VIDEO, 0, true);
+    gop_of g2;
+    g2.add(100, true, 20).add(50, false, 21);
+    video_with_gop(f, "cam1", g2);
+    auto s = drain(f, sub);
+    RTF_ASSERT(s.size() == 2 && s[0].ts == 20 && s[1].ts == 21 && s[0].stream == "main");
+}
+
+void test_r_frame_feeds::test_a_gop_that_cant_start_a_feed()
+{
+    // Each starts at the next key frame instead, and nothing of the GOP goes out.
+    auto starts_at_next_key = [](size_t bound, gop_of g) {
+        F f;
+        auto id = f.subscribe("cam1", "", F::VIDEO, bound, true);
+        video_with_gop(f, "cam1", g);
+        RTF_ASSERT(!f.gop_wanted());
+        RTF_ASSERT(drain(f, id).empty());
+        video(f, "cam1", 30, false, 98);
+        video(f, "cam1", 60, true, 99);
+        auto got = drain(f, id);
+        RTF_ASSERT(got.size() == 1 && got[0].ts == 99 && (got[0].flags & F::KEY));
+    };
+    // Bigger than the bound (the whole GOP is checked before any of it is copied).
+    starts_at_next_key(200, gop_of().add(150, true, 10).add(100, false, 11));
+    // A frame whose write threw has no stored time.
+    starts_at_next_key(0, gop_of().add(100, true, 10).add(50, false, 11, false).add(40, false, 12));
+    // Not from a key frame: a GOP longer than the cache.
+    starts_at_next_key(0, gop_of().add(50, false, 10).add(40, false, 11));
+}
+
+void test_r_frame_feeds::test_a_post_without_a_gop_keeps_the_feed_waiting()
+{
+    // A frame posted without a GOP (the poster looked before the feed asked) leaves it
+    // waiting; the next post that carries one starts it.
+    F f;
+    auto id = f.subscribe("cam1", "", F::VIDEO, 0, true);
+    video(f, "cam1", 30, false, 9);
+    RTF_ASSERT(f.gop_wanted());
+    RTF_ASSERT(drain(f, id).empty());
+    gop_of g;
+    g.add(100, true, 10).add(50, false, 11);
+    video_with_gop(f, "cam1", g);
+    auto got = drain(f, id);
+    RTF_ASSERT(got.size() == 2 && got[0].ts == 10 && got[1].ts == 11);
+}
+
+void test_r_frame_feeds::test_feeds_that_didnt_ask_ignore_the_gop()
+{
+    F f;
+    auto plain = f.subscribe("cam1", "", F::VIDEO, 0);
+    auto wants = f.subscribe("cam1", "", F::VIDEO, 0, true);
+    // An audio-only feed has no video to start: it never waits for a GOP.
+    auto aud = f.subscribe("cam1", "", F::AUDIO, 0, true);
+    RTF_ASSERT(aud != 0);
+    gop_of g;
+    g.add(100, true, 10).add(50, false, 11);
+    video_with_gop(f, "cam1", g);
+    // Not a key frame, so the plain feed takes nothing yet; the one that asked has the GOP.
+    RTF_ASSERT(drain(f, plain).empty());
+    RTF_ASSERT_EQUAL(drain(f, wants).size(), (size_t)2);
+    // Another camera's GOP touches neither.
+    auto other = f.subscribe("cam2", "", F::VIDEO, 0, true);
+    video_with_gop(f, "cam1", g);
+    RTF_ASSERT(drain(f, other).empty());
+    RTF_ASSERT(f.gop_wanted());
+}
+
+void test_r_frame_feeds::test_gop_wanted_counts_waiting_feeds()
+{
+    F f;
+    RTF_ASSERT(!f.gop_wanted());
+    auto a = f.subscribe("cam1", "", F::VIDEO, 0, true);
+    auto b = f.subscribe("cam2", "", F::VIDEO | F::AUDIO, 0, true);
+    f.unsubscribe(a);
+    RTF_ASSERT(f.gop_wanted());
+    f.close_camera("cam2");
+    RTF_ASSERT(!f.gop_wanted());
+    f.unsubscribe(b);
+    RTF_ASSERT(!f.gop_wanted());
+    f.subscribe("cam3", "", F::VIDEO, 0, true);
+    f.subscribe("cam4", "", F::VIDEO, 0, true);
+    f.close_all();
+    RTF_ASSERT(!f.gop_wanted());
+    // Once a waiting feed starts, it no longer counts.
+    auto c = f.subscribe("cam5", "", F::VIDEO, 0, true);
+    gop_of g;
+    g.add(10, true, 1);
+    video_with_gop(f, "cam5", g);
+    RTF_ASSERT(!f.gop_wanted());
+    f.unsubscribe(c);
+    RTF_ASSERT(!f.gop_wanted());
+}

@@ -513,6 +513,10 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 pts
             );
 
+            // The cache's last frame is this one (pushed above): its stored time, for a feed
+            // that starts at the newest key frame.
+            stamp_newest_gop_frame(_video_gop_cache, stored_ts);
+
             if(key)
             {
                 std::lock_guard<std::mutex> g(_latest_key_lock);
@@ -535,7 +539,14 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 this->_maybe_video_storage_write_context.value().codec_parameters
             );
 
-            // Plugins' frame feeds: one atomic load while none is open.
+            // Plugins' frame feeds: one atomic load while none is open. A feed waiting to
+            // start at the newest key frame is given the cached GOP, this frame its last,
+            // with the times storage gave each frame. Built here, on this thread, the only
+            // one that touches the cache, and only while a feed waits for it.
+            std::vector<r_gop_frame> gop;
+            std::vector<r_pipeline::r_gst_buffer::r_map_info> gop_maps;
+            if(this->_sk->feeds_want_gop())
+                gop = gop_for_feeds(_video_gop_cache, gop_maps);
             this->_sk->post_video_to_feeds(
                 this->_camera.id,
                 mi.data(),
@@ -543,7 +554,8 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 key,
                 stored_ts,
                 this->_maybe_video_storage_write_context.value().codec_name,
-                this->_maybe_video_storage_write_context.value().codec_parameters
+                this->_maybe_video_storage_write_context.value().codec_parameters,
+                gop.empty() ? nullptr : &gop
             );
 
             bool do_motion = (!this->_camera.do_motion_detection.is_null())?this->_camera.do_motion_detection.value():false;
@@ -1445,4 +1457,25 @@ void r_recording_context::_playback_restream_cleanup_cbs(playback_restreaming_st
         lock_guard<mutex> g(rc->_playback_restreaming_states_lok);
         rc->_playback_restreaming_states.erase(media);
     }
+}
+
+void r_vss::stamp_newest_gop_frame(std::deque<_gop_cache_entry>& cache, int64_t stored_ts)
+{
+    if(!cache.empty())
+        cache.back().stored_ts = stored_ts;
+}
+
+std::vector<r_gop_frame> r_vss::gop_for_feeds(const std::deque<_gop_cache_entry>& cache, std::vector<r_pipeline::r_gst_buffer::r_map_info>& maps)
+{
+    std::vector<r_gop_frame> gop;
+    gop.reserve(cache.size());
+    maps.clear();
+    maps.reserve(cache.size());
+    for(auto& e : cache)
+    {
+        maps.push_back(e.buffer.map(r_pipeline::r_gst_buffer::MT_READ));
+        auto& m = maps.back();
+        gop.push_back({m.data(), m.size(), e.key, e.stored_ts, e.stored_ts != _gop_cache_entry::NOT_STORED});
+    }
+    return gop;
 }

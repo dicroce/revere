@@ -72,7 +72,7 @@ void test_r_system_plugin_frames::test_a_plugin_gets_the_host_functions()
     host.set_frame_source(&feeds, _recording("cam1"));
     auto l = _lines(_top + "/frames.txt");
     RTF_ASSERT_EQUAL(l.size(), (size_t)1);
-    RTF_ASSERT(l[0] == "api version=1 size_ok=1");
+    RTF_ASSERT(l[0] == "api version=2 size_ok=1");
     // Once: a second call doesn't give them again.
     host.set_frame_source(&feeds, _recording("cam1"));
     RTF_ASSERT_EQUAL(_lines(_top + "/frames.txt").size(), (size_t)1);
@@ -269,4 +269,27 @@ void test_r_system_plugin_frames::test_unsubscribe_races_a_reading_thread()
     RTF_ASSERT(ok);
     RTF_ASSERT(_lines(_top + "/frames.txt").back() == "churn frames=some ended=200");
     RTF_ASSERT_EQUAL(feeds.feeds(), (size_t)0);
+}
+
+void test_r_system_plugin_frames::test_a_plugin_starts_at_the_newest_key_frame()
+{
+    // Version 2: subscribe_frames_from with R_SUBSCRIBE_FROM_NEWEST_KEY, given the GOP at
+    // the next frame; a flag the host doesn't know is refused.
+    r_frame_feeds feeds;
+    r_system_plugin_host host(_top);
+    host.set_frame_source(&feeds, _recording("cam1"));
+    RTF_ASSERT(host.run_plugin_action(_name(), "subfrom:cam1:-:" + to_string(R_FRAME_VIDEO) + ":0:" + to_string(1u << 7)));
+    RTF_ASSERT(host.run_plugin_action(_name(), "subfrom:cam1:-:" + to_string(R_FRAME_VIDEO) + ":0:" + to_string(R_SUBSCRIBE_FROM_NEWEST_KEY)));
+    RTF_ASSERT(feeds.gop_wanted());
+    vector<vector<uint8_t>> store = {vector<uint8_t>(60, 3), vector<uint8_t>(40, 4)};
+    vector<r_gop_frame> gop = {{store[0].data(), 60, true, 3, true}, {store[1].data(), 40, false, 4, true}};
+    feeds.post_video("cam1", "main", store[1].data(), 40, false, 4, "h264", "sps1", &gop);
+    RTF_ASSERT(host.run_plugin_action(_name(), "read:2:full"));
+    RTF_ASSERT(host.run_plugin_action(_name(), "unsub"));
+    auto l = _lines(_top + "/frames.txt");
+    RTF_ASSERT_EQUAL(l.size(), (size_t)6);
+    RTF_ASSERT(l[1] == "sub null");
+    RTF_ASSERT(l[2] == "sub ok");
+    RTF_ASSERT(l[3] == "frame flags=" + to_string(R_FRAME_VIDEO | R_FRAME_KEY | R_FRAME_CODEC_CHANGED) + " ts=3 size=60 codec=h264 params=sps1 data0=3 stream=main");
+    RTF_ASSERT(l[4] == "frame flags=" + to_string(R_FRAME_VIDEO) + " ts=4 size=40 codec=h264 params=sps1 data0=4 stream=main");
 }

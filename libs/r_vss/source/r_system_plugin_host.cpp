@@ -62,6 +62,14 @@ struct r_system_plugin_host::frame_api
 
     static r_frame_subscription_handle subscribe(void* host, const char* camera_id, const char* stream, uint32_t media, size_t max_queued_bytes)
     {
+        return subscribe_from(host, camera_id, stream, media, max_queued_bytes, 0);
+    }
+
+    static r_frame_subscription_handle subscribe_from(void* host, const char* camera_id, const char* stream, uint32_t media, size_t max_queued_bytes, uint32_t flags)
+    {
+        if((flags & ~(uint32_t)R_SUBSCRIBE_FROM_NEWEST_KEY) != 0)
+            return nullptr;
+        bool from_newest_key = (flags & R_SUBSCRIBE_FROM_NEWEST_KEY) != 0;
         auto api = static_cast<frame_api*>(host);
         if(!api || !camera_id || !api->feeds)
             return nullptr;
@@ -80,7 +88,7 @@ struct r_system_plugin_host::frame_api
                 R_LOG_WARNING("System plugin %s: no frame feed for camera %s: it has %zu already", api->guid.c_str(), camera.c_str(), api->subs.size());
                 return nullptr;
             }
-            auto id = api->feeds->subscribe(camera, s, media, max_queued_bytes);
+            auto id = api->feeds->subscribe(camera, s, media, max_queued_bytes, from_newest_key);
             if(id == 0)
                 return nullptr;
             auto owned = std::make_shared<r_frame_subscription>();
@@ -89,8 +97,9 @@ struct r_system_plugin_host::frame_api
             sub = owned.get();
             api->subs[sub] = std::move(owned);
         }
-        R_LOG_INFO("System plugin %s: frame feed for camera %s (%s%s%s)", api->guid.c_str(), camera.c_str(),
-                   s.empty() ? "main" : s.c_str(), (media & R_FRAME_VIDEO) ? ", video" : "", (media & R_FRAME_AUDIO) ? ", audio" : "");
+        R_LOG_INFO("System plugin %s: frame feed for camera %s (%s%s%s%s)", api->guid.c_str(), camera.c_str(),
+                   s.empty() ? "main" : s.c_str(), (media & R_FRAME_VIDEO) ? ", video" : "", (media & R_FRAME_AUDIO) ? ", audio" : "",
+                   from_newest_key ? ", from the newest key frame" : "");
         return sub;
     }
 
@@ -161,6 +170,7 @@ void r_system_plugin_host::set_frame_source(r_frame_feeds* feeds, std::function<
         api->table.subscribe_frames = &frame_api::subscribe;
         api->table.next_frame = &frame_api::next;
         api->table.unsubscribe = &frame_api::unsubscribe;
+        api->table.subscribe_frames_from = &frame_api::subscribe_from;
         p.frames = api;
         try
         {
