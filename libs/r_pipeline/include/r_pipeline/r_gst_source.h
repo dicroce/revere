@@ -45,6 +45,11 @@ R_API uint32_t rtsp_protocol_flags(const std::string& protocols);
 // packets, and sequence gaps a camera leaves when it drops packets itself (over
 // TCP too), each stalled the stream for up to GStreamer's 2 s default.
 const int RTSP_JITTERBUFFER_LATENCY_MS = 200;
+// How long stopping a pipeline gives rtspsrc to send its TEARDOWN: 2 s.
+const uint64_t RTSP_TEARDOWN_TIMEOUT_NS = 2000000000ULL;
+
+// Sets an rtspsrc's teardown-timeout to RTSP_TEARDOWN_TIMEOUT_NS.
+R_API void rtsp_set_teardown_timeout(GstElement* rtspsrc);
 
 // Sets an rtspsrc's latency to RTSP_JITTERBUFFER_LATENCY_MS.
 R_API void rtsp_set_jitterbuffer_latency(GstElement* rtspsrc);

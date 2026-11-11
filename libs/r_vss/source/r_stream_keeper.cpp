@@ -181,6 +181,7 @@ void r_stream_keeper::start()
         R_THROW(("Stream keeper already started!"));
 
     _running = true;
+    _stopping = false;
 
     g_signal_connect(
         _server,
@@ -250,13 +251,26 @@ bool r_stream_keeper::stop()
     // Recording is stopping: let the computer sleep again.
     _keep_awake.stop();
 
-    // Camera event subscriptions first: asking doesn't wait, they unsubscribe
-    // while the network and everything else are still up, and nothing later
-    // that blocks can leave one polling.
+    // The keeper's thread runs on a while yet: it neither reaps the streams
+    // stopped below as dead nor starts them again.
+    _stopping = true;
+
+    // The cameras first, all at once: their event subscriptions (asking doesn't
+    // wait) and their RTSP sessions, each with a TEARDOWN. A quit that runs
+    // long is killed (revere --quit gives it 10 s), and a camera left holding
+    // a session it was never told to end can refuse new ones until it's power
+    // cycled; nothing later in the shutdown is worth more than these.
     {
         std::lock_guard<std::mutex> lock(_streams_mutex);
+        std::vector<std::thread> stopping;
+        stopping.reserve(_streams.size());
         for(auto& s : _streams)
-            s.second->stop_camera_events();
+        {
+            auto rc = s.second;
+            stopping.emplace_back([rc](){ rc->stop(); });
+        }
+        for(auto& t : stopping)
+            t.join();
     }
 
     R_LOG_INFO("Stopping prune...");
@@ -287,12 +301,6 @@ bool r_stream_keeper::stop()
             _detection_pass->stop();
             R_LOG_INFO("Detection pass stopped");
         }
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(_streams_mutex);
-        for(auto& s : _streams)
-            s.second->stop();
     }
 
     R_LOG_INFO("Stopping motion engine...");
@@ -1246,7 +1254,7 @@ void r_stream_keeper::_entry_point()
                 {
                     std::lock_guard<std::mutex> lock(_streams_mutex);
 
-                    for(auto it = _streams.begin(); it != _streams.end();)
+                    for(auto it = _streams.begin(); !_stopping && it != _streams.end();)
                     {
                         if(it->second->dead())
                         {
@@ -1260,6 +1268,14 @@ void r_stream_keeper::_entry_point()
                                transport.attempt_ended(it->second->answered(), it->second->receiving_video()))
                                 R_LOG_WARNING("Camera %s answered but sent no video over RTSP/%s; retrying over %s",
                                               it->first.c_str(), was.c_str(), transport.protocols().c_str());
+                            // One that never sent a frame waits before the next try, longer each time.
+                            auto& backoff = _restart_backoffs[it->first];
+                            backoff.ended(it->second->receiving_video(), std::chrono::steady_clock::now());
+                            if(backoff.wait().count() > 0)
+                                R_LOG_WARNING("Camera %s sent no video (%d in a row, %s); trying again in %d s",
+                                              it->first.c_str(), backoff.failures(),
+                                              it->second->answered() ? "it answered" : "it didn't answer",
+                                              (int)backoff.wait().count());
                             // The next pass starts it again: a reconnect.
                             _reconnects.record(it->first);
                             _frame_feeds.camera_restarted(it->first);
@@ -1467,6 +1483,8 @@ vector<r_camera> r_stream_keeper::_get_current_cameras()
 
 void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
 {
+    if(_stopping)
+        return;
     auto now = std::chrono::steady_clock::now();
     for(const auto& camera : cameras)
     {
@@ -1506,6 +1524,11 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         // constructor throws (e.g. legacy nanots v1 .nts file rejected by v2 lib).
         auto fc_it = _failed_cameras.find(camera.id);
         if(fc_it != _failed_cameras.end() && fc_it->second.next_retry_time > now)
+            continue;
+
+        // A stream that died without sending video waits its turn (r_restart_backoff).
+        auto bo_it = _restart_backoffs.find(camera.id);
+        if(bo_it != _restart_backoffs.end() && !bo_it->second.may_start(now))
             continue;
 
         // UDP when the camera is set to it; otherwise TCP, or UDP standing in

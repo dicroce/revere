@@ -371,6 +371,13 @@ void r_gst_source::set_args(const vector<r_arg>& args)
     _password = _args["password"];
 }
 
+void r_pipeline::rtsp_set_teardown_timeout(GstElement* rtspsrc)
+{
+    // Room to send TEARDOWN when the pipeline stops (rtspsrc's default is 100 ms). A camera
+    // never told to end a session may hold it, and some refuse new ones until power cycled.
+    g_object_set(G_OBJECT(rtspsrc), "teardown-timeout", (guint64)RTSP_TEARDOWN_TIMEOUT_NS, NULL);
+}
+
 void r_pipeline::rtsp_set_jitterbuffer_latency(GstElement* rtspsrc)
 {
     g_object_set(G_OBJECT(rtspsrc), "latency", (guint)RTSP_JITTERBUFFER_LATENCY_MS, NULL);
@@ -432,6 +439,7 @@ void r_gst_source::play()
     }
 
     g_object_set(G_OBJECT(rtspsrc), "do-rtsp-keep-alive", true, NULL);
+    rtsp_set_teardown_timeout(rtspsrc);
     g_object_set(G_OBJECT(rtspsrc), "location", _url.value().c_str(), NULL);
 
     // Set short-header for compatibility with older cameras
