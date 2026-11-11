@@ -46,6 +46,7 @@ struct fake_camera
     string pull_support;          // the capability's WSPullPointSupport: "false", "true" or "" (not said)
     bool pull_works {false};      // CreatePullPointSubscription works (else it's ActionNotSupported)
     bool subscribe_works {true};  // Subscribe works (else ActionNotSupported)
+    string pull_fault;            // if set, CreatePullPointSubscription answers with a fault whose text is this
     bool pull_fails {false};      // PullMessages answers with a fault (the pull point is gone)
     bool renew_fails {false};     // Renew answers with a fault (the subscription is gone)
     mutex lock;
@@ -103,6 +104,9 @@ struct fake_camera
                          "</tt:Events></tds:Capabilities></tds:GetCapabilitiesResponse>");
         if(op == "CreatePullPointSubscription")
         {
+            if(!pull_fault.empty())
+                return _soap("<s:Fault><s:Code><s:Value>s:Sender</s:Value></s:Code><s:Reason><s:Text xml:lang=\"en\">" + pull_fault +
+                             "</s:Text></s:Reason></s:Fault>", response_bad_request);
             if(!pull_works)
                 return _soap(UNSUPPORTED, response_bad_request);
             return _soap("<tev:CreatePullPointSubscriptionResponse><tev:SubscriptionReference><wsa:Address>http://127.0.0.1:" + to_string(port) +
@@ -482,4 +486,28 @@ void test_r_onvif_push_events::test_a_pull_point_is_dropped_however_the_session_
     cam.pull_fails = true;
     RTF_ASSERT(_until([&]() { return cam.count("Unsubscribe") >= 1; }, 6000));
     RTF_ASSERT(!rig.events->status().up);
+}
+
+void test_r_onvif_push_events::test_only_a_not_supported_answer_switches_to_push()
+{
+    // Creating a pull point failing for some other reason (a login that is refused, say) isn't "no pull point": the camera
+    // may well have one, so push isn't chosen, and it is tried again as a pull.
+    {
+        fake_camera cam(11123);
+        cam.pull_fault = "Sender not authorized";
+        events_rig rig(cam.port);
+        RTF_ASSERT(_until([&]() { return rig.events->status().state == "down"; }));
+        RTF_ASSERT(rig.events->status().last_error.find("CreatePullPointSubscription") != string::npos);
+        RTF_ASSERT(!rig.events->status().unavailable());
+        RTF_ASSERT_EQUAL(cam.count("Subscribe"), 0);
+    }
+    // The ways a camera says it doesn't do it do switch to push.
+    for(const char* words : {"Action Not Implemented", "ActionNotSupported", "Optional Action Not Implemented"})
+    {
+        fake_camera cam(11124);
+        cam.pull_fault = words;
+        events_rig rig(cam.port);
+        RTF_ASSERT(_until([&]() { return rig.events->status().state == "subscribed"; }));
+        RTF_ASSERT_EQUAL(cam.count("Subscribe"), 1);
+    }
 }
