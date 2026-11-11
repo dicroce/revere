@@ -212,11 +212,12 @@ struct fake_camera
         return _soap("", response_bad_request);
     }
 
-    // What a camera answers to something it doesn't do.
+    // What a camera answers to something it doesn't do, as one real camera does: a Receiver fault with the
+    // ActionNotSupported subcode and "Action Not Implemented" as its reason.
     r_server_response _unsupported()
     {
-        return _soap("<s:Fault><s:Code><s:Value>s:Sender</s:Value><s:Subcode><s:Value>ter:ActionNotSupported</s:Value></s:Subcode></s:Code>"
-                     "<s:Reason><s:Text xml:lang=\"en\">Action not supported</s:Text></s:Reason></s:Fault>", response_bad_request);
+        return _soap("<s:Fault><s:Code><s:Value>s:Receiver</s:Value><s:Subcode><s:Value>ter:ActionNotSupported</s:Value></s:Subcode></s:Code>"
+                     "<s:Reason><s:Text xml:lang=\"en\">Action Not Implemented</s:Text></s:Reason></s:Fault>", response_bad_request);
     }
 };
 

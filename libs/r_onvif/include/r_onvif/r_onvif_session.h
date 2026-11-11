@@ -296,8 +296,8 @@ enum class ptz_verdict { usable, none, unknown };
 R_API ptz_verdict ptz_verdict_of(const ptz_probe_result& nodes, const ptz_probe_result& configurations);
 
 // Whether the text of a failed ONVIF call (r_onvif_cam's errors carry the camera's own reason) says the camera
-// definitely doesn't support the action: "ActionNotSupported", "OptionalActionNotImplemented" or "Action not
-// supported", in any case. Not a timeout, not an authentication failure, not a bad argument.
+// definitely doesn't support the action: the subcode "ter:ActionNotSupported" or "ter:OptionalActionNotImplemented",
+// or the reason text "Action not supported" / "Action Not Implemented", in any case (cameras send either, or both). Not a timeout, not an authentication failure, not a bad argument.
 R_API bool is_unsupported_action(const std::string& what);
 
 // How long an ONVIF events subscription waits after a failed attempt. The wait doubles from 10 s to 10 minutes; a camera

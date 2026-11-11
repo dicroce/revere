@@ -2666,7 +2666,7 @@ bool r_onvif::is_unsupported_action(const string& what)
     for (unsigned char c : what)
         lower += (char)tolower(c);
     return lower.find("actionnotsupported") != string::npos || lower.find("optionalactionnotimplemented") != string::npos ||
-           lower.find("action not supported") != string::npos;
+           lower.find("action not supported") != string::npos || lower.find("action not implemented") != string::npos;
 }
 
 int r_onvif::events_wait_s(int backoff_s, bool unsupported)

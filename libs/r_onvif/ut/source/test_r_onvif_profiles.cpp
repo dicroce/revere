@@ -421,6 +421,11 @@ void test_r_onvif_profiles::test_unsupported_action_and_events_wait()
     RTF_ASSERT(is_unsupported_action("GetNodes failed: HTTP 400 ter:ActionNotSupported | Action not supported"));
     RTF_ASSERT(is_unsupported_action("CreatePullPointSubscription failed: HTTP 500 s:Receiver | ter:OptionalActionNotImplemented"));
     RTF_ASSERT(is_unsupported_action("HTTP 400 ACTION NOT SUPPORTED"));
+    // A real camera's (Garage): the subcode and the reason text both say it; either alone is enough.
+    RTF_ASSERT(is_unsupported_action("GetNodes failed: HTTP 400 s:Receiver | ter:ActionNotSupported | Action Not Implemented"));
+    RTF_ASSERT(is_unsupported_action("GetNodes failed: HTTP 400 s:Receiver | ter:ActionNotSupported"));
+    RTF_ASSERT(is_unsupported_action("GetNodes failed: HTTP 400 s:Receiver | Action Not Implemented"));
+    RTF_ASSERT(!is_unsupported_action("GetNodes failed: HTTP 400 s:Receiver | ter:InvalidArgVal | Invalid argument"));
     RTF_ASSERT(!is_unsupported_action(""));
     RTF_ASSERT(!is_unsupported_action("HTTP 401 Unauthorized"));
     RTF_ASSERT(!is_unsupported_action("GetPresets failed: HTTP 500 ter:InvalidArgVal"));
