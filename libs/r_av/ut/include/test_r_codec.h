@@ -17,6 +17,10 @@ public:
       TEST(test_r_codec::test_software_encoder_failure_still_throws);
       TEST(test_r_codec::test_hw_decode_failure_is_remembered);
       TEST(test_r_codec::test_hw_failure_on_one_format_keeps_others_in_hardware);
+      TEST(test_r_codec::test_dead_hw_context_falls_back_to_software);
+      TEST(test_r_codec::test_software_decoder_does_not_fall_back);
+      TEST(test_r_codec::test_hw_failures_not_in_a_row_keep_the_hardware);
+      TEST(test_r_codec::test_hw_decoder_that_wont_open_decodes_in_software);
     RTF_FIXTURE_END();
 
     virtual ~test_r_codec() throw() {}
@@ -36,4 +40,8 @@ public:
     void test_software_encoder_failure_still_throws();
     void test_hw_decode_failure_is_remembered();
     void test_hw_failure_on_one_format_keeps_others_in_hardware();
+    void test_dead_hw_context_falls_back_to_software();
+    void test_software_decoder_does_not_fall_back();
+    void test_hw_failures_not_in_a_row_keep_the_hardware();
+    void test_hw_decoder_that_wont_open_decodes_in_software();
 };
