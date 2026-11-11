@@ -142,6 +142,17 @@ void r_frame_feeds::post_video(const string& camera_id, const string& stream, co
     }
 }
 
+bool r_frame_feeds::gop_wanted(const string& camera_id) const
+{
+    if(_gop_wanted.load(memory_order_relaxed) == 0)
+        return false;
+    lock_guard<mutex> g(_lock);
+    for(auto& p : _feeds)
+        if(p.second->wants_gop && !p.second->closed && p.second->camera_id == camera_id)
+            return true;
+    return false;
+}
+
 bool r_frame_feeds::_gop_fits(const _feed& f, const vector<r_gop_frame>& gop)
 {
     if(gop.empty() || !gop.front().key)

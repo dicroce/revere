@@ -441,6 +441,17 @@ void test_r_frame_feeds::test_gop_wanted_counts_waiting_feeds()
 {
     F f;
     RTF_ASSERT(!f.gop_wanted());
+    // By camera: a feed waiting on one camera doesn't make another build its GOP.
+    {
+        F g;
+        auto w = g.subscribe("cam2", "", F::VIDEO, 0, true);
+        g.subscribe("cam1", "", F::VIDEO, 0);
+        RTF_ASSERT(g.gop_wanted("cam2"));
+        RTF_ASSERT(!g.gop_wanted("cam1"));
+        g.unsubscribe(w);
+        RTF_ASSERT(!g.gop_wanted("cam2"));
+        RTF_ASSERT(!g.gop_wanted("cam1"));
+    }
     auto a = f.subscribe("cam1", "", F::VIDEO, 0, true);
     auto b = f.subscribe("cam2", "", F::VIDEO | F::AUDIO, 0, true);
     f.unsubscribe(a);

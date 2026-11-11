@@ -87,9 +87,11 @@ public:
     R_API uint64_t subscribe(const std::string& camera_id, const std::string& stream, uint32_t media, size_t max_bytes);
     R_API uint64_t subscribe(const std::string& camera_id, const std::string& stream, uint32_t media, size_t max_bytes, bool from_newest_key);
 
-    // Whether a feed is waiting to start at the newest key frame: one atomic load,
-    // so a poster builds the GOP only then.
+    // Whether any feed is waiting to start at the newest key frame.
     R_API bool gop_wanted() const { return _gop_wanted.load(std::memory_order_relaxed) != 0; }
+    // Whether one of this camera's feeds is: a poster builds the camera's GOP only then.
+    // One atomic load while no feed of any camera waits.
+    R_API bool gop_wanted(const std::string& camera_id) const;
 
     // The feed's next frame, waiting up to timeout_ms. 1: a frame. 0: none in time.
     // -1: the feed is closed (or unknown). One reader per feed.

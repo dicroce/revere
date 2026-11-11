@@ -542,10 +542,11 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             // Plugins' frame feeds: one atomic load while none is open. A feed waiting to
             // start at the newest key frame is given the cached GOP, this frame its last,
             // with the times storage gave each frame. Built here, on this thread, the only
-            // one that touches the cache, and only while a feed waits for it.
+            // one that touches the cache, and only while one of this camera's feeds waits
+            // for it.
             std::vector<r_gop_frame> gop;
             std::vector<r_pipeline::r_gst_buffer::r_map_info> gop_maps;
-            if(this->_sk->feeds_want_gop())
+            if(this->_sk->feeds_want_gop(this->_camera.id))
                 gop = gop_for_feeds(_video_gop_cache, gop_maps);
             this->_sk->post_video_to_feeds(
                 this->_camera.id,

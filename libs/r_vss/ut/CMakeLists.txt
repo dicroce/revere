@@ -86,6 +86,8 @@ target_compile_definitions(r_vss_ut PRIVATE
     TEST_ACTION_PLUGIN="$<TARGET_FILE:test_action_system_plugin>"
     TEST_NO_ACTION_PLUGIN="$<TARGET_FILE:test_no_action_system_plugin>"
     TEST_FRAMES_PLUGIN="$<TARGET_FILE:test_frames_system_plugin>"
+    # test_r_recording_context reads the video callback's source for its wiring.
+    R_VSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../source"
 )
 
 # What r_vss/r_build_info.h should report, from the root CMakeLists.

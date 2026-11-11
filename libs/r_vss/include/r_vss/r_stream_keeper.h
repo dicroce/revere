@@ -271,8 +271,8 @@ public:
     {
         _frame_feeds.post_video(camera_id, "main", data, size, key, ts, codec_name, codec_params, gop);
     }
-    // Whether a feed waits to start at the newest key frame (r_frame_feeds::gop_wanted).
-    R_API bool feeds_want_gop() const { return _frame_feeds.gop_wanted(); }
+    // Whether one of the camera's feeds waits to start at the newest key frame (r_frame_feeds::gop_wanted).
+    R_API bool feeds_want_gop(const std::string& camera_id) const { return _frame_feeds.gop_wanted(camera_id); }
     R_API void post_audio_to_feeds(const std::string& camera_id, const uint8_t* data, size_t size, int64_t ts, const std::string& codec_name, const std::string& codec_params)
     {
         _frame_feeds.post_audio(camera_id, data, size, ts, codec_name, codec_params);

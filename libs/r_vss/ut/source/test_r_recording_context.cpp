@@ -5,6 +5,8 @@
 #include "r_vss/r_frame_feeds.h"
 #include "r_pipeline/r_gst_source.h"
 #include <deque>
+#include <fstream>
+#include <sstream>
 #include <vector>
 
 using namespace std;
@@ -69,4 +71,30 @@ void test_r_recording_context::test_a_feed_starts_from_the_stamped_gop_cache()
     feeds.post_video("cam1", "main", gop3.back().data, gop3.back().size, false, 5014, "h264", "sps1", &gop3);
     RTF_ASSERT(feeds.next(id2, 0, f) == 0);
     RTF_ASSERT(!feeds.gop_wanted());
+}
+
+void test_r_recording_context::test_the_video_callback_stamps_the_gop_cache()
+{
+    // The wiring, read from the source (no test here runs a camera's pipeline): in the video
+    // callback, the cache's newest frame is stamped after its write, and the GOP built from
+    // the cache, for this camera's waiting feeds, goes with the feed post. Without the stamp,
+    // no feed would ever start at the newest key frame, and nothing would say so.
+    std::ifstream in(std::string(R_VSS_SOURCE_DIR) + "/r_recording_context.cpp");
+    RTF_ASSERT(in.good());
+    std::stringstream ss;
+    ss << in.rdbuf();
+    auto src = ss.str();
+    auto write = src.find("R_STORAGE_MEDIA_TYPE_VIDEO,\n                mi.data(),");
+    RTF_ASSERT(write != std::string::npos);
+    auto stamp = src.find("stamp_newest_gop_frame(_video_gop_cache, stored_ts);", write);
+    auto wanted = src.find("if(this->_sk->feeds_want_gop(this->_camera.id))", write);
+    auto built = src.find("gop = gop_for_feeds(_video_gop_cache, gop_maps);", write);
+    auto post = src.find("this->_sk->post_video_to_feeds(", write);
+    auto passed = src.find("gop.empty() ? nullptr : &gop", write);
+    RTF_ASSERT(stamp != std::string::npos && wanted != std::string::npos && built != std::string::npos);
+    RTF_ASSERT(post != std::string::npos && passed != std::string::npos);
+    RTF_ASSERT(stamp < wanted && wanted < built && built < post && post < passed);
+    // And the push to the cache comes before the write, so the stamp lands on this frame.
+    auto pushed = src.find("_video_gop_cache.push_back({pts, key, buffer});");
+    RTF_ASSERT(pushed != std::string::npos && pushed < write);
 }
