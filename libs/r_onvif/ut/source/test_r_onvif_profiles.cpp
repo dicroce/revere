@@ -354,3 +354,70 @@ void test_r_onvif_profiles::test_ptz_caps()
 
     RTF_ASSERT_THROWS(parse_ptz_caps("not xml <"), std::runtime_error);
 }
+
+// A GetSystemDateAndTimeResponse as the ONVIF Core Specification shapes it: NTP, a POSIX zone, DST on.
+static const char* SYSTEM_DATE_AND_TIME =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\" "
+    "xmlns:tt=\"http://www.onvif.org/ver10/schema\" xmlns:tds=\"http://www.onvif.org/ver10/device/wsdl\">"
+    "<s:Body><tds:GetSystemDateAndTimeResponse><tds:SystemDateAndTime>"
+    "<tt:DateTimeType>NTP</tt:DateTimeType><tt:DaylightSavings>true</tt:DaylightSavings>"
+    "<tt:TimeZone><tt:TZ> EST5EDT,M3.2.0,M11.1.0 </tt:TZ></tt:TimeZone>"
+    "<tt:UTCDateTime><tt:Date><tt:Year>2026</tt:Year><tt:Month>11</tt:Month><tt:Day>11</tt:Day></tt:Date>"
+    "<tt:Time><tt:Hour>11</tt:Hour><tt:Minute>30</tt:Minute><tt:Second>5</tt:Second></tt:Time></tt:UTCDateTime>"
+    "</tds:SystemDateAndTime></tds:GetSystemDateAndTimeResponse></s:Body></s:Envelope>";
+
+void test_r_onvif_profiles::test_system_date_and_time()
+{
+    auto t = parse_system_date_and_time(SYSTEM_DATE_AND_TIME);
+    RTF_ASSERT(t.date_time_type == "NTP");
+    RTF_ASSERT(t.daylight_savings);
+    RTF_ASSERT(t.tz == "EST5EDT,M3.2.0,M11.1.0");
+    RTF_ASSERT_EQUAL((int64_t)t.time, (int64_t)1794396605);  // 2026-11-11T11:30:05Z
+
+    bool threw = false;
+    try { parse_system_date_and_time("not xml <"); } catch(const std::exception&) { threw = true; }
+    RTF_ASSERT(threw);
+    threw = false;
+    try { parse_system_date_and_time("<a><b/></a>"); } catch(const std::exception&) { threw = true; }
+    RTF_ASSERT(threw);
+}
+
+void test_r_onvif_profiles::test_set_system_date_and_time()
+{
+    onvif_system_date_time current;
+    current.date_time_type = "NTP";
+    current.daylight_savings = true;
+    current.tz = "EST5EDT,M3.2.0,M11.1.0";
+
+    pugi::xml_document doc;
+    auto body = doc.append_child("Body");
+    append_set_system_date_and_time(body, (time_t)1794396605, current);
+
+    auto req = body.child("tds:SetSystemDateAndTime");
+    RTF_ASSERT(req);
+    RTF_ASSERT(string(req.child_value("tds:DateTimeType")) == "Manual");
+    RTF_ASSERT(string(req.child_value("tds:DaylightSavings")) == "true");
+    RTF_ASSERT(string(req.child("tds:TimeZone").child_value("tt:TZ")) == "EST5EDT,M3.2.0,M11.1.0");
+    auto date = req.child("tds:UTCDateTime").child("tt:Date");
+    auto time = req.child("tds:UTCDateTime").child("tt:Time");
+    RTF_ASSERT(string(date.child_value("tt:Year")) == "2026");
+    RTF_ASSERT(string(date.child_value("tt:Month")) == "11");
+    RTF_ASSERT(string(date.child_value("tt:Day")) == "11");
+    RTF_ASSERT(string(time.child_value("tt:Hour")) == "11");
+    RTF_ASSERT(string(time.child_value("tt:Minute")) == "30");
+    RTF_ASSERT(string(time.child_value("tt:Second")) == "5");
+
+    // Schema order: DateTimeType, DaylightSavings, TimeZone, UTCDateTime.
+    vector<string> order;
+    for(auto c : req.children())
+        order.push_back(c.name());
+    RTF_ASSERT((order == vector<string>{"tds:DateTimeType", "tds:DaylightSavings", "tds:TimeZone", "tds:UTCDateTime"}));
+
+    // No zone: no TimeZone element (the camera keeps its own).
+    current.tz.clear();
+    pugi::xml_document doc2;
+    auto body2 = doc2.append_child("Body");
+    append_set_system_date_and_time(body2, (time_t)1794396605, current);
+    RTF_ASSERT(!body2.child("tds:SetSystemDateAndTime").child("tds:TimeZone"));
+}

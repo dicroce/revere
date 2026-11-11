@@ -783,6 +783,46 @@ struct storage_op_state : r_vss::r_storage_op
 
 static storage_op_state s_storage_op;
 
+// "Sync Camera Time" (camera properties): a worker sets the clock, then shows
+// the result. generation goes up when one starts or is cancelled, so a worker
+// whose wait was cancelled drops its result.
+struct sync_time_state
+{
+    std::atomic<int> generation {0};
+    std::mutex mtx;
+    std::string title;
+    std::string message;
+};
+static sync_time_state s_sync_time;
+
+// A clock offset in words: "4 seconds", "3 minutes 12 seconds", "2 hours 5 minutes", "3 days".
+static string _describe_offset(int64_t seconds)
+{
+    seconds = (seconds < 0) ? -seconds : seconds;
+    auto unit = [](int64_t n, const char* name) {
+        return r_string_utils::int_to_s((int)n) + " " + name + (n == 1 ? "" : "s");
+    };
+    if(seconds < 60)
+        return unit(seconds, "second");
+    if(seconds < 3600)
+        return unit(seconds / 60, "minute") + ((seconds % 60) ? " " + unit(seconds % 60, "second") : string());
+    if(seconds < 86400)
+        return unit(seconds / 3600, "hour") + (((seconds % 3600) / 60) ? " " + unit((seconds % 3600) / 60, "minute") : string());
+    return unit(seconds / 86400, "day");
+}
+
+static string _describe_time_sync(const r_onvif::onvif_time_sync& r)
+{
+    if(!r.changed)
+        return "The camera's clock already matches this computer's, so Revere left it as it is.";
+    string msg = "The camera's clock was " + _describe_offset(r.offset_before) + (r.offset_before > 0 ? " ahead" : " behind") +
+                 ". It now matches this computer's.";
+    if(r.was_ntp)
+        msg += "\n\nThe camera was set to get its time from an NTP server, which wasn't keeping it right. "
+               "It now keeps its own time, so check its NTP settings if you want it to sync on its own again.";
+    return msg;
+}
+
 // What the logger writes, for the main window's log pane (View > Show log).
 static revere::log_tail s_log_tail;
 
@@ -1587,12 +1627,13 @@ void configure_camera_setup_wizard(
 
     camera_setup_wizard.add_step(
         "camera_properties_modal",
-        [&ui_state, &camera_setup_wizard, &rscc, &devices, &stream_keeper, &as](){
+        [&ui_state, &camera_setup_wizard, &rscc, &devices, &stream_keeper, &as, &agent](){
 
             // Get camera info to display record file path
             auto camera_id = ui_state.selected_camera_id();
             string record_path;
             string camera_name;
+            bool can_sync_time = false;
             if(!camera_id.is_null())
             {
                 auto camera_opt = devices.get_camera_by_id(camera_id.value());
@@ -1602,6 +1643,7 @@ void configure_camera_setup_wizard(
                 {
                     const auto& c = camera_opt.value();
                     camera_name = !c.friendly_name.is_null() ? c.friendly_name.value() : (!c.camera_name.is_null() ? c.camera_name.value() : string());
+                    can_sync_time = !c.ipv4.is_null() && !c.xaddrs.is_null();
                 }
             }
 
@@ -1617,6 +1659,7 @@ void configure_camera_setup_wizard(
                 ui_state.rtsp_transport,
                 ui_state.rtsp_transport_status,
                 record_path,
+                can_sync_time,
                 [&](){
                     // OK button
                     auto camera_id = ui_state.selected_camera_id();
@@ -1727,7 +1770,97 @@ void configure_camera_setup_wizard(
                         }
                     }
                     camera_setup_wizard.next("change_retention_modal");
+                },
+                [&](){
+                    // Sync Camera Time button
+                    auto cid = ui_state.selected_camera_id();
+                    if(cid.is_null())
+                        return;
+                    auto maybe_camera = devices.get_camera_by_id(cid.value());
+                    if(maybe_camera.is_null() || maybe_camera.value().ipv4.is_null() || maybe_camera.value().xaddrs.is_null())
+                        return;
+                    auto camera = maybe_camera.value();
+                    int gen = ++s_sync_time.generation;
+
+                    // The wait first, so a worker that finishes at once isn't overwritten by it.
+                    camera_setup_wizard.next("sync_camera_time_wait");
+                    std::thread th([&agent, &camera_setup_wizard, camera, gen](){
+                        string title, message;
+                        try
+                        {
+                            auto r = agent.sync_camera_time(
+                                camera.ipv4.value(), camera.xaddrs.value(),
+                                camera.rtsp_username, camera.rtsp_password,
+                                camera.onvif_port, camera.onvif_protocol
+                            );
+                            title = "Camera time synced";
+                            message = _describe_time_sync(r);
+                        }
+                        catch(const r_disco::r_ptz_error& e)
+                        {
+                            R_LOG_ERROR("Sync camera time for %s failed (%s): %s", camera.id.c_str(), e.code().c_str(), e.what());
+                            title = "Couldn't sync camera time";
+                            if(e.code() == "unreachable")
+                                message = "Revere couldn't reach the camera's ONVIF service. Check that the camera is on and has ONVIF turned on.";
+                            else if(e.code() == "not_authorized")
+                                message = "The camera wouldn't let Revere change its time. On most cameras that needs an administrator account; "
+                                          "the account Revere uses for this camera may not be one.";
+                            else
+                                message = string("The camera didn't set its time.\n\n") + e.what();
+                        }
+                        catch(const std::exception& e)
+                        {
+                            R_LOG_ERROR("Sync camera time for %s failed: %s", camera.id.c_str(), e.what());
+                            title = "Couldn't sync camera time";
+                            message = string("The camera didn't set its time.\n\n") + e.what();
+                        }
+
+                        if(gen != s_sync_time.generation.load())
+                            return;  // the wait was cancelled
+                        {
+                            std::lock_guard<std::mutex> g(s_sync_time.mtx);
+                            s_sync_time.title = title;
+                            s_sync_time.message = message;
+                        }
+                        camera_setup_wizard.next("sync_camera_time_result");
+                    });
+                    th.detach();
                 }
+            );
+        }
+    );
+
+    camera_setup_wizard.add_step(
+        "sync_camera_time_wait",
+        [&camera_setup_wizard](){
+            ImGui::OpenPopup("Syncing camera time");
+            revere::please_wait_modal(
+                GImGui,
+                "Syncing camera time",
+                "",
+                [&](){
+                    ++s_sync_time.generation;
+                    camera_setup_wizard.next("camera_properties_modal");
+                }
+            );
+        }
+    );
+
+    camera_setup_wizard.add_step(
+        "sync_camera_time_result",
+        [&camera_setup_wizard](){
+            string title, message;
+            {
+                std::lock_guard<std::mutex> g(s_sync_time.mtx);
+                title = s_sync_time.title;
+                message = s_sync_time.message;
+            }
+            ImGui::OpenPopup(title.c_str());
+            revere::error_modal(
+                GImGui,
+                title,
+                message,
+                [&](){ camera_setup_wizard.next("camera_properties_modal"); }
             );
         }
     );

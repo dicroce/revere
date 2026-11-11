@@ -214,6 +214,41 @@ r_onvif::onvif_video_flip r_onvif_provider::imaging_control(
     }
 }
 
+r_onvif::onvif_time_sync r_onvif_provider::sync_camera_time(
+    const string& ipv4,
+    const string& xaddrs,
+    r_nullable<string> username,
+    r_nullable<string> password,
+    r_nullable<int> onvif_port,
+    r_nullable<string> onvif_protocol
+)
+{
+    auto ep = r_onvif::find_device_service(ipv4, xaddrs, onvif_port, onvif_protocol);
+    if(ep.is_null())
+        throw r_ptz_error("unreachable", "No ONVIF device service answers at " + ipv4 + ". Check that ONVIF is enabled on the camera.");
+    try
+    {
+        r_onvif::r_onvif_cam cam(ep.value().host, ep.value().port, ep.value().protocol, ep.value().uri, username, password);
+        auto r = cam.sync_system_date_and_time();
+        R_LOG_INFO("Camera at %s: clock set (was %lld s %s, now %lld s off)%s", ipv4.c_str(),
+                   (long long)llabs(r.offset_before), r.offset_before > 0 ? "ahead" : "behind",
+                   (long long)llabs(r.offset_after), r.was_ntp ? "; it was on NTP and is now Manual" : "");
+        return r;
+    }
+    catch(const r_utils::r_unauthorized_exception& ex)
+    {
+        throw r_ptz_error("not_authorized", ex.what());
+    }
+    catch(const std::exception& ex)
+    {
+        // A refusal for the account comes back as HTTP 401, or a SOAP fault ter:NotAuthorized.
+        string what = ex.what();
+        if(what.find("HTTP 401") != string::npos || what.find("NotAuthorized") != string::npos)
+            throw r_ptz_error("not_authorized", what);
+        throw r_ptz_error("camera_error", what);
+    }
+}
+
 r_ptz_result r_onvif_provider::ptz_control(
     const string& ipv4,
     const string& xaddrs,

@@ -100,6 +100,19 @@ r_onvif::onvif_video_flip r_agent::imaging_control(
     return _onvif_provider->imaging_control(ipv4, xaddrs, username, password, cmd, onvif_port, onvif_protocol);
 }
 
+r_onvif::onvif_time_sync r_agent::sync_camera_time(
+    const string& ipv4,
+    const string& xaddrs,
+    r_nullable<string> username,
+    r_nullable<string> password,
+    r_nullable<int> onvif_port,
+    r_nullable<string> onvif_protocol
+)
+{
+    // Not under _interrogation_mutex, as imaging_control isn't.
+    return _onvif_provider->sync_camera_time(ipv4, xaddrs, username, password, onvif_port, onvif_protocol);
+}
+
 void r_agent::interrogate_camera(
     const std::string& camera_name,
     const std::string& ipv4,
