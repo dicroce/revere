@@ -134,6 +134,12 @@ R_API void query_update_camera_properties(const std::string& top_dir, r_disco::r
 // is cut to its last part.
 R_API std::string r_failure_reason(const std::string& what);
 
+// Transcoded video that mostly didn't decode (a GPU fault, say): fewer than half its video frames decoded, of at
+// least TRANSCODE_CHECK_MIN_FRAMES. Its gaps are filled with the last picture decoded, so the result plays as a
+// frozen picture and looks fine: it's refused instead, so the clip fails rather than ships broken.
+constexpr size_t TRANSCODE_CHECK_MIN_FRAMES = 10;
+R_API bool transcode_mostly_failed(size_t video_frames_in, size_t pictures_decoded);
+
 }
 
 #endif
