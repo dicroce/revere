@@ -12,6 +12,9 @@ public:
       TEST(test_r_onvif_push_events::test_subscribe_not_supported);
       TEST(test_r_onvif_push_events::test_junk_notifications_are_dropped);
       TEST(test_r_onvif_push_events::test_the_subscription_is_renewed);
+      TEST(test_r_onvif_push_events::test_a_camera_that_posts_to_the_root_and_grants_less);
+      TEST(test_r_onvif_push_events::test_a_heartbeat_that_stops_resubscribes);
+      TEST(test_r_onvif_push_events::test_a_camera_that_only_sends_changes_is_left_alone);
     RTF_FIXTURE_END();
 
     virtual ~test_r_onvif_push_events() throw() {}
@@ -25,4 +28,7 @@ public:
     void test_subscribe_not_supported();
     void test_junk_notifications_are_dropped();
     void test_the_subscription_is_renewed();
+    void test_a_camera_that_posts_to_the_root_and_grants_less();
+    void test_a_heartbeat_that_stops_resubscribes();
+    void test_a_camera_that_only_sends_changes_is_left_alone();
 };

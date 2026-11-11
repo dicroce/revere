@@ -71,6 +71,15 @@ void test_r_onvif_push::test_push_head()
     // A query is ignored; HTTP/1.0 is fine.
     RTF_ASSERT_EQUAL(parse_push_head("POST /onvif/notify/abc?x=1 HTTP/1.0\r\nContent-Length: 1\r\n\r\n").id, string("abc"));
 
+    // "/" is a camera's own address; it has no id.
+    auto bare = parse_push_head("POST / HTTP/1.1\r\nContent-Length: 1800\r\n\r\n");
+    RTF_ASSERT_EQUAL(bare.status, 0);
+    RTF_ASSERT(bare.id.empty());
+    RTF_ASSERT_EQUAL(bare.content_length, (size_t)1800);
+    RTF_ASSERT_EQUAL(parse_push_head("POST /?x=1 HTTP/1.1\r\nContent-Length: 1\r\n\r\n").status, 0);
+    RTF_ASSERT_EQUAL(parse_push_head("POST // HTTP/1.1\r\nContent-Length: 1\r\n\r\n").status, 404);
+    RTF_ASSERT_EQUAL(parse_push_head("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").status, 411);
+
     RTF_ASSERT_EQUAL(parse_push_head("GET /onvif/notify/abc HTTP/1.1\r\nContent-Length: 1\r\n\r\n").status, 405);
     RTF_ASSERT_EQUAL(parse_push_head("POST /other HTTP/1.1\r\nContent-Length: 1\r\n\r\n").status, 404);
     RTF_ASSERT_EQUAL(parse_push_head("POST /onvif/notify/ HTTP/1.1\r\nContent-Length: 1\r\n\r\n").status, 404);
@@ -243,6 +252,58 @@ void test_r_onvif_push::test_listener_turns_away()
     strangers.add("x", "10.9.9.9", [&](const string&) { ++called; });
     RTF_ASSERT_EQUAL(_send_raw(strangers.port(), _post("/onvif/notify/x", NOTIFY)), 0);
     RTF_ASSERT_EQUAL(called.load(), 0);
+}
+
+void test_r_onvif_push::test_listener_bare_path()
+{
+    // A camera that posts to "/" whatever address it was given: the caller's address says whose it is.
+    auto l = make_shared<r_onvif_push_listener>("127.0.0.1", 11060, 11079);
+    atomic<int> a {0}, b {0};
+    l->add("one", "127.0.0.1", [&](const string&) { ++a; });
+    l->add("elsewhere", "10.9.9.9", [&](const string&) { ++b; });
+    RTF_ASSERT_EQUAL(_send_raw(l->port(), _post("/", NOTIFY)), 200);
+    RTF_ASSERT_EQUAL(a.load(), 1);
+    RTF_ASSERT_EQUAL(b.load(), 0);
+
+    // Two subscriptions from one address can't be told apart by it: nothing is delivered.
+    l->add("two", "127.0.0.1", [&](const string&) { ++b; });
+    RTF_ASSERT_EQUAL(_send_raw(l->port(), _post("/", NOTIFY)), 404);
+    RTF_ASSERT_EQUAL(a.load(), 1);
+    RTF_ASSERT_EQUAL(b.load(), 0);
+    // The path with an id still picks one.
+    RTF_ASSERT_EQUAL(_send_raw(l->port(), _post("/onvif/notify/two", NOTIFY)), 200);
+    RTF_ASSERT_EQUAL(b.load(), 1);
+
+    // And a caller that isn't a subscribed camera's gets nothing at "/" either.
+    l->remove("one");
+    l->remove("two");
+    RTF_ASSERT_EQUAL(_send_raw(l->port(), _post("/", NOTIFY)), 0);
+    RTF_ASSERT_EQUAL(a.load(), 1);
+}
+
+void test_r_onvif_push::test_granted_seconds()
+{
+    auto resp = [](const string& now, const string& end) {
+        return "<s:Envelope xmlns:s=\"x\" xmlns:wsnt=\"y\" xmlns:wsa=\"z\"><s:Body><wsnt:SubscribeResponse>"
+               "<wsnt:SubscriptionReference><wsa:Address>http://1.2.3.4/event_service/0</wsa:Address></wsnt:SubscriptionReference>"
+               "<wsnt:CurrentTime>" + now + "</wsnt:CurrentTime><wsnt:TerminationTime>" + end + "</wsnt:TerminationTime>"
+               "</wsnt:SubscribeResponse></s:Body></s:Envelope>";
+    };
+    // The camera's clock being hours wrong doesn't matter: only the two of them against each other.
+    RTF_ASSERT_EQUAL(parse_subscribe_response(resp("2026-11-10T20:48:50Z", "2026-11-10T20:49:50Z")).granted_seconds, 60);
+    RTF_ASSERT_EQUAL(parse_subscribe_response(resp("2026-11-10T23:59:30Z", "2026-11-11T00:00:30Z")).granted_seconds, 60);   // across midnight
+    RTF_ASSERT_EQUAL(parse_subscribe_response(resp("2026-12-31T23:59:30Z", "2027-01-01T00:01:30Z")).granted_seconds, 120);  // and a year
+    RTF_ASSERT_EQUAL(parse_subscribe_response(resp("2026-11-10T20:48:50.5Z", "2026-11-10T20:49:50.5Z")).granted_seconds, 60);
+    // Not said, not usable, or not sensible: 0.
+    RTF_ASSERT_EQUAL(parse_subscribe_response(resp("2026-11-10T20:48:50Z", "2026-11-10T20:48:50Z")).granted_seconds, 0);
+    RTF_ASSERT_EQUAL(parse_subscribe_response(resp("2026-11-10T20:49:50Z", "2026-11-10T20:48:50Z")).granted_seconds, 0);
+    RTF_ASSERT_EQUAL(parse_subscribe_response(resp("2026-11-10T20:48:50Z", "2026-11-20T20:48:50Z")).granted_seconds, 0);
+    RTF_ASSERT_EQUAL(parse_subscribe_response(resp("soon", "later")).granted_seconds, 0);
+    RTF_ASSERT_EQUAL(parse_subscribe_response(resp("2026-13-40T20:48:50Z", "2026-11-10T20:49:50Z")).granted_seconds, 0);
+    // A response with no CurrentTime (the existing test's) leaves it 0.
+    RTF_ASSERT_EQUAL(parse_subscribe_response("<s:Envelope xmlns:s=\"x\" xmlns:wsnt=\"y\" xmlns:wsa=\"z\"><s:Body><wsnt:SubscribeResponse>"
+        "<wsnt:SubscriptionReference><wsa:Address>http://1.2.3.4/a</wsa:Address></wsnt:SubscriptionReference>"
+        "<wsnt:TerminationTime>2026-11-10T20:50:50Z</wsnt:TerminationTime></wsnt:SubscribeResponse></s:Body></s:Envelope>").granted_seconds, 0);
 }
 
 void test_r_onvif_push::test_listener_shares_and_ports()

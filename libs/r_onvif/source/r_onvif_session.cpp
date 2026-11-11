@@ -2963,6 +2963,26 @@ int r_onvif::parse_ws_pull_point_support(const string& capabilities_xml)
     return -1;
 }
 
+// An ISO 8601 time ("2026-11-10T09:30:05Z", a fraction or a zone offset after the seconds ignored) as seconds on a
+// calendar with no zones; only the difference of two of these from one camera is meaningful. false if it isn't one.
+static bool _iso_seconds(const string& text, long long& out)
+{
+    int y, mo, d, h, mi, sec;
+    if (sscanf(text.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &sec) != 6)
+        return false;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h < 0 || h > 23 || mi < 0 || mi > 59 || sec < 0 || sec > 60)
+        return false;
+    // Days from civil (Howard Hinnant's).
+    y -= mo <= 2;
+    const long long era = (y >= 0 ? y : y - 399) / 400;
+    const long long yoe = y - era * 400;
+    const long long doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const long long days = era * 146097 + doe;
+    out = days * 86400 + h * 3600 + mi * 60 + sec;
+    return true;
+}
+
 r_onvif::onvif_pull_point r_onvif::parse_create_pull_point_response(const string& xml)
 {
     pugi::xml_document doc;
@@ -2987,6 +3007,14 @@ r_onvif::onvif_pull_point r_onvif::parse_create_pull_point_response(const string
     auto term = doc.select_node(xp.c_str());
     if (term)
         pp.termination_time = term.node().child_value();
+
+    // How long the camera really granted, which may be less than was asked (one camera gives 60 s whatever the request):
+    // its own TerminationTime less its own CurrentTime, so the camera's clock being wrong doesn't matter.
+    auto cur = doc.select_node(("//" + _xpath_local("CurrentTime")).c_str());
+    long long t = 0, c = 0;
+    if (term && cur && _iso_seconds(r_string_utils::strip(term.node().child_value()), t) && _iso_seconds(r_string_utils::strip(cur.node().child_value()), c) &&
+        t > c && t - c < 24 * 3600)
+        pp.granted_seconds = (int)(t - c);
 
     return pp;
 }

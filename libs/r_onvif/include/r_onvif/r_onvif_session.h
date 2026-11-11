@@ -207,6 +207,7 @@ struct onvif_pull_point
     std::string address;                            // wsa:Address of the SubscriptionReference
     std::vector<std::string> reference_parameters;  // serialized elements to echo as SOAP headers
     std::string termination_time;                   // as the camera reported it (may be empty)
+    int granted_seconds {0};                        // TerminationTime minus CurrentTime, both the camera's own clock; 0 if it didn't say
 };
 
 struct onvif_event

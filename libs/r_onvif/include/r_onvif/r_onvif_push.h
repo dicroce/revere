@@ -15,7 +15,8 @@
 //
 // The listener takes input from the network, so it is small and strict. It is bound to one local address (the one the
 // camera reaches Revere on, never every interface), in a fixed port range. A request is read only from a camera's own IP,
-// to a path made of a random id that only that camera was given, with a head of at most 8 KB and a body of at most 64 KB,
+// to a path made of a random id that only that camera was given (or to "/", which some cameras use for every
+// notification: the caller's address then picks the camera's one subscription), with a head of at most 8 KB and a body of at most 64 KB,
 // read under a deadline. Nothing it reads is trusted: the body goes to a parser that has its own limits.
 namespace r_onvif
 {
@@ -31,7 +32,7 @@ extern const char* const PUSH_PATH_PREFIX;     // "/onvif/notify/"
 struct push_head
 {
     int status {0};             // 0: fine, read the body. Else the HTTP status to answer with (and close).
-    std::string id;             // the subscription id in the path
+    std::string id;             // the subscription id in the path; empty for "/"
     size_t content_length {0};
 };
 R_API push_head parse_push_head(const std::string& head);

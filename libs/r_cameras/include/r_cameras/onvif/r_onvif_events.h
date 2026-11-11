@@ -29,6 +29,8 @@ public:
 
     // For tests: how long a subscription is asked to last (120 s), so a renewal (at half of it) can be seen quickly.
     R_API static void set_termination_seconds_for_tests(int seconds);
+    // For tests: the least quiet (30 s) after which a camera that has been sending a heartbeat is taken to have lost its push subscription.
+    R_API static void set_heartbeat_silence_floor_for_tests(int seconds);
     R_API ~r_onvif_events() noexcept override;
 
 private:

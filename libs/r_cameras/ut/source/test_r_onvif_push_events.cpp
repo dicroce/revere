@@ -4,6 +4,7 @@
 #include "r_utils/r_socket.h"
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <string>
@@ -47,6 +48,7 @@ struct fake_camera
     bool subscribe_works {true};  // Subscribe works (else ActionNotSupported)
     mutex lock;
     map<string, int> calls;
+    int grant_s {0};              // Subscribe says it granted this many seconds (on a clock that is wrong), 0: says nothing
     string consumer;              // the consumer address Subscribe was given
     r_web_server<r_socket> ws;
 
@@ -114,8 +116,15 @@ struct fake_camera
             auto b = body.find("</wsa:Address>");
             if(a != string::npos && b != string::npos)
                 consumer = body.substr(a + 13, b - a - 13);
+            string times;
+            if(grant_s > 0)
+            {
+                char end[32];
+                snprintf(end, sizeof(end), "2026-11-10T20:%02d:%02dZ", 48 + (50 + grant_s) / 60, (50 + grant_s) % 60);
+                times = string("<wsnt:CurrentTime>2026-11-10T20:48:50Z</wsnt:CurrentTime><wsnt:TerminationTime>") + end + "</wsnt:TerminationTime>";
+            }
             return _soap("<wsnt:SubscribeResponse><wsnt:SubscriptionReference><wsa:Address>http://127.0.0.1:" + to_string(port) +
-                         "/onvif/sub1</wsa:Address></wsnt:SubscriptionReference></wsnt:SubscribeResponse>");
+                         "/onvif/sub1</wsa:Address></wsnt:SubscriptionReference>" + times + "</wsnt:SubscribeResponse>");
         }
         return _soap("<wsnt:" + op + "Response/>");
     }
@@ -133,12 +142,14 @@ bool _split(const string& url, int& port, string& path)
     return true;
 }
 
-int _post_notify(const string& url, const string& body)
+int _post_notify(const string& url, const string& body, bool bare_path = false)
 {
     int port;
     string path;
     if(!_split(url, port, path))
         return -1;
+    if(bare_path)
+        path = "/";     // what a camera that keeps only the host and port does
     r_socket s;
     try { s.connect("127.0.0.1", port); } catch(...) { return -2; }     // nothing listening any more
     string req = "POST " + path + " HTTP/1.1\r\nContent-Type: application/soap+xml\r\nContent-Length: " + to_string(body.size()) + "\r\n\r\n" + body;
@@ -316,4 +327,64 @@ void test_r_onvif_push_events::test_the_subscription_is_renewed()
         RTF_ASSERT_EQUAL(cam.count("Subscribe"), 1);    // renewed, not subscribed again
     }
     r_onvif_events::set_termination_seconds_for_tests(120);
+}
+
+void test_r_onvif_push_events::test_a_camera_that_posts_to_the_root_and_grants_less()
+{
+    // One camera's way: it grants 4 s however long is asked for (120 s), posts to "/" and not to the address it was given,
+    // and repeats "no motion" as a heartbeat. The renewal follows what it granted, and only a change is an event.
+    fake_camera cam(11116);
+    cam.pull_support = "false";
+    cam.grant_s = 4;
+    events_rig rig(cam.port);
+    RTF_ASSERT(_until([&]() { return rig.events->status().state == "subscribed"; }));
+    RTF_ASSERT(_until([&]() { return cam.count("Renew") >= 1; }, 5000));    // at 2 s, not at 60 s
+
+    string url = cam.consumer_url();
+    for(int i = 0; i < 3; ++i)
+        RTF_ASSERT_EQUAL(_post_notify(url, _notify(false), true), 200);
+    this_thread::sleep_for(chrono::milliseconds(500));
+    RTF_ASSERT_EQUAL(rig.transitions(), (size_t)0);
+
+    RTF_ASSERT_EQUAL(_post_notify(url, _notify(true), true), 200);
+    RTF_ASSERT(_until([&]() { return rig.transitions() >= 1; }));
+    RTF_ASSERT_EQUAL(_post_notify(url, _notify(false), true), 200);
+    RTF_ASSERT(_until([&]() { return rig.transitions() >= 2; }));
+    RTF_ASSERT_EQUAL(rig.transitions(), (size_t)2);
+    RTF_ASSERT(rig.events->status().up);
+}
+
+void test_r_onvif_push_events::test_a_heartbeat_that_stops_resubscribes()
+{
+    // A camera that was sending a heartbeat and goes quiet has lost the subscription: it is subscribed again.
+    r_onvif_events::set_heartbeat_silence_floor_for_tests(1);
+    {
+        fake_camera cam(11117);
+        cam.pull_support = "false";
+        events_rig rig(cam.port);
+        RTF_ASSERT(_until([&]() { return rig.events->status().state == "subscribed"; }));
+        string url = cam.consumer_url();
+        RTF_ASSERT_EQUAL(_post_notify(url, _notify(false), true), 200);
+        this_thread::sleep_for(chrono::milliseconds(1100));
+        RTF_ASSERT_EQUAL(_post_notify(url, _notify(false), true), 200);   // a beat of 1 s: quiet for 4 s is lost
+        RTF_ASSERT(_until([&]() { return cam.count("Subscribe") >= 2; }, 20000));
+    }
+    r_onvif_events::set_heartbeat_silence_floor_for_tests(30);
+}
+
+void test_r_onvif_push_events::test_a_camera_that_only_sends_changes_is_left_alone()
+{
+    // No heartbeat seen (notifications far apart): quiet is normal, and nothing is subscribed again.
+    r_onvif_events::set_heartbeat_silence_floor_for_tests(1);
+    {
+        fake_camera cam(11118);
+        cam.pull_support = "false";
+        events_rig rig(cam.port);
+        RTF_ASSERT(_until([&]() { return rig.events->status().state == "subscribed"; }));
+        RTF_ASSERT_EQUAL(_post_notify(cam.consumer_url(), _notify(true), true), 200);
+        this_thread::sleep_for(chrono::milliseconds(6000));
+        RTF_ASSERT_EQUAL(cam.count("Subscribe"), 1);
+        RTF_ASSERT(rig.events->status().up);
+    }
+    r_onvif_events::set_heartbeat_silence_floor_for_tests(30);
 }

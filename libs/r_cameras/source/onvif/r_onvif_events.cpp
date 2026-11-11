@@ -12,6 +12,12 @@ using namespace std::chrono;
 
 static const int PULL_TIMEOUT_S = 2;       // short, so a stop is never waiting on a long pull
 static atomic<int> g_termination_s {120};
+static atomic<int> g_silence_floor_s {30};
+
+void r_onvif_events::set_heartbeat_silence_floor_for_tests(int seconds)
+{
+    g_silence_floor_s = seconds;
+}
 
 void r_onvif_events::set_termination_seconds_for_tests(int seconds)
 {
@@ -178,6 +184,7 @@ void r_onvif_events::_check_region(r_onvif::r_onvif_cam& cam, const string& caps
 void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& events_url, const string& caps, int port, string& stage, int& backoff_s)
 {
     static const size_t MAX_QUEUED = 100;           // Notify bodies waiting to be parsed: a camera that floods drops the rest
+    static const int HEARTBEAT_MAX_S = 20;          // notifications this close together are a heartbeat
     static const int HINT_AFTER_S = 30;             // nothing has arrived this long after subscribing
 
     const string camera_ip = _camera.ipv4.value();
@@ -213,8 +220,18 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
 
     _check_region(cam, caps);
 
+    // Renewed at half of what the camera granted, if it says (one gives 60 s however long is asked for), and never later
+    // than half of what was asked.
+    int renew_after_s = g_termination_s.load() / 2;
+    if (sub.granted_seconds > 0)
+        renew_after_s = min(renew_after_s, max(1, sub.granted_seconds / 2));
+
     auto renewed = steady_clock::now();
     const auto subscribed = renewed;
+    auto last_notify = renewed;
+    // A camera that sends a heartbeat (a notification every few seconds even when nothing changed) is alive while it does.
+    // One that has been seen to and then goes quiet for several beats has lost the subscription: subscribe again.
+    int beat_s = 0;
     bool received = false, hinted = false;
     auto last_bad_log = steady_clock::now() - hours(1);
     while (_running())
@@ -232,6 +249,11 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
             {
                 _apply(_tracker.process(r_onvif::parse_notify(body)));
                 received = true;
+                const auto now = steady_clock::now();
+                const int gap_s = (int)duration_cast<seconds>(now - last_notify).count();
+                if (gap_s >= 1 && gap_s <= HEARTBEAT_MAX_S)
+                    beat_s = max(beat_s, gap_s);
+                last_notify = now;
             }
             catch (const exception& e)
             {
@@ -266,7 +288,10 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
             R_LOG_WARNING("%s%s", _prefix().c_str(), hint.c_str());
         }
 
-        if (steady_clock::now() - renewed > seconds(g_termination_s.load() / 2))
+        if (beat_s > 0 && steady_clock::now() - last_notify > seconds(max(g_silence_floor_s.load(), 4 * beat_s)))
+            throw runtime_error("the camera's notifications stopped");
+
+        if (steady_clock::now() - renewed > seconds(renew_after_s))
         {
             stage = "Renew";
             cam.renew(sub, g_termination_s.load());

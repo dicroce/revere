@@ -68,22 +68,31 @@ push_head r_onvif::parse_push_head(const string& head)
         return h;
     }
 
-    // The path is the prefix and the id, and nothing else (a query is ignored).
+    // The path is the prefix and the id, and nothing else (a query is ignored). Or "/", which is what some cameras post
+    // to whatever address they were given (they keep only the host and port): it has no id, and the caller's address
+    // says whose it is.
     auto q = path.find('?');
     if (q != string::npos)
         path = path.substr(0, q);
     const string prefix = PUSH_PATH_PREFIX;
-    if (path.size() <= prefix.size() || path.compare(0, prefix.size(), prefix) != 0)
+    if (path == "/")
     {
-        h.status = 404;
-        return h;
-    }
-    h.id = path.substr(prefix.size());
-    if (h.id.size() > 64 || !all_of(h.id.begin(), h.id.end(), [](unsigned char c) { return isalnum(c) || c == '-' || c == '_'; }))
-    {
-        h.status = 404;
         h.id.clear();
-        return h;
+    }
+    else
+    {
+        if (path.size() <= prefix.size() || path.compare(0, prefix.size(), prefix) != 0)
+        {
+            h.status = 404;
+            return h;
+        }
+        h.id = path.substr(prefix.size());
+        if (h.id.size() > 64 || !all_of(h.id.begin(), h.id.end(), [](unsigned char c) { return isalnum(c) || c == '-' || c == '_'; }))
+        {
+            h.status = 404;
+            h.id.clear();
+            return h;
+        }
     }
 
     // The headers: Content-Length is required (a chunked body isn't read), and is checked before anything is read for it.
@@ -383,22 +392,41 @@ void r_onvif_push_listener::_serve(void* c)
             return;
         }
 
-        // The id belongs to one camera, and this is it.
+        // An id belongs to one camera, and this is it. With no id (the path "/"), the caller's address picks the
+        // subscription, and only when it has exactly one.
         push_handler handler;
         {
             lock_guard<mutex> g(_impl->lock);
-            auto found = _impl->entries.find(h.id);
-            if (found == _impl->entries.end())
+            if (h.id.empty())
             {
-                turn_away(404);
-                return;
+                size_t n = 0;
+                for (auto& e : _impl->entries)
+                    if (e.second.camera_ip == peer)
+                    {
+                        handler = e.second.handler;
+                        ++n;
+                    }
+                if (n != 1)
+                {
+                    turn_away(404);
+                    return;
+                }
             }
-            if (found->second.camera_ip != peer)
+            else
             {
-                turn_away(403);
-                return;
+                auto found = _impl->entries.find(h.id);
+                if (found == _impl->entries.end())
+                {
+                    turn_away(404);
+                    return;
+                }
+                if (found->second.camera_ip != peer)
+                {
+                    turn_away(403);
+                    return;
+                }
+                handler = found->second.handler;
             }
-            handler = found->second.handler;
         }
 
         // The body: exactly Content-Length bytes (what comes after is not read).
