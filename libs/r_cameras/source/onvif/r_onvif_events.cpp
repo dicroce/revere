@@ -115,6 +115,14 @@ void r_onvif_events::_run()
                 _push_session(cam, events.value(), caps, ep.value().port, stage, backoff_s);
                 continue;
             }
+            // However this ends (a stop, a failed pull or Renew, anything thrown) the camera is told to drop the pull point: it
+            // keeps only a few, and a camera that is asked again gets another while the old one waits to expire.
+            struct unsubscribe_on_exit
+            {
+                r_onvif::r_onvif_cam& cam;
+                r_onvif::onvif_pull_point& pp;
+                ~unsubscribe_on_exit() { try { cam.unsubscribe(pp); } catch (...) {} }
+            } unsubscribe_it{cam, pp};
             {
                 int port = ep.value().port;
                 _update([port](r_camera_events_status& s) { s.up = true; s.state = "subscribed"; s.port = port; s.last_error.clear(); });
@@ -149,7 +157,6 @@ void r_onvif_events::_run()
                     renewed = steady_clock::now();
                 }
             }
-            try { cam.unsubscribe(pp); } catch (...) {}
         }
         catch (const exception& e)
         {

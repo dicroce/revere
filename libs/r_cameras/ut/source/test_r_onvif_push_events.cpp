@@ -46,6 +46,7 @@ struct fake_camera
     string pull_support;          // the capability's WSPullPointSupport: "false", "true" or "" (not said)
     bool pull_works {false};      // CreatePullPointSubscription works (else it's ActionNotSupported)
     bool subscribe_works {true};  // Subscribe works (else ActionNotSupported)
+    bool pull_fails {false};      // PullMessages answers with a fault (the pull point is gone)
     bool renew_fails {false};     // Renew answers with a fault (the subscription is gone)
     mutex lock;
     map<string, int> calls;
@@ -108,7 +109,11 @@ struct fake_camera
                          "/onvif/sub1</wsa:Address></tev:SubscriptionReference></tev:CreatePullPointSubscriptionResponse>");
         }
         if(op == "PullMessages")
+        {
+            if(pull_fails)
+                return _soap("<s:Fault><s:Code><s:Value>s:Sender</s:Value></s:Code><s:Reason><s:Text xml:lang=\"en\">gone</s:Text></s:Reason></s:Fault>", response_bad_request);
             return _soap("<tev:PullMessagesResponse/>");
+        }
         if(op == "Subscribe")
         {
             if(!subscribe_works)
@@ -463,4 +468,18 @@ void test_r_onvif_push_events::test_two_repeats_are_not_a_heartbeat()
         RTF_ASSERT(rig.events->status().up);
     }
     r_onvif_events::set_heartbeat_silence_floor_for_tests(30);
+}
+
+void test_r_onvif_push_events::test_a_pull_point_is_dropped_however_the_session_ends()
+{
+    // A pull that fails (the pull point is gone) ends the session with a throw: the camera is still told to drop it.
+    fake_camera cam(11122);
+    cam.pull_support = "true";
+    cam.pull_works = true;
+    events_rig rig(cam.port);
+    RTF_ASSERT(_until([&]() { return cam.count("PullMessages") >= 1; }));
+    RTF_ASSERT_EQUAL(cam.count("Unsubscribe"), 0);
+    cam.pull_fails = true;
+    RTF_ASSERT(_until([&]() { return cam.count("Unsubscribe") >= 1; }, 6000));
+    RTF_ASSERT(!rig.events->status().up);
 }
