@@ -104,14 +104,15 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         MACOSX_BUNDLE_INFO_STRING "Revere Vision"
     )
 
-    # TODO: Add icon file when available
-    # set_target_properties(vision PROPERTIES
-    #     MACOSX_BUNDLE_ICON_FILE "vision.icns"
-    # )
-    # set(APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/vision.icns")
-    # set_source_files_properties(${APP_ICON} PROPERTIES
-    #     MACOSX_PACKAGE_LOCATION "Resources")
-    # target_sources(vision PRIVATE ${APP_ICON})
+    # App icon (Revere's tile with the play triangle), generated with tools/icons/build-icons.sh.
+    # Without it the app shows the generic icon in the Dock and Finder.
+    set_target_properties(vision PROPERTIES
+        MACOSX_BUNDLE_ICON_FILE "vision.icns"
+    )
+    set(APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/vision.icns")
+    set_source_files_properties(${APP_ICON} PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources")
+    target_sources(vision PRIVATE ${APP_ICON})
 
     # Copy shared libraries into the app bundle so it can find them at runtime
     set(VISION_LIBS r_utils r_ui_utils r_av r_pipeline r_storage r_motion r_onvif r_http r_db r_vss r_cameras r_disco r_fakey)
