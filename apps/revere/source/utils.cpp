@@ -24,6 +24,7 @@ extern char** environ;
 #include <deque>
 #include <numeric>
 #include <iterator>
+#include <thread>
 
 using namespace std;
 using namespace r_utils;
@@ -125,22 +126,29 @@ std::string revere::join_path(const std::string& path, const std::string& fileNa
 }
 
 #if defined(IS_MACOS) || defined(IS_LINUX)
-// Runs the opener with the URL as its one argument, never through a shell, and
-// waits for it, as system() did.
-static int _run_opener(const char* opener, const std::string& url)
+// Starts the opener with the URL as its one argument, never through a shell,
+// and doesn't wait for it: when no browser is running, xdg-open runs the one it
+// starts in the foreground and only returns when that browser quits, which
+// would hang the caller (the tray's menu, the app's UI thread) until then. A
+// thread reaps it and logs a failure. -1 if it couldn't be started.
+static int _start_opener(const char* opener, const std::string& url)
 {
     char* argv[] = {const_cast<char*>(opener), const_cast<char*>(url.c_str()), nullptr};
     pid_t pid;
     int err = posix_spawnp(&pid, opener, nullptr, nullptr, argv, environ);
     if(err != 0)
         return -1;
-    int status = 0;
-    while(waitpid(pid, &status, 0) < 0)
-    {
-        if(errno != EINTR)
-            return -1;
-    }
-    return (WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+    std::thread([pid, name = std::string(opener)]() {
+        int status = 0;
+        while(waitpid(pid, &status, 0) < 0)
+        {
+            if(errno != EINTR)
+                return;
+        }
+        if(!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+            R_LOG_ERROR("%s exited with %d", name.c_str(), WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+    }).detach();
+    return 0;
 }
 #endif
 
@@ -164,22 +172,19 @@ bool revere::open_url_in_browser(const std::string& url)
 #elif defined(IS_MACOS)
     // macOS: Use open command
     R_LOG_INFO("Opening URL with open: %s", url.c_str());
-    int result = _run_opener("open", url);
-    if(result != 0)
+    if(_start_opener("open", url) != 0)
     {
-        R_LOG_ERROR("open command failed for URL: %s (exit code: %d)", url.c_str(), result);
-        R_THROW(("Failed to open URL in browser. Error code: %d", result));
+        R_LOG_ERROR("Could not run open for URL: %s", url.c_str());
+        R_THROW(("Failed to open URL in browser: could not run open"));
     }
 #elif defined(IS_LINUX)
     // Linux: Use xdg-open which works with XDG Desktop Portal in snaps
     R_LOG_INFO("Opening URL with xdg-open: %s", url.c_str());
-    int result = _run_opener("xdg-open", url);
-    if(result != 0)
+    if(_start_opener("xdg-open", url) != 0)
     {
-        R_LOG_ERROR("xdg-open failed for URL: %s (exit code: %d)", url.c_str(), result);
-        R_THROW(("Failed to open URL in browser. Error code: %d", result));
+        R_LOG_ERROR("Could not run xdg-open for URL: %s", url.c_str());
+        R_THROW(("Failed to open URL in browser: could not run xdg-open"));
     }
-    R_LOG_INFO("xdg-open succeeded for URL: %s", url.c_str());
 #else
     R_LOG_ERROR("open_url_in_browser: unsupported platform");
     return false;  // Unsupported platform
