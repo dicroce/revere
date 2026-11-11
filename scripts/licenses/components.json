@@ -64,9 +64,9 @@
         {"id": "nanots", "name": "nanots", "version": "", "spdx": "Apache-2.0", "platforms": ["win", "mac", "appimage", "deb"],
          "use": "Video storage", "source": "https://github.com/dicroce/nanots",
          "sources": [{"url": "https://raw.githubusercontent.com/dicroce/nanots/main/LICENSE"}]},
-        {"id": "yolov8n-model", "name": "YOLOv8n model weights (Ultralytics)", "version": "", "spdx": "AGPL-3.0-only", "platforms": ["win", "mac", "appimage", "deb"],
-         "use": "Object detection model (models/yolov8n.*), loaded by the yolov8 motion plugin", "source": "https://github.com/ultralytics/ultralytics",
-         "sources": [{"url": "https://raw.githubusercontent.com/ultralytics/ultralytics/main/LICENSE"}]}
+        {"id": "yolox-model", "name": "YOLOX-s model weights (Megvii)", "version": "0.1.1rc0", "spdx": "Apache-2.0", "platforms": ["win", "mac", "appimage", "deb"],
+         "use": "Object detection model (models/yolox/yolox_s.*, converted to ncnn by tools/yolox), loaded by the yolox motion plugin", "source": "https://github.com/Megvii-BaseDetection/YOLOX",
+         "sources": [{"url": "https://raw.githubusercontent.com/Megvii-BaseDetection/YOLOX/main/LICENSE"}]}
       ]
     },
     {
@@ -120,7 +120,7 @@
          "use": "Motion detection. The Windows build's bundled libraries' licences are in licenses/opencv-windows/.", "source": "https://github.com/opencv/opencv",
          "sources": [{"url": "https://raw.githubusercontent.com/opencv/opencv/4.12.0/LICENSE"}]},
         {"id": "ncnn", "name": "ncnn", "version": "20250503 (Windows), 20261020 (macOS)", "spdx": "BSD-3-Clause", "platforms": ["win", "mac", "appimage"],
-         "use": "Neural-network inference for the yolov8 motion plugin", "source": "https://github.com/Tencent/ncnn",
+         "use": "Neural-network inference for the yolox motion plugin", "source": "https://github.com/Tencent/ncnn",
          "sources": [{"url": "https://raw.githubusercontent.com/Tencent/ncnn/master/LICENSE.txt"}]}
       ]
     },

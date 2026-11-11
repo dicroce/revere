@@ -97,6 +97,7 @@ include(dependencies.cmake)
 
 add_subdirectory(libs)
 add_subdirectory(apps)
+add_subdirectory(tools/detector_harness)
 
 # External plugin support
 set(EXTERNAL_PLUGIN_REPOS "" CACHE STRING "Semicolon-separated list of external plugin git repository URLs or local directories")

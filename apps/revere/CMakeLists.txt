@@ -213,11 +213,27 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
             COMMAND ${CMAKE_COMMAND} -E remove -f $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/motion_plugins/test_plugin.dylib
         )
     endif()
+    # copy_directory only adds: drop a detector plugin and model an earlier
+    # build put in the bundle and this one doesn't build (yolov8, removed; or
+    # yolox without NCNN).
+    foreach(_detector yolox yolov8)
+        if(NOT (NCNN_AVAILABLE AND _detector STREQUAL "yolox"))
+            if(_detector STREQUAL "yolox")
+                set(_detector_models yolox)
+            else()
+                set(_detector_models yolov8_person)
+            endif()
+            add_custom_command(TARGET revere POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E remove -f $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/motion_plugins/${_detector}_motion_plugin.dylib
+                COMMAND ${CMAKE_COMMAND} -E rm -rf $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/${_detector_models}
+            )
+        endif()
+    endforeach()
     if(NCNN_AVAILABLE)
         add_custom_command(TARGET revere POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/libs/r_vss/motion_plugins/yolov8_motion_plugin/model/yolov8n.param $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person/
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/libs/r_vss/motion_plugins/yolov8_motion_plugin/model/yolov8n.bin $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolov8_person/
+            COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolox
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/libs/r_vss/motion_plugins/yolox_motion_plugin/model/yolox_s.param $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolox/
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/libs/r_vss/motion_plugins/yolox_motion_plugin/model/yolox_s.bin $<TARGET_BUNDLE_DIR:revere>/Contents/MacOS/models/yolox/
         )
     endif()
 endif()

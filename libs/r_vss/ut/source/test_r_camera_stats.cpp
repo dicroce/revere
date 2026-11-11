@@ -28,7 +28,7 @@ static motion_event_info _event(system_clock::time_point start)
 static r_storage::r_metadata_entry _entry(const string& json)
 {
     r_storage::r_metadata_entry e;
-    e.stream_tag = "yolov8_motion_plugin";
+    e.stream_tag = "yolox_motion_plugin";
     e.json_data = json;
     e.timestamp_ms = 0;
     return e;

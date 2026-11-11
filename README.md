@@ -35,7 +35,7 @@ Revere is an open source video surveillance system with ONVIF camera support, mo
 - RTSP restreaming of live and recorded video
 - Cross-platform (Linux/Windows/Mac, plus arm64 Linux builds for Raspberry Pi)
 - Full featured API
-- YOLOv8 object detection (people, cars, bikes, animals and other common objects), run only on frames containing motion
+- YOLOX object detection (people, cars, bikes, animals and other common objects), run only on frames containing motion
 - Multi-camera viewer (Vision) with motion timeline, playback, export and a floating single-camera overlay mode
 - Storage management: move recording files to a new drive or reset storage in-place via the camera Properties dialog
 - Headless mode & WebUI
@@ -178,7 +178,7 @@ Run `revere --help` to see all command line options.
 
 ### Adding Your First Camera
 
-ONVIF-discoverable cameras on your LAN appear in the Discovered list. Click Record next to a camera and follow the instructions: Revere streams briefly from the camera to measure its bitrate, then lets you pick a storage file size (with retention estimates) for that stream. During setup you'll be asked whether to enable motion detection for the camera — say yes if you want motion events in the timeline bar (in Vision and the web UI). YOLOv8 object detection only runs on frames containing motion, so it requires motion detection too.
+ONVIF-discoverable cameras on your LAN appear in the Discovered list. Click Record next to a camera and follow the instructions: Revere streams briefly from the camera to measure its bitrate, then lets you pick a storage file size (with retention estimates) for that stream. During setup you'll be asked whether to enable motion detection for the camera — say yes if you want motion events in the timeline bar (in Vision and the web UI). YOLOX object detection only runs on frames containing motion, so it requires motion detection too.
 
 Cameras that don't support ONVIF discovery can still be added manually by entering their RTSP URL (Cameras menu in the desktop app, or "Add RTSP Camera" in the web UI Config tab).
 
@@ -233,7 +233,7 @@ Multiple plugin repos can be separated by semicolons.
 For the desktop apps (Revere + Vision) with several cameras, plan on a modern desktop or laptop CPU — smooth multi-camera decoding and playback is the expensive part.
 
 ### Raspberry Pi
-The arm64 `.deb` is aimed at running Revere headless on a Raspberry Pi 4 or 5 as a small always-on recorder, managed through the web UI. Recording and RTSP restreaming are light, but motion detection and especially YOLOv8 object detection are CPU-bound, so keep the camera count and the number of cameras with analytics enabled modest, and expect a Pi 4 to handle less than a Pi 5. The desktop apps install too, but the Pi is not a good fit for viewing many cameras at once — use Vision or the web UI from another machine instead. Record to a USB SSD rather than the SD card.
+The arm64 `.deb` is aimed at running Revere headless on a Raspberry Pi 4 or 5 as a small always-on recorder, managed through the web UI. Recording and RTSP restreaming are light, but motion detection and especially YOLOX object detection are CPU-bound, so keep the camera count and the number of cameras with analytics enabled modest, and expect a Pi 4 to handle less than a Pi 5. The desktop apps install too, but the Pi is not a good fit for viewing many cameras at once — use Vision or the web UI from another machine instead. Record to a USB SSD rather than the SD card.
 
 ### Storage
 Storage requirements vary based on number of cameras, resolution, bitrate, and retention period. Revere uses the camera's bitrate to estimate retention when configuring recording. Generally:
@@ -259,7 +259,7 @@ If you have a camera that doesn't work with Revere send me a message, maybe we c
 - [FFmpeg](https://ffmpeg.org/) - Video decoding, encoding, and format handling
 
 **AI/ML (Optional):**
-- [NCNN](https://github.com/Tencent/ncnn) - High-performance neural network inference (YOLOv8 object detection)
+- [NCNN](https://github.com/Tencent/ncnn) - High-performance neural network inference (YOLOX object detection)
 
 **User Interface:**
 - [Dear ImGui](https://github.com/ocornut/imgui) (v1.88) - Immediate-mode GUI framework

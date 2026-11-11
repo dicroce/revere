@@ -1,5 +1,5 @@
-#ifndef __yolov8_motion_plugin_h
-#define __yolov8_motion_plugin_h
+#ifndef __yolox_motion_plugin_h
+#define __yolox_motion_plugin_h
 
 #include "r_vss/r_motion_plugin.h"
 #include "r_utils/r_macro.h"
@@ -22,7 +22,7 @@ namespace r_vss {
     class r_motion_event_plugin_host;
 }
 
-class yolov8_motion_plugin : public r_vss::r_motion_plugin
+class yolox_motion_plugin : public r_vss::r_motion_plugin
 {
 public:
     struct Detection {
@@ -45,12 +45,12 @@ public:
         int64_t handed_at {0}; // wall clock when the host handed it to this plugin
     };
 
-    R_API yolov8_motion_plugin(r_vss::r_motion_event_plugin_host* host);
-    R_API virtual ~yolov8_motion_plugin();
+    R_API yolox_motion_plugin(r_vss::r_motion_event_plugin_host* host);
+    R_API virtual ~yolox_motion_plugin();
 
     R_API void stop();
 
-    // Every object YOLO finds in one RGB24 frame (640x640), no motion filter,
+    // Every object YOLOX finds in one RGB24 frame (640x640), no motion filter,
     // nothing written or emitted. Safe alongside the worker thread: ncnn runs
     // each call on its own extractor.
     R_API std::vector<Detection> detect_objects(const uint8_t* rgb_data, int width, int height);
@@ -82,10 +82,10 @@ private:
     void _process_motion_event(const MotionEventMessage& msg);
     std::vector<Detection> detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions, std::vector<Detection>* unfiltered_detections = nullptr);
     void _analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms);
-    // Notes a key frame YOLO just ran on for the camera's event, and how many detections it added.
+    // Notes a key frame YOLOX just ran on for the camera's event, and how many detections it added.
     void _record_look(const std::string& camera_id, int64_t ts, size_t n_dets);
     // Puts the first person, vehicle or animal of each class in an event on
-    // the detection bus as soon as YOLO sees it (r_vss::r_early_alerts), and logs each decision.
+    // the detection bus as soon as YOLOX sees it (r_vss::r_early_alerts), and logs each decision.
     void _early_alerts_for(const std::string& camera_id, const std::vector<Detection>& detections);
     std::string _anchors_path() const;
     void _save_anchors();

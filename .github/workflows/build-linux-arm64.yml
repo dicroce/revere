@@ -93,7 +93,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.REVERE_CLOUD_TOKEN }}
 
-      # Static NCNN, linked into the yolov8 plugin: a .deb has no linuxdeploy
+      # Static NCNN, linked into the yolox plugin: a .deb has no linuxdeploy
       # step to bundle a shared libncnn the way the AppImage does.
       - name: Restore cached NCNN
         id: cache-ncnn

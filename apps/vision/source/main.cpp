@@ -135,7 +135,7 @@ void init_icon_textures()
     R_LOG_INFO("Creating icon textures from PNG data...");
 
     // Map class names to their PNG data
-    // Class names match YOLOv8 detection output
+    // Class names match the detector's output (the 80 COCO classes, as yolox reports them)
     struct icon_data {
         const char* class_name;
         const unsigned char* png_data;
