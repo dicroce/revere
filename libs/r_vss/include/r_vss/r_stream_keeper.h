@@ -53,6 +53,8 @@
 #pragma warning( pop )
 #endif
 
+struct _GMainContext;
+typedef struct _GMainContext GMainContext;
 struct _GMainLoop;
 typedef struct _GMainLoop GMainLoop;
 struct _GstRTSPServer;
@@ -424,6 +426,10 @@ private:
     std::chrono::steady_clock::time_point _last_retention_update;
 
     std::thread _rtsp_server_th;
+    // The RTSP server thread's loop, published for stop() to quit it.
+    std::mutex _rtsp_loop_mutex;
+    GMainContext* _rtsp_context {nullptr};
+    GMainLoop* _rtsp_loop {nullptr};
     GMainLoop* _loop;
     GstRTSPServer* _server;
     GstRTSPAuth* _rtsp_auth {nullptr};
