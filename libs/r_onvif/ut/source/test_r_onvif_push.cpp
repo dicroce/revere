@@ -78,6 +78,8 @@ void test_r_onvif_push::test_push_head()
     RTF_ASSERT_EQUAL(parse_push_head("POST /onvif/notify/" + string(65, 'a') + " HTTP/1.1\r\nContent-Length: 1\r\n\r\n").status, 404);
     RTF_ASSERT_EQUAL(parse_push_head("POST /onvif/notify/abc HTTP/1.1\r\n\r\n").status, 411);                         // no length
     RTF_ASSERT_EQUAL(parse_push_head("POST /onvif/notify/abc HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").status, 411);
+    // Both a chunked encoding and a length: not accepted either (the two can disagree about where the body ends).
+    RTF_ASSERT_EQUAL(parse_push_head("POST /onvif/notify/abc HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n").status, 411);
     RTF_ASSERT_EQUAL(parse_push_head("POST /onvif/notify/abc HTTP/1.1\r\nContent-Length: 65537\r\n\r\n").status, 413);  // one over the cap
     RTF_ASSERT_EQUAL(parse_push_head("POST /onvif/notify/abc HTTP/1.1\r\nContent-Length: 65536\r\n\r\n").status, 0);   // at it
     RTF_ASSERT_EQUAL(parse_push_head("POST /onvif/notify/abc HTTP/1.1\r\nContent-Length: 99999999999\r\n\r\n").status, 400);
@@ -177,6 +179,14 @@ void test_r_onvif_push::test_listener_delivers()
         lock_guard<mutex> g(lock);
         RTF_ASSERT_EQUAL(got.size(), (size_t)1);
         RTF_ASSERT_EQUAL(got[0], string(NOTIFY));
+    }
+    // Whatever follows the body (a pipelined second request, say) is not part of it.
+    RTF_ASSERT_EQUAL(_send_raw(l->port(), _post("/onvif/notify/camid", NOTIFY) + "POST /onvif/notify/camid HTTP/1.1\r\n"), 200);
+    {
+        lock_guard<mutex> g(lock);
+        RTF_ASSERT_EQUAL(got.size(), (size_t)2);
+        RTF_ASSERT_EQUAL(got[1], string(NOTIFY));
+        got.pop_back();
     }
     // The body can come in pieces, after the head.
     {
