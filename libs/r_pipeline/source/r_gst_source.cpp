@@ -1258,6 +1258,48 @@ GstFlowReturn r_gst_source::_new_audio_sample(GstElement* elt, r_gst_source* src
     {
         r_gst_buffer buffer(gst_sample_get_buffer(sample.get()));
 
+        // G.711 with a camera's own frame header in front (r_g711_header_filter): the header goes here, before
+        // anything records, restreams or sends it.
+        auto audio_pad = src->_sample_context._src_pad_info.find(AUDIO_MEDIA);
+        if(audio_pad != src->_sample_context._src_pad_info.end() &&
+           (audio_pad->second.encoding == PCMA_ENCODING || audio_pad->second.encoding == PCMU_ENCODING))
+        {
+            size_t header = 0, total = 0;
+            {
+                auto peek = buffer.map(r_gst_buffer::MT_READ);
+                total = peek.size();
+                header = src->_g711_filter.header_to_strip(peek.data(), total);
+            }
+            if(src->_g711_filter.just_confirmed())
+            {
+                if(src->_g711_filter.resumes() == 0)
+                    R_LOG_INFO("%sG.711 audio with a %d-byte vendor header before its samples: removing it", src->_name_prefix.c_str(), (int)header);
+                else if(src->_g711_filter.resumes() <= 3)
+                    R_LOG_INFO("%sG.711 audio: the vendor header is back on every packet; removing it again", src->_name_prefix.c_str());
+            }
+            // A camera that keeps sending odd packets is said three times, not every few seconds.
+            if(src->_g711_filter.just_paused() && src->_g711_filter.resumes() < 3)
+                R_LOG_WARNING("%sG.711 audio: a packet without the vendor header; judging the stream again", src->_name_prefix.c_str());
+            if(src->_g711_filter.just_stopped())
+                R_LOG_WARNING("%sG.711 audio: packets without the vendor header again; no longer removing it", src->_name_prefix.c_str());
+            if(header > 0)
+            {
+                GstBuffer* stripped = gst_buffer_copy_region(buffer.get(), GST_BUFFER_COPY_ALL, header, total - header);
+                if(stripped)
+                {
+                    // A region that doesn't start at 0 gets no timestamps from the copy: the original's still hold
+                    // (the header takes no time), and the duration is the samples' alone.
+                    GstBuffer* orig = buffer.get();
+                    GST_BUFFER_PTS(stripped) = GST_BUFFER_PTS(orig);
+                    GST_BUFFER_DTS(stripped) = GST_BUFFER_DTS(orig);
+                    GST_BUFFER_DURATION(stripped) = GST_BUFFER_DURATION_IS_VALID(orig) ?
+                        gst_util_uint64_scale(GST_BUFFER_DURATION(orig), total - header, total) : GST_CLOCK_TIME_NONE;
+                    buffer = r_gst_buffer(stripped);
+                    gst_buffer_unref(stripped);
+                }
+            }
+        }
+
         auto info = buffer.map(r_gst_buffer::MT_READ);
 
         auto sample_pts = GST_BUFFER_PTS(buffer.get());

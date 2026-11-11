@@ -32,10 +32,21 @@ public:
     R_API bool wanted(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now(),
                       std::chrono::steady_clock::duration idle = LIVE_RESTREAM_TRACK_IDLE) const;
 
+    // Whether a buffer the track sends at pts_ns (lasting duration_ns, or -1 when unknown) breaks from the last one:
+    // the first, or one more than RESTREAM_DISCONT_NS from where the last ended. Only a break is sent as a
+    // discontinuity. An audio payloader takes a discontinuity as a gap: it re-stamps from the time and adds the
+    // samples too, so a flag on every packet doubles its clock (and sets the marker on every packet).
+    // Called by the session's streaming thread only.
+    R_API bool breaks(int64_t pts_ns, int64_t duration_ns);
+
 private:
     std::atomic<bool> _waiting {false};
     std::atomic<int64_t> _last_pull_ns {0}; // steady_clock; 0 = never
+    int64_t _next_pts_ns {-1};               // where the last buffer ended; -1 before the first
 };
+
+// How far a buffer may start from where the last one ended and still follow on from it.
+constexpr int64_t RESTREAM_DISCONT_NS = 100000000; // 100 ms
 
 // One session's frames dropped since the last report.
 struct restream_overflow

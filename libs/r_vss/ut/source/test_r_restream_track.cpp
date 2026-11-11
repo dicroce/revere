@@ -124,3 +124,169 @@ void test_r_restream_track::test_feed_survives_a_pause()
     gst_object_unref(sink);
     gst_object_unref(pipeline);
 }
+
+void test_r_restream_track::test_breaks()
+{
+    const int64_t ms = 1000000;
+    r_restream_track_gate gate;
+    // The first buffer starts the track.
+    RTF_ASSERT(gate.breaks(1000 * ms, 40 * ms));
+    // Each following on from where the last ended, give or take: no break.
+    RTF_ASSERT(!gate.breaks(1040 * ms, 40 * ms));
+    RTF_ASSERT(!gate.breaks(1081 * ms, 40 * ms));
+    RTF_ASSERT(!gate.breaks(1120 * ms, 40 * ms));
+    // A gap of more than RESTREAM_DISCONT_NS (frames dropped), and a step back: breaks.
+    RTF_ASSERT(gate.breaks(1300 * ms, 40 * ms));
+    RTF_ASSERT(!gate.breaks(1340 * ms, 40 * ms));
+    RTF_ASSERT(gate.breaks(1000 * ms, 40 * ms));
+    // No duration known: the next is measured from this one's start.
+    RTF_ASSERT(!gate.breaks(1040 * ms, -1));
+    RTF_ASSERT(!gate.breaks(1080 * ms, -1));
+    // Measured from where the last ended, not where it started: 120 ms after a 40 ms buffer follows on.
+    RTF_ASSERT(gate.breaks(2000 * ms, 40 * ms));
+    RTF_ASSERT(!gate.breaks(2120 * ms, 40 * ms));
+}
+
+namespace
+{
+// Feeds 12 a-law buffers of 320 samples, 40 ms apart and each flagged DISCONT (as some cameras' buffers come), through
+// restream_feed into rtppcmapay, as the live restream does. Returns each RTP packet's (timestamp, marker).
+vector<pair<uint32_t, int>> restream_pcma(bool audio)
+{
+    r_pipeline::gstreamer_init();
+    GError* err = nullptr;
+    GstElement* pipeline = gst_parse_launch("appsrc name=src is-live=true format=time caps=audio/x-alaw,rate=8000,channels=1 ! "
+                                            "rtppcmapay pt=8 ! appsink name=sink sync=false", &err);
+    if(!pipeline)
+        return {};
+    GstElement* src = gst_bin_get_by_name(GST_BIN(pipeline), "src");
+    GstElement* sink = gst_bin_get_by_name(GST_BIN(pipeline), "sink");
+
+    struct ctx_t
+    {
+        r_blocking_q<_frame_context> q {300};
+        r_restream_track_gate gate;
+        bool audio;
+    } ctx;
+    ctx.audio = audio;
+    g_signal_connect(src, "need-data", G_CALLBACK(+[](GstElement* appsrc, guint, ctx_t* c) {
+        restream_feed(appsrc, c->q, c->gate, c->audio);
+    }), &ctx);
+
+    for(int i = 0; i < 12; ++i)
+    {
+        vector<uint8_t> samples(320, 0xD5);
+        _frame_context fc;
+        fc.gst_pts = (uint64_t)i * 40 * GST_MSECOND;
+        fc.gst_dts = fc.gst_pts;
+        fc.key = true;
+        fc.buffer = r_pipeline::r_gst_buffer(samples.data(), samples.size());
+        GST_BUFFER_DURATION(fc.buffer.get()) = 40 * GST_MSECOND;
+        GST_BUFFER_FLAG_SET(fc.buffer.get(), GST_BUFFER_FLAG_DISCONT);
+        ctx.q.post(fc);
+    }
+
+    gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    vector<pair<uint32_t, int>> out;
+    while(out.size() < 12)
+    {
+        GstSample* sample = nullptr;
+        g_signal_emit_by_name(sink, "try-pull-sample", (GstClockTime)(3 * GST_SECOND), &sample);
+        if(!sample)
+            break;
+        GstMapInfo info;
+        GstBuffer* b = gst_sample_get_buffer(sample);
+        if(gst_buffer_map(b, &info, GST_MAP_READ) && info.size >= 12)
+        {
+            uint32_t ts = ((uint32_t)info.data[4] << 24) | ((uint32_t)info.data[5] << 16) | ((uint32_t)info.data[6] << 8) | info.data[7];
+            out.push_back({ts, info.data[1] >> 7});
+            gst_buffer_unmap(b, &info);
+        }
+        gst_sample_unref(sample);
+    }
+    gst_element_set_state(pipeline, GST_STATE_NULL);
+    gst_object_unref(src);
+    gst_object_unref(sink);
+    gst_object_unref(pipeline);
+    return out;
+}
+}
+
+void test_r_restream_track::test_audio_restream_stamps_by_samples()
+{
+    // The audio track sends a discontinuity only where its times break, so the payloader counts samples: +320 a
+    // packet at 8 kHz, and the marker only on the first.
+    auto audio = restream_pcma(true);
+    RTF_ASSERT(audio.size() == 12);
+    for(size_t i = 1; i < audio.size(); ++i)
+    {
+        RTF_ASSERT(audio[i].first - audio[i - 1].first == 320);
+        RTF_ASSERT(audio[i].second == 0);
+    }
+    RTF_ASSERT(audio[0].second == 1);
+
+    // Passing every packet's DISCONT on (as video keeps its flags) is what doubled the clock: +640, marker on each.
+    auto passed = restream_pcma(false);
+    RTF_ASSERT(passed.size() == 12);
+    RTF_ASSERT(passed[2].first - passed[1].first == 640);
+    RTF_ASSERT(passed[2].second == 1);
+}
+
+void test_r_restream_track::test_audio_restream_drops_camera_resync()
+{
+    // A camera that sets the RTP marker on every packet gets every buffer flagged RESYNC by rtppcmadepay ("start of a
+    // talkspurt"), and GStreamer 1.28's audio payloader takes RESYNC as a discontinuity, as it does DISCONT. The
+    // restream's audio buffers carry neither, after the first.
+    r_pipeline::gstreamer_init();
+    GError* err = nullptr;
+    GstElement* pipeline = gst_parse_launch("appsrc name=src is-live=true format=time caps=audio/x-alaw,rate=8000,channels=1 ! "
+                                            "appsink name=sink sync=false", &err);
+    RTF_ASSERT(pipeline != nullptr);
+    GstElement* src = gst_bin_get_by_name(GST_BIN(pipeline), "src");
+    GstElement* sink = gst_bin_get_by_name(GST_BIN(pipeline), "sink");
+
+    struct ctx_t
+    {
+        r_blocking_q<_frame_context> q {300};
+        r_restream_track_gate gate;
+    } ctx;
+    g_signal_connect(src, "need-data", G_CALLBACK(+[](GstElement* appsrc, guint, ctx_t* c) {
+        restream_feed(appsrc, c->q, c->gate, true);
+    }), &ctx);
+
+    for(int i = 0; i < 8; ++i)
+    {
+        vector<uint8_t> samples(320, 0xD5);
+        _frame_context fc;
+        fc.gst_pts = (uint64_t)i * 40 * GST_MSECOND;
+        fc.gst_dts = fc.gst_pts;
+        fc.key = true;
+        fc.buffer = r_pipeline::r_gst_buffer(samples.data(), samples.size());
+        GST_BUFFER_DURATION(fc.buffer.get()) = 40 * GST_MSECOND;
+        GST_BUFFER_FLAG_SET(fc.buffer.get(), GST_BUFFER_FLAG_RESYNC);
+        ctx.q.post(fc);
+    }
+
+    gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    vector<guint> flags;
+    while(flags.size() < 8)
+    {
+        GstSample* sample = nullptr;
+        g_signal_emit_by_name(sink, "try-pull-sample", (GstClockTime)(3 * GST_SECOND), &sample);
+        if(!sample)
+            break;
+        flags.push_back(GST_BUFFER_FLAGS(gst_sample_get_buffer(sample)));
+        gst_sample_unref(sample);
+    }
+    gst_element_set_state(pipeline, GST_STATE_NULL);
+    gst_object_unref(src);
+    gst_object_unref(sink);
+    gst_object_unref(pipeline);
+
+    RTF_ASSERT(flags.size() == 8);
+    for(size_t i = 1; i < flags.size(); ++i)
+    {
+        RTF_ASSERT((flags[i] & GST_BUFFER_FLAG_RESYNC) == 0);
+        RTF_ASSERT((flags[i] & GST_BUFFER_FLAG_DISCONT) == 0);
+    }
+}

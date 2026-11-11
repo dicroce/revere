@@ -12,6 +12,12 @@ public:
       TEST(test_r_pipeline::test_rtsp_teardown_timeout);
       TEST(test_r_pipeline::test_gst_source_stop_sends_teardown);
       TEST(test_r_pipeline::test_rtsp_probe_retry_over_udp);
+      TEST(test_r_pipeline::test_g711_vendor_header_candidate);
+      TEST(test_r_pipeline::test_g711_header_filter_header_stream);
+      TEST(test_r_pipeline::test_g711_header_filter_normal_stream);
+      TEST(test_r_pipeline::test_g711_header_filter_normal_stream_starting_with_00);
+      TEST(test_r_pipeline::test_g711_header_filter_mixed_stream);
+      TEST(test_r_pipeline::test_gst_source_strips_g711_vendor_header);
 #if 0
       TEST(test_r_pipeline::test_gst_source_h265_aac);
       TEST(test_r_pipeline::test_gst_source_h264_mulaw);
@@ -39,6 +45,12 @@ public:
     void test_rtsp_teardown_timeout();
     void test_gst_source_stop_sends_teardown();
     void test_rtsp_probe_retry_over_udp();
+    void test_g711_vendor_header_candidate();
+    void test_g711_header_filter_header_stream();
+    void test_g711_header_filter_normal_stream();
+    void test_g711_header_filter_normal_stream_starting_with_00();
+    void test_g711_header_filter_mixed_stream();
+    void test_gst_source_strips_g711_vendor_header();
 #if 0
     void test_gst_source_h265_aac();
     void test_gst_source_h264_mulaw();
