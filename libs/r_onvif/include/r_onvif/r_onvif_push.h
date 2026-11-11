@@ -21,8 +21,10 @@
 namespace r_onvif
 {
 
-constexpr int PUSH_PORT_FIRST = 11040;
-constexpr int PUSH_PORT_LAST = 11059;
+// The top 20 ports of the 51830-51929 range the installer already opens for the LAN (the HomeKit cameras take theirs
+// from the bottom, one each); this listener takes the first of these that is free.
+constexpr int PUSH_PORT_FIRST = 51910;
+constexpr int PUSH_PORT_LAST = 51929;
 constexpr size_t PUSH_MAX_HEAD = 8 * 1024;
 constexpr size_t PUSH_MAX_BODY = 64 * 1024;
 constexpr int PUSH_READ_DEADLINE_MS = 5000;
@@ -66,6 +68,7 @@ public:
 
     // Notifications from camera_ip to .../<id> go to handler.
     R_API void add(const std::string& id, const std::string& camera_ip, push_handler handler);
+    // Once this returns, the handler isn't running and won't be called again (a call that has started is waited for).
     R_API void remove(const std::string& id);
 
     R_API int port() const { return _port; }

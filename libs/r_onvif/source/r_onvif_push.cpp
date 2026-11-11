@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <condition_variable>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -221,6 +222,8 @@ struct r_onvif_push_listener::impl
     r_server_threaded<r_socket> server;
     thread th;
     mutex lock;
+    condition_variable idle;        // signalled when a handler call ends
+    int calls {0};                  // handler calls running now
     map<string, entry> entries;
     atomic<size_t> rejected {0};
 };
@@ -305,8 +308,10 @@ void r_onvif_push_listener::add(const string& id, const string& camera_ip, push_
 
 void r_onvif_push_listener::remove(const string& id)
 {
-    lock_guard<mutex> g(_impl->lock);
+    unique_lock<mutex> g(_impl->lock);
     _impl->entries.erase(id);
+    // A handler that is running may use what the caller is about to free: wait for it. (A handler is quick: it queues.)
+    _impl->idle.wait(g, [this]() { return _impl->calls == 0; });
 }
 
 string r_onvif_push_listener::url(const string& id) const
@@ -393,9 +398,9 @@ void r_onvif_push_listener::_serve(void* c)
         }
 
         // An id belongs to one camera, and this is it. With no id (the path "/"), the caller's address picks the
-        // subscription, and only when it has exactly one.
-        push_handler handler;
-        {
+        // subscription, and only when it has exactly one. Returns 0 and the handler, or the status to turn away with.
+        // With count_call, the handler's call is counted (under the same lock) so remove() waits for it.
+        auto resolve = [&](push_handler& handler, bool count_call) -> int {
             lock_guard<mutex> g(_impl->lock);
             if (h.id.empty())
             {
@@ -407,25 +412,27 @@ void r_onvif_push_listener::_serve(void* c)
                         ++n;
                     }
                 if (n != 1)
-                {
-                    turn_away(404);
-                    return;
-                }
+                    return 404;
             }
             else
             {
                 auto found = _impl->entries.find(h.id);
                 if (found == _impl->entries.end())
-                {
-                    turn_away(404);
-                    return;
-                }
+                    return 404;
                 if (found->second.camera_ip != peer)
-                {
-                    turn_away(403);
-                    return;
-                }
+                    return 403;
                 handler = found->second.handler;
+            }
+            if (count_call)
+                ++_impl->calls;
+            return 0;
+        };
+        {
+            push_handler early;
+            if (int status = resolve(early, false))
+            {
+                turn_away(status);
+                return;
             }
         }
 
@@ -441,6 +448,22 @@ void r_onvif_push_listener::_serve(void* c)
             }
         }
 
+        // Looked up again: while the body was coming, the subscription may have ended (and its owner gone).
+        push_handler handler;
+        if (int status = resolve(handler, true))
+        {
+            turn_away(status);
+            return;
+        }
+        struct done_call
+        {
+            r_onvif_push_listener::impl& i;
+            ~done_call()
+            {
+                { lock_guard<mutex> g(i.lock); --i.calls; }
+                i.idle.notify_all();
+            }
+        } done{*_impl};
         handler(body);
         _reply(conn, 200);
     }

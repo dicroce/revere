@@ -84,16 +84,6 @@ begin
   Result := '';
 end;
 
-// The firewall rule for the port range where a camera sends Revere its events (ONVIF push, TCP 11040-11059): from this
-// network only, on Private and Domain networks, for revere.exe. Named so a reinstall replaces it and an uninstall removes it.
-procedure DeleteCameraEventsRule;
-var
-  ResultCode: Integer;
-begin
-  Exec(ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall delete rule name="Revere camera events (TCP)"', '',
-       SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   // Vision-only over a full install: the recorder's files are removed
@@ -101,11 +91,7 @@ begin
   // Windows would try to start a revere.exe that's gone. Recordings and
   // settings in the user's data folder are left alone.
   if (CurStep = ssPostInstall) and not WizardIsComponentSelected('revere') then
-  begin
     RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Revere');
-    // ...and the firewall rule that was for it ([Run] adds it with the recorder).
-    DeleteCameraEventsRule;
-  end;
 end;
 
 #include ComponentsInclude
@@ -121,17 +107,8 @@ Name: "{autoprograms}\Vision"; Filename: "{app}\vision.exe"
 [Run]
 ; Install Visual C++ 2022 Redistributable (required for application to run)
 Filename: "{tmp}\{#ExtractFileName(VCRedistPath)}"; Parameters: "/quiet /norestart"; StatusMsg: "Installing Visual C++ 2022 Runtime..."; Flags: waituntilterminated
-; Camera events: an inbound rule for revere.exe, TCP 11040-11059, from the local subnet only, on Private and Domain networks
-; (never Public). Not a rule for the program alone, which would also open its other listeners. The old rule is removed first,
-; so a reinstall at another path doesn't leave two.
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Revere camera events (TCP)"""; Flags: runhidden waituntilterminated; Components: revere
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Revere camera events (TCP)"" dir=in action=allow enable=yes protocol=TCP localport=11040-11059 remoteip=LocalSubnet profile=private,domain program=""{app}\{#MyAppExeName}"""; StatusMsg: "Allowing cameras to send Revere their events..."; Flags: runhidden waituntilterminated; Components: revere
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent; Components: revere
 Filename: "{app}\vision.exe"; Description: "{cm:LaunchProgram,Vision}"; Flags: nowait postinstall skipifsilent; Components: not revere
-
-[UninstallRun]
-; The rule [Run] added.
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Revere camera events (TCP)"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveCameraEventsRule"
 
 [InstallDelete]
 Type: files; Name: "{app}\motion_plugins\yolov8_person_plugin.dll"

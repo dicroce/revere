@@ -46,6 +46,7 @@ struct fake_camera
     string pull_support;          // the capability's WSPullPointSupport: "false", "true" or "" (not said)
     bool pull_works {false};      // CreatePullPointSubscription works (else it's ActionNotSupported)
     bool subscribe_works {true};  // Subscribe works (else ActionNotSupported)
+    bool renew_fails {false};     // Renew answers with a fault (the subscription is gone)
     mutex lock;
     map<string, int> calls;
     int grant_s {0};              // Subscribe says it granted this many seconds (on a clock that is wrong), 0: says nothing
@@ -126,6 +127,8 @@ struct fake_camera
             return _soap("<wsnt:SubscribeResponse><wsnt:SubscriptionReference><wsa:Address>http://127.0.0.1:" + to_string(port) +
                          "/onvif/sub1</wsa:Address></wsnt:SubscriptionReference>" + times + "</wsnt:SubscribeResponse>");
         }
+        if(op == "Renew" && renew_fails)
+            return _soap("<s:Fault><s:Code><s:Value>s:Sender</s:Value></s:Code><s:Reason><s:Text xml:lang=\"en\">gone</s:Text></s:Reason></s:Fault>", response_bad_request);
         return _soap("<wsnt:" + op + "Response/>");
     }
 };
@@ -364,10 +367,14 @@ void test_r_onvif_push_events::test_a_heartbeat_that_stops_resubscribes()
         events_rig rig(cam.port);
         RTF_ASSERT(_until([&]() { return rig.events->status().state == "subscribed"; }));
         string url = cam.consumer_url();
-        RTF_ASSERT_EQUAL(_post_notify(url, _notify(false), true), 200);
-        this_thread::sleep_for(chrono::milliseconds(1100));
-        RTF_ASSERT_EQUAL(_post_notify(url, _notify(false), true), 200);   // a beat of 1 s: quiet for 4 s is lost
+        // The same "no motion" four times, a second apart: a heartbeat of 1 s, and quiet for 4 s is lost.
+        for(int i = 0; i < 4; ++i)
+        {
+            RTF_ASSERT_EQUAL(_post_notify(url, _notify(false), true), 200);
+            this_thread::sleep_for(chrono::milliseconds(1100));
+        }
         RTF_ASSERT(_until([&]() { return cam.count("Subscribe") >= 2; }, 20000));
+        RTF_ASSERT(cam.count("Unsubscribe") >= 1);     // and the lost one was dropped at the camera first
     }
     r_onvif_events::set_heartbeat_silence_floor_for_tests(30);
 }
@@ -381,7 +388,14 @@ void test_r_onvif_push_events::test_a_camera_that_only_sends_changes_is_left_alo
         cam.pull_support = "false";
         events_rig rig(cam.port);
         RTF_ASSERT(_until([&]() { return rig.events->status().state == "subscribed"; }));
+        // A short motion: on, then off a second later (changes, never the same twice in a row), and then quiet.
         RTF_ASSERT_EQUAL(_post_notify(cam.consumer_url(), _notify(true), true), 200);
+        this_thread::sleep_for(chrono::milliseconds(1100));
+        RTF_ASSERT_EQUAL(_post_notify(cam.consumer_url(), _notify(false), true), 200);
+        this_thread::sleep_for(chrono::milliseconds(1100));
+        RTF_ASSERT_EQUAL(_post_notify(cam.consumer_url(), _notify(true), true), 200);
+        this_thread::sleep_for(chrono::milliseconds(1100));
+        RTF_ASSERT_EQUAL(_post_notify(cam.consumer_url(), _notify(false), true), 200);
         this_thread::sleep_for(chrono::milliseconds(6000));
         RTF_ASSERT_EQUAL(cam.count("Subscribe"), 1);
         RTF_ASSERT(rig.events->status().up);
@@ -407,4 +421,25 @@ void test_r_onvif_push_events::test_a_heartbeat_keeps_it_subscribed()
         RTF_ASSERT(rig.events->status().up);
     }
     r_onvif_events::set_heartbeat_silence_floor_for_tests(30);
+}
+
+void test_r_onvif_push_events::test_push_stays_chosen_after_a_failure_and_the_subscription_is_dropped()
+{
+    // Push was chosen because creating a pull point said "not supported". When the subscription is later lost (a Renew that
+    // fails), the camera is told to drop it, and push is used again without asking for a pull point.
+    r_onvif_events::set_termination_seconds_for_tests(2);
+    {
+        fake_camera cam(11120);       // no WSPullPointSupport, pull point not supported
+        events_rig rig(cam.port);
+        RTF_ASSERT(_until([&]() { return rig.events->status().state == "subscribed"; }));
+        RTF_ASSERT_EQUAL(cam.count("CreatePullPointSubscription"), 1);
+        cam.pull_works = true;           // if it were asked again, it would work and be used
+        cam.renew_fails = true;
+        RTF_ASSERT(_until([&]() { return cam.count("Unsubscribe") >= 1; }, 6000));
+        cam.renew_fails = false;
+        RTF_ASSERT(_until([&]() { return cam.count("Subscribe") >= 2; }, 20000));
+        RTF_ASSERT_EQUAL(cam.count("CreatePullPointSubscription"), 1);
+        RTF_ASSERT_EQUAL(cam.count("PullMessages"), 0);
+    }
+    r_onvif_events::set_termination_seconds_for_tests(120);
 }

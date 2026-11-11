@@ -306,6 +306,33 @@ void test_r_onvif_push::test_granted_seconds()
         "<wsnt:TerminationTime>2026-11-10T20:50:50Z</wsnt:TerminationTime></wsnt:SubscribeResponse></s:Body></s:Envelope>").granted_seconds, 0);
 }
 
+void test_r_onvif_push::test_remove_waits_for_a_running_handler()
+{
+    // The handler may use what its owner frees after remove() returns, so remove() waits for a call that has started.
+    auto l = make_shared<r_onvif_push_listener>("127.0.0.1", 11060, 11079);
+    atomic<bool> started {false}, finished {false};
+    l->add("slow", "127.0.0.1", [&](const string&) {
+        started = true;
+        this_thread::sleep_for(chrono::milliseconds(500));
+        finished = true;
+    });
+    thread caller([&]() { _send_raw(l->port(), _post("/onvif/notify/slow", NOTIFY)); });
+    for(int i = 0; i < 200 && !started; ++i)
+        this_thread::sleep_for(chrono::milliseconds(10));
+    RTF_ASSERT(started.load());
+    RTF_ASSERT(!finished.load());
+    l->remove("slow");
+    RTF_ASSERT(finished.load());     // not returned before the handler did
+    caller.join();
+
+    // And once removed, a request that was still arriving isn't handed to it.
+    atomic<int> called {0};
+    l->add("gone", "127.0.0.1", [&](const string&) { ++called; });
+    l->remove("gone");
+    RTF_ASSERT_EQUAL(_send_raw(l->port(), _post("/onvif/notify/gone", NOTIFY)), 0);
+    RTF_ASSERT_EQUAL(called.load(), 0);
+}
+
 void test_r_onvif_push::test_listener_shares_and_ports()
 {
     auto a = r_onvif_push_listener::acquire("127.0.0.1", 11090, 11099);

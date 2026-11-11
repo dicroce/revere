@@ -24,6 +24,24 @@ void r_onvif_events::set_termination_seconds_for_tests(int seconds)
     g_termination_s = seconds;
 }
 
+// What a notification says, without its times or its PropertyOperation: two notifications with the same signature say
+// the same thing again (a heartbeat repeats the state it already reported; a change is never the same as the one before).
+static string _signature(const vector<r_onvif::onvif_event>& events)
+{
+    string sig;
+    for (auto& e : events)
+    {
+        sig += e.topic + "|";
+        for (auto& kv : e.source)
+            sig += kv.first + "=" + kv.second + ";";
+        sig += "|";
+        for (auto& kv : e.data)
+            sig += kv.first + "=" + kv.second + ";";
+        sig += "\n";
+    }
+    return sig;
+}
+
 static string _first_line(const string& s)
 {
     auto nl = s.find('\n');
@@ -184,7 +202,8 @@ void r_onvif_events::_check_region(r_onvif::r_onvif_cam& cam, const string& caps
 void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& events_url, const string& caps, int port, string& stage, int& backoff_s)
 {
     static const size_t MAX_QUEUED = 100;           // Notify bodies waiting to be parsed: a camera that floods drops the rest
-    static const int HEARTBEAT_MAX_S = 20;          // notifications this close together are a heartbeat
+    static const int HEARTBEAT_MAX_S = 20;          // repeats this close together are a heartbeat
+    static const int HEARTBEAT_REPEATS = 3;         // and only after this many repeats in a row
     static const int HINT_AFTER_S = 30;             // nothing has arrived this long after subscribing
 
     const string camera_ip = _camera.ipv4.value();
@@ -214,6 +233,15 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
 
     stage = "Subscribe";
     auto sub = cam.subscribe_push(events_url, listener->url(id), g_termination_s.load());
+    // However this ends (a stop, a lost heartbeat, a failed Renew, anything thrown) the camera is told to drop the
+    // subscription: a camera keeps only a few, and one left behind posts every event twice to the same address. A
+    // camera that doesn't answer isn't waited for long. (Declared after forget_it, so it runs before the listener forgets.)
+    struct unsubscribe_on_exit
+    {
+        r_onvif::r_onvif_cam& cam;
+        r_onvif::onvif_pull_point& sub;
+        ~unsubscribe_on_exit() { try { cam.unsubscribe(sub); } catch (...) {} }
+    } unsubscribe_it{cam, sub};
     _update([port](r_camera_events_status& s) { s.up = true; s.state = "subscribed"; s.port = port; s.last_error.clear(); });
     backoff_s = 10;
     R_LOG_INFO("%ssubscribed for push events on port %d (notifications to %s:%d)", _prefix().c_str(), port, local_ip.c_str(), listener->port());
@@ -229,9 +257,12 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
     auto renewed = steady_clock::now();
     const auto subscribed = renewed;
     auto last_notify = renewed;
-    // A camera that sends a heartbeat (a notification every few seconds even when nothing changed) is alive while it does.
-    // One that has been seen to and then goes quiet for several beats has lost the subscription: subscribe again.
-    int beat_s = 0;
+    // A camera that sends a heartbeat (the same notification, nothing changed, every few seconds) is alive while it does.
+    // One that has been seen to, several repeats in a row, and then goes quiet for several beats has lost the
+    // subscription: subscribe again. A change is not a repeat, so a camera that only sends changes is never taken for
+    // one that is quiet.
+    int beat_s = 0, repeats = 0, run_gap_s = 0;
+    string last_signature;
     bool received = false, hinted = false;
     auto last_bad_log = steady_clock::now() - hours(1);
     while (_running())
@@ -247,12 +278,29 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
         {
             try
             {
-                _apply(_tracker.process(r_onvif::parse_notify(body)));
+                auto parsed = r_onvif::parse_notify(body);
+                const string signature = _signature(parsed);
+                _apply(_tracker.process(parsed));
                 received = true;
                 const auto now = steady_clock::now();
                 const int gap_s = (int)duration_cast<seconds>(now - last_notify).count();
-                if (gap_s >= 1 && gap_s <= HEARTBEAT_MAX_S)
-                    beat_s = max(beat_s, gap_s);
+                if (signature.empty() || signature != last_signature)
+                {
+                    repeats = 0;
+                    run_gap_s = 0;
+                }
+                else if (gap_s > HEARTBEAT_MAX_S)
+                {
+                    repeats = 0;
+                    run_gap_s = 0;
+                }
+                else if (gap_s >= 1)
+                {
+                    run_gap_s = max(run_gap_s, gap_s);
+                    if (++repeats >= HEARTBEAT_REPEATS)
+                        beat_s = max(beat_s, run_gap_s);
+                }
+                last_signature = signature;
                 last_notify = now;
             }
             catch (const exception& e)
@@ -298,5 +346,4 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
             renewed = steady_clock::now();
         }
     }
-    try { cam.unsubscribe(sub); } catch (...) {}
 }
