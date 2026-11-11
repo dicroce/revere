@@ -623,7 +623,10 @@ void r_stream_keeper::_tier_tick()
         if(!c.is_null() && !c.value().motion_tier_verified.is_null())
             f.saved_verified = c.value().motion_tier_verified.value();
         if(s.second->has_camera_events())
-            f.subscription = s.second->camera_events_status().up ? 1 : 0;
+        {
+            auto events = s.second->camera_events_status();
+            f.subscription = tier_subscription_state(true, events.up, events.unavailable());
+        }
         facts.push_back(f);
     }
 
