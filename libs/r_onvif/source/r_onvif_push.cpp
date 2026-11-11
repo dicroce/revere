@@ -9,6 +9,7 @@
 #include "r_utils/r_string_utils.h"
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
