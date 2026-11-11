@@ -15,6 +15,7 @@
 #include "r_vss/r_tier_controller.h"
 #include "r_vss/r_tier_outputs.h"
 #include "r_vss/r_rtsp_transport.h"
+#include "r_vss/r_restart_backoff.h"
 #include "r_vss/r_lag_watchdog.h"
 #include "r_vss/r_keep_awake.h"
 #include "r_vss/r_substream_setting.h"
@@ -29,6 +30,7 @@
 #include "r_utils/r_work_q.h"
 #include "r_utils/r_macro.h"
 #include "r_pipeline/r_stream_info.h"
+#include <atomic>
 #include <map>
 #include <set>
 #include <vector>
@@ -442,6 +444,10 @@ private:
     std::map<std::string, _failed_camera_state> _failed_cameras;
     // Per camera, kept across reconnects; protected by _streams_mutex
     std::map<std::string, r_rtsp_transport> _rtsp_transports;
+    // Per camera: how soon a stream that died may start again (r_restart_backoff).
+    std::map<std::string, r_restart_backoff> _restart_backoffs;
+    // Set as stop() begins: the cameras are stopped first, and none is reaped or started again after.
+    std::atomic<bool> _stopping {false};
     reconnect_log _reconnects;
     // Reconnects asked for by a camera's lag watchdog, with their backoff.
     r_lag_reconnects _lag_reconnects;

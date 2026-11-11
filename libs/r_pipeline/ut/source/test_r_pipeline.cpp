@@ -9,9 +9,12 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_work_q.h"
 #include "r_utils/r_std_utils.h"
+#include "r_utils/r_socket.h"
 
 #include <sys/types.h>
 #include <thread>
+#include <atomic>
+#include <mutex>
 #include <vector>
 #include <functional>
 #include <algorithm>
@@ -153,6 +156,136 @@ void test_r_pipeline::test_rtsp_jitterbuffer_latency()
     g_object_get(G_OBJECT(rtspsrc), "latency", &latency, NULL);
     RTF_ASSERT(latency == (guint)RTSP_JITTERBUFFER_LATENCY_MS && latency == 200);
     gst_object_unref(rtspsrc);
+}
+
+void test_r_pipeline::test_rtsp_teardown_timeout()
+{
+    gst_init(nullptr, nullptr);
+    GstElement* rtspsrc = gst_element_factory_make("rtspsrc", nullptr);
+    RTF_ASSERT(rtspsrc != nullptr);
+    guint64 timeout = 0;
+    g_object_get(G_OBJECT(rtspsrc), "teardown-timeout", &timeout, NULL);
+    RTF_ASSERT(timeout == 100000000ULL); // GStreamer's default: 100 ms to get the TEARDOWN out
+    rtsp_set_teardown_timeout(rtspsrc);
+    g_object_get(G_OBJECT(rtspsrc), "teardown-timeout", &timeout, NULL);
+    RTF_ASSERT(timeout == RTSP_TEARDOWN_TIMEOUT_NS && timeout == 2000000000ULL);
+    gst_object_unref(rtspsrc);
+}
+
+// A camera that answers over RTSP/TCP but sends no video, as one with its sessions stuck did. It writes down each
+// request's method and session.
+namespace
+{
+struct fake_silent_camera
+{
+    int port;
+    std::mutex lock;
+    vector<string> requests;
+    std::atomic<bool> listening{false};
+    std::atomic<bool> done{false};
+    std::thread th;
+
+    explicit fake_silent_camera(int p) : port(p)
+    {
+        th = std::thread([this](){ _serve(); });
+        while(!listening)
+            std::this_thread::yield();
+    }
+    ~fake_silent_camera() { done = true; if(th.joinable()) th.join(); }
+
+    bool saw(const string& method)
+    {
+        std::lock_guard<std::mutex> g(lock);
+        return std::any_of(requests.begin(), requests.end(), [&](const string& r){ return r.rfind(method, 0) == 0; });
+    }
+
+    void _serve()
+    {
+        r_socket listener;
+        listener.bind(port, "127.0.0.1");
+        listener.listen();
+        listening = true;
+        uint64_t wait = 10000;
+        if(!listener.wait_till_recv_wont_block(wait))
+            return;
+        auto conn = listener.accept();
+        string buf;
+        const string sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=cam\r\nc=IN IP4 0.0.0.0\r\nt=0 0\r\n"
+                           "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1\r\na=control:track1\r\n";
+        while(!done)
+        {
+            uint64_t millis = 200;
+            if(!conn.wait_till_recv_wont_block(millis))
+                continue;
+            char chunk[4096];
+            int n = conn.recv(chunk, sizeof(chunk));
+            if(n <= 0)
+                return;
+            buf.append(chunk, n);
+            size_t end;
+            while((end = buf.find("\r\n\r\n")) != string::npos)
+            {
+                string head = buf.substr(0, end);
+                buf.erase(0, end + 4);
+                string method = head.substr(0, head.find(' '));
+                auto header = [&](const string& name){
+                    auto at = head.find("\r\n" + name + ":");
+                    if(at == string::npos) return string();
+                    at += name.size() + 3;
+                    auto stop = head.find("\r\n", at);
+                    return r_string_utils::strip(head.substr(at, stop == string::npos ? string::npos : stop - at));
+                };
+                {
+                    std::lock_guard<std::mutex> g(lock);
+                    requests.push_back(method + " " + header("Session"));
+                }
+                string extra, body;
+                if(method == "OPTIONS")
+                    extra = "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER\r\n";
+                else if(method == "DESCRIBE")
+                {
+                    body = sdp;
+                    extra = r_string_utils::format("Content-Type: application/sdp\r\nContent-Base: rtsp://127.0.0.1:%d/x/\r\n", port);
+                }
+                else if(method == "SETUP")
+                    extra = "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\nSession: S1;timeout=60\r\n";
+                else
+                    extra = "Session: S1\r\n";
+                auto reply = r_string_utils::format("RTSP/1.0 200 OK\r\nCSeq: %s\r\n%sContent-Length: %d\r\n\r\n",
+                                                    header("CSeq").c_str(), extra.c_str(), (int)body.size()) + body;
+                conn.send(reply.data(), reply.size());
+            }
+        }
+    }
+};
+}
+
+void test_r_pipeline::test_gst_source_stop_sends_teardown()
+{
+    // Stopping a stream tells the camera to end its session. A camera never told may hold the session, and some
+    // refuse new ones until they're power cycled: TCP connects, then nothing.
+    int port = RTF_NEXT_PORT();
+    fake_silent_camera cam(port);
+
+    vector<r_arg> arguments;
+    add_argument(arguments, "url", r_string_utils::format("rtsp://127.0.0.1:%d/x", port));
+    r_gst_source src;
+    src.set_args(arguments);
+    src.play();
+    // 2 s to get the TEARDOWN out, not rtspsrc's 100 ms
+    RTF_ASSERT(src.teardown_timeout_ns() == RTSP_TEARDOWN_TIMEOUT_NS);
+
+    auto deadline = steady_clock::now() + seconds(10);
+    while(!cam.saw("PLAY") && steady_clock::now() < deadline)
+        std::this_thread::sleep_for(milliseconds(20));
+    RTF_ASSERT(cam.saw("PLAY S1"));
+
+    src.stop();
+
+    deadline = steady_clock::now() + seconds(5);
+    while(!cam.saw("TEARDOWN") && steady_clock::now() < deadline)
+        std::this_thread::sleep_for(milliseconds(20));
+    RTF_ASSERT(cam.saw("TEARDOWN S1"));
 }
 
 void test_r_pipeline::test_rtsp_probe_retry_over_udp()
