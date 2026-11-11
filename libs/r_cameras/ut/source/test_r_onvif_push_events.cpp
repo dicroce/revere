@@ -388,3 +388,23 @@ void test_r_onvif_push_events::test_a_camera_that_only_sends_changes_is_left_alo
     }
     r_onvif_events::set_heartbeat_silence_floor_for_tests(30);
 }
+
+void test_r_onvif_push_events::test_a_heartbeat_keeps_it_subscribed()
+{
+    // A beat every second for longer than the quiet that would count as lost: still the one subscription.
+    r_onvif_events::set_heartbeat_silence_floor_for_tests(1);
+    {
+        fake_camera cam(11119);
+        cam.pull_support = "false";
+        events_rig rig(cam.port);
+        RTF_ASSERT(_until([&]() { return rig.events->status().state == "subscribed"; }));
+        for(int i = 0; i < 8; ++i)
+        {
+            RTF_ASSERT_EQUAL(_post_notify(cam.consumer_url(), _notify(false), true), 200);
+            this_thread::sleep_for(chrono::milliseconds(1000));
+        }
+        RTF_ASSERT_EQUAL(cam.count("Subscribe"), 1);
+        RTF_ASSERT(rig.events->status().up);
+    }
+    r_onvif_events::set_heartbeat_silence_floor_for_tests(30);
+}

@@ -15,6 +15,7 @@ public:
       TEST(test_r_onvif_push_events::test_a_camera_that_posts_to_the_root_and_grants_less);
       TEST(test_r_onvif_push_events::test_a_heartbeat_that_stops_resubscribes);
       TEST(test_r_onvif_push_events::test_a_camera_that_only_sends_changes_is_left_alone);
+      TEST(test_r_onvif_push_events::test_a_heartbeat_keeps_it_subscribed);
     RTF_FIXTURE_END();
 
     virtual ~test_r_onvif_push_events() throw() {}
@@ -31,4 +32,5 @@ public:
     void test_a_camera_that_posts_to_the_root_and_grants_less();
     void test_a_heartbeat_that_stops_resubscribes();
     void test_a_camera_that_only_sends_changes_is_left_alone();
+    void test_a_heartbeat_keeps_it_subscribed();
 };
