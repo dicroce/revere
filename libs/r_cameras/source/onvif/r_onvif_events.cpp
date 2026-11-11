@@ -2,6 +2,7 @@
 #include "r_onvif/r_onvif_push.h"
 #include "r_onvif/r_onvif_session.h"
 #include "r_utils/r_logger.h"
+#include <atomic>
 #include <chrono>
 
 using namespace r_cameras;
@@ -10,7 +11,12 @@ using namespace std;
 using namespace std::chrono;
 
 static const int PULL_TIMEOUT_S = 2;       // short, so a stop is never waiting on a long pull
-static const int TERMINATION_S = 120;
+static atomic<int> g_termination_s {120};
+
+void r_onvif_events::set_termination_seconds_for_tests(int seconds)
+{
+    g_termination_s = seconds;
+}
 
 static string _first_line(const string& s)
 {
@@ -70,7 +76,7 @@ void r_onvif_events::_run()
                 stage = "CreatePullPointSubscription";
                 try
                 {
-                    pp = cam.create_pull_point_subscription(events.value(), TERMINATION_S);
+                    pp = cam.create_pull_point_subscription(events.value(), g_termination_s.load());
                 }
                 catch (const exception& e)
                 {
@@ -112,10 +118,10 @@ void r_onvif_events::_run()
                 if (_stale())
                     _apply(_tracker.close_all());
 
-                if (steady_clock::now() - renewed > seconds(TERMINATION_S / 2))
+                if (steady_clock::now() - renewed > seconds(g_termination_s.load() / 2))
                 {
                     stage = "Renew";
-                    cam.renew(pp, TERMINATION_S);
+                    cam.renew(pp, g_termination_s.load());
                     renewed = steady_clock::now();
                 }
             }
@@ -200,7 +206,7 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
     struct forget { shared_ptr<r_onvif::r_onvif_push_listener> l; string id; ~forget() { l->remove(id); } } forget_it{listener, id};
 
     stage = "Subscribe";
-    auto sub = cam.subscribe_push(events_url, listener->url(id), TERMINATION_S);
+    auto sub = cam.subscribe_push(events_url, listener->url(id), g_termination_s.load());
     _update([port](r_camera_events_status& s) { s.up = true; s.state = "subscribed"; s.port = port; s.last_error.clear(); });
     backoff_s = 10;
     R_LOG_INFO("%ssubscribed for push events on port %d (notifications to %s:%d)", _prefix().c_str(), port, local_ip.c_str(), listener->port());
@@ -260,10 +266,10 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
             R_LOG_WARNING("%s%s", _prefix().c_str(), hint.c_str());
         }
 
-        if (steady_clock::now() - renewed > seconds(TERMINATION_S / 2))
+        if (steady_clock::now() - renewed > seconds(g_termination_s.load() / 2))
         {
             stage = "Renew";
-            cam.renew(sub, TERMINATION_S);
+            cam.renew(sub, g_termination_s.load());
             renewed = steady_clock::now();
         }
     }

@@ -299,3 +299,21 @@ void test_r_onvif_push_events::test_junk_notifications_are_dropped()
     RTF_ASSERT(_until([&]() { return rig.transitions() >= 1; }));
     RTF_ASSERT(rig.events->status().up);
 }
+
+void test_r_onvif_push_events::test_the_subscription_is_renewed()
+{
+    // A subscription that is never renewed expires at the camera and its events stop: it is renewed at half its time.
+    r_onvif_events::set_termination_seconds_for_tests(2);
+    {
+        fake_camera cam(11115);
+        cam.pull_support = "false";
+        events_rig rig(cam.port);
+        RTF_ASSERT(_until([&]() { return rig.events->status().state == "subscribed"; }));
+        RTF_ASSERT(cam.count("Renew") == 0);
+        RTF_ASSERT(_until([&]() { return cam.count("Renew") >= 1; }, 8000));
+        RTF_ASSERT(_until([&]() { return cam.count("Renew") >= 2; }, 8000));
+        RTF_ASSERT(rig.events->status().up);
+        RTF_ASSERT_EQUAL(cam.count("Subscribe"), 1);    // renewed, not subscribed again
+    }
+    r_onvif_events::set_termination_seconds_for_tests(120);
+}

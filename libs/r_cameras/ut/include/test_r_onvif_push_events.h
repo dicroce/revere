@@ -11,6 +11,7 @@ public:
       TEST(test_r_onvif_push_events::test_pull_point_is_used_when_there_is_one);
       TEST(test_r_onvif_push_events::test_subscribe_not_supported);
       TEST(test_r_onvif_push_events::test_junk_notifications_are_dropped);
+      TEST(test_r_onvif_push_events::test_the_subscription_is_renewed);
     RTF_FIXTURE_END();
 
     virtual ~test_r_onvif_push_events() throw() {}
@@ -23,4 +24,5 @@ public:
     void test_pull_point_is_used_when_there_is_one();
     void test_subscribe_not_supported();
     void test_junk_notifications_are_dropped();
+    void test_the_subscription_is_renewed();
 };

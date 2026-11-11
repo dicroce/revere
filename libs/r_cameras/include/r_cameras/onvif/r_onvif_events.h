@@ -26,6 +26,9 @@ class r_onvif_events final : public r_camera_events_base
 {
 public:
     R_API r_onvif_events(const r_disco::r_camera& camera, transition_fn on_transition);
+
+    // For tests: how long a subscription is asked to last (120 s), so a renewal (at half of it) can be seen quickly.
+    R_API static void set_termination_seconds_for_tests(int seconds);
     R_API ~r_onvif_events() noexcept override;
 
 private:
