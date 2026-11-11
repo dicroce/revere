@@ -84,6 +84,19 @@ begin
   Result := '';
 end;
 
+// The firewall rules for the local-network ports that Revere's plugins listen on: TCP and UDP 51830-51929, from this
+// network only, on Private and Domain networks, for revere.exe (not for the program's other ports, 8088 and 8554, which
+// stay closed to the network). Named so a reinstall replaces them and an uninstall removes them.
+procedure DeleteLanPortRules;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall delete rule name="Revere local plugin ports (TCP)"', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall delete rule name="Revere local plugin ports (UDP)"', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   // Vision-only over a full install: the recorder's files are removed
@@ -91,7 +104,11 @@ begin
   // Windows would try to start a revere.exe that's gone. Recordings and
   // settings in the user's data folder are left alone.
   if (CurStep = ssPostInstall) and not WizardIsComponentSelected('revere') then
+  begin
     RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Revere');
+    // ...and the firewall rules that were for it ([Run] adds them with the recorder).
+    DeleteLanPortRules;
+  end;
 end;
 
 #include ComponentsInclude
@@ -107,8 +124,20 @@ Name: "{autoprograms}\Vision"; Filename: "{app}\vision.exe"
 [Run]
 ; Install Visual C++ 2022 Redistributable (required for application to run)
 Filename: "{tmp}\{#ExtractFileName(VCRedistPath)}"; Parameters: "/quiet /norestart"; StatusMsg: "Installing Visual C++ 2022 Runtime..."; Flags: waituntilterminated
+; Local-network ports for Revere's plugins: an inbound rule per protocol for revere.exe, TCP and UDP 51830-51929, from the
+; local subnet only, on Private and Domain networks (never Public). Not a rule for the program alone, which would also open
+; its other listeners. The old rule is removed first, so a reinstall at another path doesn't leave two.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Revere local plugin ports (TCP)"""; Flags: runhidden waituntilterminated; Components: revere
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Revere local plugin ports (UDP)"""; Flags: runhidden waituntilterminated; Components: revere
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Revere local plugin ports (TCP)"" dir=in action=allow enable=yes protocol=TCP localport=51830-51929 remoteip=LocalSubnet profile=private,domain program=""{app}\{#MyAppExeName}"""; StatusMsg: "Allowing Revere's local network ports..."; Flags: runhidden waituntilterminated; Components: revere
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Revere local plugin ports (UDP)"" dir=in action=allow enable=yes protocol=UDP localport=51830-51929 remoteip=LocalSubnet profile=private,domain program=""{app}\{#MyAppExeName}"""; StatusMsg: "Allowing Revere's local network ports..."; Flags: runhidden waituntilterminated; Components: revere
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent; Components: revere
 Filename: "{app}\vision.exe"; Description: "{cm:LaunchProgram,Vision}"; Flags: nowait postinstall skipifsilent; Components: not revere
+
+[UninstallRun]
+; The rules [Run] added.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Revere local plugin ports (TCP)"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveLanPortRuleTcp"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Revere local plugin ports (UDP)"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveLanPortRuleUdp"
 
 [InstallDelete]
 Type: files; Name: "{app}\motion_plugins\yolov8_person_plugin.dll"
