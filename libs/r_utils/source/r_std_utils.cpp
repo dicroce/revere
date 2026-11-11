@@ -15,8 +15,9 @@ string r_utils::r_std_utils::get_env(const string& name)
    if(var)
       free(var);
    return result;
-#endif
-#ifdef IS_LINUX
+#else
+    // Linux and macOS (it used to cover only IS_LINUX, so on macOS it fell
+    // off the end without returning).
     auto var = getenv(name.c_str());
     return (var)?string(var):string();
 #endif

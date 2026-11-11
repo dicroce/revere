@@ -69,8 +69,9 @@ rm -rf "$PKG_DIR/opt/revere/system_plugins"
 find "$PKG_DIR/opt/revere" -name '*.a' -delete
 
 # Without it Revere still records, but finds no objects (tier 1 and 3 run YOLO).
-if [ ! -f "$PKG_DIR/opt/revere/motion_plugins/yolov8_motion_plugin.so" ]; then
-    echo "Warning: no yolov8_motion_plugin.so in the build; this package has no object detection."
+if [ ! -f "$PKG_DIR/opt/revere/motion_plugins/yolox_motion_plugin.so" ] && \
+   [ ! -f "$PKG_DIR/opt/revere/motion_plugins/yolov8_motion_plugin.so" ]; then
+    echo "Warning: no yolox/yolov8 motion plugin in the build; this package has no object detection."
     echo "         Configure with NCNN_TOP_DIR set (see docs/BUILDING.md) to build it."
 fi
 

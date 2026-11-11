@@ -4,7 +4,7 @@ ncnn
 Licence:   BSD-3-Clause
 Version:   20250503 (Windows), 20261020 (macOS)
 Shipped in: Windows, macOS, Linux AppImage
-Used for:  Neural-network inference for the yolov8 motion plugin
+Used for:  Neural-network inference for the yolox motion plugin
 Source:    https://github.com/Tencent/ncnn
 
 ------------------------------------------------------------------------------

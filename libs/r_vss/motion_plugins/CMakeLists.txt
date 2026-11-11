@@ -20,5 +20,21 @@ endif()
 if(NCNN_AVAILABLE)
 #    add_subdirectory(mobilenet_person_plugin)
 #    add_subdirectory(picodet_person_plugin)
-    add_subdirectory(yolov8_motion_plugin)
+    add_subdirectory(${REVERE_DETECTOR}_motion_plugin)
 endif()
+
+# Only the chosen detector may be loaded (see REVERE_DETECTOR in settings.cmake):
+# drop the other's copy a previous build left where revere loads plugins from.
+foreach(_detector yolox yolov8)
+    if(NOT (NCNN_AVAILABLE AND _detector STREQUAL REVERE_DETECTOR))
+        # REVERE_RUNTIME_DIR is bin/ or, multi-config, bin/$<CONFIG>/ (a
+        # generator expression a configure-time glob can't expand).
+        file(GLOB _stale_detector
+            "${CMAKE_BINARY_DIR}/motion_plugins/${_detector}_motion_plugin.*"
+            "${CMAKE_BINARY_DIR}/bin/motion_plugins/${_detector}_motion_plugin.*"
+            "${CMAKE_BINARY_DIR}/bin/*/motion_plugins/${_detector}_motion_plugin.*")
+        if(_stale_detector)
+            file(REMOVE ${_stale_detector})
+        endif()
+    endif()
+endforeach()

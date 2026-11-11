@@ -34,7 +34,7 @@ Options:
      the distributions we build on (not in Debian bookworm or Ubuntu 24.04).
 
 
-2. YOLOv8n model weights are AGPL-3.0                          [open, Tony deciding]
+2. YOLOv8n model weights are AGPL-3.0                                       [resolved]
 -------------------------------------------------------------------------------------
 models/yolov8n.{bin,param} (all packages) are Ultralytics' YOLOv8 weights,
 released under AGPL-3.0 (commercial licence sold separately). They're data
@@ -44,6 +44,12 @@ Ultralytics' position is that it covers uses of the model.
 Options: swap to a permissively licensed detector (YOLOX, NanoDet,
 RT-DETR: all Apache-2.0) and re-tune the motion tiers; buy an Ultralytics
 licence; or make the model a separate, optional download.
+
+Resolved: swapped to YOLOX-s (Apache-2.0 weights, Megvii) in
+yolox_motion_plugin, converted to ncnn by tools/yolox/export_yolox_ncnn.py.
+REVERE_DETECTOR (settings.cmake) picks the detector, yolox by default; only
+the chosen one is built and shipped. yolov8 is still buildable for comparison
+(tools/detector_harness), but a build with it ships the AGPL weights again.
 
 
 3. Windows FFmpeg carries ~60 extra libraries                                [open]

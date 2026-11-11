@@ -32,7 +32,7 @@ edit the JSON, not this file.
 | [pugixml](pugixml.txt) | 1.15 | MIT | Windows, macOS, Linux AppImage, Raspberry Pi .deb |
 | [traypp](traypp.txt) | - | MIT | Windows, macOS, Linux AppImage, Raspberry Pi .deb |
 | [nanots](nanots.txt) | - | Apache-2.0 | Windows, macOS, Linux AppImage, Raspberry Pi .deb |
-| [YOLOv8n model weights (Ultralytics)](yolov8n-model.txt) | - | AGPL-3.0-only | Windows, macOS, Linux AppImage, Raspberry Pi .deb |
+| [YOLOX-s model weights (Megvii)](yolox-model.txt) | 0.1.1rc0 | Apache-2.0 | Windows, macOS, Linux AppImage, Raspberry Pi .deb |
 
 ## Media libraries (every package)
 

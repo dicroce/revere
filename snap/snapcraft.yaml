@@ -11,7 +11,7 @@ description: |
   - RTSP video streaming (H.264/H.265)
   - Continuous recording with automatic storage pruning
   - Motion detection using background subtraction
-  - YOLOv8 AI object detection (people and vehicles)
+  - YOLOX AI object detection (people and vehicles)
   - REST API for integration
   - System tray operation
   - Multi-camera viewing (Vision app)
