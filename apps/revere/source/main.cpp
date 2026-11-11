@@ -2698,10 +2698,6 @@ static void _emit_console_text(const std::string& text)
 }
 #endif
 
-#ifdef IS_WINDOWS
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
 // The renderer: Metal on macOS (software if it won't start); software first on Windows and Linux, as before (Direct3D
 // and OpenGL have misbehaved on some drivers, and OpenGL is a packaging problem for AppImage and Snap). REVERE_RENDERER=
 // accelerated opts in to the GPU renderer there; =software forces software everywhere. Which was chosen is logged.
@@ -2780,6 +2776,10 @@ static bool _window_drawable(SDL_Window* window)
     return revere::window_drawable(shown, minimised, occluded);
 }
 
+#ifdef IS_WINDOWS
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
+#endif
+#if defined(IS_LINUX) || defined(IS_MACOS)
 int main(int argc, char** argv)
 #endif
 {
