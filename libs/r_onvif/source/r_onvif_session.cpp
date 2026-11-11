@@ -2683,7 +2683,7 @@ bool r_onvif::events_unsupported(const string& stage, const string& what)
 {
     // Only the questions that set a subscription up: Renew and PullMessages failing on a subscription that worked is a
     // camera that went wrong, not one that lacks the feature.
-    return (stage == "GetCapabilities" || stage == "CreatePullPointSubscription") && is_unsupported_action(what);
+    return (stage == "GetCapabilities" || stage == "CreatePullPointSubscription" || stage == "Subscribe") && is_unsupported_action(what);
 }
 
 int r_onvif::events_wait_s(int backoff_s, bool unsupported)
@@ -2906,6 +2906,63 @@ r_onvif::onvif_pull_point r_onvif::r_onvif_cam::create_pull_point_subscription(c
     return parse_create_pull_point_response(result.second);
 }
 
+r_onvif::onvif_pull_point r_onvif::r_onvif_cam::subscribe_push(const string& events_service, const string& consumer_url, int termination_seconds)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(events_service, host, port, protocol, uri);
+
+    const string action = "http://docs.oasis-open.org/wsn/bw-2/NotificationProducer/SubscribeRequest";
+    auto result = _soap_request(
+        host, port, uri, action,
+        [consumer_url, termination_seconds](pugi::xml_node& body) {
+            auto req = body.append_child("wsnt:Subscribe");
+            req.append_child("wsnt:ConsumerReference").append_child("wsa:Address").text().set(consumer_url.c_str());
+            req.append_child("wsnt:InitialTerminationTime").text().set(("PT" + to_string(termination_seconds) + "S").c_str());
+        },
+        _username, _password,
+        _addressing_headers(action, events_service)
+    );
+    if (result.first != 200)
+        throw _events_error("Subscribe failed", result);
+
+    return parse_subscribe_response(result.second);
+}
+
+r_onvif::onvif_pull_point r_onvif::parse_subscribe_response(const string& xml)
+{
+    try
+    {
+        return parse_create_pull_point_response(xml);
+    }
+    catch (const runtime_error& e)
+    {
+        string what = e.what();
+        const string from = "CreatePullPointSubscription";
+        auto at = what.find(from);
+        if (at != string::npos)
+            what.replace(at, from.size(), "Subscribe");
+        throw runtime_error(what);
+    }
+}
+
+int r_onvif::parse_ws_pull_point_support(const string& capabilities_xml)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(capabilities_xml.c_str()))
+        return -1;
+    string xp = "//" + _xpath_local("Events") + "/" + _xpath_local("WSPullPointSupport");
+    auto node = doc.select_node(xp.c_str());
+    if (!node)
+        return -1;
+    string v = r_string_utils::to_lower(r_string_utils::strip(node.node().child_value()));
+    if (v == "true" || v == "1")
+        return 1;
+    if (v == "false" || v == "0")
+        return 0;
+    return -1;
+}
+
 r_onvif::onvif_pull_point r_onvif::parse_create_pull_point_response(const string& xml)
 {
     pugi::xml_document doc;
@@ -2988,12 +3045,30 @@ vector<r_onvif::onvif_event> r_onvif::r_onvif_cam::pull_messages(const onvif_pul
     return parse_pull_messages_response(result.second);
 }
 
+static vector<r_onvif::onvif_event> _events_of(const pugi::xml_document& doc, size_t max_events);
+
 vector<r_onvif::onvif_event> r_onvif::parse_pull_messages_response(const string& xml)
 {
     pugi::xml_document doc;
     if (!doc.load_string(xml.c_str()))
         throw runtime_error("PullMessages: unparseable response");
+    return _events_of(doc, (size_t)-1);
+}
 
+vector<r_onvif::onvif_event> r_onvif::parse_notify(const string& xml)
+{
+    if (xml.size() > MAX_NOTIFY_BYTES)
+        throw runtime_error("Notify: too large");
+    pugi::xml_document doc;
+    // No DTD or entities, whatever the camera sends.
+    if (!doc.load_buffer(xml.data(), xml.size(), pugi::parse_default & ~pugi::parse_doctype))
+        throw runtime_error("Notify: unparseable");
+    return _events_of(doc, MAX_NOTIFY_EVENTS);
+}
+
+static vector<r_onvif::onvif_event> _events_of(const pugi::xml_document& doc, size_t max_events)
+{
+    using r_onvif::onvif_event;
     vector<onvif_event> events;
     string xp = "//" + _xpath_local("NotificationMessage");
     for (auto& nm : doc.select_nodes(xp.c_str()))
@@ -3019,6 +3094,8 @@ vector<r_onvif::onvif_event> r_onvif::parse_pull_messages_response(const string&
             items("Data", ev.data);
         }
         events.push_back(ev);
+        if (events.size() > max_events)
+            throw runtime_error("too many notification messages");
     }
     return events;
 }

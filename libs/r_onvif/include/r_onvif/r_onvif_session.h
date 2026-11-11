@@ -229,6 +229,19 @@ R_API onvif_pull_point parse_create_pull_point_response(const std::string& xml);
 // PullMessagesResponse: one onvif_event per NotificationMessage.
 R_API std::vector<onvif_event> parse_pull_messages_response(const std::string& xml);
 
+// A Notify a camera pushed (WS-BaseNotification): the same NotificationMessages as a pull, one onvif_event each. It is
+// untrusted input: more than MAX_NOTIFY_BYTES, or more than MAX_NOTIFY_EVENTS messages, throws, as does a body that isn't XML.
+constexpr size_t MAX_NOTIFY_BYTES = 64 * 1024;
+constexpr size_t MAX_NOTIFY_EVENTS = 200;
+R_API std::vector<onvif_event> parse_notify(const std::string& xml);
+
+// SubscribeResponse: the subscription's manager address, ReferenceParameters and termination time (the shape of a pull
+// point's).
+R_API onvif_pull_point parse_subscribe_response(const std::string& xml);
+
+// Whether the camera offers a pull point: the Events capability's WSPullPointSupport. 1 yes, 0 no, -1 it doesn't say.
+R_API int parse_ws_pull_point_support(const std::string& capabilities_xml);
+
 // GetEventPropertiesResponse: every topic in its TopicSet marked
 // wstop:topic="true", as a path of local names without prefixes
 // ("RuleEngine/CellMotionDetector/Motion").
@@ -308,7 +321,8 @@ constexpr int EVENTS_BACKOFF_MAX_S = 600;
 constexpr int EVENTS_UNSUPPORTED_WAIT_S = 6 * 60 * 60;
 R_API int events_wait_s(int backoff_s, bool unsupported);
 // Whether a failed events call says the camera doesn't do events: ActionNotSupported (is_unsupported_action) to one of the
-// calls that set a subscription up, GetCapabilities or CreatePullPointSubscription (`stage` as r_onvif_events names it).
+// calls that set a subscription up, GetCapabilities, CreatePullPointSubscription or Subscribe (`stage` as r_onvif_events
+// names it).
 R_API bool events_unsupported(const std::string& stage, const std::string& what);
 R_API int events_next_backoff_s(int backoff_s);
 
@@ -414,6 +428,10 @@ public:
 
     // CreatePullPointSubscription with an InitialTerminationTime of termination_seconds.
     R_API onvif_pull_point create_pull_point_subscription(const std::string& events_service, int termination_seconds);
+
+    // Subscribe (WS-BaseNotification) with consumer_url as where the camera POSTs its Notify messages, for
+    // termination_seconds. The subscription is renewed and ended with renew() and unsubscribe(), as a pull point's is.
+    R_API onvif_pull_point subscribe_push(const std::string& events_service, const std::string& consumer_url, int termination_seconds);
 
     // PullMessages: waits up to timeout_seconds on the camera for up to message_limit events.
     R_API std::vector<onvif_event> pull_messages(const onvif_pull_point& pull_point, int timeout_seconds, int message_limit);

@@ -1,4 +1,5 @@
 #include "r_cameras/onvif/r_onvif_events.h"
+#include "r_onvif/r_onvif_push.h"
 #include "r_onvif/r_onvif_session.h"
 #include "r_utils/r_logger.h"
 #include <chrono>
@@ -59,8 +60,31 @@ void r_onvif_events::_run()
                 return;
             }
 
-            stage = "CreatePullPointSubscription";
-            auto pp = cam.create_pull_point_subscription(events.value(), TERMINATION_S);
+            // A camera that says it has no pull point (WSPullPointSupport false), or says "not supported" to creating one,
+            // pushes its events to Revere instead.
+            if (r_onvif::parse_ws_pull_point_support(caps) == 0)
+                _push_preferred = true;
+            r_onvif::onvif_pull_point pp;
+            if (!_push_preferred)
+            {
+                stage = "CreatePullPointSubscription";
+                try
+                {
+                    pp = cam.create_pull_point_subscription(events.value(), TERMINATION_S);
+                }
+                catch (const exception& e)
+                {
+                    if (!r_onvif::events_unsupported(stage, e.what()))
+                        throw;
+                    _push_preferred = true;
+                }
+            }
+            if (_push_preferred)
+            {
+                R_LOG_INFO("%sthe camera has no pull point: using push events", _prefix().c_str());
+                _push_session(cam, events.value(), caps, ep.value().port, stage, backoff_s);
+                continue;
+            }
             {
                 int port = ep.value().port;
                 _update([port](r_camera_events_status& s) { s.up = true; s.state = "subscribed"; s.port = port; s.last_error.clear(); });
@@ -68,22 +92,7 @@ void r_onvif_events::_run()
             R_LOG_INFO("%ssubscribed on port %d", _prefix().c_str(), ep.value().port);
             backoff_s = 10;
 
-            // A camera whose motion region is empty detects nothing: give it
-            // the whole frame. A region anyone drew is left alone. Once; a
-            // failure here doesn't stop the events.
-            if (!_region_checked)
-            {
-                _region_checked = true;
-                try
-                {
-                    for (auto& rule : cam.fill_empty_cell_motion_regions(caps))
-                        R_LOG_INFO("%smotion region %s was empty; set it to the whole frame", _prefix().c_str(), rule.c_str());
-                }
-                catch (const exception& e)
-                {
-                    R_LOG_WARNING("%scouldn't check its motion region: %s", _prefix().c_str(), _first_line(e.what()).c_str());
-                }
-            }
+            _check_region(cam, caps);
 
             auto renewed = steady_clock::now();
             while (_running())
@@ -140,4 +149,123 @@ void r_onvif_events::_run()
     }
 
     _apply(_tracker.close_all());
+}
+
+void r_onvif_events::_check_region(r_onvif::r_onvif_cam& cam, const string& caps)
+{
+    // A camera whose motion region is empty detects nothing: give it the whole frame. A region anyone drew is left
+    // alone. Once; a failure here doesn't stop the events.
+    if (_region_checked)
+        return;
+    _region_checked = true;
+    try
+    {
+        for (auto& rule : cam.fill_empty_cell_motion_regions(caps))
+            R_LOG_INFO("%smotion region %s was empty; set it to the whole frame", _prefix().c_str(), rule.c_str());
+    }
+    catch (const exception& e)
+    {
+        R_LOG_WARNING("%scouldn't check its motion region: %s", _prefix().c_str(), _first_line(e.what()).c_str());
+    }
+}
+
+void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& events_url, const string& caps, int port, string& stage, int& backoff_s)
+{
+    static const size_t MAX_QUEUED = 100;           // Notify bodies waiting to be parsed: a camera that floods drops the rest
+    static const int HINT_AFTER_S = 30;             // nothing has arrived this long after subscribing
+
+    const string camera_ip = _camera.ipv4.value();
+    if (!r_onvif::is_ipv4_literal(camera_ip))
+        throw runtime_error("push events need the camera's IPv4 address");
+    stage = "push listener";
+    const string local_ip = r_onvif::local_ip_for(camera_ip);
+    if (local_ip.empty())
+        throw runtime_error("no local address reaches the camera at " + camera_ip);
+    auto listener = r_onvif::r_onvif_push_listener::acquire(local_ip);
+
+    const string id = r_onvif::new_push_id();
+    {
+        lock_guard<mutex> g(_notify_lock);
+        _notifies.clear();
+    }
+    listener->add(id, camera_ip, [this](const string& body) {
+        {
+            lock_guard<mutex> g(_notify_lock);
+            if (_notifies.size() < MAX_QUEUED)
+                _notifies.push_back(body);
+        }
+        _notify_cv.notify_all();
+    });
+    // The listener forgets the id however this ends.
+    struct forget { shared_ptr<r_onvif::r_onvif_push_listener> l; string id; ~forget() { l->remove(id); } } forget_it{listener, id};
+
+    stage = "Subscribe";
+    auto sub = cam.subscribe_push(events_url, listener->url(id), TERMINATION_S);
+    _update([port](r_camera_events_status& s) { s.up = true; s.state = "subscribed"; s.port = port; s.last_error.clear(); });
+    backoff_s = 10;
+    R_LOG_INFO("%ssubscribed for push events on port %d (notifications to %s:%d)", _prefix().c_str(), port, local_ip.c_str(), listener->port());
+
+    _check_region(cam, caps);
+
+    auto renewed = steady_clock::now();
+    const auto subscribed = renewed;
+    bool received = false, hinted = false;
+    auto last_bad_log = steady_clock::now() - hours(1);
+    while (_running())
+    {
+        vector<string> bodies;
+        {
+            unique_lock<mutex> lk(_notify_lock);
+            _notify_cv.wait_for(lk, seconds(PULL_TIMEOUT_S), [this]() { return !_notifies.empty() || !_running(); });
+            bodies.swap(_notifies);
+        }
+        stage = "Notify";
+        for (auto& body : bodies)
+        {
+            try
+            {
+                _apply(_tracker.process(r_onvif::parse_notify(body)));
+                received = true;
+            }
+            catch (const exception& e)
+            {
+                // Untrusted input: drop it, and say so at most once a minute.
+                if (steady_clock::now() - last_bad_log > minutes(1))
+                {
+                    last_bad_log = steady_clock::now();
+                    R_LOG_WARNING("%sdropped a notification: %s", _prefix().c_str(), _first_line(e.what()).c_str());
+                }
+            }
+        }
+        if (received && hinted)
+        {
+            hinted = false;
+            _update([](r_camera_events_status& s) { s.last_error.clear(); });
+        }
+
+        {
+            auto topic = _tracker.motion_topic();
+            auto classes = _tracker.classes();
+            _update([&](r_camera_events_status& s) { s.motion_topic = topic; s.classes = classes; });
+        }
+        if (_stale())
+            _apply(_tracker.close_all());
+
+        if (!received && !hinted && steady_clock::now() - subscribed > seconds(HINT_AFTER_S))
+        {
+            hinted = true;
+            const string hint = "no notification has reached Revere on port " + to_string(listener->port()) +
+                                " yet (the camera must be able to connect to " + local_ip + "; a firewall may be blocking it)";
+            _update([&](r_camera_events_status& s) { s.last_error = hint; });
+            R_LOG_WARNING("%s%s", _prefix().c_str(), hint.c_str());
+        }
+
+        if (steady_clock::now() - renewed > seconds(TERMINATION_S / 2))
+        {
+            stage = "Renew";
+            cam.renew(sub, TERMINATION_S);
+            renewed = steady_clock::now();
+        }
+    }
+    try { cam.unsubscribe(sub); } catch (...) {}
 }

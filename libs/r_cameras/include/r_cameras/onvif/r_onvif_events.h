@@ -5,11 +5,18 @@
 #include "r_cameras/r_camera_events_base.h"
 #include "r_cameras/onvif/r_onvif_event_tracker.h"
 #include "r_utils/r_macro.h"
+#include <condition_variable>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace r_onvif { class r_onvif_cam; }
 
 namespace r_cameras
 {
 
-// A camera's events over ONVIF: one pull point subscription. Finds the device
+// A camera's events over ONVIF: one pull point subscription (or, for a camera that has no pull point, a push
+// subscription: see _push_session). Finds the device
 // service (its stored port first), subscribes, pulls every 2 s, renews at half
 // the termination time, and resubscribes with backoff (10 s doubling to 10 min)
 // on failure. After its first subscription it gives a camera whose motion
@@ -24,8 +31,23 @@ public:
 private:
     void _run() override;
 
+    // The camera's motion region is checked (once), and an empty one given the whole frame.
+    void _check_region(r_onvif::r_onvif_cam& cam, const std::string& capabilities);
+
+    // For a camera that doesn't offer a pull point: Subscribe with Revere's own address as the consumer, the camera
+    // POSTs each Notify to Revere's listener (r_onvif_push_listener), renewed at half the termination time, and
+    // ended with Unsubscribe. Returns when asked to stop, and throws when the subscription fails, as a pull does.
+    void _push_session(r_onvif::r_onvif_cam& cam, const std::string& events_url, const std::string& capabilities, int port,
+                       std::string& stage, int& backoff_s);
+
     r_onvif_event_tracker _tracker;
     bool _region_checked {false};   // the camera's motion region has been checked (once)
+    bool _push_preferred {false};   // the camera said it has no pull point: don't ask again
+
+    // Notify bodies the listener has received, not yet parsed (parsed on this thread, not the listener's).
+    std::mutex _notify_lock;
+    std::condition_variable _notify_cv;
+    std::vector<std::string> _notifies;
 };
 
 }
