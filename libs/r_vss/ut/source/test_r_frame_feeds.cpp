@@ -383,6 +383,8 @@ void test_r_frame_feeds::test_a_gop_that_cant_start_a_feed()
         video(f, "cam1", 60, true, 99);
         auto got = drain(f, id);
         RTF_ASSERT(got.size() == 1 && got[0].ts == 99 && (got[0].flags & F::KEY));
+        // Nothing of the GOP went out, so nothing was dropped: the key frame isn't a gap.
+        RTF_ASSERT(!(got[0].flags & F::GAP));
     };
     // Bigger than the bound (the whole GOP is checked before any of it is copied).
     starts_at_next_key(200, gop_of().add(150, true, 10).add(100, false, 11));
@@ -413,7 +415,13 @@ void test_r_frame_feeds::test_feeds_that_didnt_ask_ignore_the_gop()
     F f;
     auto plain = f.subscribe("cam1", "", F::VIDEO, 0);
     auto wants = f.subscribe("cam1", "", F::VIDEO, 0, true);
-    // An audio-only feed has no video to start: it never waits for a GOP.
+    // An audio-only feed has no video to start: it never waits for a GOP, so posters
+    // don't build one for it.
+    {
+        F only_audio;
+        RTF_ASSERT(only_audio.subscribe("cam1", "", F::AUDIO, 0, true) != 0);
+        RTF_ASSERT(!only_audio.gop_wanted());
+    }
     auto aud = f.subscribe("cam1", "", F::AUDIO, 0, true);
     RTF_ASSERT(aud != 0);
     gop_of g;
