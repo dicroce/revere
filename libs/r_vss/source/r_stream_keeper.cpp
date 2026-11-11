@@ -18,7 +18,18 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_time_utils.h"
 
+#if defined(IS_MACOS) || defined(IS_LINUX)
+#include <pthread.h>
+#elif defined(IS_WINDOWS)
+#include <windows.h>
+#endif
 #include <algorithm>
+
+static gboolean _quit_rtsp_loop(gpointer loop)
+{
+    g_main_loop_quit((GMainLoop*)loop);
+    return G_SOURCE_REMOVE;
+}
 
 using namespace r_vss;
 using namespace r_utils;
@@ -333,6 +344,13 @@ bool r_stream_keeper::stop()
 
     // Substream recorders (keeper thread only, and it's joined): stopped before the recordings they follow.
     _substreams.clear();
+
+    // Wake the RTSP server's blocking loop (it has no timer to notice _running by itself).
+    {
+        std::lock_guard<std::mutex> g(_rtsp_loop_mutex);
+        if(_rtsp_loop)
+            g_main_context_invoke(_rtsp_context, _quit_rtsp_loop, _rtsp_loop);
+    }
 
     R_LOG_INFO("Joining rtsp server thread...");
     _rtsp_server_th.join();
@@ -1499,19 +1517,43 @@ void r_stream_keeper::_entry_point()
     }
 }
 
+// Runs the RTSP server's GLib context on its own thread. The loop blocks in poll() until a socket or timer needs it, so
+// with no clients the thread is asleep (it used to wake every millisecond to ask whether anything was pending).
 void r_stream_keeper::_rtsp_server_entry_point()
 {
+#if defined(IS_MACOS)
+    pthread_setname_np("rtsp-server");
+#elif defined(IS_LINUX)
+    pthread_setname_np(pthread_self(), "rtsp-server");
+#elif defined(IS_WINDOWS)
+    SetThreadDescription(GetCurrentThread(), L"rtsp-server");
+#endif
+
     GMainContext* context = g_main_context_new();
+    GMainLoop* loop = g_main_loop_new(context, FALSE);
     g_main_context_push_thread_default(context);
     gst_rtsp_server_attach(_server, context);
-    while(_running)
-    {
-        while (g_main_context_pending(context))
-            g_main_context_iteration(context, false);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    {
+        std::lock_guard<std::mutex> g(_rtsp_loop_mutex);
+        _rtsp_context = context;
+        _rtsp_loop = loop;
+        // stop() ran before the loop was published: nothing will ask it to quit.
+        if(!_running)
+            g_main_loop_quit(loop);
+    }
+    // If stop() queues its quit before this starts, the quit runs as soon as the loop does (a plain g_main_loop_quit
+    // before g_main_loop_run would be lost).
+    if(_running)
+        g_main_loop_run(loop);
+
+    {
+        std::lock_guard<std::mutex> g(_rtsp_loop_mutex);
+        _rtsp_loop = nullptr;
+        _rtsp_context = nullptr;
     }
     g_main_context_pop_thread_default(context);
+    g_main_loop_unref(loop);
     g_main_context_unref(context);
 }
 
