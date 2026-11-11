@@ -2874,6 +2874,22 @@ void r_ws::_transcode_export(export_job& job)
     auto output_path = job.exports_path + PATH_SLASH + job.file_name;
     auto temp_path = r_fs::temp_file_name(job.exports_path, "tmp_") + ext;
 
+    // A failed export leaves no tmp_ file behind. Removed on the way out, once the muxer (declared after this, so
+    // destroyed first) has closed it: Windows can't delete an open file. A finished export has been renamed away.
+    struct temp_file_cleanup
+    {
+        const string& path;
+        ~temp_file_cleanup()
+        {
+            try
+            {
+                if(r_fs::file_exists(path))
+                    r_fs::remove_file(path);
+            }
+            catch(...) {}
+        }
+    } cleanup{temp_path};
+
     r_muxer muxer(temp_path);
     muxer.enable_faststart();
     size_t video_in = 0, video_decoded = 0;  // transcode_mostly_failed
