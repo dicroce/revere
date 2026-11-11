@@ -3,6 +3,7 @@
 
 #include "r_utils/r_macro.h"
 #include <chrono>
+#include <string>
 
 namespace r_vss
 {
@@ -15,17 +16,20 @@ namespace r_vss
 // that died without a single frame waits, longer each time it happens in a row
 // (20 s, then 60 s, then every 2 minutes), and the first frame resets it. Some
 // cameras keep a session for a while after the client goes; one that's stuck
-// gets room to clear rather than a new connection every 20 seconds.
+// gets room to clear rather than a new connection every 20 seconds. A camera
+// whose stream settings changed since (a fixed URL, say) starts at once, and
+// counts from the start again.
 class r_restart_backoff final
 {
 public:
     using clock = std::chrono::steady_clock;
 
-    // A stream on this camera ended (it was found dead).
-    R_API void ended(bool received_video, clock::time_point now);
+    // A stream on this camera ended (it was found dead). `config` is the camera's
+    // stream_config_hash as that stream had it.
+    R_API void ended(bool received_video, clock::time_point now, const std::string& config);
 
-    // Whether a new stream may start now.
-    R_API bool may_start(clock::time_point now) const { return now >= _next_start; }
+    // Whether a new stream may start now, with the camera's settings as `config` has them.
+    R_API bool may_start(clock::time_point now, const std::string& config) const { return config != _config || now >= _next_start; }
 
     // How long the current wait is (zero when there's none).
     R_API std::chrono::seconds wait() const { return _wait; }
@@ -37,6 +41,7 @@ private:
     int _failures {0};
     std::chrono::seconds _wait {0};
     clock::time_point _next_start {};
+    std::string _config;
 };
 
 }

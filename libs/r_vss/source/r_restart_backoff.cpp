@@ -4,8 +4,13 @@ using namespace r_vss;
 using namespace std;
 using namespace std::chrono;
 
-void r_restart_backoff::ended(bool received_video, clock::time_point now)
+void r_restart_backoff::ended(bool received_video, clock::time_point now, const string& config)
 {
+    // New settings: what failed before says nothing about these.
+    if(config != _config)
+        _failures = 0;
+    _config = config;
+
     if(received_video)
     {
         _failures = 0;

@@ -267,7 +267,12 @@ bool r_stream_keeper::stop()
         for(auto& s : _streams)
         {
             auto rc = s.second;
-            stopping.emplace_back([rc](){ rc->stop(); });
+            // A throw here would end the process (std::terminate) mid-shutdown.
+            stopping.emplace_back([rc](){
+                try { rc->stop(); }
+                catch(const std::exception& e) { R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__); }
+                catch(...) { R_LOG_ERROR("Unknown exception stopping a camera's stream"); }
+            });
         }
         for(auto& t : stopping)
             t.join();
@@ -1270,7 +1275,7 @@ void r_stream_keeper::_entry_point()
                                               it->first.c_str(), was.c_str(), transport.protocols().c_str());
                             // One that never sent a frame waits before the next try, longer each time.
                             auto& backoff = _restart_backoffs[it->first];
-                            backoff.ended(it->second->receiving_video(), std::chrono::steady_clock::now());
+                            backoff.ended(it->second->receiving_video(), std::chrono::steady_clock::now(), it->second->camera().stream_config_hash);
                             if(backoff.wait().count() > 0)
                                 R_LOG_WARNING("Camera %s sent no video (%d in a row, %s); trying again in %d s",
                                               it->first.c_str(), backoff.failures(),
@@ -1526,9 +1531,10 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         if(fc_it != _failed_cameras.end() && fc_it->second.next_retry_time > now)
             continue;
 
-        // A stream that died without sending video waits its turn (r_restart_backoff).
+        // A stream that died without sending video waits its turn (r_restart_backoff), unless
+        // the camera's settings changed since.
         auto bo_it = _restart_backoffs.find(camera.id);
-        if(bo_it != _restart_backoffs.end() && !bo_it->second.may_start(now))
+        if(bo_it != _restart_backoffs.end() && !bo_it->second.may_start(now, camera.stream_config_hash))
             continue;
 
         // UDP when the camera is set to it; otherwise TCP, or UDP standing in
