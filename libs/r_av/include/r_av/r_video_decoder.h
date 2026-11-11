@@ -82,6 +82,10 @@ public:
 private:
     void _clear();
     void _release_hw_frame();
+    int _send_packet(const AVPacket* packet);
+    int _open_context();
+    void _fall_back_to_software(int rc);
+    void _rebuild_in_software();
 
     AVCodecID _codec_id;
     r_hw_accel _hw_accel;
@@ -100,6 +104,8 @@ private:
     AVPixelFormat _hw_pix_fmt; // hw pixel format expected from decoder
     std::map<r_scaler_state, SwsContext*> _scalers;
     bool _codec_opened;
+    // Hardware sends that failed with AVERROR_EXTERNAL in a row (see _fall_back_to_software).
+    int _hw_send_failures {0};
 
     void _open_codec();
     static AVPixelFormat _get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);
@@ -112,6 +118,16 @@ private:
     bool _gap_take_output();
     r_codec_state _flush_receive();
 };
+
+
+// A hardware decoder falls back to software after this many sends in a row fail with AVERROR_EXTERNAL.
+constexpr int R_HW_DECODE_FAILURES_TO_FALL_BACK = 5;
+
+// Tests only: decode() sends packets through `send` instead of avcodec_send_packet (nullptr restores it).
+R_API void r_video_decoder_send_override(int (*send)(AVCodecContext*, const AVPacket*));
+
+// Tests only: the decoder opens through `open` instead of avcodec_open2 (nullptr restores it).
+R_API void r_video_decoder_open_override(int (*open)(AVCodecContext*, const AVCodec*, AVDictionary**));
 
 }
 

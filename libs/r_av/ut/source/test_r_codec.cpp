@@ -777,3 +777,219 @@ void test_r_codec::test_software_encoder_failure_still_throws()
     RTF_ASSERT(what.find("Failed to open codec") != string::npos);
     RTF_ASSERT(what.find("Generic error in an external library") != string::npos);
 }
+
+namespace
+{
+// Three seconds of grey H.264 with a key frame every 10 frames, so a decoder that starts again part way has one to
+// start from.
+vector<vector<uint8_t>> grey_gop10_stream(vector<uint8_t>& extradata, uint16_t gop = 10)
+{
+    r_video_encoder enc(AV_CODEC_ID_H264, 500000, GREY_W, GREY_H, AVRational{10, 1}, AV_PIX_FMT_YUV420P, 0, gop,
+                        AV_PROFILE_H264_MAIN, 41, "veryfast", "zerolatency");
+    vector<uint8_t> picture(GREY_W * GREY_H * 3 / 2, 128);
+    vector<vector<uint8_t>> packets;
+    for(int i = 0; i < 30; ++i)
+    {
+        enc.attach_buffer(picture.data(), picture.size(), i);
+        while(enc.encode() == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto pi = enc.get();
+            packets.emplace_back(pi.data, pi.data + pi.size);
+        }
+    }
+    extradata = enc.get_extradata();
+    return packets;
+}
+
+// The grey pictures a decoder gives for the packets.
+int grey_pictures(r_video_decoder& dec, const vector<vector<uint8_t>>& packets, const vector<uint8_t>& extradata)
+{
+    dec.set_extradata(extradata);
+    int grey = 0;
+    for(auto& p : packets)
+    {
+        dec.attach_buffer(p.data(), p.size());
+        auto st = dec.decode();
+        if(st == R_CODEC_STATE_HAS_OUTPUT || st == R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+        {
+            auto out = dec.get(AV_PIX_FMT_YUV420P, GREY_W, GREY_H, 1);
+            bool is_grey = out && out->size() >= (size_t)GREY_W * GREY_H;
+            for(size_t i = 0; is_grey && i < (size_t)GREY_W * GREY_H; ++i)
+                is_grey = abs((int)(*out)[i] - 128) <= 4;
+            if(is_grey)
+                ++grey;
+        }
+    }
+    return grey;
+}
+
+// A GPU that faulted: every send to a hardware context fails as CUDA's dead context does. Software sends go through.
+int dead_gpu_send(AVCodecContext* ctx, const AVPacket* pkt)
+{
+    if(ctx->hw_device_ctx)
+        return AVERROR_EXTERNAL;
+    return avcodec_send_packet(ctx, pkt);
+}
+
+int every_send_fails(AVCodecContext*, const AVPacket*)
+{
+    return AVERROR_EXTERNAL;
+}
+
+// Every hardware send refuses the packet as bad data: the stream's fault, not the device's.
+int hw_invalid_data_send(AVCodecContext* ctx, const AVPacket* pkt)
+{
+    if(ctx->hw_device_ctx)
+        return AVERROR_INVALIDDATA;
+    return avcodec_send_packet(ctx, pkt);
+}
+
+int g_sends = 0;
+// Every other hardware send fails: never R_HW_DECODE_FAILURES_TO_FALL_BACK in a row.
+int flaky_gpu_send(AVCodecContext* ctx, const AVPacket* pkt)
+{
+    if(ctx->hw_device_ctx && (g_sends++ % 2) == 0)
+        return AVERROR_EXTERNAL;
+    return avcodec_send_packet(ctx, pkt);
+}
+
+struct log_count
+{
+    int fallbacks {0};
+    int send_failures {0};
+    log_count()
+    {
+        r_logger::set_log_callback([this](r_logger::LOG_LEVEL, const string& m) {
+            if(m.find("decoding this stream in software from here") != string::npos)
+                ++fallbacks;
+            if(m.find("Failed to send packet") != string::npos)
+                ++send_failures;
+        });
+    }
+    ~log_count() { r_logger::clear_log_callback(); }
+};
+}
+
+void test_r_codec::test_dead_hw_context_falls_back_to_software()
+{
+    // A long-lived hardware decoder whose GPU faulted (Windows' nvlddmkm, CUDA_ERROR_ILLEGAL_ADDRESS): every send
+    // failed with "Generic error in an external library", every few seconds, for good. After
+    // R_HW_DECODE_FAILURES_TO_FALL_BACK in a row it decodes the same stream in software, saying so once, and the
+    // pictures come back from the next key frame.
+    auto accel = r_find_best_hw_accel(AV_CODEC_ID_H264);
+    if(accel == r_hw_accel::none)
+        return;  // no hardware decoder on this machine
+    vector<uint8_t> extradata;
+    auto packets = grey_gop10_stream(extradata);
+
+    int grey = 0;
+    log_count logs;
+    {
+        r_video_decoder dec(AV_CODEC_ID_H264, accel);
+        r_video_decoder_send_override(dead_gpu_send);
+        try { grey = grey_pictures(dec, packets, extradata); } catch(...) {}
+        r_video_decoder_send_override(nullptr);
+    }
+    RTF_ASSERT(logs.fallbacks == 1);
+    RTF_ASSERT(logs.send_failures == R_HW_DECODE_FAILURES_TO_FALL_BACK);
+    // The two key frames after the fallback, and the frames after each.
+    RTF_ASSERT(grey >= 10);
+}
+
+void test_r_codec::test_software_decoder_does_not_fall_back()
+{
+    // Already in software: there's nothing to fall back from, however many sends fail.
+    vector<uint8_t> extradata;
+    auto packets = grey_gop10_stream(extradata);
+    log_count logs;
+    {
+        r_video_decoder dec(AV_CODEC_ID_H264, r_hw_accel::none);
+        r_video_decoder_send_override(every_send_fails);
+        try { grey_pictures(dec, packets, extradata); } catch(...) {}
+        r_video_decoder_send_override(nullptr);
+    }
+    RTF_ASSERT(logs.fallbacks == 0);
+    RTF_ASSERT(logs.send_failures == (int)packets.size());
+}
+
+void test_r_codec::test_hw_invalid_data_does_not_fall_back()
+{
+    // Only a failed device (AVERROR_EXTERNAL) is fallen back from. A hardware decoder that gets bad data, packet
+    // after packet, is given the stream's next packets as before: software would get the same bad data.
+    auto accel = r_find_best_hw_accel(AV_CODEC_ID_H264);
+    if(accel == r_hw_accel::none)
+        return;
+    vector<uint8_t> extradata;
+    auto packets = grey_gop10_stream(extradata);
+    log_count logs;
+    {
+        r_video_decoder dec(AV_CODEC_ID_H264, accel);
+        r_video_decoder_send_override(hw_invalid_data_send);
+        try { grey_pictures(dec, packets, extradata); } catch(...) {}
+        r_video_decoder_send_override(nullptr);
+    }
+    RTF_ASSERT(logs.fallbacks == 0);
+    // Still the hardware at the end: every send went to it and failed.
+    RTF_ASSERT(logs.send_failures == (int)packets.size());
+}
+
+void test_r_codec::test_hw_failures_not_in_a_row_keep_the_hardware()
+{
+    // A send that fails now and then, with good ones between, isn't a dead device: the hardware stays. Every frame
+    // is a key frame here, so the frame after a lost one decodes (a P frame after a lost reference fails in the
+    // hardware too, which is a failure in a row).
+    auto accel = r_find_best_hw_accel(AV_CODEC_ID_H264);
+    if(accel == r_hw_accel::none)
+        return;
+    vector<uint8_t> extradata;
+    auto packets = grey_gop10_stream(extradata, 1);
+    int grey = 0;
+    log_count logs;
+    {
+        r_video_decoder dec(AV_CODEC_ID_H264, accel);
+        g_sends = 0;
+        r_video_decoder_send_override(flaky_gpu_send);
+        try { grey = grey_pictures(dec, packets, extradata); } catch(...) {}
+        r_video_decoder_send_override(nullptr);
+    }
+    RTF_ASSERT(logs.fallbacks == 0);
+    RTF_ASSERT(logs.send_failures >= R_HW_DECODE_FAILURES_TO_FALL_BACK);
+    RTF_ASSERT(grey >= 10);
+}
+
+namespace
+{
+// The device was made, but the decoder won't open on it, as NVDEC after a GPU fault. Software opens as usual.
+int dead_gpu_open(AVCodecContext* ctx, const AVCodec* codec, AVDictionary** opts)
+{
+    if(ctx->hw_device_ctx)
+        return AVERROR_EXTERNAL;
+    return avcodec_open2(ctx, codec, opts);
+}
+}
+
+void test_r_codec::test_hw_decoder_that_wont_open_decodes_in_software()
+{
+    // It used to throw "Failed to open codec: Generic error in an external library", failing the export or stream.
+    auto accel = r_find_best_hw_accel(AV_CODEC_ID_H264);
+    if(accel == r_hw_accel::none)
+        return;
+    vector<uint8_t> extradata;
+    auto packets = grey_gop10_stream(extradata);
+    int grey = 0, warnings = 0;
+    r_logger::set_log_callback([&](r_logger::LOG_LEVEL, const string& m) {
+        if(m.find("decode wouldn't open") != string::npos)
+            ++warnings;
+    });
+    bool threw = false;
+    {
+        r_video_decoder dec(AV_CODEC_ID_H264, accel);
+        r_video_decoder_open_override(dead_gpu_open);
+        try { grey = grey_pictures(dec, packets, extradata); } catch(...) { threw = true; }
+        r_video_decoder_open_override(nullptr);
+    }
+    r_logger::clear_log_callback();
+    RTF_ASSERT(!threw);
+    RTF_ASSERT(warnings == 1);
+    RTF_ASSERT(grey >= 25);
+}
