@@ -207,6 +207,7 @@ struct onvif_pull_point
     std::string address;                            // wsa:Address of the SubscriptionReference
     std::vector<std::string> reference_parameters;  // serialized elements to echo as SOAP headers
     std::string termination_time;                   // as the camera reported it (may be empty)
+    int granted_seconds {0};                        // TerminationTime minus CurrentTime, both the camera's own clock; 0 if it didn't say
 };
 
 struct onvif_event
@@ -228,6 +229,19 @@ R_API onvif_pull_point parse_create_pull_point_response(const std::string& xml);
 
 // PullMessagesResponse: one onvif_event per NotificationMessage.
 R_API std::vector<onvif_event> parse_pull_messages_response(const std::string& xml);
+
+// A Notify a camera pushed (WS-BaseNotification): the same NotificationMessages as a pull, one onvif_event each. It is
+// untrusted input: more than MAX_NOTIFY_BYTES, or more than MAX_NOTIFY_EVENTS messages, throws, as does a body that isn't XML.
+constexpr size_t MAX_NOTIFY_BYTES = 64 * 1024;
+constexpr size_t MAX_NOTIFY_EVENTS = 200;
+R_API std::vector<onvif_event> parse_notify(const std::string& xml);
+
+// SubscribeResponse: the subscription's manager address, ReferenceParameters and termination time (the shape of a pull
+// point's).
+R_API onvif_pull_point parse_subscribe_response(const std::string& xml);
+
+// Whether the camera offers a pull point: the Events capability's WSPullPointSupport. 1 yes, 0 no, -1 it doesn't say.
+R_API int parse_ws_pull_point_support(const std::string& capabilities_xml);
 
 // GetEventPropertiesResponse: every topic in its TopicSet marked
 // wstop:topic="true", as a path of local names without prefixes
@@ -263,6 +277,55 @@ R_API std::vector<onvif_ptz_preset> parse_ptz_presets(const std::string& xml);
 // Supported continuous-move axes from a GetNodesResponse (any PTZNode's
 // SupportedPTZSpaces). Separate so it can be tested without a camera.
 R_API onvif_ptz_caps parse_ptz_caps(const std::string& xml);
+
+// The same from a GetConfigurationsResponse, for a camera whose GetNodes says nothing usable: a PTZConfiguration's
+// default continuous velocity spaces and its pan/tilt and zoom limits. known is true when the reply held any
+// PTZConfiguration; the axes are those some configuration drives.
+R_API onvif_ptz_caps parse_ptz_configuration_caps(const std::string& xml);
+
+// Whether a PTZ node can be driven at all: it lists a continuous pan/tilt or zoom space.
+inline bool ptz_caps_usable(const onvif_ptz_caps& caps) { return caps.known && (caps.pan_tilt || caps.zoom); }
+
+// How a PTZ probe call (GetNodes, GetConfigurations) went.
+enum class ptz_probe_how
+{
+    answered,      // a good reply (its caps may still say nothing)
+    unsupported,   // the camera said it doesn't support the action (is_unsupported_action)
+    failed         // anything else: a timeout, a refused login, a camera that is down. Says nothing about PTZ.
+};
+
+struct ptz_probe_result
+{
+    ptz_probe_how how {ptz_probe_how::failed};
+    onvif_ptz_caps caps;
+};
+
+// Whether a camera that advertises a PTZ service really has PTZ.
+enum class ptz_verdict { usable, none, unknown };
+
+// usable: some probe found a node (or configuration) with a pan/tilt or zoom axis. none: a probe positively listed its
+// axes and there are none (a node's SupportedPTZSpaces without a continuous space, a configuration naming only axes it
+// does not drive), or the camera said twice that it doesn't support the question. unknown: anything else (a reply that
+// says nothing about axes, a probe that failed): the camera is treated as before and asked again, not remembered. A real
+// PTZ camera must not lose its controls because it answers in a way that isn't read.
+R_API ptz_verdict ptz_verdict_of(const ptz_probe_result& nodes, const ptz_probe_result& configurations);
+
+// Whether the text of a failed ONVIF call (r_onvif_cam's errors carry the camera's own reason) says the camera
+// definitely doesn't support the action: the subcode "ter:ActionNotSupported" or "ter:OptionalActionNotImplemented",
+// or the reason text "Action not supported" / "Action Not Implemented", in any case (cameras send either, or both). Not a timeout, not an authentication failure, not a bad argument.
+R_API bool is_unsupported_action(const std::string& what);
+
+// How long an ONVIF events subscription waits after a failed attempt. The wait doubles from 10 s to 10 minutes; a camera
+// that said the action isn't supported waits EVENTS_UNSUPPORTED_WAIT_S (6 hours) instead, since asking again every few
+// minutes only gets the same answer (a firmware update might add it).
+constexpr int EVENTS_BACKOFF_MAX_S = 600;
+constexpr int EVENTS_UNSUPPORTED_WAIT_S = 6 * 60 * 60;
+R_API int events_wait_s(int backoff_s, bool unsupported);
+// Whether a failed events call says the camera doesn't do events: ActionNotSupported (is_unsupported_action) to one of the
+// calls that set a subscription up, GetCapabilities, CreatePullPointSubscription or Subscribe (`stage` as r_onvif_events
+// names it).
+R_API bool events_unsupported(const std::string& stage, const std::string& what);
+R_API int events_next_backoff_s(int backoff_s);
 
 enum class soap_version
 {
@@ -338,6 +401,9 @@ public:
     // camera that omits SupportedPTZSpaces answers with known false.
     R_API onvif_ptz_caps get_ptz_caps(const std::string& ptz_service);
 
+    // GetConfigurations -> the same, from the PTZ configurations (parse_ptz_configuration_caps). Throws on a SOAP fault.
+    R_API onvif_ptz_caps get_ptz_configuration_caps(const std::string& ptz_service);
+
     // ContinuousMove: pan/tilt/zoom velocities, each normalized to [-1,1] (0 =
     // no motion on that axis, and that axis isn't sent: PanTilt only when pan or
     // tilt moves, Zoom only when zoom does). The camera keeps moving until Stop or, if given,
@@ -363,6 +429,10 @@ public:
 
     // CreatePullPointSubscription with an InitialTerminationTime of termination_seconds.
     R_API onvif_pull_point create_pull_point_subscription(const std::string& events_service, int termination_seconds);
+
+    // Subscribe (WS-BaseNotification) with consumer_url as where the camera POSTs its Notify messages, for
+    // termination_seconds. The subscription is renewed and ended with renew() and unsubscribe(), as a pull point's is.
+    R_API onvif_pull_point subscribe_push(const std::string& events_service, const std::string& consumer_url, int termination_seconds);
 
     // PullMessages: waits up to timeout_seconds on the camera for up to message_limit events.
     R_API std::vector<onvif_event> pull_messages(const onvif_pull_point& pull_point, int timeout_seconds, int message_limit);

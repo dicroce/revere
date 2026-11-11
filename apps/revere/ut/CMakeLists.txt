@@ -11,6 +11,9 @@ add_executable(
     ../source/configure_state.cpp
     include/test_tray_status.h
     source/test_tray_status.cpp
+    include/test_tray_fetch.h
+    source/test_tray_fetch.cpp
+    ../source/tray_fetch.cpp
     include/test_plugin_status_line.h
     source/test_plugin_status_line.cpp
     ../source/tray_status.cpp
@@ -18,6 +21,8 @@ add_executable(
     include/test_cloud_download.h
     source/test_cloud_download.cpp
     ../source/cloud_download.cpp
+    include/test_render_policy.h
+    source/test_render_policy.cpp
 )
 
 target_include_directories(
@@ -30,6 +35,7 @@ target_link_libraries(
     revere_ut LINK_PUBLIC
     experimentum
     r_utils
+    r_http
     r_ui_utils
     # main_window.h's headers (test_plugin_status_line)
     r_storage

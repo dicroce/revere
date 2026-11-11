@@ -1,5 +1,6 @@
 
 #include "r_vss/r_storage_ops.h"
+#include "r_vss/r_substream_recorder.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_disco/r_devices.h"
 #include "r_storage/r_storage_file.h"
@@ -69,7 +70,12 @@ static string _motion_base(const string& top_dir, const r_camera& camera)
 void r_vss::delete_camera_files(const string& top_dir, const r_camera& camera)
 {
     if(!camera.record_file_path.is_null())
-        _remove_if_exists(storage_path(top_dir, camera.record_file_path.value()));
+    {
+        auto nts = storage_path(top_dir, camera.record_file_path.value());
+        _remove_if_exists(nts);
+        // The substream's ring beside it (r_substream_recorder.h).
+        _remove_if_exists(substream_ring_path(nts));
+    }
 
     if(!camera.motion_detection_file_path.is_null())
     {
@@ -94,6 +100,10 @@ static vector<pair<string, string>> _storage_file_pairs(const string& top_dir, c
         auto p = storage_path(top_dir, camera.record_file_path.value());
         if(r_fs::file_exists(p))
             files.push_back({p, std::filesystem::path(p).filename().string()});
+        // The substream's ring beside it (r_substream_recorder.h), moved with it.
+        auto ring = substream_ring_path(p);
+        if(r_fs::file_exists(ring))
+            files.push_back({ring, std::filesystem::path(ring).filename().string()});
     }
 
     if(!camera.motion_detection_file_path.is_null())

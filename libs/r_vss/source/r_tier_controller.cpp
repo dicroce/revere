@@ -178,7 +178,7 @@ int r_tier_controller::_decide(_camera& c, int64_t now_ms)
     {
         if (!c.known)
         {
-            c.reason = "set to the camera's events, but it has no event subscription";
+            c.reason = "set to the camera's events, but they aren't available, so Revere detects the motion itself";
             return motion_tier_1;
         }
         if (down_long)
@@ -192,7 +192,7 @@ int r_tier_controller::_decide(_camera& c, int64_t now_ms)
 
     if (!c.known)
     {
-        c.reason = "the camera has no event subscription";
+        c.reason = "the camera's events aren't available, so Revere detects the motion itself";
         return motion_tier_1;
     }
 

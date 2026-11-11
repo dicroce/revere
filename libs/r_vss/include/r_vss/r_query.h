@@ -1,6 +1,7 @@
 #ifndef __revere_query_h
 #define __revere_query_h
 
+#include "r_vss/r_live_key_frame.h"
 #include "r_utils/r_macro.h"
 #include "r_utils/r_nullable.h"
 #include "r_disco/r_devices.h"
@@ -45,6 +46,13 @@ struct measured_camera
 // frame_ts, if given, gets the epoch-ms ts of the key frame decoded: the one
 // r_storage_file_reader::query_key picks for ts. That isn't always at or before
 // ts: before the first frame it's the first key frame.
+// A key frame as a JPEG that fits w x h (a bounding box: the picture's aspect is kept).
+R_API std::vector<uint8_t> encode_key_frame_jpg(const std::string& codec_name, const std::string& codec_parameters, const std::vector<uint8_t>& data, uint16_t w, uint16_t h);
+
+// The same for a key frame held in memory (a substream's newest), cached like query_get_jpg's by the camera, the
+// frame's ts and the box.
+R_API std::vector<uint8_t> jpg_from_live_key_frame(const std::string& camera_id, const r_live_key_frame& key_frame, uint16_t w, uint16_t h);
+
 R_API std::vector<uint8_t> query_get_jpg(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h, int64_t* frame_ts = nullptr);
 
 // frame_ts as for query_get_jpg.
@@ -86,7 +94,9 @@ R_API std::vector<uint8_t> query_get_bgr24_frame(const std::string& top_dir, r_d
 
 R_API std::vector<uint8_t> query_get_rgb24_frame(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point ts, uint16_t w, uint16_t h);
 
-R_API std::vector<uint8_t> query_get_video(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
+// The camera's video (and audio) between start and end, as a blob tree. substream: from the camera's substream ring
+// instead (r_substream_recorder.h), video only; not found when the camera has none.
+R_API std::vector<uint8_t> query_get_video(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end, bool substream = false);
 
 R_API contents query_get_contents(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
 
@@ -133,6 +143,12 @@ R_API void query_update_camera_properties(const std::string& top_dir, r_disco::r
 // exception begins "/Users/<name>/.../nanots.cpp:1835: <message>": the "file:line:" is dropped; any other path
 // is cut to its last part.
 R_API std::string r_failure_reason(const std::string& what);
+
+// Transcoded video that mostly didn't decode (a GPU fault, say): fewer than half its video frames decoded, of at
+// least TRANSCODE_CHECK_MIN_FRAMES. Its gaps are filled with the last picture decoded, so the result plays as a
+// frozen picture and looks fine: it's refused instead, so the clip fails rather than ships broken.
+constexpr size_t TRANSCODE_CHECK_MIN_FRAMES = 10;
+R_API bool transcode_mostly_failed(size_t video_frames_in, size_t pictures_decoded);
 
 }
 

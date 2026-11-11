@@ -156,6 +156,18 @@ private:
     std::map<std::string, _camera> _cameras;
 };
 
+// What the stream keeper tells the tier controller about a camera's event subscription: -1 none (the camera has no events
+// to give: it has no events service, or said it doesn't support the subscription), 0 down (expected back), 1 up. A camera
+// that can't give events is not "down": it would sit at "checking the camera's events" for ever.
+inline int tier_subscription_state(bool has_events, bool up, bool unavailable)
+{
+    if(!has_events)
+        return -1;
+    if(up)
+        return 1;
+    return unavailable ? -1 : 0;
+}
+
 }
 
 #endif

@@ -52,6 +52,13 @@ inline void wrapped_tooltip(const char* text)
 }
 }
 
+// The Settings item for using cameras' smaller streams (substreams); off until turned on (see r_substream_setting).
+namespace substream_text
+{
+inline constexpr const char* menu_item = "Use cameras' smaller streams";
+inline constexpr const char* menu_tooltip = "Off: live view, grid tiles, pictures and motion detection all use each camera's main stream. On: a camera set to use its smaller stream (in its properties) uses that for them, and Revere keeps a short copy of it. Recording is not affected.";
+}
+
 // What the desktop app calls the password for revere's local web interface
 // (stored as the "system password"; the stored name doesn't change). One place,
 // so the wording can change without hunting for strings.
@@ -119,8 +126,8 @@ inline void pop_menu_bar_style()
     ImGui::PopStyleVar(4);
 }
 
-template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename GET_KEEP_AWAKE_CB, typename SET_KEEP_AWAKE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB, typename REMOTE_ACCESS_CB, typename ABOUT_CB>
-uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, GET_KEEP_AWAKE_CB get_keep_awake_cb, SET_KEEP_AWAKE_CB set_keep_awake_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb, REMOTE_ACCESS_CB remote_access_cb, ABOUT_CB about_cb)
+template<typename EXIT_CB, typename MINIMIZE_CB, typename ADD_RTSP_SOURCE_CAMERA_CB, typename LAUNCH_VISION_CB, typename DOWNLOAD_REVERE_CLOUD_CB, typename GET_STARTUP_STATE_CB, typename SET_STARTUP_STATE_CB, typename GET_KEEP_AWAKE_CB, typename SET_KEEP_AWAKE_CB, typename OPEN_WEB_UI_CB, typename SET_SYSTEM_PASSWORD_CB, typename REMOTE_ACCESS_CB, typename ABOUT_CB, typename GET_SUBSTREAMS_CB, typename SET_SUBSTREAMS_CB>
+uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAMERA_CB add_rtsp_source_camera_cb, LAUNCH_VISION_CB launch_vision_cb, DOWNLOAD_REVERE_CLOUD_CB download_revere_cloud_cb, GET_STARTUP_STATE_CB get_startup_state_cb, SET_STARTUP_STATE_CB set_startup_state_cb, GET_KEEP_AWAKE_CB get_keep_awake_cb, SET_KEEP_AWAKE_CB set_keep_awake_cb, OPEN_WEB_UI_CB open_web_ui_cb, SET_SYSTEM_PASSWORD_CB set_system_password_cb, REMOTE_ACCESS_CB remote_access_cb, ABOUT_CB about_cb, GET_SUBSTREAMS_CB get_substreams_cb, SET_SUBSTREAMS_CB set_substreams_cb)
 {
     push_menu_bar_style();
     ImGui::BeginMainMenuBar();
@@ -171,6 +178,12 @@ uint16_t main_menu(EXIT_CB exit_cb, MINIMIZE_CB minimize_cb, ADD_RTSP_SOURCE_CAM
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             keep_awake_text::wrapped_tooltip(keep_awake_text::battery_tooltip);
         ImGui::Unindent();
+
+        bool substreams = get_substreams_cb();
+        if (ImGui::MenuItem(substream_text::menu_item, nullptr, &substreams))
+            set_substreams_cb(substreams);
+        if (ImGui::IsItemHovered())
+            keep_awake_text::wrapped_tooltip(substream_text::menu_tooltip);
 
         if (ImGui::MenuItem(web_password_text::menu_item))
             set_system_password_cb();

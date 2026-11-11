@@ -859,6 +859,11 @@ struct sidebar_list_ui_item
     std::string sub_label;
     std::string camera_id;
     bool do_motion_detection;
+    // The camera's live restream paths from /cameras: its main stream's, and its smaller stream's with whether that
+    // is up now (an older revere sends none of these: they are then empty and false).
+    std::string mount;
+    std::string sub_mount;
+    bool sub_fresh {false};
 };
 
 template<typename ITEM_CLICK_CB>

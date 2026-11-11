@@ -588,3 +588,84 @@ void test_r_transcoder_repro::test_writes_return_once_the_output_fails()
     RTF_ASSERT(failed);
     RTF_ASSERT(returned);
 }
+
+void test_r_transcoder_repro::test_aac_repeated_as_is_is_dropped()
+{
+    // A camera's AAC goes over SRT as it was stored, so a chunk that repeats the last one's end repeats its frames
+    // exactly, at the same pts: the frame at the last pts written goes too, not only the ones before it.
+    const uint16_t w = 320, h = 240;
+    const AVRational fps = {15, 1};
+    r_video_encoder video(AV_CODEC_ID_H264, 500000, w, h, fps, AV_PIX_FMT_YUV420P, 0, 15, AV_PROFILE_H264_MAIN, 41, "veryfast", "zerolatency");
+    vector<uint8_t> gray(w * h * 3 / 2, 128);
+    vector<pair<vector<uint8_t>, int64_t>> video_packets;
+    for (int i = 0; i < 30; ++i)
+    {
+        video.attach_buffer(gray.data(), gray.size(), i);
+        while (video.encode() == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto p = video.get();
+            video_packets.push_back({vector<uint8_t>(p.data, p.data + p.size), (int64_t)i * 1000 / 15});
+        }
+    }
+    const int rate = 16000;
+    r_audio_encoder aac(AV_CODEC_ID_AAC, 32000, rate, 1, AV_SAMPLE_FMT_FLTP);
+    int fs = aac.get_frame_size();
+    vector<pair<vector<uint8_t>, int64_t>> stored;
+    for (int at = 0; at + fs <= 2 * rate; at += fs)
+    {
+        vector<float> f(fs, 0.1f);
+        aac.attach_buffer(reinterpret_cast<const uint8_t*>(f.data()), f.size() * sizeof(float), at);
+        if (aac.encode() == R_CODEC_STATE_HAS_OUTPUT)
+        {
+            auto p = aac.get();
+            stored.push_back({vector<uint8_t>(p.data, p.data + p.size), av_rescale_q(p.pts, p.time_base, {1, 1000})});
+        }
+    }
+    // Each frame sent twice in a row: every repeat has exactly the pts last written.
+    vector<pair<vector<uint8_t>, int64_t>> sent;
+    for (auto& p : stored)
+    {
+        sent.push_back(p);
+        sent.push_back(p);
+    }
+
+    const string path = "transcoder_aac_repeated.ts";
+    bool failed = true;
+    uint64_t dropped = 0;
+    {
+        r_transcoder t(path, "mpegts", AV_CODEC_ID_H264, video.get_extradata(), {1, 1000}, w, h, fps,
+                       500000, 1000000, 250000, false, "", r_transcoder_audio{AV_CODEC_ID_AAC, 1, (uint32_t)rate, aac.get_extradata()});
+        t.start();
+        size_t vi = 0, ai = 0;
+        while (vi < video_packets.size() || ai < sent.size())
+        {
+            bool take_audio = ai < sent.size() && (vi >= video_packets.size() || sent[ai].second < video_packets[vi].second);
+            if (take_audio)
+            {
+                t.write_audio_frame(sent[ai].first.data(), sent[ai].first.size(), sent[ai].second);
+                ++ai;
+            }
+            else
+            {
+                t.write_frame(video_packets[vi].first.data(), video_packets[vi].first.size(), video_packets[vi].second);
+                ++vi;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        failed = t.failed();
+        dropped = t.audio_frames_dropped();
+        t.stop();
+    }
+    int audio_read = 0;
+    {
+        r_demuxer d(path);
+        auto ai = d.get_audio_stream_index();
+        while (d.read_frame())
+            if (d.get_frame_info().index == ai)
+                ++audio_read;
+    }
+    r_fs::remove_file(path);
+    RTF_ASSERT(!failed);
+    RTF_ASSERT(dropped == stored.size());
+    RTF_ASSERT(audio_read == (int)stored.size());
+}

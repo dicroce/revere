@@ -844,6 +844,8 @@ inline r_utils::r_nullable<stat_card> motion_source_card(const sidebar_list_ui_i
         detail = "verified";
     else if(item.motion_tier_checked >= 5 && item.motion_tier_matched < item.motion_tier_checked)
         detail = r_utils::r_string_utils::format("camera missed %d of %d", item.motion_tier_checked - item.motion_tier_matched, item.motion_tier_checked);
+    else if(item.motion_tier_reason.find("aren't available") != std::string::npos)
+        detail = "camera events unavailable";
     else if(item.motion_tier_checked > 0 || item.motion_tier_reason.find("checking") != std::string::npos)
         detail = r_utils::r_string_utils::format("checking \xC2\xB7 %d of 5", std::min(item.motion_tier_checked, 5));
 
