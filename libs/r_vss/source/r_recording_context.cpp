@@ -786,8 +786,8 @@ void r_recording_context::write_metadata(const std::string& stream_tag, const st
 static void _need_live_data_cbs(GstElement* appsrc, guint, live_restreaming_state* lrs)
 {
     if(appsrc == lrs->v_appsrc)
-        restream_feed(appsrc, lrs->video_samples, lrs->video_gate);
-    else restream_feed(appsrc, lrs->audio_samples, lrs->audio_gate);
+        restream_feed(appsrc, lrs->video_samples, lrs->video_gate, false);
+    else restream_feed(appsrc, lrs->audio_samples, lrs->audio_gate, true);
 }
 
 void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, GstRTSPMedia* media)

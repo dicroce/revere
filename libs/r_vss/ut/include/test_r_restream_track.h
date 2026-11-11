@@ -8,6 +8,8 @@ public:
       TEST(test_r_restream_track::test_gate);
       TEST(test_r_restream_track::test_format_overflow);
       TEST(test_r_restream_track::test_feed_survives_a_pause);
+      TEST(test_r_restream_track::test_breaks);
+      TEST(test_r_restream_track::test_audio_restream_stamps_by_samples);
     RTF_FIXTURE_END();
 
     virtual ~test_r_restream_track() throw() {}
@@ -18,4 +20,6 @@ public:
     void test_gate();
     void test_format_overflow();
     void test_feed_survives_a_pause();
+    void test_breaks();
+    void test_audio_restream_stamps_by_samples();
 };

@@ -91,7 +91,8 @@ struct _frame_context
 // appsrc waiting for a push that nothing makes (it asks for data again only
 // after one), so a source that paused for a few seconds stalled the track for
 // the rest of the session while its queue filled.
-R_API void restream_feed(GstElement* appsrc, r_utils::r_blocking_q<_frame_context>& q, r_restream_track_gate& gate);
+// audio: send DISCONT only where the track's times break (r_restream_track_gate::breaks); video buffers keep their flags.
+R_API void restream_feed(GstElement* appsrc, r_utils::r_blocking_q<_frame_context>& q, r_restream_track_gate& gate, bool audio = false);
 
 // One entry in the per-camera GOP cache. Stores the original source pts
 // (in milliseconds, as delivered by the gst source) so the relative spacing

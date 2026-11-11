@@ -5,6 +5,7 @@
 #include "r_pipeline/r_arg.h"
 #include "r_pipeline/r_stream_info.h"
 #include "r_pipeline/r_sample_context.h"
+#include "r_pipeline/r_g711_header.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
 #include "r_gst_buffer.h"
@@ -273,6 +274,8 @@ private:
     /// optional arguments
     r_utils::r_nullable<std::string> _protocols;
     uint32_t _protocol_flags {0};
+    // Whether this stream's G.711 carries a camera's frame header, and removing it (r_g711_header_filter).
+    r_g711_header_filter _g711_filter;
     r_utils::r_nullable<std::string> _buffer_mode; // rtspsrc buffer-mode enum value
                                                    // (0=none,1=slave,2=buffer,3=auto,4=synced);
                                                    // overrides the protocols-implied default
