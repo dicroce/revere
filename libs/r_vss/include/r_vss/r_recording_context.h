@@ -22,6 +22,7 @@
 #include <functional>
 #include <mutex>
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <string>
@@ -112,7 +113,19 @@ struct _gop_cache_entry
     int64_t pts;
     bool key;
     r_pipeline::r_gst_buffer buffer;
+    // The time storage gave the frame, set once write_frame() returns. A frame whose
+    // write threw keeps the sentinel, and a feed's start at the newest key frame
+    // (r_frame_feeds) isn't given a GOP with one.
+    int64_t stored_ts {NOT_STORED};
+    static constexpr int64_t NOT_STORED = INT64_MIN;
 };
+
+// The cache's newest frame (the one just written) gets the time storage gave it.
+R_API void stamp_newest_gop_frame(std::deque<_gop_cache_entry>& cache, int64_t stored_ts);
+
+// The cached GOP as a frame feed takes it, each frame mapped for reading into maps,
+// which must outlive the result. A frame never stamped is marked not stored.
+R_API std::vector<r_gop_frame> gop_for_feeds(const std::deque<_gop_cache_entry>& cache, std::vector<r_pipeline::r_gst_buffer::r_map_info>& maps);
 
 struct live_restreaming_state
 {
@@ -177,6 +190,14 @@ public:
 
     // Frames in the cache.
     R_API size_t cached_frames() const { return _gop_cache.size(); }
+
+    // For frame feeds that start at the newest key frame (r_frame_feeds): the newest cached frame (the one just
+    // written) gets the time storage gave it, and the cached GOP as a feed takes it (gop_for_feeds()).
+    void stamp_newest(int64_t stored_ts) { stamp_newest_gop_frame(_gop_cache, stored_ts); }
+    std::vector<r_gop_frame> gop_for_feeds(std::vector<r_pipeline::r_gst_buffer::r_map_info>& maps) const
+    {
+        return r_vss::gop_for_feeds(_gop_cache, maps);
+    }
 
 private:
     std::deque<_gop_cache_entry> _gop_cache;

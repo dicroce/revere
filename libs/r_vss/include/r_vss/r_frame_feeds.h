@@ -28,6 +28,18 @@ struct r_feed_frame
     std::string stream;             // "main" or "sub": the stream this frame came from
 };
 
+// One frame of the camera's newest GOP, from its key frame to the frame being
+// posted, for a feed that starts there (subscribe's from_newest_key). stored is
+// false for a frame whose write failed, which has no stored time.
+struct r_gop_frame
+{
+    const uint8_t* data {nullptr};
+    size_t size {0};
+    bool key {false};
+    int64_t ts {0};
+    bool stored {false};
+};
+
 // Feeds of cameras' encoded frames, for readers that pull them on their own
 // thread (plugins: see r_system_plugin.h). A reader subscribes to a camera's
 // video, audio or both, and takes frames with next() as they come.
@@ -45,6 +57,13 @@ struct r_feed_frame
 // either way is a gap: video carries on from the new stream's next key frame,
 // marked GAP and CODEC_CHANGED when its codec parameters differ. A feed's audio
 // always comes from main.
+//
+// A feed can start at the camera's newest key frame instead of its next one
+// (from_newest_key): at the next video frame of the stream it's serving, it's
+// given that stream's newest GOP up to and including that frame, if the poster
+// passes one, the GOP starts at a key frame, every frame of it was stored, and
+// it fits the feed's bound. Otherwise it starts at the next key frame, as any
+// feed does. Either way it's decided once, at that frame, on the posting thread.
 class r_frame_feeds final
 {
 public:
@@ -68,6 +87,13 @@ public:
     // empty or "main" for the main stream, or "sub". 0 for any other media or
     // stream. max_bytes 0 is DEFAULT_MAX_BYTES. The caller checks the camera.
     R_API uint64_t subscribe(const std::string& camera_id, const std::string& stream, uint32_t media, size_t max_bytes);
+    R_API uint64_t subscribe(const std::string& camera_id, const std::string& stream, uint32_t media, size_t max_bytes, bool from_newest_key);
+
+    // Whether any feed is waiting to start at the newest key frame.
+    R_API bool gop_wanted() const { return _gop_wanted.load(std::memory_order_relaxed) != 0; }
+    // Whether one of this camera's feeds is: a poster builds the camera's GOP only then.
+    // One atomic load while no feed of any camera waits.
+    R_API bool gop_wanted(const std::string& camera_id) const;
 
     // The feed's next frame, waiting up to timeout_ms. 1: a frame. 0: none in time.
     // -1: the feed is closed (or unknown). One reader per feed.
@@ -92,8 +118,10 @@ public:
     // the camera is on now. Called by the stream keeper as the substream comes and goes.
     R_API void substream_fresh(const std::string& camera_id, bool fresh);
 
-    // A frame the camera recorded. stream is the stream it came from.
-    R_API void post_video(const std::string& camera_id, const std::string& stream, const uint8_t* data, size_t size, bool key, int64_t ts, const std::string& codec_name, const std::string& codec_params);
+    // A frame the camera recorded. stream is the stream it came from. gop, when
+    // given, is that stream's newest GOP, its last frame this one, for feeds that
+    // start at the newest key frame: they take it in place of this frame.
+    R_API void post_video(const std::string& camera_id, const std::string& stream, const uint8_t* data, size_t size, bool key, int64_t ts, const std::string& codec_name, const std::string& codec_params, const std::vector<r_gop_frame>* gop = nullptr);
     R_API void post_audio(const std::string& camera_id, const uint8_t* data, size_t size, int64_t ts, const std::string& codec_name, const std::string& codec_params);
 
     // For tests: open feeds, posts that found any feed at all, a feed's queued bytes.
@@ -119,8 +147,14 @@ private:
         std::string video_codec;        // name + params of the last video frame queued
         std::string audio_codec;
         bool closed {false};
+        bool wants_gop {false};         // to start at the newest key frame, at the next video frame
         std::condition_variable cond;
     };
+
+    // Whether a GOP can start this feed: from a key frame, every frame stored, within the bound.
+    static bool _gop_fits(const _feed& f, const std::vector<r_gop_frame>& gop);
+    // The feed no longer waits for a GOP. Under _lock.
+    void _no_gop(_feed& f);
 
     void _push(_feed& f, uint32_t media, const std::string& stream, const uint8_t* data, size_t size, bool key, int64_t ts, const std::string& codec_name, const std::string& codec_params);
 
@@ -129,6 +163,7 @@ private:
     uint64_t _next_id {1};
     std::atomic<size_t> _count {0};
     std::atomic<size_t> _posts_seen {0};
+    std::atomic<size_t> _gop_wanted {0};
     std::map<std::string, bool> _sub_fresh;   // by camera; _lock
 };
 

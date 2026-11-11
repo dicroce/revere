@@ -17,6 +17,7 @@ public:
       TEST(test_r_system_plugin_frames::test_an_old_handle_reads_as_closed);
       TEST(test_r_system_plugin_frames::test_concurrent_subscribes_keep_the_cap);
       TEST(test_r_system_plugin_frames::test_unsubscribe_races_a_reading_thread);
+      TEST(test_r_system_plugin_frames::test_a_plugin_starts_at_the_newest_key_frame);
     RTF_FIXTURE_END();
 
     virtual ~test_r_system_plugin_frames() throw() {}
@@ -36,6 +37,7 @@ public:
     void test_an_old_handle_reads_as_closed();
     void test_concurrent_subscribes_keep_the_cap();
     void test_unsubscribe_races_a_reading_thread();
+    void test_a_plugin_starts_at_the_newest_key_frame();
 
 private:
     std::string _top;

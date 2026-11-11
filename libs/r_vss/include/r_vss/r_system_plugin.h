@@ -111,7 +111,7 @@ R_API void system_plugin_action(r_system_plugin_handle plugin, const char* actio
 // A plugin can read cameras' encoded frames as they're recorded. It pulls them on
 // its own thread: the host never calls into the plugin with frames.
 
-#define R_SYSTEM_PLUGIN_HOST_API_VERSION 1
+#define R_SYSTEM_PLUGIN_HOST_API_VERSION 2
 
 typedef struct r_frame_subscription* r_frame_subscription_handle;
 
@@ -122,6 +122,16 @@ enum
     R_FRAME_KEY           = 1 << 2,   // a video key frame
     R_FRAME_CODEC_CHANGED = 1 << 3,   // the first frame of its media, or its codec name or params changed
     R_FRAME_GAP           = 1 << 4    // frames of this media were dropped before this one
+};
+
+// Flags for subscribe_frames_from (version 2).
+enum
+{
+    // Start the feed's video at the camera's newest key frame, not its next: the frames
+    // recorded since that key frame come first, then the live ones. Without a whole GOP
+    // the host can give (its frames weren't all stored, or they don't fit the bound),
+    // the feed starts at the next key frame, as without the flag.
+    R_SUBSCRIBE_FROM_NEWEST_KEY = 1 << 0
 };
 
 typedef struct r_frame
@@ -158,6 +168,10 @@ typedef struct r_system_plugin_host_api
 
     // Ends the feed; a next_frame waiting on it returns -1. From any thread.
     void (*unsubscribe)(void* host, r_frame_subscription_handle sub);
+
+    // Version 2. As subscribe_frames, with flags (R_SUBSCRIBE_*): null for a flag the host
+    // doesn't know. A plugin checks version >= 2 before calling it.
+    r_frame_subscription_handle (*subscribe_frames_from)(void* host, const char* camera_id, const char* stream, uint32_t media, size_t max_queued_bytes, uint32_t flags);
 } r_system_plugin_host_api;
 
 // Optional: the host calls this once after load_system_plugin, before start, with the
