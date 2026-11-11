@@ -1915,6 +1915,7 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
 
         size_t n_frames     = in_bt.has_key("frames") ? in_bt["frames"].size() : 0;
         size_t out_frame_idx = 0;
+        size_t video_in = 0, video_decoded = 0;  // transcode_mostly_failed
 
         for(size_t fi = 0; fi < n_frames; ++fi)
         {
@@ -1935,11 +1936,13 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
 
             if(sid == R_STORAGE_MEDIA_TYPE_VIDEO)
             {
+                ++video_in;
                 session.decoder->attach_buffer(frame_data.data(), frame_data.size());
                 auto dec_state = session.decoder->decode();
 
                 if(dec_state != R_CODEC_STATE_HAS_OUTPUT && dec_state != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
                     continue;
+                ++video_decoded;
 
                 auto decoded = session.decoder->get(AV_PIX_FMT_YUV420P, session.output_width, session.output_height, 1);
 
@@ -2070,6 +2073,10 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
                 }
             }
         }
+
+        // A chunk that mostly didn't decode would go out as the last good picture repeated (see Fill above).
+        if(transcode_mostly_failed(video_in, video_decoded))
+            R_THROW(("Transcode failed: %zu of %zu video frames decoded.", video_decoded, video_in));
 
         // Some encoders (e.g. h264_mf on Windows) put SPS/PPS inline in IDR frames rather
         // than in global extradata. Detect this by checking AVCC num_sps==0 (ed[5] & 0x1F).
@@ -2948,8 +2955,25 @@ void r_ws::_transcode_export(export_job& job)
     auto output_path = job.exports_path + PATH_SLASH + job.file_name;
     auto temp_path = r_fs::temp_file_name(job.exports_path, "tmp_") + ext;
 
+    // A failed export leaves no tmp_ file behind. Removed on the way out, once the muxer (declared after this, so
+    // destroyed first) has closed it: Windows can't delete an open file. A finished export has been renamed away.
+    struct temp_file_cleanup
+    {
+        const string& path;
+        ~temp_file_cleanup()
+        {
+            try
+            {
+                if(r_fs::file_exists(path))
+                    r_fs::remove_file(path);
+            }
+            catch(...) {}
+        }
+    } cleanup{temp_path};
+
     r_muxer muxer(temp_path);
     muxer.enable_faststart();
+    size_t video_in = 0, video_decoded = 0;  // transcode_mostly_failed
 
     auto output_width = job.width;
     auto output_height = job.height;
@@ -3108,11 +3132,13 @@ void r_ws::_transcode_export(export_job& job)
 
                 if(sid == R_STORAGE_MEDIA_TYPE_VIDEO)
                 {
+                    ++video_in;
                     decoder->attach_buffer(frame_data.data(), frame_data.size());
                     auto dec_state = decoder->decode();
 
                     if(dec_state != R_CODEC_STATE_HAS_OUTPUT && dec_state != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
                         continue;
+                    ++video_decoded;
 
                     auto decoded = decoder->get(AV_PIX_FMT_YUV420P, output_width, output_height, 1);
 
@@ -3147,6 +3173,10 @@ void r_ws::_transcode_export(export_job& job)
             );
         }
     }
+
+    // The whole export mostly didn't decode: fail it, rather than ship the last good picture repeated.
+    if(initialized && transcode_mostly_failed(video_in, video_decoded))
+        R_THROW(("Transcode export failed: %zu of %zu video frames decoded.", video_decoded, video_in));
 
     if(initialized)
     {

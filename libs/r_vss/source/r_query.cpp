@@ -1003,6 +1003,11 @@ r_letterboxed_frame r_vss::query_get_letterboxed_key_frame(const std::string& to
 }
 
 
+bool r_vss::transcode_mostly_failed(size_t video_frames_in, size_t pictures_decoded)
+{
+    return video_frames_in >= TRANSCODE_CHECK_MIN_FRAMES && pictures_decoded * 2 < video_frames_in;
+}
+
 string r_vss::r_failure_reason(const string& what)
 {
     string reason = what.substr(0, what.find('\n'));
