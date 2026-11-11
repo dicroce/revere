@@ -836,6 +836,14 @@ int every_send_fails(AVCodecContext*, const AVPacket*)
     return AVERROR_EXTERNAL;
 }
 
+// Every hardware send refuses the packet as bad data: the stream's fault, not the device's.
+int hw_invalid_data_send(AVCodecContext* ctx, const AVPacket* pkt)
+{
+    if(ctx->hw_device_ctx)
+        return AVERROR_INVALIDDATA;
+    return avcodec_send_packet(ctx, pkt);
+}
+
 int g_sends = 0;
 // Every other hardware send fails: never R_HW_DECODE_FAILURES_TO_FALL_BACK in a row.
 int flaky_gpu_send(AVCodecContext* ctx, const AVPacket* pkt)
@@ -901,6 +909,27 @@ void test_r_codec::test_software_decoder_does_not_fall_back()
         r_video_decoder_send_override(nullptr);
     }
     RTF_ASSERT(logs.fallbacks == 0);
+    RTF_ASSERT(logs.send_failures == (int)packets.size());
+}
+
+void test_r_codec::test_hw_invalid_data_does_not_fall_back()
+{
+    // Only a failed device (AVERROR_EXTERNAL) is fallen back from. A hardware decoder that gets bad data, packet
+    // after packet, is given the stream's next packets as before: software would get the same bad data.
+    auto accel = r_find_best_hw_accel(AV_CODEC_ID_H264);
+    if(accel == r_hw_accel::none)
+        return;
+    vector<uint8_t> extradata;
+    auto packets = grey_gop10_stream(extradata);
+    log_count logs;
+    {
+        r_video_decoder dec(AV_CODEC_ID_H264, accel);
+        r_video_decoder_send_override(hw_invalid_data_send);
+        try { grey_pictures(dec, packets, extradata); } catch(...) {}
+        r_video_decoder_send_override(nullptr);
+    }
+    RTF_ASSERT(logs.fallbacks == 0);
+    // Still the hardware at the end: every send went to it and failed.
     RTF_ASSERT(logs.send_failures == (int)packets.size());
 }
 
