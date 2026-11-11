@@ -9,6 +9,8 @@ public:
       TEST(test_r_pipeline::test_stream_info_get_video_codec_framerate);
       TEST(test_r_pipeline::test_rtsp_protocol_flags);
       TEST(test_r_pipeline::test_rtsp_jitterbuffer_latency);
+      TEST(test_r_pipeline::test_rtsp_teardown_timeout);
+      TEST(test_r_pipeline::test_gst_source_stop_sends_teardown);
       TEST(test_r_pipeline::test_rtsp_probe_retry_over_udp);
       TEST(test_r_pipeline::test_g711_vendor_header_candidate);
       TEST(test_r_pipeline::test_g711_header_filter_header_stream);
@@ -40,6 +42,8 @@ public:
     void test_stream_info_get_video_codec_framerate();
     void test_rtsp_protocol_flags();
     void test_rtsp_jitterbuffer_latency();
+    void test_rtsp_teardown_timeout();
+    void test_gst_source_stop_sends_teardown();
     void test_rtsp_probe_retry_over_udp();
     void test_g711_vendor_header_candidate();
     void test_g711_header_filter_header_stream();

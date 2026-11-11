@@ -17,6 +17,8 @@ public:
       TEST(test_r_frame_feeds::test_a_wait_times_out);
       TEST(test_r_frame_feeds::test_two_feeds_get_their_own_copies);
       TEST(test_r_frame_feeds::test_a_restarted_stream_is_a_gap);
+      TEST(test_r_frame_feeds::test_a_sub_feed_follows_the_substream);
+      TEST(test_r_frame_feeds::test_a_sub_feed_subscribed_while_fresh_and_a_restart);
     RTF_FIXTURE_END();
 
     virtual ~test_r_frame_feeds() throw() {}
@@ -37,4 +39,6 @@ public:
     void test_a_wait_times_out();
     void test_two_feeds_get_their_own_copies();
     void test_a_restarted_stream_is_a_gap();
+    void test_a_sub_feed_follows_the_substream();
+    void test_a_sub_feed_subscribed_while_fresh_and_a_restart();
 };

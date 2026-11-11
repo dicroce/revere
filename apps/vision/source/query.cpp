@@ -48,6 +48,9 @@ vector<sidebar_list_ui_item> vision::query_cameras(const string& ip_address)
             item.sub_label = camera["ipv4"].get<string>();
             item.camera_id = camera["id"].get<string>();
             item.do_motion_detection = camera["do_motion_detection"].get<bool>();
+            item.mount = camera.value("mount", string());
+            item.sub_mount = camera.value("sub_mount", string());
+            item.sub_fresh = camera.value("sub_fresh", false);
             cameras.push_back(item);
         }
     }

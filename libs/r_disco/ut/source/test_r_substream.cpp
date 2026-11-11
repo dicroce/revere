@@ -1,5 +1,6 @@
 #include "test_r_substream.h"
 #include "r_disco/r_substream.h"
+#include "r_pipeline/r_stream_info.h"
 #include <map>
 #include <stdexcept>
 
@@ -175,4 +176,276 @@ void test_r_substream::test_squeezed_picture_is_kept()
     auto c = find_substream(profiles, profiles[0], 1920, 1080, cam.ops());
     RTF_ASSERT(c.found);
     RTF_ASSERT(c.anamorphic);
+}
+
+// What a found substream leaves on the camera: on, ok, and the profile, address, codec and the size the SPS gave.
+void test_r_substream::test_set_records_the_pick()
+{
+    r_substream_choice choice;
+    choice.found = true;
+    choice.profile = _profile("sub_1", 704, 396);  // what ONVIF said
+    choice.rtsp_url = "rtsp://10.0.0.5/sub";
+    choice.probe = _good(640, 352);                 // what the stream really is
+    choice.probe.key_interval_ms = 2000;
+
+    r_camera camera;
+    substream_clear(camera, "no smaller stream");  // an earlier answer is replaced
+    camera.sub_analysis = 1;                       // chosen earlier: finding the substream again keeps it
+    substream_set(camera, choice, "H264", "sprop-parameter-sets=AAAA,BBBB", 90000);
+    RTF_ASSERT_EQUAL(camera.sub_analysis.value(), 1);
+
+    RTF_ASSERT(substream_on(camera));
+    RTF_ASSERT(camera.sub_status.value() == "ok");
+    RTF_ASSERT(camera.sub_onvif_profile_token.value() == "sub_1");
+    RTF_ASSERT(camera.sub_rtsp_url.value() == "rtsp://10.0.0.5/sub");
+    RTF_ASSERT(camera.sub_video_codec.value() == "H264");
+    RTF_ASSERT(camera.sub_video_codec_parameters.value() == "sprop-parameter-sets=AAAA,BBBB");
+    RTF_ASSERT_EQUAL(camera.sub_video_timebase.value(), 90000);
+    RTF_ASSERT_EQUAL(camera.sub_width.value(), 640);
+    RTF_ASSERT_EQUAL(camera.sub_height.value(), 352);  // the stream's own size, not the profile's
+    RTF_ASSERT_EQUAL(camera.sub_key_interval_ms.value(), 2000);
+
+    // A probe that saw one keyframe leaves the interval unset, not -1.
+    choice.probe.key_interval_ms = -1;
+    substream_set(camera, choice, "H264", "x", 90000);
+    RTF_ASSERT(camera.sub_key_interval_ms.is_null());
+}
+
+// No substream: off, the reason in the settings' words, and nothing left of an earlier pick.
+void test_r_substream::test_clear_goes_back_to_main()
+{
+    r_substream_choice choice;
+    choice.found = true;
+    choice.profile = _profile("sub_1", 640, 360);
+    choice.rtsp_url = "rtsp://10.0.0.5/sub";
+    choice.probe = _good(640, 360);
+
+    r_camera camera;
+    substream_set(camera, choice, "H264", "p", 90000);
+    camera.sub_analysis = 1;                                // asked for; gone with the substream
+    substream_clear(camera, "uses B-frames");
+
+    RTF_ASSERT(!substream_on(camera));
+    RTF_ASSERT(camera.sub_mode.value() == "off");
+    RTF_ASSERT(camera.sub_status.value() == "none: uses B-frames");
+    RTF_ASSERT(camera.sub_onvif_profile_token.is_null());
+    RTF_ASSERT(camera.sub_rtsp_url.is_null());
+    RTF_ASSERT(camera.sub_video_codec.is_null());
+    RTF_ASSERT(camera.sub_video_codec_parameters.is_null());
+    RTF_ASSERT(camera.sub_video_timebase.is_null());
+    RTF_ASSERT(camera.sub_width.is_null());
+    RTF_ASSERT(camera.sub_height.is_null());
+    RTF_ASSERT(camera.sub_key_interval_ms.is_null());
+    RTF_ASSERT(!camera.sub_analysis.is_null());
+    RTF_ASSERT_EQUAL(camera.sub_analysis.value(), 0);       // nothing to find motion in
+}
+
+// A copy takes every substream field and nothing else of the camera.
+void test_r_substream::test_copy_takes_only_the_substream()
+{
+    r_substream_choice choice;
+    choice.found = true;
+    choice.profile = _profile("sub_1", 640, 360);
+    choice.rtsp_url = "rtsp://10.0.0.5/sub";
+    choice.probe = _good(640, 360);
+    r_camera from;
+    from.friendly_name = string("from");
+    substream_set(from, choice, "H264", "p", 90000);
+
+    from.sub_analysis = 1;
+    r_camera to;
+    to.friendly_name = string("to");
+    substream_clear(to, "uses B-frames");
+    substream_copy(from, to);
+    RTF_ASSERT_EQUAL(to.sub_analysis.value(), 1);
+
+    RTF_ASSERT(to.friendly_name.value() == "to");
+    RTF_ASSERT(substream_on(to));
+    RTF_ASSERT(to.sub_status.value() == "ok");
+    RTF_ASSERT(to.sub_rtsp_url.value() == "rtsp://10.0.0.5/sub");
+    RTF_ASSERT_EQUAL(to.sub_width.value(), 640);
+    RTF_ASSERT_EQUAL(to.sub_key_interval_ms.value(), 1000);
+
+    // And a "none" copies over a pick: the camera goes back to main with the reason.
+    r_camera none;
+    substream_clear(none, "no smaller stream");
+    substream_copy(none, to);
+    RTF_ASSERT(!substream_on(to));
+    RTF_ASSERT(to.sub_status.value() == "none: no smaller stream");
+    RTF_ASSERT(to.sub_rtsp_url.is_null());
+}
+
+// The camera moved: the same stream at a new address is followed; a changed codec or size drops it, with the reason.
+void test_r_substream::test_follow_keeps_the_same_stream()
+{
+    const string params = "sprop-parameter-sets=Z2QACqzZRifmwFqAgICgAAB9IAAXcAHiRLLA,aOvjyyLA";
+    auto size = main_picture_size("H264", params);
+
+    r_substream_choice choice;
+    choice.found = true;
+    choice.profile = _profile("sub_1", size.first, size.second);
+    choice.rtsp_url = "rtsp://10.0.0.5/sub";
+    choice.probe = _good(size.first, size.second);
+
+    r_camera camera;
+    substream_set(camera, choice, "H264", params, 90000);
+
+    // Same stream, new address (and the SPS bytes may differ).
+    RTF_ASSERT(substream_follow(camera, "rtsp://10.0.0.9/sub", "H264", params));
+    RTF_ASSERT(substream_on(camera));
+    RTF_ASSERT(camera.sub_rtsp_url.value() == "rtsp://10.0.0.9/sub");
+
+    // The camera now sends H.265 there: not the stream that was checked.
+    RTF_ASSERT(!substream_follow(camera, "rtsp://10.0.0.9/sub", "H265", "sprop-sps=AAAA"));
+    RTF_ASSERT(!substream_on(camera));
+    RTF_ASSERT(camera.sub_status.value() == "none: camera changed the stream");
+    RTF_ASSERT(camera.sub_rtsp_url.is_null());
+
+    // A substream that is off isn't touched.
+    r_camera off;
+    substream_clear(off, "no smaller stream");
+    RTF_ASSERT(substream_follow(off, "rtsp://10.0.0.9/sub", "H264", params));
+    RTF_ASSERT(off.sub_status.value() == "none: no smaller stream");
+    RTF_ASSERT(off.sub_rtsp_url.is_null());
+}
+
+// A different picture size under the same codec is a different stream too.
+void test_r_substream::test_follow_drops_a_resized_stream()
+{
+    const string params = "sprop-parameter-sets=Z2QACqzZRifmwFqAgICgAAB9IAAXcAHiRLLA,aOvjyyLA";
+    auto size = main_picture_size("H264", params);
+
+    r_substream_choice choice;
+    choice.found = true;
+    choice.profile = _profile("sub_1", size.first, size.second);
+    choice.rtsp_url = "rtsp://10.0.0.5/sub";
+    choice.probe = _good(size.first, size.second);
+
+    r_camera camera;
+    substream_set(camera, choice, "H264", params, 90000);
+    camera.sub_width.set_value(size.first / 2);  // as if it had been stored at half the size
+
+    RTF_ASSERT(!substream_follow(camera, "rtsp://10.0.0.9/sub", "H264", params));
+    RTF_ASSERT(camera.sub_status.value() == "none: camera changed the stream");
+}
+
+// A camera whose description carries no SPS (no sprop) can't say its size: that isn't a change. The address follows,
+// the stored parameters (which have the SPS) stay, and a different codec is still a change.
+void test_r_substream::test_follow_without_an_sps_is_not_a_change()
+{
+    const string params = "sprop-parameter-sets=Z2QACqzZRifmwFqAgICgAAB9IAAXcAHiRLLA,aOvjyyLA";
+    auto size = main_picture_size("H264", params);
+
+    r_substream_choice choice;
+    choice.found = true;
+    choice.profile = _profile("sub_1", size.first, size.second);
+    choice.rtsp_url = "rtsp://10.0.0.5/sub";
+    choice.probe = _good(size.first, size.second);
+
+    r_camera camera;
+    substream_set(camera, choice, "H264", params, 90000);
+
+    RTF_ASSERT(substream_follow(camera, "rtsp://10.0.0.9/sub", "H264", "packetization-mode=1"));
+    RTF_ASSERT(substream_on(camera));
+    RTF_ASSERT(camera.sub_rtsp_url.value() == "rtsp://10.0.0.9/sub");
+    RTF_ASSERT(camera.sub_video_codec_parameters.value() == params);
+    RTF_ASSERT_EQUAL(camera.sub_width.value(), size.first);
+
+    RTF_ASSERT(!substream_follow(camera, "rtsp://10.0.0.9/sub", "H265", ""));
+    RTF_ASSERT(!substream_on(camera));
+}
+
+// Which profile is main: the one with the stored token; else the largest, the first of equals.
+void test_r_substream::test_main_profile_index()
+{
+    vector<onvif_profile_info> profiles = {
+        _profile("small", 640, 480),
+        _profile("big_a", 2560, 1920),
+        _profile("big_b", 2560, 1920),
+        _profile("mid", 1280, 720)
+    };
+    r_utils::r_nullable<string> none;
+    RTF_ASSERT_EQUAL(main_profile_index(profiles, none), (size_t)1);      // the largest; a tie goes to the first
+    RTF_ASSERT_EQUAL(main_profile_index(profiles, r_utils::r_nullable<string>(string("mid"))), (size_t)3);   // the stored token
+    RTF_ASSERT_EQUAL(main_profile_index(profiles, r_utils::r_nullable<string>(string("small"))), (size_t)0);
+    RTF_ASSERT_EQUAL(main_profile_index(profiles, r_utils::r_nullable<string>(string("gone"))), (size_t)1);  // not there: the largest
+    RTF_ASSERT_EQUAL(main_profile_index({}, none), (size_t)0);
+}
+
+// Main's size comes from the SPS in its codec parameters, for either codec; junk reads as 0 x 0.
+void test_r_substream::test_main_picture_size()
+{
+    const string params = "sprop-parameter-sets=Z2QACqzZRifmwFqAgICgAAB9IAAXcAHiRLLA,aOvjyyLA";
+    auto expected = parse_h264_sps(get_h264_sps(params).value());
+    RTF_ASSERT(expected.width > 0 && expected.height > 0);
+
+    auto size = main_picture_size("H264", params);
+    RTF_ASSERT_EQUAL(size.first, expected.width);
+    RTF_ASSERT_EQUAL(size.second, expected.height);
+
+    // An H.265 stream's size comes from its own SPS (a 640 x 360 one, from x265).
+    auto h265 = main_picture_size("H265", "sprop-sps=QgEBBAgAAAMAnggAAAMAAD+QAKBALSyys0kmV4C3AgIABAAAAwAEAAADADwg");
+    RTF_ASSERT_EQUAL(h265.first, 640);
+    RTF_ASSERT_EQUAL(h265.second, 360);
+    RTF_ASSERT_EQUAL(main_picture_size("H264", "sprop-sps=QgEBBAgAAAMAnggAAAMAAD+QAKBALSyys0kmV4C3AgIABAAAAwAEAAADADwg").first, 0);
+
+    RTF_ASSERT_EQUAL(main_picture_size("H264", "").first, 0);
+    RTF_ASSERT_EQUAL(main_picture_size("H264", "nothing here").second, 0);
+    RTF_ASSERT_EQUAL(main_picture_size("MJPEG", params).first, 0);
+    RTF_ASSERT_EQUAL(main_picture_size("H265", params).first, 0);  // an H.264 SPS isn't an H.265 one
+}
+
+// How a stream reads in the camera's settings.
+void test_r_substream::test_stream_titles()
+{
+    const string dot = "  \xC2\xB7  ", times = " \xC3\x97 ";
+    RTF_ASSERT(stream_title("H264", 2560, 1440) == "H.264" + dot + "2560" + times + "1440");
+    RTF_ASSERT(stream_title("H265", 640, 480) == "H.265" + dot + "640" + times + "480");
+    RTF_ASSERT(stream_title("mjpeg", 640, 480) == "MJPEG" + dot + "640" + times + "480");
+    RTF_ASSERT(stream_title("H264", 0, 0) == "H.264");                    // no size known
+    RTF_ASSERT(stream_title("H264", 640, 0) == "H.264");
+    RTF_ASSERT(stream_title("", 640, 480) == "640" + times + "480");     // no codec known
+    RTF_ASSERT(stream_title("", 0, 0).empty());
+
+    r_camera camera;
+    RTF_ASSERT(substream_title(camera).empty());
+    r_substream_choice choice;
+    choice.found = true;
+    choice.profile = _profile("sub_1", 640, 360);
+    choice.rtsp_url = "rtsp://10.0.0.5/sub";
+    choice.probe = _good(640, 352);
+    substream_set(camera, choice, "H264", "p", 90000);
+    RTF_ASSERT(substream_title(camera) == "H.264" + dot + "640" + times + "352");
+}
+
+// The reason a camera has no substream, from its status.
+void test_r_substream::test_none_reason()
+{
+    r_camera camera;
+    RTF_ASSERT(substream_none_reason(camera).empty());                    // never checked
+    substream_clear(camera, "uses B-frames");
+    RTF_ASSERT(substream_none_reason(camera) == "uses B-frames");
+    camera.sub_status = string("none:camera allows one stream at a time");   // without the space
+    RTF_ASSERT(substream_none_reason(camera) == "camera allows one stream at a time");
+    camera.sub_status = string("ok");
+    RTF_ASSERT(substream_none_reason(camera).empty());
+    camera.sub_status = string("pending");
+    RTF_ASSERT(substream_none_reason(camera).empty());
+    camera.sub_status = string("none: ");
+    RTF_ASSERT(substream_none_reason(camera).empty());
+    camera.sub_status = string("note: not a none");        // starts like one, isn't
+    RTF_ASSERT(substream_none_reason(camera).empty());
+    camera.sub_status = string("none");                    // no colon
+    RTF_ASSERT(substream_none_reason(camera).empty());
+}
+
+// What the camera's settings should say for each reason check_substream gives.
+void test_r_substream::test_reason_hints()
+{
+    for(auto reason : {"keyframes too far apart", "uses B-frames", "frame rate too low", "too large", "not H.264 or H.265",
+                       "no video", "camera didn't answer", "no smaller stream"})
+        RTF_ASSERT(!substream_reason_hint(reason).empty());
+    RTF_ASSERT(substream_reason_hint("keyframes too far apart").find("I-frame interval") != string::npos);
+    RTF_ASSERT(substream_reason_hint("").empty());
+    RTF_ASSERT(substream_reason_hint("something new").empty());      // nothing made up for an unknown reason
 }

@@ -249,3 +249,23 @@ void test_r_onvif_event_tracker::test_unknown_topics_ignored()
     RTF_ASSERT(t.motion_topic().empty());
     RTF_ASSERT(t.classes().empty());
 }
+
+// A camera that pushes a "Changed" IsMotion=false every 10 s as a heartbeat (nothing changed): only a real change counts.
+void test_r_onvif_event_tracker::test_heartbeat_repeats()
+{
+    r_onvif_event_tracker t;
+    const string topic = "tns1:RuleEngine/CellMotionDetector/Motion";
+    const vector<pair<string, string>> src = {{"VideoSourceConfigurationToken", "11"}, {"VideoAnalyticsConfigurationToken", "12"}, {"Rule", "TestRule"}};
+    for(int i = 0; i < 5; ++i)
+        RTF_ASSERT(t.process({_ev(topic, "IsMotion", "false", "Changed", src)}).empty());
+    RTF_ASSERT(t.motion_topic().empty());
+
+    auto tr = t.process({_ev(topic, "IsMotion", "true", "Changed", src)});
+    RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
+    RTF_ASSERT(tr[0].active);
+    RTF_ASSERT(t.process({_ev(topic, "IsMotion", "true", "Changed", src)}).empty());
+    tr = t.process({_ev(topic, "IsMotion", "false", "Changed", src)});
+    RTF_ASSERT_EQUAL(tr.size(), (size_t)1);
+    RTF_ASSERT(!tr[0].active);
+    RTF_ASSERT(t.process({_ev(topic, "IsMotion", "false", "Changed", src)}).empty());
+}

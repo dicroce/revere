@@ -316,3 +316,85 @@ void test_r_frame_feeds::test_a_restarted_stream_is_a_gap()
     RTF_ASSERT_EQUAL(b.size(), (size_t)1);
     RTF_ASSERT_EQUAL(b[0].flags, (uint32_t)F::VIDEO);
 }
+
+// A "sub" feed is on main until the camera's substream is fresh, then on the substream, and back on main when it stops.
+// Each switch waits for the new stream's key frame and is a gap; the frames say which stream they came from, and the
+// audio stays main's. A "main" feed never moves.
+void test_r_frame_feeds::test_a_sub_feed_follows_the_substream()
+{
+    F f;
+    auto m = f.subscribe("a", "main", F::VIDEO, 0);
+    auto s = f.subscribe("a", "sub", F::VIDEO | F::AUDIO, 0);
+
+    // No fresh substream: main, and a substream frame goes nowhere.
+    video(f, "a", 10, true, 1);
+    video(f, "a", 10, true, 2, "subsps", "sub");
+    auto got = drain(f, s);
+    RTF_ASSERT_EQUAL(got.size(), (size_t)1);
+    RTF_ASSERT(got[0].stream == "main");
+
+    // The substream comes up. The feed leaves main at once; its video starts at the substream's next key frame.
+    f.substream_fresh("a", true);
+    video(f, "a", 10, true, 3);                           // main: not this feed's now
+    video(f, "a", 10, false, 4, "subsps", "sub");         // not a key frame: waits
+    audio(f, "a", 5, 5);                                  // audio is main's
+    video(f, "a", 10, true, 6, "subsps", "sub");
+    video(f, "a", 10, false, 7, "subsps", "sub");
+    got = drain(f, s);
+    RTF_ASSERT_EQUAL(got.size(), (size_t)3);
+    RTF_ASSERT(got[0].stream == "main" && (got[0].flags & F::AUDIO));
+    RTF_ASSERT(got[1].stream == "sub" && (got[1].flags & F::VIDEO) && (got[1].flags & F::KEY) && got[1].ts == 6);
+    RTF_ASSERT(got[1].flags & F::GAP);
+    RTF_ASSERT(got[1].flags & F::CODEC_CHANGED);
+    RTF_ASSERT(got[2].stream == "sub" && got[2].ts == 7);
+    RTF_ASSERT(!(got[2].flags & (F::GAP | F::CODEC_CHANGED)));
+
+    // The substream stops: back on main, from its next key frame.
+    f.substream_fresh("a", false);
+    video(f, "a", 10, false, 8);
+    video(f, "a", 10, true, 9);
+    video(f, "a", 10, true, 10, "subsps", "sub");         // a late substream frame is ignored
+    got = drain(f, s);
+    RTF_ASSERT_EQUAL(got.size(), (size_t)1);
+    RTF_ASSERT(got[0].stream == "main" && got[0].ts == 9);
+    RTF_ASSERT(got[0].flags & F::GAP);
+
+    // The "main" feed saw only main's key frames and the frames after them, never the substream's.
+    auto main_got = drain(f, m);
+    for(auto& fr : main_got)
+        RTF_ASSERT(fr.stream == "main");
+    RTF_ASSERT_EQUAL(main_got.size(), (size_t)4);   // ts 1, 3, 8, 9 (no gap: it never moved)
+    RTF_ASSERT(!(main_got[1].flags & F::GAP));
+}
+
+// A feed subscribed while the substream is fresh starts on it; a main restart doesn't move it, or gap its video.
+void test_r_frame_feeds::test_a_sub_feed_subscribed_while_fresh_and_a_restart()
+{
+    F f;
+    f.substream_fresh("a", true);
+    f.substream_fresh("b", true);
+    f.substream_fresh("b", false);   // another camera's state doesn't leak
+    auto s = f.subscribe("a", "sub", F::VIDEO | F::AUDIO, 0);
+    auto sb = f.subscribe("b", "sub", F::VIDEO, 0);
+
+    video(f, "a", 10, true, 1);                            // main: not this feed's
+    video(f, "a", 10, true, 2, "subsps", "sub");
+    video(f, "b", 10, true, 3);
+    audio(f, "a", 5, 4);
+    auto got = drain(f, s);
+    RTF_ASSERT_EQUAL(got.size(), (size_t)2);
+    RTF_ASSERT(got[0].stream == "sub" && got[0].ts == 2);
+    RTF_ASSERT(got[1].stream == "main" && (got[1].flags & F::AUDIO));
+    auto got_b = drain(f, sb);
+    RTF_ASSERT_EQUAL(got_b.size(), (size_t)1);
+    RTF_ASSERT(got_b[0].stream == "main");
+
+    // Main reconnects: the substream's video carries on without a gap; the audio, main's, gaps.
+    f.camera_restarted("a");
+    video(f, "a", 10, false, 5, "subsps", "sub");
+    audio(f, "a", 5, 6);
+    got = drain(f, s);
+    RTF_ASSERT_EQUAL(got.size(), (size_t)2);
+    RTF_ASSERT(got[0].stream == "sub" && !(got[0].flags & F::GAP));
+    RTF_ASSERT(got[1].stream == "main" && (got[1].flags & F::GAP));
+}

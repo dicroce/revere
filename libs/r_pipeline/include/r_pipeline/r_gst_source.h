@@ -46,6 +46,11 @@ R_API uint32_t rtsp_protocol_flags(const std::string& protocols);
 // packets, and sequence gaps a camera leaves when it drops packets itself (over
 // TCP too), each stalled the stream for up to GStreamer's 2 s default.
 const int RTSP_JITTERBUFFER_LATENCY_MS = 200;
+// How long stopping a pipeline gives rtspsrc to send its TEARDOWN: 2 s.
+const uint64_t RTSP_TEARDOWN_TIMEOUT_NS = 2000000000ULL;
+
+// Sets an rtspsrc's teardown-timeout to RTSP_TEARDOWN_TIMEOUT_NS.
+R_API void rtsp_set_teardown_timeout(GstElement* rtspsrc);
 
 // Sets an rtspsrc's latency to RTSP_JITTERBUFFER_LATENCY_MS.
 R_API void rtsp_set_jitterbuffer_latency(GstElement* rtspsrc);
@@ -207,6 +212,9 @@ public:
     // GstRTSPLowerTrans flags the last play() gave rtspsrc (0 before play())
     R_API uint32_t protocol_flags() const;
 
+    // The teardown-timeout the last play() gave rtspsrc, in ns, read back from it (0 before play())
+    R_API uint64_t teardown_timeout_ns() const;
+
     // Simulated failure for leak testing: stream silently stops delivering samples
     // after a random interval near mttf_seconds. 0 = disabled.
     R_API void set_sim_mttf_seconds(uint32_t mttf) { _sim_mttf_seconds = mttf; }
@@ -274,6 +282,7 @@ private:
     /// optional arguments
     r_utils::r_nullable<std::string> _protocols;
     uint32_t _protocol_flags {0};
+    uint64_t _teardown_timeout_ns {0};
     // Whether this stream's G.711 carries a camera's frame header, and removing it (r_g711_header_filter).
     r_g711_header_filter _g711_filter;
     r_utils::r_nullable<std::string> _buffer_mode; // rtspsrc buffer-mode enum value

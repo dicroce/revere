@@ -187,6 +187,12 @@ private:
         // Counts this camera's commands, so a Stop scheduled by a move knows
         // whether anything came after it.
         uint64_t commands {0};
+        // What GetNodes (or GetConfigurations) said when the session opened: the axes the camera drives.
+        r_onvif::onvif_ptz_caps caps;
+        // The camera advertises a PTZ service but has no PTZ (no usable node, or it said ActionNotSupported): every PTZ
+        // command answers "no_ptz" without asking the camera, until this many ms on the steady clock (ptz_none_valid).
+        // 0: not known to be without PTZ.
+        int64_t none_since_ms {0};
     };
     void _open_ptz_session(
         _ptz_session& session,
@@ -221,6 +227,15 @@ private:
     std::thread _ptz_stopper;
     bool _ptz_stopper_done {false};
 };
+
+// How long a camera found to have no PTZ is not asked again. A firmware update can add one, so it isn't for ever.
+constexpr int64_t PTZ_NONE_TTL_MS = 60LL * 60 * 1000;
+
+// Whether a camera found at none_since_ms (steady clock; 0 never) is still taken to have no PTZ at now_ms.
+inline bool ptz_none_valid(int64_t none_since_ms, int64_t now_ms)
+{
+    return none_since_ms > 0 && now_ms >= none_since_ms && now_ms - none_since_ms < PTZ_NONE_TTL_MS;
+}
 
 // The longest ContinuousMove Timeout taken, and its longest text.
 constexpr int64_t PTZ_TIMEOUT_MAX_MS = 24LL * 60 * 60 * 1000;
