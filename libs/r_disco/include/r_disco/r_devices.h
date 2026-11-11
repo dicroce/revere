@@ -119,6 +119,7 @@ private:
     r_devices_cmd_result _get_all_cameras(const r_db::r_sqlite_conn& conn) const;
     r_devices_cmd_result _get_assigned_cameras(const r_db::r_sqlite_conn& conn) const;
     r_devices_cmd_result _save_camera(const r_db::r_sqlite_conn& conn, const r_camera& camera) const;
+    void _save_substream(const r_db::r_sqlite_conn& conn, const r_camera& camera) const;
     r_devices_cmd_result _remove_camera(const r_db::r_sqlite_conn& conn, const r_camera& camera) const;
     r_devices_cmd_result _get_modified_cameras(const r_db::r_sqlite_conn& conn, const std::vector<r_camera>& cameras) const;
     r_devices_cmd_result _get_assigned_cameras_added(const r_db::r_sqlite_conn& conn, const std::vector<r_camera>& cameras) const;

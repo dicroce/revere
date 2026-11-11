@@ -15,6 +15,8 @@ add_executable(
     source/test_r_frame_tap.cpp
     include/test_r_frame_feeds.h
     source/test_r_frame_feeds.cpp
+    include/test_r_live_fanout.h
+    source/test_r_live_fanout.cpp
     include/test_r_restream_track.h
     source/test_r_restream_track.cpp
     include/test_r_detection_planner.h
@@ -39,16 +41,22 @@ add_executable(
     source/test_r_ptz_session.cpp
     include/test_r_rtsp_transport.h
     source/test_r_rtsp_transport.cpp
+    include/test_r_restart_backoff.h
+    source/test_r_restart_backoff.cpp
     include/test_r_lag_watchdog.h
     source/test_r_lag_watchdog.cpp
     include/test_r_key_frame_reply.h
     source/test_r_key_frame_reply.cpp
     include/test_r_failure_reason.h
     source/test_r_failure_reason.cpp
+    include/test_r_transcode_check.h
+    source/test_r_transcode_check.cpp
     include/test_r_system_plugin_dirs.h
     source/test_r_system_plugin_dirs.cpp
     include/test_r_keep_awake.h
     source/test_r_keep_awake.cpp
+    include/test_r_substream_setting.h
+    source/test_r_substream_setting.cpp
     include/test_r_ws_auth.h
     source/test_r_ws_auth.cpp
     include/test_r_rtsp_auth.h
@@ -59,6 +67,8 @@ add_executable(
     source/test_r_teardown_queue.cpp
     include/test_r_restream_opus.h
     source/test_r_restream_opus.cpp
+    include/test_r_substream_recorder.h
+    source/test_r_substream_recorder.cpp
     include/test_r_system_plugin_action.h
     source/test_r_system_plugin_action.cpp
     include/test_r_system_plugin_frames.h
@@ -86,6 +96,8 @@ target_compile_definitions(r_vss_ut PRIVATE
     TEST_ACTION_PLUGIN="$<TARGET_FILE:test_action_system_plugin>"
     TEST_NO_ACTION_PLUGIN="$<TARGET_FILE:test_no_action_system_plugin>"
     TEST_FRAMES_PLUGIN="$<TARGET_FILE:test_frames_system_plugin>"
+    # test_r_recording_context reads the video callback's source for its wiring.
+    R_VSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../source"
 )
 
 # What r_vss/r_build_info.h should report, from the root CMakeLists.
@@ -106,6 +118,7 @@ target_link_libraries(
     r_vss_ut LINK_PUBLIC
     experimentum
     r_vss
+    r_fakey
     r_pipeline
     r_av
     r_motion

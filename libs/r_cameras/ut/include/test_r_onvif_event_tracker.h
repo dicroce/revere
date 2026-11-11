@@ -13,6 +13,7 @@ public:
       TEST(test_r_onvif_event_tracker::test_sources);
       TEST(test_r_onvif_event_tracker::test_close_all);
       TEST(test_r_onvif_event_tracker::test_unknown_topics_ignored);
+      TEST(test_r_onvif_event_tracker::test_heartbeat_repeats);
     RTF_FIXTURE_END();
 
     virtual ~test_r_onvif_event_tracker() throw() {}
@@ -29,4 +30,5 @@ public:
     void test_sources();
     void test_close_all();
     void test_unknown_topics_ignored();
+    void test_heartbeat_repeats();
 };

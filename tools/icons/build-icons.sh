@@ -8,6 +8,7 @@
 #   apps/revere/R.png          256: tray icon (Linux) and the Linux install icon
 #   apps/revere/R-menubar.png  36: macOS menu bar icon, the bare mark as a template image
 #   apps/revere/revere.icns    macOS app bundle icon
+#   apps/vision/vision.icns    macOS app bundle icon for Vision: the same tile, a play triangle as the stamp
 #   snap/gui/revere.png        256: snap desktop icon
 #   libs/r_vss/webui/public/favicon.svg, favicon-32.png   web UI favicon
 #
@@ -28,11 +29,11 @@ trap 'rm -rf "$WORK"' EXIT
 # A tile SVG on a 1024 canvas. $1 = the tile's size inside the canvas (1024 is
 # full bleed; macOS icons sit on an 824 square with room around it), $2 = the
 # share of the tile the mark's outer edge spans, $3 = the corner radius (0 for
-# square corners). macOS 26 puts any icon that isn't Apple's rounded square on
+# square corners), $4 = the stamp: square (Revere) or play (Vision's triangle, as make_app_icons.py draws it). macOS 26 puts any icon that isn't Apple's rounded square on
 # a grey tile of its own, so the macOS tile has the grid's corners (185 on 824).
 tile_svg() {
-  local tile=$1 share=$2 radius=${3:-0}
-  awk -v tile="$tile" -v share="$share" -v radius="$radius" -v ink="$INK" -v paper="$PAPER" 'BEGIN {
+  local tile=$1 share=$2 radius=${3:-0} stamp=${4:-square}
+  awk -v tile="$tile" -v share="$share" -v radius="$radius" -v stamp="$stamp" -v ink="$INK" -v paper="$PAPER" 'BEGIN {
     inset = (1024 - tile) / 2
     # The outline'"'"'s outer edge runs 10.25 to 53.75 on the 64 grid: 43.5 units.
     s = share * tile / 43.5
@@ -41,7 +42,10 @@ tile_svg() {
     printf "  <rect x=\"%g\" y=\"%g\" width=\"%g\" height=\"%g\" rx=\"%g\" fill=\"%s\"/>\n", inset, inset, tile, tile, radius, ink
     printf "  <g transform=\"translate(%g %g) scale(%g)\" fill=\"none\">\n", t, t, s
     printf "    <rect x=\"12\" y=\"12\" width=\"40\" height=\"40\" stroke=\"%s\" stroke-width=\"3.5\"/>\n", paper
-    printf "    <rect x=\"27\" y=\"27\" width=\"10\" height=\"10\" fill=\"%s\"/>\n", paper
+    if (stamp == "play")
+      printf "    <polygon points=\"27.5,24.5 41.5,32 27.5,39.5\" fill=\"%s\"/>\n", paper
+    else
+      printf "    <rect x=\"27\" y=\"27\" width=\"10\" height=\"10\" fill=\"%s\"/>\n", paper
     printf "  </g>\n</svg>\n"
   }'
 }
@@ -89,8 +93,18 @@ if command -v iconutil >/dev/null; then
     render "$WORK/mac.svg" $((n * 2)) "$set_dir/icon_${n}x${n}@2x.png"
   done
   iconutil -c icns "$set_dir" -o "$ROOT/apps/revere/revere.icns"
+
+  # Vision: the same tile with the play triangle.
+  tile_svg 824 0.5 185 play > "$WORK/mac-vision.svg"
+  set_dir="$WORK/vision.iconset"
+  mkdir "$set_dir"
+  for n in 16 32 128 256 512; do
+    render "$WORK/mac-vision.svg" "$n" "$set_dir/icon_${n}x${n}.png"
+    render "$WORK/mac-vision.svg" $((n * 2)) "$set_dir/icon_${n}x${n}@2x.png"
+  done
+  iconutil -c icns "$set_dir" -o "$ROOT/apps/vision/vision.icns"
 else
-  echo "iconutil not found (not macOS): left apps/revere/revere.icns as it is" >&2
+  echo "iconutil not found (not macOS): left apps/revere/revere.icns and apps/vision/vision.icns as they are" >&2
 fi
 
 # Web UI favicon: the plain mark, ink on light tabs and white on dark ones.

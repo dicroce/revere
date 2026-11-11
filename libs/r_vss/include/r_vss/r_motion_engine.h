@@ -129,6 +129,11 @@ public:
     int64_t get_last_probe_ts() const { return _last_probe_ts; }
     void set_last_probe_ts(int64_t ts) { _last_probe_ts = ts; }
 
+    // The stream (codec name and parameters) the decoder was built for. A frame that carries other ones is from another
+    // stream (the camera's main stream and its substream are fed to the same context in turn): see r_motion_engine.
+    void set_source(const std::string& codec_name, const std::string& codec_parameters) { _codec_name = codec_name; _codec_parameters = codec_parameters; }
+    bool is_source(const std::string& codec_name, const std::string& codec_parameters) const { return _codec_name == codec_name && _codec_parameters == codec_parameters; }
+
 private:
     r_motion::r_motion_state _motion_state;
     r_av::r_video_decoder _video_decoder;
@@ -150,6 +155,8 @@ private:
     size_t _no_motion_count {0};
 
     int64_t _last_probe_ts {-1};
+    std::string _codec_name;
+    std::string _codec_parameters;
 };
 
 using r_motion_work_context_factory = std::function<std::shared_ptr<r_motion_work_context>(const r_motion_work_item&)>;

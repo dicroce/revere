@@ -4,6 +4,12 @@
 
 using namespace r_ui_utils;
 
+std::atomic<uint64_t>& r_ui_utils::texture_generation()
+{
+    static std::atomic<uint64_t> g {0};
+    return g;
+}
+
 texture::texture() :
     _sdl_texture(nullptr),
     _renderer(nullptr),
@@ -62,6 +68,7 @@ std::shared_ptr<texture> texture::create_from_rgba(
     uint16_t w,
     uint16_t h)
 {
+    texture_generation().fetch_add(1, std::memory_order_relaxed);
     if (!renderer || !pixels || w == 0 || h == 0)
     {
         R_LOG_ERROR("Invalid parameters for create_from_rgba");
@@ -111,6 +118,7 @@ std::shared_ptr<texture> texture::create_from_rgb(
     uint16_t w,
     uint16_t h)
 {
+    texture_generation().fetch_add(1, std::memory_order_relaxed);
     if (!renderer || !pixels || w == 0 || h == 0)
     {
         R_LOG_ERROR("Invalid parameters for create_from_rgb");
@@ -157,6 +165,7 @@ std::shared_ptr<texture> texture::create_streaming(
     uint16_t h,
     bool rgba)
 {
+    texture_generation().fetch_add(1, std::memory_order_relaxed);
     if (!renderer || w == 0 || h == 0)
     {
         R_LOG_ERROR("Invalid parameters for create_streaming");
@@ -203,6 +212,7 @@ std::shared_ptr<texture> texture::create_streaming_nv12(
     uint16_t w,
     uint16_t h)
 {
+    texture_generation().fetch_add(1, std::memory_order_relaxed);
     if (!renderer || w == 0 || h == 0)
     {
         R_LOG_ERROR("Invalid parameters for create_streaming_nv12");
@@ -234,6 +244,7 @@ std::shared_ptr<texture> texture::create_streaming_nv12(
 
 bool texture::update_nv12(const uint8_t* pixels, uint16_t w, uint16_t h)
 {
+    texture_generation().fetch_add(1, std::memory_order_relaxed);
     if (!_sdl_texture || !pixels)
     {
         R_LOG_ERROR("Invalid texture or pixel data in update_nv12");
@@ -260,6 +271,7 @@ bool texture::update_nv12(const uint8_t* pixels, uint16_t w, uint16_t h)
 
 bool texture::update_rgba(const uint8_t* pixels, uint16_t w, uint16_t h)
 {
+    texture_generation().fetch_add(1, std::memory_order_relaxed);
     if (!_sdl_texture || !pixels)
     {
         R_LOG_ERROR("Invalid texture or pixel data in update_rgba");
@@ -303,6 +315,7 @@ bool texture::update_rgba(const uint8_t* pixels, uint16_t w, uint16_t h)
 
 bool texture::update_rgb(const uint8_t* pixels, uint16_t w, uint16_t h)
 {
+    texture_generation().fetch_add(1, std::memory_order_relaxed);
     if (!_sdl_texture || !pixels)
     {
         R_LOG_ERROR("Invalid texture or pixel data in update_rgb");

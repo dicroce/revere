@@ -18,6 +18,7 @@ public:
       TEST(test_r_tier_controller::test_forced_tiers);
       TEST(test_r_tier_controller::test_status_without_detector);
       TEST(test_r_tier_controller::test_camera_reports_are_not_yolo);
+      TEST(test_r_tier_controller::test_unavailable_events_say_so);
     RTF_FIXTURE_END();
 
     virtual ~test_r_tier_controller() throw() {}
@@ -39,4 +40,5 @@ public:
     void test_forced_tiers();
     void test_status_without_detector();
     void test_camera_reports_are_not_yolo();
+    void test_unavailable_events_say_so();
 };

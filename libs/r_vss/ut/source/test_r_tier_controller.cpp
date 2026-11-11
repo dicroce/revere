@@ -340,3 +340,37 @@ void test_r_tier_controller::test_camera_reports_are_not_yolo()
     RTF_ASSERT_EQUAL(t.status("a").checked, 1);
     RTF_ASSERT_EQUAL(t.status("a").person_checked, 1);
 }
+
+// A camera whose events aren't available (no service, or it said it doesn't support them) is "none", not "down": the tier
+// stays Revere's own, and the status says why instead of "checking the camera's events" for ever.
+void test_r_tier_controller::test_unavailable_events_say_so()
+{
+    // The subscription state the keeper reports.
+    RTF_ASSERT_EQUAL(tier_subscription_state(false, false, false), -1);     // no events object at all
+    RTF_ASSERT_EQUAL(tier_subscription_state(true, true, false), 1);        // up
+    RTF_ASSERT_EQUAL(tier_subscription_state(true, false, false), 0);       // down: expected back
+    RTF_ASSERT_EQUAL(tier_subscription_state(true, false, true), -1);       // no events service, or "not supported"
+    RTF_ASSERT_EQUAL(tier_subscription_state(true, true, true), 1);         // up wins
+
+    // With -1 the controller is never told of a subscription: it has none to check, and says why.
+    T t;
+    t.set_setting("a", "auto");
+    t.tick(0);
+    auto st = t.status("a");
+    RTF_ASSERT_EQUAL(st.tier, (int)motion_tier_1);
+    RTF_ASSERT(st.reason.find("aren't available") != string::npos);
+    RTF_ASSERT(st.reason.find("Revere detects the motion itself") != string::npos);
+    RTF_ASSERT(st.reason.find("checking") == string::npos);
+    RTF_ASSERT_EQUAL(st.checked, 0);
+    // Set to the camera's events, with none to give: Revere's own, and it says so.
+    t.set_setting("a", "2");
+    t.tick(MIN);
+    RTF_ASSERT_EQUAL(t.tier("a"), (int)motion_tier_1);
+    RTF_ASSERT(t.status("a").reason.find("aren't available") != string::npos);
+
+    // A camera that is down (a subscription that was reported) still reads as checking.
+    T d;
+    d.subscription("b", false, 0);
+    d.tick(MIN);
+    RTF_ASSERT(d.status("b").reason.find("checking") != string::npos);
+}

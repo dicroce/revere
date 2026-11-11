@@ -24,6 +24,7 @@
 #endif
 
 #include "macos_activation.h"
+#include "render_policy.h"
 #include "vision_launch.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -69,6 +70,7 @@
 #include "r_ui_utils/font_catalog.h"
 #include "r_ui_utils/theme.h"
 #include "r_utils/3rdparty/json/json.h"
+#include "r_ui_utils/texture.h"
 #include "r_ui_utils/texture_loader.h"
 #include "r_ui_utils/wizard.h"
 #include "r_vss/r_rtsp_auth.h"
@@ -91,6 +93,7 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 #include "r_vss/r_camera_source_info.h"
 #include "r_vss/r_camera_stats.h"
 #include "assignment_state.h"
+#include "streams_state.h"
 #include "configure_state.h"
 #include "rtsp_source_camera_config.h"
 
@@ -314,6 +317,19 @@ extern ImGuiContext *GImGui;
 
 static std::string _get_storage_path(const std::string& record_file_path);
 
+// "H.264 \xC2\xB7 640 \xC3\x97 480", for a camera's substream or a profile.
+static std::string _stream_title(const std::string& codec, int width, int height)
+{
+    return r_disco::stream_title(codec, width, height);
+}
+
+static std::string _stream_summary(const r_disco::r_camera& camera)
+{
+    return _stream_title(camera.sub_video_codec.is_null() ? std::string() : camera.sub_video_codec.value(),
+        camera.sub_width.is_null() ? 0 : camera.sub_width.value(),
+        camera.sub_height.is_null() ? 0 : camera.sub_height.value());
+}
+
 void _assign_camera(revere::assignment_state& as, r_disco::r_devices& devices)
 {
     auto c = as.camera.value();
@@ -330,6 +346,10 @@ void _assign_camera(revere::assignment_state& as, r_disco::r_devices& devices)
         c.record_file_block_size = as.storage_file_block_size.value();
     c.do_motion_detection.set_value(as.do_motion_detection);
     c.motion_detection_file_path.set_value(as.motion_detection_file_path);
+
+    // The smaller stream, when the box was ticked. Unticked (or never asked) leaves it off, with no second stream.
+    if(as.sub_can_ask && as.use_substream)
+        r_disco::substream_copy(as.sub_found, c);
 
     devices.assign_camera(c);
 }
@@ -650,6 +670,21 @@ void _delete_camera_files(const r_disco::r_camera& camera)
             catch(const std::exception& e)
             {
                 R_LOG_ERROR("Failed to delete storage file %s: %s", storage_path.c_str(), e.what());
+            }
+        }
+
+        // The substream's ring beside it (r_substream_recorder.h).
+        auto ring_path = r_vss::substream_ring_path(storage_path);
+        if(r_fs::file_exists(ring_path))
+        {
+            try
+            {
+                r_fs::remove_file(ring_path);
+                R_LOG_INFO("Deleted camera substream file: %s", ring_path.c_str());
+            }
+            catch(const std::exception& e)
+            {
+                R_LOG_ERROR("Failed to delete substream file %s: %s", ring_path.c_str(), e.what());
             }
         }
     }
@@ -1097,6 +1132,11 @@ void configure_camera_setup_wizard(
                                     as.available_profiles.push_back(p);
                             }
                             as.profiles_were_filtered = as.available_profiles.size() < all_profiles.size();
+                            // Largest first, so the list reads the way Auto picks.
+                            std::stable_sort(as.available_profiles.begin(), as.available_profiles.end(),
+                                [](const r_onvif::onvif_profile_info& a, const r_onvif::onvif_profile_info& b){
+                                    return (uint32_t)a.width * a.height > (uint32_t)b.width * b.height;
+                                });
 
                             if(as.available_profiles.empty())
                             {
@@ -1203,7 +1243,32 @@ void configure_camera_setup_wizard(
                         );
                     }
 
-                    as.interrogation_phase.store(4);  // Done
+                    // The camera's smaller stream, for live view and analysis. Whatever happens here, the camera is
+                    // set up: it just doesn't get one (and says why).
+                    as.interrogation_phase.store(4);
+                    as.sub_can_ask = true;
+                    try
+                    {
+                        auto cam = as.camera.value();
+                        if(!as.selected_profile_token.empty())
+                            cam.onvif_profile_token = as.selected_profile_token;
+                        std::string vcodec, vparams; int vtb = 0;
+                        std::tie(vcodec, vparams, vtb) = r_pipeline::sdp_media_map_to_s(r_pipeline::VIDEO_MEDIA, cp.sdp_medias);
+                        auto main_size = r_disco::main_picture_size(vcodec, vparams);
+                        auto choice = agent.find_camera_substream(cam, as.rtsp_username, as.rtsp_password, main_size.first, main_size.second);
+                        as.sub_found = cam;
+                        as.sub_line = choice.found ?
+                            "Found: " + _stream_summary(cam) + "." :
+                            "No smaller stream to use (" + choice.reason + "). Live view uses the main stream.";
+                    }
+                    catch(const std::exception& e)
+                    {
+                        R_LOG_INFO("substream: not looked for: %s", e.what());
+                        r_disco::substream_clear(as.sub_found, "couldn't ask the camera");
+                        as.sub_line = "No smaller stream to use. Live view uses the main stream.";
+                    }
+
+                    as.interrogation_phase.store(5);  // Done
                     if(camera_setup_wizard.active())
                         camera_setup_wizard.next("friendly_name");
                 }
@@ -1276,7 +1341,7 @@ void configure_camera_setup_wizard(
                         );
                     }
 
-                    as.interrogation_phase.store(4);  // Done
+                    as.interrogation_phase.store(5);  // Done
                     if(camera_setup_wizard.active())
                         camera_setup_wizard.next("friendly_name");
                 }
@@ -1328,7 +1393,8 @@ void configure_camera_setup_wizard(
                 case 1: phase_text = "Querying camera (ONVIF)..."; break;
                 case 2: phase_text = "Probing video stream (RTSP)..."; break;
                 case 3: phase_text = "Decoding key frame..."; break;
-                case 4: phase_text = "Done."; break;
+                case 4: phase_text = "Looking for the camera's smaller stream..."; break;
+                case 5: phase_text = "Done."; break;
             }
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - as.interrogation_start).count();
@@ -1587,7 +1653,8 @@ void configure_camera_setup_wizard(
 
     camera_setup_wizard.add_step(
         "camera_properties_modal",
-        [&ui_state, &camera_setup_wizard, &rscc, &devices, &stream_keeper, &as](){
+        [&ui_state, &camera_setup_wizard, &rscc, &devices, &stream_keeper, &as, &agent](){
+            auto& streams = as.streams;
 
             // Get camera info to display record file path
             auto camera_id = ui_state.selected_camera_id();
@@ -1617,6 +1684,7 @@ void configure_camera_setup_wizard(
                 ui_state.rtsp_transport,
                 ui_state.rtsp_transport_status,
                 record_path,
+                streams,
                 [&](){
                     // OK button
                     auto camera_id = ui_state.selected_camera_id();
@@ -1647,6 +1715,12 @@ void configure_camera_setup_wizard(
                     camera.min_continuous_recording_hours.set_value(r_string_utils::s_to_int(ui_state.min_continuous_recording_hours));
                     camera.motion_tier.set_value(ui_state.motion_tier);
                     camera.rtsp_transport.set_value(ui_state.rtsp_transport);
+                    {
+                        // The Streams section's choice, when it was changed.
+                        std::lock_guard<std::mutex> g(streams.m);
+                        if(streams.changed)
+                            r_disco::substream_copy(streams.sub, camera);
+                    }
                     devices.save_camera(camera);
 
                     stream_keeper.bounce(camera_id.value());
@@ -1727,6 +1801,62 @@ void configure_camera_setup_wizard(
                         }
                     }
                     camera_setup_wizard.next("change_retention_modal");
+                },
+                [&](const std::string& op, const std::string& token){
+                    // A click in the Streams section: Off, a smaller stream, or look again.
+                    auto cid = ui_state.selected_camera_id();
+                    if(cid.is_null())
+                        return;
+                    if(op == "analysis")
+                    {
+                        std::lock_guard<std::mutex> g(streams.m);
+                        streams.sub.sub_analysis.set_value(token == "1" ? 1 : 0);
+                        streams.changed = true;
+                        return;
+                    }
+                    if(op == "off")
+                    {
+                        std::lock_guard<std::mutex> g(streams.m);
+                        if(!streams.working)
+                        {
+                            streams.sub.sub_mode.set_value("off");
+                            streams.changed = true;
+                        }
+                        return;
+                    }
+                    auto maybe_camera = devices.get_camera_by_id(cid.value());
+                    if(maybe_camera.is_null())
+                        return;
+                    uint64_t gen = 0;
+                    {
+                        std::lock_guard<std::mutex> g(streams.m);
+                        if(streams.working)
+                            return;
+                        streams.working = true;
+                        gen = streams.generation;
+                    }
+                    // Asking the camera and probing its streams takes seconds; off the UI thread.
+                    std::thread([&agent, &devices, &streams, camera = maybe_camera.value(), token, gen]() mutable {
+                        try
+                        {
+                            auto creds = devices.get_credentials(camera.id);
+                            std::pair<uint16_t, uint16_t> size {0, 0};
+                            if(!camera.video_codec.is_null() && !camera.video_codec_parameters.is_null())
+                                size = r_disco::main_picture_size(camera.video_codec.value(), camera.video_codec_parameters.value());
+                            agent.find_camera_substream(camera, creds.first, creds.second, size.first, size.second, token);
+                        }
+                        catch(const std::exception& e)
+                        {
+                            R_LOG_INFO("substream: not looked for: %s", e.what());
+                            r_disco::substream_clear(camera, "couldn't ask the camera");
+                        }
+                        std::lock_guard<std::mutex> g(streams.m);
+                        if(streams.generation != gen)
+                            return;
+                        r_disco::substream_copy(camera, streams.sub);
+                        streams.changed = true;
+                        streams.working = false;
+                    }).detach();
                 }
             );
         }
@@ -2568,6 +2698,84 @@ static void _emit_console_text(const std::string& text)
 }
 #endif
 
+// The renderer: Metal on macOS (software if it won't start); software first on Windows and Linux, as before (Direct3D
+// and OpenGL have misbehaved on some drivers, and OpenGL is a packaging problem for AppImage and Snap). REVERE_RENDERER=
+// accelerated opts in to the GPU renderer there; =software forces software everywhere. Which was chosen is logged.
+static SDL_Renderer* _create_renderer(SDL_Window* window)
+{
+    const auto mode = revere::renderer_mode_from(getenv("REVERE_RENDERER"));
+#if defined(IS_WINDOWS)
+    const auto platform = revere::render_platform::windows;
+#elif defined(IS_MACOS)
+    const auto platform = revere::render_platform::macos;
+#else
+    const auto platform = revere::render_platform::linux_;
+#endif
+    SDL_Renderer* renderer = nullptr;
+    // No PRESENTVSYNC: SDL_RenderPresent() with vsync can block indefinitely on old/buggy GPU drivers, freezing the
+    // entire UI. The loop's SDL_WaitEventTimeout(100) paces it.
+    for(const auto& attempt : revere::renderer_attempts(mode, platform))
+    {
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, attempt.driver.empty() ? nullptr : attempt.driver.c_str());
+        renderer = SDL_CreateRenderer(window, -1, attempt.accelerated ? SDL_RENDERER_ACCELERATED : SDL_RENDERER_SOFTWARE);
+        if(renderer)
+            break;
+        R_LOG_WARNING("%s renderer%s%s did not start: %s", attempt.accelerated ? "Accelerated" : "Software",
+            attempt.driver.empty() ? "" : " ", attempt.driver.c_str(), SDL_GetError());
+    }
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, nullptr);
+    if(renderer)
+    {
+        SDL_RendererInfo info;
+        if(SDL_GetRendererInfo(renderer, &info) == 0)
+            R_LOG_INFO("Renderer: %s (%s)", info.name, (info.flags & SDL_RENDERER_ACCELERATED) ? "accelerated" : "software");
+    }
+    return renderer;
+}
+
+// A hash of what ImGui built for this frame: its vertices, indices and draw commands. The same hash as the frame
+// before means the window already shows it, so it is not drawn again.
+static uint64_t _draw_data_hash(const ImDrawData* dd)
+{
+    // Textures created or updated in place (same id, new pixels) change what a frame looks like without changing its draw data.
+    uint64_t h = revere::hash_value(r_ui_utils::texture_generation().load(std::memory_order_relaxed), 1469598103934665603ULL);
+    h = revere::hash_value(dd->DisplaySize.x, h);
+    h = revere::hash_value(dd->DisplaySize.y, h);
+    h = revere::hash_value(dd->FramebufferScale.x, h);
+    h = revere::hash_value(dd->FramebufferScale.y, h);
+    for(int n = 0; n < dd->CmdListsCount; ++n)
+    {
+        const ImDrawList* list = dd->CmdLists[n];
+        h = revere::hash_bytes(list->VtxBuffer.Data, (size_t)list->VtxBuffer.Size * sizeof(ImDrawVert), h);
+        h = revere::hash_bytes(list->IdxBuffer.Data, (size_t)list->IdxBuffer.Size * sizeof(ImDrawIdx), h);
+        for(const ImDrawCmd& cmd : list->CmdBuffer)
+        {
+            h = revere::hash_value(cmd.ClipRect, h);
+            h = revere::hash_value(cmd.TextureId, h);
+            h = revere::hash_value(cmd.VtxOffset, h);
+            h = revere::hash_value(cmd.IdxOffset, h);
+            h = revere::hash_value(cmd.ElemCount, h);
+            h = revere::hash_value(cmd.UserCallback, h);
+        }
+    }
+    return h;
+}
+
+// Whether the window can be seen. Hidden to the tray or minimised (SDL's flags), and on macOS also covered by other
+// windows, on another desktop or hidden with the app, which SDL has no event for.
+static bool _window_drawable(SDL_Window* window)
+{
+    const Uint32 flags = SDL_GetWindowFlags(window);
+    const bool shown = (flags & SDL_WINDOW_SHOWN) && !(flags & SDL_WINDOW_HIDDEN);
+    const bool minimised = (flags & SDL_WINDOW_MINIMIZED) != 0;
+#ifdef IS_MACOS
+    const bool occluded = macos_window_unseen(window);
+#else
+    const bool occluded = false;
+#endif
+    return revere::window_drawable(shown, minimised, occluded);
+}
+
 #ifdef IS_WINDOWS
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int)
 #endif
@@ -2759,6 +2967,22 @@ int main(int argc, char** argv)
 #endif
     }
 
+#ifdef IS_LINUX
+    // The desktop app needs a desktop session. Without one GTK can't start, the
+    // tray icon's constructor throws, and Revere used to end there with an abort
+    // and a core dump. Say what's wrong instead, before the lock is taken or
+    // anything is started. (GTK is initialized here rather than by the tray icon
+    // a little later; the tray's own call then does nothing.)
+    if(!r_args::check_argument(args, "--headless") && gtk_init_check(nullptr, nullptr) != TRUE)
+    {
+        fprintf(stderr,
+                "Revere's desktop app needs a desktop session and couldn't connect to one\n"
+                "(check that WAYLAND_DISPLAY or DISPLAY is set in this terminal).\n"
+                "To run Revere without a desktop, use: revere --headless\n");
+        return 1;
+    }
+#endif
+
     // Single instance check: prevent multiple revere processes from running
 #ifdef IS_WINDOWS
     HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\RevereAppMutex");
@@ -2779,7 +3003,9 @@ int main(int argc, char** argv)
     }
 #endif
 #if defined(IS_LINUX) || defined(IS_MACOS)
-    int lock_fd = open(lock_file_path.c_str(), O_CREAT | O_RDWR, 0600);
+    // O_CLOEXEC: a program Revere starts (the browser, Vision) must not inherit the
+    // lock, or Revere can't start again until that program exits.
+    int lock_fd = open(lock_file_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
     if (lock_fd >= 0 && flock(lock_fd, LOCK_EX | LOCK_NB) != 0)
     {
         fprintf(stderr, "Revere is already running.\n");
@@ -3036,29 +3262,7 @@ int main(int argc, char** argv)
     }
 #endif
 
-    // Platform-specific renderer selection:
-    // - Windows: Use hardware-accelerated (Direct3D) - no packaging concerns
-    // - Linux: Use software renderer - for AppImage/Snap compatibility (avoids OpenGL)
-    SDL_Renderer* renderer = nullptr;
-#ifdef IS_WINDOWS
-    // Windows: Use hardware acceleration (Direct3D, not OpenGL)
-    // No PRESENTVSYNC: SDL_RenderPresent() with vsync can block indefinitely on old/buggy GPU drivers,
-    // freezing the entire UI. Frame rate is naturally limited by SDL_WaitEventTimeout(100) in the loop.
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
-    if (renderer == nullptr)
-    {
-        R_LOG_ERROR("Hardware renderer failed: %s, falling back to software", SDL_GetError());
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    }
-#else
-    // Linux/macOS: Use software renderer to avoid OpenGL packaging issues
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
-    if (renderer == nullptr)
-    {
-        R_LOG_ERROR("Software renderer failed: %s, trying hardware", SDL_GetError());
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    }
-#endif
+    SDL_Renderer* renderer = _create_renderer(window);
 
     if (renderer == nullptr)
     {
@@ -3118,30 +3322,46 @@ int main(int argc, char** argv)
 
     R_LOG_INFO("icon_path=%s\n",icon_path.c_str());
 
-    Tray::Tray tray("Revere", icon_path);
-    tray.setTooltip("Revere video surveillance");
-    tray.addEntry(Tray::Button("Show", [&]{
-        SDL_ShowWindow(window);
-        SDL_RaiseWindow(window);
-    }));
-    tray.addEntry(Tray::Button("Hide", [&]{
-        SDL_HideWindow(window);
-    }));
-    tray.addEntry(Tray::Button("Launch Vision", [&]{
+    // No tray icon is not a reason to end Revere (the constructor throws when the
+    // desktop has nowhere to put one). Without it the window is the only way back
+    // in, so it is never hidden: closing it quits, and Minimize minimizes.
+    std::unique_ptr<Tray::Tray> tray;
+    try
+    {
+        tray = std::make_unique<Tray::Tray>("Revere", icon_path);
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("No system tray icon: %s. Closing the window will quit Revere.", e.what());
+    }
+    if(tray)
+    {
+        tray->setTooltip("Revere video surveillance");
+        tray->addEntry(Tray::Button("Show", [&]{
+            SDL_ShowWindow(window);
+            SDL_RaiseWindow(window);
+        }));
+        tray->addEntry(Tray::Button("Hide", [&]{
+            SDL_HideWindow(window);
+        }));
+        tray->addEntry(Tray::Button("Launch Vision", [&]{
 #ifdef IS_MACOS
-        _launch_vision({});
+            _launch_vision({});
 #else
-        if(!vision_process.running())
-            vision_process.start();
+            if(!vision_process.running())
+                vision_process.start();
 #endif
-    }));
-    tray.addEntry(Tray::Button("Open local web UI", [&]{
-        revere::open_url_in_browser("http://localhost:8088");
-    }));
-    tray.addEntry(Tray::Separator());
-    tray.addEntry(Tray::Button("Exit", [&]{
-        close_requested = true;
-    }));
+        }));
+        tray->addEntry(Tray::Button("Open local web UI", [&]{
+            // Called from the tray's own callback, which an exception can't unwind through.
+            try { revere::open_url_in_browser("http://localhost:8088"); }
+            catch(const std::exception& e) { R_LOG_ERROR("Could not open the web UI: %s", e.what()); }
+        }));
+        tray->addEntry(Tray::Separator());
+        tray->addEntry(Tray::Button("Exit", [&]{
+            close_requested = true;
+        }));
+    }
 
     // Configure Dear ImGui (context already created earlier)
     ImGuiIO& io = ImGui::GetIO(); (void)io;
@@ -3246,12 +3466,18 @@ int main(int argc, char** argv)
 
     bool window_visible = !maybe_start_minimized;  // Start hidden if minimized flag is set
     bool need_render = true;  // Render at least once on startup
+    // Whether the window could be seen on the last pass, and what the frame on it was: nothing is built or drawn while
+    // it can't be seen, and a frame the same as the one on the window is not drawn again.
+    bool was_drawable = false;
+    revere::frame_skipper frame_skipper;
 
     // The main window's list, detail pane and log. Each action does what the
     // matching button on the old camera cards did.
     revere::main_window_state main_window_state;
     if(!cfg_state.load_problem().empty())
         main_window_state.show_toast(cfg_state.load_problem(), "config_load_problem", 30.0);
+    if(!tray)
+        main_window_state.show_toast("Revere couldn't add its system tray icon, so it can't run in the background: closing this window quits Revere and stops recording.", std::string(), 30.0);
     // Sections the user closed stay closed across runs; the default is open.
     main_window_state.recording_open = cfg_state.get_section_open("recording", main_window_state.recording_open);
     main_window_state.discovered_open = cfg_state.get_section_open("discovered", main_window_state.discovered_open);
@@ -3300,6 +3526,10 @@ int main(int argc, char** argv)
         as.rtsp_transport = (!cam.rtsp_transport.is_null() && cam.rtsp_transport.value() == "UDP") ? "UDP" : "TCP";
         as.wizard_step = 1;
         as.wizard_total_steps = 9;
+        as.sub_can_ask = false;
+        as.use_substream = true;
+        as.sub_found = r_disco::r_camera();
+        as.sub_line.clear();
 
         // A manually-added RTSP camera has a stream URL but no
         // ONVIF address — skip the credentials/profile/ONVIF
@@ -3372,6 +3602,59 @@ int main(int argc, char** argv)
             if(st.camera.id == camera.id && st.rtsp_transport_fallback)
                 ui_state.rtsp_transport_status = "This camera wouldn't stream over TCP, so Revere is receiving it over UDP. "
                                                  "Choose UDP to keep it that way, or Save with TCP to try TCP again.";
+        }
+        {
+            // Streams: the stream recorded and the substream now, then (in the background) the smaller streams the
+            // camera offers.
+            auto& streams = as.streams;
+            uint64_t gen = 0;
+            bool ask = false;
+            {
+                std::lock_guard<std::mutex> g(streams.m);
+                gen = ++streams.generation;
+                streams.onvif = !camera.xaddrs.is_null() && !camera.ipv4.is_null();
+                streams.gateway_on = streamKeeper.substreams_enabled();
+                ask = streams.onvif;
+                streams.recording.clear();
+                if(!camera.video_codec.is_null() && !camera.video_codec_parameters.is_null())
+                {
+                    auto size = r_disco::main_picture_size(camera.video_codec.value(), camera.video_codec_parameters.value());
+                    streams.recording = _stream_title(camera.video_codec.value(), size.first, size.second);
+                }
+                streams.candidates.clear();
+                streams.sub = r_disco::r_camera();
+                r_disco::substream_copy(camera, streams.sub);
+                streams.changed = false;
+                streams.working = false;
+                streams.loading = ask;
+            }
+            if(ask)
+            {
+                std::thread([&agent, &devices, &streams, camera, gen](){
+                    std::vector<revere::streams_state::candidate> list;
+                    std::string main_title;
+                    try
+                    {
+                        auto creds = devices.get_credentials(camera.id);
+                        auto found = agent.list_substream_candidates(camera, creds.first, creds.second);
+                        // The profile Revere recorded from, for when the camera record has no stream parameters to read.
+                        main_title = _stream_title(found.main.encoding, found.main.width, found.main.height);
+                        for(auto& c : found.candidates)
+                            list.push_back({c.token, _stream_title(c.encoding, c.width, c.height)});
+                    }
+                    catch(const std::exception& e)
+                    {
+                        R_LOG_INFO("substream: couldn't list the camera's streams: %s", e.what());
+                    }
+                    std::lock_guard<std::mutex> g(streams.m);
+                    if(streams.generation != gen)
+                        return;
+                    streams.candidates = list;
+                    if(streams.recording.empty())
+                        streams.recording = main_title;
+                    streams.loading = false;
+                }).detach();
+            }
         }
         camera_setup_wizard.next("camera_properties_modal");
     };
@@ -3491,9 +3774,22 @@ int main(int argc, char** argv)
                     if (event.window.event == SDL_WINDOWEVENT_CLOSE &&
                         event.window.windowID == SDL_GetWindowID(window))
                     {
-                        user_close_handled = true;
-                        ui_state.minimize_requested = true;
+                        if(tray)
+                        {
+                            user_close_handled = true;
+                            ui_state.minimize_requested = true;
+                        }
+                        else
+                            close_requested = true;     // nothing to bring a hidden window back
                     }
+                    // What is on the window is not known after these: the next frame is drawn whatever it is.
+                    if (event.window.event == SDL_WINDOWEVENT_SHOWN ||
+                        event.window.event == SDL_WINDOWEVENT_EXPOSED ||
+                        event.window.event == SDL_WINDOWEVENT_RESTORED ||
+                        event.window.event == SDL_WINDOWEVENT_MAXIMIZED ||
+                        event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                        event.window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED)
+                        frame_skipper.invalidate();
                     if (event.window.event == SDL_WINDOWEVENT_SHOWN)
                     {
                         window_visible = true;
@@ -3541,6 +3837,7 @@ int main(int argc, char** argv)
                 if (event.type == SDL_RENDER_TARGETS_RESET || event.type == SDL_RENDER_DEVICE_RESET)
                 {
                     R_LOG_WARNING("Render device reset - recreating GPU resources");
+                    frame_skipper.invalidate();
                     ImGui_ImplSDLRenderer_DestroyDeviceObjects();
                     ImGui_ImplSDLRenderer_CreateDeviceObjects();
                     force_ui_update = true;
@@ -3548,7 +3845,8 @@ int main(int argc, char** argv)
             } while (SDL_PollEvent(&event));
         }
 
-        tray.pump();
+        if(tray)
+            tray->pump();
 
         // Check for external shutdown signals (from --quit / installer)
 #ifdef IS_WINDOWS
@@ -3567,8 +3865,18 @@ int main(int argc, char** argv)
         if(maybe_start_minimized)
         {
             maybe_start_minimized = false;
-            SDL_HideWindow(window);
-            window_visible = false;
+            if(tray)
+            {
+                SDL_HideWindow(window);
+                window_visible = false;
+            }
+            else
+            {
+                // Created hidden for the tray; without one, minimized is as far out of the way as it can go.
+                SDL_ShowWindow(window);
+                SDL_MinimizeWindow(window);
+                window_visible = true;
+            }
         }
 
         if(placement_changed && chrono::steady_clock::now() - placement_changed_at >= placement_debounce)
@@ -3580,10 +3888,19 @@ int main(int argc, char** argv)
         if(cfg_state.need_save())
             cfg_state.save();
 
-        // Skip rendering when window is hidden
-        if(!window_visible)
+        // Nothing to do while the window can't be seen (hidden to the tray, minimised, covered, on another desktop):
+        // no UI is built or drawn, and the first frame after it can be seen again is drawn whatever it is.
+        if(!window_visible || !_window_drawable(window))
         {
+            was_drawable = false;
             continue;
+        }
+        if(!was_drawable)
+        {
+            was_drawable = true;
+            frame_skipper.invalidate();
+            force_ui_update = true;
+            need_render = true;
         }
 
         auto now = chrono::steady_clock::now();
@@ -3707,6 +4024,12 @@ int main(int argc, char** argv)
             },
             [&](){
                 camera_setup_wizard.next("about_revere");
+            },
+            [&]() -> bool {
+                return streamKeeper.substreams_enabled();
+            },
+            [&](bool enabled){
+                streamKeeper.set_substreams_enabled(enabled);
             }
         );
         revere::main_window_view_menu(main_window_state);
@@ -3779,12 +4102,22 @@ int main(int argc, char** argv)
         if(ui_state.minimize_requested)
         {
             ui_state.minimize_requested = false;
-            tray_notice_pending = !_notice_dismissed("minimized_to_tray");
-            SDL_HideWindow(window);
-            window_visible = false;
+            if(tray)
+            {
+                tray_notice_pending = !_notice_dismissed("minimized_to_tray");
+                SDL_HideWindow(window);
+                window_visible = false;
+            }
+            else
+                SDL_MinimizeWindow(window);
         }
 
         ImGui::Render();
+
+        // The same frame as the one on the window: nothing to draw. (The UI is still built every pass so that anything
+        // that changed, a tooltip, a toast, a result from another thread, is seen at once; it is drawing that costs.)
+        if(!frame_skipper.should_render(_draw_data_hash(ImGui::GetDrawData())))
+            continue;
 
         // Clear with background color
         SDL_SetRenderDrawColor(renderer,
@@ -3800,12 +4133,16 @@ int main(int argc, char** argv)
         SDL_RenderPresent(renderer);
     }
 
+    R_LOG_INFO("Frames drawn: %llu, skipped as unchanged: %llu",
+        (unsigned long long)frame_skipper.rendered(), (unsigned long long)frame_skipper.skipped());
+
     // Where the window is as Revere exits (unless it's in the tray: then where it was last shown).
     _record_window_placement(window, cfg_state);
     if(cfg_state.need_save())
         cfg_state.save();
 
-    tray.exit();
+    if(tray)
+        tray->exit();
 
     // Cleanup — order matters:
     // 1. Stop background workers first so they stop touching SDL textures
