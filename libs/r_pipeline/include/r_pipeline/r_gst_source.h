@@ -211,6 +211,9 @@ public:
     // GstRTSPLowerTrans flags the last play() gave rtspsrc (0 before play())
     R_API uint32_t protocol_flags() const;
 
+    // The teardown-timeout the last play() gave rtspsrc, in ns, read back from it (0 before play())
+    R_API uint64_t teardown_timeout_ns() const;
+
     // Simulated failure for leak testing: stream silently stops delivering samples
     // after a random interval near mttf_seconds. 0 = disabled.
     R_API void set_sim_mttf_seconds(uint32_t mttf) { _sim_mttf_seconds = mttf; }
@@ -278,6 +281,7 @@ private:
     /// optional arguments
     r_utils::r_nullable<std::string> _protocols;
     uint32_t _protocol_flags {0};
+    uint64_t _teardown_timeout_ns {0};
     r_utils::r_nullable<std::string> _buffer_mode; // rtspsrc buffer-mode enum value
                                                    // (0=none,1=slave,2=buffer,3=auto,4=synced);
                                                    // overrides the protocols-implied default

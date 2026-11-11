@@ -272,6 +272,8 @@ void test_r_pipeline::test_gst_source_stop_sends_teardown()
     r_gst_source src;
     src.set_args(arguments);
     src.play();
+    // 2 s to get the TEARDOWN out, not rtspsrc's 100 ms
+    RTF_ASSERT(src.teardown_timeout_ns() == RTSP_TEARDOWN_TIMEOUT_NS);
 
     auto deadline = steady_clock::now() + seconds(10);
     while(!cam.saw("PLAY") && steady_clock::now() < deadline)
