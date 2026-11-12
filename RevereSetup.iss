@@ -84,6 +84,20 @@ begin
   Result := '';
 end;
 
+// Whether the user installed Revere Cloud themselves, with its own installer
+// (revere_cloud's RevereCloudSetup.iss, AppId 2CC64416-...), which registers an
+// uninstall entry. Without one, a revere_cloud_system_plugin.dll in system_plugins
+// came only from an earlier Revere installer, which bundled it. Revere Cloud is
+// opt-in, so that copy is removed ([InstallDelete]). An in-app install goes to
+// the user's data folder, not here, and isn't touched.
+function CloudInstalledByUser: Boolean;
+var
+  Key: String;
+begin
+  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{2CC64416-8464-4EB0-849D-67662A8BB5C0}_is1';
+  Result := RegKeyExists(HKLM64, Key) or RegKeyExists(HKLM32, Key) or RegKeyExists(HKCU, Key);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   // Vision-only over a full install: the recorder's files are removed
@@ -117,6 +131,9 @@ Type: files; Name: "{app}\motion_plugins\yolov8_person_plugin.dll"
 Type: files; Name: "{app}\motion_plugins\yolov8_motion_plugin.dll"
 Type: filesandordirs; Name: "{app}\models\yolov8_person"
 Type: files; Name: "{app}\motion_plugins\test_plugin.dll"
+; Revere Cloud is opt-in: this installer doesn't ship it, and removes the copy
+; earlier ones bundled, unless the user installed it with its own installer.
+Type: files; Name: "{app}\system_plugins\revere_cloud_system_plugin.dll"; Check: not CloudInstalledByUser
 ; (The generated include adds the Vision-only cleanup.)
 
 [UninstallDelete]
