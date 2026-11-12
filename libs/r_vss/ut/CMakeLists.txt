@@ -55,6 +55,8 @@ add_executable(
     source/test_r_transcode_check.cpp
     include/test_r_system_plugin_dirs.h
     source/test_r_system_plugin_dirs.cpp
+    include/test_r_plugin_manifest.h
+    source/test_r_plugin_manifest.cpp
     include/test_r_keep_awake.h
     source/test_r_keep_awake.cpp
     include/test_r_substream_setting.h
