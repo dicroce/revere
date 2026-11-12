@@ -1660,6 +1660,141 @@ r_onvif::onvif_device_information r_onvif::r_onvif_cam::get_device_information()
     return info;
 }
 
+// ---------------------------------------------------------------------------
+// Reboot (SystemReboot) and whether the stored credentials may do it.
+
+const char* r_onvif::reboot_support_name(reboot_support s)
+{
+    switch (s)
+    {
+    case reboot_support::supported: return "supported";
+    case reboot_support::not_supported: return "not_supported";
+    default: return "unknown";
+    }
+}
+
+r_onvif::onvif_answer r_onvif::onvif_answer_of(int status, const string& body)
+{
+    // A 200 carrying a SOAP fault is a fault (some cameras answer every call with 200).
+    bool fault = body.find(":Fault") != string::npos || body.find("<Fault") != string::npos;
+    if (status == 200 && !fault)
+        return onvif_answer::ok;
+    if (is_unsupported_action(body))
+        return onvif_answer::unsupported;
+    if (_is_auth_error(status, body))
+        return onvif_answer::refused_auth;
+    return onvif_answer::failed;
+}
+
+r_onvif::reboot_check r_onvif::reboot_check_of(onvif_answer users, r_nullable<onvif_answer> device_info)
+{
+    switch (users)
+    {
+    case onvif_answer::ok:
+        return {reboot_support::supported, "admin"};
+    case onvif_answer::unsupported:
+        // GetUsers is optional (UserConfigNotSupported); SystemReboot isn't. Only a reboot can tell.
+        return {reboot_support::unknown, "no_user_list"};
+    case onvif_answer::refused_auth:
+        if (!device_info.is_null() && device_info.value() == onvif_answer::ok)
+            return {reboot_support::not_supported, "not_admin"};
+        if (!device_info.is_null() && device_info.value() == onvif_answer::refused_auth)
+            return {reboot_support::unknown, "credentials_rejected"};
+        return {reboot_support::unknown, "error"};
+    default:
+        return {reboot_support::unknown, "error"};
+    }
+}
+
+r_onvif::reboot_check r_onvif::reboot_check_of_reboot(onvif_answer reboot)
+{
+    switch (reboot)
+    {
+    case onvif_answer::ok: return {reboot_support::supported, "rebooted"};
+    case onvif_answer::unsupported: return {reboot_support::not_supported, "unsupported"};
+    case onvif_answer::refused_auth: return {reboot_support::not_supported, "refused"};
+    default: return {reboot_support::unknown, "error"};
+    }
+}
+
+// Stored credentials, as reboot needs them: a user name (a password may be empty, as some cameras ship).
+static bool _has_credentials(const r_nullable<string>& username, const r_nullable<string>& password)
+{
+    return !username.is_null() && !username.value().empty() && !password.is_null();
+}
+
+r_onvif::reboot_check r_onvif::r_onvif_cam::check_reboot_support()
+{
+    if (!_has_credentials(_username, _password))
+        return {reboot_support::not_supported, "no_credentials"};
+    auto ask = [this](const char* action, const char* element) -> onvif_answer {
+        auto result = _soap_request(
+            _service_host, _service_port, _service_uri,
+            string("http://www.onvif.org/ver10/device/wsdl/") + action,
+            [element](pugi::xml_node& body) { body.append_child(element); },
+            _username, _password, {}, true, REBOOT_TIMEOUT_MS
+        );
+        // GetUsers' reply names the camera's accounts: its status and fault are all that is read.
+        return onvif_answer_of(result.first, result.second);
+    };
+    try
+    {
+        auto users = ask("GetUsers", "tds:GetUsers");
+        if (users != onvif_answer::refused_auth)
+            return reboot_check_of(users);
+        return reboot_check_of(users, ask("GetDeviceInformation", "tds:GetDeviceInformation"));
+    }
+    catch (const std::exception& e)
+    {
+        R_LOG_INFO("onvif: reboot check got no answer from %s: %s", _service_host.c_str(), e.what());
+        return {reboot_support::unknown, "no_answer"};
+    }
+}
+
+r_onvif::reboot_result r_onvif::r_onvif_cam::system_reboot()
+{
+    reboot_result out;
+    if (!_has_credentials(_username, _password))
+    {
+        out.check = {reboot_support::not_supported, "no_credentials"};
+        return out;
+    }
+    out.sent = true;
+    pair<int, string> result;
+    try
+    {
+        result = _soap_request(
+            _service_host, _service_port, _service_uri,
+            "http://www.onvif.org/ver10/device/wsdl/SystemReboot",
+            [](pugi::xml_node& body) { body.append_child("tds:SystemReboot"); },
+            _username, _password, {}, true, REBOOT_TIMEOUT_MS, 1
+        );
+    }
+    catch (const std::exception& e)
+    {
+        R_LOG_WARNING("onvif: SystemReboot to %s got no answer: %s", _service_host.c_str(), e.what());
+        out.check = {reboot_support::unknown, "no_answer"};
+        return out;
+    }
+    auto answer = onvif_answer_of(result.first, result.second);
+    out.check = reboot_check_of_reboot(answer);
+    if (answer == onvif_answer::ok)
+    {
+        pugi::xml_document doc;
+        if (doc.load_string(result.second.c_str()))
+        {
+            auto n = _select_node_local_abs(doc, "Message", NS_DEVICE);
+            if (!n)
+                n = _select_node_local_abs(doc, "Message");
+            if (n)
+                out.message = string(n.node().child_value()).substr(0, REBOOT_MAX_MESSAGE);
+        }
+    }
+    else
+        R_LOG_WARNING("onvif: SystemReboot to %s refused: HTTP %d %s", _service_host.c_str(), result.first, out.check.reason.c_str());
+    return out;
+}
+
 r_onvif::onvif_media_service r_onvif::r_onvif_cam::get_media_service(const r_onvif::onvif_capabilities& capabilities) const
 {
     pugi::xml_document doc;

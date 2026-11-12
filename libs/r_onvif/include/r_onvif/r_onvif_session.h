@@ -315,6 +315,57 @@ R_API ptz_verdict ptz_verdict_of(const ptz_probe_result& nodes, const ptz_probe_
 // or the reason text "Action not supported" / "Action Not Implemented", in any case (cameras send either, or both). Not a timeout, not an authentication failure, not a bad argument.
 R_API bool is_unsupported_action(const std::string& what);
 
+// Rebooting a camera (ONVIF SystemReboot), always with its stored credentials.
+//
+// ONVIF Core (5.9.4, Table 7, the default access policy) lets only an Administrator call SystemReboot (access class
+// UNRECOVERABLE) or GetUsers (READ_SYSTEM_SECRET). So a GetUsers that works with the stored credentials says they may
+// reboot the camera, without rebooting it. The reply lists the camera's accounts: only its status is read, and nothing
+// of it is kept or logged. Some firmware accepts a SystemReboot with no credentials at all; that never counts here, and
+// Revere never sends one without them.
+
+// supported: the stored credentials have the rights (GetUsers worked), or a SystemReboot with them worked.
+// not_supported: there are no stored credentials, the camera turned the stored credentials away for reboot (they work for
+// other calls), or it said it doesn't do SystemReboot.
+// unknown: anything else (no answer, credentials it rejects outright, a camera that doesn't do GetUsers, an error).
+// Unknown is asked again later.
+enum class reboot_support { supported, not_supported, unknown };
+R_API const char* reboot_support_name(reboot_support s);   // "supported", "not_supported", "unknown"
+
+struct reboot_check
+{
+    reboot_support support {reboot_support::unknown};
+    // Why, one word: admin, rebooted (supported); no_credentials, not_admin, refused, unsupported (not_supported);
+    // credentials_rejected, no_user_list, no_answer, error (unknown).
+    std::string reason;
+};
+
+// How a camera answered one ONVIF call: it worked; it turned the credentials away (HTTP 401, or a fault saying
+// NotAuthorized and the like); it said it doesn't do the action (is_unsupported_action); anything else.
+enum class onvif_answer { ok, refused_auth, unsupported, failed };
+R_API onvif_answer onvif_answer_of(int status, const std::string& body);
+
+// The verdict from the admin probe. `users` is GetUsers' answer; `device_info` is GetDeviceInformation's, asked only
+// when GetUsers turned the credentials away, to tell credentials that work but lack the rights (not_admin) from ones
+// the camera rejects outright (credentials_rejected: a changed password, say, which is asked again later).
+R_API reboot_check reboot_check_of(onvif_answer users, r_utils::r_nullable<onvif_answer> device_info = r_utils::r_nullable<onvif_answer>());
+
+// The verdict from a SystemReboot's answer.
+R_API reboot_check reboot_check_of_reboot(onvif_answer reboot);
+
+// What a SystemReboot did. `message` is the camera's own (e.g. "Rebooting in 30 seconds"), at most REBOOT_MAX_MESSAGE
+// bytes. `sent` is false when nothing went out (no stored credentials).
+struct reboot_result
+{
+    reboot_check check;
+    bool sent {false};
+    std::string message;
+};
+constexpr size_t REBOOT_MAX_MESSAGE = 200;
+// SystemReboot's own timeout. It is never retried after no answer: ONVIF has the camera answer before it reboots, but
+// one that goes down first must not get a second request. (Only a camera that refused it, for a SOAP version it doesn't
+// take, is asked again in the other one; the clock check every r_onvif_cam starts with normally settles the version.)
+constexpr int REBOOT_TIMEOUT_MS = 10000;
+
 // How long an ONVIF events subscription waits after a failed attempt. The wait doubles from 10 s to 10 minutes; a camera
 // that said the action isn't supported waits EVENTS_UNSUPPORTED_WAIT_S (6 hours) instead, since asking again every few
 // minutes only gets the same answer (a firmware update might add it).
@@ -359,6 +410,15 @@ public:
     // GetDeviceInformation (device service): manufacturer, model, firmware
     // version, serial number, hardware id. Throws on a non-200 / SOAP fault.
     R_API onvif_device_information get_device_information();
+
+    // Whether the stored credentials may reboot the camera (see reboot_support), without rebooting it: GetUsers, then
+    // GetDeviceInformation if GetUsers turned them away. Nothing is sent without stored credentials. Doesn't throw: a
+    // camera that doesn't answer is unknown (no_answer).
+    R_API reboot_check check_reboot_support();
+
+    // SystemReboot with the stored credentials, sent once (REBOOT_TIMEOUT_MS). Nothing is sent without them. Doesn't
+    // throw: no answer is unknown (no_answer), and the camera may still be rebooting.
+    R_API reboot_result system_reboot();
 
     R_API onvif_media_service get_media_service(const onvif_capabilities& capabilities) const;
 
