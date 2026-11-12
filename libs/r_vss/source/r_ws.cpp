@@ -1035,6 +1035,25 @@ static float _compute_framerate(const r_blob_tree& bt)
     return (float)1000 / (float)avg_delta;
 }
 
+// Drops frames already written by an earlier export chunk (see _export()). Tracks the
+// last accepted timestamp per stream; a frame is accepted only if it is strictly later.
+struct export_ts_filter
+{
+    bool has_video = false, has_audio = false;
+    int64_t last_video = 0, last_audio = 0;
+
+    bool accept(int sid, int64_t ts)
+    {
+        bool& has = (sid == r_storage::R_STORAGE_MEDIA_TYPE_VIDEO) ? has_video : has_audio;
+        int64_t& last = (sid == r_storage::R_STORAGE_MEDIA_TYPE_VIDEO) ? last_video : last_audio;
+        if(has && ts <= last)
+            return false;
+        has = true;
+        last = ts;
+        return true;
+    }
+};
+
 static void _check_timestamps(const r_blob_tree& bt)
 {
     if(!bt.has_key("frames"))
@@ -1199,6 +1218,13 @@ void r_ws::_export(export_job& job)
     int64_t ts_first_frame = 0;
     bool done = false;
 
+    // query_get_video() backs up to the key frame before each chunk's start, so every
+    // chunk after the first begins with frames the previous chunk already wrote. Writing
+    // them again sends DTS backwards, the muxer throws, and the whole chunk used to be
+    // dropped: exports lost every other 5 minute chunk. Skip anything at or before the
+    // last timestamp written for that stream.
+    export_ts_filter ts_filter;
+
     while(!done)
     {
         if(!_export_running) break;
@@ -1357,6 +1383,9 @@ void r_ws::_export(export_job& job)
                     R_THROW(("Blob tree missing ts."));
 
                 auto ts = bt["frames"][fi]["ts"].get_value<int64_t>();
+
+                if(!ts_filter.accept(sid, ts))
+                    continue;
 
                 if(ts_first_frame == 0)
                     ts_first_frame = ts;
@@ -2994,6 +3023,11 @@ void r_ws::_transcode_export(export_job& job)
     unique_ptr<r_video_decoder> decoder;
     unique_ptr<r_video_encoder> encoder;
 
+    // Chunks overlap by up to a GOP (see _export()). Without this, the overlapping video
+    // was decoded and re-encoded twice (a repeated stutter at every chunk boundary) and the
+    // overlapping audio went backwards, making the muxer throw and drop the rest of the chunk.
+    export_ts_filter ts_filter;
+
     bool done = false;
     while(!done)
     {
@@ -3123,6 +3157,9 @@ void r_ws::_transcode_export(export_job& job)
 
                 auto sid        = bt["frames"][fi]["stream_id"].get_value<int>();
                 auto ts         = bt["frames"][fi]["ts"].get_value<int64_t>();
+                if(!ts_filter.accept(sid, ts))
+                    continue;
+
                 auto frame_data = bt["frames"][fi]["data"].get_blob();
 
                 if(ts_first_frame == 0)
