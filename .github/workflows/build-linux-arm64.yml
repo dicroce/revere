@@ -194,6 +194,7 @@ jobs:
       # The cloud .run is packed by package-cloud, after the sign job.
       # The built plugin, exactly as the cloud .run packs it, and its manifest.
       - name: Write the cloud plugin's manifest
+        shell: bash
         run: |
           set -euo pipefail
           version="$(git -C revere describe --tags --match 'v[0-9]*' --always)"
