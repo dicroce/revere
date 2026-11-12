@@ -50,7 +50,7 @@ jobs:
           # and libopus are for that build.
           apt-get install -y --no-install-recommends \
             build-essential cmake git pkg-config patchelf file \
-            ca-certificates curl zstd binutils \
+            ca-certificates curl zstd binutils python3 \
             libwebp-dev libopus-dev \
             libopencv-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
