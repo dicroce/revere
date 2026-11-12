@@ -274,6 +274,36 @@ R_API std::vector<onvif_cell_motion_rule> parse_cell_motion_rules(const std::str
 // name from the tt:Name child). Separate so it can be tested without a camera.
 R_API std::vector<onvif_ptz_preset> parse_ptz_presets(const std::string& xml);
 
+// The camera's clock, as GetSystemDateAndTime reports it.
+struct onvif_system_date_time
+{
+    std::string date_time_type;   // "Manual" or "NTP"; empty when the camera doesn't say
+    bool daylight_savings {false};
+    std::string tz;               // POSIX TZ string (TimeZone/TZ); empty when the camera gives none
+    time_t time {0};              // UTC: from UTCDateTime, or LocalDateTime and the zone when that's all there is
+};
+
+// A GetSystemDateAndTimeResponse. Throws std::runtime_error when it isn't XML or has no SystemDateAndTime.
+R_API onvif_system_date_time parse_system_date_and_time(const std::string& xml);
+
+// A tds:SetSystemDateAndTime request, appended to body: a Manual set to utc, keeping the camera's own
+// DaylightSavings and TimeZone (current, as read just before), so only its clock changes.
+R_API void append_set_system_date_and_time(pugi::xml_node body, time_t utc, const onvif_system_date_time& current);
+
+// The outcome of r_onvif_cam::sync_system_date_and_time(). Offsets are the camera's clock minus this computer's,
+// in seconds: positive when the camera is ahead.
+struct onvif_time_sync
+{
+    int64_t offset_before {0};
+    int64_t offset_after {0};
+    bool was_ntp {false};         // the camera was set to NTP (a set switches it to Manual)
+    bool changed {false};         // false: the clock was already within the tolerance, so nothing was sent
+};
+
+// How far the camera's clock may be from this computer's after a sync and still count as set: a set takes a
+// round trip or two, and the clock has only whole seconds.
+constexpr int64_t ONVIF_TIME_SYNC_TOLERANCE_SECONDS = 5;
+
 // Supported continuous-move axes from a GetNodesResponse (any PTZNode's
 // SupportedPTZSpaces). Separate so it can be tested without a camera.
 R_API onvif_ptz_caps parse_ptz_caps(const std::string& xml);
@@ -404,6 +434,16 @@ public:
         r_utils::r_nullable<std::string> username,
         r_utils::r_nullable<std::string> password
     );
+
+    // GetSystemDateAndTime with the session's credentials, parsed (parse_system_date_and_time).
+    R_API onvif_system_date_time get_system_date_and_time();
+
+    // Set the camera's clock to this computer's (SetSystemDateAndTime, Manual, its time zone and daylight savings
+    // kept), then read it back. A clock already within ONVIF_TIME_SYNC_TOLERANCE_SECONDS is left alone. Needs an admin account on most cameras. Throws std::runtime_error when the camera
+    // refuses the set, or when the time read back is still more than ONVIF_TIME_SYNC_TOLERANCE_SECONDS off (a
+    // camera that takes the request but keeps its own clock, often one set to sync from its own NTP server).
+    // The session's clock offset, used for WS-Security digests, is updated to the camera's new clock.
+    R_API onvif_time_sync sync_system_date_and_time();
 
     R_API onvif_capabilities get_camera_capabilities();
 

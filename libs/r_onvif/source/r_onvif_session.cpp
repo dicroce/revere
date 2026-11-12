@@ -230,6 +230,7 @@ static time_t _portable_timegm(struct tm* t)
 static string _xpath_local(const string& local_name, const string& ns_uri = "");
 static pugi::xpath_node _select_node_local(const pugi::xml_node& parent, const string& local_name, const string& ns_uri = "");
 static pugi::xpath_node _select_node_local_abs(const pugi::xml_document& doc, const string& local_name, const string& ns_uri = "");
+static runtime_error _events_error(const string& what, const pair<int, string>& result);
 
 // Namespace constant - defined here, used throughout
 static const char* NS_SCHEMA = "http://www.onvif.org/ver10/schema";
@@ -1602,6 +1603,71 @@ time_t r_onvif::r_onvif_cam::get_camera_system_date_and_time(
     return maybe_parsed_ts.value();
 }
 
+r_onvif::onvif_system_date_time r_onvif::r_onvif_cam::get_system_date_and_time()
+{
+    auto result = _soap_request(
+        _service_host, _service_port, _service_uri,
+        "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime",
+        [](pugi::xml_node& body) { body.append_child("tds:GetSystemDateAndTime"); },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("GetSystemDateAndTime failed", result);
+    return parse_system_date_and_time(result.second);
+}
+
+r_onvif::onvif_time_sync r_onvif::r_onvif_cam::sync_system_date_and_time()
+{
+    auto now = [](){ return chrono::system_clock::to_time_t(chrono::system_clock::now()); };
+
+    auto before = get_system_date_and_time();
+    onvif_time_sync out;
+    out.offset_before = (int64_t)before.time - (int64_t)now();
+    out.was_ntp = (before.date_time_type == "NTP");
+
+    // Already right: leave it alone, so a camera that keeps good time from NTP isn't switched to Manual for nothing.
+    if (llabs(out.offset_before) <= ONVIF_TIME_SYNC_TOLERANCE_SECONDS)
+    {
+        out.offset_after = out.offset_before;
+        return out;
+    }
+    out.changed = true;
+
+    auto result = _soap_request(
+        _service_host, _service_port, _service_uri,
+        "http://www.onvif.org/ver10/device/wsdl/SetSystemDateAndTime",
+        [&](pugi::xml_node& body) { append_set_system_date_and_time(body, now(), before); },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("SetSystemDateAndTime failed", result);
+
+    // The camera's clock just moved, so the offset the digests are built with is stale. Read it back with the
+    // offset as it should now be (none); if the camera kept its own clock, that read may fail auth, so fall back
+    // to the old offset for it.
+    auto old_offset = _time_offset_seconds;
+    _time_offset_seconds = 0;
+    onvif_system_date_time after;
+    try
+    {
+        after = get_system_date_and_time();
+    }
+    catch (const std::exception&)
+    {
+        _time_offset_seconds = old_offset;
+        after = get_system_date_and_time();
+    }
+    out.offset_after = (int64_t)after.time - (int64_t)now();
+    _time_offset_seconds = (int)out.offset_after;
+
+    if (llabs(out.offset_after) > ONVIF_TIME_SYNC_TOLERANCE_SECONDS)
+        throw std::runtime_error("The camera accepted the new time but its clock is still " +
+                                 std::to_string(llabs(out.offset_after)) + " seconds " +
+                                 (out.offset_after > 0 ? "ahead" : "behind") +
+                                 (out.was_ntp ? " (it is set to take its time from an NTP server)." : "."));
+    return out;
+}
+
 r_onvif::onvif_capabilities r_onvif::r_onvif_cam::get_camera_capabilities()
 {
     auto result = _soap_request(
@@ -2711,6 +2777,64 @@ vector<r_onvif::onvif_ptz_preset> r_onvif::parse_ptz_presets(const string& xml)
             out.push_back(preset);
     }
     return out;
+}
+
+r_onvif::onvif_system_date_time r_onvif::parse_system_date_and_time(const string& xml)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetSystemDateAndTimeResponse XML");
+    auto sdt = doc.select_node("//*[local-name()='SystemDateAndTime']");
+    if (!sdt)
+        throw std::runtime_error("GetSystemDateAndTimeResponse has no SystemDateAndTime");
+
+    auto text = [](const pugi::xml_node& parent, const char* xpath) {
+        auto n = parent.select_node(xpath);
+        string v = n ? n.node().child_value() : "";
+        auto b = v.find_first_not_of(" \t\r\n");
+        auto e = v.find_last_not_of(" \t\r\n");
+        return (b == string::npos) ? string() : v.substr(b, e - b + 1);
+    };
+
+    onvif_system_date_time out;
+    out.date_time_type = text(sdt.node(), "./*[local-name()='DateTimeType']");
+    auto dst = text(sdt.node(), "./*[local-name()='DaylightSavings']");
+    out.daylight_savings = (dst == "true" || dst == "1");
+    out.tz = text(sdt.node(), "./*[local-name()='TimeZone']/*[local-name()='TZ']");
+
+    auto t = _parse_onvif_date_time(xml);
+    if (t.is_null())
+        throw std::runtime_error("GetSystemDateAndTimeResponse has no date and time");
+    out.time = t.value();
+    return out;
+}
+
+void r_onvif::append_set_system_date_and_time(pugi::xml_node body, time_t utc, const onvif_system_date_time& current)
+{
+    struct tm tm_utc {};
+#ifdef IS_WINDOWS
+    if (gmtime_s(&tm_utc, &utc) != 0)
+        throw std::runtime_error("gmtime_s failed");
+#else
+    if (!gmtime_r(&utc, &tm_utc))
+        throw std::runtime_error("gmtime_r failed");
+#endif
+
+    // Element order is the schema's: DateTimeType, DaylightSavings, TimeZone, UTCDateTime.
+    auto req = body.append_child("tds:SetSystemDateAndTime");
+    req.append_child("tds:DateTimeType").text().set("Manual");
+    req.append_child("tds:DaylightSavings").text().set(current.daylight_savings ? "true" : "false");
+    if (!current.tz.empty())
+        req.append_child("tds:TimeZone").append_child("tt:TZ").text().set(current.tz.c_str());
+    auto u = req.append_child("tds:UTCDateTime");
+    auto date = u.append_child("tt:Date");
+    date.append_child("tt:Year").text().set(tm_utc.tm_year + 1900);
+    date.append_child("tt:Month").text().set(tm_utc.tm_mon + 1);
+    date.append_child("tt:Day").text().set(tm_utc.tm_mday);
+    auto time = u.append_child("tt:Time");
+    time.append_child("tt:Hour").text().set(tm_utc.tm_hour);
+    time.append_child("tt:Minute").text().set(tm_utc.tm_min);
+    time.append_child("tt:Second").text().set(tm_utc.tm_sec);
 }
 
 vector<r_onvif::onvif_ptz_preset> r_onvif::r_onvif_cam::get_ptz_presets(const string& ptz_service, const onvif_profile_token& profile_token)

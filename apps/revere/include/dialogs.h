@@ -619,7 +619,8 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
 // streams is the Streams section's state (see streams_state); streams_cb(op, token) is called for a click in it:
 // op "off" (use the recording stream), "use" (the smaller stream with that profile token), "find" (look again) or
 // "analysis" (token "1" or "0": find motion in the smaller stream).
-template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB, typename STREAMS_CB>
+// can_sync_time: the camera was found by ONVIF discovery, so sync_time_cb can set its clock.
+template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB, typename STREAMS_CB, typename SYNC_TIME_CB>
 void camera_properties_modal(
     const char* popup_name,
     const std::string& camera_name,
@@ -632,11 +633,13 @@ void camera_properties_modal(
     const std::string& transport_status,
     const std::string& record_file_path,
     streams_state& streams,
+    bool can_sync_time,
     OK_CB ok_cb,
     CANCEL_CB cancel_cb,
     MOVE_STORAGE_CB move_storage_cb,
     CHANGE_RETENTION_CB change_retention_cb,
-    STREAMS_CB streams_cb
+    STREAMS_CB streams_cb,
+    SYNC_TIME_CB sync_time_cb
 )
 {
     using namespace r_ui_utils::theme;
@@ -707,12 +710,42 @@ void camera_properties_modal(
 
     streams_section(d, streams, streams_cb);
 
+    bool closing = false;
+    // A button with a line saying what it does beside it.
+    auto row_action = [&](const char* label, const char* description) {
+        d.gap(2.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
+        // The widest label, so every row's button lines up.
+        const float bw = std::max(button_size("Change retention").x, button_size("Sync Camera Time").x);
+        bool clicked = ImGui::Button(label, ImVec2(bw, 0.0f));
+        ImGui::SameLine(0.0f, 12.0f);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + d.width() - bw - 12.0f);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(text_secondary, "%s", description);
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleVar();
+        return clicked;
+    };
+
     d.section("Network");
     rtsp_transport_options(d, rtsp_transport);
     if(!transport_status.empty())
     {
         d.gap(2.0f);
         d.body(transport_status, r_ui_utils::theme::status_warning_text);
+    }
+
+    d.section("Camera");
+    ImGui::BeginDisabled(!can_sync_time);
+    bool sync_clicked = row_action("Sync Camera Time", can_sync_time
+        ? "Set the camera's clock to this computer's. Its time zone is left as it is."
+        : "Only a camera Revere found on the network (ONVIF) can have its clock set.");
+    ImGui::EndDisabled();
+    if(sync_clicked)
+    {
+        closing = true;
+        d.close();
+        sync_time_cb();
     }
 
     d.section("Storage");
@@ -723,27 +756,13 @@ void camera_properties_modal(
             ImGui::SetClipboardText(record_file_path.c_str());
     }
 
-    bool closing = false;
-    auto storage_action = [&](const char* label, const char* description) {
-        d.gap(2.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
-        const float bw = button_size("Change retention").x;  // the wider label, so both line up
-        bool clicked = ImGui::Button(label, ImVec2(bw, 0.0f));
-        ImGui::SameLine(0.0f, 12.0f);
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + d.width() - bw - 12.0f);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(text_secondary, "%s", description);
-        ImGui::PopTextWrapPos();
-        ImGui::PopStyleVar();
-        return clicked;
-    };
-    if(storage_action("Move storage", "Move this camera's recording files to another folder or disk."))
+    if(!closing && row_action("Move storage", "Move this camera's recording files to another folder or disk."))
     {
         closing = true;
         d.close();
         move_storage_cb();
     }
-    if(!closing && storage_action("Change retention", "Resize the recording file to hold more or fewer days of video. Clears this camera's existing recordings."))
+    if(!closing && row_action("Change retention", "Resize the recording file to hold more or fewer days of video. Clears this camera's existing recordings."))
     {
         closing = true;
         d.close();

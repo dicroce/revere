@@ -158,6 +158,16 @@ public:
         r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
     );
 
+    // Set a camera's clock to this computer's (r_onvif_provider::sync_camera_time). Throws r_ptz_error.
+    R_API r_onvif::onvif_time_sync sync_camera_time(
+        const std::string& ipv4,
+        const std::string& xaddrs,
+        r_utils::r_nullable<std::string> username,
+        r_utils::r_nullable<std::string> password,
+        r_utils::r_nullable<int> onvif_port = r_utils::r_nullable<int>(),
+        r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
+    );
+
     R_API void interrogate_camera(
         const std::string& camera_name,
         const std::string& ipv4,

@@ -127,6 +127,19 @@ public:
         r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
     );
 
+    // Set the camera's clock to this computer's (r_onvif_cam::sync_system_date_and_time) and return how far off it
+    // was and is. Each call opens the camera afresh. Throws r_ptz_error: "unreachable" (no ONVIF device service
+    // answers), "not_authorized" (the camera refused the account: changing the time usually needs an admin), or
+    // "camera_error" (the camera refused or didn't keep the time; what() says which).
+    R_API r_onvif::onvif_time_sync sync_camera_time(
+        const std::string& ipv4,
+        const std::string& xaddrs,
+        r_utils::r_nullable<std::string> username,
+        r_utils::r_nullable<std::string> password,
+        r_utils::r_nullable<int> onvif_port = r_utils::r_nullable<int>(),
+        r_utils::r_nullable<std::string> onvif_protocol = r_utils::r_nullable<std::string>()
+    );
+
     R_API void interrogate_camera(
         r_stream_config& sc,
         r_utils::r_nullable<std::string> username,
