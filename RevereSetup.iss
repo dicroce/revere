@@ -85,8 +85,9 @@ begin
 end;
 
 // The firewall rules for the local-network ports that Revere's plugins listen on: TCP and UDP 51830-51929, from
-// private-range addresses only (10/8, 172.16/12, 192.168/16), on Private and Domain networks, for revere.exe (not for the program's other ports, 8088 and 8554, which
-// stay closed to the network). Named so a reinstall replaces them and an uninstall removes them.
+// private-range addresses only (10/8, 172.16/12, 192.168/16), on Private and Domain networks, for revere.exe. Not for
+// the program's other ports (8088 and 8554), which stay closed to the network. Named so a reinstall replaces them and
+// an uninstall removes them.
 procedure DeleteLanPortRules;
 var
   ResultCode: Integer;
@@ -138,7 +139,8 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 Filename: "{app}\vision.exe"; Description: "{cm:LaunchProgram,Vision}"; Flags: nowait postinstall skipifsilent; Components: not revere
 
 [UninstallRun]
-; The rules [Run] added.
+; The rules [Run] added, and any inbound rule for revere.exe that Windows saved from a dismissed firewall prompt.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=all dir=in program=""{app}\{#MyAppExeName}"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveAllRevereInboundRules"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Revere local plugin ports (TCP)"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveLanPortRuleTcp"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Revere local plugin ports (UDP)"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveLanPortRuleUdp"
 
