@@ -39,6 +39,7 @@ struct plugin_view
     std::string version;        // empty when the plugin doesn't report one
     bool enabled {false};
     bool has_status {false};    // false when the plugin has no status export
+    bool has_toggle {true};     // false for a row revere adds for a plugin that isn't loaded
     std::string status_label;
     ImVec4 status_color {r_ui_utils::theme::status_neutral_dot};
     std::string status_message; // JSON from system_plugin_get_status_message, may be empty
@@ -1678,7 +1679,7 @@ inline void main_window(
             const float title_w = ImGui::CalcTextSize(title.c_str()).x;
             const float title_h = ImGui::GetTextLineHeight();
             ImGui::PopFont();
-            const bool toggle_in_title_row = title_w + 16.0f + toggle_w <= avail;
+            const bool toggle_in_title_row = p.has_toggle && title_w + 16.0f + toggle_w <= avail;
 
             bool enabled = p.enabled;
             detail_title(title, std::string(), fonts);
@@ -1691,7 +1692,7 @@ inline void main_window(
                 ImGui::SetCursorScreenPos(below);
             }
             plugin_status_line(p, fonts);
-            if(!toggle_in_title_row && compact_toggle(toggle_label, &enabled, fonts))
+            if(p.has_toggle && !toggle_in_title_row && compact_toggle(toggle_label, &enabled, fonts))
                 actions.set_plugin_enabled(p.name, enabled);
 
             // The same gap above the content as above a camera's action row.

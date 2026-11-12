@@ -249,6 +249,9 @@ private:
     r_http::r_server_response _get_system_plugins(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _post_system_plugin_enabled(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    // Revere Cloud's in-app install: its state, and starting one.
+    r_http::r_server_response _get_revere_cloud_install(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _post_revere_cloud_install(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
     r_http::r_server_response _get_keep_awake(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
     r_http::r_server_response _post_keep_awake(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 

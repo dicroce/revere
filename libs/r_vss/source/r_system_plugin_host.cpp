@@ -284,6 +284,7 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
 
 r_system_plugin_host::r_system_plugin_host(const std::string& top_dir, const r_system_plugin_dirs& dirs, bool require_signed)
     : _top_dir(top_dir),
+      _user_dir(dirs.load.empty() ? std::string() : dirs.load.back()),
       _require_signed(require_signed)
 {
     R_LOG_INFO("r_system_plugin_host constructor called with top_dir=%s", top_dir.c_str());

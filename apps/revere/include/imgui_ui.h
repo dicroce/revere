@@ -12,6 +12,8 @@
 #include "r_disco/r_camera.h"
 #include "r_vss/r_camera_stats.h"
 #include "r_vss/r_keep_awake.h"
+#include "r_vss/r_cloud_install.h"
+#include "cloud_download.h"
 #include <map>
 #include <memory>
 #include <chrono>
@@ -671,51 +673,144 @@ void download_revere_cloud_modal(
     }
 }
 
-template<typename DOWNLOAD_CB, typename CLOSE_CB>
+// Whether About Revere Cloud is showing the terms, between frames.
+struct about_revere_cloud_state
+{
+    bool showing_terms {false};
+};
+
+// About Revere Cloud, with its in-app install (r_vss/r_cloud_install.h). A release
+// build installs or updates it here, after the terms; any other build opens the
+// download page, as before.
+//   install_cb(bool accept_terms): start the install; accept_terms when the user
+//     agreed to the terms just now.
+//   download_cb(): open the download page.  open_url_cb(url): open a link.
+template<typename INSTALL_CB, typename DOWNLOAD_CB, typename OPEN_URL_CB, typename CLOSE_CB>
 void about_revere_cloud_modal(
     ImGuiContext*,
     const std::string& name,
+    const r_vss::r_cloud_install_status& s,
+    about_revere_cloud_state& ms,
+    INSTALL_CB install_cb,
     DOWNLOAD_CB download_cb,
+    OPEN_URL_CB open_url_cb,
     CLOSE_CB close_cb
 )
 {
-    ImGui::SetNextWindowSize(ImVec2(640, 0));
+    using r_vss::r_cloud_state;
+    const float width = 640.0f;
+    ImGui::SetNextWindowSize(ImVec2(width, 0));
     if (begin_modal(name.c_str()))
     {
+        auto paragraph = [&](const std::string& text, const ImVec4* color = nullptr) {
+            ImGui::SetCursorPosX(16.0f);
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width - 32.0f);
+            if(color)
+                ImGui::PushStyleColor(ImGuiCol_Text, *color);
+            ImGui::TextWrapped("%s", text.c_str());
+            if(color)
+                ImGui::PopStyleColor();
+            ImGui::PopTextWrapPos();
+        };
+        // A row of buttons, centred; returns the index of the one clicked, or -1.
+        auto buttons = [&](const std::vector<std::string>& labels) {
+            const float bw = 190.0f;
+            const float total = bw * labels.size() + ImGui::GetStyle().ItemSpacing.x * (labels.size() - 1);
+            ImGui::SetCursorPosX((width - total) * 0.5f);
+            int clicked = -1;
+            for(size_t i = 0; i < labels.size(); ++i)
+            {
+                if(i > 0)
+                    ImGui::SameLine();
+                if(ImGui::Button(labels[i].c_str(), ImVec2(bw, 0)))
+                    clicked = (int)i;
+            }
+            return clicked;
+        };
+        auto close = [&]() {
+            ms.showing_terms = false;
+            close_cb();
+            ImGui::CloseCurrentPopup();
+        };
+
         ImGui::Spacing();
+        ImGui::Spacing();
+        paragraph("Revere Cloud is an optional plugin for Revere that connects your system to the Revere Cloud infrastructure and enables the Revere mobile app to access your cameras remotely. Some Revere Cloud features require paying for service (and some do not).");
+        ImGui::Spacing();
+        paragraph("Revere Cloud is not open source. Revere works fully without it.", &r_ui_utils::theme::text_secondary);
         ImGui::Spacing();
 
-        ImGui::SetCursorPosX(16.0f);
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 608.0f);
-        ImGui::TextWrapped("Revere Cloud is an optional plugin for Revere that connects your system to the Revere Cloud infrastructure and enables the Revere mobile app to access your cameras remotely. Some Revere Cloud features require paying for service (and some do not).");
-        ImGui::PopTextWrapPos();
+        const bool installing = s.state == r_cloud_state::installing;
+        if(installing)
+            paragraph("Installing Revere Cloud...");
+        else if(s.state == r_cloud_state::installed)
+            paragraph("Revere Cloud is installed and running. Its pairing code is under Plugins.");
+        else if(s.state == r_cloud_state::needs_update || s.state == r_cloud_state::failed_check)
+            paragraph(cloud_skipped_text(r_vss::cloud_state_name(s.state)));
+        if(!installing && !s.error_kind.empty())
+        {
+            paragraph(cloud_install_error_text(s.error_kind), &r_ui_utils::theme::status_danger_text);
+            if(!s.error_detail.empty())
+                paragraph(s.error_detail, &r_ui_utils::theme::text_secondary);
+        }
 
-        ImGui::Spacing();
-        ImGui::Spacing();
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
 
-        float button_width = 260.0f;
-        float total_buttons = button_width * 2 + ImGui::GetStyle().ItemSpacing.x;
-        ImGui::SetCursorPosX((640.0f - total_buttons) * 0.5f);
-
-        if(ImGui::Button("Download Revere Cloud", ImVec2(button_width, 0)))
+        if(ms.showing_terms && s.can_install)
         {
-            download_cb();
-            ImGui::CloseCurrentPopup();
+            paragraph(std::string("Revere Cloud connects this system to Revere's servers. By installing it you agree to the Revere Cloud terms (version ") +
+                      r_vss::REVERE_CLOUD_TERMS_VERSION + ").");
+            ImGui::Spacing();
+            switch(buttons({"View the terms", "Agree and install", "Cancel"}))
+            {
+                case 0: open_url_cb(r_vss::REVERE_CLOUD_TERMS_URL); break;
+                case 1: ms.showing_terms = false; install_cb(true); break;
+                case 2: ms.showing_terms = false; break;
+                default: break;
+            }
         }
-
-        ImGui::SameLine();
-
-        if(ImGui::Button("Close", ImVec2(button_width, 0)))
+        else
         {
-            close_cb();
-            ImGui::CloseCurrentPopup();
+            std::vector<std::string> labels;
+            std::string action;
+            if(s.can_install)
+            {
+                action = s.state == r_cloud_state::needs_update ? "Update Revere Cloud"
+                       : s.state == r_cloud_state::failed_check ? "Reinstall Revere Cloud"
+                       : "Install Revere Cloud";
+                labels.push_back(action);
+            }
+            // Builds that can't install it themselves, and releases with no plugin for this platform.
+            const bool offer_download = (!s.can_install && !installing && s.state != r_cloud_state::installed) ||
+                                        s.error_kind == "not_available";
+            if(offer_download)
+                labels.push_back("Download page");
+            labels.push_back("Close");
+
+            int clicked = buttons(labels);
+            if(clicked >= 0)
+            {
+                const auto& label = labels[clicked];
+                if(label == action)
+                {
+                    if(s.terms_accepted)
+                        install_cb(false);
+                    else
+                        ms.showing_terms = true;
+                }
+                else if(label == "Download page")
+                {
+                    download_cb();
+                    close();
+                }
+                else
+                    close();
+            }
         }
 
         ImGui::Spacing();
-
         ImGui::EndPopup();
     }
 }
