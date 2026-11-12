@@ -26,6 +26,26 @@ void test_cloud_download::test_other_versions_open_the_latest_release()
             RTF_ASSERT(revere_cloud_download_url(v, p) == "https://github.com/dicroce/revere/releases/latest");
 }
 
+void test_cloud_download::test_install_texts()
+{
+    // Every failure the installer reports has its own words; none when nothing failed.
+    RTF_ASSERT(cloud_install_error_text("").empty());
+    for(auto kind : {"not_available", "download_failed", "check_failed", "write_failed", "load_failed"})
+        RTF_ASSERT(!cloud_install_error_text(kind).empty());
+    RTF_ASSERT(cloud_install_error_text("not_available").find("download page") != string::npos);
+    RTF_ASSERT(cloud_install_error_text("something new") == "Revere Cloud couldn't be installed.");
+
+    RTF_ASSERT(cloud_skipped_label("needs_update") == "Needs updating");
+    RTF_ASSERT(cloud_skipped_text("needs_update").find("needs updating") != string::npos);
+    RTF_ASSERT(cloud_skipped_label("failed_check") == "Failed check");
+    RTF_ASSERT(cloud_skipped_text("failed_check").find("integrity check") != string::npos);
+    for(auto state : {"not_installed", "installing", "installed"})
+    {
+        RTF_ASSERT(cloud_skipped_label(state).empty());
+        RTF_ASSERT(cloud_skipped_text(state).empty());
+    }
+}
+
 void test_cloud_download::test_this_build_platform()
 {
     // The platform the test itself was built for.

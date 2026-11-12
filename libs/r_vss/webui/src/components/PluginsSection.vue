@@ -3,7 +3,36 @@
     <h2>Plugins <span v-if="authed" class="count">{{ plugins.length }}</span></h2>
     <p v-if="!authed" class="empty">Sign in to see and manage plugins.</p>
     <p v-else-if="error" class="error">{{ error }}</p>
-    <p v-else-if="loaded && plugins.length === 0" class="empty">No system plugins loaded.</p>
+    <p v-else-if="loaded && plugins.length === 0 && !showCloud" class="empty">No system plugins loaded.</p>
+
+    <!-- Revere Cloud until it's loaded: install it, or update one built for an older Revere. -->
+    <div v-if="showCloud" class="plugin cloud">
+      <div class="head">
+        <span class="dot" :class="cloudTone"></span>
+        <span class="name">Revere Cloud</span>
+        <span class="state">{{ cloudLabel }}</span>
+      </div>
+      <div class="lines">
+        <p class="text">Revere Cloud is an optional plugin that connects this system to the Revere Cloud infrastructure, so the Revere mobile app can reach your cameras remotely. Some of its features are paid. It is not open source, and Revere works fully without it.</p>
+        <p v-if="cloudStateText" class="text">{{ cloudStateText }}</p>
+        <p v-if="cloudErrorText" class="error">{{ cloudErrorText }}<span v-if="cloud.error_detail" class="muted"> ({{ cloud.error_detail }})</span></p>
+        <p v-if="cloudStartError" class="error">{{ cloudStartError }}</p>
+
+        <div v-if="showingTerms && cloud.can_install" class="terms">
+          <p class="text">Revere Cloud connects this system to Revere's servers. By installing it you agree to the
+            <a :href="safeUrl(cloud.terms_url)" target="_blank" rel="noopener noreferrer">Revere Cloud terms</a>
+            (version {{ cloud.terms_version }}).</p>
+          <div class="actions">
+            <button class="primary small" :disabled="cloudBusy" @click="installCloud(true)">Agree and install</button>
+            <button class="ghost small" @click="showingTerms = false">Cancel</button>
+          </div>
+        </div>
+        <div v-else class="actions">
+          <button v-if="cloud.can_install" class="primary small" :disabled="cloudBusy" @click="onInstallClick">{{ cloudActionLabel }}</button>
+          <a v-if="offerDownload" :href="safeUrl(cloud.download_url)" target="_blank" rel="noopener noreferrer">Download page</a>
+        </div>
+      </div>
+    </div>
 
     <div v-for="p in plugins" :key="p.name" class="plugin">
       <div class="head">
@@ -57,8 +86,8 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue'
-import { getSystemPlugins, setSystemPluginEnabled } from '../api.js'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { getSystemPlugins, setSystemPluginEnabled, getRevereCloudInstall, startRevereCloudInstall } from '../api.js'
 
 const props = defineProps({ authed: { type: Boolean, default: false } })
 
@@ -68,6 +97,83 @@ const error = ref('')
 const busy = ref(null)
 const toggleError = ref(null)
 const copied = ref('')
+
+// Revere Cloud's in-app install (GET /revere_cloud_install).
+const cloud = ref(null)
+const showingTerms = ref(false)
+const cloudBusy = ref(false)
+const cloudStartError = ref('')
+
+// The same words as the desktop (apps/revere cloud_download.cpp).
+const CLOUD_ERRORS = {
+  not_available: "Revere Cloud isn't available for this version of Revere yet. You can get it from the download page instead.",
+  download_failed: "Revere Cloud couldn't be downloaded. Check this computer's internet connection and try again.",
+  check_failed: "The downloaded Revere Cloud failed its integrity check, so it wasn't installed.",
+  write_failed: "Revere Cloud couldn't be saved to the plugins folder.",
+  load_failed: "Revere Cloud was installed but couldn't be started. Restart Revere to try again.",
+}
+
+const showCloud = computed(() => props.authed && cloud.value && cloud.value.state !== 'installed')
+const cloudTone = computed(() => ({ needs_update: 'warning', failed_check: 'error' })[cloud.value?.state] || 'neutral')
+const cloudLabel = computed(() => ({
+  not_installed: 'Not installed',
+  installing: 'Installing',
+  needs_update: 'Needs updating',
+  failed_check: 'Failed check',
+})[cloud.value?.state] || '')
+const cloudStateText = computed(() => ({
+  installing: 'Installing Revere Cloud...',
+  needs_update: 'Revere Cloud needs updating for this version of Revere.',
+  failed_check: "Revere Cloud failed its integrity check, so it wasn't started. Reinstall it.",
+})[cloud.value?.state] || '')
+const cloudErrorText = computed(() => {
+  const kind = cloud.value?.error_kind
+  if (!kind || cloud.value.state === 'installing') return ''
+  return CLOUD_ERRORS[kind] || "Revere Cloud couldn't be installed."
+})
+const cloudActionLabel = computed(() => ({
+  needs_update: 'Update Revere Cloud',
+  failed_check: 'Reinstall Revere Cloud',
+})[cloud.value?.state] || 'Install Revere Cloud')
+// Builds that can't install it themselves, and releases with no plugin for this platform.
+const offerDownload = computed(() => {
+  const c = cloud.value
+  if (!c) return false
+  return (!c.can_install && c.state !== 'installing') || c.error_kind === 'not_available'
+})
+
+function onInstallClick() {
+  if (cloud.value.terms_accepted) installCloud(false)
+  else showingTerms.value = true
+}
+
+async function installCloud(acceptTerms) {
+  cloudBusy.value = true
+  cloudStartError.value = ''
+  try {
+    cloud.value = await startRevereCloudInstall(acceptTerms ? cloud.value.terms_version : null)
+    showingTerms.value = false
+  } catch (e) {
+    cloudStartError.value = e.message
+  }
+  cloudBusy.value = false
+  pollCloud()
+}
+
+// Every second while it installs; the plugin list picks it up when it's done.
+let cloudPollId = null
+async function pollCloud() {
+  clearTimeout(cloudPollId)
+  if (!props.authed) return
+  const was = cloud.value?.state
+  try {
+    cloud.value = await getRevereCloudInstall()
+  } catch {
+    return   // an older revere without the route, or signed out: no card
+  }
+  if (cloud.value.state === 'installing') cloudPollId = setTimeout(pollCloud, 1000)
+  else if (was === 'installing') refreshPlugins()   // just loaded: list it now
+}
 
 // "revere_cloud_system_plugin" -> "revere_cloud", for a plugin that doesn't
 // name itself (as the desktop's plugin_short_name).
@@ -110,8 +216,14 @@ function groups(lines) {
 }
 
 async function refresh() {
+  await refreshPlugins()
+  if (cloud.value?.state !== 'installing') pollCloud()
+}
+
+async function refreshPlugins() {
   if (!props.authed) {
     plugins.value = []
+    cloud.value = null
     return
   }
   try {
@@ -162,7 +274,10 @@ onMounted(() => {
   // A plugin's status changes on its own (connecting, a pairing code): poll.
   pollId = setInterval(refresh, 5000)
 })
-onUnmounted(() => clearInterval(pollId))
+onUnmounted(() => {
+  clearInterval(pollId)
+  clearTimeout(cloudPollId)
+})
 </script>
 
 <style scoped>
@@ -259,4 +374,15 @@ button.ghost {
   cursor: pointer;
 }
 button.small { padding: 0.35rem 0.75rem; font-size: 0.8rem; }
+button.primary {
+  background: #2d6cdf;
+  border: 1px solid #2d6cdf;
+  color: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+}
+button.primary:disabled { opacity: 0.5; cursor: default; }
+.actions { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.actions a, .terms a { color: #4a9eff; }
+.terms { display: flex; flex-direction: column; gap: 0.45rem; }
 </style>

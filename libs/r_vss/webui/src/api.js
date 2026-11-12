@@ -262,6 +262,27 @@ export async function setSystemPluginEnabled(name, enabled) {
   return res.json()
 }
 
+// Revere Cloud's in-app install:
+// { state: 'not_installed'|'installing'|'installed'|'needs_update'|'failed_check',
+//   detail, can_install, terms_accepted, terms_url, terms_version,
+//   error_kind: ''|'not_available'|'download_failed'|'check_failed'|'write_failed'|'load_failed',
+//   error_detail, download_url }
+export async function getRevereCloudInstall() {
+  const res = await apiFetch('/revere_cloud_install')
+  return res.json()
+}
+
+// Starts the install. acceptTermsVersion: the terms version the user just agreed
+// to, or null when they agreed to the current one before.
+export async function startRevereCloudInstall(acceptTermsVersion) {
+  const res = await apiFetch('/revere_cloud_install', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(acceptTermsVersion ? { accept_terms_version: acceptTermsVersion } : {}),
+  })
+  return res.json()
+}
+
 // "Keep this computer awake":
 // { enabled, on_battery, power: 'ac'|'battery'|'unknown', wanted, held,
 //   problem, unavailable, events: [{ what: 'asleep'|'paused', start_ms, end_ms }] newest first }

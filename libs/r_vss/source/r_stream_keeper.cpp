@@ -13,6 +13,8 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/r_std_utils.h"
 #include "r_utils/r_functional.h"
+#include "r_vss/r_build_info.h"
+#include "r_vss/r_plugin_installer.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_time_utils.h"
@@ -88,6 +90,17 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
         _motion_tee
     ),
     _system_plugin_host(top_dir),
+    _cloud_install([&]() {
+        r_cloud_install::deps d;
+        d.install_dir = _system_plugin_host.user_plugin_dir();
+        d.terms_path = top_dir + PATH_SLASH + "revere_cloud_terms.json";
+        d.release_build = is_release_version(revere_version());
+        d.install = [](const std::string& dir) { return install_revere_cloud_plugin(dir); };
+        d.load = [this](const std::string& path, std::string& why) { return _system_plugin_host.load_and_start(path, why); };
+        d.loaded = [this]() { return _system_plugin_host.get_loaded_plugins(); };
+        d.skipped = [this]() { return _system_plugin_host.get_skipped_plugins(); };
+        return d;
+    }()),
     _keep_awake(top_dir),
     _substream_setting(top_dir),
     _ws(top_dir, _devices, _agent, *this),
@@ -1122,6 +1135,16 @@ bool r_stream_keeper::run_system_plugin_action(const std::string& plugin_name, c
 std::string r_stream_keeper::get_system_plugin_version(const std::string& plugin_name) const
 {
     return _system_plugin_host.get_plugin_version(plugin_name);
+}
+
+r_cloud_install_status r_stream_keeper::get_cloud_install_status() const
+{
+    return _cloud_install.status();
+}
+
+bool r_stream_keeper::start_cloud_install(const std::string& accepted_terms_version, std::string& why)
+{
+    return _cloud_install.start(accepted_terms_version, why);
 }
 
 std::string r_stream_keeper::get_system_plugin_status(const std::string& plugin_name) const

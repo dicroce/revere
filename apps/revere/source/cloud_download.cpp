@@ -60,3 +60,38 @@ string revere::revere_cloud_download_url(const string& version, cloud_platform p
     }
     return "https://github.com/dicroce/revere/releases/download/v" + version + "/revere-v" + version + asset;
 }
+
+string revere::cloud_install_error_text(const string& error_kind)
+{
+    if(error_kind.empty())
+        return string();
+    if(error_kind == "not_available")
+        return "Revere Cloud isn't available for this version of Revere yet. You can get it from the download page instead.";
+    if(error_kind == "download_failed")
+        return "Revere Cloud couldn't be downloaded. Check this computer's internet connection and try again.";
+    if(error_kind == "check_failed")
+        return "The downloaded Revere Cloud failed its integrity check, so it wasn't installed.";
+    if(error_kind == "write_failed")
+        return "Revere Cloud couldn't be saved to the plugins folder.";
+    if(error_kind == "load_failed")
+        return "Revere Cloud was installed but couldn't be started. Restart Revere to try again.";
+    return "Revere Cloud couldn't be installed.";
+}
+
+string revere::cloud_skipped_label(const string& state)
+{
+    if(state == "needs_update")
+        return "Needs updating";
+    if(state == "failed_check")
+        return "Failed check";
+    return string();
+}
+
+string revere::cloud_skipped_text(const string& state)
+{
+    if(state == "needs_update")
+        return "Revere Cloud needs updating for this version of Revere.";
+    if(state == "failed_check")
+        return "Revere Cloud failed its integrity check, so it wasn't started. Reinstall it.";
+    return string();
+}

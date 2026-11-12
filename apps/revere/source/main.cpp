@@ -1647,14 +1647,24 @@ void configure_camera_setup_wizard(
 
     camera_setup_wizard.add_step(
         "about_revere_cloud",
-        [&camera_setup_wizard](){
+        [&camera_setup_wizard, &stream_keeper](){
+            static revere::about_revere_cloud_state about_cloud;
             ImGui::OpenPopup("About Revere Cloud");
             revere::about_revere_cloud_modal(
                 GImGui,
                 "About Revere Cloud",
+                stream_keeper.get_cloud_install_status(),
+                about_cloud,
+                [&](bool accept_terms){
+                    std::string why;
+                    if(!stream_keeper.start_cloud_install(accept_terms ? r_vss::REVERE_CLOUD_TERMS_VERSION : "", why))
+                        R_LOG_ERROR("Revere Cloud install didn't start: %s", why.c_str());
+                },
                 [&](){
                     revere::open_url_in_browser(revere::revere_cloud_download_url(REVERE_VERSION, revere::this_cloud_platform()));
-                    camera_setup_wizard.cancel();
+                },
+                [&](const std::string& url){
+                    revere::open_url_in_browser(url);
                 },
                 [&](){camera_setup_wizard.cancel();}
             );
@@ -3853,6 +3863,12 @@ int main(int argc, char** argv)
         streamKeeper.set_system_plugin_enabled(name, enabled);
     };
     main_window_actions.run_plugin_action = [&](const std::string& name, const std::string& action){
+        // The Revere Cloud row revere adds itself (not the plugin's): update it from About Revere Cloud.
+        if(name == r_vss::REVERE_CLOUD_PLUGIN_NAME && action == "revere:install_cloud")
+        {
+            camera_setup_wizard.next("about_revere_cloud");
+            return;
+        }
         if(!streamKeeper.run_system_plugin_action(name, action))
             R_LOG_WARNING("Plugin %s has no action %s", name.c_str(), action.c_str());
     };
@@ -4200,6 +4216,54 @@ int main(int argc, char** argv)
             revere::parse_plugin_status(streamKeeper.get_system_plugin_status(plugin_name), pv);
             pv.status_message = streamKeeper.get_system_plugin_status_message(plugin_name);
             plugin_views.push_back(std::move(pv));
+        }
+
+        // Revere Cloud when it's there but not loaded (built for an older Revere, or
+        // tampered with), or being installed: a row of its own, whose button opens
+        // About Revere Cloud to update it. Once an install loads it, it's listed
+        // at once rather than at the next 5 second refresh.
+        {
+            auto cloud = streamKeeper.get_cloud_install_status();
+            const bool listed = std::find(ui_state.loaded_system_plugins.begin(), ui_state.loaded_system_plugins.end(),
+                                          r_vss::REVERE_CLOUD_PLUGIN_NAME) != ui_state.loaded_system_plugins.end();
+            if(cloud.state == r_vss::r_cloud_state::installed && !listed)
+                ui_state.loaded_system_plugins = streamKeeper.get_loaded_system_plugins();
+            else if(!listed && (cloud.state == r_vss::r_cloud_state::needs_update ||
+                                cloud.state == r_vss::r_cloud_state::failed_check ||
+                                cloud.state == r_vss::r_cloud_state::installing))
+            {
+                revere::plugin_view pv;
+                pv.name = r_vss::REVERE_CLOUD_PLUGIN_NAME;
+                pv.display_name = "Revere Cloud";
+                pv.has_status = true;
+                pv.has_toggle = false;
+                const std::string state = r_vss::cloud_state_name(cloud.state);
+                nlohmann::json line;
+                if(cloud.state == r_vss::r_cloud_state::installing)
+                {
+                    pv.status_label = "Installing";
+                    pv.status_color = r_ui_utils::theme::status_neutral_dot;
+                    line["text"] = "Installing Revere Cloud...";
+                }
+                else
+                {
+                    pv.status_label = revere::cloud_skipped_label(state);
+                    pv.status_color = cloud.state == r_vss::r_cloud_state::needs_update ? r_ui_utils::theme::status_warning_dot
+                                                                                        : r_ui_utils::theme::status_danger_dot;
+                    line["text"] = revere::cloud_skipped_text(state);
+                    if(cloud.can_install)
+                    {
+                        line["action"] = "revere:install_cloud";
+                        line["action_label"] = cloud.state == r_vss::r_cloud_state::needs_update ? "Update Revere Cloud" : "Reinstall Revere Cloud";
+                    }
+                }
+                nlohmann::json lines = nlohmann::json::array({line});
+                auto error = revere::cloud_install_error_text(cloud.error_kind);
+                if(!error.empty() && cloud.state != r_vss::r_cloud_state::installing)
+                    lines.push_back({{"text", error}});
+                pv.status_message = nlohmann::json{{"lines", lines}}.dump();
+                plugin_views.push_back(std::move(pv));
+            }
         }
 
         main_window_state.cameras_loaded = cameras_loaded;
