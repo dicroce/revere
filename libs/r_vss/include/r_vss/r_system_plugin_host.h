@@ -98,6 +98,11 @@ public:
     // "needs updating" or "failed its integrity check". Empty unless signatures are required.
     R_API std::vector<r_skipped_system_plugin> get_skipped_plugins() const;
 
+    // The folder an in-app install writes to: the last plugin folder, the user's
+    // (the data folder, or $SNAP_USER_COMMON under the Snap). A verified copy
+    // there wins over one next to the exe.
+    R_API std::string user_plugin_dir() const { return _user_dir; }
+
     // Start all loaded plugins
     R_API void start_all();
 
@@ -183,6 +188,7 @@ private:
     };
 
     std::string _top_dir;
+    std::string _user_dir;
     bool _require_signed {false};
 
     // _list_lock guards _plugins and _skipped. _plugins is only ever appended to (until the

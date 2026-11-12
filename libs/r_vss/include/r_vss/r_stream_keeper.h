@@ -6,6 +6,7 @@
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_motion_event_plugin_host.h"
 #include "r_vss/r_system_plugin_host.h"
+#include "r_vss/r_cloud_install.h"
 #include "r_vss/r_ws.h"
 #include "r_vss/r_prune.h"
 #include "r_vss/r_camera_stats.h"
@@ -347,6 +348,10 @@ public:
     R_API std::string get_system_plugin_status_message(const std::string& plugin_name) const;
     R_API std::string get_system_plugin_version(const std::string& plugin_name) const;
 
+    // Revere Cloud's in-app install (r_vss/r_cloud_install.h), for the desktop and web UIs.
+    R_API r_cloud_install_status get_cloud_install_status() const;
+    R_API bool start_cloud_install(const std::string& accepted_terms_version, std::string& why);
+
     // "Keep this computer awake": the setting, the OS request and power events.
     R_API r_keep_awake& keep_awake() { return _keep_awake; }
 
@@ -487,6 +492,7 @@ private:
     r_motion_event_tee _motion_tee;
     r_motion_engine _motionEngine;
     r_system_plugin_host _system_plugin_host;
+    r_cloud_install _cloud_install;   // after _system_plugin_host, which it loads into: destroyed first
     r_keep_awake _keep_awake;
     r_substream_setting _substream_setting;
     r_ws _ws;

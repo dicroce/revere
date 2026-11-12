@@ -180,6 +180,8 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_POST, "/storage_op_cancel", &r_ws::_post_storage_op_cancel);
     route(METHOD_GET, "/system_plugins", &r_ws::_get_system_plugins);
     route(METHOD_POST, "/system_plugin_enabled", &r_ws::_post_system_plugin_enabled);
+    route(METHOD_GET, "/revere_cloud_install", &r_ws::_get_revere_cloud_install);
+    route(METHOD_POST, "/revere_cloud_install", &r_ws::_post_revere_cloud_install);
     route(METHOD_GET, "/keep_awake", &r_ws::_get_keep_awake);
     route(METHOD_POST, "/keep_awake", &r_ws::_post_keep_awake);
 
@@ -4447,6 +4449,51 @@ r_http::r_server_response r_ws::_post_system_plugin_enabled(r_utils::r_socket_ba
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to set the plugin's enabled state."));
+}
+
+// {"state": "not_installed"|"installing"|"installed"|"needs_update"|"failed_check",
+//  "detail", "can_install", "terms_accepted", "terms_url", "terms_version",
+//  "error_kind" ("" or plugin_install_name(), or "load_failed"), "error_detail",
+//  "download_url": the release page, for builds that can't install it themselves}
+static json _cloud_install_json(const r_cloud_install_status& s)
+{
+    auto version = revere_version();
+    return json{
+        {"state", cloud_state_name(s.state)},
+        {"detail", s.detail},
+        {"can_install", s.can_install},
+        {"terms_accepted", s.terms_accepted},
+        {"terms_url", REVERE_CLOUD_TERMS_URL},
+        {"terms_version", REVERE_CLOUD_TERMS_VERSION},
+        {"error_kind", s.error_kind},
+        {"error_detail", s.error_detail},
+        {"download_url", is_release_version(version) ? "https://github.com/dicroce/revere/releases/tag/v" + version
+                                                     : string("https://github.com/dicroce/revere/releases/latest")}
+    };
+}
+
+r_http::r_server_response r_ws::_get_revere_cloud_install(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    return _json_reply(_cloud_install_json(_stream_keeper.get_cloud_install_status()));
+}
+
+// {"accept_terms_version": "2026-11-07"} (may be left out once that version was
+// accepted): starts the install. 202 with the state; 400 if it can't start.
+r_http::r_server_response r_ws::_post_revere_cloud_install(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    auto body = request.get_body_as_string();
+    auto req = body.empty() ? json::object() : json::parse(body, nullptr, false);
+    if(!req.is_object() || (req.contains("accept_terms_version") && !req["accept_terms_version"].is_string()))
+        return _json_error(response_bad_request, "Expected {\"accept_terms_version\": \"...\"}.");
+
+    string why;
+    if(!_stream_keeper.start_cloud_install(req.value("accept_terms_version", string()), why))
+        return _json_error(response_bad_request, why);
+
+    return _json_reply(_cloud_install_json(_stream_keeper.get_cloud_install_status()), response_accepted);
 }
 
 static json _keep_awake_json(const r_keep_awake_status& s)
