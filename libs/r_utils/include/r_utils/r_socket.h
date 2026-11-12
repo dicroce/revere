@@ -241,6 +241,11 @@ struct r_adapter_info
 // Returns network adapters that are: UP, not loopback, multicast capable, and have an IPv4 address
 R_API std::vector<r_adapter_info> r_get_adapters();
 
+// A line that names the computer's usable network addresses (r_get_adapters() without the virtual ones, sorted), so two
+// calls differ when an interface came or went or an address changed (Wi-Fi to Ethernet, a new DHCP lease). Empty with
+// no network.
+R_API std::string r_network_signature();
+
 // Enumerate the usable host addresses on the IPv4 subnet described by (ipv4_addr,
 // netmask), excluding the network and broadcast addresses. Returns an empty vector
 // if the inputs are invalid or the host count would exceed max_hosts (so callers

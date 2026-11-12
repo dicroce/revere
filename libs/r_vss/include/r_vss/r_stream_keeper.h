@@ -20,6 +20,7 @@
 #include "r_vss/r_keep_awake.h"
 #include "r_vss/r_substream_setting.h"
 #include "r_vss/r_teardown_queue.h"
+#include "r_vss/r_network_watch.h"
 #include "r_vss/r_frame_tap.h"
 #include "r_vss/r_substream_recorder.h"
 #include "r_vss/r_live_restream_host.h"
@@ -426,6 +427,7 @@ private:
     // is still pending. _stuck_warned: per camera, the 30 s steps of a stuck
     // teardown already logged (keeper thread only).
     r_teardown_queue _teardowns;
+    r_network_watch _network_watch;
     // PTZ view pictures (ptz_view_frame).
     r_frame_taps _frame_taps;
     // Before _system_plugin_host, which reads from it until it's destroyed.

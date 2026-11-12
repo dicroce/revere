@@ -274,6 +274,9 @@ public:
     R_API r_recording_context& operator=(r_recording_context&&) noexcept = delete;
 
     R_API bool dead() const;
+    // Marks this stream dead now, so the stream keeper ends it (a TEARDOWN, the sockets closed) and starts it again,
+    // without waiting for it to go quiet: the network it was on changed.
+    R_API void drop() { _die = true; }
 
     R_API r_disco::r_camera camera() const;
 
@@ -402,7 +405,7 @@ private:
     void _record_byte_sample();
     // Feeds the lag watchdog one video frame and logs what it found; returns its lag, ms.
     int64_t _watch_lag(int64_t pts);
-    bool _die;
+    std::atomic<bool> _die;
     r_ws& _ws;
     // Per-camera rolling cache of video frames since the last keyframe.
     // Only touched by the source thread inside the video sample callback —

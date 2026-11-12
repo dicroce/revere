@@ -527,29 +527,32 @@ void r_gst_source::stop()
             g_signal_handlers_disconnect_by_data(_a_appsink, this);
         }
 
-        auto result = gst_element_set_state(_pipeline, GST_STATE_NULL);
+        // Taking rtspsrc to NULL sends the TEARDOWN and closes its sockets, and it can block on a connection that has died
+        // under it (a network that changed, a camera that vanished): the state change doesn't return until the TEARDOWN
+        // is answered or its own write gives up. So it runs on its own thread, and this waits for it no longer than
+        // STOP_WAIT. A change that outlives the wait finishes on its thread, which holds its own reference to the
+        // pipeline until then; nothing here waits for it again.
+        auto change = std::make_shared<_null_change>();
+        GstElement* pipeline = GST_ELEMENT(gst_object_ref(_pipeline));
+        std::thread([change, pipeline](){
+            auto rc = gst_element_set_state(pipeline, GST_STATE_NULL);
+            if(rc == GST_STATE_CHANGE_ASYNC)
+                rc = gst_element_get_state(pipeline, NULL, NULL, 5 * GST_SECOND);
+            {
+                std::lock_guard<std::mutex> g(change->m);
+                change->result = rc;
+                change->done = true;
+            }
+            change->cv.notify_all();
+            gst_object_unref(pipeline);
+        }).detach();
 
-        // Poll with a finite timeout per iteration and an absolute deadline so we never
-        // hang indefinitely waiting for an unresponsive camera's RTSP TEARDOWN response.
-        auto deadline = steady_clock::now() + seconds(5);
-        bool done = false;
-        while(!done)
-        {
-            if(result == GST_STATE_CHANGE_FAILURE)
-            {
-                R_LOG_WARNING("Pipeline state change failed during stop, forcing cleanup");
-                done = true;
-            }
-            else if(result == GST_STATE_CHANGE_SUCCESS || result == GST_STATE_CHANGE_NO_PREROLL)
-                done = true;
-            else if(steady_clock::now() >= deadline)
-            {
-                R_LOG_WARNING("Pipeline shutdown timed out after 5s, forcing cleanup");
-                done = true;
-            }
-            else
-                result = gst_element_get_state(_pipeline, NULL, NULL, 500 * GST_MSECOND);
-        }
+        std::unique_lock<std::mutex> wait_lock(change->m);
+        if(!change->cv.wait_for(wait_lock, STOP_WAIT, [&](){ return change->done; }))
+            R_LOG_WARNING("Pipeline shutdown timed out after %d s, forcing cleanup", (int)STOP_WAIT.count());
+        else if(change->result == GST_STATE_CHANGE_FAILURE)
+            R_LOG_WARNING("Pipeline state change failed during stop, forcing cleanup");
+        wait_lock.unlock();
 
         _running = false;
     }

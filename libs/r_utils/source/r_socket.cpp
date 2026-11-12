@@ -892,6 +892,22 @@ vector<r_networking::r_adapter_info> r_utils::r_networking::r_get_adapters()
     return adapters;
 }
 
+string r_utils::r_networking::r_network_signature()
+{
+    vector<string> parts;
+    for(auto& a : r_get_adapters())
+    {
+        if(a.is_virtual)
+            continue;
+        parts.push_back(a.name + "=" + a.ipv4_addr + "/" + a.ipv4_netmask);
+    }
+    sort(parts.begin(), parts.end());
+    string sig;
+    for(auto& p : parts)
+        sig += p + ";";
+    return sig;
+}
+
 vector<string> r_utils::r_networking::r_ipv4_subnet_hosts(const string& ipv4_addr, const string& netmask, size_t max_hosts)
 {
     vector<string> hosts;
