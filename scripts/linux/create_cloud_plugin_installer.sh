@@ -5,6 +5,14 @@
 # Usage: ./create_cloud_plugin_installer.sh
 #
 # Expects the plugin to be built at: build/system_plugins/revere_cloud_system_plugin.so
+#
+# The plugin's signed manifest and its signature (<plugin>.json, <plugin>.json.sig,
+# from a release build's sign job) go in too when they sit beside it: release
+# builds of revere load only a plugin whose manifest checks out
+# (libs/r_vss/r_plugin_manifest.h). The payload is a gzipped tar of those files.
+#
+# REVERE_CLOUD_ARCH (x86_64 or arm64) names the installer's architecture when it's
+# packed on another machine; it defaults to this one's.
 
 set -e
 
@@ -29,10 +37,10 @@ fi
 mkdir -p "$OUTPUT_DIR"
 # x86_64 keeps the original name; other architectures name theirs, matching
 # the in-app download URL (_revere_cloud_download_url in main.cpp).
-case "$(uname -m)" in
-    x86_64)  ARCH_SUFFIX="" ;;
-    aarch64) ARCH_SUFFIX="-arm64" ;;
-    *)       ARCH_SUFFIX="-$(uname -m)" ;;
+case "${REVERE_CLOUD_ARCH:-$(uname -m)}" in
+    x86_64)        ARCH_SUFFIX="" ;;
+    aarch64|arm64) ARCH_SUFFIX="-arm64" ;;
+    *)             ARCH_SUFFIX="-${REVERE_CLOUD_ARCH:-$(uname -m)}" ;;
 esac
 OUTPUT_FILE="$OUTPUT_DIR/revere-${VERSION}-linux${ARCH_SUFFIX}-cloud.run"
 
@@ -47,11 +55,27 @@ echo "Creating installer for version: $VERSION"
 echo "Plugin: $PLUGIN_PATH"
 echo "Output: $OUTPUT_FILE"
 
+# The payload: the plugin under its installed name, and its manifest and
+# signature when they're there.
+PLUGIN_NAME="revere_cloud_system_plugin.so"
+PAYLOAD_DIR="$(mktemp -d)"
+trap 'rm -rf "$PAYLOAD_DIR"' EXIT
+cp "$PLUGIN_PATH" "$PAYLOAD_DIR/$PLUGIN_NAME"
+PAYLOAD_FILES="$PLUGIN_NAME"
+for suffix in .json .json.sig; do
+    if [ -f "$PLUGIN_PATH$suffix" ]; then
+        cp "$PLUGIN_PATH$suffix" "$PAYLOAD_DIR/$PLUGIN_NAME$suffix"
+        PAYLOAD_FILES="$PAYLOAD_FILES $PLUGIN_NAME$suffix"
+    fi
+done
+echo "Payload: $PAYLOAD_FILES"
+
 # Create the installer
 cat > "$OUTPUT_FILE" << 'INSTALLER_HEADER'
 #!/bin/bash
 # Revere Cloud Plugin Installer
-# This is a self-extracting installer - the .so is appended after the __PAYLOAD__ marker
+# This is a self-extracting installer - a gzipped tar of the .so and its signed
+# manifest is appended after the __PAYLOAD__ marker
 #
 # Usage: ./revere-<version>-linux-cloud.run [data-dir]
 #   With no data-dir it installs for the desktop app: into the Revere Snap's
@@ -103,10 +127,14 @@ mkdir -p "$PLUGIN_DIR"
 ARCHIVE_START=$(awk '/^__PAYLOAD__$/{print NR + 1; exit 0; }' "$0")
 
 echo "Installing plugin to: $PLUGIN_DIR/$PLUGIN_NAME"
-tail -n +"$ARCHIVE_START" "$0" > "$PLUGIN_DIR/$PLUGIN_NAME"
+# An older install's manifest and signature describe its plugin, not this one.
+rm -f "$PLUGIN_DIR/$PLUGIN_NAME.json" "$PLUGIN_DIR/$PLUGIN_NAME.json.sig"
+tail -n +"$ARCHIVE_START" "$0" | tar -xzf - -C "$PLUGIN_DIR" --no-same-owner
 chmod 755 "$PLUGIN_DIR/$PLUGIN_NAME"
 # Installed as root into a service's data dir: give it to the service's user.
-chown --reference="$DATA_DIR" "$PLUGIN_DIR" "$PLUGIN_DIR/$PLUGIN_NAME" 2>/dev/null || true
+for f in "$PLUGIN_DIR" "$PLUGIN_DIR/$PLUGIN_NAME" "$PLUGIN_DIR/$PLUGIN_NAME.json" "$PLUGIN_DIR/$PLUGIN_NAME.json.sig"; do
+    [ -e "$f" ] && chown --reference="$DATA_DIR" "$f" 2>/dev/null || true
+done
 
 # A copy from an earlier installer, which the Snap can't load: say it can go.
 if [ "$SNAP_INSTALL" -eq 1 ] && [ -f "$DESKTOP_DATA_DIR/system_plugins/$PLUGIN_NAME" ]; then
@@ -124,8 +152,8 @@ exit 0
 __PAYLOAD__
 INSTALLER_HEADER
 
-# Append the plugin binary
-cat "$PLUGIN_PATH" >> "$OUTPUT_FILE"
+# Append the payload
+tar -czf - -C "$PAYLOAD_DIR" $PAYLOAD_FILES >> "$OUTPUT_FILE"
 
 # Make executable
 chmod +x "$OUTPUT_FILE"
