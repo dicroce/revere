@@ -183,6 +183,57 @@ const vector<string>& r_vss::trusted_plugin_keys()
     return keys;
 }
 
+r_plugin_check_result r_vss::check_plugin_manifest(const string& manifest_json,
+                                                   const string& signature,
+                                                   const string& file_name,
+                                                   const string& revere_version,
+                                                   const vector<string>& trusted_keys,
+                                                   const string& platform,
+                                                   const string& arch,
+                                                   r_plugin_manifest& manifest)
+{
+    if(manifest_json.size() > MAX_MANIFEST_BYTES)
+        return _result(r_plugin_check::malformed, "the manifest is " + to_string(manifest_json.size()) + " bytes");
+    if(signature.size() > MAX_SIGNATURE_BYTES)
+        return _result(r_plugin_check::bad_signature, "the signature is " + to_string(signature.size()) + " bytes");
+
+    // The signature first: nothing in an unsigned manifest is believed, or even parsed.
+    bool signed_by_trusted = false;
+    for(const auto& key : trusted_keys)
+    {
+        if(ecdsa_p256_sha256_verify(key,
+                                    reinterpret_cast<const uint8_t*>(manifest_json.data()), manifest_json.size(),
+                                    reinterpret_cast<const uint8_t*>(signature.data()), signature.size()))
+        {
+            signed_by_trusted = true;
+            break;
+        }
+    }
+    if(!signed_by_trusted)
+        return _result(r_plugin_check::bad_signature,
+                       trusted_keys.empty() ? string("no trusted keys") : string("no trusted key signed the manifest"));
+
+    r_plugin_manifest m;
+    try
+    {
+        m = parse_plugin_manifest(manifest_json);
+    }
+    catch(const exception& e)
+    {
+        return _result(r_plugin_check::malformed, e.what());
+    }
+
+    if(m.file != file_name)
+        return _result(r_plugin_check::wrong_file, "the manifest is for " + m.file);
+    if(m.platform != platform || m.arch != arch)
+        return _result(r_plugin_check::wrong_platform, "built for " + m.platform + " " + m.arch + ", this is " + platform + " " + arch);
+    if(m.revere_version != revere_version)
+        return _result(r_plugin_check::wrong_version, "built for revere " + m.revere_version + ", this is " + revere_version);
+
+    manifest = m;
+    return _result(r_plugin_check::ok);
+}
+
 r_plugin_check_result r_vss::check_system_plugin(const string& plugin_path,
                                                  const string& revere_version,
                                                  const vector<string>& trusted_keys,
@@ -204,39 +255,12 @@ r_plugin_check_result r_vss::check_system_plugin(const string& plugin_path,
     if(!_read_small(signature_path, MAX_SIGNATURE_BYTES, signature, why))
         return _result(r_plugin_check::bad_signature, why);
 
-    // The signature first: nothing in an unsigned manifest is believed, or even parsed.
-    bool signed_by_trusted = false;
-    for(const auto& key : trusted_keys)
-    {
-        if(ecdsa_p256_sha256_verify(key,
-                                    reinterpret_cast<const uint8_t*>(manifest_json.data()), manifest_json.size(),
-                                    reinterpret_cast<const uint8_t*>(signature.data()), signature.size()))
-        {
-            signed_by_trusted = true;
-            break;
-        }
-    }
-    if(!signed_by_trusted)
-        return _result(r_plugin_check::bad_signature,
-                       trusted_keys.empty() ? string("no trusted keys") : "no trusted key signed " + manifest_path);
-
-    r_plugin_manifest m;
-    try
-    {
-        m = parse_plugin_manifest(manifest_json);
-    }
-    catch(const exception& e)
-    {
-        return _result(r_plugin_check::malformed, e.what());
-    }
-
     auto file_name = fs::u8path(plugin_path).filename().u8string();
-    if(m.file != string(file_name.begin(), file_name.end()))
-        return _result(r_plugin_check::wrong_file, "the manifest is for " + m.file);
-    if(m.platform != platform || m.arch != arch)
-        return _result(r_plugin_check::wrong_platform, "built for " + m.platform + " " + m.arch + ", this is " + platform + " " + arch);
-    if(m.revere_version != revere_version)
-        return _result(r_plugin_check::wrong_version, "built for revere " + m.revere_version + ", this is " + revere_version);
+    r_plugin_manifest m;
+    auto r = check_plugin_manifest(manifest_json, signature, string(file_name.begin(), file_name.end()),
+                                   revere_version, trusted_keys, platform, arch, m);
+    if(!r.ok())
+        return r;
 
     auto size = fs::file_size(fs::u8path(plugin_path), ec);
     if(ec)

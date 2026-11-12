@@ -59,6 +59,8 @@ add_executable(
     source/test_r_plugin_manifest.cpp
     include/test_r_plugin_loader.h
     source/test_r_plugin_loader.cpp
+    include/test_r_plugin_installer.h
+    source/test_r_plugin_installer.cpp
     include/test_r_keep_awake.h
     source/test_r_keep_awake.cpp
     include/test_r_substream_setting.h
