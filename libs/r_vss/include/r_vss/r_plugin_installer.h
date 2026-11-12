@@ -56,7 +56,7 @@ R_API std::string revere_cloud_plugin_file();
 // dicroce/revere's release v<revere_version> assets for platform and arch (as
 // plugin_platform() and plugin_arch() name them):
 //   revere-v0.0.41-windows-cloud-plugin.dll, and .dll.json, .dll.json.sig
-// The platform part is the installers': windows, macos, linux, linux-arm64.
+// The platform part is the installers': windows, macos, macos-intel, linux, linux-arm64.
 R_API r_plugin_release_assets revere_cloud_release_assets(const std::string& revere_version,
                                                           const std::string& platform,
                                                           const std::string& arch);

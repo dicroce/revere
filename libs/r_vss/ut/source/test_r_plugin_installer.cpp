@@ -180,6 +180,7 @@ void test_r_plugin_installer::test_release_assets()
     RTF_ASSERT(revere_cloud_release_assets("0.0.41", "linux", "x86_64").plugin_url == base + "revere-v0.0.41-linux-cloud-plugin.so");
     RTF_ASSERT(revere_cloud_release_assets("0.0.41", "linux", "arm64").plugin_url == base + "revere-v0.0.41-linux-arm64-cloud-plugin.so");
     RTF_ASSERT(revere_cloud_release_assets("0.0.41", "macos", "arm64").plugin_url == base + "revere-v0.0.41-macos-cloud-plugin.dylib");
+    RTF_ASSERT(revere_cloud_release_assets("0.0.41", "macos", "x86_64").plugin_url == base + "revere-v0.0.41-macos-intel-cloud-plugin.dylib");
 
     auto file = revere_cloud_plugin_file();
     RTF_ASSERT(file == "revere_cloud_system_plugin.dll" || file == "revere_cloud_system_plugin.dylib" || file == "revere_cloud_system_plugin.so");
