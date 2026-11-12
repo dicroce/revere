@@ -2,6 +2,7 @@
 #include "r_vss/r_plugin_manifest.h"
 #include "r_utils/r_ecdsa.h"
 #include "r_utils/r_exception.h"
+#include "r_utils/r_string_utils.h"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -286,6 +287,11 @@ void test_r_plugin_manifest::test_names_and_paths()
     auto arch = plugin_arch();
     RTF_ASSERT(arch == "x86_64" || arch == "arm64");
 
-    // No release key yet, so nothing verifies for this build.
-    RTF_ASSERT(trusted_plugin_keys().empty());
+    // The release key, and only it: a signature Scott made with its private half
+    // over this text (openssl dgst -sha256 -sign, 2026-11-12) verifies with it.
+    RTF_ASSERT_EQUAL(trusted_plugin_keys().size(), (size_t)1);
+    const string text = "revere plugin key check 2026-11-12";
+    auto sig = r_string_utils::from_base64("MEUCIQCClUP76LUnhLxIDYCAhHB7hGOweRKTGFSkKa6sS28HpwIgAfUYspJFs/I5XyRyHnt5BaiMgpuyVFqLB6M5rOWqxp0=");
+    RTF_ASSERT(ecdsa_p256_sha256_verify(trusted_plugin_keys()[0], reinterpret_cast<const uint8_t*>(text.data()), text.size(), sig.data(), sig.size()));
+    RTF_ASSERT(!ecdsa_p256_sha256_verify(trusted_plugin_keys()[0], reinterpret_cast<const uint8_t*>(text.data()), text.size() - 1, sig.data(), sig.size()));
 }

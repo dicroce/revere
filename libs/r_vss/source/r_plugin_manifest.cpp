@@ -171,11 +171,15 @@ string r_vss::plugin_arch()
 
 const vector<string>& r_vss::trusted_plugin_keys()
 {
-    // Empty until the release key exists: Scott generates the P-256 pair, the private
-    // key goes in the release environment's secret (and his encrypted offline copy),
-    // and its public key goes here, as a PEM "PUBLIC KEY" block. With none, no
-    // manifest verifies, so release builds mustn't require signed plugins until then.
-    static const vector<string> keys = {};
+    // The release signing key's public half (P-256). Its private half is the
+    // REVERE_PLUGIN_SIGNING_KEY secret in dicroce/revere's release environment, and
+    // Scott's encrypted offline copy. Generated 2026-11-12.
+    static const vector<string> keys = {
+        "-----BEGIN PUBLIC KEY-----\n"
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEyoJaveiI9dV8iMd1BCuTJ5waLQlE\n"
+        "Lb/o4EjKncI5WScnbgqhP/t4XoNJxwdCaXcnMAEmMUy733L4laq3PEZGhg==\n"
+        "-----END PUBLIC KEY-----\n"
+    };
     return keys;
 }
 
