@@ -539,14 +539,23 @@ void test_r_pipeline::test_gst_source_fetch_sdp()
 
 }
 
+// A live test against a real camera: it needs REVERE_TEST_CAMERA_RTSP_URL, REVERE_TEST_CAMERA_USERNAME and
+// REVERE_TEST_CAMERA_PASSWORD (never put a camera's credentials in this file) and is skipped without them.
 void test_r_pipeline::test_gst_source_pull_real()
 {
-    vector<r_arg> arguments;
-    add_argument(arguments, "url", "rtsp://192.168.1.20/h265Preview_01_main");
-    //add_argument(arguments, "url", "rtsp://192.168.1.20/h264Preview_01_sub");
+    auto url = r_std_utils::get_env("REVERE_TEST_CAMERA_RTSP_URL");
+    auto user = r_std_utils::get_env("REVERE_TEST_CAMERA_USERNAME");
+    auto pass = r_std_utils::get_env("REVERE_TEST_CAMERA_PASSWORD");
+    if(url.empty() || user.empty() || pass.empty())
+    {
+        printf("skipped: set REVERE_TEST_CAMERA_RTSP_URL, REVERE_TEST_CAMERA_USERNAME and REVERE_TEST_CAMERA_PASSWORD to run\n");
+        return;
+    }
 
-    add_argument(arguments, "username", "admin");
-    add_argument(arguments, "password", "emperor1");
+    vector<r_arg> arguments;
+    add_argument(arguments, "url", url);
+    add_argument(arguments, "username", user);
+    add_argument(arguments, "password", pass);
 
     r_gst_source src;
     src.set_args(arguments);

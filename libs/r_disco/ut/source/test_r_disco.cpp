@@ -11,6 +11,8 @@
 #include <set>
 #include <mutex>
 
+#include "r_utils/r_std_utils.h"
+
 using namespace std;
 using namespace r_utils;
 
@@ -49,14 +51,24 @@ void test_r_disco::teardown()
     r_fs::rmdir("top_dir");
 }
 
+// A live test against real cameras: it needs REVERE_TEST_CAMERA_USERNAME and REVERE_TEST_CAMERA_PASSWORD
+// (never put a camera's credentials in this file) and is skipped without them.
 void test_r_disco::test_r_disco_r_agent_basics()
 {
+    auto user = r_std_utils::get_env("REVERE_TEST_CAMERA_USERNAME");
+    auto pass = r_std_utils::get_env("REVERE_TEST_CAMERA_PASSWORD");
+    if(user.empty() || pass.empty())
+    {
+        printf("skipped: set REVERE_TEST_CAMERA_USERNAME and REVERE_TEST_CAMERA_PASSWORD to run\n");
+        return;
+    }
+
     r_agent agent("top_dir");
     vector<pair<r_stream_config, string>> saved_stream_configs;
 
-    agent.set_credential_cb([](const string& id){
+    agent.set_credential_cb([user, pass](const string& id){
         printf("credential_cb: %s\n", id.c_str());
-        return make_pair(r_nullable<string>("root"), r_nullable<string>("emperor1"));
+        return make_pair(r_nullable<string>(user), r_nullable<string>(pass));
     });
     agent.set_stream_change_cb([&](const vector<pair<r_stream_config, string>>& stream_configs){
         saved_stream_configs = stream_configs;
