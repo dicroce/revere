@@ -167,6 +167,15 @@ void test_r_network_watch::test_vpn_and_vm_links_are_not_the_cameras_network()
     busy.push_back(adapter("Ethernet 2", "10.1.1.1", "255.255.255.255"));
     RTF_ASSERT(r_network_signature_of(busy) == base);
 
+    // Each skipped name on its own, with an ordinary netmask, so the name is what keeps it out (not the /32 rule).
+    for(auto name : {"utun3", "tun0", "tap1", "wg0", "tailscale0", "ppp0", "ipsec0", "gif0", "stf0", "awdl0", "llw0", "bridge100",
+                     "Tailscale", "WireGuard Tunnel", "OpenVPN TAP-Windows6", "vEthernet (Default Switch)"})
+    {
+        vector<r_adapter_info> with = lan;
+        with.push_back(adapter(name, "10.50.0.2", "255.255.255.0"));
+        RTF_ASSERT(r_network_signature_of(with) == base);
+    }
+
     // A real second interface is a change.
     vector<r_adapter_info> two = lan;
     two.push_back(adapter("en7", "192.168.1.9", "255.255.255.0"));
