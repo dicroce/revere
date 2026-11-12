@@ -498,6 +498,29 @@ if(NOT TARGET SDL2::SDL2)
 
     FetchContent_MakeAvailable(SDL2)
 
+    # Patch SDL2: its Fcitx and IBus input-method code reads the window's display
+    # without checking there is one. When the last monitor goes away (unplugged,
+    # powered off, a KVM switched) SDL_GetDisplayForWindow returns NULL and the
+    # app segfaults in SDL_Fcitx_UpdateTextRect. Not fixed upstream as of 2.32.10.
+    # With no display the window position is used as it is.
+    foreach(_sdl_ime_file SDL_fcitx.c SDL_ibus.c)
+        set(_sdl_ime_path ${sdl2_SOURCE_DIR}/src/core/linux/${_sdl_ime_file})
+        if(EXISTS ${_sdl_ime_path})
+            file(READ ${_sdl_ime_path} _sdl_ime_content)
+            string(REPLACE
+                "if (info.subsystem == SDL_SYSWM_X11) {"
+                "if (info.subsystem == SDL_SYSWM_X11 && SDL_GetDisplayForWindow(focused_win)) {"
+                _sdl_ime_patched "${_sdl_ime_content}")
+            if(NOT _sdl_ime_patched STREQUAL _sdl_ime_content)
+                file(WRITE ${_sdl_ime_path} "${_sdl_ime_patched}")
+            endif()
+            string(FIND "${_sdl_ime_patched}" "SDL_SYSWM_X11 && SDL_GetDisplayForWindow(focused_win)" _sdl_ime_found)
+            if(_sdl_ime_found EQUAL -1)
+                message(WARNING "SDL2 ${_sdl_ime_file}: the no-display patch did not apply; check it against this SDL2 version")
+            endif()
+        endif()
+    endforeach()
+
     # SDL2 creates SDL2::SDL2 target when built as shared
     if(TARGET SDL2 AND NOT TARGET SDL2::SDL2)
         add_library(SDL2::SDL2 ALIAS SDL2)
