@@ -18,9 +18,9 @@ on:
 # links, no human step). A bad tag ships publicly until deleted — push tags
 # deliberately. The version guard below is the safety net against dead links.
 
-# The release job needs to create a Release + upload assets on this repo.
+# Read-only by default; only the release job writes (it creates the Release and uploads assets).
 permissions:
-  contents: write
+  contents: read
 
 env:
   # Bump these together when publishing a new dependency bundle from revere-deps.
@@ -33,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout revere
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: revere
           # Full history + tags so CMake's `git describe` version detection works.
@@ -66,7 +66,7 @@ jobs:
           fi
 
       - name: Checkout revere_cloud
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: dicroce/revere_cloud
           ref: ${{ steps.cloudref.outputs.ref }}
@@ -80,7 +80,7 @@ jobs:
           token: ${{ secrets.REVERE_CLOUD_TOKEN }}
 
       - name: Checkout revere-deps (manifest only)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ env.DEPS_REPO }}
           path: revere-deps
@@ -90,7 +90,7 @@ jobs:
       # fetches + sha256-verifies each asset from the revere-deps release.
       - name: Restore cached dependencies
         id: cache-deps
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: deps
           key: deps-${{ runner.os }}-${{ env.DEPS_VERSION }}
@@ -133,7 +133,7 @@ jobs:
       # Sets up the MSVC x64 toolchain and exports the VS dev-env vars (incl.
       # VSCMD_ARG_TGT_ARCH=x64, which build_installers.py checks for).
       - name: Setup MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x64
 
@@ -158,7 +158,7 @@ jobs:
           python revere\scripts\windows\build_installers.py --clean
 
       - name: Upload installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-installers
           path: artifacts/*.exe
@@ -169,12 +169,14 @@ jobs:
   # links are live the moment this job finishes). The version guard above
   # prevents publishing assets whose names don't match the tag.
   release:
+    permissions:
+      contents: write
     needs: [build-windows]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Download Windows installers
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: windows-installers
           path: dist

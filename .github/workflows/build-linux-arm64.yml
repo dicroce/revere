@@ -9,8 +9,9 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Read-only by default; only the release job writes (it creates the Release and uploads assets).
 permissions:
-  contents: write
+  contents: read
 
 env:
   # NCNN is built from source (not in apt) and cached. Bump to rebuild.
@@ -55,7 +56,7 @@ jobs:
           git config --global --add safe.directory '*'
 
       - name: Checkout revere
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: revere
           fetch-depth: 0
@@ -85,7 +86,7 @@ jobs:
           fi
 
       - name: Checkout revere_cloud
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: dicroce/revere_cloud
           ref: ${{ steps.cloudref.outputs.ref }}
@@ -97,7 +98,7 @@ jobs:
       # step to bundle a shared libncnn the way the AppImage does.
       - name: Restore cached NCNN
         id: cache-ncnn
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ncnn-install
           key: ncnn-arm64-bookworm-static-${{ env.NCNN_VERSION }}
@@ -124,7 +125,7 @@ jobs:
       # when the script changes.
       - name: Restore cached FFmpeg
         id: cache-ffmpeg
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ffmpeg-lgpl
           key: ffmpeg-lgpl-${{ env.FFMPEG_VERSION }}-openh264-${{ env.OPENH264_VERSION }}-bookworm-arm64-v1
@@ -248,7 +249,7 @@ jobs:
           echo "OK: one LGPL FFmpeg in the .deb, no dependency on Debian's"
 
       - name: Upload Linux arm64 assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-arm64-assets
           path: dist/*
@@ -257,12 +258,14 @@ jobs:
   # Only runs for tag pushes. Attaches the .deb + arm64 cloud .run to the
   # PUBLIC GitHub Release for this tag (shared with the other platforms).
   release:
+    permissions:
+      contents: write
     needs: [build-linux-arm64]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Download Linux arm64 assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: linux-arm64-assets
           path: dist
