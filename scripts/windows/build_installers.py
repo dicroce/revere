@@ -312,6 +312,10 @@ def verify_dependencies():
 # names them: its icon and the shared app icons the installer itself uses.
 VISION_EXTRA_FILES = {"v.ico", "v.png", "r.ico", "r.png"}
 
+# Revere Cloud's plugin, its manifest and signature: never in the Revere
+# installer (see write_component_lists).
+CLOUD_PLUGIN_PREFIX = "revere_cloud_system_plugin"
+
 
 def write_component_lists():
     """Generate the Inno Setup [Files]/[InstallDelete] entries that split the
@@ -322,7 +326,8 @@ def write_component_lists():
     and go: vision.exe plus the GStreamer plugins it loads at runtime, and
     everything those import, recursively, from the staged tree. Every other
     top-level file, and the models/motion_plugins/system_plugins trees, goes
-    with Revere. A Vision-only install over an existing full one deletes the
+    with Revere, except Revere Cloud's plugin, which is opt-in and has its own
+    installer. A Vision-only install over an existing full one deletes the
     Revere-only files (InstallDelete), so the old recorder can't linger.
     """
     print(f"\n{'='*60}")
@@ -374,9 +379,17 @@ def write_component_lists():
               f'Source: "{src("vision.exe")}"; DestDir: "{{app}}"; Components: vision; Flags: ignoreversion',
               "; Revere only."]
     lines += [f'Source: "{src(n)}"; DestDir: "{{app}}"; Components: revere; Flags: ignoreversion' for n in revere_only]
-    for d in ("models", "motion_plugins", "system_plugins"):
+    for d in ("models", "motion_plugins"):
         if (STAGING_DIR / d).is_dir():
             lines.append(f'Source: "{{#StagingDir}}\\{d}\\*"; DestDir: "{{app}}\\{d}"; Components: revere; Flags: ignoreversion recursesubdirs createallsubdirs')
+    # System plugins, but never Revere Cloud: it's opt-in, installed only by its
+    # own installer or from inside Revere. The build stages it (EXTERNAL_PLUGIN_REPOS)
+    # for the cloud installer, so it's left out here by name.
+    plugins_dir = STAGING_DIR / "system_plugins"
+    if plugins_dir.is_dir():
+        for p in sorted(plugins_dir.iterdir()):
+            if p.is_file() and not p.name.lower().startswith(CLOUD_PLUGIN_PREFIX):
+                lines.append(f'Source: "{{#StagingDir}}\\system_plugins\\{p.name}"; DestDir: "{{app}}\\system_plugins"; Components: revere; Flags: ignoreversion')
     lines += ["",
               "[InstallDelete]",
               "; Vision-only over a full install: remove the recorder.",
