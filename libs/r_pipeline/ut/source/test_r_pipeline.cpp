@@ -183,6 +183,7 @@ struct fake_silent_camera
     vector<string> requests;
     std::atomic<bool> listening{false};
     std::atomic<bool> done{false};
+    std::atomic<bool> mute{false};      // stops answering: a path that has died under a session
     std::thread th;
 
     explicit fake_silent_camera(int p) : port(p)
@@ -251,6 +252,8 @@ struct fake_silent_camera
                     extra = "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\nSession: S1;timeout=60\r\n";
                 else
                     extra = "Session: S1\r\n";
+                if(mute)
+                    continue;
                 auto reply = r_string_utils::format("RTSP/1.0 200 OK\r\nCSeq: %s\r\n%sContent-Length: %d\r\n\r\n",
                                                     header("CSeq").c_str(), extra.c_str(), (int)body.size()) + body;
                 conn.send(reply.data(), reply.size());
@@ -285,6 +288,70 @@ void test_r_pipeline::test_gst_source_stop_sends_teardown()
     deadline = steady_clock::now() + seconds(5);
     while(!cam.saw("TEARDOWN") && steady_clock::now() < deadline)
         std::this_thread::sleep_for(milliseconds(20));
+    RTF_ASSERT(cam.saw("TEARDOWN S1"));
+}
+
+void test_r_pipeline::test_gst_source_stop_is_bounded_when_the_camera_stops_answering()
+{
+    // A state change that blocks (the TEARDOWN write on a connection that died under the session): stop() gives up
+    // waiting after its bound and returns, and the change finishes on its own thread. The bound is 1 s here and the
+    // change takes 4 s, so a stop() that waited for the change would take 4 s.
+    int port = RTF_NEXT_PORT();
+    fake_silent_camera cam(port);
+
+    vector<r_arg> arguments;
+    add_argument(arguments, "url", r_string_utils::format("rtsp://127.0.0.1:%d/x", port));
+    r_gst_source src;
+    src.set_args(arguments);
+    src.play();
+
+    auto deadline = steady_clock::now() + seconds(10);
+    while(!cam.saw("PLAY") && steady_clock::now() < deadline)
+        std::this_thread::sleep_for(milliseconds(20));
+    RTF_ASSERT(cam.saw("PLAY S1"));
+
+    set_stop_for_tests(milliseconds(1000), [](){ std::this_thread::sleep_for(seconds(4)); });
+    auto began = steady_clock::now();
+    src.stop();
+    auto took = duration_cast<milliseconds>(steady_clock::now() - began);
+    set_stop_for_tests(milliseconds(0), nullptr);
+
+    RTF_ASSERT(took >= milliseconds(900));
+    RTF_ASSERT(took < milliseconds(2500));
+
+    // The change goes on after stop() returned: the TEARDOWN still reaches the camera.
+    deadline = steady_clock::now() + seconds(10);
+    while(!cam.saw("TEARDOWN") && steady_clock::now() < deadline)
+        std::this_thread::sleep_for(milliseconds(50));
+    RTF_ASSERT(cam.saw("TEARDOWN S1"));
+}
+
+void test_r_pipeline::test_gst_source_stop_lets_go_of_rtspsrc_handlers()
+{
+    // After stop() the source is no longer called back by rtspsrc: its handlers hold `this`, and a reply landing during a
+    // state change that outlived stop() must not fire them into a source that is gone. Here the source is destroyed while
+    // the state change is still blocked, and the camera answers afterwards.
+    int port = RTF_NEXT_PORT();
+    fake_silent_camera cam(port);
+
+    {
+        vector<r_arg> arguments;
+        add_argument(arguments, "url", r_string_utils::format("rtsp://127.0.0.1:%d/x", port));
+        auto src = std::make_unique<r_gst_source>();
+        src->set_args(arguments);
+        src->play();
+        auto deadline = steady_clock::now() + seconds(10);
+        while(!cam.saw("PLAY") && steady_clock::now() < deadline)
+            std::this_thread::sleep_for(milliseconds(20));
+        RTF_ASSERT(cam.saw("PLAY S1"));
+
+        set_stop_for_tests(milliseconds(300), [](){ std::this_thread::sleep_for(seconds(2)); });
+        src->stop();
+        src.reset();
+        set_stop_for_tests(milliseconds(0), nullptr);
+    }
+    // The state change finishes on its thread against the pipeline alone.
+    std::this_thread::sleep_for(seconds(3));
     RTF_ASSERT(cam.saw("TEARDOWN S1"));
 }
 

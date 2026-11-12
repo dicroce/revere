@@ -28,6 +28,8 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <condition_variable>
+#include <memory>
 #include <chrono>
 #include <random>
 
@@ -48,6 +50,13 @@ R_API uint32_t rtsp_protocol_flags(const std::string& protocols);
 const int RTSP_JITTERBUFFER_LATENCY_MS = 200;
 // How long stopping a pipeline gives rtspsrc to send its TEARDOWN: 2 s.
 const uint64_t RTSP_TEARDOWN_TIMEOUT_NS = 2000000000ULL;
+
+// The longest r_gst_source::stop() waits for the pipeline to reach NULL (the TEARDOWN included) before it lets go.
+const std::chrono::seconds STOP_WAIT {5};
+
+// For tests: stop() waits `wait` instead of STOP_WAIT (zero: STOP_WAIT), and `before_null` runs on the state-change thread
+// before it takes the pipeline to NULL (a state change that blocks). Call again with 0 and {} to undo.
+R_API void set_stop_for_tests(std::chrono::milliseconds wait, std::function<void()> before_null);
 
 // Sets an rtspsrc's teardown-timeout to RTSP_TEARDOWN_TIMEOUT_NS.
 R_API void rtsp_set_teardown_timeout(GstElement* rtspsrc);
@@ -288,6 +297,15 @@ private:
     r_utils::r_nullable<std::string> _buffer_mode; // rtspsrc buffer-mode enum value
                                                    // (0=none,1=slave,2=buffer,3=auto,4=synced);
                                                    // overrides the protocols-implied default
+
+    // The state change to NULL that stop() waits for (a bounded wait; see stop()).
+    struct _null_change
+    {
+        std::mutex m;
+        std::condition_variable cv;
+        bool done {false};
+        GstStateChangeReturn result {GST_STATE_CHANGE_FAILURE};
+    };
 
     GstElement* _pipeline;
     guint _bus_watch_id;
