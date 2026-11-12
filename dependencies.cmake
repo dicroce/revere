@@ -518,6 +518,8 @@ if(NOT TARGET SDL2::SDL2)
             if(_sdl_ime_found EQUAL -1)
                 message(WARNING "SDL2 ${_sdl_ime_file}: the no-display patch did not apply; check it against this SDL2 version")
             endif()
+        else()
+            message(WARNING "SDL2 ${_sdl_ime_file} not found at ${_sdl_ime_path}; the no-display patch was not applied, check it against this SDL2 version")
         endif()
     endforeach()
 
