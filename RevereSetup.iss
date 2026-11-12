@@ -112,6 +112,10 @@ Filename: "{app}\vision.exe"; Description: "{cm:LaunchProgram,Vision}"; Flags: n
 
 [InstallDelete]
 Type: files; Name: "{app}\motion_plugins\yolov8_person_plugin.dll"
+; yolov8 is gone (AGPL-3.0 weights; yolox replaced it): an upgrade must not
+; leave it loading beside yolox.
+Type: files; Name: "{app}\motion_plugins\yolov8_motion_plugin.dll"
+Type: filesandordirs; Name: "{app}\models\yolov8_person"
 Type: files; Name: "{app}\motion_plugins\test_plugin.dll"
 ; (The generated include adds the Vision-only cleanup.)
 

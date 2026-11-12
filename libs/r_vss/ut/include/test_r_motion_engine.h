@@ -12,6 +12,8 @@ public:
       TEST(test_r_motion_engine::test_real_frames_trigger_motion);
       TEST(test_r_motion_engine::test_probe_starts_event_on_first_frame);
       TEST(test_r_motion_engine::test_skips_to_newest_key_frame);
+      TEST(test_r_motion_engine::test_other_stream_frame_rebuilds_context);
+      TEST(test_r_motion_engine::test_same_stream_keeps_context);
     RTF_FIXTURE_END();
 
     virtual ~test_r_motion_engine() throw() {}
@@ -27,4 +29,6 @@ public:
     void test_real_frames_trigger_motion();
     void test_probe_starts_event_on_first_frame();
     void test_skips_to_newest_key_frame();
+    void test_other_stream_frame_rebuilds_context();
+    void test_same_stream_keeps_context();
 };

@@ -371,6 +371,22 @@ void r_gst_source::set_args(const vector<r_arg>& args)
     _password = _args["password"];
 }
 
+static std::chrono::milliseconds g_stop_wait {0};
+static std::function<void()> g_stop_before_null;
+
+void r_pipeline::set_stop_for_tests(std::chrono::milliseconds wait, std::function<void()> before_null)
+{
+    g_stop_wait = wait;
+    g_stop_before_null = std::move(before_null);
+}
+
+void r_pipeline::rtsp_set_teardown_timeout(GstElement* rtspsrc)
+{
+    // Room to send TEARDOWN when the pipeline stops (rtspsrc's default is 100 ms). A camera
+    // never told to end a session may hold it, and some refuse new ones until power cycled.
+    g_object_set(G_OBJECT(rtspsrc), "teardown-timeout", (guint64)RTSP_TEARDOWN_TIMEOUT_NS, NULL);
+}
+
 void r_pipeline::rtsp_set_jitterbuffer_latency(GstElement* rtspsrc)
 {
     g_object_set(G_OBJECT(rtspsrc), "latency", (guint)RTSP_JITTERBUFFER_LATENCY_MS, NULL);
@@ -393,6 +409,12 @@ uint32_t r_gst_source::protocol_flags() const
 {
     lock_guard<mutex> g(_state_lok);
     return _protocol_flags;
+}
+
+uint64_t r_gst_source::teardown_timeout_ns() const
+{
+    lock_guard<mutex> g(_state_lok);
+    return _teardown_timeout_ns;
 }
 
 void r_gst_source::play()
@@ -432,6 +454,12 @@ void r_gst_source::play()
     }
 
     g_object_set(G_OBJECT(rtspsrc), "do-rtsp-keep-alive", true, NULL);
+    rtsp_set_teardown_timeout(rtspsrc);
+    {
+        guint64 t = 0;
+        g_object_get(G_OBJECT(rtspsrc), "teardown-timeout", &t, NULL);
+        _teardown_timeout_ns = t;
+    }
     g_object_set(G_OBJECT(rtspsrc), "location", _url.value().c_str(), NULL);
 
     // Set short-header for compatibility with older cameras
@@ -508,29 +536,45 @@ void r_gst_source::stop()
             g_signal_handlers_disconnect_by_data(_a_appsink, this);
         }
 
-        auto result = gst_element_set_state(_pipeline, GST_STATE_NULL);
-
-        // Poll with a finite timeout per iteration and an absolute deadline so we never
-        // hang indefinitely waiting for an unresponsive camera's RTSP TEARDOWN response.
-        auto deadline = steady_clock::now() + seconds(5);
-        bool done = false;
-        while(!done)
+        // Taking rtspsrc to NULL sends the TEARDOWN and closes its sockets, and it can block on a connection that has died
+        // under it (a network that changed, a camera that vanished): the state change doesn't return until the TEARDOWN
+        // is answered or its own write gives up. So it runs on its own thread, and this waits for it no longer than
+        // STOP_WAIT. A change that outlives the wait finishes on its thread, which holds its own reference to the
+        // pipeline until then; nothing here waits for it again.
+        //
+        // rtspsrc's handlers hold `this`, and a reply that lands during the change (a DESCRIBE or SETUP still in flight)
+        // would fire them into a source that stop() has let go. They are disconnected first, with the appsinks'.
+        if(GstElement* rtspsrc = gst_bin_get_by_name(GST_BIN(_pipeline), "src"))
         {
-            if(result == GST_STATE_CHANGE_FAILURE)
-            {
-                R_LOG_WARNING("Pipeline state change failed during stop, forcing cleanup");
-                done = true;
-            }
-            else if(result == GST_STATE_CHANGE_SUCCESS || result == GST_STATE_CHANGE_NO_PREROLL)
-                done = true;
-            else if(steady_clock::now() >= deadline)
-            {
-                R_LOG_WARNING("Pipeline shutdown timed out after 5s, forcing cleanup");
-                done = true;
-            }
-            else
-                result = gst_element_get_state(_pipeline, NULL, NULL, 500 * GST_MSECOND);
+            g_signal_handlers_disconnect_by_data(rtspsrc, this);
+            gst_object_unref(rtspsrc);
         }
+
+        auto change = std::make_shared<_null_change>();
+        auto before_null = g_stop_before_null;
+        GstElement* pipeline = GST_ELEMENT(gst_object_ref(_pipeline));
+        std::thread([change, pipeline, before_null](){
+            if(before_null)
+                before_null();
+            auto rc = gst_element_set_state(pipeline, GST_STATE_NULL);
+            if(rc == GST_STATE_CHANGE_ASYNC)
+                rc = gst_element_get_state(pipeline, NULL, NULL, 5 * GST_SECOND);
+            {
+                std::lock_guard<std::mutex> g(change->m);
+                change->result = rc;
+                change->done = true;
+            }
+            change->cv.notify_all();
+            gst_object_unref(pipeline);
+        }).detach();
+
+        std::unique_lock<std::mutex> wait_lock(change->m);
+        const auto stop_wait = g_stop_wait.count() > 0 ? g_stop_wait : std::chrono::milliseconds(STOP_WAIT);
+        if(!change->cv.wait_for(wait_lock, stop_wait, [&](){ return change->done; }))
+            R_LOG_WARNING("Pipeline shutdown timed out after %d ms, forcing cleanup", (int)stop_wait.count());
+        else if(change->result == GST_STATE_CHANGE_FAILURE)
+            R_LOG_WARNING("Pipeline state change failed during stop, forcing cleanup");
+        wait_lock.unlock();
 
         _running = false;
     }
@@ -1238,6 +1282,48 @@ GstFlowReturn r_gst_source::_new_audio_sample(GstElement* elt, r_gst_source* src
     try
     {
         r_gst_buffer buffer(gst_sample_get_buffer(sample.get()));
+
+        // G.711 with a camera's own frame header in front (r_g711_header_filter): the header goes here, before
+        // anything records, restreams or sends it.
+        auto audio_pad = src->_sample_context._src_pad_info.find(AUDIO_MEDIA);
+        if(audio_pad != src->_sample_context._src_pad_info.end() &&
+           (audio_pad->second.encoding == PCMA_ENCODING || audio_pad->second.encoding == PCMU_ENCODING))
+        {
+            size_t header = 0, total = 0;
+            {
+                auto peek = buffer.map(r_gst_buffer::MT_READ);
+                total = peek.size();
+                header = src->_g711_filter.header_to_strip(peek.data(), total);
+            }
+            if(src->_g711_filter.just_confirmed())
+            {
+                if(src->_g711_filter.resumes() == 0)
+                    R_LOG_INFO("%sG.711 audio with a %d-byte vendor header before its samples: removing it", src->_name_prefix.c_str(), (int)header);
+                else if(src->_g711_filter.resumes() <= 3)
+                    R_LOG_INFO("%sG.711 audio: the vendor header is back on every packet; removing it again", src->_name_prefix.c_str());
+            }
+            // A camera that keeps sending odd packets is said three times, not every few seconds.
+            if(src->_g711_filter.just_paused() && src->_g711_filter.resumes() < 3)
+                R_LOG_WARNING("%sG.711 audio: a packet without the vendor header; judging the stream again", src->_name_prefix.c_str());
+            if(src->_g711_filter.just_stopped())
+                R_LOG_WARNING("%sG.711 audio: packets without the vendor header again; no longer removing it", src->_name_prefix.c_str());
+            if(header > 0)
+            {
+                GstBuffer* stripped = gst_buffer_copy_region(buffer.get(), GST_BUFFER_COPY_ALL, header, total - header);
+                if(stripped)
+                {
+                    // A region that doesn't start at 0 gets no timestamps from the copy: the original's still hold
+                    // (the header takes no time), and the duration is the samples' alone.
+                    GstBuffer* orig = buffer.get();
+                    GST_BUFFER_PTS(stripped) = GST_BUFFER_PTS(orig);
+                    GST_BUFFER_DTS(stripped) = GST_BUFFER_DTS(orig);
+                    GST_BUFFER_DURATION(stripped) = GST_BUFFER_DURATION_IS_VALID(orig) ?
+                        gst_util_uint64_scale(GST_BUFFER_DURATION(orig), total - header, total) : GST_CLOCK_TIME_NONE;
+                    buffer = r_gst_buffer(stripped);
+                    gst_buffer_unref(stripped);
+                }
+            }
+        }
 
         auto info = buffer.map(r_gst_buffer::MT_READ);
 

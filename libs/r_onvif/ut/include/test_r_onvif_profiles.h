@@ -19,6 +19,9 @@ public:
       TEST(test_r_onvif_profiles::test_ptz_caps);
       TEST(test_r_onvif_profiles::test_system_date_and_time);
       TEST(test_r_onvif_profiles::test_set_system_date_and_time);
+      TEST(test_r_onvif_profiles::test_ptz_configuration_caps);
+      TEST(test_r_onvif_profiles::test_ptz_verdict);
+      TEST(test_r_onvif_profiles::test_unsupported_action_and_events_wait);
     RTF_FIXTURE_END();
 
     virtual ~test_r_onvif_profiles() throw() {}
@@ -39,4 +42,7 @@ public:
     void test_ptz_caps();
     void test_system_date_and_time();
     void test_set_system_date_and_time();
+    void test_ptz_configuration_caps();
+    void test_ptz_verdict();
+    void test_unsupported_action_and_events_wait();
 };

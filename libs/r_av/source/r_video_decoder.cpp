@@ -127,6 +127,22 @@ bool r_av::operator<(const r_scaler_state& lhs, const r_scaler_state& rhs)
     return false;
 }
 
+namespace
+{
+    int (*g_send_packet)(AVCodecContext*, const AVPacket*) = nullptr;
+    int (*g_open)(AVCodecContext*, const AVCodec*, AVDictionary**) = nullptr;
+}
+
+void r_av::r_video_decoder_open_override(int (*open)(AVCodecContext*, const AVCodec*, AVDictionary**))
+{
+    g_open = open;
+}
+
+void r_av::r_video_decoder_send_override(int (*send)(AVCodecContext*, const AVPacket*))
+{
+    g_send_packet = send;
+}
+
 r_video_decoder::r_video_decoder() :
     _codec_id(AV_CODEC_ID_NONE),
     _hw_accel(r_hw_accel::none),
@@ -245,6 +261,7 @@ r_video_decoder::r_video_decoder(r_video_decoder&& obj) :
     _hw_pix_fmt(std::move(obj._hw_pix_fmt)),
     _scalers(std::move(obj._scalers)),
     _codec_opened(std::move(obj._codec_opened)),
+    _hw_send_failures(obj._hw_send_failures),
     _gaps(std::move(obj._gaps))
 {
     obj._codec_id = AV_CODEC_ID_NONE;
@@ -305,6 +322,7 @@ r_video_decoder& r_video_decoder::operator=(r_video_decoder&& obj)
         obj._hw_pix_fmt = AV_PIX_FMT_NONE;
         _scalers = std::move(obj._scalers);
         _codec_opened = std::move(obj._codec_opened);
+        _hw_send_failures = obj._hw_send_failures;
         _gaps = std::move(obj._gaps);
 
         // _context->opaque points into obj's _hw_pix_fmt — redirect to ours
@@ -379,10 +397,16 @@ void r_video_decoder::_open_codec()
         _context->opaque        = &_hw_pix_fmt;
     }
 
-    AVDictionary* opts = nullptr;
-    av_dict_set(&opts, "strict", "experimental", 0);
-    int ret = avcodec_open2(_context, _codec, &opts);
-    av_dict_free(&opts);
+    int ret = _open_context();
+    // The device was made, but the decoder won't open on it (a GPU fault: NVDEC can't start on a dead context).
+    // Decode in software, as when the device can't be made at all.
+    if(ret < 0 && _hw_accel != r_hw_accel::none)
+    {
+        R_LOG_WARNING("r_video_decoder: %s decode wouldn't open (%s); decoding in software",
+                      _accel_name(_hw_accel), _ff_rc_to_msg(ret).c_str());
+        _rebuild_in_software();
+        ret = _open_context();
+    }
     if(ret < 0)
         R_THROW(("Failed to open codec: %s", _ff_rc_to_msg(ret).c_str()));
 
@@ -479,9 +503,10 @@ r_codec_state r_video_decoder::decode()
     }
 
     // Send the packet to the decoder
-    int send_result = avcodec_send_packet(_context, packet.get());
+    int send_result = _send_packet(packet.get());
 
     if (send_result >= 0) {
+        _hw_send_failures = 0;
         if(_gaps)
             _gap_after_send(packet->data, packet->size);
 
@@ -537,8 +562,74 @@ r_codec_state r_video_decoder::decode()
     }
     else {
         R_LOG_ERROR("Failed to send packet: %s", _ff_rc_to_msg(send_result).c_str());
+        // A GPU fault leaves a hardware decoder's device dead: every send fails like this from then on, and it never
+        // recovers (new decoders fall back already, when they can't create the device).
+        if(_hw_accel != r_hw_accel::none && send_result == AVERROR_EXTERNAL &&
+           ++_hw_send_failures >= R_HW_DECODE_FAILURES_TO_FALL_BACK)
+            _fall_back_to_software(send_result);
         return R_CODEC_STATE_HUNGRY;
     }
+}
+
+int r_video_decoder::_open_context()
+{
+    AVDictionary* opts = nullptr;
+    av_dict_set(&opts, "strict", "experimental", 0);
+    int ret = g_open ? g_open(_context, _codec, &opts) : avcodec_open2(_context, _codec, &opts);
+    av_dict_free(&opts);
+    return ret;
+}
+
+int r_video_decoder::_send_packet(const AVPacket* packet)
+{
+    return g_send_packet ? g_send_packet(_context, packet) : avcodec_send_packet(_context, packet);
+}
+
+// The same stream, decoded in software from here: a new context for the codec, with the extradata, and no device.
+// The parser and the scalers are kept. Pictures until the next key frame may be damaged, as after any lost packets.
+void r_video_decoder::_fall_back_to_software(int rc)
+{
+    R_LOG_WARNING("r_video_decoder: %s decode failed %d times in a row (%s); decoding this stream in software from here",
+                  _accel_name(_hw_accel), _hw_send_failures, _ff_rc_to_msg(rc).c_str());
+    _rebuild_in_software();
+}
+
+void r_video_decoder::_rebuild_in_software()
+{
+    vector<uint8_t> extradata;
+    if(_context && _context->extradata && _context->extradata_size > 0)
+        extradata.assign(_context->extradata, _context->extradata + _context->extradata_size);
+
+    av_frame_unref(_frame);
+    if(_sw_frame)
+        av_frame_free(&_sw_frame);
+    _gaps.reset();
+    avcodec_free_context(&_context);
+    if(_hw_device_ctx)
+        av_buffer_unref(&_hw_device_ctx);
+    _hw_accel = r_hw_accel::none;
+    _hw_pix_fmt = AV_PIX_FMT_NONE;
+    _hw_send_failures = 0;
+    _codec_opened = false;
+
+    _context = avcodec_alloc_context3(_codec);
+    if(!_context)
+        R_THROW(("Failed to allocate context"));
+    if(!extradata.empty())
+    {
+        _context->extradata = (uint8_t*)av_mallocz(extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE);
+        if(!_context->extradata)
+            R_THROW(("Unable to allocate extradata."));
+        memcpy(_context->extradata, extradata.data(), extradata.size());
+        _context->extradata_size = (int)extradata.size();
+    }
+    if(_codec->capabilities & AV_CODEC_CAP_FRAME_THREADS)
+        _context->thread_type = FF_THREAD_FRAME;
+    else if(_codec->capabilities & AV_CODEC_CAP_SLICE_THREADS)
+        _context->thread_type = FF_THREAD_SLICE;
+    else _context->thread_count = 1;
+    _context->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    _context->workaround_bugs = FF_BUG_AUTODETECT;
 }
 
 r_codec_state r_video_decoder::flush()

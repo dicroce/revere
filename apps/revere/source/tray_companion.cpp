@@ -1,9 +1,7 @@
 #include "tray_companion.h"
 #include "tray_status.h"
+#include "tray_fetch.h"
 #include "utils.h"
-#include "r_http/r_client_request.h"
-#include "r_http/r_client_response.h"
-#include "r_utils/r_socket.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_startup.h"
@@ -27,41 +25,12 @@
 
 using namespace std;
 using namespace r_utils;
-using namespace r_http;
 
 static const char* TRAY_APP_NAME = "Revere Tray";
 static const char* TRAY_ARGS = "--tray";
 static const char* WEB_UI_URL = "http://localhost:8088";
 static const int REVERE_PORT = 8088;
 static const auto POLL_INTERVAL = chrono::seconds(5);
-
-static optional<string> _fetch_cameras()
-{
-    try
-    {
-        r_socket sok;
-        sok.set_io_timeout(3000);
-        sok.connect("127.0.0.1", REVERE_PORT);
-
-        r_client_request req("127.0.0.1", REVERE_PORT);
-        req.set_uri("/cameras");
-        req.write_request(sok);
-
-        r_client_response resp;
-        resp.read_response(sok);
-        if(resp.get_status() != 200)
-            return nullopt;
-
-        auto body = resp.get_body_as_string();
-        if(body.is_null())
-            return nullopt;
-        return body.value();
-    }
-    catch(const exception&)
-    {
-        return nullopt;
-    }
-}
 
 // Keeps a second `revere --tray` from adding a second icon. Separate from
 // revere.lock, which the service or desktop app holds.
@@ -75,7 +44,8 @@ public:
         _acquired = _mutex && GetLastError() != ERROR_ALREADY_EXISTS;
 #else
         auto path = top_dir + PATH_SLASH + "revere-tray.lock";
-        _fd = open(path.c_str(), O_CREAT | O_RDWR, 0600);
+        // O_CLOEXEC: the browser Open web UI starts must not inherit the lock.
+        _fd = open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
         _acquired = _fd >= 0 && flock(_fd, LOCK_EX | LOCK_NB) == 0;
 #endif
     }
@@ -105,7 +75,8 @@ private:
 
 int revere::run_tray_companion(const string& icon_path)
 {
-    tray_instance_lock instance_lock(revere::top_dir());
+    const auto top_dir = revere::top_dir();
+    tray_instance_lock instance_lock(top_dir);
     if(!instance_lock.acquired())
     {
         fprintf(stderr, "The Revere tray icon is already running.\n");
@@ -141,7 +112,8 @@ int revere::run_tray_companion(const string& icon_path)
     auto status_entry = tray->addEntry(Tray::Label(status.summary));
     tray->addEntry(Tray::Separator());
     tray->addEntry(Tray::Button("Open web UI", [] {
-        revere::open_url_in_browser(WEB_UI_URL);
+        try { revere::open_url_in_browser(WEB_UI_URL); }
+        catch(const exception& e) { R_LOG_ERROR("Could not open %s: %s", WEB_UI_URL, e.what()); }
     }));
     if(can_autostart)
     {
@@ -165,7 +137,7 @@ int revere::run_tray_companion(const string& icon_path)
         while(!quit_requested)
         {
             g.unlock();
-            auto st = summarize_cameras(_fetch_cameras());
+            auto st = summarize_reply(fetch_cameras("127.0.0.1", REVERE_PORT, top_dir));
             g.lock();
             latest = st;
             poll_wake.wait_for(g, POLL_INTERVAL, [&] { return quit_requested.load(); });

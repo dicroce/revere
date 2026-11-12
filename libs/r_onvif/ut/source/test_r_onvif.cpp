@@ -5,6 +5,7 @@
 #include "r_utils/r_sha1.h"
 #include "r_utils/r_uuid.h"
 #include "r_utils/r_socket.h"
+#include "r_utils/r_std_utils.h"
 #include <string.h>
 #include <map>
 
@@ -23,8 +24,18 @@ void test_r_onvif::teardown()
 {
 }
 
+// A live test against real cameras: it needs REVERE_TEST_CAMERA_USERNAME and REVERE_TEST_CAMERA_PASSWORD
+// (never put a camera's credentials in this file) and is skipped without them.
 void test_r_onvif::test_r_onvif_session_basic()
 {
+    auto user = r_std_utils::get_env("REVERE_TEST_CAMERA_USERNAME");
+    auto pass = r_std_utils::get_env("REVERE_TEST_CAMERA_PASSWORD");
+    if(user.empty() || pass.empty())
+    {
+        printf("skipped: set REVERE_TEST_CAMERA_USERNAME and REVERE_TEST_CAMERA_PASSWORD to run\n");
+        return;
+    }
+
     auto discovered = r_onvif::discover(r_uuid::generate());
 
     auto filtered = r_onvif::filter_discovered(discovered);
@@ -33,8 +44,8 @@ void test_r_onvif::test_r_onvif_session_basic()
     {
         printf("%s\n", di.camera_name.c_str());
         r_nullable<string> username, password;
-        username = "root";
-        password = "emperor1";
+        username = user;
+        password = pass;
         r_onvif_cam cam(di.host, di.port, di.protocol, di.uri, username, password);
 
         auto caps = cam.get_camera_capabilities();

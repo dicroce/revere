@@ -243,7 +243,7 @@ jobs:
           export OUTPUT="Revere-x86_64.AppImage"
           # linuxdeploy must find (a) our own libs, which the install put next to
           # the executables in usr/bin, and (b) libncnn from the NCNN build, which
-          # only the dlopen'd yolov8 plugin needs.
+          # only the dlopen'd yolox plugin needs.
           export LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/AppDir/usr/bin:${GITHUB_WORKSPACE}/ncnn-install/lib:${LD_LIBRARY_PATH:-}"
           # The motion plugins are dlopen'd at runtime, so they are NOT dependencies
           # of revere/vision and linuxdeploy won't process them by default — meaning

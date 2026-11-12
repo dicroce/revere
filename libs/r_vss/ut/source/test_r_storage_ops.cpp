@@ -1,5 +1,7 @@
 #include "test_r_storage_ops.h"
 #include "r_vss/r_storage_ops.h"
+#include "r_vss/r_substream_recorder.h"
+#include "r_disco/r_camera.h"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -187,4 +189,31 @@ void test_r_storage_ops::test_failed_copy_leaves_no_partial_file()
     RTF_ASSERT(!committed);
     RTF_ASSERT(fs::exists(_from / "cam.nts") && fs::exists(_from / "cam.mdb"));
     RTF_ASSERT(!fs::exists(_to / "cam.nts") && !fs::exists(_to / "cam.mdb") && !fs::exists(_to / "missing.mdnts"));
+}
+
+// A camera's substream ring (<name>_sub.nts, 130 MiB) goes with its other files when they're deleted, and only that
+// camera's: a ring of the same name in another directory and a neighbour's stay.
+void test_r_storage_ops::test_deleting_a_camera_takes_its_substream_ring()
+{
+    auto touch = [](const fs::path& p) { std::ofstream(p.string(), std::ios::binary) << "x"; };
+    fs::create_directories(_from);
+    fs::create_directories(_to);
+    touch(_from / "front.nts");
+    touch(_from / "front_sub.nts");
+    touch(_from / "back.nts");
+    touch(_from / "back_sub.nts");
+    touch(_to / "front_sub.nts");
+
+    r_disco::r_camera camera;
+    camera.id = "front";
+    camera.record_file_path = (_from / "front.nts").string();
+
+    RTF_ASSERT((fs::path(substream_ring_path((_from / "front.nts").string())) == _from / "front_sub.nts"));
+    delete_camera_files(_root.string(), camera);
+
+    RTF_ASSERT(!fs::exists(_from / "front.nts"));
+    RTF_ASSERT(!fs::exists(_from / "front_sub.nts"));
+    RTF_ASSERT(fs::exists(_from / "back.nts"));
+    RTF_ASSERT(fs::exists(_from / "back_sub.nts"));
+    RTF_ASSERT(fs::exists(_to / "front_sub.nts"));
 }

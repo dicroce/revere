@@ -6,6 +6,7 @@
 #include <sstream>
 #include <map>
 #include <algorithm>
+#include <cctype>
 #include <tuple>
 #include "r_http/r_client_request.h"
 #include "r_http/r_methods.h"
@@ -1725,6 +1726,141 @@ r_onvif::onvif_device_information r_onvif::r_onvif_cam::get_device_information()
     return info;
 }
 
+// ---------------------------------------------------------------------------
+// Reboot (SystemReboot) and whether the stored credentials may do it.
+
+const char* r_onvif::reboot_support_name(reboot_support s)
+{
+    switch (s)
+    {
+    case reboot_support::supported: return "supported";
+    case reboot_support::not_supported: return "not_supported";
+    default: return "unknown";
+    }
+}
+
+r_onvif::onvif_answer r_onvif::onvif_answer_of(int status, const string& body)
+{
+    // A 200 carrying a SOAP fault is a fault (some cameras answer every call with 200).
+    bool fault = body.find(":Fault") != string::npos || body.find("<Fault") != string::npos;
+    if (status == 200 && !fault)
+        return onvif_answer::ok;
+    if (is_unsupported_action(body))
+        return onvif_answer::unsupported;
+    if (_is_auth_error(status, body))
+        return onvif_answer::refused_auth;
+    return onvif_answer::failed;
+}
+
+r_onvif::reboot_check r_onvif::reboot_check_of(onvif_answer users, r_nullable<onvif_answer> device_info)
+{
+    switch (users)
+    {
+    case onvif_answer::ok:
+        return {reboot_support::supported, "admin"};
+    case onvif_answer::unsupported:
+        // GetUsers is optional (UserConfigNotSupported); SystemReboot isn't. Only a reboot can tell.
+        return {reboot_support::unknown, "no_user_list"};
+    case onvif_answer::refused_auth:
+        if (!device_info.is_null() && device_info.value() == onvif_answer::ok)
+            return {reboot_support::not_supported, "not_admin"};
+        if (!device_info.is_null() && device_info.value() == onvif_answer::refused_auth)
+            return {reboot_support::unknown, "credentials_rejected"};
+        return {reboot_support::unknown, "error"};
+    default:
+        return {reboot_support::unknown, "error"};
+    }
+}
+
+r_onvif::reboot_check r_onvif::reboot_check_of_reboot(onvif_answer reboot)
+{
+    switch (reboot)
+    {
+    case onvif_answer::ok: return {reboot_support::supported, "rebooted"};
+    case onvif_answer::unsupported: return {reboot_support::not_supported, "unsupported"};
+    case onvif_answer::refused_auth: return {reboot_support::not_supported, "refused"};
+    default: return {reboot_support::unknown, "error"};
+    }
+}
+
+// Stored credentials, as reboot needs them: a user name (a password may be empty, as some cameras ship).
+static bool _has_credentials(const r_nullable<string>& username, const r_nullable<string>& password)
+{
+    return !username.is_null() && !username.value().empty() && !password.is_null();
+}
+
+r_onvif::reboot_check r_onvif::r_onvif_cam::check_reboot_support()
+{
+    if (!_has_credentials(_username, _password))
+        return {reboot_support::not_supported, "no_credentials"};
+    auto ask = [this](const char* action, const char* element) -> onvif_answer {
+        auto result = _soap_request(
+            _service_host, _service_port, _service_uri,
+            string("http://www.onvif.org/ver10/device/wsdl/") + action,
+            [element](pugi::xml_node& body) { body.append_child(element); },
+            _username, _password, {}, true, REBOOT_TIMEOUT_MS
+        );
+        // GetUsers' reply names the camera's accounts: its status and fault are all that is read.
+        return onvif_answer_of(result.first, result.second);
+    };
+    try
+    {
+        auto users = ask("GetUsers", "tds:GetUsers");
+        if (users != onvif_answer::refused_auth)
+            return reboot_check_of(users);
+        return reboot_check_of(users, ask("GetDeviceInformation", "tds:GetDeviceInformation"));
+    }
+    catch (const std::exception& e)
+    {
+        R_LOG_INFO("onvif: reboot check got no answer from %s: %s", _service_host.c_str(), e.what());
+        return {reboot_support::unknown, "no_answer"};
+    }
+}
+
+r_onvif::reboot_result r_onvif::r_onvif_cam::system_reboot()
+{
+    reboot_result out;
+    if (!_has_credentials(_username, _password))
+    {
+        out.check = {reboot_support::not_supported, "no_credentials"};
+        return out;
+    }
+    out.sent = true;
+    pair<int, string> result;
+    try
+    {
+        result = _soap_request(
+            _service_host, _service_port, _service_uri,
+            "http://www.onvif.org/ver10/device/wsdl/SystemReboot",
+            [](pugi::xml_node& body) { body.append_child("tds:SystemReboot"); },
+            _username, _password, {}, true, REBOOT_TIMEOUT_MS, 1
+        );
+    }
+    catch (const std::exception& e)
+    {
+        R_LOG_WARNING("onvif: SystemReboot to %s got no answer: %s", _service_host.c_str(), e.what());
+        out.check = {reboot_support::unknown, "no_answer"};
+        return out;
+    }
+    auto answer = onvif_answer_of(result.first, result.second);
+    out.check = reboot_check_of_reboot(answer);
+    if (answer == onvif_answer::ok)
+    {
+        pugi::xml_document doc;
+        if (doc.load_string(result.second.c_str()))
+        {
+            auto n = _select_node_local_abs(doc, "Message", NS_DEVICE);
+            if (!n)
+                n = _select_node_local_abs(doc, "Message");
+            if (n)
+                out.message = string(n.node().child_value()).substr(0, REBOOT_MAX_MESSAGE);
+        }
+    }
+    else
+        R_LOG_WARNING("onvif: SystemReboot to %s refused: HTTP %d %s", _service_host.c_str(), result.first, out.check.reason.c_str());
+    return out;
+}
+
 r_onvif::onvif_media_service r_onvif::r_onvif_cam::get_media_service(const r_onvif::onvif_capabilities& capabilities) const
 {
     pugi::xml_document doc;
@@ -2741,6 +2877,101 @@ r_onvif::onvif_ptz_caps r_onvif::parse_ptz_caps(const string& xml)
     return caps;
 }
 
+r_onvif::onvif_ptz_caps r_onvif::parse_ptz_configuration_caps(const string& xml)
+{
+    onvif_ptz_caps caps;
+    pugi::xml_document doc;
+    if (!doc.load_string(xml.c_str()))
+        throw std::runtime_error("Failed to parse GetConfigurationsResponse XML");
+    // Match by local name, as parse_ptz_caps does. A configuration drives an axis when it names a default velocity space
+    // for it, a default speed (DefaultPTZSpeed's PanTilt and Zoom), or limits on it. known is true only when some
+    // configuration says something about its axes: one that carries none of these (a name and a node token) says nothing,
+    // and is not a listing of no axes.
+    auto has = [&](const char* child) {
+        string xp = string("//*[local-name()='PTZConfiguration']/*[local-name()='") + child + "']";
+        return (bool)doc.select_node(xp.c_str());
+    };
+    auto speed_has = [&](const char* axis) {
+        string xp = string("//*[local-name()='PTZConfiguration']/*[local-name()='DefaultPTZSpeed']/*[local-name()='") + axis + "']";
+        return (bool)doc.select_node(xp.c_str());
+    };
+    const bool pan_tilt_info = has("DefaultContinuousPanTiltVelocitySpace") || has("PanTiltLimits") || speed_has("PanTilt");
+    const bool zoom_info = has("DefaultContinuousZoomVelocitySpace") || has("ZoomLimits") || speed_has("Zoom");
+    caps.pan_tilt = pan_tilt_info;
+    caps.zoom = zoom_info;
+    caps.known = pan_tilt_info || zoom_info || has("DefaultAbsolutePanTiltPositionSpace") || has("DefaultRelativePanTiltTranslationSpace") ||
+                 has("DefaultAbsoluteZoomPositionSpace") || has("DefaultRelativeZoomTranslationSpace");
+    return caps;
+}
+
+r_onvif::ptz_verdict r_onvif::ptz_verdict_of(const ptz_probe_result& nodes, const ptz_probe_result& configurations)
+{
+    const ptz_probe_result* both[] = {&nodes, &configurations};
+    bool listed_unusable = false;
+    for (auto p : both)
+    {
+        if (p->how == ptz_probe_how::answered)
+        {
+            if (ptz_caps_usable(p->caps))
+                return ptz_verdict::usable;
+            if (p->caps.known)
+                listed_unusable = true;
+        }
+    }
+    // None only when something positively listed its axes and there are none, or the camera twice said it doesn't support
+    // the question. A reply that says nothing about axes, and a probe that failed, leave it unknown: a real PTZ camera
+    // must not lose its controls because it answers in a way we don't read.
+    if (listed_unusable)
+        return ptz_verdict::none;
+    if (nodes.how == ptz_probe_how::unsupported && configurations.how == ptz_probe_how::unsupported)
+        return ptz_verdict::none;
+    return ptz_verdict::unknown;
+}
+
+bool r_onvif::is_unsupported_action(const string& what)
+{
+    string lower;
+    lower.reserve(what.size());
+    for (unsigned char c : what)
+        lower += (char)tolower(c);
+    return lower.find("actionnotsupported") != string::npos || lower.find("optionalactionnotimplemented") != string::npos ||
+           lower.find("action not supported") != string::npos || lower.find("action not implemented") != string::npos;
+}
+
+bool r_onvif::events_unsupported(const string& stage, const string& what)
+{
+    // Only the questions that set a subscription up: Renew and PullMessages failing on a subscription that worked is a
+    // camera that went wrong, not one that lacks the feature.
+    return (stage == "GetCapabilities" || stage == "CreatePullPointSubscription" || stage == "Subscribe") && is_unsupported_action(what);
+}
+
+int r_onvif::events_wait_s(int backoff_s, bool unsupported)
+{
+    return unsupported ? std::max(backoff_s, EVENTS_UNSUPPORTED_WAIT_S) : backoff_s;
+}
+
+int r_onvif::events_next_backoff_s(int backoff_s)
+{
+    return std::min(backoff_s * 2, EVENTS_BACKOFF_MAX_S);
+}
+
+r_onvif::onvif_ptz_caps r_onvif::r_onvif_cam::get_ptz_configuration_caps(const string& ptz_service)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(ptz_service, host, port, protocol, uri);
+    auto result = _soap_request(
+        host, port, uri, "http://www.onvif.org/ver20/ptz/wsdl/GetConfigurations",
+        [&](pugi::xml_node& body) {
+            body.append_child("tptz:GetConfigurations");
+        },
+        _username, _password
+    );
+    if (result.first != 200)
+        throw _events_error("GetConfigurations failed", result);
+    return parse_ptz_configuration_caps(result.second);
+}
+
 r_onvif::onvif_ptz_caps r_onvif::r_onvif_cam::get_ptz_caps(const string& ptz_service)
 {
     string host, protocol, uri;
@@ -2934,6 +3165,83 @@ r_onvif::onvif_pull_point r_onvif::r_onvif_cam::create_pull_point_subscription(c
     return parse_create_pull_point_response(result.second);
 }
 
+r_onvif::onvif_pull_point r_onvif::r_onvif_cam::subscribe_push(const string& events_service, const string& consumer_url, int termination_seconds)
+{
+    string host, protocol, uri;
+    int port;
+    r_http::parse_url_parts(events_service, host, port, protocol, uri);
+
+    const string action = "http://docs.oasis-open.org/wsn/bw-2/NotificationProducer/SubscribeRequest";
+    auto result = _soap_request(
+        host, port, uri, action,
+        [consumer_url, termination_seconds](pugi::xml_node& body) {
+            auto req = body.append_child("wsnt:Subscribe");
+            req.append_child("wsnt:ConsumerReference").append_child("wsa:Address").text().set(consumer_url.c_str());
+            req.append_child("wsnt:InitialTerminationTime").text().set(("PT" + to_string(termination_seconds) + "S").c_str());
+        },
+        _username, _password,
+        _addressing_headers(action, events_service)
+    );
+    if (result.first != 200)
+        throw _events_error("Subscribe failed", result);
+
+    return parse_subscribe_response(result.second);
+}
+
+r_onvif::onvif_pull_point r_onvif::parse_subscribe_response(const string& xml)
+{
+    try
+    {
+        return parse_create_pull_point_response(xml);
+    }
+    catch (const runtime_error& e)
+    {
+        string what = e.what();
+        const string from = "CreatePullPointSubscription";
+        auto at = what.find(from);
+        if (at != string::npos)
+            what.replace(at, from.size(), "Subscribe");
+        throw runtime_error(what);
+    }
+}
+
+int r_onvif::parse_ws_pull_point_support(const string& capabilities_xml)
+{
+    pugi::xml_document doc;
+    if (!doc.load_string(capabilities_xml.c_str()))
+        return -1;
+    string xp = "//" + _xpath_local("Events") + "/" + _xpath_local("WSPullPointSupport");
+    auto node = doc.select_node(xp.c_str());
+    if (!node)
+        return -1;
+    string v = r_string_utils::to_lower(r_string_utils::strip(node.node().child_value()));
+    if (v == "true" || v == "1")
+        return 1;
+    if (v == "false" || v == "0")
+        return 0;
+    return -1;
+}
+
+// An ISO 8601 time ("2026-11-10T09:30:05Z", a fraction or a zone offset after the seconds ignored) as seconds on a
+// calendar with no zones; only the difference of two of these from one camera is meaningful. false if it isn't one.
+static bool _iso_seconds(const string& text, long long& out)
+{
+    int y, mo, d, h, mi, sec;
+    if (sscanf(text.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &sec) != 6)
+        return false;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h < 0 || h > 23 || mi < 0 || mi > 59 || sec < 0 || sec > 60)
+        return false;
+    // Days from civil (Howard Hinnant's).
+    y -= mo <= 2;
+    const long long era = (y >= 0 ? y : y - 399) / 400;
+    const long long yoe = y - era * 400;
+    const long long doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const long long days = era * 146097 + doe;
+    out = days * 86400 + h * 3600 + mi * 60 + sec;
+    return true;
+}
+
 r_onvif::onvif_pull_point r_onvif::parse_create_pull_point_response(const string& xml)
 {
     pugi::xml_document doc;
@@ -2958,6 +3266,14 @@ r_onvif::onvif_pull_point r_onvif::parse_create_pull_point_response(const string
     auto term = doc.select_node(xp.c_str());
     if (term)
         pp.termination_time = term.node().child_value();
+
+    // How long the camera really granted, which may be less than was asked (one camera gives 60 s whatever the request):
+    // its own TerminationTime less its own CurrentTime, so the camera's clock being wrong doesn't matter.
+    auto cur = doc.select_node(("//" + _xpath_local("CurrentTime")).c_str());
+    long long t = 0, c = 0;
+    if (term && cur && _iso_seconds(r_string_utils::strip(term.node().child_value()), t) && _iso_seconds(r_string_utils::strip(cur.node().child_value()), c) &&
+        t > c && t - c < 24 * 3600)
+        pp.granted_seconds = (int)(t - c);
 
     return pp;
 }
@@ -3016,12 +3332,30 @@ vector<r_onvif::onvif_event> r_onvif::r_onvif_cam::pull_messages(const onvif_pul
     return parse_pull_messages_response(result.second);
 }
 
+static vector<r_onvif::onvif_event> _events_of(const pugi::xml_document& doc, size_t max_events);
+
 vector<r_onvif::onvif_event> r_onvif::parse_pull_messages_response(const string& xml)
 {
     pugi::xml_document doc;
     if (!doc.load_string(xml.c_str()))
         throw runtime_error("PullMessages: unparseable response");
+    return _events_of(doc, (size_t)-1);
+}
 
+vector<r_onvif::onvif_event> r_onvif::parse_notify(const string& xml)
+{
+    if (xml.size() > MAX_NOTIFY_BYTES)
+        throw runtime_error("Notify: too large");
+    pugi::xml_document doc;
+    // No DTD or entities, whatever the camera sends.
+    if (!doc.load_buffer(xml.data(), xml.size(), pugi::parse_default & ~pugi::parse_doctype))
+        throw runtime_error("Notify: unparseable");
+    return _events_of(doc, MAX_NOTIFY_EVENTS);
+}
+
+static vector<r_onvif::onvif_event> _events_of(const pugi::xml_document& doc, size_t max_events)
+{
+    using r_onvif::onvif_event;
     vector<onvif_event> events;
     string xp = "//" + _xpath_local("NotificationMessage");
     for (auto& nm : doc.select_nodes(xp.c_str()))
@@ -3047,6 +3381,8 @@ vector<r_onvif::onvif_event> r_onvif::parse_pull_messages_response(const string&
             items("Data", ev.data);
         }
         events.push_back(ev);
+        if (events.size() > max_events)
+            throw runtime_error("too many notification messages");
     }
     return events;
 }

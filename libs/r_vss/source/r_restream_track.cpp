@@ -45,7 +45,14 @@ bool r_restream_track_gate::wanted(steady_clock::time_point now, steady_clock::d
     return _ns(now) - last < duration_cast<nanoseconds>(idle).count();
 }
 
-void r_vss::restream_feed(GstElement* appsrc, r_blocking_q<_frame_context>& q, r_restream_track_gate& gate)
+bool r_restream_track_gate::breaks(int64_t pts_ns, int64_t duration_ns)
+{
+    bool brk = _next_pts_ns < 0 || pts_ns > _next_pts_ns + RESTREAM_DISCONT_NS || pts_ns < _next_pts_ns - RESTREAM_DISCONT_NS;
+    _next_pts_ns = duration_ns >= 0 ? pts_ns + duration_ns : pts_ns;
+    return brk;
+}
+
+void r_vss::restream_feed(GstElement* appsrc, r_blocking_q<_frame_context>& q, r_restream_track_gate& gate, bool audio)
 {
     gate.begin_pull();
 
@@ -69,6 +76,15 @@ void r_vss::restream_feed(GstElement* appsrc, r_blocking_q<_frame_context>& q, r
         GstBuffer* output_buffer = gst_buffer_copy(sample.value().buffer.get());
         GST_BUFFER_PTS(output_buffer) = sample.value().gst_pts;
         GST_BUFFER_DTS(output_buffer) = sample.value().gst_dts;
+        // Audio: the camera's buffer brings its own flags; a discontinuity only where this track's times really break.
+        if(audio)
+        {
+            auto duration = GST_BUFFER_DURATION_IS_VALID(output_buffer) ? (int64_t)GST_BUFFER_DURATION(output_buffer) : (int64_t)-1;
+            if(gate.breaks((int64_t)sample.value().gst_pts, duration))
+                GST_BUFFER_FLAG_SET(output_buffer, GST_BUFFER_FLAG_DISCONT);
+            else
+                GST_BUFFER_FLAG_UNSET(output_buffer, GST_BUFFER_FLAG_DISCONT | GST_BUFFER_FLAG_RESYNC);
+        }
         int ret;
         g_signal_emit_by_name(appsrc, "push-buffer", output_buffer, &ret);
         gst_buffer_unref(output_buffer);

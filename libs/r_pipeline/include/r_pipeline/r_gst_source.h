@@ -5,6 +5,7 @@
 #include "r_pipeline/r_arg.h"
 #include "r_pipeline/r_stream_info.h"
 #include "r_pipeline/r_sample_context.h"
+#include "r_pipeline/r_g711_header.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
 #include "r_gst_buffer.h"
@@ -27,6 +28,8 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <condition_variable>
+#include <memory>
 #include <chrono>
 #include <random>
 
@@ -45,6 +48,18 @@ R_API uint32_t rtsp_protocol_flags(const std::string& protocols);
 // packets, and sequence gaps a camera leaves when it drops packets itself (over
 // TCP too), each stalled the stream for up to GStreamer's 2 s default.
 const int RTSP_JITTERBUFFER_LATENCY_MS = 200;
+// How long stopping a pipeline gives rtspsrc to send its TEARDOWN: 2 s.
+const uint64_t RTSP_TEARDOWN_TIMEOUT_NS = 2000000000ULL;
+
+// The longest r_gst_source::stop() waits for the pipeline to reach NULL (the TEARDOWN included) before it lets go.
+const std::chrono::seconds STOP_WAIT {5};
+
+// For tests: stop() waits `wait` instead of STOP_WAIT (zero: STOP_WAIT), and `before_null` runs on the state-change thread
+// before it takes the pipeline to NULL (a state change that blocks). Call again with 0 and {} to undo.
+R_API void set_stop_for_tests(std::chrono::milliseconds wait, std::function<void()> before_null);
+
+// Sets an rtspsrc's teardown-timeout to RTSP_TEARDOWN_TIMEOUT_NS.
+R_API void rtsp_set_teardown_timeout(GstElement* rtspsrc);
 
 // Sets an rtspsrc's latency to RTSP_JITTERBUFFER_LATENCY_MS.
 R_API void rtsp_set_jitterbuffer_latency(GstElement* rtspsrc);
@@ -206,6 +221,9 @@ public:
     // GstRTSPLowerTrans flags the last play() gave rtspsrc (0 before play())
     R_API uint32_t protocol_flags() const;
 
+    // The teardown-timeout the last play() gave rtspsrc, in ns, read back from it (0 before play())
+    R_API uint64_t teardown_timeout_ns() const;
+
     // Simulated failure for leak testing: stream silently stops delivering samples
     // after a random interval near mttf_seconds. 0 = disabled.
     R_API void set_sim_mttf_seconds(uint32_t mttf) { _sim_mttf_seconds = mttf; }
@@ -273,9 +291,21 @@ private:
     /// optional arguments
     r_utils::r_nullable<std::string> _protocols;
     uint32_t _protocol_flags {0};
+    uint64_t _teardown_timeout_ns {0};
+    // Whether this stream's G.711 carries a camera's frame header, and removing it (r_g711_header_filter).
+    r_g711_header_filter _g711_filter;
     r_utils::r_nullable<std::string> _buffer_mode; // rtspsrc buffer-mode enum value
                                                    // (0=none,1=slave,2=buffer,3=auto,4=synced);
                                                    // overrides the protocols-implied default
+
+    // The state change to NULL that stop() waits for (a bounded wait; see stop()).
+    struct _null_change
+    {
+        std::mutex m;
+        std::condition_variable cv;
+        bool done {false};
+        GstStateChangeReturn result {GST_STATE_CHANGE_FAILURE};
+    };
 
     GstElement* _pipeline;
     guint _bus_watch_id;

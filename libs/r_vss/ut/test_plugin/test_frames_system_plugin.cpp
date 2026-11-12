@@ -114,6 +114,21 @@ R_API void system_plugin_action(r_system_plugin_handle h, const char* action)
         p->sub = p->api->subscribe_frames(p->api->host, camera.c_str(), stream == "-" ? nullptr : stream.c_str(), media, max);
         note(p, p->sub ? "sub ok" : "sub null");
     }
+    else if(cmd == "subfrom")
+    {
+        // As sub, through subscribe_frames_from with flags (field 5), when the host has it.
+        auto camera = field(a, 1), stream = field(a, 2);
+        auto media = (uint32_t)strtoul(field(a, 3).c_str(), nullptr, 10);
+        auto max = (size_t)strtoull(field(a, 4).c_str(), nullptr, 10);
+        auto flags = (uint32_t)strtoul(field(a, 5).c_str(), nullptr, 10);
+        if(p->api->version < 2)
+        {
+            note(p, "subfrom unsupported");
+            return;
+        }
+        p->sub = p->api->subscribe_frames_from(p->api->host, camera.c_str(), stream == "-" ? nullptr : stream.c_str(), media, max, flags);
+        note(p, p->sub ? "sub ok" : "sub null");
+    }
     else if(cmd == "subs")
     {
         auto camera = field(a, 1);

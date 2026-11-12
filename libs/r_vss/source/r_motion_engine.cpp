@@ -181,6 +181,14 @@ void r_motion_engine::_entry_point()
             try
             {
                 auto found_wc = _work_contexts.find(work.id);
+                // A frame of another stream than the one the decoder was built for (a move between the camera's streams
+                // whose frame was already queued, or whose removal request was dropped by a full queue): start over
+                // from this frame, as after a removal, instead of decoding it with the other stream's decoder.
+                if(found_wc != _work_contexts.end() && !found_wc->second->is_source(work.video_codec_name, work.video_codec_parameters))
+                {
+                    _work_contexts.erase(found_wc);
+                    found_wc = _work_contexts.end();
+                }
                 if(found_wc == _work_contexts.end())
                     found_wc = _create_work_context(work);
 
@@ -398,5 +406,6 @@ void r_motion_engine::_entry_point()
 map<string, shared_ptr<r_motion_work_context>>::iterator r_motion_engine::_create_work_context(const r_motion_work_item& item)
 {
     auto wc = _factory(item);
+    wc->set_source(item.video_codec_name, item.video_codec_parameters);
     return _work_contexts.insert(make_pair(item.id, wc)).first;
 }

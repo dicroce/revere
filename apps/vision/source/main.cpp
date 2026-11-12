@@ -60,6 +60,7 @@ void* get_icon_texture_id(const std::string& class_name)
 #include "imgui_ui.h"
 #include "utils.h"
 #include "layouts.h"
+#include "r_vss/r_substream_recorder.h"
 #include "query.h"
 #include "pipeline_host.h"
 #include "error_handling.h"
@@ -134,7 +135,7 @@ void init_icon_textures()
     R_LOG_INFO("Creating icon textures from PNG data...");
 
     // Map class names to their PNG data
-    // Class names match YOLOv8 detection output
+    // Class names match the detector's output (the 80 COCO classes, as yolox reports them)
     struct icon_data {
         const char* class_name;
         const unsigned char* png_data;
@@ -1463,10 +1464,11 @@ int main(int argc, char** argv)
                                             auto maybe_revere_ip = cfg_state.get_revere_ipv4();
                                             if(!maybe_revere_ip.is_null())
                                             {
-                                                auto url_label = c.label;
-                                                replace(begin(url_label), end(url_label), ' ', '_');
-
-                                                auto rtsp_url = r_string_utils::format("rtsp://%s:8554/%s", maybe_revere_ip.value().c_str(), url_label.c_str());
+                                                // A tile in a grid plays the camera's smaller stream when it has one up (it decodes
+                                                // a fraction of the pixels); the single view plays main.
+                                                const bool grid_tile = cfg_state.get_current_layout() != LAYOUT_ONE_BY_ONE;
+                                                auto mount = r_vss::view_mount_path(c.label, c.mount, c.sub_mount, c.sub_fresh, grid_tile);
+                                                auto rtsp_url = r_string_utils::format("rtsp://%s:8554%s", maybe_revere_ip.value().c_str(), mount.c_str());
 
                                                 stream_info si;
                                                 si.name = name;

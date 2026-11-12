@@ -1,10 +1,11 @@
-#include "yolov8_motion_plugin.h"
+#include "yolox_motion_plugin.h"
 #include "r_utils/r_logger.h"
 #include "r_vss/r_motion_event_plugin_host.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_utils/r_file.h"
 #include "r_disco/r_devices.h"
 #include "r_utils/r_time_utils.h"
+#include "r_utils/r_std_utils.h"
 #include "r_vss/r_detection_cap.h"
 #include <memory>
 #include <vector>
@@ -12,6 +13,7 @@
 #include <fstream>
 #include <string>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <list>
 #include <set>
@@ -27,7 +29,45 @@
 
 using namespace r_utils;
 
-yolov8_motion_plugin::yolov8_motion_plugin(r_vss::r_motion_event_plugin_host* host)
+namespace
+{
+// The model: models/yolox/<MODEL_NAME>.{param,bin}, converted from an
+// official YOLOX checkpoint by tools/yolox/export_yolox_ncnn.py (no decode in
+// the graph: raw regression + objectness + 80 COCO class scores per anchor).
+const char* const MODEL_NAME = "yolox_s";
+// Square input the network runs at. Frames arrive 640x640 letterboxed; any
+// other size is resized to it and boxes are scaled back to 640 space.
+const int MODEL_INPUT_SIZE = 640;
+const int FRAME_SIZE = 640;
+const int NUM_CLASSES = 80;
+const int STRIDES[] = {8, 16, 32};
+// Score = objectness * class score. Same starting point as the old yolov8
+// plugin's 0.65 class score; to be calibrated against it.
+const float DEFAULT_CONF_THRESHOLD = 0.65f;
+const float NMS_THRESHOLD = 0.45f;
+
+// REVERE_YOLOX_CONF_THRESHOLD (0..1) overrides it, for calibration
+// (tools/detector_harness needs the detections under the default too).
+float conf_threshold()
+{
+    static const float threshold = []() {
+        const std::string env = r_std_utils::get_env("REVERE_YOLOX_CONF_THRESHOLD");
+        if (!env.empty()) {
+            char* end = nullptr;
+            const float v = strtof(env.c_str(), &end);
+            if (end != env.c_str() && v > 0.0f && v <= 1.0f) {
+                R_LOG_INFO("yolox_motion_plugin: confidence threshold %.3f (REVERE_YOLOX_CONF_THRESHOLD)", v);
+                return v;
+            }
+            R_LOG_WARNING("yolox_motion_plugin: ignoring REVERE_YOLOX_CONF_THRESHOLD=%s (want 0..1)", env.c_str());
+        }
+        return DEFAULT_CONF_THRESHOLD;
+    }();
+    return threshold;
+}
+}
+
+yolox_motion_plugin::yolox_motion_plugin(r_vss::r_motion_event_plugin_host* host)
     : _host(host),
       _initialized(false),
       _running(false)
@@ -35,8 +75,8 @@ yolov8_motion_plugin::yolov8_motion_plugin(r_vss::r_motion_event_plugin_host* ho
     try {
         auto working_directory = r_fs::working_directory();
 
-        auto params_path = working_directory + "/models/yolov8_person/yolov8n.param";
-        auto bin_path = working_directory + "/models/yolov8_person/yolov8n.bin";
+        auto params_path = working_directory + "/models/yolox/" + MODEL_NAME + ".param";
+        auto bin_path = working_directory + "/models/yolox/" + MODEL_NAME + ".bin";
 
         // Create NCNN network instance
         _net = std::make_unique<ncnn::Net>();
@@ -48,14 +88,14 @@ yolov8_motion_plugin::yolov8_motion_plugin(r_vss::r_motion_event_plugin_host* ho
         // Load model
         int ret_param = _net->load_param(params_path.c_str());
         if (ret_param != 0) {
-            R_LOG_ERROR("yolov8_motion_plugin: Failed to load model param file: %s (ret=%d)", params_path.c_str(), ret_param);
+            R_LOG_ERROR("yolox_motion_plugin: Failed to load model param file: %s (ret=%d)", params_path.c_str(), ret_param);
             _net.reset();
             return;
         }
 
         int ret_bin = _net->load_model(bin_path.c_str());
         if (ret_bin != 0) {
-            R_LOG_ERROR("yolov8_motion_plugin: Failed to load model bin file: %s (ret=%d)", bin_path.c_str(), ret_bin);
+            R_LOG_ERROR("yolox_motion_plugin: Failed to load model bin file: %s (ret=%d)", bin_path.c_str(), ret_bin);
             _net.reset();
             return;
         }
@@ -71,15 +111,15 @@ yolov8_motion_plugin::yolov8_motion_plugin(r_vss::r_motion_event_plugin_host* ho
 
         // Start processing thread
         _running = true;
-        _thread = std::thread(&yolov8_motion_plugin::_entry_point, this);
+        _thread = std::thread(&yolox_motion_plugin::_entry_point, this);
 
     } catch (const std::exception& e) {
-        R_LOG_ERROR("yolov8_motion_plugin: Failed to initialize: %s", e.what());
+        R_LOG_ERROR("yolox_motion_plugin: Failed to initialize: %s", e.what());
         _initialized = false;
     }
 }
 
-yolov8_motion_plugin::~yolov8_motion_plugin()
+yolox_motion_plugin::~yolox_motion_plugin()
 {
     stop();
 
@@ -87,7 +127,7 @@ yolov8_motion_plugin::~yolov8_motion_plugin()
     _net.reset();
 }
 
-void yolov8_motion_plugin::stop()
+void yolox_motion_plugin::stop()
 {
     // Stop processing thread
     if (_running) {
@@ -103,12 +143,12 @@ void yolov8_motion_plugin::stop()
     }
 }
 
-void yolov8_motion_plugin::post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox)
+void yolox_motion_plugin::post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox)
 {
     post_motion_event(evt, camera_id, ts, frame_data, width, height, motion_bbox, {});
 }
 
-void yolov8_motion_plugin::post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions)
+void yolox_motion_plugin::post_motion_event(r_vss::r_motion_event evt, const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame_data, uint16_t width, uint16_t height, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions)
 {
     if (!_running)
         return;
@@ -158,14 +198,14 @@ void yolov8_motion_plugin::post_motion_event(r_vss::r_motion_event evt, const st
     // Drop if queue is too deep (system performance limit)
     const size_t MAX_QUEUE_DEPTH = 30;
     if (_event_queue.size() >= MAX_QUEUE_DEPTH) {
-        R_LOG_WARNING("yolov8_motion_plugin: System performance limit exceeded - dropping frame (queue depth: %zu)", _event_queue.size());
+        R_LOG_WARNING("yolox_motion_plugin: System performance limit exceeded - dropping frame (queue depth: %zu)", _event_queue.size());
         return;
     }
 
     _event_queue.post(msg);
 }
 
-void yolov8_motion_plugin::_entry_point()
+void yolox_motion_plugin::_entry_point()
 {
     while (_running) {
         try {
@@ -180,12 +220,12 @@ void yolov8_motion_plugin::_entry_point()
             }
 
         } catch (const std::exception& e) {
-            R_LOG_ERROR("yolov8_motion_plugin: Error in worker thread: %s", e.what());
+            R_LOG_ERROR("yolox_motion_plugin: Error in worker thread: %s", e.what());
         }
     }
 }
 
-void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
+void yolox_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
 {
     if (!_initialized || !_host) {
         return;
@@ -310,11 +350,11 @@ void yolov8_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
         }
 
     } catch (const std::exception& e) {
-        R_LOG_ERROR("yolov8_motion_plugin: Failed to process motion event: %s", e.what());
+        R_LOG_ERROR("yolox_motion_plugin: Failed to process motion event: %s", e.what());
     }
 }
 
-std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions, std::vector<Detection>* unfiltered_detections)
+std::vector<yolox_motion_plugin::Detection> yolox_motion_plugin::detect_persons(const uint8_t* rgb_data, int width, int height, const std::string& camera_id, int64_t timestamp, const r_vss::motion_region& motion_bbox, const std::vector<r_vss::motion_region>& motion_regions, std::vector<Detection>* unfiltered_detections)
 {
     std::vector<Detection> detections;
 
@@ -323,33 +363,34 @@ std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_person
     }
 
     try {
-        // Input is already 640x640 letterboxed RGB from motion engine
-        // No resize needed - use directly
-        cv::Mat input_img(height, width, CV_8UC3, (void*)rgb_data);
-        if (input_img.empty()) {
+        // Input is 640x640 letterboxed RGB from the motion engine. YOLOX wants
+        // BGR, 0..255, no normalisation; resized only if the model runs at
+        // another size.
+        if (width <= 0 || height <= 0) {
             return detections;
         }
 
-        // Convert to NCNN mat (RGB input, NCNN expects RGB for PIXEL_RGB)
-        ncnn::Mat in = ncnn::Mat::from_pixels(input_img.data, ncnn::Mat::PIXEL_RGB, width, height);
+        ncnn::Mat in = (width == MODEL_INPUT_SIZE && height == MODEL_INPUT_SIZE)
+            ? ncnn::Mat::from_pixels(rgb_data, ncnn::Mat::PIXEL_RGB2BGR, width, height)
+            : ncnn::Mat::from_pixels_resize(rgb_data, ncnn::Mat::PIXEL_RGB2BGR, width, height, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
         if (in.empty()) {
             return detections;
         }
 
-        // YOLOv8 normalization: divide by 255.0
-        const float norm_vals[3] = {1.0f/255.0f, 1.0f/255.0f, 1.0f/255.0f};
-        in.substract_mean_normalize(0, norm_vals);
+        // Model space back to the frame's (640) space.
+        const float scale_x = (float)width / MODEL_INPUT_SIZE;
+        const float scale_y = (float)height / MODEL_INPUT_SIZE;
+        const float max_x = (float)width - 1.0f;
+        const float max_y = (float)height - 1.0f;
 
         // Create extractor and run inference
         ncnn::Extractor ex = _net->create_extractor();
 
-        // YOLOv8 input layer name
         int ret = ex.input("in0", in);
         if (ret != 0) {
             return detections;
         }
 
-        // YOLOv8 output layer name
         ncnn::Mat out;
         ret = ex.extract("out0", out);
         if (ret != 0) {
@@ -361,68 +402,70 @@ std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_person
             return detections;  // Empty detections is valid - nothing found
         }
 
-        // YOLOv8 post-processing
-        // Actual output format: w=8400, h=84, c=1 where 84 = 4 (bbox) + 80 (COCO classes)
-        const float conf_threshold = 0.65f;  // Higher threshold to reduce false positives (e.g., car misclassified as train)
-        const float nms_threshold = 0.45f;
+        // YOLOX post-processing. Output: w=85 (dx, dy, log w, log h, objectness,
+        // 80 class scores; sigmoids already applied), h=8400 anchors ordered
+        // stride 8, 16, 32, row-major over each stride's grid.
+        const float conf_threshold = ::conf_threshold();
+        const float nms_threshold = NMS_THRESHOLD;
 
-        if (out.w == 8400 && out.c == 1) {
-            int num_proposals = out.w;  // 8400 proposals
-            int num_channels = out.h;   // 84 channels
+        int expected_anchors = 0;
+        for (int stride : STRIDES)
+            expected_anchors += (MODEL_INPUT_SIZE / stride) * (MODEL_INPUT_SIZE / stride);
+
+        if (out.w == 5 + NUM_CLASSES && out.h == expected_anchors && out.c == 1) {
             std::vector<Detection> proposals;
 
-            for (int i = 0; i < num_proposals; i++) {
-                // Access data for proposal i
-                // Format: w=8400 (proposals), h=76 (channels)
-                // Data is accessed as: out[channel_idx * 8400 + proposal_idx]
+            int anchor = 0;
+            for (int stride : STRIDES) {
+                const int grid = MODEL_INPUT_SIZE / stride;
+                for (int gy = 0; gy < grid; gy++) {
+                    for (int gx = 0; gx < grid; gx++, anchor++) {
+                        const float* row = out.row(anchor);
 
-                // Get bbox coordinates (first 4 channels)
-                const float* data = (const float*)out.data;
-                float cx = data[0 * 8400 + i];  // Channel 0, proposal i
-                float cy = data[1 * 8400 + i];  // Channel 1, proposal i
-                float bw = data[2 * 8400 + i];  // Channel 2, proposal i
-                float bh = data[3 * 8400 + i];  // Channel 3, proposal i
+                        const float objectness = row[4];
+                        if (objectness < conf_threshold) {
+                            continue;  // score = objectness * class score <= objectness
+                        }
 
-                // Find the class with maximum confidence (channels 4 to num_channels-1)
-                float max_class_score = 0.0f;
-                int max_class_id = -1;
-                for (int j = 4; j < num_channels; j++) {
-                    float class_score = data[j * 8400 + i];  // Channel j, proposal i
-                    if (class_score > max_class_score) {
-                        max_class_score = class_score;
-                        max_class_id = j - 4;  // Subtract 4 to get 0-based class ID
+                        float max_class_score = 0.0f;
+                        int max_class_id = -1;
+                        for (int j = 0; j < NUM_CLASSES; j++) {
+                            if (row[5 + j] > max_class_score) {
+                                max_class_score = row[5 + j];
+                                max_class_id = j;
+                            }
+                        }
+
+                        const float score = objectness * max_class_score;
+                        if (max_class_id < 0 || score < conf_threshold) {
+                            continue;
+                        }
+
+                        // Decode against the grid, in model space.
+                        const float cx = (row[0] + gx) * stride;
+                        const float cy = (row[1] + gy) * stride;
+                        const float bw = std::exp(row[2]) * stride;
+                        const float bh = std::exp(row[3]) * stride;
+
+                        Detection detection;
+                        detection.x1 = (cx - bw * 0.5f) * scale_x;
+                        detection.y1 = (cy - bh * 0.5f) * scale_y;
+                        detection.x2 = (cx + bw * 0.5f) * scale_x;
+                        detection.y2 = (cy + bh * 0.5f) * scale_y;
+                        detection.score = score;
+                        detection.class_id = max_class_id;
+                        detection.camera_id = camera_id;
+                        detection.timestamp = timestamp;
+
+                        // Clamp to image bounds (640x640)
+                        detection.x1 = std::max(0.0f, std::min(max_x, detection.x1));
+                        detection.y1 = std::max(0.0f, std::min(max_y, detection.y1));
+                        detection.x2 = std::max(0.0f, std::min(max_x, detection.x2));
+                        detection.y2 = std::max(0.0f, std::min(max_y, detection.y2));
+
+                        proposals.push_back(detection);
                     }
                 }
-
-                if (max_class_score < conf_threshold) {
-                    continue;
-                }
-
-                // Convert center format to corner format
-                // Coordinates are already in 640x640 letterbox space - no transformation needed
-                float x1 = cx - bw * 0.5f;
-                float y1 = cy - bh * 0.5f;
-                float x2 = cx + bw * 0.5f;
-                float y2 = cy + bh * 0.5f;
-
-                Detection detection;
-                detection.x1 = x1;
-                detection.y1 = y1;
-                detection.x2 = x2;
-                detection.y2 = y2;
-                detection.score = max_class_score;
-                detection.class_id = max_class_id;
-                detection.camera_id = camera_id;
-                detection.timestamp = timestamp;
-
-                // Clamp to image bounds (640x640)
-                detection.x1 = std::max(0.0f, std::min(639.0f, detection.x1));
-                detection.y1 = std::max(0.0f, std::min(639.0f, detection.y1));
-                detection.x2 = std::max(0.0f, std::min(639.0f, detection.x2));
-                detection.y2 = std::max(0.0f, std::min(639.0f, detection.y2));
-
-                // Since user only needs detection events (not bbox coordinates), add all detections above threshold
-                proposals.push_back(detection);
             }
             
             // Apply NMS (Non-Maximum Suppression) - only within same class
@@ -492,16 +535,25 @@ std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_person
                     detections.push_back(det);
                 }
             }
+        } else {
+            // A model converted with other settings (decode in the graph,
+            // another input size or class count) finds nothing; say so once.
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                R_LOG_ERROR("yolox_motion_plugin: unexpected model output w=%d h=%d c=%d (want w=%d h=%d c=1); no detections",
+                            out.w, out.h, out.c, 5 + NUM_CLASSES, expected_anchors);
+            }
         }
-        
+
     } catch (const std::exception& e) {
-        R_LOG_ERROR("yolov8_motion_plugin: YOLOv8 detection failed: %s", e.what());
+        R_LOG_ERROR("yolox_motion_plugin: YOLOX detection failed: %s", e.what());
     }
     
     return detections;
 }
 
-std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_objects(const uint8_t* rgb_data, int width, int height)
+std::vector<yolox_motion_plugin::Detection> yolox_motion_plugin::detect_objects(const uint8_t* rgb_data, int width, int height)
 {
     if (!_running)
         return {};
@@ -510,12 +562,12 @@ std::vector<yolov8_motion_plugin::Detection> yolov8_motion_plugin::detect_object
     return detect_persons(rgb_data, width, height, std::string(), 0, none, {});
 }
 
-void yolov8_motion_plugin::_record_look(const std::string& camera_id, int64_t ts, size_t n_dets)
+void yolox_motion_plugin::_record_look(const std::string& camera_id, int64_t ts, size_t n_dets)
 {
     r_vss::add_look(_camera_timing[camera_id], {ts, r_vss::wall_clock_ms(), (int)n_dets});
 }
 
-void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms)
+void yolox_motion_plugin::_analyze_and_log_detections(const std::string& camera_id, int64_t end_time_ms)
 {
     auto& devices = _host->get_devices();
 
@@ -573,21 +625,8 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
         }
     }
 
-    // What the start frame showed: a learnt vehicle anchor only drops a car that was already parked then.
-    std::vector<r_vss::r_early_alerts::r_seen> start_seen;
-    {
-        auto sf_it = _camera_start_frame_detections.find(camera_id);
-        if(sf_it != _camera_start_frame_detections.end())
-            for(const auto& d : sf_it->second)
-                start_seen.push_back({get_class_name(d.class_id), {d.x1, d.y1, d.x2, d.y2}});
-    }
-
-    const auto is_static_detection = [this, &static_anchors, &start_seen, &camera_id, end_time_ms](const Detection& detection) {
+    const auto is_static_detection = [&static_anchors](const Detection& detection) {
         const float static_iou_threshold = 0.85f;
-        // A parked car the camera has seen sit still in earlier events, even if this event's first and last frames
-        // missed it (night, IR): left out of the record, so a raccoon's event isn't a vehicle's.
-        if(_early.is_parked_vehicle(camera_id, get_class_name(detection.class_id), {detection.x1, detection.y1, detection.x2, detection.y2}, end_time_ms, start_seen))
-            return true;
         for(const auto& anchor : static_anchors) {
             if(anchor.class_id != detection.class_id) continue;
             const float ix1 = std::max(anchor.x1, detection.x1);
@@ -625,7 +664,7 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
     for (const auto& pair : class_counts) {
         const char* class_name = get_class_name(pair.first);
         float confidence = max_confidence[pair.first];
-        R_LOG_INFO("yolov8_motion_plugin: camera: %s detected: %s (%d frames, max confidence: %.1f%%)",
+        R_LOG_INFO("yolox_motion_plugin: camera: %s detected: %s (%d frames, max confidence: %.1f%%)",
                    (!maybe_friendly_name.is_null())?maybe_friendly_name.value().c_str():"unknown",
                    class_name, pair.second, confidence * 100);
     }
@@ -705,7 +744,7 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
         json_metadata += "}}";
 
         auto& stream_keeper = _host->get_stream_keeper();
-        stream_keeper.write_metadata(camera_id, "yolov8_motion_plugin", json_metadata, first_detection_ts);
+        stream_keeper.write_metadata(camera_id, "yolox_motion_plugin", json_metadata, first_detection_ts);
 
         for (const auto& detection : it->second) {
             if (disproven.find(detection.class_id) != disproven.end()) continue;
@@ -727,7 +766,7 @@ void yolov8_motion_plugin::_analyze_and_log_detections(const std::string& camera
     }
 }
 
-void yolov8_motion_plugin::_early_alerts_for(const std::string& camera_id, const std::vector<Detection>& detections)
+void yolox_motion_plugin::_early_alerts_for(const std::string& camera_id, const std::vector<Detection>& detections)
 {
     for (const auto& d : detections) {
         const char* class_name = get_class_name(d.class_id);
@@ -737,18 +776,18 @@ void yolov8_motion_plugin::_early_alerts_for(const std::string& camera_id, const
             case r_vss::r_early_alerts::early_already_sent:
                 continue;
             case r_vss::r_early_alerts::early_below_floor:
-                R_LOG_INFO("yolov8_motion_plugin: early %s on %s at %.0f%%: held, under the %.0f%% floor",
+                R_LOG_INFO("yolox_motion_plugin: early %s on %s at %.0f%%: held, under the %.0f%% floor",
                            class_name, camera_id.c_str(), d.score * 100, r_vss::r_early_alerts::MIN_CONFIDENCE * 100);
                 continue;
             case r_vss::r_early_alerts::early_anchored:
-                R_LOG_INFO("yolov8_motion_plugin: early %s on %s at %.0f%%: held, on a %s static anchor (IoU %.2f)",
+                R_LOG_INFO("yolox_motion_plugin: early %s on %s at %.0f%%: held, on a %s static anchor (IoU %.2f)",
                            class_name, camera_id.c_str(), d.score * 100, decision.strong_anchor ? "parked" : "recurring", decision.anchor_iou);
                 continue;
             case r_vss::r_early_alerts::early_sent:
                 break;
         }
 
-        R_LOG_INFO("yolov8_motion_plugin: early %s on %s at %.0f%%: sent", class_name, camera_id.c_str(), d.score * 100);
+        R_LOG_INFO("yolox_motion_plugin: early %s on %s at %.0f%%: sent", class_name, camera_id.c_str(), d.score * 100);
         r_vss::r_detection det;
         det.camera_id  = camera_id;
         det.ts         = d.timestamp;
@@ -762,14 +801,14 @@ void yolov8_motion_plugin::_early_alerts_for(const std::string& camera_id, const
     }
 }
 
-std::string yolov8_motion_plugin::_anchors_path() const
+std::string yolox_motion_plugin::_anchors_path() const
 {
     if (!_host || _host->get_top_dir().empty())
         return std::string();
-    return _host->get_top_dir() + PATH_SLASH + "yolov8_static_anchors.json";
+    return _host->get_top_dir() + PATH_SLASH + "yolox_static_anchors.json";
 }
 
-void yolov8_motion_plugin::_save_anchors()
+void yolox_motion_plugin::_save_anchors()
 {
     auto path = _anchors_path();
     if (path.empty())
@@ -780,11 +819,11 @@ void yolov8_motion_plugin::_save_anchors()
         r_fs::write_file((const uint8_t*)j.data(), j.size(), tmp);
         r_fs::atomic_rename_file(tmp, path);
     } catch (const std::exception& e) {
-        R_LOG_ERROR("yolov8_motion_plugin: couldn't save static anchors: %s", e.what());
+        R_LOG_ERROR("yolox_motion_plugin: couldn't save static anchors: %s", e.what());
     }
 }
 
-const char* yolov8_motion_plugin::get_class_name(int class_id)
+const char* yolox_motion_plugin::get_class_name(int class_id)
 {
     // COCO dataset class names (80 classes)
     static const char* class_names[] = {
@@ -822,7 +861,7 @@ R_API r_motion_plugin_handle load_plugin(r_motion_event_plugin_host_handle host)
     r_vss::r_motion_event_plugin_host* host_ptr = reinterpret_cast<r_vss::r_motion_event_plugin_host*>(host);
 
     // Create plugin instance
-    yolov8_motion_plugin* plugin = new yolov8_motion_plugin(host_ptr);
+    yolox_motion_plugin* plugin = new yolox_motion_plugin(host_ptr);
 
     // Return as opaque handle
     return reinterpret_cast<r_motion_plugin_handle>(plugin);
@@ -831,14 +870,14 @@ R_API r_motion_plugin_handle load_plugin(r_motion_event_plugin_host_handle host)
 R_API void stop_plugin(r_motion_plugin_handle plugin)
 {
     // Cast opaque handle back to actual type and stop
-    yolov8_motion_plugin* plugin_ptr = reinterpret_cast<yolov8_motion_plugin*>(plugin);
+    yolox_motion_plugin* plugin_ptr = reinterpret_cast<yolox_motion_plugin*>(plugin);
     plugin_ptr->stop();
 }
 
 R_API void destroy_plugin(r_motion_plugin_handle plugin)
 {
     // Cast opaque handle back to actual type and delete
-    yolov8_motion_plugin* plugin_ptr = reinterpret_cast<yolov8_motion_plugin*>(plugin);
+    yolox_motion_plugin* plugin_ptr = reinterpret_cast<yolox_motion_plugin*>(plugin);
     delete plugin_ptr;
 }
 
@@ -858,7 +897,7 @@ R_API void post_motion_event(
     bool has_motion)
 {
     // Cast opaque handle back to actual type
-    yolov8_motion_plugin* plugin_ptr = reinterpret_cast<yolov8_motion_plugin*>(plugin);
+    yolox_motion_plugin* plugin_ptr = reinterpret_cast<yolox_motion_plugin*>(plugin);
 
     // Convert C types back to C++ types
     std::string camera_id_str(camera_id);
@@ -881,16 +920,16 @@ R_API int detect_objects(
 {
     if (!plugin || !frame_data || frame_data_size != (size_t)width * height * 3)
         return -1;
-    yolov8_motion_plugin* plugin_ptr = reinterpret_cast<yolov8_motion_plugin*>(plugin);
+    yolox_motion_plugin* plugin_ptr = reinterpret_cast<yolox_motion_plugin*>(plugin);
     try
     {
         for (const auto& d : plugin_ptr->detect_objects(frame_data, width, height))
-            on_detection(userdata, yolov8_motion_plugin::class_name(d.class_id), d.score, d.x1, d.y1, d.x2, d.y2);
+            on_detection(userdata, yolox_motion_plugin::class_name(d.class_id), d.score, d.x1, d.y1, d.x2, d.y2);
         return 0;
     }
     catch (const std::exception& e)
     {
-        R_LOG_ERROR("yolov8_motion_plugin: detect_objects failed: %s", e.what());
+        R_LOG_ERROR("yolox_motion_plugin: detect_objects failed: %s", e.what());
         return -1;
     }
 }
@@ -912,7 +951,7 @@ R_API void post_motion_event_regions(
     const int* motion_regions_xywh,
     size_t motion_region_count)
 {
-    yolov8_motion_plugin* plugin_ptr = reinterpret_cast<yolov8_motion_plugin*>(plugin);
+    yolox_motion_plugin* plugin_ptr = reinterpret_cast<yolox_motion_plugin*>(plugin);
 
     std::vector<r_vss::motion_region> motion_regions;
     if(motion_regions_xywh)

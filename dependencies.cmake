@@ -382,7 +382,7 @@ endif()
 # NCNN_TOP_DIR from the environment is kept in the cache (or pass
 # -DNCNN_TOP_DIR=...): CMake re-configures on its own when HEAD moves (see
 # CMakeLists.txt), often in a shell without the variable, and that used to
-# drop the yolov8 plugin from the build without a word. -U NCNN_TOP_DIR
+# drop the yolox plugin from the build without a word. -U NCNN_TOP_DIR
 # forgets it.
 if(DEFINED ENV{NCNN_TOP_DIR})
     set(NCNN_TOP_DIR "$ENV{NCNN_TOP_DIR}" CACHE PATH "NCNN install prefix, for the AI detection plugins" FORCE)
@@ -497,6 +497,31 @@ if(NOT TARGET SDL2::SDL2)
     )
 
     FetchContent_MakeAvailable(SDL2)
+
+    # Patch SDL2: its Fcitx and IBus input-method code reads the window's display
+    # without checking there is one. When the last monitor goes away (unplugged,
+    # powered off, a KVM switched) SDL_GetDisplayForWindow returns NULL and the
+    # app segfaults in SDL_Fcitx_UpdateTextRect. Not fixed upstream as of 2.32.10.
+    # With no display the window position is used as it is.
+    foreach(_sdl_ime_file SDL_fcitx.c SDL_ibus.c)
+        set(_sdl_ime_path ${sdl2_SOURCE_DIR}/src/core/linux/${_sdl_ime_file})
+        if(EXISTS ${_sdl_ime_path})
+            file(READ ${_sdl_ime_path} _sdl_ime_content)
+            string(REPLACE
+                "if (info.subsystem == SDL_SYSWM_X11) {"
+                "if (info.subsystem == SDL_SYSWM_X11 && SDL_GetDisplayForWindow(focused_win)) {"
+                _sdl_ime_patched "${_sdl_ime_content}")
+            if(NOT _sdl_ime_patched STREQUAL _sdl_ime_content)
+                file(WRITE ${_sdl_ime_path} "${_sdl_ime_patched}")
+            endif()
+            string(FIND "${_sdl_ime_patched}" "SDL_SYSWM_X11 && SDL_GetDisplayForWindow(focused_win)" _sdl_ime_found)
+            if(_sdl_ime_found EQUAL -1)
+                message(WARNING "SDL2 ${_sdl_ime_file}: the no-display patch did not apply; check it against this SDL2 version")
+            endif()
+        else()
+            message(WARNING "SDL2 ${_sdl_ime_file} not found at ${_sdl_ime_path}; the no-display patch was not applied, check it against this SDL2 version")
+        endif()
+    endforeach()
 
     # SDL2 creates SDL2::SDL2 target when built as shared
     if(TARGET SDL2 AND NOT TARGET SDL2::SDL2)

@@ -892,6 +892,43 @@ vector<r_networking::r_adapter_info> r_utils::r_networking::r_get_adapters()
     return adapters;
 }
 
+string r_utils::r_networking::r_network_signature()
+{
+    return r_network_signature_of(r_get_adapters());
+}
+
+string r_utils::r_networking::r_network_signature_of(const vector<r_adapter_info>& adapters)
+{
+    static const char* name_prefixes[] = {"utun", "tun", "tap", "wg", "tailscale", "ppp", "ipsec", "gif", "stf", "awdl", "llw",
+                                          "anpi", "bridge", "lo"};
+    static const char* name_parts[] = {"tailscale", "wireguard", "openvpn", "vpn", "vethernet", "virtual", "tap-windows", "zerotier"};
+
+    vector<string> parts;
+    for(auto& a : adapters)
+    {
+        if(a.is_virtual || a.ipv4_netmask == "255.255.255.255")
+            continue;
+        string lower = a.name;
+        for(auto& ch : lower)
+            ch = (char)tolower((unsigned char)ch);
+        bool skip = false;
+        for(auto p : name_prefixes)
+            if(lower.rfind(p, 0) == 0)
+                skip = true;
+        for(auto p : name_parts)
+            if(lower.find(p) != string::npos)
+                skip = true;
+        if(skip)
+            continue;
+        parts.push_back(a.name + "=" + a.ipv4_addr + "/" + a.ipv4_netmask);
+    }
+    sort(parts.begin(), parts.end());
+    string sig;
+    for(auto& p : parts)
+        sig += p + ";";
+    return sig;
+}
+
 vector<string> r_utils::r_networking::r_ipv4_subnet_hosts(const string& ipv4_addr, const string& netmask, size_t max_hosts)
 {
     vector<string> hosts;

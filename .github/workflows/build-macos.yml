@@ -133,7 +133,7 @@ jobs:
           # The pinned Intel Homebrew stays where it is.
           [ -n "${{ matrix.brew_core_pin }}" ] || brew update
           # Runtime/build deps via Homebrew. ncnn is in brew (arm64) so the
-          # yolov8 plugin builds without a from-source NCNN. dylibbundler gathers
+          # yolox plugin builds without a from-source NCNN. dylibbundler gathers
           # the non-system dylibs into the .app and rewrites their load paths.
           # FFmpeg is NOT Homebrew's (see "Build FFmpeg"); openh264, webp and
           # opus are for that build.

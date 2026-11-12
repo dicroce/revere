@@ -20,6 +20,23 @@ struct tray_status
 // service could not be reached at all.
 tray_status summarize_cameras(const std::optional<std::string>& cameras_json);
 
+// GET /cameras was refused (401/403): the service is up, but this process
+// couldn't authenticate, e.g. its local API token is in another user's or
+// another --data-dir's data directory.
+tray_status summarize_refused();
+
+// GET /cameras as the tray got it.
+struct cameras_reply
+{
+    int status {0};     // the HTTP status, or 0 when nothing answered
+    std::string body;   // the JSON, when status is 200
+};
+
+// Build the status from the reply. Any answer means the service is running:
+// 401 or 403 is summarize_refused(), and any other non-200 means it couldn't
+// read the cameras. Only no answer at all means it isn't running.
+tray_status summarize_reply(const cameras_reply& reply);
+
 }
 
 #endif

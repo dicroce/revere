@@ -1,4 +1,6 @@
 
+#include "r_vss/r_substream_recorder.h"
+#include "r_disco/r_substream.h"
 #include "r_vss/r_ws.h"
 #include "r_vss/r_recap.h"
 #include "r_vss/r_stream_keeper.h"
@@ -491,11 +493,50 @@ r_http::r_server_response r_ws::_get_jpg(r_utils::r_socket_base&, const r_http::
 
         auto t_start = steady_clock::now();
         int64_t frame_ts = 0;
+
+        // A "now" picture can come from the camera's smaller stream: its newest key frame is held in memory, so
+        // there is no disk read, and the decode is of a fraction of the pixels. Only when the box fits inside that
+        // stream and has main's shape; anything else (a picture at a time, a bigger box) is main's, as before.
+        const auto requested_tp = r_time_utils::iso_8601_to_tp(args["start_time"]);
+        {
+            const auto off_now_ms = duration_cast<milliseconds>(system_clock::now() - requested_tp).count();
+            if(off_now_ms >= -SNAPSHOT_NOW_MS && off_now_ms <= SNAPSHOT_NOW_MS)
+            {
+                try
+                {
+                    auto sub_kf = _stream_keeper.latest_substream_key_frame(args["camera_id"]);
+                    auto maybe_camera = sub_kf.is_null() ? r_nullable<r_disco::r_camera>() : _devices.get_camera_by_id(args["camera_id"]);
+                    if(!maybe_camera.is_null() && _stream_keeper.substreams_enabled() && r_disco::substream_on(maybe_camera.value()))
+                    {
+                        const auto& cam = maybe_camera.value();
+                        auto main_size = (cam.video_codec.is_null() || cam.video_codec_parameters.is_null()) ?
+                            std::pair<uint16_t, uint16_t>(0, 0) : r_disco::main_picture_size(cam.video_codec.value(), cam.video_codec_parameters.value());
+                        if(!cam.sub_width.is_null() && !cam.sub_height.is_null() &&
+                           substream_snapshot_fits(w, h, cam.sub_width.value(), cam.sub_height.value(), main_size.first, main_size.second))
+                        {
+                            auto jpeg = jpg_from_live_key_frame(args["camera_id"], sub_kf.value(), w, h);
+                            r_server_response sub_response;
+                            sub_response.set_content_type("image/jpeg");
+                            sub_response.set_body(jpeg.size(), jpeg.data());
+                            sub_response.add_additional_header("X-Frame-Ts", std::to_string(sub_kf.value().ts));
+                            sub_response.add_additional_header("X-Stream", "sub");
+                            return sub_response;
+                        }
+                    }
+                }
+                catch(const std::exception& ex)
+                {
+                    // Main's picture is still there.
+                    R_LOG_INFO("[JPG] the substream's picture for %s didn't work (%s); using main's", args["camera_id"].c_str(), ex.what());
+                }
+            }
+        }
+
         auto result = query_get_jpg(
             _top_dir,
             _devices,
             args["camera_id"],
-            r_time_utils::iso_8601_to_tp(args["start_time"]),
+            requested_tp,
             w,
             h,
             &frame_ts
@@ -791,6 +832,9 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
             const auto& res = src.resolution;
 
             bool receiving_video = false;
+            bool sub_fresh = false;
+            std::string mount;
+            std::string sub_mount;
             bool stream_failed = false;
             int64_t storage_write_lag_ms = 0;
             int64_t storage_timeline_lag_ms = 0;
@@ -801,6 +845,9 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
             if(sit != status_by_id.end())
             {
                 receiving_video = sit->second.receiving_video;
+                sub_fresh = sit->second.sub_fresh;
+                mount = sit->second.mount;
+                sub_mount = sit->second.sub_mount;
                 stream_failed = sit->second.failed;
                 storage_write_lag_ms = sit->second.storage_write_lag_ms;
                 storage_timeline_lag_ms = sit->second.storage_timeline_lag_ms;
@@ -892,6 +939,24 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     // Where the camera's ONVIF device service last answered; 0 / "" when unknown.
                     {"onvif_port", (c.onvif_port.is_null())?0:c.onvif_port.value()},
                     {"onvif_protocol", (c.onvif_protocol.is_null())?"":c.onvif_protocol.value()},
+                    // The substream (r_camera::sub_*): sub_mode "on" or "off", sub_status "ok",
+                    // "pending" or "none:<reason>"; "" / 0 when unknown.
+                    {"sub_mode", (_stream_keeper.substreams_enabled() && r_disco::substream_on(c))?"on":"off"},
+                    {"sub_status", (c.sub_status.is_null())?"":c.sub_status.value()},
+                    {"sub_profile", (c.sub_onvif_profile_token.is_null())?"":c.sub_onvif_profile_token.value()},
+                    {"sub_codec", (c.sub_video_codec.is_null())?"":c.sub_video_codec.value()},
+                    {"sub_width", (c.sub_width.is_null())?0:c.sub_width.value()},
+                    {"sub_height", (c.sub_height.is_null())?0:c.sub_height.value()},
+                    // Motion is found in the smaller stream (r_camera::sub_analysis).
+                    {"sub_analysis", !c.sub_analysis.is_null() && c.sub_analysis.value() != 0},
+                    // The substream ring got a frame within the last few seconds (r_substream_recorder::fresh):
+                    // /video?stream=sub has live video.
+                    {"sub_fresh", sub_fresh},
+                    // The camera's live restream mounts (rtsp://<revere>:<rtsp port><path>): the main stream's and
+                    // the smaller stream's; "" until each is up. Use sub_mount only with sub_fresh, and check the
+                    // stream's size: a request for a path that isn't mounted can reach main's.
+                    {"mount", mount},
+                    {"sub_mount", sub_mount},
                     // The camera's ONVIF event subscription; null when it has none.
                     {"camera_events", camera_events},
                     // An address change (r_disco/r_camera_move.h): held or followed; null when none.
@@ -969,6 +1034,25 @@ static float _compute_framerate(const r_blob_tree& bt)
 
     return (float)1000 / (float)avg_delta;
 }
+
+// Drops frames already written by an earlier export chunk (see _export()). Tracks the
+// last accepted timestamp per stream; a frame is accepted only if it is strictly later.
+struct export_ts_filter
+{
+    bool has_video = false, has_audio = false;
+    int64_t last_video = 0, last_audio = 0;
+
+    bool accept(int sid, int64_t ts)
+    {
+        bool& has = (sid == r_storage::R_STORAGE_MEDIA_TYPE_VIDEO) ? has_video : has_audio;
+        int64_t& last = (sid == r_storage::R_STORAGE_MEDIA_TYPE_VIDEO) ? last_video : last_audio;
+        if(has && ts <= last)
+            return false;
+        has = true;
+        last = ts;
+        return true;
+    }
+};
 
 static void _check_timestamps(const r_blob_tree& bt)
 {
@@ -1134,6 +1218,13 @@ void r_ws::_export(export_job& job)
     int64_t ts_first_frame = 0;
     bool done = false;
 
+    // query_get_video() backs up to the key frame before each chunk's start, so every
+    // chunk after the first begins with frames the previous chunk already wrote. Writing
+    // them again sends DTS backwards, the muxer throws, and the whole chunk used to be
+    // dropped: exports lost every other 5 minute chunk. Skip anything at or before the
+    // last timestamp written for that stream.
+    export_ts_filter ts_filter;
+
     while(!done)
     {
         if(!_export_running) break;
@@ -1292,6 +1383,9 @@ void r_ws::_export(export_job& job)
                     R_THROW(("Blob tree missing ts."));
 
                 auto ts = bt["frames"][fi]["ts"].get_value<int64_t>();
+
+                if(!ts_filter.accept(sid, ts))
+                    continue;
 
                 if(ts_first_frame == 0)
                     ts_first_frame = ts;
@@ -1501,12 +1595,28 @@ r_http::r_server_response r_ws::_get_video(r_utils::r_socket_base&, const r_http
         if(args.find("end_time") == args.end())
             R_THROW(("Missing end_time."));
 
+        // stream=sub: the camera's substream ring, for live view; main otherwise.
+        bool substream = false;
+        if(args.find("stream") != args.end())
+        {
+            if(args["stream"] == "sub")
+            {
+                // Smaller streams are off for this computer until they're turned on in Settings: nothing is recorded.
+                if(!_stream_keeper.substreams_enabled())
+                    throw r_utils::r_not_found_exception("Smaller streams are off.");
+                substream = true;
+            }
+            else if(args["stream"] != "main")
+                R_THROW(("Unknown stream: %s", args["stream"].c_str()));
+        }
+
         auto qr_buffer = query_get_video(
             _top_dir,
             _devices,
             args["camera_id"],
             r_time_utils::iso_8601_to_tp(args["start_time"]),
-            r_time_utils::iso_8601_to_tp(args["end_time"])
+            r_time_utils::iso_8601_to_tp(args["end_time"]),
+            substream
         );
 
         r_server_response response;
@@ -1834,6 +1944,7 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
 
         size_t n_frames     = in_bt.has_key("frames") ? in_bt["frames"].size() : 0;
         size_t out_frame_idx = 0;
+        size_t video_in = 0, video_decoded = 0;  // transcode_mostly_failed
 
         for(size_t fi = 0; fi < n_frames; ++fi)
         {
@@ -1854,11 +1965,13 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
 
             if(sid == R_STORAGE_MEDIA_TYPE_VIDEO)
             {
+                ++video_in;
                 session.decoder->attach_buffer(frame_data.data(), frame_data.size());
                 auto dec_state = session.decoder->decode();
 
                 if(dec_state != R_CODEC_STATE_HAS_OUTPUT && dec_state != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
                     continue;
+                ++video_decoded;
 
                 auto decoded = session.decoder->get(AV_PIX_FMT_YUV420P, session.output_width, session.output_height, 1);
 
@@ -1989,6 +2102,10 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
                 }
             }
         }
+
+        // A chunk that mostly didn't decode would go out as the last good picture repeated (see Fill above).
+        if(transcode_mostly_failed(video_in, video_decoded))
+            R_THROW(("Transcode failed: %zu of %zu video frames decoded.", video_decoded, video_in));
 
         // Some encoders (e.g. h264_mf on Windows) put SPS/PPS inline in IDR frames rather
         // than in global extradata. Detect this by checking AVCC num_sps==0 (ed[5] & 0x1F).
@@ -2867,8 +2984,25 @@ void r_ws::_transcode_export(export_job& job)
     auto output_path = job.exports_path + PATH_SLASH + job.file_name;
     auto temp_path = r_fs::temp_file_name(job.exports_path, "tmp_") + ext;
 
+    // A failed export leaves no tmp_ file behind. Removed on the way out, once the muxer (declared after this, so
+    // destroyed first) has closed it: Windows can't delete an open file. A finished export has been renamed away.
+    struct temp_file_cleanup
+    {
+        const string& path;
+        ~temp_file_cleanup()
+        {
+            try
+            {
+                if(r_fs::file_exists(path))
+                    r_fs::remove_file(path);
+            }
+            catch(...) {}
+        }
+    } cleanup{temp_path};
+
     r_muxer muxer(temp_path);
     muxer.enable_faststart();
+    size_t video_in = 0, video_decoded = 0;  // transcode_mostly_failed
 
     auto output_width = job.width;
     auto output_height = job.height;
@@ -2888,6 +3022,11 @@ void r_ws::_transcode_export(export_job& job)
 
     unique_ptr<r_video_decoder> decoder;
     unique_ptr<r_video_encoder> encoder;
+
+    // Chunks overlap by up to a GOP (see _export()). Without this, the overlapping video
+    // was decoded and re-encoded twice (a repeated stutter at every chunk boundary) and the
+    // overlapping audio went backwards, making the muxer throw and drop the rest of the chunk.
+    export_ts_filter ts_filter;
 
     bool done = false;
     while(!done)
@@ -3018,6 +3157,9 @@ void r_ws::_transcode_export(export_job& job)
 
                 auto sid        = bt["frames"][fi]["stream_id"].get_value<int>();
                 auto ts         = bt["frames"][fi]["ts"].get_value<int64_t>();
+                if(!ts_filter.accept(sid, ts))
+                    continue;
+
                 auto frame_data = bt["frames"][fi]["data"].get_blob();
 
                 if(ts_first_frame == 0)
@@ -3027,11 +3169,13 @@ void r_ws::_transcode_export(export_job& job)
 
                 if(sid == R_STORAGE_MEDIA_TYPE_VIDEO)
                 {
+                    ++video_in;
                     decoder->attach_buffer(frame_data.data(), frame_data.size());
                     auto dec_state = decoder->decode();
 
                     if(dec_state != R_CODEC_STATE_HAS_OUTPUT && dec_state != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
                         continue;
+                    ++video_decoded;
 
                     auto decoded = decoder->get(AV_PIX_FMT_YUV420P, output_width, output_height, 1);
 
@@ -3066,6 +3210,10 @@ void r_ws::_transcode_export(export_job& job)
             );
         }
     }
+
+    // The whole export mostly didn't decode: fail it, rather than ship the last good picture repeated.
+    if(initialized && transcode_mostly_failed(video_in, video_decoded))
+        R_THROW(("Transcode export failed: %zu of %zu video frames decoded.", video_decoded, video_in));
 
     if(initialized)
     {
