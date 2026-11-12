@@ -1,0 +1,5 @@
+# The release workflows build what users download and, later, what gets signed:
+# changes to them, to this file and to Dependabot's settings ask both of us to review.
+/.github/workflows/  @dicroce @hypexr
+/.github/CODEOWNERS  @dicroce @hypexr
+/.github/dependabot.yml  @dicroce @hypexr

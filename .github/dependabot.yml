@@ -1,0 +1,12 @@
+# Keeps the workflows' actions current. They're pinned to commit SHAs (a tag like
+# @v4 can be moved to new code; a SHA can't), so Dependabot proposes each update
+# as a reviewed PR that bumps the SHA and its version comment.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
