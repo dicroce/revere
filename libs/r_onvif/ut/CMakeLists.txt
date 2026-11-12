@@ -9,6 +9,8 @@ add_executable(
     source/test_r_onvif_push.cpp
     include/test_r_onvif_profiles.h
     source/test_r_onvif_profiles.cpp
+    include/test_r_onvif_reboot.h
+    source/test_r_onvif_reboot.cpp
 )
 
 target_include_directories(
