@@ -92,6 +92,13 @@ else()
     project(revere)
 endif()
 
+# Load only system plugins whose signed manifest checks out (r_vss/r_plugin_manifest.h).
+# For release tag builds, whose plugins the release CI signs with the key in
+# r_vss::trusted_plugin_keys(); off for local and developer builds, whose plugins
+# have no signed manifest.
+option(REVERE_REQUIRE_SIGNED_PLUGINS "Load only system plugins with a valid signed manifest" OFF)
+message(STATUS "Require signed system plugins: ${REVERE_REQUIRE_SIGNED_PLUGINS}")
+
 include(settings.cmake)
 include(dependencies.cmake)
 

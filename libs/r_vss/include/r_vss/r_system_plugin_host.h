@@ -3,11 +3,14 @@
 #define _r_system_plugin_host_h
 
 #include "r_vss/r_system_plugin.h"
+#include "r_vss/r_plugin_manifest.h"
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_macro.h"
 
+#include <functional>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -49,11 +52,51 @@ R_API r_system_plugin_dirs system_plugin_dirs(const std::string& exe_dir,
                                               const char* snap,
                                               const char* snap_user_common);
 
+// Whether this build loads only system plugins whose signed manifest checks out
+// (check_system_plugin()): the REVERE_REQUIRE_SIGNED_PLUGINS build option, on for
+// release tag builds. Off, a plugin that fails its check still loads, as before.
+R_API bool signed_system_plugins_required();
+
+// One plugin file's copies, in the order the folders are scanned (the exe's first),
+// with what each copy's check found. The copy to load: the last that passed, so a
+// verified copy in a user folder wins over the exe folder's; else, when signatures
+// aren't required, the first, as before; else -1, none.
+R_API int choose_system_plugin_copy(const std::vector<r_plugin_check_result>& checks, bool require_signed);
+
+// A system plugin found but not loaded, because no copy of it passed its check.
+struct r_skipped_system_plugin
+{
+    std::string name;              // its file name without the extension, as get_loaded_plugins() names plugins
+    std::string path;              // the copy reported: the last found, a user folder's if there is one
+    r_plugin_check_result check;   // what that copy's check found
+
+    // No manifest (an older installer) or built for another revere: "needs updating",
+    // and an install of the matching build fixes it. Anything else failed its integrity check.
+    bool needs_update() const
+    {
+        return check.status == r_plugin_check::no_manifest || check.status == r_plugin_check::wrong_version;
+    }
+};
+
 class r_system_plugin_host
 {
 public:
+    // Loads the plugins in system_plugin_dirs(), checked when signed_system_plugins_required().
     R_API r_system_plugin_host(const std::string& top_dir);
+    // The same from dirs, checked when require_signed: for tests.
+    R_API r_system_plugin_host(const std::string& top_dir, const r_system_plugin_dirs& dirs, bool require_signed);
     R_API ~r_system_plugin_host();
+
+    // Loads one more plugin while revere runs (one just installed), checked as at start
+    // and started if start_all() has run. False, with why, if it isn't loaded: it failed
+    // its check (also reported by get_skipped_plugins()), a plugin by its file name or
+    // GUID is already loaded, or it isn't a system plugin. Nothing is ever unloaded:
+    // dlclose under a plugin's own threads isn't safe.
+    R_API bool load_and_start(const std::string& path, std::string& why);
+
+    // The plugins found but not loaded because no copy passed its check, for the UI's
+    // "needs updating" or "failed its integrity check". Empty unless signatures are required.
+    R_API std::vector<r_skipped_system_plugin> get_skipped_plugins() const;
 
     // Start all loaded plugins
     R_API void start_all();
@@ -103,6 +146,15 @@ public:
     R_API void set_frame_source(r_frame_feeds* feeds, std::function<bool(const std::string&)> camera_recording);
 
 private:
+    struct plugin_info;
+    bool _load(const std::string& path, std::string& why);
+    void _give_frames(plugin_info& p);
+    void _skip(const r_skipped_system_plugin& skipped);
+    std::vector<plugin_info*> _snapshot();
+    std::vector<const plugin_info*> _snapshot() const;
+    const plugin_info* _find(const std::string& plugin_name) const;
+    plugin_info* _find(const std::string& plugin_name);
+
     void _dispatch_detection(const r_detection& det, int64_t posted_at_ms);
     void _on_api_result(const char* name, const char* json);
     static void _api_result_bridge(const char* result_type, const char* json, void* user_data);
@@ -131,11 +183,24 @@ private:
     };
 
     std::string _top_dir;
+    bool _require_signed {false};
+
+    // _list_lock guards _plugins and _skipped. _plugins is only ever appended to (until the
+    // destructor), and a std::list's elements never move, so a snapshot of pointers taken
+    // under the lock stays good: plugins are called without it held.
+    mutable std::mutex _list_lock;
     std::list<plugin_info> _plugins;
+    std::vector<r_skipped_system_plugin> _skipped;
+
+    // _ops_lock makes loading, start_all(), stop_all() and the setters one at a time, and
+    // guards what only they touch.
+    std::mutex _ops_lock;
+    bool _started {false};
     std::set<std::string> _loaded_guids;       // Track loaded plugin GUIDs to prevent duplicates
     std::set<std::string> _loaded_filenames;   // Track loaded plugin filenames (dedupe BEFORE dlopen)
     std::function<void(const std::string&, const std::string&)> _api_result_fn;
     r_frame_feeds* _feeds {nullptr};
+    std::function<bool(const std::string&)> _camera_recording;
 };
 
 }

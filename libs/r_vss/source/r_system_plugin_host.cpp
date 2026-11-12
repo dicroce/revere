@@ -1,6 +1,7 @@
 
 #include "r_vss/r_system_plugin_host.h"
 #include "r_vss/r_frame_feeds.h"
+#include <algorithm>
 #include <cstddef>
 #include <mutex>
 #include <map>
@@ -153,34 +154,39 @@ struct r_system_plugin_host::frame_api
     }
 };
 
+void r_system_plugin_host::_give_frames(plugin_info& p)
+{
+    if(!_feeds || !p.plugin_handle || !p.set_host_api_func || p.frames)
+        return;
+    auto api = std::make_shared<frame_api>();
+    api->feeds = _feeds;
+    api->camera_recording = _camera_recording;
+    api->guid = p.guid;
+    api->table.struct_size = sizeof(r_system_plugin_host_api);
+    api->table.version = R_SYSTEM_PLUGIN_HOST_API_VERSION;
+    api->table.host = api.get();
+    api->table.subscribe_frames = &frame_api::subscribe;
+    api->table.next_frame = &frame_api::next;
+    api->table.unsubscribe = &frame_api::unsubscribe;
+    api->table.subscribe_frames_from = &frame_api::subscribe_from;
+    p.frames = api;
+    try
+    {
+        p.set_host_api_func(p.plugin_handle, &p.frames->table);
+    }
+    catch (const std::exception& e)
+    {
+        R_LOG_ERROR("Error giving system plugin %s its host functions: %s", p.name.c_str(), e.what());
+    }
+}
+
 void r_system_plugin_host::set_frame_source(r_frame_feeds* feeds, std::function<bool(const std::string&)> camera_recording)
 {
+    std::lock_guard<std::mutex> g(_ops_lock);
     _feeds = feeds;
-    for(auto& p : _plugins)
-    {
-        if(!p.plugin_handle || !p.set_host_api_func || p.frames)
-            continue;
-        auto api = std::make_shared<frame_api>();
-        api->feeds = feeds;
-        api->camera_recording = camera_recording;
-        api->guid = p.guid;
-        api->table.struct_size = sizeof(r_system_plugin_host_api);
-        api->table.version = R_SYSTEM_PLUGIN_HOST_API_VERSION;
-        api->table.host = api.get();
-        api->table.subscribe_frames = &frame_api::subscribe;
-        api->table.next_frame = &frame_api::next;
-        api->table.unsubscribe = &frame_api::unsubscribe;
-        api->table.subscribe_frames_from = &frame_api::subscribe_from;
-        p.frames = api;
-        try
-        {
-            p.set_host_api_func(p.plugin_handle, &p.frames->table);
-        }
-        catch (const std::exception& e)
-        {
-            R_LOG_ERROR("Error giving system plugin %s its host functions: %s", p.name.c_str(), e.what());
-        }
-    }
+    _camera_recording = std::move(camera_recording);
+    for(auto p : _snapshot())
+        _give_frames(*p);
 }
 
 r_system_plugin_dirs r_vss::system_plugin_dirs(const std::string& exe_dir,
@@ -210,25 +216,83 @@ r_system_plugin_dirs r_vss::system_plugin_dirs(const std::string& exe_dir,
     return dirs;
 }
 
-r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
-    : _top_dir(top_dir)
+bool r_vss::signed_system_plugins_required()
 {
-    R_LOG_INFO("r_system_plugin_host constructor called with top_dir=%s", top_dir.c_str());
- 
-    try
-    {
-        // Determine the plugin extension based on platform
-#ifdef IS_WINDOWS
-        const std::string plugin_ext = ".dll";
-#elif defined(IS_MACOS)
-        const std::string plugin_ext = ".dylib";
+#if defined(R_REQUIRE_SIGNED_PLUGINS) && R_REQUIRE_SIGNED_PLUGINS
+    return true;
 #else
-        const std::string plugin_ext = ".so";
+    return false;
+#endif
+}
+
+int r_vss::choose_system_plugin_copy(const std::vector<r_plugin_check_result>& checks, bool require_signed)
+{
+    for(int i = (int)checks.size() - 1; i >= 0; --i)
+    {
+        if(checks[i].ok())
+            return i;
+    }
+    if(!require_signed && !checks.empty())
+        return 0;
+    return -1;
+}
+
+namespace
+{
+
+#ifdef IS_WINDOWS
+const std::string PLUGIN_EXT = ".dll";
+#elif defined(IS_MACOS)
+const std::string PLUGIN_EXT = ".dylib";
+#else
+const std::string PLUGIN_EXT = ".so";
 #endif
 
-        auto dirs = system_plugin_dirs(r_fs::working_directory(), _top_dir, getenv("SNAP"), getenv("SNAP_USER_COMMON"));
-        const auto& plugin_dirs = dirs.load;
+bool _has_plugin_ext(const std::string& filename)
+{
+    return filename.size() > PLUGIN_EXT.size() &&
+           filename.compare(filename.size() - PLUGIN_EXT.size(), PLUGIN_EXT.size(), PLUGIN_EXT) == 0;
+}
 
+std::string _plugin_name(const std::string& filename)
+{
+    return filename.substr(0, filename.size() - PLUGIN_EXT.size());
+}
+
+// A symbol from lib as F, or nullptr if it doesn't export one.
+template<typename F>
+F _symbol(r_utils::r_dynamic_library& lib, const char* name)
+{
+    try
+    {
+        return reinterpret_cast<F>(lib.resolve_symbol(name));
+    }
+    catch (...)
+    {
+        return nullptr;
+    }
+}
+
+}
+
+r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
+    : r_system_plugin_host(top_dir,
+                           system_plugin_dirs(r_fs::working_directory(), top_dir, getenv("SNAP"), getenv("SNAP_USER_COMMON")),
+                           signed_system_plugins_required())
+{
+}
+
+r_system_plugin_host::r_system_plugin_host(const std::string& top_dir, const r_system_plugin_dirs& dirs, bool require_signed)
+    : _top_dir(top_dir),
+      _require_signed(require_signed)
+{
+    R_LOG_INFO("r_system_plugin_host constructor called with top_dir=%s", top_dir.c_str());
+
+    if(_require_signed && trusted_plugin_keys().empty())
+        R_LOG_ERROR("This build loads only signed system plugins but trusts no signing key, so none will load.");
+
+    try
+    {
         // A plugin left where this install can't load it (installed for the
         // Snap before it had a folder of its own): say where it belongs. Only a
         // hint, so nothing here may stop the real plugins loading: error_code
@@ -241,8 +305,7 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
             {
                 std::error_code fec;
                 std::string filename = it->path().filename().string();
-                if (it->is_regular_file(fec) && filename.size() > plugin_ext.size() &&
-                    filename.substr(filename.size() - plugin_ext.size()) == plugin_ext)
+                if (it->is_regular_file(fec) && _has_plugin_ext(filename))
                 {
                     R_LOG_ERROR("System plugin %s is in %s, where the Snap can't load it. Run its installer again, or move it to %s.",
                         filename.c_str(), dirs.unloadable.c_str(), dirs.load.back().c_str());
@@ -252,201 +315,69 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
                 R_LOG_WARNING("Could not check %s for left-over system plugins: %s", dirs.unloadable.c_str(), ec.message().c_str());
         }
 
-        for (const auto& plugin_dir : plugin_dirs)
+        // Every copy of each plugin file, in scan order, before any is opened: the
+        // same plugin can be both next to the exe and in the user folder, and which
+        // copy loads depends on their checks. dlopen runs a library's static
+        // initializers at once, so only the chosen copy is ever opened.
+        std::vector<std::string> filenames;
+        std::map<std::string, std::vector<std::string>> copies;
+        for (const auto& plugin_dir : dirs.load)
         {
-        if (r_fs::is_dir(plugin_dir))
-        {
+            if (!r_fs::is_dir(plugin_dir))
+                continue;
             R_LOG_INFO("Searching for system plugins in: %s", plugin_dir.c_str());
-
             for (const auto& entry : fs::directory_iterator(plugin_dir))
             {
-                if (entry.is_regular_file())
-                {
-                    std::string filename = entry.path().filename().string();
-
-                    // Check if file has the correct extension
-                    if (filename.size() > plugin_ext.size() &&
-                        filename.substr(filename.size() - plugin_ext.size()) == plugin_ext)
-                    {
-                        try
-                        {
-                            // Dedupe by filename BEFORE dlopen. The same plugin can
-                            // exist in both search dirs (e.g. shipped next to the exe
-                            // AND installed in the user data dir). dlopen runs the
-                            // library's static initializers immediately, so loading a
-                            // second copy can crash (e.g. a duplicate protobuf/OpenCV
-                            // pulled in by a differently-built copy) before we ever
-                            // reach the GUID check below. Skipping by filename here
-                            // means the first dir scanned (next-to-exe) wins.
-                            if (_loaded_filenames.count(filename) > 0)
-                            {
-                                R_LOG_INFO("System plugin %s already loaded from an earlier directory, skipping duplicate", filename.c_str());
-                                continue;
-                            }
-
-                            // Extract plugin name (filename without extension)
-                            std::string plugin_name = filename.substr(0, filename.size() - plugin_ext.size());
-
-                            // Load the dynamic library
-                            auto lib = std::make_unique<r_dynamic_library>(entry.path().string());
-                            _loaded_filenames.insert(filename);
-
-                            // Look for the required C API symbols
-                            void* guid_symbol = lib->resolve_symbol("get_system_plugin_guid");
-                            void* load_symbol = lib->resolve_symbol("load_system_plugin");
-                            void* start_symbol = lib->resolve_symbol("start_system_plugin");
-                            void* stop_symbol = lib->resolve_symbol("stop_system_plugin");
-                            void* destroy_symbol = lib->resolve_symbol("destroy_system_plugin");
-                            void* enabled_symbol = lib->resolve_symbol("system_plugin_enabled");
-                            void* set_enabled_symbol = lib->resolve_symbol("system_plugin_set_enabled");
-
-                            if (guid_symbol && load_symbol && start_symbol && stop_symbol && destroy_symbol &&
-                                enabled_symbol && set_enabled_symbol)
-                            {
-                                // Cast to function pointers
-                                get_system_plugin_guid_func guid_func = reinterpret_cast<get_system_plugin_guid_func>(guid_symbol);
-                                load_system_plugin_func load_func = reinterpret_cast<load_system_plugin_func>(load_symbol);
-                                start_system_plugin_func start_func = reinterpret_cast<start_system_plugin_func>(start_symbol);
-                                stop_system_plugin_func stop_func = reinterpret_cast<stop_system_plugin_func>(stop_symbol);
-                                destroy_system_plugin_func destroy_func = reinterpret_cast<destroy_system_plugin_func>(destroy_symbol);
-                                system_plugin_enabled_func enabled_func = reinterpret_cast<system_plugin_enabled_func>(enabled_symbol);
-                                system_plugin_set_enabled_func set_enabled_func = reinterpret_cast<system_plugin_set_enabled_func>(set_enabled_symbol);
-
-                                // Optional: resolve status functions (nullptr if not supported)
-                                system_plugin_get_status_func status_func = nullptr;
-                                system_plugin_get_status_message_func status_message_func = nullptr;
-                                try {
-                                    void* status_symbol = lib->resolve_symbol("system_plugin_get_status");
-                                    if (status_symbol)
-                                        status_func = reinterpret_cast<system_plugin_get_status_func>(status_symbol);
-                                } catch (...) {}
-                                try {
-                                    void* msg_symbol = lib->resolve_symbol("system_plugin_get_status_message");
-                                    if (msg_symbol)
-                                        status_message_func = reinterpret_cast<system_plugin_get_status_message_func>(msg_symbol);
-                                } catch (...) {}
-
-                                system_plugin_post_detection_func post_detection_func = nullptr;
-                                try {
-                                    void* pd_symbol = lib->resolve_symbol("system_plugin_post_detection");
-                                    if (pd_symbol)
-                                        post_detection_func = reinterpret_cast<system_plugin_post_detection_func>(pd_symbol);
-                                } catch (...) {}
-                                system_plugin_post_detection_v2_func post_detection_v2_func = nullptr;
-                                try {
-                                    void* sym = lib->resolve_symbol("system_plugin_post_detection_v2");
-                                    if (sym)
-                                        post_detection_v2_func = reinterpret_cast<system_plugin_post_detection_v2_func>(sym);
-                                } catch (...) {}
-
-                                system_plugin_set_api_result_cb_func set_api_result_cb_func = nullptr;
-                                try {
-                                    void* sym = lib->resolve_symbol("system_plugin_set_api_result_cb");
-                                    if (sym)
-                                        set_api_result_cb_func = reinterpret_cast<system_plugin_set_api_result_cb_func>(sym);
-                                } catch (...) {}
-
-                                system_plugin_cameras_changed_func cameras_changed_func = nullptr;
-                                try {
-                                    void* sym = lib->resolve_symbol("system_plugin_cameras_changed");
-                                    if (sym)
-                                        cameras_changed_func = reinterpret_cast<system_plugin_cameras_changed_func>(sym);
-                                } catch (...) {}
-
-                                void (*action_func)(r_system_plugin_handle, const char*) = nullptr;
-                                try {
-                                    void* sym = lib->resolve_symbol("system_plugin_action");
-                                    if (sym)
-                                        action_func = reinterpret_cast<void (*)(r_system_plugin_handle, const char*)>(sym);
-                                } catch (...) {}
-
-                                void (*set_host_api_func)(r_system_plugin_handle, const r_system_plugin_host_api*) = nullptr;
-                                try {
-                                    void* sym = lib->resolve_symbol("system_plugin_set_host_api");
-                                    if (sym)
-                                        set_host_api_func = reinterpret_cast<void (*)(r_system_plugin_handle, const r_system_plugin_host_api*)>(sym);
-                                } catch (...) {}
-
-                                // Optional: the plugin's own version
-                                std::string plugin_version;
-                                try {
-                                    void* sym = lib->resolve_symbol("get_system_plugin_version");
-                                    if (sym)
-                                    {
-                                        const char* v = reinterpret_cast<get_system_plugin_version_func>(sym)();
-                                        if (v)
-                                            plugin_version = v;
-                                    }
-                                } catch (...) {}
-
-                                // Get the plugin GUID and check for duplicates
-                                const char* guid_cstr = guid_func();
-                                std::string plugin_guid = guid_cstr ? guid_cstr : "";
-
-                                if (plugin_guid.empty())
-                                {
-                                    R_LOG_WARNING("System plugin %s returned empty GUID, skipping", filename.c_str());
-                                    continue;
-                                }
-
-                                if (_loaded_guids.count(plugin_guid) > 0)
-                                {
-                                    R_LOG_INFO("System plugin %s (GUID: %s) already loaded, skipping duplicate",
-                                        filename.c_str(), plugin_guid.c_str());
-                                    continue;
-                                }
-
-                                // Call load_system_plugin with top_dir and logger state
-                                r_system_plugin_handle plugin_handle = load_func(_top_dir.c_str(), r_logger::get_logger_state());
-
-                                if (plugin_handle)
-                                {
-                                    _loaded_guids.insert(plugin_guid);
-                                    _plugins.push_back({
-                                        std::move(lib),
-                                        plugin_handle,
-                                        start_func,
-                                        stop_func,
-                                        destroy_func,
-                                        enabled_func,
-                                        set_enabled_func,
-                                        status_func,
-                                        status_message_func,
-                                        post_detection_func,
-                                        post_detection_v2_func,
-                                        set_api_result_cb_func,
-                                        cameras_changed_func,
-                                        action_func,
-                                        plugin_name,
-                                        plugin_guid,
-                                        plugin_version
-                                    });
-                                    _plugins.back().set_host_api_func = set_host_api_func;
-
-                                    if(set_api_result_cb_func && _api_result_fn)
-                                        set_api_result_cb_func(plugin_handle, _api_result_bridge, this);
-                                    R_LOG_INFO("Loaded system plugin: %s (GUID: %s, version: %s)", filename.c_str(), plugin_guid.c_str(),
-                                        plugin_version.empty() ? "unknown" : plugin_version.c_str());
-                                }
-                                else
-                                {
-                                    R_LOG_WARNING("System plugin %s load_plugin returned null", filename.c_str());
-                                }
-                            }
-                            else
-                            {
-                                R_LOG_WARNING("System plugin %s does not export required symbols", filename.c_str());
-                            }
-                        }
-                        catch (const std::exception& e)
-                        {
-                            R_LOG_WARNING("Failed to load system plugin %s: %s", filename.c_str(), e.what());
-                        }
-                    }
-                }
+                if (!entry.is_regular_file())
+                    continue;
+                std::string filename = entry.path().filename().string();
+                if (!_has_plugin_ext(filename))
+                    continue;
+                auto& paths = copies[filename];
+                if (paths.empty())
+                    filenames.push_back(filename);
+                paths.push_back(entry.path().string());
             }
         }
-        } // end for each plugin_dir
+
+        for (const auto& filename : filenames)
+        {
+            const auto& paths = copies[filename];
+            std::vector<r_plugin_check_result> checks;
+            for (const auto& path : paths)
+                checks.push_back(check_system_plugin(path));
+
+            if (_require_signed)
+            {
+                for (size_t i = 0; i < paths.size(); ++i)
+                {
+                    if (!checks[i].ok())
+                        R_LOG_WARNING("System plugin %s failed its check (%s): %s", paths[i].c_str(),
+                                      plugin_check_name(checks[i].status), checks[i].detail.c_str());
+                }
+            }
+
+            int chosen = choose_system_plugin_copy(checks, _require_signed);
+            if (chosen < 0)
+            {
+                r_skipped_system_plugin skipped;
+                skipped.name = _plugin_name(filename);
+                skipped.path = paths.back();
+                skipped.check = checks.back();
+                _skip(skipped);
+                R_LOG_ERROR("System plugin %s not loaded: %s", filename.c_str(),
+                            skipped.needs_update() ? "it needs updating for this version of revere" : "no copy passed its integrity check");
+                continue;
+            }
+
+            if (paths.size() > 1)
+                R_LOG_INFO("System plugin %s is in %zu folders; loading %s%s", filename.c_str(), paths.size(),
+                           paths[chosen].c_str(), checks[chosen].ok() ? ", verified" : "");
+
+            std::string why;
+            if (!_load(paths[chosen], why))
+                R_LOG_WARNING("System plugin %s not loaded: %s", filename.c_str(), why.c_str());
+        }
 
         R_LOG_INFO("Loaded %zu system plugins", _plugins.size());
     }
@@ -454,6 +385,233 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir)
     {
         R_LOG_ERROR("Error loading system plugins: %s", e.what());
     }
+}
+
+bool r_system_plugin_host::_load(const std::string& path, std::string& why)
+{
+    std::string filename = fs::path(path).filename().string();
+    if (!_has_plugin_ext(filename))
+    {
+        why = filename + " isn't a " + PLUGIN_EXT + " file";
+        return false;
+    }
+
+    // Dedupe by filename BEFORE dlopen: loading a second copy of a plugin can
+    // crash in its static initializers (e.g. a duplicate protobuf/OpenCV pulled in
+    // by a differently-built copy) before we ever reach the GUID check below.
+    if (_loaded_filenames.count(filename) > 0)
+    {
+        why = "a plugin named " + filename + " is already loaded";
+        return false;
+    }
+
+    try
+    {
+        std::string plugin_name = _plugin_name(filename);
+
+        auto lib = std::make_unique<r_dynamic_library>(path);
+        _loaded_filenames.insert(filename);
+
+        auto guid_func = _symbol<get_system_plugin_guid_func>(*lib, "get_system_plugin_guid");
+        auto load_func = _symbol<load_system_plugin_func>(*lib, "load_system_plugin");
+        auto start_func = _symbol<start_system_plugin_func>(*lib, "start_system_plugin");
+        auto stop_func = _symbol<stop_system_plugin_func>(*lib, "stop_system_plugin");
+        auto destroy_func = _symbol<destroy_system_plugin_func>(*lib, "destroy_system_plugin");
+        auto enabled_func = _symbol<system_plugin_enabled_func>(*lib, "system_plugin_enabled");
+        auto set_enabled_func = _symbol<system_plugin_set_enabled_func>(*lib, "system_plugin_set_enabled");
+        if (!guid_func || !load_func || !start_func || !stop_func || !destroy_func || !enabled_func || !set_enabled_func)
+        {
+            why = filename + " does not export required symbols";
+            return false;
+        }
+
+        // Optional exports: nullptr if not supported.
+        auto status_func = _symbol<system_plugin_get_status_func>(*lib, "system_plugin_get_status");
+        auto status_message_func = _symbol<system_plugin_get_status_message_func>(*lib, "system_plugin_get_status_message");
+        auto post_detection_func = _symbol<system_plugin_post_detection_func>(*lib, "system_plugin_post_detection");
+        auto post_detection_v2_func = _symbol<system_plugin_post_detection_v2_func>(*lib, "system_plugin_post_detection_v2");
+        auto set_api_result_cb_func = _symbol<system_plugin_set_api_result_cb_func>(*lib, "system_plugin_set_api_result_cb");
+        auto cameras_changed_func = _symbol<system_plugin_cameras_changed_func>(*lib, "system_plugin_cameras_changed");
+        auto action_func = _symbol<void (*)(r_system_plugin_handle, const char*)>(*lib, "system_plugin_action");
+        auto set_host_api_func = _symbol<void (*)(r_system_plugin_handle, const r_system_plugin_host_api*)>(*lib, "system_plugin_set_host_api");
+
+        std::string plugin_version;
+        auto version_func = _symbol<get_system_plugin_version_func>(*lib, "get_system_plugin_version");
+        if (version_func)
+        {
+            const char* v = version_func();
+            if (v)
+                plugin_version = v;
+        }
+
+        const char* guid_cstr = guid_func();
+        std::string plugin_guid = guid_cstr ? guid_cstr : "";
+        if (plugin_guid.empty())
+        {
+            why = filename + " returned an empty GUID";
+            return false;
+        }
+        if (_loaded_guids.count(plugin_guid) > 0)
+        {
+            why = "a plugin with GUID " + plugin_guid + " is already loaded";
+            return false;
+        }
+
+        // Call load_system_plugin with top_dir and logger state
+        r_system_plugin_handle plugin_handle = load_func(_top_dir.c_str(), r_logger::get_logger_state());
+        if (!plugin_handle)
+        {
+            why = filename + "'s load_system_plugin returned null";
+            return false;
+        }
+
+        _loaded_guids.insert(plugin_guid);
+        plugin_info p {
+            std::move(lib),
+            plugin_handle,
+            start_func,
+            stop_func,
+            destroy_func,
+            enabled_func,
+            set_enabled_func,
+            status_func,
+            status_message_func,
+            post_detection_func,
+            post_detection_v2_func,
+            set_api_result_cb_func,
+            cameras_changed_func,
+            action_func,
+            plugin_name,
+            plugin_guid,
+            plugin_version
+        };
+        p.set_host_api_func = set_host_api_func;
+
+        // Wired up before anything else can see it.
+        if (set_api_result_cb_func && _api_result_fn)
+            set_api_result_cb_func(plugin_handle, _api_result_bridge, this);
+        _give_frames(p);
+
+        {
+            std::lock_guard<std::mutex> g(_list_lock);
+            _plugins.push_back(std::move(p));
+            _skipped.erase(std::remove_if(_skipped.begin(), _skipped.end(),
+                                          [&](const r_skipped_system_plugin& s) { return s.name == plugin_name; }),
+                           _skipped.end());
+        }
+
+        R_LOG_INFO("Loaded system plugin: %s (GUID: %s, version: %s)", path.c_str(), plugin_guid.c_str(),
+            plugin_version.empty() ? "unknown" : plugin_version.c_str());
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        why = "failed to load " + filename + ": " + e.what();
+        return false;
+    }
+}
+
+void r_system_plugin_host::_skip(const r_skipped_system_plugin& skipped)
+{
+    std::lock_guard<std::mutex> g(_list_lock);
+    for (auto& s : _skipped)
+    {
+        if (s.name == skipped.name)
+        {
+            s = skipped;
+            return;
+        }
+    }
+    _skipped.push_back(skipped);
+}
+
+bool r_system_plugin_host::load_and_start(const std::string& path, std::string& why)
+{
+    std::lock_guard<std::mutex> g(_ops_lock);
+
+    std::string filename = fs::path(path).filename().string();
+    if (_require_signed && _has_plugin_ext(filename))
+    {
+        auto check = check_system_plugin(path);
+        if (!check.ok())
+        {
+            r_skipped_system_plugin skipped;
+            skipped.name = _plugin_name(filename);
+            skipped.path = path;
+            skipped.check = check;
+            _skip(skipped);
+            why = std::string("it failed its check (") + plugin_check_name(check.status) + "): " + check.detail;
+            R_LOG_ERROR("System plugin %s not loaded: %s", path.c_str(), why.c_str());
+            return false;
+        }
+    }
+
+    if (!_load(path, why))
+    {
+        R_LOG_WARNING("System plugin %s not loaded: %s", path.c_str(), why.c_str());
+        return false;
+    }
+
+    if (_started)
+    {
+        auto p = _snapshot().back();   // the one just loaded: only loads append, and they hold _ops_lock
+        try
+        {
+            R_LOG_INFO("Starting system plugin: %s", p->name.c_str());
+            p->start_func(p->plugin_handle);
+        }
+        catch (const std::exception& e)
+        {
+            R_LOG_ERROR("Error starting system plugin %s: %s", p->name.c_str(), e.what());
+        }
+    }
+    return true;
+}
+
+std::vector<r_skipped_system_plugin> r_system_plugin_host::get_skipped_plugins() const
+{
+    std::lock_guard<std::mutex> g(_list_lock);
+    return _skipped;
+}
+
+std::vector<r_system_plugin_host::plugin_info*> r_system_plugin_host::_snapshot()
+{
+    std::lock_guard<std::mutex> g(_list_lock);
+    std::vector<plugin_info*> out;
+    for (auto& p : _plugins)
+        out.push_back(&p);
+    return out;
+}
+
+std::vector<const r_system_plugin_host::plugin_info*> r_system_plugin_host::_snapshot() const
+{
+    std::lock_guard<std::mutex> g(_list_lock);
+    std::vector<const plugin_info*> out;
+    for (const auto& p : _plugins)
+        out.push_back(&p);
+    return out;
+}
+
+const r_system_plugin_host::plugin_info* r_system_plugin_host::_find(const std::string& plugin_name) const
+{
+    std::lock_guard<std::mutex> g(_list_lock);
+    for (const auto& p : _plugins)
+    {
+        if (p.name == plugin_name)
+            return &p;
+    }
+    return nullptr;
+}
+
+r_system_plugin_host::plugin_info* r_system_plugin_host::_find(const std::string& plugin_name)
+{
+    std::lock_guard<std::mutex> g(_list_lock);
+    for (auto& p : _plugins)
+    {
+        if (p.name == plugin_name)
+            return &p;
+    }
+    return nullptr;
 }
 
 r_system_plugin_host::~r_system_plugin_host()
@@ -484,23 +642,26 @@ r_system_plugin_host::~r_system_plugin_host()
             p.frames->subs.clear();
         }
     }
+    std::lock_guard<std::mutex> g(_list_lock);
     _plugins.clear();
 }
 
 void r_system_plugin_host::start_all()
 {
-    for(auto& p : _plugins)
+    std::lock_guard<std::mutex> g(_ops_lock);
+    _started = true;
+    for(auto p : _snapshot())
     {
-        if (p.plugin_handle && p.start_func)
+        if (p->plugin_handle && p->start_func)
         {
             try
             {
-                R_LOG_INFO("Starting system plugin: %s", p.name.c_str());
-                p.start_func(p.plugin_handle);
+                R_LOG_INFO("Starting system plugin: %s", p->name.c_str());
+                p->start_func(p->plugin_handle);
             }
             catch (const std::exception& e)
             {
-                R_LOG_ERROR("Error starting system plugin %s: %s", p.name.c_str(), e.what());
+                R_LOG_ERROR("Error starting system plugin %s: %s", p->name.c_str(), e.what());
             }
         }
     }
@@ -508,18 +669,20 @@ void r_system_plugin_host::start_all()
 
 void r_system_plugin_host::stop_all()
 {
-    for(auto& p : _plugins)
+    std::lock_guard<std::mutex> g(_ops_lock);
+    _started = false;
+    for(auto p : _snapshot())
     {
-        if (p.plugin_handle && p.stop_func)
+        if (p->plugin_handle && p->stop_func)
         {
             try
             {
-                R_LOG_INFO("Stopping system plugin: %s", p.name.c_str());
-                p.stop_func(p.plugin_handle);
+                R_LOG_INFO("Stopping system plugin: %s", p->name.c_str());
+                p->stop_func(p->plugin_handle);
             }
             catch (const std::exception& e)
             {
-                R_LOG_ERROR("Error stopping system plugin %s: %s", p.name.c_str(), e.what());
+                R_LOG_ERROR("Error stopping system plugin %s: %s", p->name.c_str(), e.what());
             }
         }
     }
@@ -532,27 +695,23 @@ void r_system_plugin_host::stop_all()
 std::vector<std::string> r_system_plugin_host::get_loaded_plugins() const
 {
     std::vector<std::string> plugin_names;
-    for(const auto& p : _plugins)
-    {
-        plugin_names.push_back(p.name);
-    }
+    for(auto p : _snapshot())
+        plugin_names.push_back(p->name);
     return plugin_names;
 }
 
 bool r_system_plugin_host::is_plugin_enabled(const std::string& plugin_name) const
 {
-    for(const auto& p : _plugins)
+    auto p = _find(plugin_name);
+    if (p && p->plugin_handle && p->enabled_func)
     {
-        if (p.name == plugin_name && p.plugin_handle && p.enabled_func)
+        try
         {
-            try
-            {
-                return p.enabled_func(p.plugin_handle);
-            }
-            catch (const std::exception& e)
-            {
-                R_LOG_ERROR("Error checking enabled state for plugin %s: %s", plugin_name.c_str(), e.what());
-            }
+            return p->enabled_func(p->plugin_handle);
+        }
+        catch (const std::exception& e)
+        {
+            R_LOG_ERROR("Error checking enabled state for plugin %s: %s", plugin_name.c_str(), e.what());
         }
     }
     return false;
@@ -560,62 +719,52 @@ bool r_system_plugin_host::is_plugin_enabled(const std::string& plugin_name) con
 
 void r_system_plugin_host::set_plugin_enabled(const std::string& plugin_name, bool enabled)
 {
-    for(auto& p : _plugins)
+    auto p = _find(plugin_name);
+    if (p && p->plugin_handle && p->set_enabled_func)
     {
-        if (p.name == plugin_name && p.plugin_handle && p.set_enabled_func)
+        try
         {
-            try
-            {
-                p.set_enabled_func(p.plugin_handle, enabled);
-                R_LOG_INFO("Set plugin %s enabled=%s", plugin_name.c_str(), enabled ? "true" : "false");
-            }
-            catch (const std::exception& e)
-            {
-                R_LOG_ERROR("Error setting enabled state for plugin %s: %s", plugin_name.c_str(), e.what());
-            }
-            return;
+            p->set_enabled_func(p->plugin_handle, enabled);
+            R_LOG_INFO("Set plugin %s enabled=%s", plugin_name.c_str(), enabled ? "true" : "false");
+        }
+        catch (const std::exception& e)
+        {
+            R_LOG_ERROR("Error setting enabled state for plugin %s: %s", plugin_name.c_str(), e.what());
         }
     }
 }
 
 bool r_system_plugin_host::run_plugin_action(const std::string& plugin_name, const std::string& action)
 {
-    for(auto& p : _plugins)
+    auto p = _find(plugin_name);
+    if(!p || !p->plugin_handle || !p->action_func)
+        return false;
+    try
     {
-        if(p.name != plugin_name)
-            continue;
-        if(!p.plugin_handle || !p.action_func)
-            return false;
-        try
-        {
-            p.action_func(p.plugin_handle, action.c_str());
-            R_LOG_INFO("Ran plugin %s action %s", plugin_name.c_str(), action.c_str());
-            return true;
-        }
-        catch (const std::exception& e)
-        {
-            R_LOG_ERROR("Error running plugin %s action %s: %s", plugin_name.c_str(), action.c_str(), e.what());
-            return false;
-        }
+        p->action_func(p->plugin_handle, action.c_str());
+        R_LOG_INFO("Ran plugin %s action %s", plugin_name.c_str(), action.c_str());
+        return true;
     }
-    return false;
+    catch (const std::exception& e)
+    {
+        R_LOG_ERROR("Error running plugin %s action %s: %s", plugin_name.c_str(), action.c_str(), e.what());
+        return false;
+    }
 }
 
 std::string r_system_plugin_host::get_plugin_status(const std::string& plugin_name) const
 {
-    for(const auto& p : _plugins)
+    auto p = _find(plugin_name);
+    if (p && p->plugin_handle && p->status_func)
     {
-        if (p.name == plugin_name && p.plugin_handle && p.status_func)
+        try
         {
-            try
-            {
-                const char* status = p.status_func(p.plugin_handle);
-                return status ? std::string(status) : std::string();
-            }
-            catch (const std::exception& e)
-            {
-                R_LOG_ERROR("Error getting status for plugin %s: %s", plugin_name.c_str(), e.what());
-            }
+            const char* status = p->status_func(p->plugin_handle);
+            return status ? std::string(status) : std::string();
+        }
+        catch (const std::exception& e)
+        {
+            R_LOG_ERROR("Error getting status for plugin %s: %s", plugin_name.c_str(), e.what());
         }
     }
     return std::string();
@@ -623,29 +772,23 @@ std::string r_system_plugin_host::get_plugin_status(const std::string& plugin_na
 
 std::string r_system_plugin_host::get_plugin_version(const std::string& plugin_name) const
 {
-    for(const auto& p : _plugins)
-    {
-        if (p.name == plugin_name)
-            return p.version;
-    }
-    return std::string();
+    auto p = _find(plugin_name);
+    return p ? p->version : std::string();
 }
 
 std::string r_system_plugin_host::get_plugin_status_message(const std::string& plugin_name) const
 {
-    for(const auto& p : _plugins)
+    auto p = _find(plugin_name);
+    if (p && p->plugin_handle && p->status_message_func)
     {
-        if (p.name == plugin_name && p.plugin_handle && p.status_message_func)
+        try
         {
-            try
-            {
-                const char* msg = p.status_message_func(p.plugin_handle);
-                return msg ? std::string(msg) : std::string();
-            }
-            catch (const std::exception& e)
-            {
-                R_LOG_ERROR("Error getting status message for plugin %s: %s", plugin_name.c_str(), e.what());
-            }
+            const char* msg = p->status_message_func(p->plugin_handle);
+            return msg ? std::string(msg) : std::string();
+        }
+        catch (const std::exception& e)
+        {
+            R_LOG_ERROR("Error getting status message for plugin %s: %s", plugin_name.c_str(), e.what());
         }
     }
     return std::string();
@@ -663,11 +806,12 @@ void r_system_plugin_host::connect_detection_bus(r_motion_event_plugin_host& mep
 
 void r_system_plugin_host::set_api_result_fn(std::function<void(const std::string&, const std::string&)> fn)
 {
+    std::lock_guard<std::mutex> g(_ops_lock);
     _api_result_fn = std::move(fn);
-    for(auto& p : _plugins)
+    for(auto p : _snapshot())
     {
-        if(p.set_api_result_cb_func && p.plugin_handle)
-            p.set_api_result_cb_func(p.plugin_handle, _api_result_bridge, this);
+        if(p->set_api_result_cb_func && p->plugin_handle)
+            p->set_api_result_cb_func(p->plugin_handle, _api_result_bridge, this);
     }
 }
 
@@ -692,11 +836,11 @@ void r_vss::post_detection_to_plugin(r_system_plugin_handle plugin, system_plugi
 
 void r_system_plugin_host::notify_cameras_changed()
 {
-    for(auto& p : _plugins)
+    for(auto p : _snapshot())
     {
-        if(p.cameras_changed_func && p.plugin_handle)
+        if(p->cameras_changed_func && p->plugin_handle)
         {
-            try { p.cameras_changed_func(p.plugin_handle); }
+            try { p->cameras_changed_func(p->plugin_handle); }
             catch(...) {}  // a plugin must never take the stream keeper down
         }
     }
@@ -704,15 +848,15 @@ void r_system_plugin_host::notify_cameras_changed()
 
 void r_system_plugin_host::_dispatch_detection(const r_detection& det, int64_t posted_at_ms)
 {
-    for (auto& p : _plugins)
+    for (auto p : _snapshot())
     {
         try
         {
-            post_detection_to_plugin(p.plugin_handle, p.post_detection_func, p.post_detection_v2_func, det, posted_at_ms);
+            post_detection_to_plugin(p->plugin_handle, p->post_detection_func, p->post_detection_v2_func, det, posted_at_ms);
         }
         catch (const std::exception& e)
         {
-            R_LOG_ERROR("Error dispatching detection to system plugin %s: %s", p.name.c_str(), e.what());
+            R_LOG_ERROR("Error dispatching detection to system plugin %s: %s", p->name.c_str(), e.what());
         }
     }
 }

@@ -1,0 +1,29 @@
+#include "framework.h"
+
+class test_r_plugin_loader : public test_fixture
+{
+public:
+    RTF_FIXTURE(test_r_plugin_loader);
+      TEST(test_r_plugin_loader::test_choose_copy);
+      TEST(test_r_plugin_loader::test_needs_update);
+      TEST(test_r_plugin_loader::test_unsigned_build_loads_the_first_copy);
+      TEST(test_r_plugin_loader::test_required_skips_unsigned_plugins);
+      TEST(test_r_plugin_loader::test_load_and_start);
+      TEST(test_r_plugin_loader::test_load_and_start_checks);
+    RTF_FIXTURE_END();
+
+    virtual ~test_r_plugin_loader() throw() {}
+
+    virtual void setup();
+    virtual void teardown();
+
+    void test_choose_copy();
+    void test_needs_update();
+    void test_unsigned_build_loads_the_first_copy();
+    void test_required_skips_unsigned_plugins();
+    void test_load_and_start();
+    void test_load_and_start_checks();
+
+private:
+    std::string _top;
+};

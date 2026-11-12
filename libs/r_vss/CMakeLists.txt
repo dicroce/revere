@@ -21,6 +21,7 @@ target_compile_definitions(r_vss PRIVATE
     REVERE_VERSION_STRING="${REVERE_VERSION_STRING}"
     REVERE_BUILD_NUMBER=${REVERE_BUILD_NUMBER}
     REVERE_GIT_REVISION="${REVERE_GIT_REVISION}"
+    R_REQUIRE_SIGNED_PLUGINS=$<BOOL:${REVERE_REQUIRE_SIGNED_PLUGINS}>
 )
 
 # The build time and dirty flag, stamped on every build: this target always
