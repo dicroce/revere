@@ -84,8 +84,8 @@ begin
   Result := '';
 end;
 
-// The firewall rules for the local-network ports that Revere's plugins listen on: TCP and UDP 51830-51929, from this
-// network only, on Private and Domain networks, for revere.exe (not for the program's other ports, 8088 and 8554, which
+// The firewall rules for the local-network ports that Revere's plugins listen on: TCP and UDP 51830-51929, from
+// private-range addresses only (10/8, 172.16/12, 192.168/16), on Private and Domain networks, for revere.exe (not for the program's other ports, 8088 and 8554, which
 // stay closed to the network). Named so a reinstall replaces them and an uninstall removes them.
 procedure DeleteLanPortRules;
 var
@@ -125,12 +125,15 @@ Name: "{autoprograms}\Vision"; Filename: "{app}\vision.exe"
 ; Install Visual C++ 2022 Redistributable (required for application to run)
 Filename: "{tmp}\{#ExtractFileName(VCRedistPath)}"; Parameters: "/quiet /norestart"; StatusMsg: "Installing Visual C++ 2022 Runtime..."; Flags: waituntilterminated
 ; Local-network ports for Revere's plugins: an inbound rule per protocol for revere.exe, TCP and UDP 51830-51929, from the
-; local subnet only, on Private and Domain networks (never Public). Not a rule for the program alone, which would also open
-; its other listeners. The old rule is removed first, so a reinstall at another path doesn't leave two.
+; private-range addresses only (10/8, 172.16/12, 192.168/16), on Private and Domain networks (never Public). Not a rule for
+; the program alone, which would also open its other listeners. Every existing inbound rule for revere.exe is removed
+; first: if someone once dismissed Windows' own firewall prompt, it saved block rules for the program, and a block rule
+; beats an allow rule. Then our named rules, so a reinstall doesn't leave two.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=all dir=in program=""{app}\{#MyAppExeName}"""; Flags: runhidden waituntilterminated; Components: revere
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Revere local plugin ports (TCP)"""; Flags: runhidden waituntilterminated; Components: revere
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Revere local plugin ports (UDP)"""; Flags: runhidden waituntilterminated; Components: revere
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Revere local plugin ports (TCP)"" dir=in action=allow enable=yes protocol=TCP localport=51830-51929 remoteip=LocalSubnet profile=private,domain program=""{app}\{#MyAppExeName}"""; StatusMsg: "Allowing Revere's local network ports..."; Flags: runhidden waituntilterminated; Components: revere
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Revere local plugin ports (UDP)"" dir=in action=allow enable=yes protocol=UDP localport=51830-51929 remoteip=LocalSubnet profile=private,domain program=""{app}\{#MyAppExeName}"""; StatusMsg: "Allowing Revere's local network ports..."; Flags: runhidden waituntilterminated; Components: revere
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Revere local plugin ports (TCP)"" dir=in action=allow enable=yes protocol=TCP localport=51830-51929 remoteip=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 profile=private,domain program=""{app}\{#MyAppExeName}"""; StatusMsg: "Allowing Revere's local network ports..."; Flags: runhidden waituntilterminated; Components: revere
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Revere local plugin ports (UDP)"" dir=in action=allow enable=yes protocol=UDP localport=51830-51929 remoteip=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 profile=private,domain program=""{app}\{#MyAppExeName}"""; StatusMsg: "Allowing Revere's local network ports..."; Flags: runhidden waituntilterminated; Components: revere
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent; Components: revere
 Filename: "{app}\vision.exe"; Description: "{cm:LaunchProgram,Vision}"; Flags: nowait postinstall skipifsilent; Components: not revere
 
