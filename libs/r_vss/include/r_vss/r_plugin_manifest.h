@@ -71,6 +71,18 @@ R_API std::string plugin_arch();
 // To rotate, add the new key in one release and sign with it from the next.
 R_API const std::vector<std::string>& trusted_plugin_keys();
 
+// Checks a manifest and its signature in memory (one just downloaded), in this
+// order: one of trusted_keys signed it; it parses; it names file_name; it's for this
+// platform and arch; it's for this revere_version, exactly. On ok, manifest is set.
+R_API r_plugin_check_result check_plugin_manifest(const std::string& manifest_json,
+                                                  const std::string& signature,
+                                                  const std::string& file_name,
+                                                  const std::string& revere_version,
+                                                  const std::vector<std::string>& trusted_keys,
+                                                  const std::string& platform,
+                                                  const std::string& arch,
+                                                  r_plugin_manifest& manifest);
+
 // Checks the plugin at plugin_path, in this order, stopping at the first that fails:
 // its manifest is there; its signature is there and one of trusted_keys made it;
 // the manifest parses; it names this file; it's for this platform and arch; it's for
