@@ -54,6 +54,10 @@ const uint64_t RTSP_TEARDOWN_TIMEOUT_NS = 2000000000ULL;
 // The longest r_gst_source::stop() waits for the pipeline to reach NULL (the TEARDOWN included) before it lets go.
 const std::chrono::seconds STOP_WAIT {5};
 
+// For tests: stop() waits `wait` instead of STOP_WAIT (zero: STOP_WAIT), and `before_null` runs on the state-change thread
+// before it takes the pipeline to NULL (a state change that blocks). Call again with 0 and {} to undo.
+R_API void set_stop_for_tests(std::chrono::milliseconds wait, std::function<void()> before_null);
+
 // Sets an rtspsrc's teardown-timeout to RTSP_TEARDOWN_TIMEOUT_NS.
 R_API void rtsp_set_teardown_timeout(GstElement* rtspsrc);
 

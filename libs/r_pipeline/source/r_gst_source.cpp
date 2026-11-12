@@ -371,6 +371,15 @@ void r_gst_source::set_args(const vector<r_arg>& args)
     _password = _args["password"];
 }
 
+static std::chrono::milliseconds g_stop_wait {0};
+static std::function<void()> g_stop_before_null;
+
+void r_pipeline::set_stop_for_tests(std::chrono::milliseconds wait, std::function<void()> before_null)
+{
+    g_stop_wait = wait;
+    g_stop_before_null = std::move(before_null);
+}
+
 void r_pipeline::rtsp_set_teardown_timeout(GstElement* rtspsrc)
 {
     // Room to send TEARDOWN when the pipeline stops (rtspsrc's default is 100 ms). A camera
@@ -532,9 +541,21 @@ void r_gst_source::stop()
         // is answered or its own write gives up. So it runs on its own thread, and this waits for it no longer than
         // STOP_WAIT. A change that outlives the wait finishes on its thread, which holds its own reference to the
         // pipeline until then; nothing here waits for it again.
+        //
+        // rtspsrc's handlers hold `this`, and a reply that lands during the change (a DESCRIBE or SETUP still in flight)
+        // would fire them into a source that stop() has let go. They are disconnected first, with the appsinks'.
+        if(GstElement* rtspsrc = gst_bin_get_by_name(GST_BIN(_pipeline), "src"))
+        {
+            g_signal_handlers_disconnect_by_data(rtspsrc, this);
+            gst_object_unref(rtspsrc);
+        }
+
         auto change = std::make_shared<_null_change>();
+        auto before_null = g_stop_before_null;
         GstElement* pipeline = GST_ELEMENT(gst_object_ref(_pipeline));
-        std::thread([change, pipeline](){
+        std::thread([change, pipeline, before_null](){
+            if(before_null)
+                before_null();
             auto rc = gst_element_set_state(pipeline, GST_STATE_NULL);
             if(rc == GST_STATE_CHANGE_ASYNC)
                 rc = gst_element_get_state(pipeline, NULL, NULL, 5 * GST_SECOND);
@@ -548,8 +569,9 @@ void r_gst_source::stop()
         }).detach();
 
         std::unique_lock<std::mutex> wait_lock(change->m);
-        if(!change->cv.wait_for(wait_lock, STOP_WAIT, [&](){ return change->done; }))
-            R_LOG_WARNING("Pipeline shutdown timed out after %d s, forcing cleanup", (int)STOP_WAIT.count());
+        const auto stop_wait = g_stop_wait.count() > 0 ? g_stop_wait : std::chrono::milliseconds(STOP_WAIT);
+        if(!change->cv.wait_for(wait_lock, stop_wait, [&](){ return change->done; }))
+            R_LOG_WARNING("Pipeline shutdown timed out after %d ms, forcing cleanup", (int)stop_wait.count());
         else if(change->result == GST_STATE_CHANGE_FAILURE)
             R_LOG_WARNING("Pipeline state change failed during stop, forcing cleanup");
         wait_lock.unlock();

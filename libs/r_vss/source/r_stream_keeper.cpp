@@ -1281,12 +1281,13 @@ void r_stream_keeper::_entry_point()
             // The network changed (Wi-Fi to Ethernet, a new address): every session was made over what is gone. Mark
             // them all dead here, so the pass below ends each one properly (TEARDOWN, sockets closed, each bounded) and
             // the next pass connects again once its teardown is done.
-            if(!_stopping && _network_watch.poll(r_utils::r_networking::r_network_signature()))
+            if(!_stopping)
             {
                 std::lock_guard<std::mutex> lock(_streams_mutex);
-                R_LOG_WARNING("The network changed: ending %d camera sessions to connect again", (int)_streams.size());
-                for(auto& s : _streams)
-                    s.second->drop();
+                auto dropped = r_drop_streams_on_network_change(_network_watch, std::chrono::steady_clock::now(),
+                                                               [](){ return r_utils::r_networking::r_network_signature(); }, _streams);
+                if(dropped > 0)
+                    R_LOG_WARNING("The network changed: ending %d camera sessions to connect again", (int)dropped);
             }
 
             // All _streams map modifications are protected by _streams_mutex.
