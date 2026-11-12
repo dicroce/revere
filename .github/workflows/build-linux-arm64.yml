@@ -14,6 +14,16 @@ permissions:
   contents: read
 
 env:
+  # The public half of the plugin signing key: the same key as
+  # r_vss::trusted_plugin_keys() (libs/r_vss/source/r_plugin_manifest.cpp). The sign
+  # job refuses a REVERE_PLUGIN_SIGNING_KEY secret that isn't its private half.
+  TRUSTED_PLUGIN_KEY: |
+    -----BEGIN PUBLIC KEY-----
+    MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEyoJaveiI9dV8iMd1BCuTJ5waLQlE
+    Lb/o4EjKncI5WScnbgqhP/t4XoNJxwdCaXcnMAEmMUy733L4laq3PEZGhg==
+    -----END PUBLIC KEY-----
+  # Release tag builds load only signed system plugins (r_vss/r_system_plugin_host.h).
+  REQUIRE_SIGNED_PLUGINS: ${{ startsWith(github.ref, 'refs/tags/') && 'ON' || 'OFF' }}
   # NCNN is built from source (not in apt) and cached. Bump to rebuild.
   NCNN_VERSION: "20240820"
   # revere's own LGPL FFmpeg (scripts/linux/build_ffmpeg_lgpl.sh), cached and
@@ -146,7 +156,8 @@ jobs:
           cmake -S revere -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DREVERE_PORTABLE_BUILD=ON \
-            -DEXTERNAL_PLUGIN_REPOS="${GITHUB_WORKSPACE}/revere_cloud"
+            -DEXTERNAL_PLUGIN_REPOS="${GITHUB_WORKSPACE}/revere_cloud" \
+            -DREVERE_REQUIRE_SIGNED_PLUGINS="${REQUIRE_SIGNED_PLUGINS}"
         env:
           NCNN_TOP_DIR: ${{ github.workspace }}/ncnn-install
 
@@ -168,7 +179,7 @@ jobs:
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           echo "Version: $ver"
 
-      - name: Stage release assets (.deb + cloud .run)
+      - name: Stage release assets (.deb)
         shell: bash
         run: |
           set -euo pipefail
@@ -178,12 +189,26 @@ jobs:
           REVERE_BUILD_DIR="${GITHUB_WORKSPACE}/build" \
           REVERE_RELEASES_DIR="${GITHUB_WORKSPACE}/dist" \
           bash revere/scripts/linux/build_deb.sh
-          VERSION="$ver" \
-          REVERE_BUILD_DIR="${GITHUB_WORKSPACE}/build" \
-          REVERE_CLOUD_PLUGIN_PATH="${GITHUB_WORKSPACE}/build/system_plugins/revere_cloud_system_plugin.so" \
-          REVERE_RELEASES_DIR="${GITHUB_WORKSPACE}/dist" \
-          bash revere/scripts/linux/create_cloud_plugin_installer.sh
           echo "=== dist/ ==="; ls -la dist
+
+      # The cloud .run is packed by package-cloud, after the sign job.
+      # The built plugin, exactly as the cloud .run packs it, and its manifest.
+      - name: Write the cloud plugin's manifest
+        run: |
+          set -euo pipefail
+          version="$(git -C revere describe --tags --match 'v[0-9]*' --always)"
+          python3 revere/scripts/release/write_plugin_manifest.py \
+            --plugin "${GITHUB_WORKSPACE}/build/system_plugins/revere_cloud_system_plugin.so" \
+            --version "${version#v}" --platform linux --arch arm64 --asset-platform linux-arm64 \
+            --out cloud
+
+      - name: Upload the cloud plugin and its manifest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cloud-plugin-linux-arm64
+          path: cloud/*
+          if-no-files-found: error
+
 
       # Install the .deb the way a user would (apt resolves its Depends), then
       # run it headless: it must stay up and serve the web UI.
@@ -255,12 +280,129 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # Only runs for tag pushes. Attaches the .deb + arm64 cloud .run to the
-  # PUBLIC GitHub Release for this tag (shared with the other platforms).
+  # Signs the cloud plugin's manifest (project-planning docs/IN_APP_PLUGIN_INSTALL.md,
+  # section 2a). The only job that sees the signing key: it runs in the protected
+  # `release` environment (v* tags only, after an approval from Tony or Scott),
+  # checks out no code, runs no repo scripts, installs nothing, and uses only
+  # GitHub's own actions. Shell tracing (set -x) stays off here.
+  sign:
+    needs: [build-linux-arm64]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+    steps:
+      - name: Download the plugin and its manifest
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: cloud-plugin-linux-arm64
+          merge-multiple: true
+          path: plugin
+
+      - name: Check each plugin against its manifest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          shopt -s nullglob
+          manifests=(plugin/*.json)
+          if [ ${#manifests[@]} -eq 0 ]; then echo "::error::no plugin manifests to sign"; exit 1; fi
+          for m in "${manifests[@]}"; do
+            p="${m%.json}"
+            if [ ! -f "$p" ]; then echo "::error::no plugin beside $m"; exit 1; fi
+            if [ "$(jq -r .format "$m")" != "1" ]; then echo "::error::$m isn't a format 1 manifest"; exit 1; fi
+            if [ "$(jq -r .revere_version "$m")" != "$version" ]; then echo "::error::$m is for revere $(jq -r .revere_version "$m"), not $version"; exit 1; fi
+            if [ "$(jq -r .size "$m")" != "$(stat -c %s "$p")" ]; then echo "::error::$p isn't the size $m says"; exit 1; fi
+            if [ "$(jq -r .sha256 "$m")" != "$(sha256sum "$p" | cut -d' ' -f1)" ]; then echo "::error::$p isn't the file $m describes"; exit 1; fi
+            echo "OK: $p"; cat "$m"; echo
+          done
+
+      - name: Sign each manifest
+        env:
+          SIGNING_KEY: ${{ secrets.REVERE_PLUGIN_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/plugin_signing_key.pem"
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          # The secret must be the key revere trusts, or every plugin it signs is refused.
+          printf '%s\n' "$TRUSTED_PLUGIN_KEY" > "$RUNNER_TEMP/trusted_key.pem"
+          if ! cmp -s <(openssl pkey -in "$key" -pubout -outform DER) <(openssl pkey -pubin -in "$RUNNER_TEMP/trusted_key.pem" -outform DER); then
+            echo "::error::REVERE_PLUGIN_SIGNING_KEY isn't the key in TRUSTED_PLUGIN_KEY (and r_vss::trusted_plugin_keys())"
+            exit 1
+          fi
+          for m in plugin/*.json; do
+            openssl dgst -sha256 -sign "$key" -out "$m.sig" "$m"
+            openssl dgst -sha256 -verify "$RUNNER_TEMP/trusted_key.pem" -signature "$m.sig" "$m"
+          done
+
+      - name: Remove the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/plugin_signing_key.pem"
+
+      - name: Upload the signatures
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cloud-signatures
+          path: plugin/*.json.sig
+          if-no-files-found: error
+
+  # Packs the cloud .run around the plugin, its manifest and (on tag builds) the
+  # signature, so a manual install passes the same checks as an in-app one. Only
+  # bash and tar: no build environment needed.
+  package-cloud:
+    needs: [build-linux-arm64, sign]
+    if: always() && needs.build-linux-arm64.result == 'success' && (needs.sign.result == 'success' || needs.sign.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout revere (its installer script)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: revere
+
+      - name: Download the plugin and its manifest
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cloud-plugin-linux-arm64
+          path: plugin
+
+      - name: Download the signature
+        if: needs.sign.result == 'success'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cloud-signatures
+          path: plugin
+
+      - name: Pack the cloud .run
+        run: |
+          set -euo pipefail
+          asset="$(ls plugin/*-cloud-plugin.so | head -1)"
+          version="$(jq -r .revere_version "$asset.json")"
+          mkdir -p dist
+          VERSION="v$version" \
+          REVERE_CLOUD_ARCH=arm64 \
+          REVERE_CLOUD_PLUGIN_PATH="$asset" \
+          REVERE_RELEASES_DIR="${GITHUB_WORKSPACE}/dist" \
+          bash revere/scripts/linux/create_cloud_plugin_installer.sh
+          cp plugin/* dist/
+          echo "=== dist/ ==="; ls -la dist
+
+      - name: Upload the cloud .run and plugin assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-arm64-cloud-assets
+          path: dist/*
+          if-no-files-found: error
+
+  # Only runs for tag pushes. Attaches the .deb, the arm64 cloud .run and the
+  # cloud plugin's assets to the PUBLIC GitHub Release for this tag (shared with
+  # the other platforms).
   release:
     permissions:
       contents: write
-    needs: [build-linux-arm64]
+    needs: [build-linux-arm64, package-cloud]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
@@ -268,6 +410,12 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-arm64-assets
+          path: dist
+
+      - name: Download the cloud .run and plugin assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-arm64-cloud-assets
           path: dist
 
       - name: Verify asset versions match the tag
@@ -288,6 +436,14 @@ jobs:
             fi
           done
           echo "Version guard passed: both Linux arm64 assets match $tag."
+          # The in-app install's assets (libs/r_vss/r_plugin_installer.h), signed.
+          for suffix in "" .json .json.sig; do
+            expected="revere-v${version}-linux-arm64-cloud-plugin.so${suffix}"
+            if [ ! -f "dist/${expected}" ]; then
+              echo "::error::Expected '${expected}' not found: the in-app Revere Cloud install would fail."
+              exit 1
+            fi
+          done
 
       - name: Create/update public release and upload Linux arm64 assets
         env:

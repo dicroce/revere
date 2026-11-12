@@ -183,8 +183,12 @@ def configure_cmake():
         "cmake",
         f"-DCMAKE_INSTALL_PREFIX={INSTALL_DIR.as_posix()}",
         f"-DEXTERNAL_PLUGIN_REPOS={REVERE_CLOUD_DIR.as_posix()}",
-        ".."
     ]
+    # Release tag builds load only signed system plugins (CI sets this to ON).
+    require_signed = os.environ.get("REVERE_REQUIRE_SIGNED_PLUGINS", "")
+    if require_signed:
+        cmd.append(f"-DREVERE_REQUIRE_SIGNED_PLUGINS={require_signed}")
+    cmd.append("..")
 
     run_command(cmd, cwd=BUILD_DIR, description="Configuring CMake")
 
@@ -477,6 +481,9 @@ def main():
     parser.add_argument("--skip-install", action="store_true", help="Skip CMake install step")
     parser.add_argument("--skip-inno", action="store_true", help="Skip Inno Setup compilation")
     parser.add_argument("--clean", action="store_true", help="Clean build directory before building")
+    parser.add_argument("--no-cloud-installer", action="store_true",
+                        help="Build only the Revere installer; the release workflow packs the cloud "
+                             "installer itself, after its plugin's manifest is signed")
 
     args = parser.parse_args()
 
@@ -530,10 +537,11 @@ def main():
             defines={"StagingDir": STAGING_DIR, "VCRedistPath": VC_REDIST,
                      "ComponentsInclude": write_component_lists()},
         )
-        compile_inno_setup(
-            "RevereCloudSetup.iss", REVERE_CLOUD_DIR, "RevereCloud",
-            defines={"StagingDir": STAGING_DIR},
-        )
+        if not args.no_cloud_installer:
+            compile_inno_setup(
+                "RevereCloudSetup.iss", REVERE_CLOUD_DIR, "RevereCloud",
+                defines={"StagingDir": STAGING_DIR},
+            )
 
         # Rename installers with version
         rename_installer(
@@ -541,11 +549,12 @@ def main():
             "revere-v{version}-windows-app-setup.exe",
             version
         )
-        rename_installer(
-            "RevereCloudSetup.exe",
-            "revere-v{version}-windows-cloud-setup.exe",
-            version
-        )
+        if not args.no_cloud_installer:
+            rename_installer(
+                "RevereCloudSetup.exe",
+                "revere-v{version}-windows-cloud-setup.exe",
+                version
+            )
     else:
         print("\nSkipping Inno Setup compilation (--skip-inno)")
 

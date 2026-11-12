@@ -41,6 +41,16 @@ env:
   # revere's own FFmpeg (see "Build FFmpeg"): the same release line as the
   # Windows deps (BtbN n8.1 lgpl-shared). Bump to rebuild.
   FFMPEG_VERSION: n8.1.3
+  # The public half of the plugin signing key: the same key as
+  # r_vss::trusted_plugin_keys() (libs/r_vss/source/r_plugin_manifest.cpp). The sign
+  # job refuses a REVERE_PLUGIN_SIGNING_KEY secret that isn't its private half.
+  TRUSTED_PLUGIN_KEY: |
+    -----BEGIN PUBLIC KEY-----
+    MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEyoJaveiI9dV8iMd1BCuTJ5waLQlE
+    Lb/o4EjKncI5WScnbgqhP/t4XoNJxwdCaXcnMAEmMUy733L4laq3PEZGhg==
+    -----END PUBLIC KEY-----
+  # Release tag builds load only signed system plugins (r_vss/r_system_plugin_host.h).
+  REQUIRE_SIGNED_PLUGINS: ${{ startsWith(github.ref, 'refs/tags/') && 'ON' || 'OFF' }}
 
 jobs:
   build-macos:
@@ -199,6 +209,7 @@ jobs:
           cmake -S revere -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DEXTERNAL_PLUGIN_REPOS="${GITHUB_WORKSPACE}/revere_cloud" \
+            -DREVERE_REQUIRE_SIGNED_PLUGINS="${REQUIRE_SIGNED_PLUGINS}" \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/macos-install" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.min_macos }}" \
             -DCMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
@@ -560,50 +571,27 @@ jobs:
           codesign --force --sign - "$plugin"
           codesign --verify --verbose=2 "$plugin" && echo "plugin verify OK"
 
-      # Cloud plugin .command (self-extracting, installs the dylib into
-      # ~/Library/Application Support/Revere/revere/system_plugins). The plugin
-      # was built in-tree against this run's libs via EXTERNAL_PLUGIN_REPOS; it
-      # lands under build/_deps/revere_cloud-build/.
-      - name: Create cloud .command
+      # The cloud plugin as its .command will install it (after the install_name_tool
+      # and codesign above), and its manifest. The .command is packed by
+      # package-cloud, after the sign job, by scripts/macos/create_cloud_plugin_installer.sh.
+      # The plugin was built in-tree against this run's libs via EXTERNAL_PLUGIN_REPOS;
+      # it lands under build/_deps/revere_cloud-build/.
+      - name: Write the cloud plugin's manifest
         run: |
           set -euo pipefail
-          ver="${{ steps.ver.outputs.ver }}"
           plugin="$(find build -name 'revere_cloud_system_plugin.dylib' -type f | head -1)"
           if [ -z "$plugin" ]; then echo "::error::cloud plugin dylib not found"; exit 1; fi
-          echo "plugin: $plugin"
-          out="dist/revere-${ver}-${{ matrix.asset }}-cloud.command"
-          echo '#!/bin/bash' > "$out"
-          # The plugin only loads into a Revere of its own architecture.
-          echo 'PLUGIN_ARCH="${{ matrix.arch }}"' >> "$out"
-          cat >> "$out" <<'HDR'
-          set -e
-          PLUGIN_DIR="$HOME/Library/Application Support/Revere/revere/system_plugins"
-          PLUGIN_NAME="revere_cloud_system_plugin.dylib"
-          echo "Revere Cloud Plugin Installer"; echo "=============================="; echo ""
-          if [ "$(uname -m)" != "$PLUGIN_ARCH" ]; then
-            if [ "$PLUGIN_ARCH" = "x86_64" ]; then
-              echo "Error: this installer is for Intel Macs. This Mac has Apple silicon: use revere-<version>-macos-cloud.command."
-            else
-              echo "Error: this installer is for Macs with Apple silicon. On an Intel Mac use revere-<version>-macos-intel-cloud.command."
-            fi
-            read -p "Press Enter to exit..."; exit 1
-          fi
-          if [ ! -d "$HOME/Library/Application Support/Revere/revere" ]; then
-            echo "Error: Revere does not appear to be installed."
-            echo "Please run Revere at least once before installing the plugin."
-            read -p "Press Enter to exit..."; exit 1
-          fi
-          mkdir -p "$PLUGIN_DIR"
-          ARCHIVE_START=$(awk '/^__PAYLOAD__$/{print NR + 1; exit 0; }' "$0")
-          tail -n +"$ARCHIVE_START" "$0" > "$PLUGIN_DIR/$PLUGIN_NAME"
-          chmod 755 "$PLUGIN_DIR/$PLUGIN_NAME"
-          echo ""; echo "Installation complete! Restart Revere to load the cloud plugin."
-          read -p "Press Enter to exit..."; exit 0
-          __PAYLOAD__
-          HDR
-          cat "$plugin" >> "$out"
-          chmod +x "$out"
-          echo "=== dist ==="; ls -la dist
+          version="$(git -C revere describe --tags --match 'v[0-9]*' --always)"
+          python3 revere/scripts/release/write_plugin_manifest.py \
+            --plugin "$plugin" --version "${version#v}" --platform macos --arch "${{ matrix.arch }}" \
+            --asset-platform "${{ matrix.asset }}" --out cloud
+
+      - name: Upload the cloud plugin and its manifest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cloud-plugin-${{ matrix.asset }}
+          path: cloud/*
+          if-no-files-found: error
 
       # Light smoke check: confirm the bundled app has no unresolved non-system
       # dylib references (otool). A full GUI launch needs a display we don't have.
@@ -629,10 +617,127 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # Signs the cloud plugin's manifest (project-planning docs/IN_APP_PLUGIN_INSTALL.md,
+  # section 2a). The only job that sees the signing key: it runs in the protected
+  # `release` environment (v* tags only, after an approval from Tony or Scott),
+  # checks out no code, runs no repo scripts, installs nothing, and uses only
+  # GitHub's own actions. Shell tracing (set -x) stays off here.
+  sign:
+    needs: [build-macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+    steps:
+      - name: Download the plugin and its manifest
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: cloud-plugin-macos*
+          merge-multiple: true
+          path: plugin
+
+      - name: Check each plugin against its manifest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          shopt -s nullglob
+          manifests=(plugin/*.json)
+          if [ ${#manifests[@]} -eq 0 ]; then echo "::error::no plugin manifests to sign"; exit 1; fi
+          for m in "${manifests[@]}"; do
+            p="${m%.json}"
+            if [ ! -f "$p" ]; then echo "::error::no plugin beside $m"; exit 1; fi
+            if [ "$(jq -r .format "$m")" != "1" ]; then echo "::error::$m isn't a format 1 manifest"; exit 1; fi
+            if [ "$(jq -r .revere_version "$m")" != "$version" ]; then echo "::error::$m is for revere $(jq -r .revere_version "$m"), not $version"; exit 1; fi
+            if [ "$(jq -r .size "$m")" != "$(stat -c %s "$p")" ]; then echo "::error::$p isn't the size $m says"; exit 1; fi
+            if [ "$(jq -r .sha256 "$m")" != "$(sha256sum "$p" | cut -d' ' -f1)" ]; then echo "::error::$p isn't the file $m describes"; exit 1; fi
+            echo "OK: $p"; cat "$m"; echo
+          done
+
+      - name: Sign each manifest
+        env:
+          SIGNING_KEY: ${{ secrets.REVERE_PLUGIN_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/plugin_signing_key.pem"
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          # The secret must be the key revere trusts, or every plugin it signs is refused.
+          printf '%s\n' "$TRUSTED_PLUGIN_KEY" > "$RUNNER_TEMP/trusted_key.pem"
+          if ! cmp -s <(openssl pkey -in "$key" -pubout -outform DER) <(openssl pkey -pubin -in "$RUNNER_TEMP/trusted_key.pem" -outform DER); then
+            echo "::error::REVERE_PLUGIN_SIGNING_KEY isn't the key in TRUSTED_PLUGIN_KEY (and r_vss::trusted_plugin_keys())"
+            exit 1
+          fi
+          for m in plugin/*.json; do
+            openssl dgst -sha256 -sign "$key" -out "$m.sig" "$m"
+            openssl dgst -sha256 -verify "$RUNNER_TEMP/trusted_key.pem" -signature "$m.sig" "$m"
+          done
+
+      - name: Remove the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/plugin_signing_key.pem"
+
+      - name: Upload the signatures
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cloud-signatures
+          path: plugin/*.json.sig
+          if-no-files-found: error
+
+  # Packs both .command installers around their plugin, its manifest and (on tag
+  # builds) the signature, so a manual install passes the same checks as an
+  # in-app one. Only bash and tar: it needn't run on a Mac.
+  package-cloud:
+    needs: [build-macos, sign]
+    if: always() && needs.build-macos.result == 'success' && (needs.sign.result == 'success' || needs.sign.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout revere (its installer script)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: revere
+
+      - name: Download the plugins and their manifests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: cloud-plugin-macos*
+          merge-multiple: true
+          path: plugin
+
+      - name: Download the signatures
+        if: needs.sign.result == 'success'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cloud-signatures
+          path: plugin
+
+      - name: Pack the cloud .commands
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for pair in macos:arm64 macos-intel:x86_64; do
+            asset_platform="${pair%%:*}"; arch="${pair##*:}"
+            plugin="$(ls plugin/revere-v*-"${asset_platform}"-cloud-plugin.dylib | head -1)"
+            version="$(jq -r .revere_version "$plugin.json")"
+            PLUGIN_PATH="$plugin" PLUGIN_ARCH="$arch" ASSET="$asset_platform" VERSION="v$version" \
+              OUTPUT_DIR="${GITHUB_WORKSPACE}/dist" bash revere/scripts/macos/create_cloud_plugin_installer.sh
+          done
+          cp plugin/* dist/
+          echo "=== dist ==="; ls -la dist
+
+      - name: Upload the cloud .commands and plugin assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-cloud-assets
+          path: dist/*
+          if-no-files-found: error
+
   release:
     permissions:
       contents: write
-    needs: [build-macos]
+    needs: [build-macos, package-cloud]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
@@ -641,6 +746,12 @@ jobs:
         with:
           pattern: macos-assets-*
           merge-multiple: true
+          path: dist
+
+      - name: Download the cloud .commands and plugin assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-cloud-assets
           path: dist
 
       - name: Verify asset versions match the tag
@@ -656,6 +767,16 @@ jobs:
             fi
           done
           echo "Version guard passed: all four macOS assets match $tag."
+          # The in-app install's assets (libs/r_vss/r_plugin_installer.h), signed.
+          for asset_platform in macos macos-intel; do
+            for suffix in "" .json .json.sig; do
+              expected="revere-v${version}-${asset_platform}-cloud-plugin.dylib${suffix}"
+              if [ ! -f "dist/${expected}" ]; then
+                echo "::error::Expected '${expected}' not found: the in-app Revere Cloud install would fail."
+                exit 1
+              fi
+            done
+          done
 
       - name: Create/update public release and upload macOS assets
         env:
