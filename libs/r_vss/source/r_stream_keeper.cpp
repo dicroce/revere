@@ -865,11 +865,7 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
     if(camera.friendly_name.is_null())
         R_THROW(("Camera friendly name is null!"));
 
-    string mount_path = camera.friendly_name.value();
-
-    replace(begin(mount_path), end(mount_path), ' ', '_');
-
-    mount_path = r_string_utils::format("/%s", mount_path.c_str());
+    const string mount_path = friendly_mount_path(camera.friendly_name.value());
 
     // Also at /camera/<id> (restream_id_mount_path), which a rename leaves where it is.
     const auto id_path = restream_id_mount_path(camera.id);
@@ -2082,10 +2078,9 @@ void r_stream_keeper::_create_playback_mount(const string& friendly_name, const 
 {
     for(auto s : _streams)
     {
-        // Normalize the camera's friendly name the same way URLs are created (spaces -> underscores)
+        // Normalize the camera's friendly name the same way URLs are created (friendly_mount_path, less its "/")
         // so we can match against the friendly_name extracted from the URL
-        string normalized_name = s.second->camera().friendly_name.value();
-        replace(begin(normalized_name), end(normalized_name), ' ', '_');
+        string normalized_name = friendly_mount_path(s.second->camera().friendly_name.value()).substr(1);
 
         if(normalized_name == friendly_name)
         {

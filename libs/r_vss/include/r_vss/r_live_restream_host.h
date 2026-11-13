@@ -46,6 +46,12 @@ R_API std::string add_substream_mount_to(_GstRTSPMountPoints* mounts, const r_di
 R_API std::string restream_id_mount_path(const std::string& camera_id);
 R_API std::string substream_id_mount_path(const std::string& camera_id);
 
+// Where a camera is mounted by its friendly name: "/" plus the name, spaces as underscores. The "camera/" prefix is
+// reserved for the id mounts above, so a name that would land on it ("camera", "camera/x") gets an underscore
+// after "camera" ("/camera_", "/camera_/x"); otherwise it would stand in for an id mount, or catch a request for
+// one that is not mounted (a request is routed to the longest mounted prefix).
+R_API std::string friendly_mount_path(const std::string& name);
+
 // Serves `factory` at both `path` and `id_path`: the same stream, the same credential check (it is the factory's).
 // Takes the caller's reference to the factory. Each path is removed on its own (remove_restream_mount).
 R_API void add_factory_at_both(_GstRTSPMountPoints* mounts, _GstRTSPMediaFactory* factory, const std::string& path, const std::string& id_path);

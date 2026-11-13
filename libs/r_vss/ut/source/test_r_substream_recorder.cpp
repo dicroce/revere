@@ -478,6 +478,21 @@ void test_r_substream_recorder::test_mount_path()
     // By id: the name plays no part, so a rename leaves it where it was.
     RTF_ASSERT(substream_id_mount_path("cam-1") == "/camera/cam-1/sub");
     RTF_ASSERT(restream_id_mount_path("cam-1") == "/camera/cam-1");
+    // The "camera/" prefix is the id mounts': a friendly name can't land on it or beside it.
+    RTF_ASSERT(friendly_mount_path("Front Door") == "/Front_Door");
+    RTF_ASSERT(friendly_mount_path("camera") == "/camera_");
+    RTF_ASSERT(friendly_mount_path("camera/abc") == "/camera_/abc");
+    RTF_ASSERT(friendly_mount_path("camera 2") == "/camera_2");         // not under it: left alone
+    RTF_ASSERT(friendly_mount_path("cameras") == "/cameras");
+    RTF_ASSERT(friendly_mount_path("camera_") == "/camera_");           // still not an id mount's path
+    for(auto n : {"camera", "camera/cam-1", "camera/cam-1/sub", "camera/"})
+    {
+        auto p = friendly_mount_path(n);
+        RTF_ASSERT(p != "/camera" && p.compare(0, 8, "/camera/") != 0);
+    }
+    c.friendly_name = string("camera");
+    RTF_ASSERT(substream_mount_path(c) == "/camera_/sub");
+    RTF_ASSERT(view_mount_path("camera", "", "", false, false) == "/camera_");
     c.friendly_name = string("Porch");
     RTF_ASSERT(substream_mount_path(c) == "/Porch/sub");
     RTF_ASSERT(substream_id_mount_path(c.id) == "/camera/cam-1/sub");

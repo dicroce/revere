@@ -53,9 +53,7 @@ string r_vss::view_mount_path(const string& label, const string& main_mount, con
         return sub_mount;
     if(!main_mount.empty())
         return main_mount;
-    string name = label;
-    replace(begin(name), end(name), ' ', '_');
-    return "/" + name;
+    return friendly_mount_path(label);
 }
 
 bool r_vss::substream_in_use(const r_camera& camera, bool computer_on)
@@ -71,9 +69,7 @@ bool r_vss::substream_wanted(const r_camera& camera, bool computer_on)
 string r_vss::substream_mount_path(const r_camera& camera)
 {
     // As the main mount is named (r_stream_keeper::add_restream_mount): the friendly name, spaces as underscores.
-    string name = camera.friendly_name.is_null() ? camera.id : camera.friendly_name.value();
-    replace(begin(name), end(name), ' ', '_');
-    return "/" + name + "/sub";
+    return friendly_mount_path(camera.friendly_name.is_null() ? camera.id : camera.friendly_name.value()) + "/sub";
 }
 
 bool r_vss::motion_on_sub_possible(const motion_source_inputs& in)
@@ -427,6 +423,17 @@ string r_vss::add_substream_mount_to(_GstRTSPMountPoints* mounts, const r_camera
     auto mount_path = substream_mount_path(camera);
     add_factory_at_both(mounts, (GstRTSPMediaFactory*)factory, mount_path, substream_id_mount_path(camera.id));
     return mount_path;
+}
+
+string r_vss::friendly_mount_path(const string& name)
+{
+    string path = name;
+    replace(begin(path), end(path), ' ', '_');
+    path = "/" + path;
+    const string reserved = "/camera";
+    if(path == reserved || path.compare(0, reserved.size() + 1, reserved + "/") == 0)
+        path.insert(reserved.size(), "_");
+    return path;
 }
 
 string r_vss::restream_id_mount_path(const string& camera_id)
