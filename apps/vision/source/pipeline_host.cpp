@@ -633,8 +633,10 @@ bool pipeline_host::load_video_textures()
             auto& st = pres.stats;
             if(st.window_started && now - st.window_start >= seconds(STATS_WINDOW_SECONDS))
             {
-                if(st.arrivals > 0 || st.presents > 0)
+                if((st.arrivals > 0 || st.presents > 0) && st.should_log(now))
                 {
+                    st.last_logged = now;
+                    st.logged_once = true;
                     auto elapsed_s = duration_cast<seconds>(now - st.window_start).count();
                     stats_lines.push_back(r_string_utils::format(
                         "vision_stats[%s] %llds: arr=%u nmono=%u pts_d(ms) avg=%.1f min=%lld max=%lld | arr_jit(ms) avg=%.1f max=%lld | pres=%u late=%u lat(ms) avg=%.1f max=%lld | skip=%u drop=%u reanch=%u slew=%u rslew=%u qmax=%zu dbuf=%.0f",
