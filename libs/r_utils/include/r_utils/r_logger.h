@@ -56,6 +56,10 @@ R_API void write(LOG_LEVEL level, int line, const char* file, const char* format
 
 R_API void install_logger(const std::string& log_dir, const std::string& log_prefix);
 R_API void uninstall_logger();
+
+// How long the logger waits before trying again to open a log file that
+// failed to open (30 s by default).
+R_API void set_log_file_retry_interval(std::chrono::milliseconds interval);
 R_API void install_terminate();
 
 R_API void set_log_callback(log_callback_t callback);

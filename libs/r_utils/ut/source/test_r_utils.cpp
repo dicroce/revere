@@ -2609,9 +2609,168 @@ void test_r_utils::test_terminate_with_stalled_console()
     RTF_ASSERT(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
 #endif
 }
+
+// The logger's file tests: a log folder of their own, and the logger as it
+// was (no file, the default folder) afterwards.
+namespace
+{
+struct logger_file_scope
+{
+    string dir;
+    string saved_dir, saved_prefix;
+
+    logger_file_scope(const string& name)
+    {
+        auto st = r_logger::get_logger_state();
+        saved_dir = st->log_dir;
+        saved_prefix = st->log_prefix;
+        dir = (std::filesystem::temp_directory_path() / ("r_logger_ut_" + name + "_" + to_string(getpid()))).string();
+        std::filesystem::remove_all(dir);
+        r_logger::set_log_file_retry_interval(chrono::milliseconds(0));
+    }
+    ~logger_file_scope()
+    {
+        r_logger::uninstall_logger();
+        r_logger::set_log_file_retry_interval(chrono::seconds(30));
+        auto st = r_logger::get_logger_state();
+        st->log_dir = saved_dir;
+        st->log_prefix = saved_prefix;
+        st->approx_bytes_logged = 0;
+        chmod(dir.c_str(), 0700);
+        std::filesystem::remove_all(dir);
+    }
+    string path(const string& file) const { return dir + PATH_SLASH + file; }
+    string read(const string& file) const
+    {
+        FILE* f = fopen(path(file).c_str(), "r");
+        if(!f)
+            return string();
+        string out;
+        char buf[4096];
+        size_t n;
+        while((n = fread(buf, 1, sizeof(buf), f)) > 0)
+            out.append(buf, n);
+        fclose(f);
+        return out;
+    }
+};
+}
+
+// A full disk made the next log file fail to open at rotation; the open threw
+// out of R_LOG_*, in a thread that didn't catch it, and revere died in
+// std::terminate. Here the folder is made read-only at the point of rotation:
+// logging carries on in the current file, and the next file opens once the
+// folder takes files again.
+void test_r_utils::test_logger_rotation_survives_failed_open()
+{
+#if defined(IS_MACOS) || defined(IS_LINUX)
+    logger_file_scope scope("rotate");
+    std::filesystem::create_directories(scope.dir);
+    auto st = r_logger::get_logger_state();
+#ifdef IS_LINUX
+    st->is_sandboxed = true;
+#endif
+    r_logger::install_logger(scope.dir, "t_");
+    R_LOG_INFO("rotate-test before");
+
+    chmod(scope.dir.c_str(), 0500);
+    st->approx_bytes_logged = 0x7fffffff;
+    bool threw = false;
+    try { R_LOG_INFO("rotate-test during"); } catch(...) { threw = true; }
+    RTF_ASSERT(!threw);
+    RTF_ASSERT(!r_fs::file_exists(scope.path("t_1.txt")));
+    RTF_ASSERT(scope.read("t_0.txt").find("rotate-test during") != string::npos);
+
+    chmod(scope.dir.c_str(), 0700);
+    R_LOG_INFO("rotate-test after");
+    RTF_ASSERT(scope.read("t_1.txt").find("rotate-test after") != string::npos);
+    RTF_ASSERT(scope.read("t_0.txt").find("rotate-test after") == string::npos);
+    RTF_ASSERT(st->approx_bytes_logged < 1024);
+#ifdef IS_LINUX
+    st->is_sandboxed = false;
+#endif
+#endif
+}
+
+// A log folder that isn't there: install_logger doesn't throw, the lines go
+// to stdout, and once the folder exists the file opens with a note of how
+// many lines it missed.
+void test_r_utils::test_logger_install_survives_missing_dir()
+{
+#if defined(IS_MACOS) || defined(IS_LINUX)
+    logger_file_scope scope("missing");
+    auto st = r_logger::get_logger_state();
+#ifdef IS_LINUX
+    st->is_sandboxed = true;
+#endif
+    bool threw = false;
+    try
+    {
+        r_logger::install_logger(scope.dir, "t_");
+        R_LOG_INFO("missing-test one");
+        R_LOG_INFO("missing-test two");
+    }
+    catch(...) { threw = true; }
+    RTF_ASSERT(!threw);
+    RTF_ASSERT(st->log_file == nullptr);
+
+    std::filesystem::create_directories(scope.dir);
+    R_LOG_INFO("missing-test back");
+    RTF_ASSERT(st->log_file != nullptr);
+    auto text = scope.read("t_0.txt");
+    RTF_ASSERT(text.find("[2 log line(s) not written here") != string::npos);
+    RTF_ASSERT(text.find("missing-test back") != string::npos);
+    RTF_ASSERT(text.find("missing-test one") == string::npos);
+#ifdef IS_LINUX
+    st->is_sandboxed = false;
+#endif
+#endif
+}
+
+// A write the file refuses (a full disk; here a stream opened for reading)
+// doesn't stick: the error is cleared, and when the file takes lines again
+// it says how many it missed.
+void test_r_utils::test_logger_write_error_retried()
+{
+#if defined(IS_MACOS) || defined(IS_LINUX)
+    logger_file_scope scope("werr");
+    std::filesystem::create_directories(scope.dir);
+    auto st = r_logger::get_logger_state();
+#ifdef IS_LINUX
+    st->is_sandboxed = true;
+#endif
+    r_logger::install_logger(scope.dir, "t_");
+    R_LOG_INFO("werr-test first");
+
+    FILE* good = st->log_file;
+    FILE* bad = fopen(scope.path("t_0.txt").c_str(), "r");
+    RTF_ASSERT(bad != nullptr);
+    st->log_file = bad;
+    bool threw = false;
+    try { R_LOG_INFO("werr-test refused"); } catch(...) { threw = true; }
+    RTF_ASSERT(!threw);
+    RTF_ASSERT(!ferror(bad));
+    st->log_file = good;
+    fclose(bad);
+
+    R_LOG_INFO("werr-test again");
+    auto text = scope.read("t_0.txt");
+    RTF_ASSERT(text.find("werr-test first") != string::npos);
+    RTF_ASSERT(text.find("werr-test refused") == string::npos);
+    RTF_ASSERT(text.find("[1 log line(s) not written here") != string::npos);
+    RTF_ASSERT(text.find("werr-test again") != string::npos);
+    RTF_ASSERT(text.find("not written here") < text.find("werr-test again"));
+#ifdef IS_LINUX
+    st->is_sandboxed = false;
+#endif
+#endif
+}
 #else
 void test_r_utils::test_logger_console_never_blocks() {}
 void test_r_utils::test_terminate_with_stalled_console() {}
+void test_r_utils::test_logger_rotation_survives_failed_open() {}
+void test_r_utils::test_logger_install_survives_missing_dir() {}
+void test_r_utils::test_logger_write_error_retried() {}
 #endif
 // The Exec= of the Linux autostart entry. Run from an AppImage, the executable
 // is inside its temporary mount, which is gone after a reboot: the entry must

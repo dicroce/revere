@@ -209,23 +209,112 @@ static string _next_log_name(const string& log_dir, const string& log_prefix, bo
     else return log_prefix + "0" + ".txt";
 }
 
-static void open_log_file(const string& filename)
+// The log file can fail to open or to take a write: a full disk, or a log
+// folder that's gone. Logging must never throw because of it (a throw out of
+// write() in a thread nobody catches in is std::terminate, which is how a full
+// disk used to crash revere at its next log rotation). Instead:
+// - Lines that don't reach the file go to stdout (on macOS they go there
+//   anyway), and are counted.
+// - A failed open leaves the current file, if there is one, as it was, and is
+//   tried again after _retry_interval, from whichever thread logs next.
+// - Once a file takes lines again, it gets a line saying how many it missed.
+//
+// _file_lock guards the log file and the state below: a rotation closes the
+// file, and another thread mustn't be writing to it then. Never destroyed, as
+// logging can happen during static destruction.
+static mutex& _file_lock()
 {
-    if(_state->log_file)
+    static mutex* m = new mutex();
+    return *m;
+}
+static chrono::milliseconds _retry_interval = chrono::seconds(30);
+static chrono::steady_clock::time_point _next_open_try {};
+static bool _file_wanted = false;   // install_logger opened (or tried to open) a file
+static bool _file_failing = false;  // the last open or write failed; noted once
+static uint64_t _missed_lines = 0;  // lines that didn't reach the file since it last took them
+
+static bool _uses_file_logging()
+{
+#if defined(IS_WINDOWS) || defined(IS_MACOS)
+    return true;
+#elif defined(IS_LINUX)
+    return _state->is_sandboxed;
+#else
+    return false;
+#endif
+}
+
+// Stdout gets the line itself only where it doesn't already (macOS logs every
+// line to it).
+static void _to_stdout(const string& line)
+{
+#ifndef IS_MACOS
+    console_writer::get().post(line);
+#else
+    (void)line;
+#endif
+}
+
+// A note on stdout, once per run of failures, that the file isn't being written.
+static void _note_file_failure(const string& what)
+{
+    if(_file_failing)
+        return;
+    _file_failing = true;
+    console_writer::get().post(
+        "[The log file isn't being written (" + what + "). Log lines go to stdout until it is; "
+        "trying again every " + r_string_utils::uint64_to_s((uint64_t)chrono::duration_cast<chrono::seconds>(_retry_interval).count()) + " s.]\n"
+    );
+}
+
+// Opens the newest log file (rotate false) or the next one (rotate true), in
+// place of the current one. Never throws. On failure the current file, if
+// any, stays, and the next try waits for _retry_interval. Called with
+// _file_lock held.
+static bool _open_log_file(bool rotate)
+{
+    _next_open_try = chrono::steady_clock::now() + _retry_interval;
+
+    string path, what;
+    try
     {
-        fclose(_state->log_file);
-        _state->log_file = nullptr;
+        auto v = _next_log_name(_state->log_dir, _state->log_prefix, !rotate);
+        path = r_string_utils::format("%s%s%s", _state->log_dir.c_str(), PATH_SLASH.c_str(), v.c_str());
+    }
+    catch(std::exception& ex)
+    {
+        // Its first line: an r_exception's what() goes on with a stack trace.
+        string w = ex.what();
+        what = _state->log_dir + ": " + w.substr(0, w.find('\n'));
+    }
+    catch(...) { what = _state->log_dir + ": unknown error"; }
+
+    FILE* f = nullptr;
+    if(!path.empty())
+    {
+#ifdef IS_WINDOWS
+        f = _fsopen(path.c_str(), "a+", _SH_DENYNO);
+#else
+        f = fopen(path.c_str(), "a+");
+#endif
+        if(!f)
+            what = path + ": " + strerror(errno);
     }
 
-#ifdef IS_WINDOWS
-    _state->log_file = _fsopen(filename.c_str(), "a+", _SH_DENYNO);
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    _state->log_file = fopen(filename.c_str(), "a+");
-#endif
+    if(!f)
+    {
+        _note_file_failure(what.empty() ? string("unknown error") : what);
+        return false;
+    }
 
-    if(_state->log_file == nullptr)
-        R_THROW(("Unable to open logger."));
+    if(_state->log_file)
+        fclose(_state->log_file);
+    _state->log_file = f;
+
+    long size = (fseek(f, 0, SEEK_END) == 0) ? ftell(f) : 0;
+    _state->approx_bytes_logged = (size > 0) ? (uint32_t)size : 0;
+    _file_failing = false;
+    return true;
 }
 
 void r_utils::r_logger::write(LOG_LEVEL level,
@@ -234,29 +323,15 @@ void r_utils::r_logger::write(LOG_LEVEL level,
                               const char* format,
                               ...)
 {
-    if(_state->approx_bytes_logged > MAX_LOG_FILE_SIZE)
-    {
-        _state->approx_bytes_logged = 0;
-        auto v = _next_log_name(_state->log_dir, _state->log_prefix);
-        auto log_path = r_string_utils::format("%s%s%s", _state->log_dir.c_str(), PATH_SLASH.c_str(), v.c_str());
-
-        open_log_file(log_path);
-    }
-
     va_list args;
     va_start(args, format);
     r_logger::write(level, line, nullptr, format, args);
     va_end(args);
 }
 
-void r_utils::r_logger::write(LOG_LEVEL level,
-                              int line,
-                              const char* file,
-                              const char* format,
-                              va_list& args)
+static void _write(r_logger::LOG_LEVEL level, const char* format, va_list& args)
 {
     auto msg = r_string_utils::format(format, args);
-    _state->approx_bytes_logged += (uint32_t)msg.length();
     auto lines = r_string_utils::split(msg, "\n");
 
 #if defined(IS_WINDOWS) || defined(IS_LINUX) || defined(IS_MACOS)
@@ -290,32 +365,62 @@ void r_utils::r_logger::write(LOG_LEVEL level,
 
 #if defined(IS_WINDOWS) || defined(IS_LINUX) || defined(IS_MACOS)
     // File logging for Windows, Linux in Flatpak/Snap, and macOS
-    bool use_file_logging = false;
-#ifdef IS_WINDOWS
-    use_file_logging = true;
-#endif
-#ifdef IS_LINUX
-    use_file_logging = _state->is_sandboxed;
-#endif
-#ifdef IS_MACOS
-    use_file_logging = true;
-#endif
-    if(use_file_logging && _state->log_file)
+    if(_uses_file_logging())
     {
-        for(auto l : lines)
+        lock_guard<mutex> g(_file_lock());
+
+        // Rotate past the size limit, or reopen after a failed open, once the
+        // retry wait is over.
+        bool over = _state->approx_bytes_logged > MAX_LOG_FILE_SIZE;
+        bool missing = _file_wanted && !_state->log_file;
+        if((over || missing) && chrono::steady_clock::now() >= _next_open_try)
+            _open_log_file(over && _state->log_file);
+
+        bool written = false;
+        if(_state->log_file)
         {
-            fprintf(_state->log_file, "%s %s\n", timestamp.c_str(), l.c_str());
+            if(_missed_lines > 0)
+                fprintf(_state->log_file, "%s [%llu log line(s) not written here: the log file couldn't be opened or written. They went to stdout.]\n",
+                        timestamp.c_str(), (unsigned long long)_missed_lines);
+
+            for(auto l : lines)
+            {
+                fprintf(_state->log_file, "%s %s\n", timestamp.c_str(), l.c_str());
+            }
+
+            // Flush every line. This used to batch non-error output on a 10 second
+            // timer, which meant that when the process was killed outright (heap
+            // corruption, abort, OS kill) the last few seconds of log — the only
+            // part describing what led to the death — never reached disk. For a
+            // service that is supposed to be recording unattended, being able to
+            // see the run-up to a crash is worth more than the saved syscalls; the
+            // steady-state log rate here is a handful of lines per minute.
+            fflush(_state->log_file);
+            _state->last_flush_time = now;
+
+            // A full disk fails the write (or the flush). The error sticks to
+            // the file until cleared; clear it so the next line tries again.
+            if(ferror(_state->log_file))
+            {
+                int e = errno;
+                clearerr(_state->log_file);
+                _note_file_failure(string("write: ") + strerror(e));
+            }
+            else
+            {
+                written = true;
+                _missed_lines = 0;
+                _file_failing = false;
+                _state->approx_bytes_logged += (uint32_t)msg.length();
+            }
         }
 
-        // Flush every line. This used to batch non-error output on a 10 second
-        // timer, which meant that when the process was killed outright (heap
-        // corruption, abort, OS kill) the last few seconds of log — the only
-        // part describing what led to the death — never reached disk. For a
-        // service that is supposed to be recording unattended, being able to
-        // see the run-up to a crash is worth more than the saved syscalls; the
-        // steady-state log rate here is a handful of lines per minute.
-        fflush(_state->log_file);
-        _state->last_flush_time = now;
+        if(!written && (_file_wanted || _state->log_file))
+        {
+            _missed_lines += lines.size();
+            for(auto l : lines)
+                _to_stdout(timestamp + " " + l + "\n");
+        }
     }
 #endif
 
@@ -348,6 +453,28 @@ void r_utils::r_logger::write(LOG_LEVEL level,
     for(auto l : lines)
         console_writer::get().post(timestamp + " " + l + "\n");
 #endif
+}
+
+void r_utils::r_logger::write(LOG_LEVEL level,
+                              int line,
+                              const char* file,
+                              const char* format,
+                              va_list& args)
+{
+    // Never throws: a throw from here, in a thread that doesn't catch, would
+    // be std::terminate.
+    try
+    {
+        _write(level, format, args);
+    }
+    catch(std::exception& ex)
+    {
+        try { console_writer::get().post(string("[A log line was lost: ") + ex.what() + "]\n"); } catch(...) {}
+    }
+    catch(...)
+    {
+        try { console_writer::get().post("[A log line was lost.]\n"); } catch(...) {}
+    }
 }
 
 void r_utils_terminate()
@@ -399,33 +526,36 @@ void r_utils::r_logger::install_logger(const std::string& log_dir, const std::st
     const char* snap = getenv("SNAP");
     _state->is_sandboxed = (flatpak_id != nullptr || snap != nullptr);
 
-    auto v = _next_log_name(_state->log_dir, _state->log_prefix, true);
-    auto log_path = r_string_utils::format("%s%s%s", _state->log_dir.c_str(), PATH_SLASH.c_str(), v.c_str());
-
-    _state->approx_bytes_logged = (r_fs::file_exists(log_path))?(uint32_t)r_fs::file_size(log_path):0;
-
-    // Open log file for Windows, Linux in Flatpak/Snap, and macOS
-#ifdef IS_WINDOWS
-    open_log_file(log_path);
-#endif
-#ifdef IS_LINUX
-    if(_state->is_sandboxed)
+    // Open log file for Windows, Linux in Flatpak/Snap, and macOS. A failure
+    // here doesn't throw either: lines go to stdout, and the file is tried
+    // again later.
+    if(_uses_file_logging())
     {
-        open_log_file(log_path);
+        lock_guard<mutex> g(_file_lock());
+        _file_wanted = true;
+        _open_log_file(false);
     }
-#endif
-#ifdef IS_MACOS
-    open_log_file(log_path);
-#endif
 }
 
 void r_utils::r_logger::uninstall_logger()
 {
+    lock_guard<mutex> g(_file_lock());
+    _file_wanted = false;
+    _file_failing = false;
+    _missed_lines = 0;
+    _next_open_try = {};
     if(_state->log_file)
     {
         fclose(_state->log_file);
         _state->log_file = nullptr;
     }
+}
+
+void r_utils::r_logger::set_log_file_retry_interval(std::chrono::milliseconds interval)
+{
+    lock_guard<mutex> g(_file_lock());
+    _retry_interval = interval;
+    _next_open_try = {};
 }
 
 void r_utils::r_logger::install_terminate()
