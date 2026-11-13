@@ -18,6 +18,7 @@
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_ssl_server_socket.h"
 #include "r_utils/r_local_api_token.h"
+#include "r_utils/r_recorder_id.h"
 #include "r_utils/r_tls_fingerprint.h"
 #include "r_utils/r_udp_receiver.h"
 #include "r_utils/r_udp_sender.h"
@@ -2872,6 +2873,69 @@ void test_r_utils::test_ssl_server_socket_threaded_server()
     RTF_ASSERT(served == N);
 }
 
+
+// ---------------------------------------------------------------------------
+// r_recorder_id
+// ---------------------------------------------------------------------------
+
+void test_r_utils::test_recorder_id_kept()
+{
+    auto dir = r_fs::temp_file_name(r_fs::working_directory(), "recorder_id_ut_");
+    r_fs::mkdir_p(dir);
+
+    // Made the first time, in the form well_formed() takes, and kept.
+    auto first = r_recorder_id::get_or_create(dir);
+    RTF_ASSERT(r_recorder_id::well_formed(first));
+    RTF_ASSERT(r_fs::file_exists(r_recorder_id::path(dir)));
+
+    // The same on every later call (a restart), and not shared with another data directory.
+    RTF_ASSERT(r_recorder_id::get_or_create(dir) == first);
+    auto other = r_fs::temp_file_name(r_fs::working_directory(), "recorder_id_ut_");
+    r_fs::mkdir_p(other);
+    auto second = r_recorder_id::get_or_create(other);
+    RTF_ASSERT(r_recorder_id::well_formed(second));
+    RTF_ASSERT(second != first);
+
+#ifndef IS_WINDOWS
+    // Owner-only, as the data directory's other files are.
+    struct stat st;
+    RTF_ASSERT(::stat(r_recorder_id::path(dir).c_str(), &st) == 0);
+    RTF_ASSERT((st.st_mode & 0777) == 0600);
+#endif
+
+    // Whitespace around a kept id is ignored.
+    string padded = "  " + first + "\n";
+    r_fs::atomic_write_private_file((const uint8_t*)padded.data(), padded.size(), r_recorder_id::path(dir));
+    RTF_ASSERT(r_recorder_id::get_or_create(dir) == first);
+
+    // A file that doesn't hold an id is replaced by a new one, which is then kept.
+    string junk = "not-an-id";
+    r_fs::atomic_write_private_file((const uint8_t*)junk.data(), junk.size(), r_recorder_id::path(dir));
+    auto replaced = r_recorder_id::get_or_create(dir);
+    RTF_ASSERT(r_recorder_id::well_formed(replaced));
+    RTF_ASSERT(replaced != first);
+    RTF_ASSERT(r_recorder_id::get_or_create(dir) == replaced);
+
+    // No data directory, no id.
+    RTF_ASSERT(r_recorder_id::get_or_create("").empty());
+
+    r_fs::remove_file(r_recorder_id::path(dir));
+    r_fs::rmdir(dir);
+    r_fs::remove_file(r_recorder_id::path(other));
+    r_fs::rmdir(other);
+}
+
+void test_r_utils::test_recorder_id_well_formed()
+{
+    RTF_ASSERT(r_recorder_id::well_formed("0f8fad5b-d9cb-469f-a165-70867728950e"));
+    RTF_ASSERT(!r_recorder_id::well_formed("0F8FAD5B-D9CB-469F-A165-70867728950E")); // upper case
+    RTF_ASSERT(!r_recorder_id::well_formed("0f8fad5bd9cb469fa16570867728950e"));     // no dashes
+    RTF_ASSERT(!r_recorder_id::well_formed("0f8fad5b-d9cb-469f-a165-70867728950"));  // short
+    RTF_ASSERT(!r_recorder_id::well_formed("0f8fad5b-d9cb-469f-a165-70867728950ee")); // long
+    RTF_ASSERT(!r_recorder_id::well_formed("0f8fad5b-d9cb-469f-a165_70867728950e")); // wrong separator
+    RTF_ASSERT(!r_recorder_id::well_formed("0f8fad5b-d9cb-469f-a165-7086772895zz")); // not hex
+    RTF_ASSERT(!r_recorder_id::well_formed(""));
+}
 
 // ---------------------------------------------------------------------------
 // r_local_api_token
