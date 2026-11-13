@@ -144,11 +144,36 @@ void test_r_plugin_notifier::test_stopping_accepting_drops_what_is_queued()
     n.post([g]() { g->wait(); });
     RTF_ASSERT(eventually([&]() { return g->entered.load(); }));
     n.post([l]() { l->add(1); });
+    // accept(false) waits for the running call, so something else lets it go.
+    thread opener([g]() { this_thread::sleep_for(milliseconds(50)); g->release(); });
     n.accept(false);
+    opener.join();
     n.post([l]() { l->add(2); });
-    g->release();
     this_thread::sleep_for(milliseconds(100));
     RTF_ASSERT_EQUAL(l->size(), (size_t)0);
+}
+
+void test_r_plugin_notifier::test_stopping_accepting_waits_for_the_running_call()
+{
+    auto g = make_shared<gate>();
+    auto done = make_shared<atomic<bool>>(false);
+    r_plugin_notifier n;
+    n.accept(true);
+    n.post([g, done]() { g->wait(); this_thread::sleep_for(milliseconds(50)); *done = true; });
+    RTF_ASSERT(eventually([&]() { return g->entered.load(); }));
+    thread opener([g]() { this_thread::sleep_for(milliseconds(50)); g->release(); });
+    n.accept(false);
+    RTF_ASSERT(done->load());   // it had finished when accept(false) returned
+    opener.join();
+}
+
+void test_r_plugin_notifier::test_stopping_accepting_from_inside_a_call_does_not_wait_for_itself()
+{
+    auto l = make_shared<log_of>();
+    r_plugin_notifier n;
+    n.accept(true);
+    n.post([&n, l]() { n.accept(false); l->add(1); });
+    RTF_ASSERT(eventually([&]() { return l->size() == 1; }));
 }
 
 void test_r_plugin_notifier::test_destructor_waits_only_for_the_running_call()

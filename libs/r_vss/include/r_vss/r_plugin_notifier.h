@@ -28,6 +28,8 @@ public:
     // Drops what is still queued and waits for the call that is running, if any.
     R_API ~r_plugin_notifier();
 
+    // accept(false) also waits for the call that is running, if any, so that when it returns nothing is inside the
+    // plugin on this notifier's account.
     R_API void accept(bool on);
     R_API void post(std::function<void()> call);
 
@@ -38,11 +40,13 @@ private:
 
     mutable std::mutex _m;
     std::condition_variable _cv;
+    std::condition_variable _idle;
     std::deque<std::function<void()>> _q;
     size_t _max_pending;
     size_t _dropped {0};
     bool _accepting {false};
     bool _stop {false};
+    bool _running {false};
     std::thread _th;
 };
 

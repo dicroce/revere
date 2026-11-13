@@ -150,3 +150,38 @@ void test_r_system_plugin_motion::test_a_slow_plugin_does_not_hold_up_the_caller
     }
     RTF_ASSERT(steady_clock::now() - start < seconds(1));
 }
+
+void test_r_system_plugin_motion::test_a_plugin_loaded_after_start_gets_each_cameras_latest_state()
+{
+    // The host is running, with no plugin yet; the keeper has told it about two cameras.
+    r_system_plugin_host host(_top);
+    host.start_all();
+    host.notify_camera_state("cam1", false, false);
+    host.notify_camera_state("cam1", true, false);
+    host.notify_camera_state("cam2", false, true);
+
+    string why;
+    RTF_ASSERT(host.load_and_start(TEST_MOTION_PLUGIN, why));
+    RTF_ASSERT_EQUAL(eventually_reads(_top + "/state.txt", "cam1 1 0\ncam2 0 1\n"), string("cam1 1 0\ncam2 0 1\n"));
+
+    // And it takes what comes after.
+    host.notify_motion("cam1", true, 7);
+    RTF_ASSERT_EQUAL(eventually_reads(_top + "/motion.txt", "cam1 1 7\n"), string("cam1 1 7\n"));
+}
+
+void test_r_system_plugin_motion::test_stop_all_waits_for_a_call_in_the_plugin()
+{
+    install(_top, TEST_MOTION_PLUGIN);
+    r_system_plugin_host host(_top);
+    host.start_all();
+
+    // "slow" calls take the plugin half a second, and write their line at the end. One that is running when stop_all
+    // is called is finished by the time it returns; the ones behind it never run.
+    host.notify_motion("slow1", true, 1);
+    host.notify_motion("slow2", true, 2);
+    this_thread::sleep_for(milliseconds(150));
+    host.stop_all();
+    RTF_ASSERT_EQUAL(read_file(_top + "/motion.txt"), string("slow1 1 1\n"));
+    this_thread::sleep_for(milliseconds(700));
+    RTF_ASSERT_EQUAL(read_file(_top + "/motion.txt"), string("slow1 1 1\n"));
+}

@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -230,6 +231,9 @@ private:
     // guards what only they touch.
     std::mutex _ops_lock;
     bool _started {false};
+    // Held shared while a detection is inside a plugin; stop_all() takes it to wait for those, and closes the gate.
+    std::shared_mutex _dispatch_gate;
+    bool _dispatch_open {true};
     // The latest receiving_video and stream_failed of each camera, for a plugin that starts after they were
     // given. _state_lock also keeps a notification and a replay from passing each other.
     std::mutex _state_lock;

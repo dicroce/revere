@@ -660,6 +660,10 @@ void r_system_plugin_host::start_all()
 {
     std::lock_guard<std::mutex> g(_ops_lock);
     _started = true;
+    {
+        std::unique_lock<std::shared_mutex> w(_dispatch_gate);
+        _dispatch_open = true;
+    }
     for(auto p : _snapshot())
     {
         if (p->plugin_handle && p->start_func)
@@ -682,6 +686,11 @@ void r_system_plugin_host::stop_all()
 {
     std::lock_guard<std::mutex> g(_ops_lock);
     _started = false;
+    {
+        // Detections stop here, and the ones inside a plugin finish, before it is told to stop.
+        std::unique_lock<std::shared_mutex> w(_dispatch_gate);
+        _dispatch_open = false;
+    }
     for(auto p : _snapshot())
     {
         // No more notifications for a plugin that is stopping.
@@ -929,6 +938,9 @@ void r_system_plugin_host::notify_cameras_changed()
 
 void r_system_plugin_host::_dispatch_detection(const r_detection& det, int64_t posted_at_ms)
 {
+    std::shared_lock<std::shared_mutex> gate(_dispatch_gate);
+    if (!_dispatch_open)
+        return;
     for (auto p : _snapshot())
     {
         try

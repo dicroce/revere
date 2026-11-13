@@ -24,10 +24,15 @@ r_plugin_notifier::~r_plugin_notifier()
 
 void r_plugin_notifier::accept(bool on)
 {
-    lock_guard<mutex> g(_m);
+    unique_lock<mutex> g(_m);
     _accepting = on;
-    if(!on)
-        _q.clear();
+    if(on)
+        return;
+    _q.clear();
+    // The call that is running is let finish, so none is still inside the plugin when this returns. (Not when this is
+    // that call itself, which would wait for itself.)
+    if(this_thread::get_id() != _th.get_id())
+        _idle.wait(g, [this]() { return !_running; });
 }
 
 void r_plugin_notifier::post(function<void()> call)
@@ -64,6 +69,7 @@ void r_plugin_notifier::_run()
                 return;
             call = std::move(_q.front());
             _q.pop_front();
+            _running = true;
         }
         try
         {
@@ -77,5 +83,10 @@ void r_plugin_notifier::_run()
         {
             R_LOG_ERROR("A system plugin's notification failed.");
         }
+        {
+            lock_guard<mutex> g(_m);
+            _running = false;
+        }
+        _idle.notify_all();
     }
 }

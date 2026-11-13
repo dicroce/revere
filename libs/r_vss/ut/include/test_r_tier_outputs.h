@@ -9,6 +9,7 @@ public:
       TEST(test_r_tier_outputs::test_camera_report_has_no_box);
       TEST(test_r_tier_outputs::test_analytics_json_leaves_out_a_reports_box);
       TEST(test_r_tier_outputs::test_plugins_get_a_report_with_no_box);
+      TEST(test_r_tier_outputs::test_leaving_tier_1_closes_an_open_mog2_window);
     RTF_FIXTURE_END();
 
     virtual ~test_r_tier_outputs() throw() {}
@@ -20,4 +21,5 @@ public:
     void test_camera_report_has_no_box();
     void test_analytics_json_leaves_out_a_reports_box();
     void test_plugins_get_a_report_with_no_box();
+    void test_leaving_tier_1_closes_an_open_mog2_window();
 };

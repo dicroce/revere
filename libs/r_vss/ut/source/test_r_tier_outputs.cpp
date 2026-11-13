@@ -4,6 +4,9 @@
 #include "r_vss/r_system_plugin_host.h"
 #include "r_utils/3rdparty/json/json.h"
 #include <string>
+#include <map>
+#include <tuple>
+#include <vector>
 
 using namespace r_vss;
 using namespace std;
@@ -91,4 +94,21 @@ void test_r_tier_outputs::test_plugins_get_a_report_with_no_box()
     RTF_ASSERT(got.n == 1);
     RTF_ASSERT_EQUAL(got.class_name, string("vehicle"));
     RTF_ASSERT(got.confidence == 0.0f && got.x1 == 0.0f && got.y1 == 0.0f && got.x2 == 0.0f && got.y2 == 0.0f);
+}
+
+// A camera that leaves tier 1 mid MOG2 window never gets MOG2's end event: the plugin is told the window closed.
+void test_r_tier_outputs::test_leaving_tier_1_closes_an_open_mog2_window()
+{
+    std::map<string, int64_t> starts {{"cam-1", T0}, {"cam-2", T0}};
+    vector<tuple<string, bool, int64_t>> told;
+    auto notify = [&](const string& id, bool started, int64_t ts) { told.push_back({id, started, ts}); };
+
+    RTF_ASSERT(close_open_mog2_window(starts, "cam-1", T0 + 500, notify));
+    RTF_ASSERT_EQUAL(told.size(), (size_t)1);
+    RTF_ASSERT(told[0] == make_tuple(string("cam-1"), false, T0 + 500));
+    RTF_ASSERT_EQUAL(starts.size(), (size_t)1);   // cam-2's is left alone
+
+    // No window open: nothing to say.
+    RTF_ASSERT(!close_open_mog2_window(starts, "cam-1", T0 + 900, notify));
+    RTF_ASSERT_EQUAL(told.size(), (size_t)1);
 }

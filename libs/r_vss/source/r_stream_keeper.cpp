@@ -747,7 +747,16 @@ void r_stream_keeper::_tier_tick()
         R_LOG_INFO("motion tier [%s]: tier %d: %s", _camera_name(c.first).c_str(), c.second.tier, c.second.reason.c_str());
         // Off tier 1: MOG2 stops getting this camera's frames; free its decoder.
         if(c.second.tier != motion_tier_1)
+        {
             _motionEngine.remove_work_context(c.first);
+
+            // MOG2's state went with it, and its end event will never come: close the window the plugin was
+            // told had opened. (Tiers 2 and 3 tell the plugin from the camera's own transitions.)
+            std::lock_guard<std::mutex> g(_tier_lock);
+            close_open_mog2_window(_mog2_starts, c.first, now, [this](const string& id, bool started, int64_t ts) {
+                _system_plugin_host.notify_motion(id, started, ts);
+            });
+        }
     }
 }
 
