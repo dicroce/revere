@@ -40,6 +40,16 @@ public:
 // add_substream_mount does. Returns the path.
 R_API std::string add_substream_mount_to(_GstRTSPMountPoints* mounts, const r_disco::r_camera& camera, const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, r_utils::r_nullable<r_pipeline::r_encoding> video_encoding, r_substream_recorder* recorder);
 
+// Where a camera is mounted by its id: "/camera/<id>", with "/opus" and "/sub" under it as the friendly-named mount
+// has them. The id is the one thing about a camera that never changes (a rename moves the friendly-named mount, not
+// this one), so a LAN client can save the address. The "camera/" prefix keeps it clear of friendly names.
+R_API std::string restream_id_mount_path(const std::string& camera_id);
+R_API std::string substream_id_mount_path(const std::string& camera_id);
+
+// Serves `factory` at both `path` and `id_path`: the same stream, the same credential check (it is the factory's).
+// Takes the caller's reference to the factory. Each path is removed on its own (remove_restream_mount).
+R_API void add_factory_at_both(_GstRTSPMountPoints* mounts, _GstRTSPMediaFactory* factory, const std::string& path, const std::string& id_path);
+
 }
 
 #endif

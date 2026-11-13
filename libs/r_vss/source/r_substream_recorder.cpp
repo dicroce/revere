@@ -294,7 +294,10 @@ r_substream_recorder::~r_substream_recorder() noexcept
         {
             auto path = mount_path();
             if(!path.empty())
+            {
                 _sk->remove_restream_mount(path);
+                _sk->remove_restream_mount(substream_id_mount_path(_camera.id));
+            }
         }
     }
     catch(...)
@@ -422,6 +425,24 @@ string r_vss::add_substream_mount_to(_GstRTSPMountPoints* mounts, const r_camera
     g_signal_connect(factory, "media-configure", (GCallback)_substream_media_configure, recorder);
 
     auto mount_path = substream_mount_path(camera);
-    gst_rtsp_mount_points_add_factory((GstRTSPMountPoints*)mounts, mount_path.c_str(), factory);
+    add_factory_at_both(mounts, (GstRTSPMediaFactory*)factory, mount_path, substream_id_mount_path(camera.id));
     return mount_path;
+}
+
+string r_vss::restream_id_mount_path(const string& camera_id)
+{
+    return "/camera/" + camera_id;
+}
+
+string r_vss::substream_id_mount_path(const string& camera_id)
+{
+    return restream_id_mount_path(camera_id) + "/sub";
+}
+
+void r_vss::add_factory_at_both(_GstRTSPMountPoints* mounts, _GstRTSPMediaFactory* factory, const string& path, const string& id_path)
+{
+    // Each add takes a reference.
+    g_object_ref(factory);
+    gst_rtsp_mount_points_add_factory((GstRTSPMountPoints*)mounts, path.c_str(), (GstRTSPMediaFactory*)factory);
+    gst_rtsp_mount_points_add_factory((GstRTSPMountPoints*)mounts, id_path.c_str(), (GstRTSPMediaFactory*)factory);
 }

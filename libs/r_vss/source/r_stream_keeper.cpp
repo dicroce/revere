@@ -871,7 +871,9 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
 
     mount_path = r_string_utils::format("/%s", mount_path.c_str());
 
-    gst_rtsp_mount_points_add_factory(_mounts, mount_path.c_str(), factory);
+    // Also at /camera/<id> (restream_id_mount_path), which a rename leaves where it is.
+    const auto id_path = restream_id_mount_path(camera.id);
+    add_factory_at_both(_mounts, factory, mount_path, id_path);
 
     // The same with its audio as Opus, at <mount>/opus, when the audio can be.
     auto opus_str = create_restream_opus_launch_string(video_encoding.value(), sdp_video.formats.front(), audio_encoding);
@@ -884,7 +886,7 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
             gst_rtsp_media_factory_set_shared(opus_factory, FALSE);
             r_rtsp_auth::allow_viewer(opus_factory);
             g_signal_connect(opus_factory, "media-configure", (GCallback)_live_restream_media_configure, rc);
-            gst_rtsp_mount_points_add_factory(_mounts, (mount_path + "/opus").c_str(), opus_factory);
+            add_factory_at_both(_mounts, opus_factory, mount_path + "/opus", id_path + "/opus");
         }
     }
 
@@ -1917,10 +1919,14 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.bytes_per_second = c.second->bytes_per_second();
             s.receiving_video = c.second->receiving_video();
             s.mount = c.second->restream_mount_path();
+            if(!s.mount.empty())
+                s.id_mount = restream_id_mount_path(c.first);
             auto sub = _substreams.find(c.first);
             s.sub_fresh = sub != _substreams.end() && sub->second->fresh();
             if(sub != _substreams.end())
                 s.sub_mount = sub->second->mount_path();
+            if(!s.sub_mount.empty())
+                s.sub_id_mount = substream_id_mount_path(c.first);
             s.storage_write_lag_ms = c.second->storage_write_lag_ms();
             s.storage_timeline_lag_ms = c.second->storage_timeline_lag_ms();
             s.has_camera_events = c.second->has_camera_events();

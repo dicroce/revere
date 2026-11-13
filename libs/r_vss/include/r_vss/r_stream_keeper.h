@@ -131,6 +131,9 @@ struct r_stream_status
     // its recorder is up). A request for the substream's path when it isn't mounted can reach main's.
     std::string mount;
     std::string sub_mount;
+    // The same two by camera id (restream_id_mount_path), empty with them.
+    std::string id_mount;
+    std::string sub_id_mount;
     // Its substream recorder wrote a frame within SUBSTREAM_FRESH_MS (r_substream_recorder::fresh).
     bool sub_fresh {false};
     int64_t storage_write_lag_ms {0}; // how far storage persistence trails reception
