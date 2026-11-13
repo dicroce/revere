@@ -10,6 +10,9 @@ public:
       TEST(test_r_plugin_loader::test_required_skips_unsigned_plugins);
       TEST(test_r_plugin_loader::test_load_and_start);
       TEST(test_r_plugin_loader::test_load_and_start_checks);
+      TEST(test_r_plugin_loader::test_uninstall);
+      TEST(test_r_plugin_loader::test_uninstall_skipped);
+      TEST(test_r_plugin_loader::test_uninstall_when_delete_fails);
     RTF_FIXTURE_END();
 
     virtual ~test_r_plugin_loader() throw() {}
@@ -23,6 +26,9 @@ public:
     void test_required_skips_unsigned_plugins();
     void test_load_and_start();
     void test_load_and_start_checks();
+    void test_uninstall();
+    void test_uninstall_skipped();
+    void test_uninstall_when_delete_fails();
 
 private:
     std::string _top;

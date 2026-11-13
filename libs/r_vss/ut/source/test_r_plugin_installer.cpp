@@ -220,10 +220,13 @@ void test_r_plugin_installer::test_install_replaces_an_old_copy()
     _write(s_dir / (FILE_NAME + ".json.sig"), "old sig");
     _write(s_dir / (FILE_NAME + ".tmp-ABCDEFGH"), "left over");
     _write(s_dir / "other_plugin.dll", "not ours");
+    // Uninstalled, but not yet restarted: installing again keeps it.
+    _write(s_dir / (FILE_NAME + ".uninstall"), "uninstall\n");
 
     fake_server server;
     auto r = _install(server);
     RTF_ASSERT(r.ok());
+    RTF_ASSERT(!fs::exists(s_dir / (FILE_NAME + ".uninstall")));
     RTF_ASSERT(_read(s_dir / FILE_NAME) == PLUGIN_BYTES);
     RTF_ASSERT(_read(s_dir / (FILE_NAME + ".json")) == MANIFEST);
     RTF_ASSERT(!fs::exists(s_dir / (FILE_NAME + ".tmp-ABCDEFGH")));

@@ -147,6 +147,11 @@ string r_vss::plugin_signature_path(const string& plugin_path)
     return plugin_path + ".json.sig";
 }
 
+string r_vss::plugin_uninstall_marker_path(const string& plugin_path)
+{
+    return plugin_path + ".uninstall";
+}
+
 string r_vss::plugin_platform()
 {
 #if defined(IS_WINDOWS)

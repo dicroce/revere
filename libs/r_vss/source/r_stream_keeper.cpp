@@ -1132,6 +1132,16 @@ bool r_stream_keeper::run_system_plugin_action(const std::string& plugin_name, c
     return _system_plugin_host.run_plugin_action(plugin_name, action);
 }
 
+bool r_stream_keeper::can_uninstall_system_plugin(const std::string& plugin_name) const
+{
+    return _system_plugin_host.can_uninstall(plugin_name);
+}
+
+bool r_stream_keeper::mark_system_plugin_for_uninstall(const std::string& plugin_name, std::string& why)
+{
+    return _system_plugin_host.mark_for_uninstall(plugin_name, why);
+}
+
 std::string r_stream_keeper::get_system_plugin_version(const std::string& plugin_name) const
 {
     return _system_plugin_host.get_plugin_version(plugin_name);

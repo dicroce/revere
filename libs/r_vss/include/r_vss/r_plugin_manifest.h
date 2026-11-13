@@ -62,6 +62,9 @@ R_API const char* plugin_check_name(r_plugin_check status);
 // Where a plugin's manifest and signature sit: <plugin_path>.json and <plugin_path>.json.sig.
 R_API std::string plugin_manifest_path(const std::string& plugin_path);
 R_API std::string plugin_signature_path(const std::string& plugin_path);
+// <plugin_path>.uninstall: the user chose to uninstall the plugin, so at the next start
+// revere deletes it (and its manifest and signature) instead of loading it.
+R_API std::string plugin_uninstall_marker_path(const std::string& plugin_path);
 
 // This build's platform and architecture, as a manifest names them.
 R_API std::string plugin_platform();

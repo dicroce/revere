@@ -103,6 +103,8 @@ public:
       TEST(test_r_utils::test_instance_lock_stale_file);
       TEST(test_r_utils::test_instance_lock_notify);
       TEST(test_r_utils::test_nullable_bool_is_explicit);
+      TEST(test_r_utils::test_restart_windows_command_line);
+      TEST(test_r_utils::test_restart_not_restarted);
     RTF_FIXTURE_END();
 
     virtual ~test_r_utils() throw() {}
@@ -208,4 +210,6 @@ public:
     void test_instance_lock_stale_file();
     void test_instance_lock_notify();
     void test_nullable_bool_is_explicit();
+    void test_restart_windows_command_line();
+    void test_restart_not_restarted();
 };
