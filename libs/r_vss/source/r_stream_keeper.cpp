@@ -674,6 +674,18 @@ void r_stream_keeper::_on_detection_bus(void* userdata, const r_detection& det, 
     sk->_tiers.yolo_detection(det.camera_id, det.class_name, det.ts, det.source);
 }
 
+// The motion engine forgets a camera: MOG2's state goes, and its end event never comes, so close the window the
+// plugins were told had opened. (Tiers 2 and 3 tell the plugins from the camera's own transitions.) Not called with
+// _tier_lock held.
+void r_stream_keeper::_remove_motion_work_context(const string& camera_id)
+{
+    _motionEngine.remove_work_context(camera_id);
+    std::lock_guard<std::mutex> g(_tier_lock);
+    close_open_mog2_window(_mog2_starts, camera_id, _epoch_ms(), [this](const string& id, bool started, int64_t ts) {
+        _system_plugin_host.notify_motion(id, started, ts);
+    });
+}
+
 void r_stream_keeper::_tier_tick()
 {
     auto now = _epoch_ms();
@@ -748,14 +760,7 @@ void r_stream_keeper::_tier_tick()
         // Off tier 1: MOG2 stops getting this camera's frames; free its decoder.
         if(c.second.tier != motion_tier_1)
         {
-            _motionEngine.remove_work_context(c.first);
-
-            // MOG2's state went with it, and its end event will never come: close the window the plugin was
-            // told had opened. (Tiers 2 and 3 tell the plugin from the camera's own transitions.)
-            std::lock_guard<std::mutex> g(_tier_lock);
-            close_open_mog2_window(_mog2_starts, c.first, now, [this](const string& id, bool started, int64_t ts) {
-                _system_plugin_host.notify_motion(id, started, ts);
-            });
+            _remove_motion_work_context(c.first);
         }
     }
 }
@@ -1510,7 +1515,7 @@ void r_stream_keeper::_entry_point()
                     {
                         rc->stop();
                         // Clean up motion engine work context for this camera
-                        _motionEngine.remove_work_context(cmd.first.id);
+                        _remove_motion_work_context(cmd.first.id);
                     }
                     else
                     {
@@ -1549,7 +1554,7 @@ void r_stream_keeper::_entry_point()
                     if(rc)
                     {
                         rc->stop();
-                        _motionEngine.remove_work_context(cmd.first.id);
+                        _remove_motion_work_context(cmd.first.id);
                         // Fully destroy the recording context here — before we ack the
                         // suspend — so its nanots write context flushes and finalizes
                         // the current segment against the SQLite DB while that DB still
@@ -1865,7 +1870,7 @@ void r_stream_keeper::_tend_substreams()
                 c.context->set_motion_from_sub(true);          // main stops posting first
                 if(was != want)
                 {
-                    _motionEngine.remove_work_context(id);
+                    _remove_motion_work_context(id);
                     R_LOG_INFO("motion of %s: now found in its smaller stream", id.c_str());
                 }
                 sub_rec->second->set_feeds_motion(true);
@@ -1876,7 +1881,7 @@ void r_stream_keeper::_tend_substreams()
                     sub_rec->second->set_feeds_motion(false);   // the smaller stream stops posting first
                 if(was != motion_source::main)
                 {
-                    _motionEngine.remove_work_context(id);
+                    _remove_motion_work_context(id);
                     R_LOG_INFO("motion of %s: back in its main stream", id.c_str());
                 }
                 c.context->set_motion_from_sub(false);
@@ -2040,7 +2045,7 @@ void r_stream_keeper::_stop(const string& camera_id)
     _streams[camera_id]->stop();
 
     // Clean up motion engine work context for this camera
-    _motionEngine.remove_work_context(camera_id);
+    _remove_motion_work_context(camera_id);
 }
 
 void r_stream_keeper::_client_connected_cbs(GstRTSPServer*, GstRTSPClient* client, r_stream_keeper* sk)
