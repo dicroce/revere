@@ -3,6 +3,7 @@
 
 using namespace r_vss;
 using namespace std;
+using namespace std::chrono;
 
 r_plugin_notifier::r_plugin_notifier(size_t max_pending) :
     _max_pending(max_pending > 0 ? max_pending : 1)
@@ -22,17 +23,18 @@ r_plugin_notifier::~r_plugin_notifier()
         _th.join();
 }
 
-void r_plugin_notifier::accept(bool on)
+bool r_plugin_notifier::accept(bool on, milliseconds limit)
 {
     unique_lock<mutex> g(_m);
     _accepting = on;
     if(on)
-        return;
+        return true;
     _q.clear();
     // The call that is running is let finish, so none is still inside the plugin when this returns. (Not when this is
     // that call itself, which would wait for itself.)
-    if(this_thread::get_id() != _th.get_id())
-        _idle.wait(g, [this]() { return !_running; });
+    if(this_thread::get_id() == _th.get_id())
+        return true;
+    return _idle.wait_for(g, limit, [this]() { return !_running; });
 }
 
 void r_plugin_notifier::post(function<void()> call)

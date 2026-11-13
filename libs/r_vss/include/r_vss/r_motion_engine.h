@@ -203,6 +203,11 @@ public:
     // Set before start().
     enum { PROBE_INTERVAL_MS = 2000 };
     void set_probe(r_motion_probe_fn probe) { _probe = std::move(probe); }
+    // Told, on the engine's thread, whenever a camera's work context is thrown away (a removal request reaches it, a
+    // frame of another stream rebuilds it, a decode error): its state, MOG2's and any event it had open, is gone with
+    // it and the event's end will never be posted. Because it is called on the thread that posts the events, it is
+    // ordered with them: every start posted before it has been seen. Set before start().
+    void set_context_removed(std::function<void(const std::string& camera_id)> fn) { _context_removed = std::move(fn); }
     // Whether a key frame gets a probe: significant, its camera not already
     // confirmed by MOG2, and PROBE_INTERVAL_MS since the last (-1: none).
     static bool probe_due(bool confirmed, bool significant, int64_t last_probe_ts, int64_t ts)
@@ -225,6 +230,8 @@ private:
     std::thread _thread;
     r_motion_event_sink& _meph;
     r_motion_probe_fn _probe;
+    std::function<void(const std::string&)> _context_removed;
+    void _removed(const std::string& camera_id);
     std::atomic<size_t> _processed {0};
     r_newest_frame_gate _newest;
     std::atomic<size_t> _skipped {0};

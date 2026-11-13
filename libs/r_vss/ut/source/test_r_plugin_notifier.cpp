@@ -200,3 +200,20 @@ void test_r_plugin_notifier::test_destructor_waits_only_for_the_running_call()
     RTF_ASSERT(destroyed);
     RTF_ASSERT_EQUAL(l->size(), (size_t)0);   // and the queued ones are not run
 }
+
+void test_r_plugin_notifier::test_stopping_accepting_gives_up_on_a_call_that_does_not_return()
+{
+    auto g = make_shared<gate>();
+    r_plugin_notifier n;
+    RTF_ASSERT(n.accept(false, milliseconds(50)));   // idle: nothing to wait for
+    n.accept(true);
+    n.post([g]() { g->wait(); });
+    RTF_ASSERT(eventually([&]() { return g->entered.load(); }));
+
+    auto start = steady_clock::now();
+    RTF_ASSERT(!n.accept(false, milliseconds(100)));   // still running: says so
+    auto took = steady_clock::now() - start;
+    RTF_ASSERT(took >= milliseconds(90));
+    RTF_ASSERT(took < seconds(2));
+    g->release();
+}

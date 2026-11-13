@@ -125,6 +125,8 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
     gst_rtsp_server_set_auth(_server, _rtsp_auth);
     _rtsp_logins = std::make_unique<r_rtsp_logins>(_server, _rtsp_auth);
 
+    _motionEngine.set_context_removed([this](const string& camera_id) { _on_motion_context_removed(camera_id); });
+
     // A person on a camera's first significant key frame starts its event at
     // once, rather than after MOG2's confirmation (see r_motion_engine).
     _motionEngine.set_probe([this](const string& camera_id, int64_t ts, const vector<uint8_t>& frame, uint16_t w, uint16_t h,
@@ -659,10 +661,11 @@ void r_stream_keeper::_on_mog2_event(r_motion_event evt, const string& camera_id
     }
     else if(evt == motion_event_end)
     {
-        _system_plugin_host.notify_motion(camera_id, false, ts);
         auto it = _mog2_starts.find(camera_id);
         if(it != _mog2_starts.end())
         {
+            // Only an end that closes an open window: every end the plugins hear pairs with a start.
+            _system_plugin_host.notify_motion(camera_id, false, ts);
             _tiers.mog2_event(camera_id, it->second, ts);
             _mog2_starts.erase(it);
         }
@@ -676,16 +679,23 @@ void r_stream_keeper::_on_detection_bus(void* userdata, const r_detection& det, 
     sk->_tiers.yolo_detection(det.camera_id, det.class_name, det.ts, det.source);
 }
 
-// The motion engine forgets a camera: MOG2's state goes, and its end event never comes, so close the window the
-// plugins were told had opened. (Tiers 2 and 3 tell the plugins from the camera's own transitions.) Not called with
-// _tier_lock held.
-void r_stream_keeper::_remove_motion_work_context(const string& camera_id)
+// On the motion engine's thread, when it throws away a camera's work context: MOG2's state went with it, and with it the
+// end of an event it had open. Close the window the plugins were told had opened. Ordered with that camera's MOG2 events,
+// which this same thread posts.
+void r_stream_keeper::_on_motion_context_removed(const string& camera_id)
 {
-    _motionEngine.remove_work_context(camera_id);
     std::lock_guard<std::mutex> g(_tier_lock);
     close_open_mog2_window(_mog2_starts, camera_id, _epoch_ms(), [this](const string& id, bool started, int64_t ts) {
         _system_plugin_host.notify_motion(id, started, ts);
     });
+}
+
+// The motion engine forgets a camera. Its queue is one ordered stream: MOG2 events posted before this request are
+// seen first, and the engine then calls the context-removed hook (see the constructor) on its own thread, which closes
+// the window the plugins were told had opened; closing it here instead could be overtaken by a start still queued.
+void r_stream_keeper::_remove_motion_work_context(const string& camera_id)
+{
+    _motionEngine.remove_work_context(camera_id);
 }
 
 void r_stream_keeper::_tier_tick()

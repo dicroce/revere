@@ -14,6 +14,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace r_vss;
@@ -367,6 +368,35 @@ void test_r_motion_engine::test_other_stream_frame_rebuilds_context()
 void test_r_motion_engine::test_same_stream_keeps_context()
 {
     RTF_ASSERT_EQUAL(_factory_calls_for(4, 4, "main-params", "main-params"), 1);
+}
+
+// The engine tells that a camera's context was removed from the thread that posts its events, so the news is ordered
+// with them (the keeper closes an open motion window on it).
+void test_r_motion_engine::test_a_removal_is_told_on_the_engines_thread()
+{
+    capturing_event_sink sink;
+    r_motion_engine engine([](const r_motion_work_item& item) -> std::shared_ptr<r_motion_work_context> {
+        return make_shared<r_motion_work_context>(AV_CODEC_ID_H264, item.id, std::vector<uint8_t>{}, make_unique<null_storage_sink>());
+    }, sink);
+
+    std::mutex m;
+    std::vector<std::string> told;
+    std::thread::id told_on;
+    engine.set_context_removed([&](const std::string& id) {
+        std::lock_guard<std::mutex> g(m);
+        told.push_back(id);
+        told_on = std::this_thread::get_id();
+    });
+    engine.start();
+    engine.remove_work_context("cam-1");
+    for(int i = 0; i < 500 && engine.processed_count() < 1; ++i)
+        rtf_usleep(10000);
+    engine.stop();
+
+    std::lock_guard<std::mutex> g(m);
+    RTF_ASSERT_EQUAL(told.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(told[0], std::string("cam-1"));
+    RTF_ASSERT(told_on != std::this_thread::get_id());
 }
 
 namespace

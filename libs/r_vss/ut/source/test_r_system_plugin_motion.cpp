@@ -185,3 +185,21 @@ void test_r_system_plugin_motion::test_stop_all_waits_for_a_call_in_the_plugin()
     this_thread::sleep_for(milliseconds(700));
     RTF_ASSERT_EQUAL(read_file(_top + "/motion.txt"), string("slow1 1 1\n"));
 }
+
+void test_r_system_plugin_motion::test_stop_all_gives_up_on_a_call_that_does_not_return()
+{
+    install(_top, TEST_MOTION_PLUGIN);
+    r_system_plugin_host host(_top);
+    host.set_stop_wait(milliseconds(100));
+    host.start_all();
+
+    // A "slow" call takes the plugin half a second: longer than stop_all is willing to wait, so it goes on without it.
+    host.notify_motion("slow1", true, 1);
+    this_thread::sleep_for(milliseconds(150));
+    auto start = steady_clock::now();
+    host.stop_all();
+    auto took = steady_clock::now() - start;
+    RTF_ASSERT(took >= milliseconds(90));
+    RTF_ASSERT(took < milliseconds(400));
+    RTF_ASSERT(read_file(_top + "/motion.txt").empty());   // the call was still running
+}

@@ -14,6 +14,7 @@ public:
       TEST(test_r_motion_engine::test_skips_to_newest_key_frame);
       TEST(test_r_motion_engine::test_other_stream_frame_rebuilds_context);
       TEST(test_r_motion_engine::test_same_stream_keeps_context);
+      TEST(test_r_motion_engine::test_a_removal_is_told_on_the_engines_thread);
     RTF_FIXTURE_END();
 
     virtual ~test_r_motion_engine() throw() {}
@@ -31,4 +32,5 @@ public:
     void test_skips_to_newest_key_frame();
     void test_other_stream_frame_rebuilds_context();
     void test_same_stream_keeps_context();
+    void test_a_removal_is_told_on_the_engines_thread();
 };

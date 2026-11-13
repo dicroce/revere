@@ -154,6 +154,7 @@ void r_motion_engine::_entry_point()
                 {
                     _work_contexts.erase(found_wc);
                 }
+                _removed(work.id);
                 ++_processed;
                 _newest.forget(work.id);
                 _skip_log.erase(work.id);
@@ -188,6 +189,7 @@ void r_motion_engine::_entry_point()
                 {
                     _work_contexts.erase(found_wc);
                     found_wc = _work_contexts.end();
+                    _removed(work.id);
                 }
                 if(found_wc == _work_contexts.end())
                     found_wc = _create_work_context(work);
@@ -397,9 +399,24 @@ void r_motion_engine::_entry_point()
                 printf("MOTION DECODE ERROR: %s\n", e.what());
                 fflush(stdout);
                 _work_contexts.erase(work.id);
+                _removed(work.id);
             }
             ++_processed;
         }
+    }
+}
+
+void r_motion_engine::_removed(const string& camera_id)
+{
+    if(!_context_removed)
+        return;
+    try
+    {
+        _context_removed(camera_id);
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("motion[%s]: telling that its work context was removed failed: %s", camera_id.c_str(), e.what());
     }
 }
 
