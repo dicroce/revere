@@ -344,6 +344,10 @@ public:
     R_API void set_system_plugin_enabled(const std::string& plugin_name, bool enabled);
     // Runs an action from a plugin's status message; false if it has none.
     R_API bool run_system_plugin_action(const std::string& plugin_name, const std::string& action);
+    // Uninstalling a plugin the user installed in revere (r_system_plugin_host::can_uninstall):
+    // marked now, deleted at the next start, so the caller restarts revere.
+    R_API bool can_uninstall_system_plugin(const std::string& plugin_name) const;
+    R_API bool mark_system_plugin_for_uninstall(const std::string& plugin_name, std::string& why);
     R_API std::string get_system_plugin_status(const std::string& plugin_name) const;
     R_API std::string get_system_plugin_status_message(const std::string& plugin_name) const;
     R_API std::string get_system_plugin_version(const std::string& plugin_name) const;

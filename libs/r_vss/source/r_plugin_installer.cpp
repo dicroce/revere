@@ -9,6 +9,7 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_string_utils.h"
+#include <stdexcept>
 #include <mbedtls/ssl.h>
 #include <cctype>
 #include <chrono>
@@ -352,6 +353,11 @@ r_plugin_install_result r_vss::install_system_plugin(const r_plugin_release_asse
                 fs::remove(it->path(), rec);
             }
         }
+        // Installing again after choosing to uninstall: keep it.
+        error_code mec;
+        fs::remove(fs::u8path(plugin_uninstall_marker_path(plugin_path)), mec);
+        if(mec)
+            throw runtime_error("couldn't keep it from being uninstalled at the next start: " + mec.message());
         r_fs::atomic_write_file(signature_bytes.data(), signature_bytes.size(), plugin_signature_path(plugin_path));
         r_fs::atomic_write_file(manifest_bytes.data(), manifest_bytes.size(), plugin_manifest_path(plugin_path));
         r_fs::atomic_write_file(plugin.data(), plugin.size(), plugin_path);

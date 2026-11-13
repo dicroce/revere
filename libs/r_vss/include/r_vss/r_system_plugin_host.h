@@ -78,6 +78,11 @@ struct r_skipped_system_plugin
     }
 };
 
+// Deletes a plugin the user uninstalled (marked by mark_for_uninstall()): its manifest,
+// signature and file, then the mark. False, with why, if the plugin file is still there,
+// in which case the mark stays, the plugin isn't loaded, and the next start tries again.
+R_API bool remove_uninstalled_system_plugin(const std::string& plugin_path, std::string& why);
+
 class r_system_plugin_host
 {
 public:
@@ -102,6 +107,16 @@ public:
     // (the data folder, or $SNAP_USER_COMMON under the Snap). A verified copy
     // there wins over one next to the exe.
     R_API std::string user_plugin_dir() const { return _user_dir; }
+
+    // Whether the user can uninstall plugin_name from revere: its copy in the user's
+    // plugin folder (where in-app installs go) is the one loaded, or the one skipped.
+    // A copy anywhere else came from an installer, and is removed the same way.
+    R_API bool can_uninstall(const std::string& plugin_name) const;
+
+    // Marks that copy to be deleted, with its manifest and signature, at the next start
+    // (plugin_uninstall_marker_path()); it isn't loaded then. Nothing is unloaded now: the
+    // caller restarts revere. False, with why, if it can't be marked.
+    R_API bool mark_for_uninstall(const std::string& plugin_name, std::string& why);
 
     // Start all loaded plugins
     R_API void start_all();
@@ -152,6 +167,7 @@ public:
 
 private:
     struct plugin_info;
+    std::string _uninstallable_path(const std::string& plugin_name) const;
     bool _load(const std::string& path, std::string& why);
     void _give_frames(plugin_info& p);
     void _skip(const r_skipped_system_plugin& skipped);
@@ -185,6 +201,7 @@ private:
         std::string version;   // Empty if the plugin doesn't report one
         void (*set_host_api_func)(r_system_plugin_handle, const r_system_plugin_host_api*) = nullptr;   // Optional
         std::shared_ptr<frame_api> frames;   // its live-frame functions, once set_frame_source() gave them
+        std::string path;   // the file it was loaded from
     };
 
     std::string _top_dir;

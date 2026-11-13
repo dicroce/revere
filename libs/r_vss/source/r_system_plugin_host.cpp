@@ -334,6 +334,17 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir, const r_s
                 std::string filename = entry.path().filename().string();
                 if (!_has_plugin_ext(filename))
                     continue;
+                // Uninstalled by the user: deleted, not loaded, even if deleting fails.
+                std::error_code mec;
+                if (fs::exists(fs::path(plugin_uninstall_marker_path(entry.path().string())), mec))
+                {
+                    std::string why;
+                    if (remove_uninstalled_system_plugin(entry.path().string(), why))
+                        R_LOG_INFO("Uninstalled system plugin %s", entry.path().string().c_str());
+                    else R_LOG_ERROR("System plugin %s was uninstalled, so it isn't loaded, but it couldn't be deleted (%s). Revere tries again at its next start.",
+                                     entry.path().string().c_str(), why.c_str());
+                    continue;
+                }
                 auto& paths = copies[filename];
                 if (paths.empty())
                     filenames.push_back(filename);
@@ -487,6 +498,7 @@ bool r_system_plugin_host::_load(const std::string& path, std::string& why)
             plugin_version
         };
         p.set_host_api_func = set_host_api_func;
+        p.path = path;
 
         // Wired up before anything else can see it.
         if (set_api_result_cb_func && _api_result_fn)
@@ -699,6 +711,76 @@ std::vector<std::string> r_system_plugin_host::get_loaded_plugins() const
     for(auto p : _snapshot())
         plugin_names.push_back(p->name);
     return plugin_names;
+}
+
+bool r_vss::remove_uninstalled_system_plugin(const std::string& plugin_path, std::string& why)
+{
+    // The manifest first: without it a release build won't load what's left.
+    for (const auto& path : {plugin_manifest_path(plugin_path), plugin_signature_path(plugin_path), plugin_path})
+    {
+        std::error_code ec;
+        fs::remove(fs::path(path), ec);
+        if (ec)
+        {
+            why = "couldn't delete " + path + ": " + ec.message();
+            return false;
+        }
+    }
+    std::error_code ec;
+    fs::remove(fs::path(plugin_uninstall_marker_path(plugin_path)), ec);
+    if (ec)
+        R_LOG_WARNING("Uninstalled system plugin %s, but couldn't delete %s: %s", plugin_path.c_str(),
+                      plugin_uninstall_marker_path(plugin_path).c_str(), ec.message().c_str());
+    return true;
+}
+
+std::string r_system_plugin_host::_uninstallable_path(const std::string& plugin_name) const
+{
+    if (_user_dir.empty())
+        return std::string();
+    auto in_user_dir = [&](const std::string& path) {
+        std::error_code ec;
+        return !path.empty() && fs::equivalent(fs::path(path).parent_path(), fs::path(_user_dir), ec) && !ec;
+    };
+    std::lock_guard<std::mutex> g(_list_lock);
+    for (const auto& p : _plugins)
+    {
+        if (p.name == plugin_name)
+            return in_user_dir(p.path) ? p.path : std::string();
+    }
+    for (const auto& s : _skipped)
+    {
+        if (s.name == plugin_name)
+            return in_user_dir(s.path) ? s.path : std::string();
+    }
+    return std::string();
+}
+
+bool r_system_plugin_host::can_uninstall(const std::string& plugin_name) const
+{
+    return !_uninstallable_path(plugin_name).empty();
+}
+
+bool r_system_plugin_host::mark_for_uninstall(const std::string& plugin_name, std::string& why)
+{
+    auto path = _uninstallable_path(plugin_name);
+    if (path.empty())
+    {
+        why = plugin_name + " isn't installed in " + (_user_dir.empty() ? std::string("the user's plugin folder") : _user_dir);
+        return false;
+    }
+    try
+    {
+        const std::string mark = "uninstall\n";
+        r_fs::atomic_write_file((const uint8_t*)mark.data(), mark.size(), plugin_uninstall_marker_path(path));
+    }
+    catch (const std::exception& e)
+    {
+        why = std::string("couldn't mark it: ") + e.what();
+        return false;
+    }
+    R_LOG_INFO("System plugin %s will be uninstalled at the next start (%s)", plugin_name.c_str(), path.c_str());
+    return true;
 }
 
 bool r_system_plugin_host::is_plugin_enabled(const std::string& plugin_name) const

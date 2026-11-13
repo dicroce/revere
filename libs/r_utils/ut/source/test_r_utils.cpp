@@ -11,6 +11,7 @@
 #include "r_utils/r_file.h"
 #include "r_utils/r_file_lock.h"
 #include "r_utils/r_instance_lock.h"
+#include "r_utils/r_restart.h"
 #include "r_utils/r_md5.h"
 #include "r_utils/r_sha1.h"
 #include "r_utils/r_socket.h"
@@ -46,6 +47,7 @@
 #include <algorithm>
 #ifdef IS_WINDOWS
 #include <windows.h>
+#include <shellapi.h>
 #else
 #include <unistd.h>
 #include <sys/stat.h>
@@ -3016,4 +3018,37 @@ void test_r_utils::test_nullable_bool_is_explicit()
     RTF_ASSERT(!n);
     n.set_value("x");
     RTF_ASSERT(n && n.value() == "x");
+}
+
+void test_r_utils::test_restart_windows_command_line()
+{
+    using r_utils::r_restart::windows_command_line;
+    RTF_ASSERT(windows_command_line({R"(C:\Program Files\Revere\revere.exe)", "--start_minimized"}) ==
+               R"("C:\Program Files\Revere\revere.exe" --start_minimized)");
+    // A trailing backslash before the closing quote is doubled.
+    RTF_ASSERT(windows_command_line({"revere.exe", "--data-dir", R"(C:\my data\)"}) ==
+               R"(revere.exe --data-dir "C:\my data\\")");
+    RTF_ASSERT(windows_command_line({"a", "", R"(say "hi")"}) == R"(a "" "say \"hi\"")");
+    RTF_ASSERT(windows_command_line({"a", R"(back\slash)"}) == R"(a back\slash)");
+#ifdef IS_WINDOWS
+    // And Windows reads back what was written.
+    std::vector<std::string> args = {R"(C:\Program Files\Revere\revere.exe)", "--data-dir", R"(C:\my data\)", "",
+                                     R"(q"uo\"te)", "tab\there"};
+    auto w = r_utils::r_string_utils::convert_multi_byte_string_to_wide_string(windows_command_line(args));
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(w.c_str(), &argc);
+    RTF_ASSERT(argv != nullptr);
+    RTF_ASSERT(argc == (int)args.size());
+    for(int i = 0; i < argc; ++i)
+        RTF_ASSERT(r_utils::r_string_utils::convert_wide_string_to_multi_byte_string(argv[i]) == args[i]);
+    LocalFree(argv);
+#endif
+}
+
+void test_r_utils::test_restart_not_restarted()
+{
+    // A process restart() didn't start has nothing to wait for.
+    auto start = std::chrono::steady_clock::now();
+    RTF_ASSERT(!r_utils::r_restart::wait_for_predecessor(std::chrono::seconds(5)));
+    RTF_ASSERT(std::chrono::steady_clock::now() - start < std::chrono::seconds(1));
 }

@@ -49,6 +49,7 @@
 #include "r_utils/r_uuid.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_process.h"
+#include "r_utils/r_restart.h"
 #include "r_utils/r_args.h"
 #include "r_utils/r_startup.h"
 #include "r_utils/r_time_utils.h"
@@ -254,6 +255,13 @@ struct revere_ui_state
     // camera removal dialog
     bool delete_camera_files {false};
     std::string camera_to_remove_name;
+
+    // plugin uninstall dialog: the plugin, and what the dialog calls it. Once it's
+    // marked, restart_requested has the main loop restart revere, which deletes it.
+    std::string plugin_to_uninstall;
+    std::string plugin_to_uninstall_label;
+    bool restart_requested {false};
+    std::string uninstall_error;
 
     bool minimize_requested {false};
 
@@ -1672,6 +1680,30 @@ void configure_camera_setup_wizard(
     );
 
     camera_setup_wizard.add_step(
+        "uninstall_plugin_modal",
+        [&ui_state, &camera_setup_wizard, &stream_keeper](){
+            ImGui::OpenPopup("Uninstall plugin");
+            revere::uninstall_plugin_modal(
+                GImGui,
+                "Uninstall plugin",
+                ui_state.plugin_to_uninstall_label,
+                [&](){
+                    std::string why;
+                    if(stream_keeper.mark_system_plugin_for_uninstall(ui_state.plugin_to_uninstall, why))
+                        ui_state.restart_requested = true;
+                    else
+                    {
+                        R_LOG_ERROR("Couldn't uninstall %s: %s", ui_state.plugin_to_uninstall.c_str(), why.c_str());
+                        ui_state.uninstall_error = "Couldn't uninstall " + ui_state.plugin_to_uninstall_label + ": " + why;
+                    }
+                    camera_setup_wizard.cancel();
+                },
+                [&](){camera_setup_wizard.cancel();}
+            );
+        }
+    );
+
+    camera_setup_wizard.add_step(
         "configure_rtsp_source_camera",
         [&ui_state, &camera_setup_wizard, &rscc, &devices](){
             ImGui::OpenPopup("Add RTSP camera");
@@ -2942,6 +2974,10 @@ int main(int argc, char** argv)
 #endif
     auto args = r_args::parse_arguments(argc, &argv[0]);
 
+    // Started by r_restart::restart() (uninstalling a plugin): the copy that
+    // started this one must be gone first, with its lock, ports and plugins.
+    r_utils::r_restart::wait_for_predecessor();
+
     if(r_args::check_argument(args, "--help") || r_args::check_argument(args, "-h"))
     {
         _emit_console_text(_help_text());
@@ -3862,6 +3898,11 @@ int main(int argc, char** argv)
     main_window_actions.set_plugin_enabled = [&](const std::string& name, bool enabled){
         streamKeeper.set_system_plugin_enabled(name, enabled);
     };
+    main_window_actions.uninstall_plugin = [&](const std::string& name, const std::string& label){
+        ui_state.plugin_to_uninstall = name;
+        ui_state.plugin_to_uninstall_label = label;
+        camera_setup_wizard.next("uninstall_plugin_modal");
+    };
     main_window_actions.run_plugin_action = [&](const std::string& name, const std::string& action){
         // The Revere Cloud row revere adds itself (not the plugin's): update it from About Revere Cloud.
         if(name == r_vss::REVERE_CLOUD_PLUGIN_NAME && action == "revere:install_cloud")
@@ -3996,6 +4037,29 @@ int main(int argc, char** argv)
 
         if(tray)
             tray->pump();
+
+        // A plugin marked for uninstall: restart, and the new copy deletes it. The
+        // window is wanted back, so not --start_minimized even if this one was.
+        if(ui_state.restart_requested)
+        {
+            ui_state.restart_requested = false;
+            std::string why;
+            if(r_utils::r_restart::restart(false, {"--start_minimized"}, why))
+            {
+                R_LOG_INFO("Restarting Revere to uninstall %s", ui_state.plugin_to_uninstall.c_str());
+                close_requested = true;
+            }
+            else
+            {
+                R_LOG_ERROR("Revere couldn't restart itself: %s", why.c_str());
+                main_window_state.show_toast(ui_state.plugin_to_uninstall_label + " will be uninstalled the next time Revere starts. Revere couldn't restart itself: " + why, std::string(), 30.0);
+            }
+        }
+        if(!ui_state.uninstall_error.empty())
+        {
+            main_window_state.show_toast(ui_state.uninstall_error, std::string(), 30.0);
+            ui_state.uninstall_error.clear();
+        }
 
         // Check for external shutdown signals (from --quit / installer)
 #ifdef IS_WINDOWS
@@ -4213,6 +4277,7 @@ int main(int argc, char** argv)
             revere::plugin_view pv;
             pv.name = plugin_name;
             pv.enabled = streamKeeper.is_system_plugin_enabled(plugin_name);
+            pv.can_uninstall = streamKeeper.can_uninstall_system_plugin(plugin_name);
             revere::parse_plugin_status(streamKeeper.get_system_plugin_status(plugin_name), pv);
             pv.status_message = streamKeeper.get_system_plugin_status_message(plugin_name);
             plugin_views.push_back(std::move(pv));
@@ -4237,6 +4302,8 @@ int main(int argc, char** argv)
                 pv.display_name = "Revere Cloud";
                 pv.has_status = true;
                 pv.has_toggle = false;
+                pv.can_uninstall = cloud.state != r_vss::r_cloud_state::installing &&
+                                   streamKeeper.can_uninstall_system_plugin(pv.name);
                 const std::string state = r_vss::cloud_state_name(cloud.state);
                 nlohmann::json line;
                 if(cloud.state == r_vss::r_cloud_state::installing)
