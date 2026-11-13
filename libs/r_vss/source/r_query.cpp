@@ -200,6 +200,10 @@ key_frame _find_key_frame(r_storage_file_reader& sf, int64_t ts_ms)
     uint32_t version = 0;
     auto bt = r_blob_tree::deserialize(&key_bt[0], key_bt.size(), version);
 
+    // None stored at or near ts (an offline camera, or nothing recorded yet): a
+    // 404 for the caller, not a logged error.
+    if(bt["frames"].size() == 0)
+        R_STHROW(r_not_found_exception, ("No key frame stored near that time."));
     if(bt["frames"].size() != 1)
         R_THROW(("Expected exactly one frame in blob tree."));
 
@@ -594,6 +598,10 @@ vector<uint8_t> r_vss::query_get_bgr24_frame(const std::string& top_dir, r_devic
     auto video_codec_name = bt["video_codec_name"].get_string();
     auto video_codec_parameters = bt["video_codec_parameters"].get_string();
 
+    // None stored at or near ts (an offline camera, or nothing recorded yet): a
+    // 404 for the caller, not a logged error.
+    if(bt["frames"].size() == 0)
+        R_STHROW(r_not_found_exception, ("No key frame stored near that time."));
     if(bt["frames"].size() != 1)
         R_THROW(("Expected exactly one frame in blob tree."));
 
@@ -634,6 +642,10 @@ vector<uint8_t> r_vss::query_get_rgb24_frame(const std::string& top_dir, r_devic
     auto video_codec_name = bt["video_codec_name"].get_string();
     auto video_codec_parameters = bt["video_codec_parameters"].get_string();
 
+    // None stored at or near ts (an offline camera, or nothing recorded yet): a
+    // 404 for the caller, not a logged error.
+    if(bt["frames"].size() == 0)
+        R_STHROW(r_not_found_exception, ("No key frame stored near that time."));
     if(bt["frames"].size() != 1)
         R_THROW(("Expected exactly one frame in blob tree."));
 
