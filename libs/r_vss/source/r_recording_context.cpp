@@ -979,16 +979,31 @@ void r_recording_context::_on_camera_transition(const r_cameras::r_camera_transi
     if(t.what != "motion")
         return;
     auto now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    // Tier 1's windows are MOG2's (the stream keeper tells the plugins of those); on tiers 2 and 3 they're the camera's.
+    const bool camera_owns_motion = _sk->motion_tier(_camera.id) != motion_tier_1;
     std::lock_guard<std::mutex> g(_camera_motion_lock);
     if(t.active)
     {
         if(_camera_motion_sources.empty())
+        {
             _camera_motion_start_ms = now;
+            if(camera_owns_motion)
+            {
+                _camera_motion_notified = true;
+                _sk->notify_motion(_camera.id, true, now);
+            }
+        }
         _camera_motion_sources.insert(t.source);
         return;
     }
     if(_camera_motion_sources.erase(t.source) == 0 || !_camera_motion_sources.empty())
         return;
+    // The window closes here, at the end the ring is given below.
+    if(_camera_motion_notified)
+    {
+        _camera_motion_notified = false;
+        _sk->notify_motion(_camera.id, false, now);
+    }
     // Written only on tiers 2 and 3 (the ring is open); on tier 1 MOG2 writes it.
     if(_camera_motion_ring)
     {
@@ -1043,6 +1058,12 @@ void r_recording_context::_camera_motion_tick(int64_t ts)
 void r_recording_context::_close_camera_motion_ring()
 {
     std::lock_guard<std::mutex> g(_camera_motion_lock);
+    // Back on tier 1 mid-motion: the camera's window ends here (MOG2's are told by the stream keeper).
+    if(_camera_motion_notified)
+    {
+        _camera_motion_notified = false;
+        _sk->notify_motion(_camera.id, false, duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+    }
     if(!_camera_motion_ring)
         return;
     try

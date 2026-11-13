@@ -417,6 +417,7 @@ private:
     std::mutex _camera_motion_lock;
     std::unique_ptr<r_ring_storage_sink> _camera_motion_ring;
     std::set<std::string> _camera_motion_sources;   // sources in motion now
+    bool _camera_motion_notified {false};          // a window the system plugins were told opened (tiers 2 and 3)
     int64_t _camera_motion_start_ms {0};
     int64_t _camera_motion_first_ts {0};
     int64_t _camera_motion_last_s {-1};

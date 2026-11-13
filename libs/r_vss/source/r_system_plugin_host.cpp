@@ -433,6 +433,8 @@ bool r_system_plugin_host::_load(const std::string& path, std::string& why)
         auto post_detection_v2_func = _symbol<system_plugin_post_detection_v2_func>(*lib, "system_plugin_post_detection_v2");
         auto set_api_result_cb_func = _symbol<system_plugin_set_api_result_cb_func>(*lib, "system_plugin_set_api_result_cb");
         auto cameras_changed_func = _symbol<system_plugin_cameras_changed_func>(*lib, "system_plugin_cameras_changed");
+        auto post_motion_func = _symbol<system_plugin_post_motion_func>(*lib, "system_plugin_post_motion");
+        auto camera_state_func = _symbol<system_plugin_camera_state_func>(*lib, "system_plugin_camera_state");
         auto action_func = _symbol<void (*)(r_system_plugin_handle, const char*)>(*lib, "system_plugin_action");
         auto set_host_api_func = _symbol<void (*)(r_system_plugin_handle, const r_system_plugin_host_api*)>(*lib, "system_plugin_set_host_api");
 
@@ -487,6 +489,10 @@ bool r_system_plugin_host::_load(const std::string& path, std::string& why)
             plugin_version
         };
         p.set_host_api_func = set_host_api_func;
+        p.post_motion_func = post_motion_func;
+        p.camera_state_func = camera_state_func;
+        if (post_motion_func || camera_state_func)
+            p.notifier = std::make_shared<r_plugin_notifier>();
 
         // Wired up before anything else can see it.
         if (set_api_result_cb_func && _api_result_fn)
@@ -565,6 +571,7 @@ bool r_system_plugin_host::load_and_start(const std::string& path, std::string& 
         {
             R_LOG_ERROR("Error starting system plugin %s: %s", p->name.c_str(), e.what());
         }
+        _replay_camera_states(*p);
     }
     return true;
 }
@@ -622,6 +629,8 @@ r_system_plugin_host::~r_system_plugin_host()
 
     for(auto& p : _plugins)
     {
+        // Its notification thread goes first: it calls into the plugin.
+        p.notifier.reset();
         if (p.plugin_handle && p.destroy_func)
         {
             try
@@ -665,6 +674,7 @@ void r_system_plugin_host::start_all()
                 R_LOG_ERROR("Error starting system plugin %s: %s", p->name.c_str(), e.what());
             }
         }
+        _replay_camera_states(*p);
     }
 }
 
@@ -674,6 +684,9 @@ void r_system_plugin_host::stop_all()
     _started = false;
     for(auto p : _snapshot())
     {
+        // No more notifications for a plugin that is stopping.
+        if (p->notifier)
+            p->notifier->accept(false);
         if (p->plugin_handle && p->stop_func)
         {
             try
@@ -833,6 +846,73 @@ void r_vss::post_detection_to_plugin(r_system_plugin_handle plugin, system_plugi
     else if (v1)
         v1(plugin, det.camera_id.c_str(), det.ts, det.class_name.c_str(), det.confidence,
            det.x1, det.y1, det.x2, det.y2);
+}
+
+void r_vss::post_motion_to_plugin(r_system_plugin_handle plugin, system_plugin_post_motion_func fn,
+                                  const std::string& camera_id, bool started, int64_t ts_ms)
+{
+    if (plugin && fn)
+        fn(plugin, camera_id.c_str(), started ? 1 : 0, ts_ms);
+}
+
+void r_vss::post_camera_state_to_plugin(r_system_plugin_handle plugin, system_plugin_camera_state_func fn,
+                                        const std::string& camera_id, bool receiving_video, bool stream_failed)
+{
+    if (plugin && fn)
+        fn(plugin, camera_id.c_str(), receiving_video ? 1 : 0, stream_failed ? 1 : 0);
+}
+
+void r_system_plugin_host::notify_motion(const std::string& camera_id, bool started, int64_t ts_ms)
+{
+    for(auto p : _snapshot())
+    {
+        if(!p->notifier || !p->post_motion_func || !p->plugin_handle)
+            continue;
+        auto handle = p->plugin_handle;
+        auto fn = p->post_motion_func;
+        p->notifier->post([handle, fn, camera_id, started, ts_ms]() { post_motion_to_plugin(handle, fn, camera_id, started, ts_ms); });
+    }
+}
+
+void r_system_plugin_host::notify_camera_state(const std::string& camera_id, bool receiving_video, bool stream_failed)
+{
+    std::lock_guard<std::mutex> g(_state_lock);
+    _camera_states[camera_id] = {receiving_video, stream_failed};
+    for(auto p : _snapshot())
+    {
+        if(!p->notifier || !p->camera_state_func || !p->plugin_handle)
+            continue;
+        auto handle = p->plugin_handle;
+        auto fn = p->camera_state_func;
+        p->notifier->post([handle, fn, camera_id, receiving_video, stream_failed]() {
+            post_camera_state_to_plugin(handle, fn, camera_id, receiving_video, stream_failed);
+        });
+    }
+}
+
+void r_system_plugin_host::forget_camera_state(const std::string& camera_id)
+{
+    std::lock_guard<std::mutex> g(_state_lock);
+    _camera_states.erase(camera_id);
+}
+
+// A plugin that has just started: it takes notifications from now, beginning with each camera's latest state.
+void r_system_plugin_host::_replay_camera_states(plugin_info& p)
+{
+    if(!p.notifier)
+        return;
+    std::lock_guard<std::mutex> g(_state_lock);
+    p.notifier->accept(true);
+    if(!p.camera_state_func || !p.plugin_handle)
+        return;
+    for(const auto& s : _camera_states)
+    {
+        auto handle = p.plugin_handle;
+        auto fn = p.camera_state_func;
+        auto id = s.first;
+        auto state = s.second;
+        p.notifier->post([handle, fn, id, state]() { post_camera_state_to_plugin(handle, fn, id, state.first, state.second); });
+    }
 }
 
 void r_system_plugin_host::notify_cameras_changed()

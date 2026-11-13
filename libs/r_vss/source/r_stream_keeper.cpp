@@ -514,8 +514,45 @@ void r_stream_keeper::_update_status_cache()
         s.dropped_frames = _total_motion_dropped + _total_restream_dropped;
     }
 
+    _publish_camera_states(status);
+
     std::lock_guard<std::mutex> lock(_status_cache_mutex);
     _status_cache = std::move(status);
+}
+
+// Tells the system plugins each camera's receiving_video and stream_failed (the values /cameras reports) the first
+// time a camera is seen and whenever either changes.
+void r_stream_keeper::_publish_camera_states(const vector<r_stream_status>& status)
+{
+    set<string> present;
+    for(const auto& s : status)
+    {
+        const auto& id = s.camera.id;
+        if(id.empty())
+            continue;
+        present.insert(id);
+        const pair<bool, bool> now(s.receiving_video, s.failed);
+        auto it = _published_camera_states.find(id);
+        if(it != _published_camera_states.end() && it->second == now)
+            continue;
+        _published_camera_states[id] = now;
+        _system_plugin_host.notify_camera_state(id, now.first, now.second);
+    }
+    for(auto it = _published_camera_states.begin(); it != _published_camera_states.end();)
+    {
+        if(present.count(it->first) == 0)
+        {
+            _system_plugin_host.forget_camera_state(it->first);
+            it = _published_camera_states.erase(it);
+        }
+        else
+            ++it;
+    }
+}
+
+void r_stream_keeper::notify_motion(const string& camera_id, bool started, int64_t ts_ms)
+{
+    _system_plugin_host.notify_motion(camera_id, started, ts_ms);
 }
 
 vector<r_cameras::r_camera_span> r_stream_keeper::camera_spans(const string& camera_id, int64_t since_ms)
@@ -612,9 +649,15 @@ void r_stream_keeper::_on_mog2_event(r_motion_event evt, const string& camera_id
 {
     std::lock_guard<std::mutex> g(_tier_lock);
     if(evt == motion_event_start)
+    {
         _mog2_starts[camera_id] = ts;
+        // Tier 1's window: it opens at the first frame that moved, and closes at the end event's time, the
+        // range the motion ring is given (and /motion_events reports).
+        _system_plugin_host.notify_motion(camera_id, true, ts);
+    }
     else if(evt == motion_event_end)
     {
+        _system_plugin_host.notify_motion(camera_id, false, ts);
         auto it = _mog2_starts.find(camera_id);
         if(it != _mog2_starts.end())
         {

@@ -83,6 +83,23 @@ R_API void system_plugin_post_detection_v2(r_system_plugin_handle plugin,
     float confidence, float x1, float y1, float x2, float y2,
     int64_t posted_at_ms);
 
+// Optional: a camera's motion window opened (started = 1) or closed (started = 0). ts_ms is the window's own time
+// (epoch ms): the same start and end that /motion_events reports for it, which for a window that opens is the
+// time of the motion's first frame, not when the host heard of it. Every window that opens closes, except that a
+// camera taken out of Revere mid-motion never sends its close. Calls for a plugin come one at a time, in order, from a
+// thread of the host's own, so returning slowly delays this plugin's later calls and nothing else; a plugin that
+// falls more than a thousand calls behind loses the oldest.
+R_API void system_plugin_post_motion(r_system_plugin_handle plugin,
+    const char* camera_id, int started, int64_t ts_ms);
+
+// Optional: a camera's state changed: receiving_video (its stream is delivering frames) or stream_failed (Revere has
+// given up reconnecting to it for now), the values /cameras reports as receiving_video and stream_failed. Called once
+// for each camera when the plugin starts (or, for a camera Revere finds later, when it first has a state), so a
+// plugin begins knowing every camera's state, and again whenever either value changes. Delivered like
+// system_plugin_post_motion, in order with it.
+R_API void system_plugin_camera_state(r_system_plugin_handle plugin,
+    const char* camera_id, int receiving_video, int stream_failed);
+
 // Callback type the plugin invokes to deliver API results back to the host.
 // name: identifies the payload (e.g. "camera_answers")
 // json: the result payload as a JSON string

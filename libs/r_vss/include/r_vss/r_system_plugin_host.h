@@ -3,12 +3,14 @@
 #define _r_system_plugin_host_h
 
 #include "r_vss/r_system_plugin.h"
+#include "r_vss/r_plugin_notifier.h"
 #include "r_vss/r_plugin_manifest.h"
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_macro.h"
 
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -24,6 +26,16 @@ struct r_detection;
 
 typedef void (*system_plugin_post_detection_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float);
 typedef void (*system_plugin_post_detection_v2_func)(r_system_plugin_handle, const char*, int64_t, const char*, float, float, float, float, float, int64_t);
+
+typedef void (*system_plugin_post_motion_func)(r_system_plugin_handle, const char*, int, int64_t);
+typedef void (*system_plugin_camera_state_func)(r_system_plugin_handle, const char*, int, int);
+
+// The calls a plugin's system_plugin_post_motion and system_plugin_camera_state get; nothing when the plugin has
+// no handle or no such function.
+R_API void post_motion_to_plugin(r_system_plugin_handle plugin, system_plugin_post_motion_func fn,
+                                 const std::string& camera_id, bool started, int64_t ts_ms);
+R_API void post_camera_state_to_plugin(r_system_plugin_handle plugin, system_plugin_camera_state_func fn,
+                                       const std::string& camera_id, bool receiving_video, bool stream_failed);
 
 // Hands one detection to a system plugin: by its system_plugin_post_detection_v2
 // with posted_at_ms when it has one, else by system_plugin_post_detection, else not at all.
@@ -145,6 +157,18 @@ public:
     // keeper's reconciliation thread; plugins that don't implement it are skipped.
     R_API void notify_cameras_changed();
 
+    // A camera's motion window opened (started) or closed, at ts_ms (r_system_plugin.h: system_plugin_post_motion).
+    // Queues the call for each plugin that exports it and returns at once: safe from any thread, and a slow
+    // plugin never holds the caller up.
+    R_API void notify_motion(const std::string& camera_id, bool started, int64_t ts_ms);
+
+    // A camera's receiving_video or stream_failed, as it is now (system_plugin_camera_state). Queued like
+    // notify_motion. Remembered, so a plugin that starts later is told each camera's latest.
+    R_API void notify_camera_state(const std::string& camera_id, bool receiving_video, bool stream_failed);
+
+    // A camera is gone: its state is no longer given to plugins that start later.
+    R_API void forget_camera_state(const std::string& camera_id);
+
     // Gives plugins that export system_plugin_set_host_api the live-frame functions,
     // reading from feeds; camera_recording says whether a camera is recording here.
     // Call after construction, before start_all(). stop_all() closes their feeds.
@@ -184,6 +208,10 @@ private:
         std::string guid;
         std::string version;   // Empty if the plugin doesn't report one
         void (*set_host_api_func)(r_system_plugin_handle, const r_system_plugin_host_api*) = nullptr;   // Optional
+        system_plugin_post_motion_func post_motion_func = nullptr;        // Optional
+        system_plugin_camera_state_func camera_state_func = nullptr;      // Optional
+        // Calls the two above on a thread of its own; only for a plugin that has either.
+        std::shared_ptr<r_plugin_notifier> notifier {};
         std::shared_ptr<frame_api> frames;   // its live-frame functions, once set_frame_source() gave them
     };
 
@@ -202,6 +230,11 @@ private:
     // guards what only they touch.
     std::mutex _ops_lock;
     bool _started {false};
+    // The latest receiving_video and stream_failed of each camera, for a plugin that starts after they were
+    // given. _state_lock also keeps a notification and a replay from passing each other.
+    std::mutex _state_lock;
+    std::map<std::string, std::pair<bool, bool>> _camera_states;
+    void _replay_camera_states(plugin_info& p);
     std::set<std::string> _loaded_guids;       // Track loaded plugin GUIDs to prevent duplicates
     std::set<std::string> _loaded_filenames;   // Track loaded plugin filenames (dedupe BEFORE dlopen)
     std::function<void(const std::string&, const std::string&)> _api_result_fn;
