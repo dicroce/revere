@@ -15,10 +15,14 @@ writes dist/revere-v0.0.41-linux-cloud-plugin.so and its manifest,
 dist/revere-v0.0.41-linux-cloud-plugin.so.json:
 
     {"format":1,"platform":"linux","arch":"x86_64","revere_version":"0.0.41",
-     "file":"revere_cloud_system_plugin.so","size":...,"sha256":"..."}
+     "file":"revere_cloud_system_plugin.so","size":...,"sha256":"...","plugin_api":"1.0"}
 
 "file" is the name the plugin is installed under (the built file's name), not
-the asset's: revere checks it against the file it's about to load.
+the asset's: revere checks it against the file it's about to load. "plugin_api"
+is the plugin interface, "<major>.<minor>": R_SYSTEM_PLUGIN_API_MAJOR and _MINOR,
+read from libs/r_vss/include/r_vss/r_system_plugin.h in this checkout (the one the
+plugin was built against). revere refuses a plugin for another major, or a later
+minor, before opening it.
 """
 
 import argparse
@@ -31,6 +35,22 @@ import sys
 
 PLATFORMS = {"windows": ".dll", "macos": ".dylib", "linux": ".so"}
 ARCHES = {"x86_64", "arm64"}
+API_HEADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                          "libs", "r_vss", "include", "r_vss", "r_system_plugin.h")
+
+
+def plugin_api_version(header):
+    """The plugin interface, "<major>.<minor>", as the header defines it."""
+    text = open(header).read()
+    parts = []
+    for name in ("MAJOR", "MINOR"):
+        found = re.findall(r"^#define R_SYSTEM_PLUGIN_API_%s ([0-9]+)\s*$" % name, text, re.M)
+        if len(found) != 1 or int(found[0]) > 0xFFFF:
+            sys.exit(f"error: no single R_SYSTEM_PLUGIN_API_{name} in {header}")
+        parts.append(int(found[0]))
+    if parts[0] < 1:
+        sys.exit(f"error: R_SYSTEM_PLUGIN_API_MAJOR is 0 in {header}")
+    return f"{parts[0]}.{parts[1]}"
 
 
 def main():
@@ -64,6 +84,7 @@ def main():
         "file": file_name,
         "size": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
+        "plugin_api": plugin_api_version(API_HEADER),
     }
 
     os.makedirs(a.out, exist_ok=True)
