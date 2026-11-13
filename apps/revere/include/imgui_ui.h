@@ -680,8 +680,8 @@ struct about_revere_cloud_state
 };
 
 // About Revere Cloud, with its in-app install (r_vss/r_cloud_install.h). A release
-// build installs or updates it here, after the terms; any other build opens the
-// download page, as before.
+// build installs or updates it here, after the terms, and so does a dev build, from
+// a release, under a warning; any other build opens the download page, as before.
 //   install_cb(bool accept_terms): start the install; accept_terms when the user
 //     agreed to the terms just now.
 //   download_cb(): open the download page.  open_url_cb(url): open a link.
@@ -739,6 +739,12 @@ void about_revere_cloud_modal(
         ImGui::Spacing();
         paragraph("Revere Cloud is not open source. Revere works fully without it.", &r_ui_utils::theme::text_secondary);
         ImGui::Spacing();
+
+        if(!s.dev_warning.empty())
+        {
+            paragraph(s.dev_warning, &r_ui_utils::theme::status_warning_text);
+            ImGui::Spacing();
+        }
 
         const bool installing = s.state == r_cloud_state::installing;
         if(installing)

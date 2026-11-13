@@ -95,6 +95,9 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
         d.install_dir = _system_plugin_host.user_plugin_dir();
         d.terms_path = top_dir + PATH_SLASH + "revere_cloud_terms.json";
         d.release_build = is_release_version(revere_version());
+        d.revere_version = revere_version();
+        if(!d.release_build)
+            d.dev_base_version = release_base_version(revere_version());
         d.install = [](const std::string& dir) { return install_revere_cloud_plugin(dir); };
         d.load = [this](const std::string& path, std::string& why) { return _system_plugin_host.load_and_start(path, why); };
         d.loaded = [this]() { return _system_plugin_host.get_loaded_plugins(); };
