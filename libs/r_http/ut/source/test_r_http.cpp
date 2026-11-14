@@ -947,6 +947,14 @@ void test_r_http::test_tls_peer_closed()
         catch(...) { clientException = std::current_exception(); }
     });
 
+    // Whatever happens below, the client is let go and joined.
+    struct joiner
+    {
+        std::thread& t;
+        std::function<void()> release;
+        ~joiner() { release(); if(t.joinable()) t.join(); }
+    } join_client{client, [&](){ set_step(2); }};
+
     auto conn = server.accept();
     char buf[8] = {};
     RTF_ASSERT(conn.recv(buf, 4) == 4);   // completes the handshake
@@ -963,13 +971,14 @@ void test_r_http::test_tls_peer_closed()
     RTF_ASSERT(conn.recv(buf, 4) == 4);
     RTF_ASSERT(std::string(buf, 4) == "more");
 
-    // The client closes (close_notify, then FIN): closed.
+    // The client closes (close_notify, then FIN): closed. Joined before the
+    // check, so a failure is reported rather than ending the run.
     set_step(2);
-    RTF_ASSERT(_tls_until([&](){ return conn.peer_closed(); }));
-
+    const bool closed = _tls_until([&](){ return conn.peer_closed(); });
     client.join();
     if(clientException)
         std::rethrow_exception(clientException);
+    RTF_ASSERT(closed);
 }
 
 // The same route table served over TLS: the request is read through
