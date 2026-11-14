@@ -1088,7 +1088,7 @@ struct raw_read
     size_t chunks {0};
 };
 
-raw_read _read_raw(const std::string& raw, size_t max_body, bool with_chunk_callback = false)
+raw_read _read_raw(const std::string& raw, size_t max_body, bool with_chunk_callback = false, bool close_after_send = false)
 {
     int port = RTF_NEXT_PORT();
     raw_read result;
@@ -1125,6 +1125,8 @@ raw_read _read_raw(const std::string& raw, size_t max_body, bool with_chunk_call
     r_socket client;
     client.connect("127.0.0.1", port);
     r_networking::r_send(client, raw.data(), raw.size());
+    if(close_after_send)
+        client.close();
     th.join();
     return result;
 }
@@ -1170,6 +1172,13 @@ void test_r_http::test_server_request_max_body()
         auto r = _read_raw(_post(bad, "x"), 16);
         RTF_ASSERT(r.outcome == "400");
     }
+
+    // A client that sends less than it declared and goes: what came is the body, and the read ends at once.
+    auto t1 = std::chrono::steady_clock::now();
+    auto short_body = _read_raw(_post("16", "hello"), 16, false, true);
+    RTF_ASSERT(short_body.outcome == "ok");
+    RTF_ASSERT(short_body.body == "hello");
+    RTF_ASSERT(std::chrono::steady_clock::now() - t1 < std::chrono::seconds(3));
 
     // A large body under the limit comes through whole.
     std::string big(300000, ' ');
