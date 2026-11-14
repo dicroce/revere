@@ -90,7 +90,8 @@ public:
         uint32_t min_bitrate,
         bool enable_dynamic_bitrate = true,
         const std::string& passphrase = "",
-        const std::optional<r_transcoder_audio>& audio = std::nullopt
+        const std::optional<r_transcoder_audio>& audio = std::nullopt,
+        bool use_libsrt = false
     );
 
     R_API ~r_transcoder();
@@ -121,6 +122,12 @@ public:
      * at once instead of waiting for room in a queue nothing drains.
      */
     R_API bool failed() const { return _failed; }
+
+    /**
+     * The SRT link's statistics now, when the output is an srt:// URL sent through libsrt (the `use_libsrt` argument,
+     * where this build has it). Empty otherwise. Safe to call from another thread while it runs.
+     */
+    R_API std::optional<r_srt_stats> srt_stats() const { return _muxer.srt_stats(); }
 
     // Start/stop transcoding
     R_API void start();

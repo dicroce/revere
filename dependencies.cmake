@@ -294,6 +294,43 @@ if(NOT TARGET gstreamer::gstreamer)
     endif()
 endif()
 
+# ---- libsrt (optional) ----
+# With it, an SRT live view is sent through libsrt directly and its link statistics (retransmits, round trip time,
+# send buffer, dropped packets) can be read (r_av's r_srt_output). Without it the build is as before: FFmpeg's own srt
+# protocol, and no statistics. macOS and Linux: pkg-config finds the system libsrt (the one the system FFmpeg is built
+# with). Windows: set SRT_TOP_DIR to a libsrt install (include/srt/srt.h, lib/srt.lib; vcpkg's `srt` port has both).
+if(NOT TARGET srt::srt)
+    if(DEFINED ENV{SRT_TOP_DIR})
+        set(SRT_ROOT "$ENV{SRT_TOP_DIR}")
+        if(CMAKE_SYSTEM_NAME MATCHES "Windows")
+            set(SRT_LIBRARY "${SRT_ROOT}/lib/srt.lib")
+        else()
+            set(SRT_LIBRARY "${SRT_ROOT}/lib/libsrt${CMAKE_SHARED_LIBRARY_SUFFIX}")
+        endif()
+        if(EXISTS "${SRT_ROOT}/include/srt/srt.h" AND EXISTS "${SRT_LIBRARY}")
+            add_library(srt::srt INTERFACE IMPORTED GLOBAL)
+            target_include_directories(srt::srt INTERFACE "${SRT_ROOT}/include")
+            target_link_libraries(srt::srt INTERFACE "${SRT_LIBRARY}")
+            message(STATUS "Using libsrt from SRT_TOP_DIR: ${SRT_ROOT}")
+        else()
+            message(STATUS "SRT_TOP_DIR has no include/srt/srt.h and ${SRT_LIBRARY}: building without libsrt (no SRT link statistics)")
+        endif()
+    elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|Darwin")
+        pkg_search_module(SRT QUIET srt)
+        if(SRT_FOUND)
+            add_library(srt::srt INTERFACE IMPORTED GLOBAL)
+            target_include_directories(srt::srt INTERFACE ${SRT_INCLUDE_DIRS})
+            target_link_directories(srt::srt INTERFACE ${SRT_LIBRARY_DIRS})
+            target_link_libraries(srt::srt INTERFACE ${SRT_LIBRARIES})
+            message(STATUS "Using system libsrt via pkg-config")
+        else()
+            message(STATUS "libsrt not found: building without it (no SRT link statistics)")
+        endif()
+    else()
+        message(STATUS "SRT_TOP_DIR not set: building without libsrt (no SRT link statistics)")
+    endif()
+endif()
+
 # ---- FFmpeg ----
 if(NOT TARGET ffmpeg::ffmpeg)
     # Check for explicit path first (works on all platforms)

@@ -11,6 +11,10 @@ add_executable(
     source/test_r_h264_frame_num.cpp
     include/test_r_output_frame_selector.h
     source/test_r_output_frame_selector.cpp
+    include/test_r_srt_url.h
+    source/test_r_srt_url.cpp
+    include/test_r_srt_output.h
+    source/test_r_srt_output.cpp
 )
 
 target_include_directories(
@@ -29,3 +33,7 @@ target_link_libraries(
     opencv::opencv
     platform::platform
 )
+
+if(TARGET srt::srt)
+    target_compile_definitions(r_av_ut PRIVATE R_HAVE_LIBSRT=1)
+endif()

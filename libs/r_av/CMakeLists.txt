@@ -27,6 +27,15 @@ target_link_libraries(
     ffmpeg::ffmpeg
 )
 
+# libsrt, where the build has it (dependencies.cmake): SRT output through it, with link statistics.
+if(TARGET srt::srt)
+    target_link_libraries(r_av PUBLIC srt::srt)
+    target_compile_definitions(r_av PRIVATE R_HAVE_LIBSRT=1)
+    if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+        target_link_libraries(r_av PUBLIC ws2_32)
+    endif()
+endif()
+
 # Install the shared library (skip on macOS - bundled into .app)
 if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     install(TARGETS r_av
@@ -50,6 +59,18 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
             "$<TARGET_FILE_DIR:r_av>"
         COMMENT "Copying FFmpeg DLLs to build output directory"
     )
+
+    # libsrt's DLLs (SRT_TOP_DIR's bin), where the build has libsrt.
+    if(TARGET srt::srt AND DEFINED ENV{SRT_TOP_DIR})
+        file(TO_CMAKE_PATH $ENV{SRT_TOP_DIR} SRT_TOP_DIR)
+        file(GLOB SRT_DLLS "${SRT_TOP_DIR}/bin/*.dll")
+        if(SRT_DLLS)
+            add_custom_command(TARGET r_av POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SRT_DLLS} "$<TARGET_FILE_DIR:r_av>"
+                COMMENT "Copying libsrt DLLs to build output directory"
+            )
+        endif()
+    endif()
 endif()
 
 add_subdirectory(ut)

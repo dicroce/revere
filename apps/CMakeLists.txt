@@ -236,6 +236,17 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
         DESTINATION revere
     )
     
+    # libsrt (optional, dependencies.cmake): r_av links it when SRT_TOP_DIR is set, so the DLLs in that prefix's bin
+    # go to the install tree with it. SRT_TOP_DIR is a prefix of its own (vcpkg: `vcpkg install srt --triplet
+    # x64-windows` into a dedicated root), so its bin holds srt.dll and what it imports, nothing else. A build
+    # without SRT_TOP_DIR ships none and r_av has no SRT statistics. scripts/windows/build_installers.py then fails
+    # the build if a staged binary imports a DLL that isn't staged, so a missing one is caught there.
+    if(TARGET srt::srt AND DEFINED ENV{SRT_TOP_DIR})
+        file(TO_CMAKE_PATH $ENV{SRT_TOP_DIR} SRT_TOP_DIR)
+        file(GLOB SRT_DLLS "${SRT_TOP_DIR}/bin/*.dll")
+        install(FILES ${SRT_DLLS} DESTINATION revere)
+    endif()
+
     # Install OpenCV DLLs conditionally based on build configuration
     # Use generator expressions to handle multi-config generators (like Visual Studio)
     foreach(module ${OPENCV_MODULES})

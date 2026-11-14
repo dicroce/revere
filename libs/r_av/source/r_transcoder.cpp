@@ -22,7 +22,8 @@ r_transcoder::r_transcoder(
     uint32_t min_bitrate,
     bool enable_dynamic_bitrate,
     const std::string& passphrase,
-    const std::optional<r_transcoder_audio>& audio
+    const std::optional<r_transcoder_audio>& audio,
+    bool use_libsrt
 ) :
     _running(false),
     _max_queue_size(30),
@@ -80,6 +81,8 @@ r_transcoder::r_transcoder(
         _muxer.set_max_interleave_delta(R_TRANSCODER_AUDIO_INTERLEAVE_US);
         _has_audio = true;
     }
+    if (use_libsrt)
+        _muxer.use_libsrt();
     _muxer.open();
 }
 
