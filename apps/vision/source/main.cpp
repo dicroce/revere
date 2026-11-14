@@ -63,6 +63,7 @@ void* get_icon_texture_id(const std::string& class_name)
 #include "utils.h"
 #include "layouts.h"
 #include "r_vss/r_substream_recorder.h"
+#include "r_vss/r_live_restream_host.h"
 #include "query.h"
 #include "pipeline_host.h"
 #include "error_handling.h"
@@ -298,10 +299,8 @@ void change_one_by_one_config_and_layout(configure_state& cfg, pipeline_host& ph
     stream_info si;
     si.name = cfg.make_name(window, LAYOUT_ONE_BY_ONE, 0);
 
-    auto url_label = label;
-    replace(begin(url_label), end(url_label), ' ', '_');
-
-    si.rtsp_url = r_string_utils::format("rtsp://%s:8554/%s", maybe_revere_ip.value().c_str(), url_label.c_str());
+    // The camera's friendly-named mount, as revere makes it.
+    si.rtsp_url = r_string_utils::format("rtsp://%s:8554%s", maybe_revere_ip.value().c_str(), r_vss::friendly_mount_path(label).c_str());
     si.camera_id = camera_id;
     si.do_motion_detection = do_motion_detection;
 
@@ -1990,12 +1989,9 @@ int run_overlay(const overlay_opts& opts)
         R_LOG_ERROR("overlay: camera %s not found on revere at %s (window will be blank)",
             opts.camera_id.c_str(), opts.revere_ip.c_str());
 
-    auto url_label = label;
-    replace(begin(url_label), end(url_label), ' ', '_');
-
     stream_info si;
     si.name = "overlay_0";
-    si.rtsp_url = r_string_utils::format("rtsp://%s:8554/%s", opts.revere_ip.c_str(), url_label.c_str());
+    si.rtsp_url = r_string_utils::format("rtsp://%s:8554%s", opts.revere_ip.c_str(), r_vss::friendly_mount_path(label).c_str());
     si.camera_id = opts.camera_id;
     si.do_motion_detection = cam_motion;  // display flag: show motion markers on the timeline
 

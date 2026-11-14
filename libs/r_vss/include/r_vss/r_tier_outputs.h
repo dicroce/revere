@@ -5,6 +5,8 @@
 #include "r_vss/r_motion_event_plugin_host.h"
 #include "r_utils/r_macro.h"
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -34,6 +36,17 @@ R_API bool reported_class(const std::string& class_name);
 // with "source" naming where it came from ("camera" or "detection_pass"). A
 // camera report has no confidence or box (x1..y2) in it.
 R_API std::string analytics_json(int64_t start_ms, int64_t end_ms, const std::vector<r_detection>& detections, const std::string& source);
+
+// A camera leaving tier 1 loses MOG2's state with its end event: if a window it opened is still open in `starts`,
+// forgets it and says it closed at `now_ms`. Returns whether one was open.
+inline bool close_open_mog2_window(std::map<std::string, int64_t>& starts, const std::string& camera_id, int64_t now_ms,
+                                   const std::function<void(const std::string&, bool, int64_t)>& notify_motion)
+{
+    if(starts.erase(camera_id) == 0)
+        return false;
+    notify_motion(camera_id, false, now_ms);
+    return true;
+}
 
 }
 

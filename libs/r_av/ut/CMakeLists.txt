@@ -15,6 +15,8 @@ add_executable(
     source/test_r_srt_url.cpp
     include/test_r_srt_output.h
     source/test_r_srt_output.cpp
+    include/test_r_bitrate_control.h
+    source/test_r_bitrate_control.cpp
     include/test_r_gop.h
     source/test_r_gop.cpp
 )

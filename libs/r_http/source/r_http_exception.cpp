@@ -136,6 +136,25 @@ r_http_404_exception::r_http_404_exception( const string& msg ) :
 {
 }
 
+r_http_413_exception::r_http_413_exception() :
+    r_http_exception( 413 )
+{
+}
+
+r_http_413_exception::r_http_413_exception( const char* msg, ... ) :
+    r_http_exception( 413 )
+{
+    va_list args;
+    va_start( args, msg );
+    set_msg( r_string_utils::format( msg, args ) );
+    va_end( args );
+}
+
+r_http_413_exception::r_http_413_exception( const string& msg ) :
+    r_http_exception( 413, msg )
+{
+}
+
 r_http_415_exception::r_http_415_exception() :
     r_http_exception( 415 )
 {
@@ -244,6 +263,11 @@ void r_http::throw_r_http_exception( int statusCode, const string& msg )
         case 404:
         {
             r_http_404_exception e( msg );
+            throw e;
+        }
+        case 413:
+        {
+            r_http_413_exception e( msg );
             throw e;
         }
         case 415:

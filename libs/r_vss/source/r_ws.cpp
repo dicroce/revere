@@ -858,6 +858,8 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
             bool sub_fresh = false;
             std::string mount;
             std::string sub_mount;
+            std::string id_mount;
+            std::string sub_id_mount;
             bool stream_failed = false;
             int64_t storage_write_lag_ms = 0;
             int64_t storage_timeline_lag_ms = 0;
@@ -871,6 +873,8 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                 sub_fresh = sit->second.sub_fresh;
                 mount = sit->second.mount;
                 sub_mount = sit->second.sub_mount;
+                id_mount = sit->second.id_mount;
+                sub_id_mount = sit->second.sub_id_mount;
                 stream_failed = sit->second.failed;
                 storage_write_lag_ms = sit->second.storage_write_lag_ms;
                 storage_timeline_lag_ms = sit->second.storage_timeline_lag_ms;
@@ -980,6 +984,10 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     // stream's size: a request for a path that isn't mounted can reach main's.
                     {"mount", mount},
                     {"sub_mount", sub_mount},
+                    // The same two by camera id: "/camera/<id>" and "/camera/<id>/sub". They stay put when the camera
+                    // is renamed, so a client can save them; "" with the mounts above.
+                    {"mount_by_id", id_mount},
+                    {"sub_mount_by_id", sub_id_mount},
                     // The camera's ONVIF event subscription; null when it has none.
                     {"camera_events", camera_events},
                     // An address change (r_disco/r_camera_move.h): held or followed; null when none.

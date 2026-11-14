@@ -86,6 +86,10 @@ add_executable(
     source/test_r_substream_recorder.cpp
     include/test_r_system_plugin_action.h
     source/test_r_system_plugin_action.cpp
+    include/test_r_plugin_notifier.h
+    source/test_r_plugin_notifier.cpp
+    include/test_r_system_plugin_motion.h
+    source/test_r_system_plugin_motion.cpp
     include/test_r_system_plugin_frames.h
     source/test_r_system_plugin_frames.cpp
 )
@@ -104,6 +108,17 @@ endforeach()
 target_compile_definitions(test_no_action_system_plugin PRIVATE NO_ACTION_EXPORT NO_API_EXPORT)
 target_compile_definitions(test_other_api_system_plugin PRIVATE "TEST_PLUGIN_API_VERSION=(R_SYSTEM_PLUGIN_API_VERSION + 1)" RECORD_LOAD)
 
+# Two system plugins for test_r_system_plugin_motion: one with system_plugin_post_motion and system_plugin_camera_state, one without.
+foreach(variant motion no_motion)
+    add_library(test_${variant}_system_plugin SHARED test_plugin/test_motion_system_plugin.cpp)
+    target_link_libraries(test_${variant}_system_plugin PRIVATE r_utils)
+    target_include_directories(test_${variant}_system_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+    target_compile_definitions(test_${variant}_system_plugin PRIVATE TEST_PLUGIN_GUID="com.revere.test.${variant}")
+    set_target_properties(test_${variant}_system_plugin PROPERTIES PREFIX "")
+    add_dependencies(r_vss_ut test_${variant}_system_plugin)
+endforeach()
+target_compile_definitions(test_no_motion_system_plugin PRIVATE NO_MOTION_EXPORTS)
+
 # A system plugin for test_r_system_plugin_frames: it reads frame feeds through the host's functions.
 add_library(test_frames_system_plugin SHARED test_plugin/test_frames_system_plugin.cpp)
 target_link_libraries(test_frames_system_plugin PRIVATE r_utils)
@@ -115,6 +130,8 @@ target_compile_definitions(r_vss_ut PRIVATE
     TEST_NO_ACTION_PLUGIN="$<TARGET_FILE:test_no_action_system_plugin>"
     TEST_OTHER_API_PLUGIN="$<TARGET_FILE:test_other_api_system_plugin>"
     TEST_FRAMES_PLUGIN="$<TARGET_FILE:test_frames_system_plugin>"
+    TEST_MOTION_PLUGIN="$<TARGET_FILE:test_motion_system_plugin>"
+    TEST_NO_MOTION_PLUGIN="$<TARGET_FILE:test_no_motion_system_plugin>"
     # test_r_recording_context reads the video callback's source for its wiring.
     R_VSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../source"
 )

@@ -57,6 +57,13 @@ public:
 
     R_API void register_chunk_callback(server_chunk_callback cb);
 
+    // The largest body read_request() reads, from a Content-Length or from chunks together (with or without a chunk
+    // callback). A request declaring more, or sending more chunked, gets r_http_413_exception, thrown before the body
+    // past the limit is read or any room is made for it.
+    static constexpr size_t DEFAULT_MAX_BODY_SIZE = 100 * 1024 * 1024;
+    R_API void set_max_body_size(size_t max_body_size);
+    R_API size_t get_max_body_size() const;
+
 private:
     void _set_header(const std::string& name, const std::string& value);
     std::string _read_headers(r_utils::r_socket_base& socket, uint64_t timeout_millis);
@@ -75,6 +82,7 @@ private:
     std::vector<uint8_t> _headerOverRead;
     server_chunk_callback _chunkCallback;
     std::vector<uint8_t> _chunk;
+    size_t _maxBodySize;
 };
 
 }

@@ -475,6 +475,27 @@ void test_r_substream_recorder::test_mount_path()
     r_camera unnamed;
     unnamed.id = "cam-2";
     RTF_ASSERT(substream_mount_path(unnamed) == "/cam-2/sub");
+    // By id: the name plays no part, so a rename leaves it where it was.
+    RTF_ASSERT(substream_id_mount_path("cam-1") == "/camera/cam-1/sub");
+    RTF_ASSERT(restream_id_mount_path("cam-1") == "/camera/cam-1");
+    // The "camera/" prefix is the id mounts': a friendly name can't land on it or beside it.
+    RTF_ASSERT(friendly_mount_path("Front Door") == "/Front_Door");
+    RTF_ASSERT(friendly_mount_path("camera") == "/camera_");
+    RTF_ASSERT(friendly_mount_path("camera/abc") == "/camera_/abc");
+    RTF_ASSERT(friendly_mount_path("camera 2") == "/camera_2");         // not under it: left alone
+    RTF_ASSERT(friendly_mount_path("cameras") == "/cameras");
+    RTF_ASSERT(friendly_mount_path("camera_") == "/camera_");           // still not an id mount's path
+    for(auto n : {"camera", "camera/cam-1", "camera/cam-1/sub", "camera/"})
+    {
+        auto p = friendly_mount_path(n);
+        RTF_ASSERT(p != "/camera" && p.compare(0, 8, "/camera/") != 0);
+    }
+    c.friendly_name = string("camera");
+    RTF_ASSERT(substream_mount_path(c) == "/camera_/sub");
+    RTF_ASSERT(view_mount_path("camera", "", "", false, false) == "/camera_");
+    c.friendly_name = string("Porch");
+    RTF_ASSERT(substream_mount_path(c) == "/Porch/sub");
+    RTF_ASSERT(substream_id_mount_path(c.id) == "/camera/cam-1/sub");
 }
 
 // Which mount a viewer plays: the smaller stream's only for a grid tile, and only when it is up and fresh.
@@ -634,6 +655,16 @@ void test_r_substream_recorder::test_serves_its_sub_mount()
         RTF_ASSERT_EQUAL(served.width, 320);
         RTF_ASSERT_EQUAL(served.height, 240);
         RTF_ASSERT(served.key_frames >= 1);
+
+        // The same stream by the camera's id, behind the same credential.
+        auto id_mount = substream_id_mount_path(_camera("rtsp://127.0.0.1:1/sub").id);
+        RTF_ASSERT(id_mount.find("/camera/") == 0);
+        RTF_ASSERT(host.has_mount(id_mount));
+        auto by_id = probe_stream(r_string_utils::format("rtsp://127.0.0.1:%d%s", host.port(), id_mount.c_str()),
+            r_nullable<string>(string(r_rtsp_auth::RTSP_USER)), r_nullable<string>(string(bare_host::PASSWORD)), 2, 10);
+        RTF_ASSERT(by_id.received_video);
+        RTF_ASSERT_EQUAL(by_id.width, 320);
+        RTF_ASSERT_EQUAL(by_id.height, 240);
     }
     // The viewer's session ends with its client (the server tears it down a moment after), and the recorder is gone,
     // its mount with it.
@@ -647,6 +678,7 @@ void test_r_substream_recorder::test_serves_its_sub_mount()
         r_nullable<string>(string(r_rtsp_auth::RTSP_USER)), r_nullable<string>(string(bare_host::PASSWORD)), 1, 3);
     RTF_ASSERT(!after.received_video);
     RTF_ASSERT(!host.has_mount(mount));      // unmounted with the recorder
+    RTF_ASSERT(!host.has_mount(substream_id_mount_path(_camera("rtsp://127.0.0.1:1/sub").id)));   // and its by-id mount
     fc->quit();
 }
 

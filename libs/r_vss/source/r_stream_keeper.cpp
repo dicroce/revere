@@ -516,8 +516,45 @@ void r_stream_keeper::_update_status_cache()
         s.dropped_frames = _total_motion_dropped + _total_restream_dropped;
     }
 
+    _publish_camera_states(status);
+
     std::lock_guard<std::mutex> lock(_status_cache_mutex);
     _status_cache = std::move(status);
+}
+
+// Tells the system plugins each camera's receiving_video and stream_failed (the values /cameras reports) the first
+// time a camera is seen and whenever either changes.
+void r_stream_keeper::_publish_camera_states(const vector<r_stream_status>& status)
+{
+    set<string> present;
+    for(const auto& s : status)
+    {
+        const auto& id = s.camera.id;
+        if(id.empty())
+            continue;
+        present.insert(id);
+        const pair<bool, bool> now(s.receiving_video, s.failed);
+        auto it = _published_camera_states.find(id);
+        if(it != _published_camera_states.end() && it->second == now)
+            continue;
+        _published_camera_states[id] = now;
+        _system_plugin_host.notify_camera_state(id, now.first, now.second);
+    }
+    for(auto it = _published_camera_states.begin(); it != _published_camera_states.end();)
+    {
+        if(present.count(it->first) == 0)
+        {
+            _system_plugin_host.forget_camera_state(it->first);
+            it = _published_camera_states.erase(it);
+        }
+        else
+            ++it;
+    }
+}
+
+void r_stream_keeper::notify_motion(const string& camera_id, bool started, int64_t ts_ms)
+{
+    _system_plugin_host.notify_motion(camera_id, started, ts_ms);
 }
 
 vector<r_cameras::r_camera_span> r_stream_keeper::camera_spans(const string& camera_id, int64_t since_ms)
@@ -614,9 +651,15 @@ void r_stream_keeper::_on_mog2_event(r_motion_event evt, const string& camera_id
 {
     std::lock_guard<std::mutex> g(_tier_lock);
     if(evt == motion_event_start)
+    {
         _mog2_starts[camera_id] = ts;
+        // Tier 1's window: it opens at the first frame that moved, and closes at the end event's time, the
+        // range the motion ring is given (and /motion_events reports).
+        _system_plugin_host.notify_motion(camera_id, true, ts);
+    }
     else if(evt == motion_event_end)
     {
+        _system_plugin_host.notify_motion(camera_id, false, ts);
         auto it = _mog2_starts.find(camera_id);
         if(it != _mog2_starts.end())
         {
@@ -631,6 +674,18 @@ void r_stream_keeper::_on_detection_bus(void* userdata, const r_detection& det, 
     auto sk = static_cast<r_stream_keeper*>(userdata);
     std::lock_guard<std::mutex> g(sk->_tier_lock);
     sk->_tiers.yolo_detection(det.camera_id, det.class_name, det.ts, det.source);
+}
+
+// The motion engine forgets a camera: MOG2's state goes, and its end event never comes, so close the window the
+// plugins were told had opened. (Tiers 2 and 3 tell the plugins from the camera's own transitions.) Not called with
+// _tier_lock held.
+void r_stream_keeper::_remove_motion_work_context(const string& camera_id)
+{
+    _motionEngine.remove_work_context(camera_id);
+    std::lock_guard<std::mutex> g(_tier_lock);
+    close_open_mog2_window(_mog2_starts, camera_id, _epoch_ms(), [this](const string& id, bool started, int64_t ts) {
+        _system_plugin_host.notify_motion(id, started, ts);
+    });
 }
 
 void r_stream_keeper::_tier_tick()
@@ -706,7 +761,9 @@ void r_stream_keeper::_tier_tick()
         R_LOG_INFO("motion tier [%s]: tier %d: %s", _camera_name(c.first).c_str(), c.second.tier, c.second.reason.c_str());
         // Off tier 1: MOG2 stops getting this camera's frames; free its decoder.
         if(c.second.tier != motion_tier_1)
-            _motionEngine.remove_work_context(c.first);
+        {
+            _remove_motion_work_context(c.first);
+        }
     }
 }
 
@@ -867,13 +924,11 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
     if(camera.friendly_name.is_null())
         R_THROW(("Camera friendly name is null!"));
 
-    string mount_path = camera.friendly_name.value();
+    const string mount_path = friendly_mount_path(camera.friendly_name.value());
 
-    replace(begin(mount_path), end(mount_path), ' ', '_');
-
-    mount_path = r_string_utils::format("/%s", mount_path.c_str());
-
-    gst_rtsp_mount_points_add_factory(_mounts, mount_path.c_str(), factory);
+    // Also at /camera/<id> (restream_id_mount_path), which a rename leaves where it is.
+    const auto id_path = restream_id_mount_path(camera.id);
+    add_factory_at_both(_mounts, factory, mount_path, id_path);
 
     // The same with its audio as Opus, at <mount>/opus, when the audio can be.
     auto opus_str = create_restream_opus_launch_string(video_encoding.value(), sdp_video.formats.front(), audio_encoding);
@@ -886,7 +941,7 @@ std::string r_stream_keeper::add_restream_mount(const std::map<std::string, r_pi
             gst_rtsp_media_factory_set_shared(opus_factory, FALSE);
             r_rtsp_auth::allow_viewer(opus_factory);
             g_signal_connect(opus_factory, "media-configure", (GCallback)_live_restream_media_configure, rc);
-            gst_rtsp_mount_points_add_factory(_mounts, (mount_path + "/opus").c_str(), opus_factory);
+            add_factory_at_both(_mounts, opus_factory, mount_path + "/opus", id_path + "/opus");
         }
     }
 
@@ -1470,7 +1525,7 @@ void r_stream_keeper::_entry_point()
                     {
                         rc->stop();
                         // Clean up motion engine work context for this camera
-                        _motionEngine.remove_work_context(cmd.first.id);
+                        _remove_motion_work_context(cmd.first.id);
                     }
                     else
                     {
@@ -1509,7 +1564,7 @@ void r_stream_keeper::_entry_point()
                     if(rc)
                     {
                         rc->stop();
-                        _motionEngine.remove_work_context(cmd.first.id);
+                        _remove_motion_work_context(cmd.first.id);
                         // Fully destroy the recording context here — before we ack the
                         // suspend — so its nanots write context flushes and finalizes
                         // the current segment against the SQLite DB while that DB still
@@ -1819,7 +1874,7 @@ void r_stream_keeper::_tend_substreams()
                 c.context->set_motion_from_sub(true);          // main stops posting first
                 if(was != want)
                 {
-                    _motionEngine.remove_work_context(id);
+                    _remove_motion_work_context(id);
                     R_LOG_INFO("motion of %s: now found in its smaller stream", id.c_str());
                 }
                 sub_rec->second->set_feeds_motion(true);
@@ -1830,7 +1885,7 @@ void r_stream_keeper::_tend_substreams()
                     sub_rec->second->set_feeds_motion(false);   // the smaller stream stops posting first
                 if(was != motion_source::main)
                 {
-                    _motionEngine.remove_work_context(id);
+                    _remove_motion_work_context(id);
                     R_LOG_INFO("motion of %s: back in its main stream", id.c_str());
                 }
                 c.context->set_motion_from_sub(false);
@@ -1923,10 +1978,14 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.bytes_per_second = c.second->bytes_per_second();
             s.receiving_video = c.second->receiving_video();
             s.mount = c.second->restream_mount_path();
+            if(!s.mount.empty())
+                s.id_mount = restream_id_mount_path(c.first);
             auto sub = _substreams.find(c.first);
             s.sub_fresh = sub != _substreams.end() && sub->second->fresh();
             if(sub != _substreams.end())
                 s.sub_mount = sub->second->mount_path();
+            if(!s.sub_mount.empty())
+                s.sub_id_mount = substream_id_mount_path(c.first);
             s.storage_write_lag_ms = c.second->storage_write_lag_ms();
             s.storage_timeline_lag_ms = c.second->storage_timeline_lag_ms();
             s.has_camera_events = c.second->has_camera_events();
@@ -1994,7 +2053,7 @@ void r_stream_keeper::_stop(const string& camera_id)
     _streams[camera_id]->stop();
 
     // Clean up motion engine work context for this camera
-    _motionEngine.remove_work_context(camera_id);
+    _remove_motion_work_context(camera_id);
 }
 
 void r_stream_keeper::_client_connected_cbs(GstRTSPServer*, GstRTSPClient* client, r_stream_keeper* sk)
@@ -2082,10 +2141,9 @@ void r_stream_keeper::_create_playback_mount(const string& friendly_name, const 
 {
     for(auto s : _streams)
     {
-        // Normalize the camera's friendly name the same way URLs are created (spaces -> underscores)
+        // Normalize the camera's friendly name the same way URLs are created (friendly_mount_path, less its "/")
         // so we can match against the friendly_name extracted from the URL
-        string normalized_name = s.second->camera().friendly_name.value();
-        replace(begin(normalized_name), end(normalized_name), ' ', '_');
+        string normalized_name = friendly_mount_path(s.second->camera().friendly_name.value()).substr(1);
 
         if(normalized_name == friendly_name)
         {
