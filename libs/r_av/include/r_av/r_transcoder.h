@@ -93,7 +93,8 @@ public:
         const std::string& passphrase = "",
         const std::optional<r_transcoder_audio>& audio = std::nullopt,
         // Seconds between key frames. 1 as it always was; a Low-Latency HLS live view asks for 2 (Cloudflare's advice).
-        uint16_t gop_seconds = 1
+        uint16_t gop_seconds = 1,
+        bool use_libsrt = false
     );
 
     R_API ~r_transcoder();
@@ -124,6 +125,12 @@ public:
      * at once instead of waiting for room in a queue nothing drains.
      */
     R_API bool failed() const { return _failed; }
+
+    /**
+     * The SRT link's statistics now, when the output is an srt:// URL sent through libsrt (the `use_libsrt` argument,
+     * where this build has it). Empty otherwise. Safe to call from another thread while it runs.
+     */
+    R_API std::optional<r_srt_stats> srt_stats() const { return _muxer.srt_stats(); }
 
     // Start/stop transcoding
     R_API void start();

@@ -38,6 +38,7 @@ r_muxer::r_muxer(const std::string& path, bool output_to_buffer, const std::stri
     _format_name(format_name),
     _output_options(),
     _buffer(),
+    _use_libsrt(false),
     _fc([](AVFormatContext* fc){avformat_free_context(fc);}),
     _video_stream(nullptr),
     _audio_stream(nullptr),
@@ -65,6 +66,9 @@ r_muxer::~r_muxer()
         catch(std::exception& ex) { R_LOG_ERROR("r_muxer finalize failed in destructor: %s", ex.what()); }
         catch(...) { R_LOG_ERROR("r_muxer finalize failed in destructor: unknown exception"); }
     }
+    // An open() that failed after the SRT connection was made, or a finalize that threw before closing it.
+    if(_srt)
+        _close_libsrt();
 }
 
 void r_muxer::add_video_stream(AVRational frame_rate, AVCodecID codec_id, uint16_t w, uint16_t h, int profile, int level)
@@ -210,6 +214,101 @@ void r_muxer::enable_fragmented_mp4()
     _fragmented = true;
 }
 
+// libavformat 61 (FFmpeg 7) made the write callback's buffer const.
+#if LIBAVFORMAT_VERSION_MAJOR >= 61
+#define R_AVIO_WRITE_BUF const uint8_t*
+#else
+#define R_AVIO_WRITE_BUF uint8_t*
+#endif
+
+static int _srt_avio_write(void* opaque, R_AVIO_WRITE_BUF buf, int size)
+{
+    int n = static_cast<r_srt_output*>(opaque)->write(buf, size);
+    return n < 0 ? AVERROR(EIO) : n;
+}
+
+// A multiple of the SRT payload (seven TS packets): each write the muxer's buffer makes is whole payloads.
+static const int SRT_AVIO_BUFFER = 1316 * 16;
+
+static bool _is_srt_url(const std::string& path)
+{
+    return path.size() > 6 && (path[0] == 's' || path[0] == 'S') && (path[1] == 'r' || path[1] == 'R') && (path[2] == 't' || path[2] == 'T') && path.compare(3, 3, "://") == 0;
+}
+
+void r_muxer::use_libsrt()
+{
+    _use_libsrt = true;
+}
+
+std::optional<r_srt_stats> r_muxer::srt_stats() const
+{
+    std::shared_ptr<r_srt_output> srt;
+    {
+        std::lock_guard<std::mutex> g(_srt_mutex);
+        srt = _srt;
+    }
+    return srt ? srt->stats() : std::nullopt;
+}
+
+// An srt:// output through libsrt, when asked for and possible: the connection is ours, so its stats can be read.
+// Anything it can't take (a URL with options a caller doesn't need) is left to FFmpeg, as before. A connection that
+// fails throws, as FFmpeg's would, so the caller's retry of a fresh live input still applies.
+bool r_muxer::_open_libsrt()
+{
+    if(!_use_libsrt || !r_srt_output::available() || !_is_srt_url(_path))
+        return false;
+
+    r_srt_endpoint endpoint;
+    try
+    {
+        endpoint = r_parse_srt_url(_path);
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_WARNING("r_muxer: an SRT URL libsrt output can't take (%s); using FFmpeg's srt", ex.what());
+        return false;
+    }
+
+    auto srt = std::make_shared<r_srt_output>(endpoint);
+
+    auto* buffer = static_cast<uint8_t*>(av_malloc(SRT_AVIO_BUFFER));
+    if(!buffer)
+        R_THROW(("Unable to allocate the SRT output buffer."));
+    auto* pb = avio_alloc_context(buffer, SRT_AVIO_BUFFER, 1, srt.get(), nullptr, _srt_avio_write, nullptr);
+    if(!pb)
+    {
+        av_free(buffer);
+        R_THROW(("Unable to allocate the SRT output context."));
+    }
+    _fc.get()->pb = pb;
+    _fc.get()->flags |= AVFMT_FLAG_CUSTOM_IO;
+    {
+        std::lock_guard<std::mutex> g(_srt_mutex);
+        _srt = srt;
+    }
+    return true;
+}
+
+// Flush and free the custom output (the connection closes with the last reference).
+void r_muxer::_close_libsrt()
+{
+    auto* pb = _fc.get() ? _fc.get()->pb : nullptr;
+    if(pb)
+    {
+        avio_flush(pb);
+        av_freep(&pb->buffer);
+        avio_context_free(&pb);
+        _fc.get()->pb = nullptr;
+    }
+    std::shared_ptr<r_srt_output> srt;
+    {
+        std::lock_guard<std::mutex> g(_srt_mutex);
+        srt = std::move(_srt);
+    }
+    if(srt)
+        srt->close();
+}
+
 void r_muxer::open()
 {
     if(_fc.get()->nb_streams < 1)
@@ -220,6 +319,10 @@ void r_muxer::open()
         int res = avio_open_dyn_buf(&_fc.get()->pb);
         if(res < 0)
             R_THROW(("Unable to allocate a memory IO object: %s", ff_rc_to_msg(res).c_str()));
+    }
+    else if(_open_libsrt())
+    {
+        // pb is the SRT connection.
     }
     else
     {
@@ -391,6 +494,10 @@ void r_muxer::finalize()
             _buffer.resize(fileSize);
             if(fileSize > 0)
                 memcpy(&_buffer[0], fileBytes.get(), fileSize);
+        }
+        else if(_srt)
+        {
+            _close_libsrt();
         }
         else
         {

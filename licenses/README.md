@@ -25,6 +25,7 @@ edit the JSON, not this file.
 | [Inter Tight font](inter-tight-font.txt) | - | OFL-1.1 | Windows, macOS, Linux AppImage, Raspberry Pi .deb |
 | [SQLite](sqlite.txt) | 3.38.5 | blessing | Windows, macOS, Linux AppImage, Raspberry Pi .deb |
 | [Mbed TLS](mbedtls.txt) | 3.6.3 | Apache-2.0 OR GPL-2.0-or-later (used under Apache-2.0) | Windows, macOS, Linux AppImage, Raspberry Pi .deb |
+| [libsrt (SRT)](libsrt.txt) | 1.5.x | MPL-2.0 | Windows, macOS |
 | [JSON for Modern C++](nlohmann-json.txt) | 3.7.3 | MIT | Windows, macOS, Linux AppImage, Raspberry Pi .deb |
 | [date (Howard Hinnant)](date.txt) | - | MIT | Windows, macOS, Linux AppImage, Raspberry Pi .deb |
 | [QR Code generator (Nayuki)](qrcodegen.txt) | - | MIT | Windows, macOS, Linux AppImage, Raspberry Pi .deb |

@@ -6,6 +6,8 @@
 #include "r_av/r_format_utils.h"
 #include "r_utils/r_std_utils.h"
 #include "r_utils/r_macro.h"
+#include "r_av/r_srt_output.h"
+#include "r_av/r_srt_stats.h"
 
 #include <string>
 #include <utility>
@@ -14,6 +16,8 @@
 #include <functional>
 #include <vector>
 #include <map>
+#include <mutex>
+#include <optional>
 
 extern "C"
 {
@@ -56,6 +60,14 @@ public:
 
     R_API void set_output_option(const std::string& key, const std::string& value);
 
+    // An srt:// output is opened through libsrt directly instead of FFmpeg's srt protocol, so its link statistics can be
+    // read (srt_stats()). Only where this build has libsrt (r_srt_output::available()) and the URL is one a caller
+    // needs (r_parse_srt_url); otherwise the output is FFmpeg's, as before, and srt_stats() is empty. Call before open().
+    R_API void use_libsrt();
+
+    // The SRT link's statistics now, when the output is through libsrt. Safe to call from another thread.
+    R_API std::optional<r_srt_stats> srt_stats() const;
+
     // With video and audio, the muxer holds one stream's packets while the other has none queued, until the queued
     // span passes this many microseconds (FFmpeg's default is 10 s). A live output whose audio can pause sets it low,
     // so a quiet stretch of audio holds the picture back for at most this long.
@@ -84,6 +96,9 @@ public:
     R_API size_t buffer_size() const;
 
 private:
+    bool _open_libsrt();
+    void _close_libsrt();
+
     std::string _path;
     bool _output_to_buffer;
     bool _faststart;
@@ -91,6 +106,9 @@ private:
     std::string _format_name;
     std::map<std::string, std::string> _output_options;
     std::vector<uint8_t> _buffer;
+    bool _use_libsrt;
+    mutable std::mutex _srt_mutex;
+    std::shared_ptr<r_srt_output> _srt;
 
     r_utils::r_std_utils::raii_ptr<AVFormatContext> _fc;
     AVStream* _video_stream; // raw pointers allowed here because they are cleaned up automatically by _fc
