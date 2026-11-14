@@ -525,6 +525,7 @@ r_recording_context::~r_recording_context() noexcept
 
     R_LOG_INFO("teardown %s: mount", id.c_str());
     _sk->remove_restream_mount(_restream_mount_path);
+    _sk->remove_restream_mount(restream_id_mount_path(_camera.id));
 
     R_LOG_INFO("teardown %s: source stop", id.c_str());
     _source.stop();
