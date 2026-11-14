@@ -1596,6 +1596,11 @@ void test_r_http::test_server_request_read_deadline()
     RTF_ASSERT(slow_body.outcome == "408");
     RTF_ASSERT(slow_body.took >= std::chrono::milliseconds(450) && slow_body.took < std::chrono::milliseconds(2000));
 
+    // A sender that goes quiet: the read ends at the deadline, not after the longer wait between bytes.
+    auto quiet = _read_trickled("POST /in HTTP/1.1\r\n", "", 100, 500);
+    RTF_ASSERT(quiet.outcome == "408");
+    RTF_ASSERT(quiet.took >= std::chrono::milliseconds(450) && quiet.took < std::chrono::milliseconds(2000));
+
     // Headers that never end.
     auto slow_headers = _read_trickled("POST /in HTTP/1.1\r\n", std::string(200, 'h'), 50, 500);
     RTF_ASSERT(slow_headers.outcome == "408");
@@ -1621,6 +1626,7 @@ void test_r_http::test_web_server_read_deadline()
     int port = RTF_NEXT_PORT();
     std::atomic<int> ran {0};
     r_web_server<r_socket> ws(port, "127.0.0.1", 1);
+    RTF_ASSERT(r_web_server<r_socket>::DEFAULT_REQUEST_READ_DEADLINE_MS == 30000);
     RTF_ASSERT(ws.request_read_deadline() == r_web_server<r_socket>::DEFAULT_REQUEST_READ_DEADLINE_MS);
     ws.set_request_read_deadline(400);
     RTF_ASSERT(ws.request_read_deadline() == 400);
