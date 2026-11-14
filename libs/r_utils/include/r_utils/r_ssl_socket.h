@@ -49,6 +49,9 @@ public:
     R_API std::string peer_cert_fingerprint_sha256() const;
     inline std::string get_local_ip() const { return _sok.get_local_ip(); }
 
+    // The underlying TCP socket, beneath TLS (as r_ssl_server_socket::get_sok_id()).
+    inline sock_t get_sok_id() const { return _sok.get_sok_id(); }
+
 private:
     r_raw_socket _sok;
 
