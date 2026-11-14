@@ -31,7 +31,7 @@ typedef void* r_system_plugin_handle;
 // to choose, and differ between builds (a release bundles its own, a self-built
 // revere uses the system's), so a plugin linking one loads in only some of them.
 #define R_SYSTEM_PLUGIN_API_MAJOR 1
-#define R_SYSTEM_PLUGIN_API_MINOR 0
+#define R_SYSTEM_PLUGIN_API_MINOR 1
 // Both in one number, as get_system_plugin_api_version() returns it: major << 16 | minor.
 #define R_SYSTEM_PLUGIN_API_VERSION ((uint32_t)(R_SYSTEM_PLUGIN_API_MAJOR) << 16 | (uint32_t)(R_SYSTEM_PLUGIN_API_MINOR))
 
