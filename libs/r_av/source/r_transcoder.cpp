@@ -31,9 +31,7 @@ r_transcoder::r_transcoder(
     _decoder(input_codec, r_find_best_hw_accel(input_codec)),
     _encoder(),
     _muxer(passphrase.empty() ? output_url : output_url + "&passphrase=" + passphrase, false, output_format),
-    _current_bitrate(initial_bitrate),
-    _max_bitrate(max_bitrate),
-    _min_bitrate(min_bitrate),
+    _bitrate_control(initial_bitrate, min_bitrate, max_bitrate),
     _enable_dynamic_bitrate(enable_dynamic_bitrate),
     _bytes_encoded_this_window(0),
     _output_width(output_width),
@@ -97,6 +95,7 @@ void r_transcoder::start()
 
     _last_bitrate_check = std::chrono::steady_clock::now();
     _bytes_encoded_this_window = 0;
+    _bitrate_control.restart(); // the first window holds the first key frames: not judged
     _frame_count = 0;
     _selector.reset();
     _last_decoded_frame = nullptr;
@@ -276,13 +275,14 @@ void r_transcoder::_worker_thread()
                 if (_enable_dynamic_bitrate)
                 {
                     auto now = std::chrono::steady_clock::now();
-                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                         now - _last_bitrate_check
                     ).count();
 
-                    if (elapsed >= 5)
+                    if (elapsed_ms >= 5000)
                     {
-                        _adjust_bitrate();
+                        // The window is checked on a frame, so it runs a little over 5 s: the rate is over what elapsed.
+                        _adjust_bitrate(static_cast<uint32_t>(elapsed_ms));
                         _last_bitrate_check = now;
                         _bytes_encoded_this_window = 0;
                     }
@@ -343,38 +343,15 @@ void r_output_frame_selector::reset()
     _next_pts = -1;
 }
 
-void r_transcoder::_adjust_bitrate()
+void r_transcoder::_adjust_bitrate(uint32_t window_ms)
 {
-    // Calculate actual bitrate over the last window
-    uint32_t actual_bitrate = static_cast<uint32_t>((_bytes_encoded_this_window * 8) / 5); // bits per second
-
-    // Calculate how far we are from target
-    float ratio = (float)actual_bitrate / (float)_current_bitrate;
-
-    uint32_t new_bitrate = _current_bitrate;
-
-    // If we're consistently under target, we can increase
-    if (ratio < 0.85f && _current_bitrate < _max_bitrate)
+    // The rule (and its skipped first window) is r_bitrate_control's.
+    const uint32_t current = _bitrate_control.current();
+    if (auto new_bitrate = _bitrate_control.review(_bytes_encoded_this_window, window_ms))
     {
-        // Increase by 25%
-        new_bitrate = (std::min)(_max_bitrate,
-                                 (uint32_t)(_current_bitrate * 1.25f));
-    }
-    // If we're over target, we need to decrease
-    else if (ratio > 1.15f)
-    {
-        // Decrease by 30%
-        new_bitrate = (std::max)(_min_bitrate,
-                                 (uint32_t)(_current_bitrate * 0.70f));
-    }
-
-    // Only adjust if bitrate changed significantly (>10%)
-    if (std::abs((int)new_bitrate - (int)_current_bitrate) > (int)(_current_bitrate * 0.10f))
-    {
-        R_LOG_INFO("Adjusting bitrate: %u -> %u (actual: %u)", _current_bitrate, new_bitrate, actual_bitrate);
+        R_LOG_INFO("Adjusting bitrate: %u -> %u (actual: %u)", current, *new_bitrate, r_bitrate_control::bits_per_second(_bytes_encoded_this_window, window_ms));
 
         // Update encoder bitrate dynamically
-        _encoder.set_bitrate(new_bitrate);
-        _current_bitrate = new_bitrate;
+        _encoder.set_bitrate(*new_bitrate);
     }
 }
