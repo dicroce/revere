@@ -120,6 +120,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
     _rtsp_password = r_rtsp_auth::load_or_create_password(top_dir);
     _rtsp_auth = r_rtsp_auth::make_auth(_rtsp_password);
     gst_rtsp_server_set_auth(_server, _rtsp_auth);
+    _rtsp_logins = std::make_unique<r_rtsp_logins>(_server, _rtsp_auth);
 
     // A person on a camera's first significant key frame starts its event at
     // once, rather than after MOG2's confirmation (see r_motion_engine).
@@ -171,6 +172,9 @@ r_stream_keeper::~r_stream_keeper() noexcept
         g_object_unref(_mounts);
         _mounts = nullptr;
     }
+
+    // Before the server and the auth it works on.
+    _rtsp_logins.reset();
 
     if(_server)
     {

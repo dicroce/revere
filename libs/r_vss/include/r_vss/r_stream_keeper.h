@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <thread>
 #include <mutex>
+#include "r_vss/r_rtsp_logins.h"
 #include <memory>
 #include <functional>
 #include <chrono>
@@ -324,6 +325,8 @@ public:
     // The restream's RTSP credential (r_vss/r_rtsp_auth.h): user
     // r_rtsp_auth::RTSP_USER with this password, by Digest.
     R_API std::string rtsp_password() const { return _rtsp_password; }
+    // Extra RTSP logins for local plugins (r_rtsp_logins.h), added and removed while running.
+    R_API r_rtsp_logins& rtsp_logins() { return *_rtsp_logins; }
 
     R_API void write_metadata(const std::string& camera_id, const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);
 
@@ -477,6 +480,7 @@ private:
     GstRTSPServer* _server;
     GstRTSPAuth* _rtsp_auth {nullptr};
     std::string _rtsp_password;
+    std::unique_ptr<r_rtsp_logins> _rtsp_logins;
     GstRTSPMountPoints* _mounts;
     std::vector<GstRTSPMediaFactory*> _factories;
     r_motion_tuning_fn _motion_tuning_fn;

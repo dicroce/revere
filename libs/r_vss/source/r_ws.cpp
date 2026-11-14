@@ -5,6 +5,7 @@
 #include "r_vss/r_recap.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_rtsp_auth.h"
+#include "r_vss/r_rtsp_logins_api.h"
 #include "r_vss/r_query.h"
 #include "r_vss/r_vss_utils.h"
 #include "r_vss/r_camera_source_info.h"
@@ -193,6 +194,19 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     open_route(METHOD_POST, "/set_password", &r_ws::_post_set_password);
     route(METHOD_POST, "/session", &r_ws::_post_session);
     route(METHOD_GET, "/rtsp_credentials", &r_ws::_get_rtsp_credentials);
+
+    // Per-client RTSP logins for local plugins: the local token, from this machine, and nothing else
+    // (r_rtsp_logins_api.h). They check for themselves, so they are not `route`s.
+    rtsp_logins_api logins_api;
+    logins_api.request_token = [this](const r_http::r_server_request& request) {
+        auto token = _request_token(request);
+        return token.is_null() ? string() : token.value();
+    };
+    logins_api.is_local_token = [this](const string& token) {
+        auto local = _auth.local_token();
+        return !local.empty() && r_ws_auth::constant_time_equal(token, local);
+    };
+    add_rtsp_login_routes(server, _stream_keeper.rtsp_logins(), logins_api);
 }
 
 r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_keeper& stream_keeper) :
