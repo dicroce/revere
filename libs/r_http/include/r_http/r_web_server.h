@@ -147,6 +147,16 @@ public:
     // iteration and return early, so it doesn't make shutdown wait for it.
     bool stopping() const { return _server.stopping(); }
 
+    // The largest request body this server reads (r_server_request::DEFAULT_MAX_BODY_SIZE unless set). A request with
+    // a larger one is answered 413 and its connection closed, before its body is read and before any route runs. Set
+    // it before start().
+    void set_max_request_body( size_t max_body_size )
+    {
+        _maxBodySize = max_body_size;
+    }
+
+    size_t max_request_body() const { return _maxBodySize; }
+
     void add_route( int method, const std::string& path, http_cb cb )
     {
         _cbs[method][path] = cb;
@@ -225,7 +235,28 @@ private:
     void _server_conn_cb(SOK_T& conn)
     {
         r_server_request request;
-        request.read_request(conn);
+        request.set_max_body_size(_maxBodySize);
+        try
+        {
+            request.read_request(conn);
+        }
+        catch(r_http_413_exception& ex)
+        {
+            R_LOG_WARNING("%s:%d %s", __FILE__, __LINE__, r_utils::r_string_utils::split(std::string(ex.what()), '\n').front().c_str());
+            _refuse_too_large(conn);
+            return;
+        }
+        catch(r_http_400_exception& ex)
+        {
+            // A length that isn't a number.
+            R_LOG_WARNING("%s:%d %s", __FILE__, __LINE__, r_utils::r_string_utils::split(std::string(ex.what()), '\n').front().c_str());
+            if(conn.valid())
+            {
+                r_server_response response(response_bad_request);
+                try { response.write_response(conn, 1000); } catch(...) {}
+            }
+            return;
+        }
 
         // The request may have waited in the queue for a free worker. If the
         // client has given up in the meantime (its own timeout), nobody will
@@ -296,6 +327,41 @@ private:
         }
     }
 
+    // 413, and the connection closed (every response says so, and the server closes it once this returns). What the client has already sent is read
+    // first, briefly and only up to a bound, so closing doesn't reset the connection before it reads the answer; the
+    // rest of its body is never read.
+    static void _refuse_too_large( SOK_T& conn )
+    {
+        if( !conn.valid() )
+            return;
+        try
+        {
+            r_server_response response(response_payload_too_large);
+            response.write_response(conn, 1000);
+
+            char discard[4096];
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+            size_t drained = 0;
+            while(drained < 65536)
+            {
+                auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+                if(left <= 0)
+                    break;
+                uint64_t wait_ms = (uint64_t)left;
+                if(!conn.wait_till_recv_wont_block(wait_ms))
+                    break;
+                int n = conn.recv(discard, sizeof(discard));
+                if(n <= 0)
+                    break;
+                drained += (size_t)n;
+            }
+        }
+        catch(...)
+        {
+        }
+    }
+
+    size_t _maxBodySize {r_server_request::DEFAULT_MAX_BODY_SIZE};
     std::map<int, std::map<std::string, http_cb>> _cbs;
     std::map<std::string, r_utils::r_blob_tree> _bundles;
     r_utils::r_server_threaded<SOK_T> _server;

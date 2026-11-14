@@ -100,6 +100,18 @@ public:
     R_API r_http_404_exception( const std::string& msg );
 };
 
+class r_http_413_exception : public r_http_exception
+{
+public:
+    R_API r_http_413_exception();
+
+    R_API virtual ~r_http_413_exception() noexcept {}
+
+    R_API r_http_413_exception( const char* msg, ... );
+
+    R_API r_http_413_exception( const std::string& msg );
+};
+
 class r_http_415_exception : public r_http_exception
 {
 public:

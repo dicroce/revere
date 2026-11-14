@@ -31,6 +31,7 @@ enum status_code
     response_method_not_allowed      = 405, ///< Could not use specified method for this resource.
     response_gone                    = 410, ///< Resource no longer available, no forwarding address.
     response_length_required         = 411, ///< Request requires Content-Length header field.
+    response_payload_too_large       = 413, ///< Request body is larger than the server accepts.
 
     /// SERVER ERROR RESPONSES
     response_internal_server_error   = 500, ///< The server encountered an unexpected condition.

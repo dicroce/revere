@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <sstream>
 #include <algorithm>
+#include <cstdint>
 
 using namespace r_http;
 using namespace r_utils;
@@ -17,7 +18,34 @@ using namespace std;
 static const uint64_t DEFAULT_RECV_TIMEOUT = 10000;
 static const size_t MAX_HEADER_LINE = 16384;
 static const size_t MAX_TOTAL_HEADERS_SIZE = 1024 * 1024; // 1MB limit for all headers
-static const size_t MAX_BODY_SIZE = 100 * 1024 * 1024; // 100MB limit for request body
+// A body is read this much at a time, so its buffer grows only as the bytes arrive.
+static const size_t BODY_READ_STEP = 64 * 1024;
+
+// A Content-Length (or a chunk size, in hex) as a number: digits only, and no larger than a uint64_t holds. Anything
+// else is not a length.
+static bool _parse_length(const string& s, int base, uint64_t& out)
+{
+    if(s.empty())
+        return false;
+    uint64_t v = 0;
+    for(char c : s)
+    {
+        int d;
+        if(c >= '0' && c <= '9')
+            d = c - '0';
+        else if(base == 16 && c >= 'a' && c <= 'f')
+            d = c - 'a' + 10;
+        else if(base == 16 && c >= 'A' && c <= 'F')
+            d = c - 'A' + 10;
+        else
+            return false;
+        if(v > (UINT64_MAX - (uint64_t)d) / (uint64_t)base)
+            return false;
+        v = v * (uint64_t)base + (uint64_t)d;
+    }
+    out = v;
+    return true;
+}
 
 r_server_request::r_server_request() :
     _initialLine(),
@@ -27,7 +55,8 @@ r_server_request::r_server_request() :
     _contentType(),
     _headerOverRead(),
     _chunkCallback(),
-    _chunk()
+    _chunk(),
+    _maxBodySize(DEFAULT_MAX_BODY_SIZE)
 {
 }
 
@@ -39,7 +68,8 @@ r_server_request::r_server_request(const r_server_request& obj) :
     _contentType(obj._contentType),
     _headerOverRead(obj._headerOverRead),
     _chunkCallback(obj._chunkCallback),
-    _chunk(obj._chunk)
+    _chunk(obj._chunk),
+    _maxBodySize(obj._maxBodySize)
 {
 }
 
@@ -57,6 +87,7 @@ r_server_request& r_server_request::operator = (const r_server_request& obj)
     _headerOverRead = obj._headerOverRead;
     _chunkCallback = obj._chunkCallback;
     _chunk = obj._chunk;
+    _maxBodySize = obj._maxBodySize;
 
     return *this;
 }
@@ -301,38 +332,44 @@ void r_server_request::_process_body(r_socket_base& socket, uint64_t timeout_mil
 
     if(!cl.is_null())
     {
-        auto contentLengthString = r_string_utils::strip(cl.value());
-        uint32_t contentLength = r_string_utils::s_to_uint32(contentLengthString);
+        uint64_t contentLength = 0;
+        if(!_parse_length(r_string_utils::strip(cl.value()), 10, contentLength))
+            R_STHROW(r_http_400_exception, ("Bad Content-Length."));
 
         if(!contentLength)
             return;
 
-        _body.resize(contentLength);
+        // Refused before any of it is read, or any room made for it.
+        if(contentLength > _maxBodySize)
+            R_STHROW(r_http_413_exception, ("Request body of %llu bytes is over this server's %llu.",
+                                            (unsigned long long)contentLength, (unsigned long long)_maxBodySize));
 
+        _body.clear();
         size_t totalReceived = 0;
 
         // First, use any leftover bytes from header reading
         if(!_headerOverRead.empty())
         {
             size_t toCopy = min(_headerOverRead.size(), (size_t)contentLength);
-            memcpy(_body.data(), _headerOverRead.data(), toCopy);
+            _body.assign(_headerOverRead.begin(), _headerOverRead.begin() + toCopy);
             totalReceived = toCopy;
             _headerOverRead.clear();
         }
 
-        // Read remaining bytes from socket if needed
-        if(totalReceived < contentLength)
+        // Then the rest from the socket, a step at a time: the buffer grows as the bytes come, not to what was
+        // declared.
+        while(totalReceived < contentLength && socket.valid())
         {
-            unsigned char* buffer = _body.data() + totalReceived;
-            size_t remaining = contentLength - totalReceived;
-
-            int received = r_networking::r_recv(socket, buffer, remaining, timeout_millis);
+            size_t step = (size_t)min((uint64_t)BODY_READ_STEP, contentLength - totalReceived);
+            _body.resize(totalReceived + step);
+            int received = r_networking::r_recv(socket, _body.data() + totalReceived, step, timeout_millis);
             if(received > 0)
                 totalReceived += received;
+            if(received < (int)step)
+                break;
         }
 
-        if(totalReceived < contentLength)
-            _body.resize(totalReceived);
+        _body.resize(totalReceived);
 
         if(!socket.valid())
             R_STHROW(r_http_io_exception, ("Socket invalid."));
@@ -366,6 +403,16 @@ void r_server_request::_process_body(r_socket_base& socket, uint64_t timeout_mil
 void r_server_request::register_chunk_callback(server_chunk_callback cb)
 {
     _chunkCallback = cb;
+}
+
+void r_server_request::set_max_body_size(size_t max_body_size)
+{
+    _maxBodySize = max_body_size;
+}
+
+size_t r_server_request::get_max_body_size() const
+{
+    return _maxBodySize;
 }
 
 bool r_server_request::_read_line(r_socket_base& socket, string& line, uint64_t timeout_millis)
@@ -423,6 +470,8 @@ void r_server_request::_consume_footer(r_socket_base& socket, uint64_t timeout_m
 void r_server_request::_read_chunked_body(r_socket_base& socket, uint64_t timeout_millis)
 {
     string line;
+    // The chunks so far, together: held to the same limit as a Content-Length.
+    uint64_t bodyTotal = 0;
 
     while(true)
     {
@@ -436,7 +485,9 @@ void r_server_request::_read_chunked_body(r_socket_base& socket, uint64_t timeou
             line = line.substr(0, semicolonPos);
 
         // Parse hex chunk size
-        uint32_t chunkLen = (uint32_t)strtoul(line.c_str(), nullptr, 16);
+        uint64_t chunkLen = 0;
+        if(!_parse_length(r_string_utils::strip(line), 16, chunkLen))
+            R_STHROW(r_http_400_exception, ("Bad chunk size."));
 
         // Zero-length chunk signals end of body
         if(chunkLen == 0)
@@ -445,25 +496,35 @@ void r_server_request::_read_chunked_body(r_socket_base& socket, uint64_t timeou
             return;
         }
 
+        // Refused before the chunk is read, or any room made for it.
+        if(chunkLen > _maxBodySize - bodyTotal)
+            R_STHROW(r_http_413_exception, ("Chunked request body is over this server's %llu bytes.", (unsigned long long)_maxBodySize));
+        bodyTotal += chunkLen;
+
         // Read chunk data
-        _chunk.resize(chunkLen);
+        _chunk.clear();
         size_t totalReceived = 0;
 
         // Use any leftover bytes first
         while(!_headerOverRead.empty() && totalReceived < chunkLen)
         {
-            _chunk[totalReceived++] = _headerOverRead[0];
+            _chunk.push_back(_headerOverRead[0]);
+            ++totalReceived;
             _headerOverRead.erase(_headerOverRead.begin());
         }
 
-        // Read remaining from socket - loop until all bytes received
+        // Read remaining from socket a step at a time, as for a Content-Length body.
         while(totalReceived < chunkLen && socket.valid())
         {
-            int received = r_networking::r_recv(socket, &_chunk[totalReceived], chunkLen - totalReceived, timeout_millis);
-            if(received <= 0)
+            size_t step = (size_t)min((uint64_t)BODY_READ_STEP, chunkLen - totalReceived);
+            _chunk.resize(totalReceived + step);
+            int received = r_networking::r_recv(socket, &_chunk[totalReceived], step, timeout_millis);
+            if(received > 0)
+                totalReceived += received;
+            if(received < (int)step)
                 break;
-            totalReceived += received;
         }
+        _chunk.resize(totalReceived);
 
         if(totalReceived < chunkLen)
             R_STHROW(r_http_io_exception, ("Failed to read complete chunk data."));
