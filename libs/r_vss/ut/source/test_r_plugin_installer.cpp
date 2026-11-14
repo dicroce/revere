@@ -2,6 +2,7 @@
 #include "plugin_manifest_fixture.h"
 #include "r_vss/r_plugin_installer.h"
 #include "r_utils/r_exception.h"
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
