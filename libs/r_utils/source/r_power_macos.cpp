@@ -1,6 +1,6 @@
 #ifdef IS_MACOS
 
-#include "r_vss/r_keep_awake.h"
+#include "r_utils/r_power.h"
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOMessage.h>
 #include <IOKit/ps/IOPowerSources.h>
@@ -10,8 +10,9 @@
 #include <cstdio>
 #include <future>
 #include <stdexcept>
+#include <thread>
 
-using namespace r_vss;
+using namespace r_utils;
 using namespace std;
 
 struct r_sleep_blocker::impl
@@ -68,7 +69,7 @@ bool r_sleep_blocker::unavailable() const
     return false;
 }
 
-r_power_source r_vss::current_power_source()
+r_power_source r_utils::current_power_source()
 {
     CFTypeRef info = IOPSCopyPowerSourcesInfo();
     if(!info)

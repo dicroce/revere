@@ -11,6 +11,12 @@
 #include "r_utils/r_file.h"
 #include "r_utils/r_file_lock.h"
 #include "r_utils/r_instance_lock.h"
+#include "r_utils/r_app_instance.h"
+#include "r_utils/r_direct_file.h"
+#include "r_utils/r_dynamic_library.h"
+#include "r_utils/r_platform.h"
+#include "r_utils/r_process.h"
+#include "r_utils/r_std_utils.h"
 #include "r_utils/r_restart.h"
 #include "r_utils/r_md5.h"
 #include "r_utils/r_sha1.h"
@@ -1084,29 +1090,24 @@ void test_r_utils::test_ssl_socket_multiple_close()
     RTF_ASSERT(sock.recv(buffer, sizeof(buffer)) < 0);
 }
 
-// r_udp_socket has no bind of its own: bind the receiver through fd().
 void test_r_utils::test_udp_socket_send_recv()
 {
     r_udp_socket rx, tx;
-    r_socket_address rx_addr(9393, "127.0.0.1");
-    RTF_ASSERT(::bind(rx.fd(), rx_addr.get_sock_addr(), rx_addr.sock_addr_size()) == 0);
-
+    rx.bind(9393, "127.0.0.1");
     // Fail rather than hang if nothing arrives.
-#ifdef IS_WINDOWS
-    DWORD timeout = 2000;
-#else
-    struct timeval timeout = {2, 0};
-#endif
-    setsockopt(rx.fd(), SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+    rx.set_recv_timeout(std::chrono::milliseconds(2000));
 
+    r_socket_address rx_addr(9393, "127.0.0.1");
     const uint8_t out[4] = {1, 2, 3, 4};
     RTF_ASSERT(tx.sendto(out, sizeof(out), rx_addr) == 4);
 
     uint8_t in[16] = {};
-    r_socket_address from(0, "127.0.0.1");
+    r_socket_address from(0);
     RTF_ASSERT(rx.recvfrom(in, sizeof(in), from) == 4);
+    RTF_ASSERT(!rx.timed_out());
     RTF_ASSERT(memcmp(in, out, sizeof(out)) == 0);
     RTF_ASSERT(((struct sockaddr_in*)from.get_sock_addr())->sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+    RTF_ASSERT_EQUAL(from.address(), string("127.0.0.1"));
 }
 
 // A destroyed r_udp_socket gives its descriptor back: the next one opened is
@@ -2415,11 +2416,7 @@ void test_r_utils::test_instance_lock_one_holder()
         // holder's pid (ours here: same process, separate lock).
         r_instance_lock second(path);
         RTF_ASSERT(!second.held());
-#ifdef IS_WINDOWS
-        RTF_ASSERT_EQUAL(second.holder_pid(), (int64_t)GetCurrentProcessId());
-#else
-        RTF_ASSERT_EQUAL(second.holder_pid(), (int64_t)getpid());
-#endif
+        RTF_ASSERT_EQUAL(second.holder_pid(), r_process::get_current_pid().id());
     }
     // Released with the holder.
     r_instance_lock third(path);
@@ -3051,4 +3048,158 @@ void test_r_utils::test_restart_not_restarted()
     auto start = std::chrono::steady_clock::now();
     RTF_ASSERT(!r_utils::r_restart::wait_for_predecessor(std::chrono::seconds(5)));
     RTF_ASSERT(std::chrono::steady_clock::now() - start < std::chrono::seconds(1));
+}
+
+void test_r_utils::test_udp_socket_recv_timeout()
+{
+    r_udp_socket rx;
+    rx.bind(0, "127.0.0.1");
+    rx.set_recv_timeout(std::chrono::milliseconds(100));
+    uint8_t in[16] = {};
+    r_socket_address from(0);
+    auto before = std::chrono::steady_clock::now();
+    RTF_ASSERT(rx.recvfrom(in, sizeof(in), from) < 0);
+    RTF_ASSERT(rx.timed_out());
+    RTF_ASSERT(std::chrono::steady_clock::now() - before < std::chrono::seconds(5));
+}
+
+void test_r_utils::test_local_ip_for()
+{
+    // Loopback and anything not an IPv4 literal give no answer.
+    RTF_ASSERT(r_networking::r_local_ip_for("127.0.0.1").empty());
+    RTF_ASSERT(r_networking::r_local_ip_for("not an address").empty());
+    RTF_ASSERT(r_networking::r_local_ip_for("").empty());
+    // A public address: empty with no network, else one of ours (not loopback).
+    auto ip = r_networking::r_local_ip_for("8.8.8.8");
+    if(!ip.empty())
+    {
+        RTF_ASSERT(ip.compare(0, 4, "127.") != 0);
+        RTF_ASSERT(ip != "0.0.0.0");
+    }
+}
+
+void test_r_utils::test_tm_conversions()
+{
+    auto epoch = r_time_utils::to_utc_tm(0);
+    RTF_ASSERT_EQUAL(epoch.tm_year, 70);
+    RTF_ASSERT_EQUAL(epoch.tm_mon, 0);
+    RTF_ASSERT_EQUAL(epoch.tm_mday, 1);
+    RTF_ASSERT_EQUAL(epoch.tm_hour, 0);
+
+    const time_t t = 1700000000;  // 2023-11-14T22:13:20Z
+    auto u = r_time_utils::to_utc_tm(t);
+    RTF_ASSERT_EQUAL(u.tm_year, 123);
+    RTF_ASSERT_EQUAL(u.tm_mon, 10);
+    RTF_ASSERT_EQUAL(u.tm_mday, 14);
+    RTF_ASSERT_EQUAL(u.tm_hour, 22);
+    RTF_ASSERT_EQUAL(u.tm_min, 13);
+    RTF_ASSERT_EQUAL(u.tm_sec, 20);
+    RTF_ASSERT_EQUAL((int64_t)r_time_utils::utc_tm_to_time_t(u), (int64_t)t);
+
+    // Out-of-range fields roll over, as with mktime: January 32 is February 1.
+    std::tm jan32 {};
+    jan32.tm_year = 123;
+    jan32.tm_mon = 0;
+    jan32.tm_mday = 32;
+    auto feb1 = r_time_utils::to_utc_tm(r_time_utils::utc_tm_to_time_t(jan32));
+    RTF_ASSERT_EQUAL(feb1.tm_mon, 1);
+    RTF_ASSERT_EQUAL(feb1.tm_mday, 1);
+
+    // Local time round-trips through mktime.
+    auto l = r_time_utils::to_local_tm(t);
+    RTF_ASSERT_EQUAL((int64_t)mktime(&l), (int64_t)t);
+
+    auto c = r_time_utils::to_ctime_string(t);
+    RTF_ASSERT_EQUAL(c.size(), (size_t)25);
+    RTF_ASSERT(c.back() == '\n');
+}
+
+void test_r_utils::test_set_env()
+{
+    const string name = "R_UTILS_TEST_SET_ENV";
+    r_std_utils::set_env(name, "abc");
+    RTF_ASSERT_EQUAL(r_std_utils::get_env(name), string("abc"));
+    r_std_utils::set_env(name, "def");
+    RTF_ASSERT_EQUAL(r_std_utils::get_env(name), string("def"));
+    r_std_utils::unset_env(name);
+    RTF_ASSERT(r_std_utils::get_env(name).empty());
+}
+
+void test_r_utils::test_current_pid()
+{
+    auto p = r_process::get_current_pid();
+    RTF_ASSERT(p.valid());
+    RTF_ASSERT(p.id() > 0);
+    r_pid none;
+    RTF_ASSERT_EQUAL(none.id(), (int64_t)0);
+}
+
+void test_r_utils::test_app_instance_one_holder()
+{
+    // A name and lock no installed build uses.
+    const string name = "RUtilsTest" + r_uuid::generate();
+    const string path = "app_instance_test.lock";
+    {
+        r_app_instance first(name, path);
+        RTF_ASSERT(first.held());
+        RTF_ASSERT(!first.quit_requested());
+
+        // Its pid is in the lock file, for a quit that has to be forced.
+        auto bytes = r_fs::read_file(path);
+        RTF_ASSERT_EQUAL((int64_t)atoll(string(bytes.begin(), bytes.end()).c_str()), r_process::get_current_pid().id());
+
+        r_app_instance second(name, path);
+        RTF_ASSERT(!second.held());
+
+        first.release();
+        RTF_ASSERT(!first.held());
+    }
+    // Free once the holder let go.
+    r_app_instance third(name, path);
+    RTF_ASSERT(third.held());
+    third.release();
+    if(r_fs::file_exists(path))
+        r_fs::remove_file(path);
+}
+
+void test_r_utils::test_app_instance_quit_when_not_running()
+{
+    const string name = "RUtilsTest" + r_uuid::generate();
+    const string path = "app_instance_absent.lock";
+    if(r_fs::file_exists(path))
+        r_fs::remove_file(path);
+    auto before = std::chrono::steady_clock::now();
+    RTF_ASSERT(r_app_instance::request_quit(name, path, std::chrono::seconds(10), std::chrono::seconds(5)));
+    // Nothing to wait for.
+    RTF_ASSERT(std::chrono::steady_clock::now() - before < std::chrono::seconds(2));
+}
+
+void test_r_utils::test_direct_file_write()
+{
+    const string path = "direct_file_test.tmp";
+    {
+        auto buf = r_direct_file::aligned_buffer(2 * r_direct_file::ALIGNMENT);
+        RTF_ASSERT(((uintptr_t)buf.get() % r_direct_file::ALIGNMENT) == 0);
+        memset(buf.get(), 0x5A, 2 * r_direct_file::ALIGNMENT);
+        r_direct_file f(path);
+        f.write(buf.get(), 2 * r_direct_file::ALIGNMENT);
+        f.write(buf.get(), r_direct_file::ALIGNMENT);
+        f.sync();
+    }
+    RTF_ASSERT_EQUAL(r_fs::file_size(path), (uint64_t)(3 * r_direct_file::ALIGNMENT));
+    auto bytes = r_fs::read_file(path);
+    RTF_ASSERT(bytes.front() == 0x5A && bytes.back() == 0x5A);
+    r_fs::remove_file(path);
+}
+
+void test_r_utils::test_platform_names()
+{
+    string os = r_platform::os_id();
+    RTF_ASSERT(os == "windows" || os == "macos" || os == "linux");
+    string arch = r_platform::arch_name();
+    RTF_ASSERT(arch == "x86_64" || arch == "arm64");
+    auto ext = r_dynamic_library::extension();
+    RTF_ASSERT(ext == ".dll" || ext == ".dylib" || ext == ".so");
+    RTF_ASSERT(r_platform::is_windows() == (ext == ".dll"));
+    RTF_ASSERT(r_platform::is_windows() == (string(r_platform::exe_suffix()) == ".exe"));
 }

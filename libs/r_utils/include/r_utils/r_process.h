@@ -55,6 +55,15 @@ struct r_pid
         return (pid == obj.pid)?true:false;
 #endif
     }
+    // The OS process id, 0 if none.
+    int64_t id() const
+    {
+#ifdef IS_WINDOWS
+        return (int64_t)pi.dwProcessId;
+#else
+        return (pid >= 0) ? (int64_t)pid : 0;
+#endif
+    }
     bool valid() const
     {
 #ifdef IS_WINDOWS

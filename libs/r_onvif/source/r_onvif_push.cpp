@@ -1,7 +1,3 @@
-#ifdef IS_WINDOWS
-#define _WINSOCK_DEPRECATED_NO_WARNINGS 1
-#endif
-
 #include "r_onvif/r_onvif_push.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_server_threaded.h"
@@ -18,16 +14,6 @@
 #include <cstring>
 #include <random>
 #include <stdexcept>
-
-#ifdef IS_WINDOWS
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-#else
-    #include <arpa/inet.h>
-    #include <netinet/in.h>
-    #include <sys/socket.h>
-    #include <unistd.h>
-#endif
 
 using namespace r_onvif;
 using namespace r_utils;
@@ -168,42 +154,7 @@ string r_onvif::local_ip_for(const string& camera_ip)
     if (const char* forced = getenv("REVERE_ONVIF_PUSH_BIND"))
         if (is_ipv4_literal(forced))
             return forced;
-    r_raw_socket::socket_startup();
-
-#ifdef IS_WINDOWS
-    SOCKET s = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (s == INVALID_SOCKET)
-        return string();
-    auto close_it = [&]() { ::closesocket(s); };
-#else
-    int s = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (s < 0)
-        return string();
-    auto close_it = [&]() { ::close(s); };
-#endif
-    string out;
-    sockaddr_in to;
-    memset(&to, 0, sizeof(to));
-    to.sin_family = AF_INET;
-    to.sin_port = htons(9);
-    inet_pton(AF_INET, camera_ip.c_str(), &to.sin_addr);
-    // A UDP connect sends nothing: it only has the OS pick the route, and so the address, for this destination.
-    if (::connect(s, (sockaddr*)&to, sizeof(to)) == 0)
-    {
-        sockaddr_in me;
-        memset(&me, 0, sizeof(me));
-        socklen_t len = sizeof(me);
-        if (::getsockname(s, (sockaddr*)&me, &len) == 0)
-        {
-            char buf[INET_ADDRSTRLEN] = {0};
-            if (inet_ntop(AF_INET, &me.sin_addr, buf, sizeof(buf)))
-                out = buf;
-        }
-    }
-    close_it();
-    if (out == "0.0.0.0" || out.compare(0, 4, "127.") == 0)
-        return string();
-    return out;
+    return r_networking::r_local_ip_for(camera_ip);
 }
 
 struct r_onvif_push_listener::impl

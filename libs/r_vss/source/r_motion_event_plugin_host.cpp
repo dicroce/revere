@@ -48,14 +48,7 @@ r_motion_event_plugin_host::r_motion_event_plugin_host(r_disco::r_devices& devic
             return;
         }
         
-        // Determine the plugin extension based on platform
-#ifdef IS_WINDOWS
-        const std::string plugin_ext = ".dll";
-#elif defined(IS_MACOS)
-        const std::string plugin_ext = ".dylib";
-#else
-        const std::string plugin_ext = ".so";
-#endif
+        const std::string plugin_ext = r_utils::r_dynamic_library::extension();
         
         // Iterate through all files in the plugin directory
         for (const auto& entry : fs::directory_iterator(plugin_dir))

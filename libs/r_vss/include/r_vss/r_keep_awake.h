@@ -2,6 +2,7 @@
 #define __r_vss_r_keep_awake_h
 
 #include "r_utils/r_macro.h"
+#include "r_utils/r_power.h"
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -46,14 +47,16 @@ namespace r_vss
 
 static const char* const KEEP_AWAKE_REASON = "Revere is recording cameras";
 
-enum class r_power_source
-{
-    ac,
-    battery,
-    unknown
-};
-
-R_API std::string power_source_name(r_power_source source);
+// The OS side (the request, the power source, the OS saying it sleeps) is
+// r_utils/r_power.h.
+using r_utils::r_power_source;
+using r_utils::power_source_name;
+using r_utils::r_power_supply;
+using r_utils::power_source_from_supplies;
+using r_utils::power_source_from_status;
+using r_utils::r_sleep_blocker;
+using r_utils::current_power_source;
+using r_utils::r_sleep_watcher;
 
 struct r_keep_awake_settings
 {
@@ -72,22 +75,6 @@ R_API bool keep_awake_wanted(const r_keep_awake_settings& settings, r_power_sour
 // file, bad JSON or a missing or non-boolean key gives the default for it.
 R_API r_keep_awake_settings parse_keep_awake_settings(const std::string& json_text);
 R_API std::string keep_awake_settings_json(const r_keep_awake_settings& settings);
-
-// One entry of /sys/class/power_supply on Linux.
-struct r_power_supply
-{
-    std::string type;   // "Mains", "Battery", "USB", "UPS", ...
-    bool online {false};
-    std::string scope;  // "Device" for a mouse's or keyboard's battery, else empty.
-};
-
-// AC when anything that feeds the computer is online or there's no battery of
-// its own; battery when it has one and nothing feeds it.
-R_API r_power_source power_source_from_supplies(const std::vector<r_power_supply>& supplies);
-
-// From Windows' SYSTEM_POWER_STATUS: ACLineStatus 0 is battery, 1 AC, 255
-// unknown; BatteryFlag 128 is "no system battery" (a desktop: AC).
-R_API r_power_source power_source_from_status(uint8_t ac_line_status, uint8_t battery_flag);
 
 struct r_power_event
 {
@@ -122,49 +109,6 @@ public:
 private:
     int64_t _last_tick_ms {-1};
     int64_t _sleep_ms {-1};
-};
-
-// Implemented per platform (r_keep_awake_macos/windows/linux.cpp).
-class r_sleep_blocker
-{
-public:
-    R_API r_sleep_blocker();
-    R_API ~r_sleep_blocker() noexcept;
-    r_sleep_blocker(const r_sleep_blocker&) = delete;
-    r_sleep_blocker& operator=(const r_sleep_blocker&) = delete;
-
-    // Empty when the request is held, else why the OS refused it. Holding
-    // again while held does nothing.
-    R_API std::string hold(const std::string& reason);
-    R_API void release();
-    // False again once the OS drops a request (on Linux, when the bus that
-    // carried it goes away), so the caller asks again.
-    R_API bool held() const;
-    // The last hold() found nothing to ask rather than a refusal: a Linux
-    // desktop with neither GNOME's nor freedesktop PowerManagement's
-    // inhibitor. Always false on macOS and Windows.
-    R_API bool unavailable() const;
-
-private:
-    struct impl;
-    std::unique_ptr<impl> _impl;
-};
-
-R_API r_power_source current_power_source();
-
-// Calls cb(true) when the OS says it's going to sleep and cb(false) when it
-// woke, on a thread of its own. Silently does nothing where the OS won't tell.
-class r_sleep_watcher
-{
-public:
-    R_API explicit r_sleep_watcher(std::function<void(bool)> cb);
-    R_API ~r_sleep_watcher() noexcept;
-    r_sleep_watcher(const r_sleep_watcher&) = delete;
-    r_sleep_watcher& operator=(const r_sleep_watcher&) = delete;
-
-private:
-    struct impl;
-    std::unique_ptr<impl> _impl;
 };
 
 struct r_keep_awake_status

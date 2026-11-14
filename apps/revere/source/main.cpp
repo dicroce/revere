@@ -1,20 +1,11 @@
 
 #include "r_utils/r_file.h"
-#include "r_utils/r_file_lock.h"
 #include <atomic>
+#include <cstdlib>
 #include <filesystem>
 
 #ifdef IS_WINDOWS
 #include <windows.h>
-#include <fcntl.h>
-#include <io.h>
-#include <process.h>
-#include <sys/stat.h>
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-#include <sys/file.h>
-#include <unistd.h>
-#include <signal.h>
 #endif
 #include <SDL.h>
 #ifdef IS_WINDOWS
@@ -84,6 +75,8 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 #include "cloud_download.h"
 #include "r_utils/r_secure_store.h"
 #include "r_utils/r_platform.h"
+#include "r_utils/r_app_instance.h"
+#include "r_utils/r_shutdown_signal.h"
 #include "r_utils/r_qr_code.h"
 #include <cstdio>
 #include "gl_utils.h"
@@ -122,36 +115,15 @@ using namespace std;
 using namespace r_utils;
 using namespace revere;
 
+// Names the single-instance lock and --quit's request (see r_app_instance).
+// Installed builds depend on it: don't change it.
+static const char* REVERE_INSTANCE_NAME = "Revere";
+
 #ifndef IS_MACOS
-// Fire-and-forget process launch for the per-camera "View" overlay windows. NOT
-// r_process (whose Windows destructor WaitForSingleObject(INFINITE)s on the
-// child — detached is ignored there — so a local one would freeze the UI until
-// the overlay closes). Windows uses CreateProcess + immediate CloseHandle;
-// Linux uses r_process's detached path (which clears its pid on start(),
-// making its destructor a no-op). macOS uses _launch_vision() below.
+// Fire-and-forget process launch for the per-camera "View" overlay windows.
+// macOS uses _launch_vision() below.
 static void _launch_detached(const std::string& cmd)
 {
-#ifdef IS_WINDOWS
-    STARTUPINFOA si;
-    ZeroMemory(&si, sizeof(si));
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi;
-    ZeroMemory(&pi, sizeof(pi));
-
-    std::vector<char> buf(cmd.begin(), cmd.end());
-    buf.push_back('\0');
-
-    if(CreateProcessA(NULL, buf.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
-    {
-        // Let it take the foreground (its window comes to the front rather
-        // than flashing in the taskbar behind ours).
-        AllowSetForegroundWindow(pi.dwProcessId);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-    }
-    else
-        R_LOG_ERROR("launch failed: CreateProcess (%lu): %s", (unsigned long)GetLastError(), cmd.c_str());
-#else
     try
     {
         r_utils::r_process p(cmd, true);
@@ -161,7 +133,6 @@ static void _launch_detached(const std::string& cmd)
     {
         R_LOG_ERROR("launch failed: %s (%s)", e.what(), cmd.c_str());
     }
-#endif
 }
 #endif
 
@@ -2503,77 +2474,6 @@ void _set_window_icon(SDL_Window* window)
     }
 }
 
-#if defined(IS_LINUX) || defined(IS_MACOS)
-static std::atomic<bool> g_sigterm_received{false};
-static void _sigterm_handler(int) { g_sigterm_received = true; }
-#endif
-
-// ---- headless mode shutdown handling --------------------------------------
-// Headless mode runs the recording/discovery/web core with no GUI and blocks
-// until asked to stop. POSIX: SIGINT/SIGTERM. Windows: a console ctrl event
-// (Ctrl+C) or the named "Local\RevereHeadlessStop" event — needed because this
-// is a GUI-subsystem binary with no console of its own.
-#if defined(IS_LINUX) || defined(IS_MACOS)
-#include <csignal>
-#include <pthread.h>
-
-static sigset_t g_headless_sigset;
-
-static void _headless_arm_shutdown()
-{
-    // Block the shutdown signals in this (main) thread BEFORE starting any
-    // worker threads, so they inherit the block and only this thread's sigwait
-    // receives them.
-    sigemptyset(&g_headless_sigset);
-    sigaddset(&g_headless_sigset, SIGINT);
-    sigaddset(&g_headless_sigset, SIGTERM);
-    pthread_sigmask(SIG_BLOCK, &g_headless_sigset, nullptr);
-}
-
-static void _headless_wait_for_shutdown()
-{
-    int sig = 0;
-    sigwait(&g_headless_sigset, &sig);
-    R_LOG_INFO("Received signal %d.", sig);
-}
-#endif
-
-#ifdef IS_WINDOWS
-static HANDLE g_headless_stop_event = nullptr;
-
-static BOOL WINAPI _headless_console_ctrl_handler(DWORD ctrl_type)
-{
-    switch(ctrl_type)
-    {
-        case CTRL_C_EVENT:
-        case CTRL_BREAK_EVENT:
-        case CTRL_CLOSE_EVENT:
-        case CTRL_LOGOFF_EVENT:
-        case CTRL_SHUTDOWN_EVENT:
-            if(g_headless_stop_event)
-                SetEvent(g_headless_stop_event);
-            return TRUE;
-        default:
-            return FALSE;
-    }
-}
-
-static void _headless_arm_shutdown()
-{
-    // GUI-subsystem process has no console of its own; attach to the launching
-    // one (if any) so Ctrl+C and stdout work when started from a terminal.
-    AttachConsole(ATTACH_PARENT_PROCESS);
-    g_headless_stop_event = CreateEventA(nullptr, TRUE, FALSE, "Local\\RevereHeadlessStop");
-    SetConsoleCtrlHandler(_headless_console_ctrl_handler, TRUE);
-}
-
-static void _headless_wait_for_shutdown()
-{
-    if(g_headless_stop_event)
-        WaitForSingleObject(g_headless_stop_event, INFINITE);
-}
-#endif
-
 // ---- systemd service install/uninstall (Linux only) -----------------------
 // Opt-in: a desktop user just runs revere; someone who wants a 24/7 daemon runs
 // `sudo revere --install-service`. Decoupled from `make install` so the desktop
@@ -3040,110 +2940,7 @@ int main(int argc, char** argv)
     {
         // --quit mode: signal the running instance to exit and wait for it.
         // Used by the installer before replacing binaries.
-#ifdef IS_WINDOWS
-        // Check if an instance is running via the named mutex
-        HANDLE hCheckMutex = OpenMutexW(SYNCHRONIZE, FALSE, L"Global\\RevereAppMutex");
-        if(!hCheckMutex)
-            return 0; // Not running
-
-        // Signal the running instance via the named quit event
-        HANDLE hQuitEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Global\\RevereQuitEvent");
-        if(hQuitEvent)
-        {
-            SetEvent(hQuitEvent);
-            CloseHandle(hQuitEvent);
-        }
-
-        // Wait up to 10s for the instance to exit (mutex is released on exit)
-        DWORD wait_result = WaitForSingleObject(hCheckMutex, 10000);
-        CloseHandle(hCheckMutex);
-
-        if(wait_result == WAIT_TIMEOUT)
-        {
-            // Escalate: read PID from lock file and force-terminate
-            int pid_fd = _open(lock_file_path.c_str(), _O_RDONLY);
-            if(pid_fd >= 0)
-            {
-                char pid_buf[32] = {};
-                _read(pid_fd, pid_buf, sizeof(pid_buf) - 1);
-                _close(pid_fd);
-                DWORD target_pid = (DWORD)atoi(pid_buf);
-                if(target_pid > 0)
-                {
-                    HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, target_pid);
-                    if(hProc)
-                    {
-                        TerminateProcess(hProc, 1);
-                        CloseHandle(hProc);
-                    }
-                }
-            }
-            // Wait another 5s after force-terminate
-            HANDLE hFinalMutex = OpenMutexW(SYNCHRONIZE, FALSE, L"Global\\RevereAppMutex");
-            if(hFinalMutex)
-            {
-                WaitForSingleObject(hFinalMutex, 5000);
-                CloseHandle(hFinalMutex);
-            }
-            return 1;
-        }
-        return 0;
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-        // Check if running via non-blocking flock
-        int wait_fd = open(lock_file_path.c_str(), O_RDWR, 0600);
-        if(wait_fd < 0)
-            return 0; // No lock file — not running
-
-        if(flock(wait_fd, LOCK_EX | LOCK_NB) == 0)
-        {
-            // Acquired immediately — not running
-            flock(wait_fd, LOCK_UN);
-            close(wait_fd);
-            return 0;
-        }
-
-        // Read PID from lock file and send SIGTERM
-        char pid_buf[32] = {};
-        pread(wait_fd, pid_buf, sizeof(pid_buf) - 1, 0);
-        pid_t target_pid = (pid_t)atoi(pid_buf);
-        if(target_pid > 0)
-            kill(target_pid, SIGTERM);
-
-        // Wait up to 10s for exit using r_file_lock (blocking exclusive lock)
-        bool exited = false;
-        auto wait_thread = std::thread([&](){
-            r_utils::r_file_lock wait_lock(wait_fd);
-            wait_lock.lock();
-            exited = true;
-        });
-
-        auto deadline = chrono::steady_clock::now() + chrono::seconds(10);
-        while(!exited && chrono::steady_clock::now() < deadline)
-            std::this_thread::sleep_for(chrono::milliseconds(100));
-
-        if(!exited)
-        {
-            // Escalate to SIGKILL
-            if(target_pid > 0)
-                kill(target_pid, SIGKILL);
-
-            deadline = chrono::steady_clock::now() + chrono::seconds(5);
-            while(!exited && chrono::steady_clock::now() < deadline)
-                std::this_thread::sleep_for(chrono::milliseconds(100));
-
-            if(!exited)
-            {
-                wait_thread.detach();
-                close(wait_fd);
-                return 1;
-            }
-        }
-
-        wait_thread.join();
-        close(wait_fd);
-        return 0;
-#endif
+        return r_app_instance::request_quit(REVERE_INSTANCE_NAME, lock_file_path, chrono::seconds(10), chrono::seconds(5)) ? 0 : 1;
     }
 
 #ifdef IS_LINUX
@@ -3162,65 +2959,23 @@ int main(int argc, char** argv)
     }
 #endif
 
-    // Single instance check: prevent multiple revere processes from running
+    // Single instance check: prevent multiple revere processes from running.
+    // It also takes --quit's requests (a named event on Windows, SIGTERM on
+    // Linux/macOS).
+    r_app_instance app_instance(REVERE_INSTANCE_NAME, lock_file_path);
+    if(!app_instance.held())
+    {
 #ifdef IS_WINDOWS
-    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\RevereAppMutex");
-    if (GetLastError() == ERROR_ALREADY_EXISTS)
-    {
         MessageBoxW(NULL, L"Revere is already running.", L"Revere", MB_OK | MB_ICONINFORMATION);
-        if (hMutex) CloseHandle(hMutex);
-        return 1;
-    }
-    // Create the quit event so --quit can signal us
-    HANDLE hQuitEvent = CreateEventW(NULL, FALSE, FALSE, L"Global\\RevereQuitEvent");
-    // Write PID to lock file so --quit can force-terminate if needed
-    int lock_fd = _open(lock_file_path.c_str(), _O_CREAT | _O_RDWR | _O_TRUNC, _S_IREAD | _S_IWRITE);
-    if(lock_fd >= 0)
-    {
-        auto pid_str = std::to_string(GetCurrentProcessId());
-        _write(lock_fd, pid_str.c_str(), (unsigned int)pid_str.size());
-    }
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    // O_CLOEXEC: a program Revere starts (the browser, Vision) must not inherit the
-    // lock, or Revere can't start again until that program exits.
-    int lock_fd = open(lock_file_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-    if (lock_fd >= 0 && flock(lock_fd, LOCK_EX | LOCK_NB) != 0)
-    {
+#else
         fprintf(stderr, "Revere is already running.\n");
-        close(lock_fd);
+#endif
         return 1;
     }
-    // Write our PID so --quit can send us SIGTERM
-    if(lock_fd >= 0)
-    {
-        auto pid_str = std::to_string(getpid());
-        ftruncate(lock_fd, 0);
-        write(lock_fd, pid_str.c_str(), pid_str.size());
-    }
-    // Hold the lock via r_file_lock for the process lifetime
-    r_utils::r_file_lock process_lock(lock_fd);
-    // Install SIGTERM handler for graceful shutdown triggered by --quit
-    signal(SIGTERM, _sigterm_handler);
-#endif
 
     // Releasing the process lock unblocks any waiting --quit process,
     // signalling that we have shut down.
-    auto release_process_lock = [&]() {
-#ifdef IS_WINDOWS
-        if(lock_fd >= 0) { _close(lock_fd); lock_fd = -1; }
-        if(hQuitEvent) { CloseHandle(hQuitEvent); hQuitEvent = NULL; }
-        if(hMutex) { CloseHandle(hMutex); hMutex = NULL; }
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-        if(lock_fd >= 0)
-        {
-            process_lock.unlock();
-            close(lock_fd);
-            lock_fd = -1;
-        }
-#endif
-    };
+    auto release_process_lock = [&]() { app_instance.release(); };
 
     // A camera's teardown still stuck when the stream keeper stopped (it is
     // logged by name): the rest of the cleanup would free what that thread may
@@ -3229,7 +2984,7 @@ int main(int argc, char** argv)
     auto exit_with_stuck_teardown = [&]() {
         R_LOG_ERROR("A camera teardown is still stuck; exiting without the rest of the cleanup");
         release_process_lock();
-        _exit(0);
+        std::_Exit(0);
     };
 
     r_logger::install_terminate();
@@ -3368,7 +3123,7 @@ int main(int argc, char** argv)
         R_LOG_INFO("Revere Video Surveillance System (headless)");
         R_LOG_INFO("========================================");
 
-        _headless_arm_shutdown();   // arm before starting worker threads
+        r_shutdown_signal::arm("RevereHeadlessStop");   // arm before starting worker threads
 
         streamKeeper.start();
         devices.start();
@@ -3376,7 +3131,7 @@ int main(int argc, char** argv)
 
         R_LOG_INFO("Revere running headless. Web UI: http://localhost:8088/");
 
-        _headless_wait_for_shutdown();
+        r_shutdown_signal::wait();
 
         R_LOG_INFO("Stopping...");
         if(!streamKeeper.stop())
@@ -3480,10 +3235,7 @@ int main(int argc, char** argv)
             R_LOG_INFO("vision: %s", vision_app.c_str());
     }
 #else
-    string vision_cmd = "vision";
-#ifdef IS_WINDOWS
-    vision_cmd = "vision.exe";
-#endif
+    string vision_cmd = string("vision") + r_platform::exe_suffix();
 
     r_process vision_process(vision_cmd, true); // Use detached process
 #endif
@@ -4062,18 +3814,8 @@ int main(int argc, char** argv)
         }
 
         // Check for external shutdown signals (from --quit / installer)
-#ifdef IS_WINDOWS
-        if(hQuitEvent && WaitForSingleObject(hQuitEvent, 0) == WAIT_OBJECT_0)
-        {
+        if(app_instance.quit_requested())
             close_requested = true;
-        }
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-        if(g_sigterm_received)
-        {
-            close_requested = true;
-        }
-#endif
 
         if(maybe_start_minimized)
         {

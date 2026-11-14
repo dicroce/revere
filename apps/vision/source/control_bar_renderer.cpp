@@ -1,13 +1,12 @@
 // Prevent Windows.h from defining min/max macros that conflict with std::min/std::max
-#ifdef IS_WINDOWS
 #define NOMINMAX
-#endif
 
 #include "control_bar_renderer.h"
 #include "timeline_constants.h"
 #include "error_handling.h"
 #include "imgui/imgui_internal.h"
 #include "r_utils/r_string_utils.h"
+#include "r_utils/r_time_utils.h"
 #include "r_ui_utils/font_catalog.h"
 #include "icon_texture_manager.h"
 #include "r_utils/3rdparty/json/json.h"
@@ -22,16 +21,9 @@
 using namespace vision;
 using namespace std::chrono;
 
-// Helper function to safely get local time (platform-specific)
 static std::tm safe_localtime(const std::time_t& time_t_val)
 {
-    std::tm result;
-#ifdef IS_WINDOWS
-    localtime_s(&result, &time_t_val);
-#else
-    result = *std::localtime(&time_t_val);
-#endif
-    return result;
+    return r_utils::r_time_utils::to_local_tm(time_t_val);
 }
 
 control_bar_renderer::control_bar_renderer()

@@ -1,11 +1,12 @@
 #ifdef IS_WINDOWS
 
-#include "r_vss/r_keep_awake.h"
+#include "r_utils/r_power.h"
 #include <windows.h>
 #include <powrprof.h>
 #include <stdexcept>
+#include <thread>
 
-using namespace r_vss;
+using namespace r_utils;
 using namespace std;
 
 static wstring _widen(const string& s)
@@ -81,7 +82,7 @@ bool r_sleep_blocker::unavailable() const
     return false;
 }
 
-r_power_source r_vss::current_power_source()
+r_power_source r_utils::current_power_source()
 {
     SYSTEM_POWER_STATUS s {};
     if(!GetSystemPowerStatus(&s))
