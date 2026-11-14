@@ -432,13 +432,13 @@ static void _write(r_logger::LOG_LEVEL level, const char* format, va_list& args)
 
         switch(level)
         {
-            case LOG_LEVEL_CRITICAL: { priority |= LOG_CRIT; break; }
-            case LOG_LEVEL_ERROR: { priority |= LOG_ERR; break; }
-            case LOG_LEVEL_WARNING: { priority |= LOG_WARNING; break; }
-            case LOG_LEVEL_NOTICE: { priority |= LOG_NOTICE; break; }
-            case LOG_LEVEL_INFO: { priority |= LOG_INFO; break; }
-            case LOG_LEVEL_TRACE: { priority |= LOG_INFO; break; }
-            case LOG_LEVEL_DEBUG: { priority |= LOG_INFO; break; }
+            case r_logger::LOG_LEVEL_CRITICAL: { priority |= LOG_CRIT; break; }
+            case r_logger::LOG_LEVEL_ERROR: { priority |= LOG_ERR; break; }
+            case r_logger::LOG_LEVEL_WARNING: { priority |= LOG_WARNING; break; }
+            case r_logger::LOG_LEVEL_NOTICE: { priority |= LOG_NOTICE; break; }
+            case r_logger::LOG_LEVEL_INFO: { priority |= LOG_INFO; break; }
+            case r_logger::LOG_LEVEL_TRACE: { priority |= LOG_INFO; break; }
+            case r_logger::LOG_LEVEL_DEBUG: { priority |= LOG_INFO; break; }
             default: break;
         };
 

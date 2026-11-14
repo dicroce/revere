@@ -56,6 +56,16 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
     _rtsp_server_th(),
     _loop(g_main_loop_new(NULL, FALSE)),
     _server(gst_rtsp_server_new()),
+    // Every stream needs the RTSP credential (r_rtsp_auth.h): Digest, user
+    // "revere", a password persisted in the data directory and handed out by
+    // the web API to authenticated clients. Made here, before _ws, whose routes
+    // take rtsp_logins() as they're added.
+    _rtsp_logins([&]() {
+        _rtsp_password = r_rtsp_auth::load_or_create_password(top_dir);
+        _rtsp_auth = r_rtsp_auth::make_auth(_rtsp_password);
+        gst_rtsp_server_set_auth(_server, _rtsp_auth);
+        return std::make_unique<r_rtsp_logins>(_server, _rtsp_auth);
+    }()),
     _mounts(nullptr),
     _factories(),
     _meph(_devices, _top_dir, *this),
@@ -116,14 +126,6 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
     gst_rtsp_server_set_service(_server, to_string(rtsp_port).c_str());
 
     _mounts = gst_rtsp_server_get_mount_points(_server);
-
-    // Every stream needs the RTSP credential (r_rtsp_auth.h): Digest, user
-    // "revere", a password persisted in the data directory and handed out by
-    // the web API to authenticated clients.
-    _rtsp_password = r_rtsp_auth::load_or_create_password(top_dir);
-    _rtsp_auth = r_rtsp_auth::make_auth(_rtsp_password);
-    gst_rtsp_server_set_auth(_server, _rtsp_auth);
-    _rtsp_logins = std::make_unique<r_rtsp_logins>(_server, _rtsp_auth);
 
     // A person on a camera's first significant key frame starts its event at
     // once, rather than after MOG2's confirmation (see r_motion_engine).
