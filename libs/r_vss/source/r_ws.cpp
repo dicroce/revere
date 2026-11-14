@@ -4484,7 +4484,10 @@ r_http::r_server_response r_ws::_post_system_plugin_enabled(r_utils::r_socket_ba
 //  "detail", "can_install", "terms_accepted", "terms_url", "terms_version",
 //  "error_kind" ("" or plugin_install_name(), or "load_failed"), "error_detail",
 //  "dev_warning": a dev build's warning that the plugin is from a release, for testing,
-//  "download_url": the release page, for builds that can't install it themselves}
+//  "download_url": the release page, for builds that can't install it themselves,
+//  "update_check": "not_checked"|"checking"|"available"|"unavailable", for a plugin
+//  that needs updating: "available" means the UI asks the user, and POST updates it,
+//  "update_version": the release the update comes from, "update_detail": why there's none}
 static json _cloud_install_json(const r_cloud_install_status& s)
 {
     auto version = revere_version();
@@ -4498,6 +4501,9 @@ static json _cloud_install_json(const r_cloud_install_status& s)
         {"error_kind", s.error_kind},
         {"error_detail", s.error_detail},
         {"dev_warning", s.dev_warning},
+        {"update_check", cloud_update_check_name(s.update_check)},
+        {"update_version", s.update_version},
+        {"update_detail", s.update_detail},
         {"download_url", is_release_version(version) ? "https://github.com/dicroce/revere/releases/tag/v" + version
                                                      : string("https://github.com/dicroce/revere/releases/latest")}
     };

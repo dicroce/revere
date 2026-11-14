@@ -278,17 +278,20 @@ const char* r_vss::plugin_install_name(r_plugin_install status)
     return "unknown";
 }
 
-r_plugin_install_result r_vss::install_system_plugin(const r_plugin_release_assets& assets,
-                                                     const string& dir,
-                                                     const string& file_name,
-                                                     const r_plugin_fetch& fetch,
-                                                     const string& revere_version,
-                                                     const vector<string>& trusted_keys,
-                                                     const string& platform,
-                                                     const string& arch)
+// Step 1 of an install, and all of a check for an update: fetches a release's
+// manifest and signature, and checks them. ok, with the manifest and its bytes, if
+// they pass.
+static r_plugin_install_result _fetch_checked_manifest(const r_plugin_release_assets& assets,
+                                                       const string& file_name,
+                                                       const r_plugin_fetch& fetch,
+                                                       const string& revere_version,
+                                                       const vector<string>& trusted_keys,
+                                                       const string& platform,
+                                                       const string& arch,
+                                                       r_plugin_manifest& m,
+                                                       vector<uint8_t>& manifest_bytes,
+                                                       vector<uint8_t>& signature_bytes)
 {
-    // 1. The manifest and its signature, checked before the plugin is fetched.
-    vector<uint8_t> manifest_bytes, signature_bytes;
     try
     {
         manifest_bytes = fetch(assets.manifest_url, MAX_MANIFEST_BYTES);
@@ -312,10 +315,28 @@ r_plugin_install_result r_vss::install_system_plugin(const r_plugin_release_asse
 
     string manifest_json(manifest_bytes.begin(), manifest_bytes.end());
     string signature(signature_bytes.begin(), signature_bytes.end());
-    r_plugin_manifest m;
     auto check = check_plugin_manifest(manifest_json, signature, file_name, revere_version, trusted_keys, platform, arch, m);
     if(!check.ok())
         return _result(r_plugin_install::check_failed, string(plugin_check_name(check.status)) + ": " + check.detail, check.status);
+    return _result(r_plugin_install::ok, string(), r_plugin_check::ok);
+}
+
+r_plugin_install_result r_vss::install_system_plugin(const r_plugin_release_assets& assets,
+                                                     const string& dir,
+                                                     const string& file_name,
+                                                     const r_plugin_fetch& fetch,
+                                                     const string& revere_version,
+                                                     const vector<string>& trusted_keys,
+                                                     const string& platform,
+                                                     const string& arch)
+{
+    // 1. The manifest and its signature, checked before the plugin is fetched.
+    r_plugin_manifest m;
+    vector<uint8_t> manifest_bytes, signature_bytes;
+    auto checked = _fetch_checked_manifest(assets, file_name, fetch, revere_version, trusted_keys, platform, arch,
+                                           m, manifest_bytes, signature_bytes);
+    if(!checked.ok())
+        return checked;
 
     // 2. The plugin, checked against the manifest.
     vector<uint8_t> plugin;
@@ -495,20 +516,18 @@ string r_vss::choose_plugin_release(const vector<r_published_release>& releases,
 
 static const size_t MAX_RELEASES_BYTES = 16 * 1024 * 1024;
 
-r_plugin_install_result r_vss::install_revere_cloud_plugin(const string& dir,
-                                                         const string& revere_version,
-                                                         const string& file_name,
-                                                         const r_plugin_fetch& fetch,
-                                                         const vector<string>& trusted_keys,
-                                                         const string& platform,
-                                                         const string& arch)
+// The release a build of revere_version installs Revere Cloud from (r_plugin_installer.h):
+// ok with release_version set, or why there's none.
+static r_plugin_install_result _choose_cloud_release(const string& revere_version,
+                                                     const r_plugin_fetch& fetch,
+                                                     const string& platform,
+                                                     const string& arch)
 {
     auto base = release_base_version(revere_version);
-    string release = revere_version;   // a release build: its own, exactly as before
-
     if(base.empty())
         return _result(r_plugin_install::not_available, "this build's version (" + revere_version + ") names no release");
 
+    string release = revere_version;   // a release build: its own
     if(base != revere_version)
     {
         // A dev build: the newest release at or below its base.
@@ -526,14 +545,73 @@ r_plugin_install_result r_vss::install_revere_cloud_plugin(const string& dir,
         if(release.empty())
             return _result(r_plugin_install::not_available,
                            "no release at or below v" + base + " has a plugin for " + platform + " " + arch);
-        R_LOG_INFO("Dev build %s: installing Revere Cloud from release v%s, for testing", revere_version.c_str(), release.c_str());
     }
+    auto r = _result(r_plugin_install::ok, string(), r_plugin_check::ok);
+    r.release_version = release;
+    return r;
+}
+
+r_plugin_install_result r_vss::install_revere_cloud_plugin(const string& dir,
+                                                         const string& revere_version,
+                                                         const string& file_name,
+                                                         const r_plugin_fetch& fetch,
+                                                         const vector<string>& trusted_keys,
+                                                         const string& platform,
+                                                         const string& arch)
+{
+    auto chosen = _choose_cloud_release(revere_version, fetch, platform, arch);
+    if(!chosen.ok())
+        return chosen;
+    const auto release = chosen.release_version;
+    if(release != revere_version)
+        R_LOG_INFO("Dev build %s: installing Revere Cloud from release v%s, for testing", revere_version.c_str(), release.c_str());
 
     // The manifest must be for exactly the release it comes from.
     auto r = install_system_plugin(revere_cloud_release_assets(release, platform, arch),
                                    dir, file_name, fetch, release, trusted_keys, platform, arch);
     if(r.ok())
         r.release_version = release;
+    return r;
+}
+
+r_plugin_install_result r_vss::check_revere_cloud_update(const string& revere_version,
+                                                       const string& file_name,
+                                                       const r_plugin_fetch& fetch,
+                                                       const vector<string>& trusted_keys,
+                                                       const string& platform,
+                                                       const string& arch)
+{
+    auto chosen = _choose_cloud_release(revere_version, fetch, platform, arch);
+    if(!chosen.ok())
+        return chosen;
+    const auto release = chosen.release_version;
+
+    // The same check an install makes before it fetches the plugin.
+    r_plugin_manifest m;
+    vector<uint8_t> manifest_bytes, signature_bytes;
+    auto r = _fetch_checked_manifest(revere_cloud_release_assets(release, platform, arch), file_name, fetch, release,
+                                     trusted_keys, platform, arch, m, manifest_bytes, signature_bytes);
+    if(r.ok())
+        r.release_version = release;
+    return r;
+}
+
+// A check needn't wait as long as a download: it fetches a few small files, and
+// shutdown waits for it.
+static const uint64_t UPDATE_CHECK_TIMEOUT_MS = 15000;
+
+r_plugin_install_result r_vss::check_revere_cloud_update()
+{
+    auto r = check_revere_cloud_update(revere_version(),
+                                       revere_cloud_plugin_file(),
+                                       [](const string& url, size_t max_bytes) { return http_get(url, max_bytes, UPDATE_CHECK_TIMEOUT_MS); },
+                                       trusted_plugin_keys(),
+                                       plugin_platform(),
+                                       plugin_arch());
+    if(r.ok())
+        R_LOG_INFO("A Revere Cloud update is available, from release v%s", r.release_version.c_str());
+    else
+        R_LOG_INFO("No Revere Cloud update found (%s): %s", plugin_install_name(r.status), r.detail.c_str());
     return r;
 }
 

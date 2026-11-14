@@ -621,3 +621,68 @@ void test_r_plugin_installer::test_http_get_live()
     try { http_get(string(url) + ".no-such-asset", 1024); } catch(const r_not_found_exception&) { not_found = true; }
     RTF_ASSERT(not_found);
 }
+
+// A check for an update chooses the release as an install does, and checks its
+// manifest and signature, but never fetches the plugin or writes anything.
+void test_r_plugin_installer::test_check_update()
+{
+    auto check = [](fake_server& server, const string& version) {
+        return check_revere_cloud_update(version, FILE_NAME, server.fetch(), {TEST_KEY}, "windows", "x86_64");
+    };
+    auto a = revere_cloud_release_assets("0.0.41", "windows", "x86_64");
+    {
+        // A release build: its own release, two fetches.
+        fake_server server;
+        _serve_release(server, "0.0.41");
+        auto r = check(server, "0.0.41");
+        RTF_ASSERT(r.ok());
+        RTF_ASSERT(r.release_version == "0.0.41");
+        RTF_ASSERT(r.path.empty());
+        RTF_ASSERT_EQUAL(server.fetched.size(), (size_t)2);
+        RTF_ASSERT(server.fetched[0] == a.manifest_url);
+        RTF_ASSERT(server.fetched[1] == a.signature_url);
+        RTF_ASSERT_EQUAL(_files_in_dir(), (size_t)0);
+    }
+    {
+        // A dev build: the list of releases first.
+        fake_server server;
+        _serve_release(server, "0.0.41");
+        server.bodies[REVERE_RELEASES_API_URL] = "[" + _release_json("v0.0.41", _plugin_assets("0.0.41", "windows", "x86_64")) + "]";
+        auto r = check(server, "0.0.42-dirty");
+        RTF_ASSERT(r.ok());
+        RTF_ASSERT(r.release_version == "0.0.41");
+        RTF_ASSERT_EQUAL(server.fetched.size(), (size_t)3);
+        RTF_ASSERT(server.fetched[0] == REVERE_RELEASES_API_URL);
+        RTF_ASSERT_EQUAL(_files_in_dir(), (size_t)0);
+    }
+    {
+        // The release has no plugin for this platform yet.
+        fake_server server;
+        RTF_ASSERT(check(server, "0.0.41").status == r_plugin_install::not_available);
+    }
+    {
+        // Offline.
+        fake_server server;
+        server.offline = true;
+        RTF_ASSERT(check(server, "0.0.41").status == r_plugin_install::download_failed);
+    }
+    {
+        // A bad signature, or a manifest for another release.
+        fake_server server;
+        _serve_release(server, "0.0.41", MANIFEST, unhex(NOT_A_MANIFEST_SIG_HEX));
+        auto r = check(server, "0.0.41");
+        RTF_ASSERT(r.status == r_plugin_install::check_failed);
+        RTF_ASSERT(r.check == r_plugin_check::bad_signature);
+        fake_server other;
+        _serve_release(other, "0.0.42");
+        r = check(other, "0.0.42");
+        RTF_ASSERT(r.status == r_plugin_install::check_failed);
+        RTF_ASSERT(r.check == r_plugin_check::wrong_version);
+    }
+    {
+        // A version with no base: nothing is fetched.
+        fake_server server;
+        RTF_ASSERT(check(server, "unknown").status == r_plugin_install::not_available);
+        RTF_ASSERT(server.fetched.empty());
+    }
+}

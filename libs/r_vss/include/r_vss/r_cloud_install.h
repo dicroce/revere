@@ -43,6 +43,18 @@ enum class r_cloud_state
 // "not_installed", "installing", ... for status JSON.
 R_API const char* cloud_state_name(r_cloud_state state);
 
+// Whether an update was found for a Revere Cloud that needs one (check_for_update()).
+enum class r_cloud_update_check
+{
+    not_checked,   // no check yet, or the plugin doesn't need updating
+    checking,      // a check is running
+    available,     // the release has a plugin whose manifest checks: offer to update
+    unavailable    // none found, or the check failed (update_detail says which)
+};
+
+// "not_checked", "checking", ... for status JSON.
+R_API const char* cloud_update_check_name(r_cloud_update_check check);
+
 struct r_cloud_install_status
 {
     r_cloud_state state {r_cloud_state::not_installed};
@@ -55,6 +67,10 @@ struct r_cloud_install_status
     // The last install's failure, until another starts; empty kind if none failed.
     std::string error_kind;        // plugin_install_name(): "not_available", "download_failed", ...
     std::string error_detail;
+    // An update for a plugin that needs one: available means the user can be asked.
+    r_cloud_update_check update_check {r_cloud_update_check::not_checked};
+    std::string update_version;    // the release it would come from ("0.0.44"), when available
+    std::string update_detail;     // why there's none, when unavailable
 };
 
 class r_cloud_install
@@ -72,6 +88,7 @@ public:
         std::function<bool(const std::string& path, std::string& why)> load;     // r_system_plugin_host::load_and_start
         std::function<std::vector<std::string>()> loaded;                       // get_loaded_plugins
         std::function<std::vector<r_skipped_system_plugin>()> skipped;          // get_skipped_plugins
+        std::function<r_plugin_install_result()> check;                         // check_revere_cloud_update
     };
 
     R_API explicit r_cloud_install(const deps& d);
@@ -90,8 +107,16 @@ public:
     // terms not accepted.
     R_API bool start(const std::string& accepted_terms_version, std::string& why);
 
+    // When the plugin needs updating (found but built for another revere), checks in
+    // the background whether its release has one, without downloading it; the
+    // result is in status()'s update_check. Does nothing for a build that can't
+    // install, a plugin that doesn't need updating, or while a check runs. Called
+    // once the plugins are loaded; the UIs then ask the user, and start() updates.
+    R_API void check_for_update();
+
 private:
     void _run();
+    void _run_check();
     bool _terms_accepted_locked() const;
     bool _can_install_build() const;
 
@@ -103,6 +128,10 @@ private:
     std::string _installed_release;   // the release this run's install came from
     std::string _accepted_terms_version;   // read from terms_path at construction
     std::thread _thread;
+    r_cloud_update_check _update_check {r_cloud_update_check::not_checked};
+    std::string _update_version;
+    std::string _update_detail;
+    std::thread _check_thread;
 };
 
 }

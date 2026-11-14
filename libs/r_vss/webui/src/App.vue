@@ -50,6 +50,9 @@
 
     <footer v-if="versionLabel" class="footer" :title="versionDetails">{{ versionLabel }}</footer>
   </div>
+
+  <!-- Asks to update a Revere Cloud built for an older Revere, over any view. -->
+  <CloudUpdatePrompt v-if="authChecked && authed" />
 </template>
 
 <script setup>
@@ -60,6 +63,7 @@ import CameraView from './components/CameraView.vue'
 import ManageTab from './components/ManageTab.vue'
 import TimelineView from './components/TimelineView.vue'
 import LoginView from './components/LoginView.vue'
+import CloudUpdatePrompt from './components/CloudUpdatePrompt.vue'
 
 const authChecked = ref(false)
 const passwordSet = ref(true)

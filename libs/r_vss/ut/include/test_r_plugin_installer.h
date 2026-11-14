@@ -17,6 +17,7 @@ public:
       TEST(test_r_plugin_installer::test_install_release_build_unchanged);
       TEST(test_r_plugin_installer::test_install_dev_build);
       TEST(test_r_plugin_installer::test_install_dev_build_rejects);
+      TEST(test_r_plugin_installer::test_check_update);
       TEST(test_r_plugin_installer::test_http_get_live);
     RTF_FIXTURE_END();
 
@@ -38,5 +39,6 @@ public:
     void test_install_release_build_unchanged();
     void test_install_dev_build();
     void test_install_dev_build_rejects();
+    void test_check_update();
     void test_http_get_live();
 };
