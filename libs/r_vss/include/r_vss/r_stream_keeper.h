@@ -258,6 +258,10 @@ public:
     R_API int motion_tier(const std::string& camera_id);
     R_API r_tier_status motion_tier_status(const std::string& camera_id) const;
 
+    // A camera's motion window opened (started) or closed, at ts_ms: handed to the system plugins that want it
+    // (system_plugin_post_motion). Returns at once.
+    R_API void notify_motion(const std::string& camera_id, bool started, int64_t ts_ms);
+
     R_API std::string add_restream_mount(const std::map<std::string, r_pipeline::r_sdp_media>& sdp_medias, const r_disco::r_camera& camera, r_recording_context* rc, r_utils::r_nullable<r_pipeline::r_encoding> video_encoding, r_utils::r_nullable<r_pipeline::r_encoding> audio_encoding);
     R_API void remove_restream_mount(const std::string& path) override;   // and its <path>/opus
     // The camera's substream mount ("<main mount>/sub", video only) for its substream recorder; the recorder removes
@@ -388,6 +392,7 @@ private:
     void _forget_substream_key_frame(const std::string& camera_id);
     std::vector<r_stream_status> _fetch_stream_status() const;
     void _update_status_cache();
+    void _publish_camera_states(const std::vector<r_stream_status>& status);
     void _update_retention_cache();
     static void _live_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, gpointer user_data);
     void _remove_mount(const std::string& mount_path);
@@ -466,6 +471,8 @@ private:
     r_utils::r_work_q<r_stream_keeper_cmd, r_stream_keeper_result> _cmd_q;
 
     // Cached stream status for non-blocking reads from GUI thread
+    // What the system plugins were last told of each camera: receiving_video, stream_failed. Keeper thread only.
+    std::map<std::string, std::pair<bool, bool>> _published_camera_states;
     mutable std::mutex _status_cache_mutex;
     std::vector<r_stream_status> _status_cache;
 
@@ -522,6 +529,7 @@ private:
     void _on_mog2_event(r_motion_event evt, const std::string& camera_id, int64_t ts);
     static void _on_detection_bus(void* userdata, const r_detection& det, int64_t posted_at_ms);
     void _tier_tick();
+    void _remove_motion_work_context(const std::string& camera_id);
     void _camera_class_output(const std::string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms);
     void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections);
     void _pass_session(const r_detection_session& session);
