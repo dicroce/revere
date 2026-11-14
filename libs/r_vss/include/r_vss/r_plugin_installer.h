@@ -76,6 +76,7 @@ struct r_plugin_install_result
     r_plugin_check check {r_plugin_check::unreadable};   // what the check found, when check_failed
     std::string detail;   // what failed, for the log and the UI; empty when ok
     std::string path;     // the installed plugin's path, when ok
+    std::string release_version;   // the release it came from ("0.0.41"), when ok
     bool ok() const { return status == r_plugin_install::ok; }
 };
 
@@ -101,9 +102,60 @@ R_API r_plugin_install_result install_system_plugin(const r_plugin_release_asset
                                                     const std::string& platform,
                                                     const std::string& arch);
 
-// The same for this build's Revere Cloud plugin, from GitHub: this revere's release
-// assets, revere_cloud_plugin_file(), http_get, revere_version(), trusted_plugin_keys(),
-// plugin_platform() and plugin_arch().
+// Which release a build installs Revere Cloud from.
+//
+// A release build ("0.0.42") installs from its own release, and the manifest must be
+// for exactly that version. A dev build ("0.0.42-dirty", "0.0.41-5-gabc1234") has no
+// release of its own, so for testing it installs from the newest published release
+// at or below its base version (the x.y.z it starts with) that has a signed plugin
+// for this platform. The manifest must then be for exactly that release. The
+// signature, platform, size and hash checks are the same for both.
+
+// The x.y.z a version starts with, when it's followed by nothing or by "-":
+// "0.0.42-dirty" and "0.0.42" give "0.0.42", "0.0.41-5-gabc1234" gives "0.0.41".
+// Empty for anything else ("unknown", "abc1234", "0.0", "v0.0.41").
+R_API std::string release_base_version(const std::string& version);
+
+// <0, 0 or >0 as release version a (x.y.z) is older than, the same as or newer than b.
+// Throws r_invalid_argument_exception if either isn't x.y.z.
+R_API int compare_release_versions(const std::string& a, const std::string& b);
+
+// A published release, from GitHub's list of releases.
+struct r_published_release
+{
+    std::string version;               // "0.0.41", from the tag "v0.0.41"
+    std::vector<std::string> assets;   // its asset file names
+};
+
+// The releases in GitHub's releases JSON (GET /repos/{owner}/{repo}/releases), in its
+// order. Drafts, prereleases and tags that aren't vx.y.z are left out. Throws
+// r_invalid_argument_exception if it isn't a JSON array.
+R_API std::vector<r_published_release> parse_published_releases(const std::string& json);
+
+// The newest release at or below base_version that has this platform's Revere Cloud
+// plugin, its manifest and its signature; empty if none has.
+R_API std::string choose_plugin_release(const std::vector<r_published_release>& releases,
+                                        const std::string& base_version,
+                                        const std::string& platform,
+                                        const std::string& arch);
+
+// dicroce/revere's newest releases, for a dev build to choose from.
+constexpr const char* REVERE_RELEASES_API_URL = "https://api.github.com/repos/dicroce/revere/releases?per_page=30";
+
+// Installs Revere Cloud for a build of revere_version into dir as file_name, from the
+// release chosen as above. A release build fetches nothing else; a dev build first
+// fetches REVERE_RELEASES_API_URL. not_available if a dev build's version has no base,
+// or no release has a plugin for it. On ok, release_version is the release used.
+R_API r_plugin_install_result install_revere_cloud_plugin(const std::string& dir,
+                                                          const std::string& revere_version,
+                                                          const std::string& file_name,
+                                                          const r_plugin_fetch& fetch,
+                                                          const std::vector<std::string>& trusted_keys,
+                                                          const std::string& platform,
+                                                          const std::string& arch);
+
+// The same for this build, from GitHub: revere_version(), revere_cloud_plugin_file(),
+// http_get, trusted_plugin_keys(), plugin_platform() and plugin_arch().
 R_API r_plugin_install_result install_revere_cloud_plugin(const std::string& dir);
 
 }

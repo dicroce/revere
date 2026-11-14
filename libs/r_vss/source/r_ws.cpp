@@ -4468,6 +4468,7 @@ r_http::r_server_response r_ws::_post_system_plugin_enabled(r_utils::r_socket_ba
 // {"state": "not_installed"|"installing"|"installed"|"needs_update"|"failed_check",
 //  "detail", "can_install", "terms_accepted", "terms_url", "terms_version",
 //  "error_kind" ("" or plugin_install_name(), or "load_failed"), "error_detail",
+//  "dev_warning": a dev build's warning that the plugin is from a release, for testing,
 //  "download_url": the release page, for builds that can't install it themselves}
 static json _cloud_install_json(const r_cloud_install_status& s)
 {
@@ -4481,6 +4482,7 @@ static json _cloud_install_json(const r_cloud_install_status& s)
         {"terms_version", REVERE_CLOUD_TERMS_VERSION},
         {"error_kind", s.error_kind},
         {"error_detail", s.error_detail},
+        {"dev_warning", s.dev_warning},
         {"download_url", is_release_version(version) ? "https://github.com/dicroce/revere/releases/tag/v" + version
                                                      : string("https://github.com/dicroce/revere/releases/latest")}
     };
