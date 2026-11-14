@@ -233,6 +233,67 @@ void test_r_http::test_client_response_streaming()
         std::rethrow_exception(serverException);
 }
 
+void test_r_http::test_server_response_chunk_framing()
+{
+    // Each chunk's size line is the size in hex and CRLF, nothing more: a bare ";" after it stops
+    // strict parsers (aiohttp's C parser waits there for good).
+    int port = RTF_NEXT_PORT();
+    std::exception_ptr serverException;
+    const string big(300, 'x');
+
+    auto th = thread([&](){
+        try {
+            r_socket socket;
+            socket.bind(port);
+            socket.listen();
+
+            auto clientSocket = socket.accept();
+
+            r_server_request ssRequest;
+            ssRequest.read_request(clientSocket);
+
+            r_server_response ssResponse;
+            ssResponse.set_content_type("text/event-stream");
+            ssResponse.write_chunk(clientSocket, 5, "hello");
+            ssResponse.write_chunk(clientSocket, big.size(), big.data());
+            ssResponse.write_chunk_finalizer(clientSocket);
+        } catch(...) {
+            serverException = std::current_exception();
+        }
+    });
+
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    r_socket socket;
+    socket.connect("127.0.0.1", port);
+    r_client_request request("127.0.0.1", port);
+    request.set_method(METHOD_GET);
+    request.write_request(socket);
+
+    // The raw bytes, until the server closes.
+    string raw;
+    char buf[4096];
+    while(true)
+    {
+        uint64_t millis = 5000;
+        if(!socket.wait_till_recv_wont_block(millis))
+            break;
+        auto n = socket.recv(buf, sizeof(buf));
+        if(n <= 0)
+            break;
+        raw.append(buf, n);
+    }
+    th.join();
+
+    if(serverException)
+        std::rethrow_exception(serverException);
+
+    auto body = raw.find("\r\n\r\n");
+    RTF_ASSERT(body != string::npos);
+    RTF_ASSERT(raw.substr(0, body).find("Transfer-Encoding: chunked") != string::npos);
+    RTF_ASSERT(raw.substr(body + 4) == "5\r\nhello\r\n12c\r\n" + big + "\r\n0\r\n\r\n");
+}
+
 void test_r_http::test_client_response_100_continue()
 {
     int port = RTF_NEXT_PORT();

@@ -178,7 +178,9 @@ void r_server_response::write_chunk(r_socket_base& socket, size_t sizeChunk, con
     if(!_headerWritten)
         _write_header(socket, timeout_millis);
 
-    auto chunkSizeString = r_string_utils::format("%s;\r\n", r_string_utils::format("%x", (unsigned int)sizeChunk).c_str());
+    // The size in hex and CRLF, nothing else: a ";" with no extension after it isn't valid HTTP/1.1
+    // (chunk-ext = *( ";" chunk-ext-name ... )), and strict parsers stop on it.
+    auto chunkSizeString = r_string_utils::format("%x\r\n", (unsigned int)sizeChunk);
     r_networking::r_send(socket, chunkSizeString.c_str(), chunkSizeString.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
