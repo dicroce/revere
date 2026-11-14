@@ -628,9 +628,27 @@ bool r_ssl_server_socket::peer_closed() const
 {
     if(!_st)
         return true;
-    if(_st->tls && _st->ssl_setup && mbedtls_ssl_get_bytes_avail(&_st->ssl) > 0)
+    if(!_st->tls || !_st->ssl_setup || !_st->handshaken)
+        return _st->sok.peer_closed();
+    if(mbedtls_ssl_get_bytes_avail(&_st->ssl) > 0)
         return false;
-    return _st->sok.peer_closed();
+
+    // A TLS client that closes sends a close_notify alert before its FIN, so
+    // the raw socket sees data waiting and reads it as still open. When
+    // something is waiting, a zero-length read takes in the records that have
+    // arrived without taking any application data: a close_notify, the end of
+    // the stream or a broken connection means closed; application data is
+    // left for recv().
+    uint64_t millis = 0;
+    if(!_st->sok.wait_till_recv_wont_block(millis))
+        return false;
+    unsigned char none = 0;
+    int ret = mbedtls_ssl_read(&_st->ssl, &none, 0);
+    if(ret == 0)
+        return mbedtls_ssl_get_bytes_avail(&_st->ssl) == 0;   // 0 with nothing buffered is the end of the stream
+    if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+        return _st->sok.peer_closed();
+    return true;
 }
 
 string r_ssl_server_socket::get_peer_ip() const

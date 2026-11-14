@@ -895,6 +895,83 @@ static std::shared_ptr<r_utils::r_ssl_server_config> _test_tls_config()
     return std::make_shared<r_utils::r_ssl_server_config>(pems.first, pems.second);
 }
 
+static bool _tls_until(std::function<bool()> pred, int millis = 3000)
+{
+    auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(millis);
+    while(!pred())
+    {
+        if(std::chrono::steady_clock::now() > until)
+            return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
+}
+
+// peer_closed() on a TLS connection: open while the client is quiet or has
+// sent data (which stays for recv()), closed once the client closes. A TLS
+// client's close sends a close_notify alert before its FIN, which a check of
+// the raw socket alone reads as data still to come.
+void test_r_http::test_tls_peer_closed()
+{
+    int port = RTF_NEXT_PORT();
+    auto cfg = _test_tls_config();
+
+    r_utils::r_ssl_server_socket server(cfg);
+    server.bind(port, "127.0.0.1");
+    server.listen();
+
+    std::mutex lock;
+    std::condition_variable cv;
+    int step = 0;
+    auto wait_step = [&](int s){
+        std::unique_lock<std::mutex> g(lock);
+        cv.wait_for(g, std::chrono::seconds(10), [&](){ return step >= s; });
+    };
+    auto set_step = [&](int s){
+        { std::lock_guard<std::mutex> g(lock); step = s; }
+        cv.notify_all();
+    };
+
+    std::exception_ptr clientException;
+    std::thread client([&](){
+        try
+        {
+            r_utils::r_ssl_socket sok(false);
+            sok.connect("127.0.0.1", port);
+            sok.send("ping", 4);
+            wait_step(1);
+            sok.send("more", 4);
+            wait_step(2);
+            sok.close();
+        }
+        catch(...) { clientException = std::current_exception(); }
+    });
+
+    auto conn = server.accept();
+    char buf[8] = {};
+    RTF_ASSERT(conn.recv(buf, 4) == 4);   // completes the handshake
+    RTF_ASSERT(std::string(buf, 4) == "ping");
+
+    // Connected and quiet: open.
+    RTF_ASSERT(!conn.peer_closed());
+
+    // Data waiting: open, and the data is still there for recv().
+    set_step(1);
+    RTF_ASSERT(_tls_until([&](){ uint64_t ms = 0; return conn.wait_till_recv_wont_block(ms); }));
+    RTF_ASSERT(!conn.peer_closed());
+    RTF_ASSERT(!conn.peer_closed());
+    RTF_ASSERT(conn.recv(buf, 4) == 4);
+    RTF_ASSERT(std::string(buf, 4) == "more");
+
+    // The client closes (close_notify, then FIN): closed.
+    set_step(2);
+    RTF_ASSERT(_tls_until([&](){ return conn.peer_closed(); }));
+
+    client.join();
+    if(clientException)
+        std::rethrow_exception(clientException);
+}
+
 // The same route table served over TLS: the request is read through
 // r_socket_base (handshake completes on the first read), the handler runs on a
 // worker, and the response goes back encrypted. Client is the existing

@@ -25,6 +25,7 @@ public:
       TEST(test_r_http::test_web_server_port_taken);
       TEST(test_r_http::test_web_server_destroyed_with_request_in_flight);
       TEST(test_r_http::test_web_server_https);
+      TEST(test_r_http::test_tls_peer_closed);
       TEST(test_r_http::test_web_server_https_survives_plaintext_probe);
       TEST(test_r_http::test_web_server_https_busy_silent_client);
     RTF_FIXTURE_END();
@@ -54,6 +55,7 @@ public:
     void test_web_server_port_taken();
     void test_web_server_destroyed_with_request_in_flight();
     void test_web_server_https();
+    void test_tls_peer_closed();
     void test_web_server_https_survives_plaintext_probe();
     void test_web_server_https_busy_silent_client();
 };
