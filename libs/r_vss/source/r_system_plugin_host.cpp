@@ -27,6 +27,7 @@ typedef void (*system_plugin_set_enabled_func)(r_system_plugin_handle, bool);
 typedef const char* (*system_plugin_get_status_func)(r_system_plugin_handle);
 typedef const char* (*system_plugin_get_status_message_func)(r_system_plugin_handle);
 typedef const char* (*get_system_plugin_version_func)();
+typedef uint32_t (*get_system_plugin_api_version_func)();
 typedef void (*system_plugin_set_api_result_cb_func)(r_system_plugin_handle, system_plugin_api_result_cb, void*);
 typedef void (*system_plugin_cameras_changed_func)(r_system_plugin_handle);
 
@@ -411,11 +412,52 @@ bool r_system_plugin_host::_load(const std::string& path, std::string& why)
         return false;
     }
 
+    std::string plugin_name = _plugin_name(filename);
+
+    // Not this revere's plugin: say so, so the UI can offer to update it. Checked in every
+    // build, signed or not, since nothing else would stop it.
+    auto refuse = [&](const r_plugin_check_result& check) {
+        r_skipped_system_plugin skipped;
+        skipped.name = plugin_name;
+        skipped.path = path;
+        skipped.check = check;
+        _skip(skipped);
+        why = "it can't run in this revere (" + std::string(plugin_check_name(check.status)) + "): " + check.detail +
+              ". Install the one made for this version of revere.";
+        return false;
+    };
+
+    // Before it's opened: opening runs its static initializers, and opening one built for
+    // another revere can fail, or crash.
+    auto api_check = check_plugin_api(path, R_SYSTEM_PLUGIN_API_VERSION);
+    if (!api_check.ok())
+        return refuse(api_check);
+
     try
     {
-        std::string plugin_name = _plugin_name(filename);
+        std::unique_ptr<r_dynamic_library> lib;
+        try
+        {
+            lib = std::make_unique<r_dynamic_library>(path);
+        }
+        catch (const std::exception& e)
+        {
+            R_LOG_ERROR("System plugin %s couldn't be opened: %s", path.c_str(), e.what());
+            r_plugin_check_result check;
+            check.status = r_plugin_check::wont_load;
+            check.detail = plugin_load_error_text(e.what());
+            return refuse(check);
+        }
 
-        auto lib = std::make_unique<r_dynamic_library>(path);
+        auto api_func = _symbol<get_system_plugin_api_version_func>(*lib, "get_system_plugin_api_version");
+        if (api_func)
+        {
+            auto check = check_plugin_api_version(api_func(), R_SYSTEM_PLUGIN_API_VERSION);
+            if (!check.ok())
+                return refuse(check);   // closed again (lib's destructor), never loaded
+        }
+        else R_LOG_WARNING("System plugin %s doesn't say which plugin interface it was built for (get_system_plugin_api_version); loading it as before", path.c_str());
+
         _loaded_filenames.insert(filename);
 
         auto guid_func = _symbol<get_system_plugin_guid_func>(*lib, "get_system_plugin_guid");

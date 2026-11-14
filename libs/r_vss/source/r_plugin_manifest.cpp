@@ -2,10 +2,12 @@
 #include "r_vss/r_plugin_manifest.h"
 #include "r_utils/r_platform.h"
 #include "r_vss/r_build_info.h"
+#include "r_vss/r_system_plugin.h"
 #include "r_utils/r_ecdsa.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_sha256.h"
 #include "r_utils/3rdparty/json/json.h"
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 
@@ -112,6 +114,9 @@ r_plugin_manifest r_vss::parse_plugin_manifest(const string& json)
     m.file = str("file");
     m.size = unsigned_number("size");
     m.sha256 = str("sha256");
+    auto api = j.find("plugin_api");
+    if(api != j.end() && (!api->is_string() || !parse_plugin_api(api->get<string>(), m.plugin_api)))
+        R_STHROW(r_invalid_argument_exception, ("Plugin manifest's plugin_api isn't a plugin interface version, \"<major>.<minor>\"."));
 
     if(m.file.empty() || m.file.find_first_of("/\\:") != string::npos || m.file == "." || m.file == "..")
         R_STHROW(r_invalid_argument_exception, ("Plugin manifest's file \"%s\" isn't a plain file name.", m.file.c_str()));
@@ -134,6 +139,8 @@ const char* r_vss::plugin_check_name(r_plugin_check status)
         case r_plugin_check::size_mismatch: return "size_mismatch";
         case r_plugin_check::hash_mismatch: return "hash_mismatch";
         case r_plugin_check::unreadable: return "unreadable";
+        case r_plugin_check::wrong_plugin_api: return "wrong_plugin_api";
+        case r_plugin_check::wont_load: return "wont_load";
     }
     return "unknown";
 }
@@ -223,6 +230,12 @@ r_plugin_check_result r_vss::check_plugin_manifest(const string& manifest_json,
         return _result(r_plugin_check::wrong_platform, "built for " + m.platform + " " + m.arch + ", this is " + platform + " " + arch);
     if(m.revere_version != revere_version)
         return _result(r_plugin_check::wrong_version, "built for revere " + m.revere_version + ", this is " + revere_version);
+    if(m.plugin_api != 0)
+    {
+        auto api = check_plugin_api_version(m.plugin_api, R_SYSTEM_PLUGIN_API_VERSION);
+        if(!api.ok())
+            return api;
+    }
 
     manifest = m;
     return _result(r_plugin_check::ok);
@@ -286,4 +299,112 @@ r_plugin_check_result r_vss::check_system_plugin(const string& plugin_path,
 r_plugin_check_result r_vss::check_system_plugin(const string& plugin_path)
 {
     return check_system_plugin(plugin_path, revere_version(), trusted_plugin_keys(), plugin_platform(), plugin_arch());
+}
+
+string r_vss::plugin_api_name(uint32_t api_version)
+{
+    return to_string(api_version >> 16) + "." + to_string(api_version & 0xffff);
+}
+
+bool r_vss::parse_plugin_api(const string& name, uint32_t& api_version)
+{
+    auto dot = name.find('.');
+    if(dot == string::npos)
+        return false;
+    auto number = [](const string& digits, uint32_t& out) {
+        if(digits.empty() || digits.size() > 5)
+            return false;
+        uint32_t v = 0;
+        for(char c : digits)
+        {
+            if(c < '0' || c > '9')
+                return false;
+            v = v * 10 + (uint32_t)(c - '0');
+        }
+        out = v;
+        return v <= 0xffff;
+    };
+    uint32_t major = 0, minor = 0;
+    if(!number(name.substr(0, dot), major) || !number(name.substr(dot + 1), minor) || major == 0)
+        return false;
+    api_version = major << 16 | minor;
+    return true;
+}
+
+r_plugin_check_result r_vss::check_plugin_api_version(uint32_t plugin_api, uint32_t host_api)
+{
+    auto major = [](uint32_t v) { return v >> 16; };
+    auto minor = [](uint32_t v) { return v & 0xffff; };
+    if(major(plugin_api) != major(host_api))
+        return _result(r_plugin_check::wrong_plugin_api, "it needs plugin interface v" + to_string(major(plugin_api)) +
+                                                         ", this revere has v" + to_string(major(host_api)));
+    if(minor(plugin_api) > minor(host_api))
+        return _result(r_plugin_check::wrong_plugin_api, "it needs plugin interface v" + plugin_api_name(plugin_api) +
+                                                         ", this revere has v" + plugin_api_name(host_api));
+    return _result(r_plugin_check::ok);
+}
+
+r_plugin_check_result r_vss::check_plugin_api(const string& plugin_path, uint32_t host_api)
+{
+    auto manifest_path = plugin_manifest_path(plugin_path);
+    error_code ec;
+    if(!fs::exists(fs::u8path(manifest_path), ec))
+        return _result(r_plugin_check::ok);
+    string json, why;
+    if(!_read_small(manifest_path, MAX_MANIFEST_BYTES, json, why))
+        return _result(r_plugin_check::ok);
+    // Only "plugin_api": a manifest that's otherwise malformed is check_system_plugin()'s to report.
+    nlohmann::json j = nlohmann::json::parse(json, nullptr, false);
+    if(!j.is_object())
+        return _result(r_plugin_check::ok);
+    auto api = j.find("plugin_api");
+    uint32_t plugin_api = 0;
+    if(api == j.end() || !api->is_string() || !parse_plugin_api(api->get<string>(), plugin_api))
+        return _result(r_plugin_check::ok);
+    return check_plugin_api_version(plugin_api, host_api);
+}
+
+string r_vss::plugin_load_error_text(const string& error)
+{
+    auto fits = [](const string& name) { return !name.empty() && name.size() <= 255 && name.find_first_of("\r\n") == string::npos; };
+
+    // macOS: "dlopen(<plugin>, 0x0002): Library not loaded: @executable_path/../libs/libavcodec.62.28.103.dylib\n  Referenced from: ..."
+    const string mac = "Library not loaded: ";
+    auto at = error.find(mac);
+    if(at != string::npos)
+    {
+        auto start = at + mac.size();
+        auto end = error.find_first_of("\r\n", start);
+        auto path = error.substr(start, end == string::npos ? string::npos : end - start);
+        while(!path.empty() && path.back() == ' ')
+            path.pop_back();
+        auto slash = path.find_last_of('/');
+        auto name = slash == string::npos ? path : path.substr(slash + 1);
+        if(fits(name))
+            return "it needs " + name + ", which this revere doesn't have";
+    }
+
+    // Linux: "<needed>: cannot open shared object file: No such file or directory"
+    const string linux_tail = ": cannot open shared object file";
+    at = error.find(linux_tail);
+    if(at != string::npos)
+    {
+        auto start = error.rfind(": ", at == 0 ? 0 : at - 1);
+        start = start == string::npos ? 0 : start + 2;
+        auto name = error.substr(start, at - start);
+        auto slash = name.find_last_of('/');
+        if(slash != string::npos)
+            name = name.substr(slash + 1);
+        if(fits(name))
+            return "it needs " + name + ", which this revere doesn't have";
+    }
+
+    // Windows: LoadLibrary's ERROR_MOD_NOT_FOUND (126), or ERROR_PROC_NOT_FOUND (127) for a
+    // library there that lacks a function the plugin needs.
+    if(error.find("Windows error code: 126") != string::npos)
+        return "it needs a library this revere doesn't have";
+    if(error.find("Windows error code: 127") != string::npos)
+        return "it needs a function this revere's libraries don't have";
+
+    return error;
 }

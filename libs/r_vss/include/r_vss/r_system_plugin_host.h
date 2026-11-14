@@ -63,18 +63,21 @@ R_API bool signed_system_plugins_required();
 // aren't required, the first, as before; else -1, none.
 R_API int choose_system_plugin_copy(const std::vector<r_plugin_check_result>& checks, bool require_signed);
 
-// A system plugin found but not loaded, because no copy of it passed its check.
+// A system plugin found but not loaded: no copy of it passed its check, or the copy chosen
+// is for a plugin interface it doesn't load or couldn't be opened.
 struct r_skipped_system_plugin
 {
     std::string name;              // its file name without the extension, as get_loaded_plugins() names plugins
     std::string path;              // the copy reported: the last found, a user folder's if there is one
     r_plugin_check_result check;   // what that copy's check found
 
-    // No manifest (an older installer) or built for another revere: "needs updating",
-    // and an install of the matching build fixes it. Anything else failed its integrity check.
+    // No manifest (an older installer), built for another revere or a plugin interface it doesn't load, or it can't
+    // be opened here (it needs a library this revere doesn't have): "needs updating", and an
+    // install of the matching build fixes it. Anything else failed its integrity check.
     bool needs_update() const
     {
-        return check.status == r_plugin_check::no_manifest || check.status == r_plugin_check::wrong_version;
+        return check.status == r_plugin_check::no_manifest || check.status == r_plugin_check::wrong_version ||
+               check.status == r_plugin_check::wrong_plugin_api || check.status == r_plugin_check::wont_load;
     }
 };
 
@@ -94,13 +97,15 @@ public:
 
     // Loads one more plugin while revere runs (one just installed), checked as at start
     // and started if start_all() has run. False, with why, if it isn't loaded: it failed
-    // its check (also reported by get_skipped_plugins()), a plugin by its file name or
-    // GUID is already loaded, or it isn't a system plugin. Nothing is ever unloaded:
+    // its check, it's for a plugin interface this revere doesn't load or couldn't be opened (these three also
+    // reported by get_skipped_plugins()), a plugin by its file name or GUID is already
+    // loaded, or it isn't a system plugin. Nothing is ever unloaded:
     // dlclose under a plugin's own threads isn't safe.
     R_API bool load_and_start(const std::string& path, std::string& why);
 
-    // The plugins found but not loaded because no copy passed its check, for the UI's
-    // "needs updating" or "failed its integrity check". Empty unless signatures are required.
+    // The plugins found but not loaded, for the UI's "needs updating" or "failed its
+    // integrity check": no copy passed its check (only when signatures are required), or,
+    // in any build, the copy chosen is for a plugin interface it doesn't load or couldn't be opened.
     R_API std::vector<r_skipped_system_plugin> get_skipped_plugins() const;
 
     // The folder an in-app install writes to: the last plugin folder, the user's
