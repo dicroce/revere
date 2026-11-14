@@ -436,16 +436,23 @@ uint64_t r_server_request::get_read_deadline() const
 int r_server_request::_recv_some(r_socket_base& socket, void* buf, size_t len, uint64_t timeout_millis)
 {
     uint64_t wait = timeout_millis;
+    // The wait ends at the deadline (rounded up to a whole ms): nothing by then is the deadline's, not a timeout.
+    bool until_deadline = false;
     if(_readDeadlineMillis > 0)
     {
-        auto left = chrono::duration_cast<chrono::milliseconds>(_readDeadlineAt - chrono::steady_clock::now()).count();
-        if(left <= 0)
+        auto left_us = chrono::duration_cast<chrono::microseconds>(_readDeadlineAt - chrono::steady_clock::now()).count();
+        if(left_us <= 0)
             R_STHROW(r_http_408_exception, ("Request not read within %llu ms.", (unsigned long long)_readDeadlineMillis));
-        wait = min(wait, (uint64_t)left);
+        uint64_t left = ((uint64_t)left_us + 999) / 1000;
+        if(left <= wait)
+        {
+            wait = left;
+            until_deadline = true;
+        }
     }
     if(!socket.wait_till_recv_wont_block(wait))
     {
-        if(_readDeadlineMillis > 0 && chrono::steady_clock::now() >= _readDeadlineAt)
+        if(until_deadline)
             R_STHROW(r_http_408_exception, ("Request not read within %llu ms.", (unsigned long long)_readDeadlineMillis));
         R_STHROW(r_socket_exception, ("recv timeout"));
     }
