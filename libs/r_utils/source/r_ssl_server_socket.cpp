@@ -331,7 +331,8 @@ int r_ssl_server_socket::_bio_recv(void* ctx, unsigned char* buf, size_t len)
     if(st->no_wait)
     {
         // Only the bytes already here: none (or the peer's FIN) is WANT_READ,
-        // and mbedtls keeps a partial record until the next read.
+        // and mbedtls keeps a partial record until the next read. With some
+        // here, recv() returns what there is without waiting for more.
         size_t here = 0;
 #ifdef IS_WINDOWS
         u_long n = 0;
@@ -344,8 +345,6 @@ int r_ssl_server_socket::_bio_recv(void* ctx, unsigned char* buf, size_t len)
 #endif
         if(here == 0)
             return MBEDTLS_ERR_SSL_WANT_READ;
-        if(len > here)
-            len = here;
     }
     int ret = st->sok.recv(buf, len);
     if(ret < 0)
