@@ -44,7 +44,9 @@ constexpr double PRESENTATION_DESIRED_DECAY_MS = 0.02;  // buffer-target decay p
                                                         // latency when delivery behaves)
 constexpr double PRESENTATION_DRAIN_GAIN = 0.05;        // proportional drain of buffer above target
 constexpr double PRESENTATION_DRAIN_MAX_MS = 2.0;       // max drain per present
-constexpr int64_t STATS_WINDOW_SECONDS = 10;            // smoothness stats logging interval
+constexpr int64_t STATS_WINDOW_SECONDS = 10;            // smoothness stats window
+constexpr int64_t STATS_HEARTBEAT_SECONDS = 300;        // a window with no trouble is logged at most
+                                                        // this often (a troubled one always is)
 
 // Playback gap skipping (see pipeline_host::_check_playback_advance)
 constexpr int64_t PLAYBACK_END_STALL_MS = 2000;         // playback pipe quiet this long after frames
@@ -57,8 +59,10 @@ constexpr int64_t PLAYBACK_PROGRESS_RESET_S = 5;        // this much footage pla
 constexpr int64_t PLAYBACK_LIVE_EDGE_SLACK_S = 5;       // a next start this close to now goes live
 constexpr int64_t PLAYBACK_SEGMENT_LOOKAHEAD_H = 6;     // first /contents lookahead (web UI uses 6h)
 
-// Log-only smoothness instrumentation, accumulated per stream and emitted as
-// one log line per stats window. Interpretation:
+// Log-only smoothness instrumentation, accumulated per stream over each stats
+// window. A window is logged when it had trouble (troubled()), and otherwise only
+// the first and then one every STATS_HEARTBEAT_SECONDS, so smooth playback doesn't
+// fill the log. Interpretation:
 //   pts_d   — delta between consecutive frame timestamps. Uneven values mean
 //             the camera itself stamps jittery timestamps (e.g. at send time
 //             rather than capture time).
@@ -95,6 +99,23 @@ struct stream_stats final
 
     std::chrono::steady_clock::time_point window_start;
     bool window_started {false};
+
+    // When a window was last logged (not reset with the window).
+    std::chrono::steady_clock::time_point last_logged;
+    bool logged_once {false};
+
+    // Anything in this window worth a log line on its own.
+    bool troubled() const
+    {
+        return nonmono > 0 || overflow_drops > 0 || late_presents > 0 || skips > 0 ||
+               reanchors > 0 || drain_slews > 0 || retard_slews > 0;
+    }
+
+    // Whether to log this window, at now: troubled, the first, or a heartbeat.
+    bool should_log(const std::chrono::steady_clock::time_point& now) const
+    {
+        return troubled() || !logged_once || now - last_logged >= std::chrono::seconds(STATS_HEARTBEAT_SECONDS);
+    }
 
     void reset(const std::chrono::steady_clock::time_point& now)
     {
