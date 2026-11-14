@@ -5,6 +5,7 @@
 #include "r_vss/r_recap.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_rtsp_auth.h"
+#include "r_vss/r_rtsp_logins_api.h"
 #include "r_vss/r_query.h"
 #include "r_vss/r_vss_utils.h"
 #include "r_vss/r_camera_source_info.h"
@@ -16,6 +17,7 @@
 #include "r_utils/r_file.h"
 #include "r_utils/r_ssl_server_socket.h"
 #include "r_utils/r_local_api_token.h"
+#include "r_utils/r_recorder_id.h"
 #include "r_utils/r_blob_tree.h"
 #include "r_utils/r_qr_code.h"
 #include "r_utils/3rdparty/json/json.h"
@@ -193,6 +195,19 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     open_route(METHOD_POST, "/set_password", &r_ws::_post_set_password);
     route(METHOD_POST, "/session", &r_ws::_post_session);
     route(METHOD_GET, "/rtsp_credentials", &r_ws::_get_rtsp_credentials);
+
+    // Per-client RTSP logins for local plugins: the local token, from this machine, and nothing else
+    // (r_rtsp_logins_api.h). They check for themselves, so they are not `route`s.
+    rtsp_logins_api logins_api;
+    logins_api.request_token = [this](const r_http::r_server_request& request) {
+        auto token = _request_token(request);
+        return token.is_null() ? string() : token.value();
+    };
+    logins_api.is_local_token = [this](const string& token) {
+        auto local = _auth.local_token();
+        return !local.empty() && r_ws_auth::constant_time_equal(token, local);
+    };
+    add_rtsp_login_routes(server, _stream_keeper.rtsp_logins(), logins_api);
 }
 
 r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_keeper& stream_keeper) :
@@ -209,6 +224,9 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     _https(WEB_SERVER_TLS_PORT, _read_remote_access(top_dir) ? string() : string("127.0.0.1"))
 {
     _remote_access_active = _read_remote_access(top_dir);
+    _recorder_id = r_recorder_id::get_or_create(top_dir);
+    if(_recorder_id.empty())
+        R_LOG_WARNING("r_ws: couldn't keep a recorder id in %s; /version reports none", top_dir.c_str());
     _add_routes(_http);
     _add_routes(_https);
 
@@ -775,11 +793,13 @@ r_http::r_server_response r_ws::_get_contents(r_utils::r_socket_base&, const r_h
     R_STHROW(r_http_500_exception, ("Failed to get contents."));
 }
 
-// Which build this is, for the web UI, the cloud plugin and support:
+// Which build this is, and which recorder, for the web UI, the cloud plugin and support:
 //   {"version": "0.0.31-dirty", "build_number": 273, "build_time": "2026-10-15T20:01:02Z",
-//    "git_revision": "abc1234", "plugins": [{"name": "...", "version": "0.9.2"}]}
-// A plugin that doesn't report its version has "version": null. No secrets,
-// so no auth, like /auth_status.
+//    "git_revision": "abc1234", "recorder_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+//    "plugins": [{"name": "...", "version": "0.9.2"}]}
+// A plugin that doesn't report its version has "version": null. recorder_id
+// (r_utils/r_recorder_id.h) is null if it couldn't be kept. It identifies
+// this recorder and proves nothing. No secrets, so no auth, like /auth_status.
 r_http::r_server_response r_ws::_get_version(r_utils::r_socket_base&, const r_http::r_server_request&)
 {
     try
@@ -796,6 +816,7 @@ r_http::r_server_response r_ws::_get_version(r_utils::r_socket_base&, const r_ht
             {"build_number", revere_build_number()},
             {"build_time", revere_build_time()},
             {"git_revision", revere_git_revision()},
+            {"recorder_id", _recorder_id.empty() ? json(nullptr) : json(_recorder_id)},
             {"plugins", plugins}
         };
 
@@ -4462,6 +4483,7 @@ r_http::r_server_response r_ws::_post_system_plugin_enabled(r_utils::r_socket_ba
 // {"state": "not_installed"|"installing"|"installed"|"needs_update"|"failed_check",
 //  "detail", "can_install", "terms_accepted", "terms_url", "terms_version",
 //  "error_kind" ("" or plugin_install_name(), or "load_failed"), "error_detail",
+//  "dev_warning": a dev build's warning that the plugin is from a release, for testing,
 //  "download_url": the release page, for builds that can't install it themselves}
 static json _cloud_install_json(const r_cloud_install_status& s)
 {
@@ -4475,6 +4497,7 @@ static json _cloud_install_json(const r_cloud_install_status& s)
         {"terms_version", REVERE_CLOUD_TERMS_VERSION},
         {"error_kind", s.error_kind},
         {"error_detail", s.error_detail},
+        {"dev_warning", s.dev_warning},
         {"download_url", is_release_version(version) ? "https://github.com/dicroce/revere/releases/tag/v" + version
                                                      : string("https://github.com/dicroce/revere/releases/latest")}
     };

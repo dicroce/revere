@@ -150,6 +150,9 @@ private:
         bool ssl_setup {false};
         bool handshaken {false};
         std::atomic<bool> failed {false};
+        // Set by peer_closed() around its read: the BIO takes only what has
+        // already arrived, and never waits for the rest of a record.
+        bool no_wait {false};
     };
 
     static int _bio_send(void* ctx, const unsigned char* buf, size_t len);

@@ -34,6 +34,8 @@
 #include "r_ui_utils/wizard.h"
 #include "revere_api.h"
 #include "r_utils/r_local_api_token.h"
+#include "r_utils/r_desktop.h"
+#include "r_utils/r_platform.h"
 #include "r_ui_utils/texture_loader.h"
 
 // Define the fonts global variable for this app
@@ -389,28 +391,14 @@ std::thread system_info_thread(
 void _pop_export_folder()
 {
     auto export_dir = sub_dir("exports");
-
-#ifdef IS_WINDOWS
-    HINSTANCE result = ShellExecuteA(NULL, "open", export_dir.c_str(), NULL, NULL, SW_SHOWDEFAULT);
-    if ((INT_PTR)result <= 32)
-        R_LOG_ERROR("ShellExecuteA failed to open exports folder: %s (error code: %lld)", export_dir.c_str(), (long long)(INT_PTR)result);
-#endif
-#ifdef IS_LINUX
-    auto command = r_string_utils::format("xdg-open \"%s\"", export_dir.c_str());
-    R_LOG_INFO("Opening exports folder with command: %s", command.c_str());
-    int result = system(command.c_str());
-    if (result != 0)
-        R_LOG_ERROR("xdg-open failed for exports folder: %s (exit code: %d)", export_dir.c_str(), result);
-    else
-        R_LOG_INFO("xdg-open succeeded for exports folder");
-#endif
-#ifdef IS_MACOS
-    auto command = r_string_utils::format("open \"%s\"", export_dir.c_str());
-    R_LOG_INFO("Opening exports folder with command: %s", command.c_str());
-    int result = system(command.c_str());
-    if (result != 0)
-        R_LOG_ERROR("open failed for exports folder: %s (exit code: %d)", export_dir.c_str(), result);
-#endif
+    try
+    {
+        r_desktop::open(export_dir);
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("Couldn't open the exports folder: %s", e.what());
+    }
 }
 
 // Trust and sign-in for a remote Revere (revere_api.h). Drawn every frame while
@@ -609,11 +597,7 @@ static bool _local_revere_present()
             return true;
     }
     catch(...) {}
-#ifdef IS_WINDOWS
-    const char* exe = "revere.exe";
-#else
-    const char* exe = "revere";
-#endif
+    auto exe = string("revere") + r_platform::exe_suffix();
     return r_fs::file_exists(r_fs::path_join(r_fs::working_directory(), exe));
 }
 
@@ -675,32 +659,9 @@ static void _init_audio()
         R_LOG_WARNING("No audio (%s); video plays without sound.", SDL_GetError());
 }
 
-// Fire-and-forget process launch for the per-camera overlay windows. NOT
-// r_process: its Windows destructor WaitForSingleObject(INFINITE)s on the child
-// (detached is ignored there), so a local r_process would freeze this app until
-// the overlay closes. Windows uses CreateProcess + immediate CloseHandle (truly
-// independent child); Linux/macOS use r_process's detached path, which clears
-// its pid on start() so its destructor is a no-op.
+// Fire-and-forget process launch for the per-camera overlay windows.
 static void _launch_detached(const std::string& cmd)
 {
-#ifdef IS_WINDOWS
-    STARTUPINFOA si;
-    ZeroMemory(&si, sizeof(si));
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi;
-    ZeroMemory(&pi, sizeof(pi));
-
-    std::vector<char> buf(cmd.begin(), cmd.end());
-    buf.push_back('\0');  // CreateProcessA needs a writable command line
-
-    if(CreateProcessA(NULL, buf.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
-    {
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-    }
-    else
-        R_LOG_ERROR("launch failed: CreateProcess (%lu): %s", (unsigned long)GetLastError(), cmd.c_str());
-#else
     try
     {
         r_utils::r_process p(cmd, true);
@@ -710,7 +671,6 @@ static void _launch_detached(const std::string& cmd)
     {
         R_LOG_ERROR("launch failed: %s (%s)", e.what(), cmd.c_str());
     }
-#endif
 }
 
 #ifdef IS_WINDOWS

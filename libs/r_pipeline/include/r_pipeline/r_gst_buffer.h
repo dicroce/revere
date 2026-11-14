@@ -5,17 +5,12 @@
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
 
-#ifdef IS_WINDOWS
-#pragma warning( push )
-#pragma warning( disable : 4244 )
-#endif
+R_THIRD_PARTY_HEADERS_BEGIN
 #include <gst/gst.h>
 #include <gst/rtsp/gstrtspmessage.h>
 #include <gst/sdp/gstsdpmessage.h>
 #include <gst/app/gstappsink.h>
-#ifdef IS_WINDOWS
-#pragma warning( pop )
-#endif
+R_THIRD_PARTY_HEADERS_END
 
 namespace r_pipeline
 {

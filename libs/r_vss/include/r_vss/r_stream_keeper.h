@@ -39,26 +39,15 @@
 #include <cstdint>
 #include <thread>
 #include <mutex>
+#include "r_vss/r_rtsp_logins.h"
 #include <memory>
 #include <functional>
 #include <chrono>
 
-#ifdef IS_WINDOWS
-#pragma warning( push )
-#pragma warning( disable : 4244 )
-#endif
-#ifdef IS_LINUX
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
+R_THIRD_PARTY_HEADERS_BEGIN
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h>
-#ifdef IS_LINUX
-#pragma GCC diagnostic pop
-#endif
-#ifdef IS_WINDOWS
-#pragma warning( pop )
-#endif
+R_THIRD_PARTY_HEADERS_END
 
 struct _GMainContext;
 typedef struct _GMainContext GMainContext;
@@ -339,6 +328,8 @@ public:
     // The restream's RTSP credential (r_vss/r_rtsp_auth.h): user
     // r_rtsp_auth::RTSP_USER with this password, by Digest.
     R_API std::string rtsp_password() const { return _rtsp_password; }
+    // Extra RTSP logins for local plugins (r_rtsp_logins.h), added and removed while running.
+    R_API r_rtsp_logins& rtsp_logins() { return *_rtsp_logins; }
 
     R_API void write_metadata(const std::string& camera_id, const std::string& stream_tag, const std::string& json_data, int64_t timestamp_ms);
 
@@ -347,6 +338,10 @@ public:
     R_API void set_system_plugin_enabled(const std::string& plugin_name, bool enabled);
     // Runs an action from a plugin's status message; false if it has none.
     R_API bool run_system_plugin_action(const std::string& plugin_name, const std::string& action);
+    // Uninstalling a plugin the user installed in revere (r_system_plugin_host::can_uninstall):
+    // marked now, deleted at the next start, so the caller restarts revere.
+    R_API bool can_uninstall_system_plugin(const std::string& plugin_name) const;
+    R_API bool mark_system_plugin_for_uninstall(const std::string& plugin_name, std::string& why);
     R_API std::string get_system_plugin_status(const std::string& plugin_name) const;
     R_API std::string get_system_plugin_status_message(const std::string& plugin_name) const;
     R_API std::string get_system_plugin_version(const std::string& plugin_name) const;
@@ -488,6 +483,7 @@ private:
     GstRTSPServer* _server;
     GstRTSPAuth* _rtsp_auth {nullptr};
     std::string _rtsp_password;
+    std::unique_ptr<r_rtsp_logins> _rtsp_logins;
     GstRTSPMountPoints* _mounts;
     std::vector<GstRTSPMediaFactory*> _factories;
     r_motion_tuning_fn _motion_tuning_fn;

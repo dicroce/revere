@@ -347,8 +347,11 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
 
             if(arrival_now - _net_window_start >= seconds(10))
             {
-                if(_net_n > 0)
+                if(_net_n > 0 &&
+                   (_net_nonmono > 0 || !_net_logged_once || arrival_now - _net_last_logged >= seconds(STATS_HEARTBEAT_SECONDS)))
                 {
+                    _net_last_logged = arrival_now;
+                    _net_logged_once = true;
                     R_LOG_INFO("vision_net[%s] %llds: n=%u nmono=%u pts_d(ms) avg=%.1f min=%lld max=%lld | arr_jit(ms) avg=%.1f max=%lld",
                         _si.name.c_str(),
                         (long long)duration_cast<seconds>(arrival_now - _net_window_start).count(),

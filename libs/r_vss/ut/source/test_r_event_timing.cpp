@@ -266,5 +266,15 @@ void test_r_event_timing::test_snapshot_reports_key_frame_ts()
     // Without frame_ts, as before.
     RTF_ASSERT(!query_get_jpg(SNAP_TOP, devices, "cam-snap", at(base + 2900), 320, 240).empty());
 
+    // More than 5 minutes past the newest frame (an offline camera): not found,
+    // which the web server answers with a quiet 404 rather than a logged 500.
+    bool jpg_not_found = false, webp_not_found = false;
+    try { query_get_jpg(SNAP_TOP, devices, "cam-snap", at(base + 600000), 320, 240); }
+    catch(const r_not_found_exception&) { jpg_not_found = true; }
+    try { query_get_webp(SNAP_TOP, devices, "cam-snap", at(base + 600000), 320, 240); }
+    catch(const r_not_found_exception&) { webp_not_found = true; }
+    RTF_ASSERT(jpg_not_found);
+    RTF_ASSERT(webp_not_found);
+
     devices.stop();
 }

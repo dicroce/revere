@@ -836,6 +836,39 @@ void remove_camera_modal(
     }
 }
 
+// ---- Uninstall plugin ----
+
+// Revere deletes a plugin at its next start (it can't unload one while running),
+// so uninstalling restarts it.
+template<typename UNINSTALL_CB, typename CANCEL_CB>
+void uninstall_plugin_modal(
+    ImGuiContext*,
+    const std::string& name,
+    const std::string& plugin_name,
+    UNINSTALL_CB uninstall_cb,
+    CANCEL_CB cancel_cb
+)
+{
+    dialog_frame d(name.c_str(), 420.0f);
+    if(!d)
+        return;
+
+    d.heading("Uninstall " + plugin_name + "?");
+    d.body("Uninstalling " + plugin_name + " restarts Revere. Recording stops for a few seconds. Proceed?");
+
+    int a = d.actions({{"Cancel"}, {"Uninstall and restart", button_kind::destructive}});
+    if(a == 0 || d.escape())
+    {
+        d.close();
+        cancel_cb();
+    }
+    else if(a == 1)
+    {
+        d.close();
+        uninstall_cb();
+    }
+}
+
 // ---- Error ----
 
 template<typename OK_CB>

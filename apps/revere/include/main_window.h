@@ -40,6 +40,7 @@ struct plugin_view
     bool enabled {false};
     bool has_status {false};    // false when the plugin has no status export
     bool has_toggle {true};     // false for a row revere adds for a plugin that isn't loaded
+    bool can_uninstall {false}; // installed in revere (the user's plugin folder), so it has an Uninstall button
     std::string status_label;
     ImVec4 status_color {r_ui_utils::theme::status_neutral_dot};
     std::string status_message; // JSON from system_plugin_get_status_message, may be empty
@@ -159,6 +160,7 @@ struct main_window_actions
     std::function<void(int)> record;
     std::function<void(int)> forget;
     std::function<void(const std::string&, bool)> set_plugin_enabled;
+    std::function<void(const std::string&, const std::string&)> uninstall_plugin;   // plugin name, display name; asks first, then revere restarts
     std::function<void(const std::string&, const std::string&)> run_plugin_action;   // plugin name, action id
     std::function<void(const std::string&)> open_url;
     std::function<void()> add_rtsp_camera;
@@ -1668,32 +1670,65 @@ inline void main_window(
         else if(sel == kind::plugin)
         {
             const auto& p = plugins[sel_index];
-            // Enabled sits at the right of the title row when both fit,
-            // otherwise on its own line under the status line.
+            // Uninstall and Enabled sit at the right of the title row when they
+            // fit, otherwise on their own line under the status line.
             const std::string title = p.display_name.empty() ? p.name : p.display_name;
             const char* toggle_label = "Enabled";
-            const float toggle_w = compact_toggle_width(toggle_label, fonts);
+            const char* uninstall_label = "Uninstall";
+            const bool show_uninstall = p.can_uninstall && actions.uninstall_plugin;
+            const float controls_gap = 12.0f;
+            const float toggle_w = p.has_toggle ? compact_toggle_width(toggle_label, fonts) : 0.0f;
+            ImGui::PushFont(font(fonts.key_22));
+            const ImVec2 uninstall_size = show_uninstall ? button_size(uninstall_label, true) : ImVec2(0.0f, 0.0f);
+            ImGui::PopFont();
+            const float controls_w = toggle_w + uninstall_size.x + (p.has_toggle && show_uninstall ? controls_gap : 0.0f);
             const float avail = ImGui::GetContentRegionAvail().x;
             const auto row = ImGui::GetCursorScreenPos();
             ImGui::PushFont(font(fonts.key_24, true));
             const float title_w = ImGui::CalcTextSize(title.c_str()).x;
             const float title_h = ImGui::GetTextLineHeight();
             ImGui::PopFont();
-            const bool toggle_in_title_row = p.has_toggle && title_w + 16.0f + toggle_w <= avail;
+            const bool has_controls = p.has_toggle || show_uninstall;
+            const bool controls_in_title_row = has_controls && title_w + 16.0f + controls_w <= avail;
 
             bool enabled = p.enabled;
+            // The controls from the cursor, left to right, centred on a line of height line_h.
+            auto controls = [&](float line_h) {
+                const auto at = ImGui::GetCursorScreenPos();
+                float x = at.x;
+                if(show_uninstall)
+                {
+                    ImGui::SetCursorScreenPos(ImVec2(x, at.y + std::floor((line_h - uninstall_size.y) * 0.5f)));
+                    ImGui::PushFont(font(fonts.key_22));
+                    if(styled_button(uninstall_label, button_kind::ghost_destructive, true))
+                        actions.uninstall_plugin(p.name, plugin_display_name(p));
+                    ImGui::PopFont();
+                    x += uninstall_size.x + controls_gap;
+                }
+                if(p.has_toggle)
+                {
+                    ImGui::SetCursorScreenPos(ImVec2(x, at.y + std::floor((line_h - compact_toggle_height(fonts)) * 0.5f)));
+                    if(compact_toggle(toggle_label, &enabled, fonts))
+                        actions.set_plugin_enabled(p.name, enabled);
+                }
+            };
             detail_title(title, std::string(), fonts);
-            if(toggle_in_title_row)
+            if(controls_in_title_row)
             {
                 auto below = ImGui::GetCursorScreenPos();
-                ImGui::SetCursorScreenPos(ImVec2(row.x + avail - toggle_w, row.y + std::floor((title_h - compact_toggle_height(fonts)) * 0.5f)));
-                if(compact_toggle(toggle_label, &enabled, fonts))
-                    actions.set_plugin_enabled(p.name, enabled);
+                ImGui::SetCursorScreenPos(ImVec2(row.x + avail - controls_w, row.y));
+                controls(title_h);
                 ImGui::SetCursorScreenPos(below);
             }
             plugin_status_line(p, fonts);
-            if(p.has_toggle && !toggle_in_title_row && compact_toggle(toggle_label, &enabled, fonts))
-                actions.set_plugin_enabled(p.name, enabled);
+            if(has_controls && !controls_in_title_row)
+            {
+                const float line_h = std::max(compact_toggle_height(fonts), uninstall_size.y);
+                const auto start = ImGui::GetCursorScreenPos();
+                controls(line_h);
+                ImGui::SetCursorScreenPos(start);
+                ImGui::Dummy(ImVec2(controls_w, line_h));
+            }
 
             // The same gap above the content as above a camera's action row.
             ImGui::Dummy(ImVec2(0.0f, 4.0f));

@@ -11,6 +11,13 @@
 #include "r_utils/r_file.h"
 #include "r_utils/r_file_lock.h"
 #include "r_utils/r_instance_lock.h"
+#include "r_utils/r_app_instance.h"
+#include "r_utils/r_direct_file.h"
+#include "r_utils/r_dynamic_library.h"
+#include "r_utils/r_platform.h"
+#include "r_utils/r_process.h"
+#include "r_utils/r_std_utils.h"
+#include "r_utils/r_restart.h"
 #include "r_utils/r_md5.h"
 #include "r_utils/r_sha1.h"
 #include "r_utils/r_socket.h"
@@ -18,6 +25,7 @@
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_ssl_server_socket.h"
 #include "r_utils/r_local_api_token.h"
+#include "r_utils/r_recorder_id.h"
 #include "r_utils/r_tls_fingerprint.h"
 #include "r_utils/r_udp_receiver.h"
 #include "r_utils/r_udp_sender.h"
@@ -46,6 +54,7 @@
 #include <algorithm>
 #ifdef IS_WINDOWS
 #include <windows.h>
+#include <shellapi.h>
 #else
 #include <unistd.h>
 #include <sys/stat.h>
@@ -1082,29 +1091,24 @@ void test_r_utils::test_ssl_socket_multiple_close()
     RTF_ASSERT(sock.recv(buffer, sizeof(buffer)) < 0);
 }
 
-// r_udp_socket has no bind of its own: bind the receiver through fd().
 void test_r_utils::test_udp_socket_send_recv()
 {
     r_udp_socket rx, tx;
-    r_socket_address rx_addr(9393, "127.0.0.1");
-    RTF_ASSERT(::bind(rx.fd(), rx_addr.get_sock_addr(), rx_addr.sock_addr_size()) == 0);
-
+    rx.bind(9393, "127.0.0.1");
     // Fail rather than hang if nothing arrives.
-#ifdef IS_WINDOWS
-    DWORD timeout = 2000;
-#else
-    struct timeval timeout = {2, 0};
-#endif
-    setsockopt(rx.fd(), SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+    rx.set_recv_timeout(std::chrono::milliseconds(2000));
 
+    r_socket_address rx_addr(9393, "127.0.0.1");
     const uint8_t out[4] = {1, 2, 3, 4};
     RTF_ASSERT(tx.sendto(out, sizeof(out), rx_addr) == 4);
 
     uint8_t in[16] = {};
-    r_socket_address from(0, "127.0.0.1");
+    r_socket_address from(0);
     RTF_ASSERT(rx.recvfrom(in, sizeof(in), from) == 4);
+    RTF_ASSERT(!rx.timed_out());
     RTF_ASSERT(memcmp(in, out, sizeof(out)) == 0);
     RTF_ASSERT(((struct sockaddr_in*)from.get_sock_addr())->sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+    RTF_ASSERT_EQUAL(from.address(), string("127.0.0.1"));
 }
 
 // A destroyed r_udp_socket gives its descriptor back: the next one opened is
@@ -2413,11 +2417,7 @@ void test_r_utils::test_instance_lock_one_holder()
         // holder's pid (ours here: same process, separate lock).
         r_instance_lock second(path);
         RTF_ASSERT(!second.held());
-#ifdef IS_WINDOWS
-        RTF_ASSERT_EQUAL(second.holder_pid(), (int64_t)GetCurrentProcessId());
-#else
-        RTF_ASSERT_EQUAL(second.holder_pid(), (int64_t)getpid());
-#endif
+        RTF_ASSERT_EQUAL(second.holder_pid(), r_process::get_current_pid().id());
     }
     // Released with the holder.
     r_instance_lock third(path);
@@ -2607,9 +2607,168 @@ void test_r_utils::test_terminate_with_stalled_console()
     RTF_ASSERT(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
 #endif
 }
+
+// The logger's file tests: a log folder of their own, and the logger as it
+// was (no file, the default folder) afterwards.
+namespace
+{
+struct logger_file_scope
+{
+    string dir;
+    string saved_dir, saved_prefix;
+
+    logger_file_scope(const string& name)
+    {
+        auto st = r_logger::get_logger_state();
+        saved_dir = st->log_dir;
+        saved_prefix = st->log_prefix;
+        dir = (std::filesystem::temp_directory_path() / ("r_logger_ut_" + name + "_" + to_string(getpid()))).string();
+        std::filesystem::remove_all(dir);
+        r_logger::set_log_file_retry_interval(chrono::milliseconds(0));
+    }
+    ~logger_file_scope()
+    {
+        r_logger::uninstall_logger();
+        r_logger::set_log_file_retry_interval(chrono::seconds(30));
+        auto st = r_logger::get_logger_state();
+        st->log_dir = saved_dir;
+        st->log_prefix = saved_prefix;
+        st->approx_bytes_logged = 0;
+        chmod(dir.c_str(), 0700);
+        std::filesystem::remove_all(dir);
+    }
+    string path(const string& file) const { return dir + PATH_SLASH + file; }
+    string read(const string& file) const
+    {
+        FILE* f = fopen(path(file).c_str(), "r");
+        if(!f)
+            return string();
+        string out;
+        char buf[4096];
+        size_t n;
+        while((n = fread(buf, 1, sizeof(buf), f)) > 0)
+            out.append(buf, n);
+        fclose(f);
+        return out;
+    }
+};
+}
+
+// A full disk made the next log file fail to open at rotation; the open threw
+// out of R_LOG_*, in a thread that didn't catch it, and revere died in
+// std::terminate. Here the folder is made read-only at the point of rotation:
+// logging carries on in the current file, and the next file opens once the
+// folder takes files again.
+void test_r_utils::test_logger_rotation_survives_failed_open()
+{
+#if defined(IS_MACOS) || defined(IS_LINUX)
+    logger_file_scope scope("rotate");
+    std::filesystem::create_directories(scope.dir);
+    auto st = r_logger::get_logger_state();
+#ifdef IS_LINUX
+    st->is_sandboxed = true;
+#endif
+    r_logger::install_logger(scope.dir, "t_");
+    R_LOG_INFO("rotate-test before");
+
+    chmod(scope.dir.c_str(), 0500);
+    st->approx_bytes_logged = 0x7fffffff;
+    bool threw = false;
+    try { R_LOG_INFO("rotate-test during"); } catch(...) { threw = true; }
+    RTF_ASSERT(!threw);
+    RTF_ASSERT(!r_fs::file_exists(scope.path("t_1.txt")));
+    RTF_ASSERT(scope.read("t_0.txt").find("rotate-test during") != string::npos);
+
+    chmod(scope.dir.c_str(), 0700);
+    R_LOG_INFO("rotate-test after");
+    RTF_ASSERT(scope.read("t_1.txt").find("rotate-test after") != string::npos);
+    RTF_ASSERT(scope.read("t_0.txt").find("rotate-test after") == string::npos);
+    RTF_ASSERT(st->approx_bytes_logged < 1024);
+#ifdef IS_LINUX
+    st->is_sandboxed = false;
+#endif
+#endif
+}
+
+// A log folder that isn't there: install_logger doesn't throw, the lines go
+// to stdout, and once the folder exists the file opens with a note of how
+// many lines it missed.
+void test_r_utils::test_logger_install_survives_missing_dir()
+{
+#if defined(IS_MACOS) || defined(IS_LINUX)
+    logger_file_scope scope("missing");
+    auto st = r_logger::get_logger_state();
+#ifdef IS_LINUX
+    st->is_sandboxed = true;
+#endif
+    bool threw = false;
+    try
+    {
+        r_logger::install_logger(scope.dir, "t_");
+        R_LOG_INFO("missing-test one");
+        R_LOG_INFO("missing-test two");
+    }
+    catch(...) { threw = true; }
+    RTF_ASSERT(!threw);
+    RTF_ASSERT(st->log_file == nullptr);
+
+    std::filesystem::create_directories(scope.dir);
+    R_LOG_INFO("missing-test back");
+    RTF_ASSERT(st->log_file != nullptr);
+    auto text = scope.read("t_0.txt");
+    RTF_ASSERT(text.find("[2 log line(s) not written here") != string::npos);
+    RTF_ASSERT(text.find("missing-test back") != string::npos);
+    RTF_ASSERT(text.find("missing-test one") == string::npos);
+#ifdef IS_LINUX
+    st->is_sandboxed = false;
+#endif
+#endif
+}
+
+// A write the file refuses (a full disk; here a stream opened for reading)
+// doesn't stick: the error is cleared, and when the file takes lines again
+// it says how many it missed.
+void test_r_utils::test_logger_write_error_retried()
+{
+#if defined(IS_MACOS) || defined(IS_LINUX)
+    logger_file_scope scope("werr");
+    std::filesystem::create_directories(scope.dir);
+    auto st = r_logger::get_logger_state();
+#ifdef IS_LINUX
+    st->is_sandboxed = true;
+#endif
+    r_logger::install_logger(scope.dir, "t_");
+    R_LOG_INFO("werr-test first");
+
+    FILE* good = st->log_file;
+    FILE* bad = fopen(scope.path("t_0.txt").c_str(), "r");
+    RTF_ASSERT(bad != nullptr);
+    st->log_file = bad;
+    bool threw = false;
+    try { R_LOG_INFO("werr-test refused"); } catch(...) { threw = true; }
+    RTF_ASSERT(!threw);
+    RTF_ASSERT(!ferror(bad));
+    st->log_file = good;
+    fclose(bad);
+
+    R_LOG_INFO("werr-test again");
+    auto text = scope.read("t_0.txt");
+    RTF_ASSERT(text.find("werr-test first") != string::npos);
+    RTF_ASSERT(text.find("werr-test refused") == string::npos);
+    RTF_ASSERT(text.find("[1 log line(s) not written here") != string::npos);
+    RTF_ASSERT(text.find("werr-test again") != string::npos);
+    RTF_ASSERT(text.find("not written here") < text.find("werr-test again"));
+#ifdef IS_LINUX
+    st->is_sandboxed = false;
+#endif
+#endif
+}
 #else
 void test_r_utils::test_logger_console_never_blocks() {}
 void test_r_utils::test_terminate_with_stalled_console() {}
+void test_r_utils::test_logger_rotation_survives_failed_open() {}
+void test_r_utils::test_logger_install_survives_missing_dir() {}
+void test_r_utils::test_logger_write_error_retried() {}
 #endif
 // The Exec= of the Linux autostart entry. Run from an AppImage, the executable
 // is inside its temporary mount, which is gone after a reboot: the entry must
@@ -2874,6 +3033,69 @@ void test_r_utils::test_ssl_server_socket_threaded_server()
 
 
 // ---------------------------------------------------------------------------
+// r_recorder_id
+// ---------------------------------------------------------------------------
+
+void test_r_utils::test_recorder_id_kept()
+{
+    auto dir = r_fs::temp_file_name(r_fs::working_directory(), "recorder_id_ut_");
+    r_fs::mkdir_p(dir);
+
+    // Made the first time, in the form well_formed() takes, and kept.
+    auto first = r_recorder_id::get_or_create(dir);
+    RTF_ASSERT(r_recorder_id::well_formed(first));
+    RTF_ASSERT(r_fs::file_exists(r_recorder_id::path(dir)));
+
+    // The same on every later call (a restart), and not shared with another data directory.
+    RTF_ASSERT(r_recorder_id::get_or_create(dir) == first);
+    auto other = r_fs::temp_file_name(r_fs::working_directory(), "recorder_id_ut_");
+    r_fs::mkdir_p(other);
+    auto second = r_recorder_id::get_or_create(other);
+    RTF_ASSERT(r_recorder_id::well_formed(second));
+    RTF_ASSERT(second != first);
+
+#ifndef IS_WINDOWS
+    // Owner-only, as the data directory's other files are.
+    struct stat st;
+    RTF_ASSERT(::stat(r_recorder_id::path(dir).c_str(), &st) == 0);
+    RTF_ASSERT((st.st_mode & 0777) == 0600);
+#endif
+
+    // Whitespace around a kept id is ignored.
+    string padded = "  " + first + "\n";
+    r_fs::atomic_write_private_file((const uint8_t*)padded.data(), padded.size(), r_recorder_id::path(dir));
+    RTF_ASSERT(r_recorder_id::get_or_create(dir) == first);
+
+    // A file that doesn't hold an id is replaced by a new one, which is then kept.
+    string junk = "not-an-id";
+    r_fs::atomic_write_private_file((const uint8_t*)junk.data(), junk.size(), r_recorder_id::path(dir));
+    auto replaced = r_recorder_id::get_or_create(dir);
+    RTF_ASSERT(r_recorder_id::well_formed(replaced));
+    RTF_ASSERT(replaced != first);
+    RTF_ASSERT(r_recorder_id::get_or_create(dir) == replaced);
+
+    // No data directory, no id.
+    RTF_ASSERT(r_recorder_id::get_or_create("").empty());
+
+    r_fs::remove_file(r_recorder_id::path(dir));
+    r_fs::rmdir(dir);
+    r_fs::remove_file(r_recorder_id::path(other));
+    r_fs::rmdir(other);
+}
+
+void test_r_utils::test_recorder_id_well_formed()
+{
+    RTF_ASSERT(r_recorder_id::well_formed("0f8fad5b-d9cb-469f-a165-70867728950e"));
+    RTF_ASSERT(!r_recorder_id::well_formed("0F8FAD5B-D9CB-469F-A165-70867728950E")); // upper case
+    RTF_ASSERT(!r_recorder_id::well_formed("0f8fad5bd9cb469fa16570867728950e"));     // no dashes
+    RTF_ASSERT(!r_recorder_id::well_formed("0f8fad5b-d9cb-469f-a165-70867728950"));  // short
+    RTF_ASSERT(!r_recorder_id::well_formed("0f8fad5b-d9cb-469f-a165-70867728950ee")); // long
+    RTF_ASSERT(!r_recorder_id::well_formed("0f8fad5b-d9cb-469f-a165_70867728950e")); // wrong separator
+    RTF_ASSERT(!r_recorder_id::well_formed("0f8fad5b-d9cb-469f-a165-7086772895zz")); // not hex
+    RTF_ASSERT(!r_recorder_id::well_formed(""));
+}
+
+// ---------------------------------------------------------------------------
 // r_local_api_token
 // ---------------------------------------------------------------------------
 
@@ -3016,4 +3238,191 @@ void test_r_utils::test_nullable_bool_is_explicit()
     RTF_ASSERT(!n);
     n.set_value("x");
     RTF_ASSERT(n && n.value() == "x");
+}
+
+void test_r_utils::test_restart_windows_command_line()
+{
+    using r_utils::r_restart::windows_command_line;
+    RTF_ASSERT(windows_command_line({R"(C:\Program Files\Revere\revere.exe)", "--start_minimized"}) ==
+               R"("C:\Program Files\Revere\revere.exe" --start_minimized)");
+    // A trailing backslash before the closing quote is doubled.
+    RTF_ASSERT(windows_command_line({"revere.exe", "--data-dir", R"(C:\my data\)"}) ==
+               R"(revere.exe --data-dir "C:\my data\\")");
+    RTF_ASSERT(windows_command_line({"a", "", R"(say "hi")"}) == R"(a "" "say \"hi\"")");
+    RTF_ASSERT(windows_command_line({"a", R"(back\slash)"}) == R"(a back\slash)");
+#ifdef IS_WINDOWS
+    // And Windows reads back what was written.
+    std::vector<std::string> args = {R"(C:\Program Files\Revere\revere.exe)", "--data-dir", R"(C:\my data\)", "",
+                                     R"(q"uo\"te)", "tab\there"};
+    auto w = r_utils::r_string_utils::convert_multi_byte_string_to_wide_string(windows_command_line(args));
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(w.c_str(), &argc);
+    RTF_ASSERT(argv != nullptr);
+    RTF_ASSERT(argc == (int)args.size());
+    for(int i = 0; i < argc; ++i)
+        RTF_ASSERT(r_utils::r_string_utils::convert_wide_string_to_multi_byte_string(argv[i]) == args[i]);
+    LocalFree(argv);
+#endif
+}
+
+void test_r_utils::test_restart_not_restarted()
+{
+    // A process restart() didn't start has nothing to wait for.
+    auto start = std::chrono::steady_clock::now();
+    RTF_ASSERT(!r_utils::r_restart::wait_for_predecessor(std::chrono::seconds(5)));
+    RTF_ASSERT(std::chrono::steady_clock::now() - start < std::chrono::seconds(1));
+}
+
+void test_r_utils::test_udp_socket_recv_timeout()
+{
+    r_udp_socket rx;
+    rx.bind(0, "127.0.0.1");
+    rx.set_recv_timeout(std::chrono::milliseconds(100));
+    uint8_t in[16] = {};
+    r_socket_address from(0);
+    auto before = std::chrono::steady_clock::now();
+    RTF_ASSERT(rx.recvfrom(in, sizeof(in), from) < 0);
+    RTF_ASSERT(rx.timed_out());
+    RTF_ASSERT(std::chrono::steady_clock::now() - before < std::chrono::seconds(5));
+}
+
+void test_r_utils::test_local_ip_for()
+{
+    // Loopback and anything not an IPv4 literal give no answer.
+    RTF_ASSERT(r_networking::r_local_ip_for("127.0.0.1").empty());
+    RTF_ASSERT(r_networking::r_local_ip_for("not an address").empty());
+    RTF_ASSERT(r_networking::r_local_ip_for("").empty());
+    // A public address: empty with no network, else one of ours (not loopback).
+    auto ip = r_networking::r_local_ip_for("8.8.8.8");
+    if(!ip.empty())
+    {
+        RTF_ASSERT(ip.compare(0, 4, "127.") != 0);
+        RTF_ASSERT(ip != "0.0.0.0");
+    }
+}
+
+void test_r_utils::test_tm_conversions()
+{
+    auto epoch = r_time_utils::to_utc_tm(0);
+    RTF_ASSERT_EQUAL(epoch.tm_year, 70);
+    RTF_ASSERT_EQUAL(epoch.tm_mon, 0);
+    RTF_ASSERT_EQUAL(epoch.tm_mday, 1);
+    RTF_ASSERT_EQUAL(epoch.tm_hour, 0);
+
+    const time_t t = 1700000000;  // 2023-11-14T22:13:20Z
+    auto u = r_time_utils::to_utc_tm(t);
+    RTF_ASSERT_EQUAL(u.tm_year, 123);
+    RTF_ASSERT_EQUAL(u.tm_mon, 10);
+    RTF_ASSERT_EQUAL(u.tm_mday, 14);
+    RTF_ASSERT_EQUAL(u.tm_hour, 22);
+    RTF_ASSERT_EQUAL(u.tm_min, 13);
+    RTF_ASSERT_EQUAL(u.tm_sec, 20);
+    RTF_ASSERT_EQUAL((int64_t)r_time_utils::utc_tm_to_time_t(u), (int64_t)t);
+
+    // Out-of-range fields roll over, as with mktime: January 32 is February 1.
+    std::tm jan32 {};
+    jan32.tm_year = 123;
+    jan32.tm_mon = 0;
+    jan32.tm_mday = 32;
+    auto feb1 = r_time_utils::to_utc_tm(r_time_utils::utc_tm_to_time_t(jan32));
+    RTF_ASSERT_EQUAL(feb1.tm_mon, 1);
+    RTF_ASSERT_EQUAL(feb1.tm_mday, 1);
+
+    // Local time round-trips through mktime.
+    auto l = r_time_utils::to_local_tm(t);
+    RTF_ASSERT_EQUAL((int64_t)mktime(&l), (int64_t)t);
+
+    auto c = r_time_utils::to_ctime_string(t);
+    RTF_ASSERT_EQUAL(c.size(), (size_t)25);
+    RTF_ASSERT(c.back() == '\n');
+}
+
+void test_r_utils::test_set_env()
+{
+    const string name = "R_UTILS_TEST_SET_ENV";
+    r_std_utils::set_env(name, "abc");
+    RTF_ASSERT_EQUAL(r_std_utils::get_env(name), string("abc"));
+    r_std_utils::set_env(name, "def");
+    RTF_ASSERT_EQUAL(r_std_utils::get_env(name), string("def"));
+    r_std_utils::unset_env(name);
+    RTF_ASSERT(r_std_utils::get_env(name).empty());
+}
+
+void test_r_utils::test_current_pid()
+{
+    auto p = r_process::get_current_pid();
+    RTF_ASSERT(p.valid());
+    RTF_ASSERT(p.id() > 0);
+    r_pid none;
+    RTF_ASSERT_EQUAL(none.id(), (int64_t)0);
+}
+
+void test_r_utils::test_app_instance_one_holder()
+{
+    // A name and lock no installed build uses.
+    const string name = "RUtilsTest" + r_uuid::generate();
+    const string path = "app_instance_test.lock";
+    {
+        r_app_instance first(name, path);
+        RTF_ASSERT(first.held());
+        RTF_ASSERT(!first.quit_requested());
+
+        // Its pid is in the lock file, for a quit that has to be forced.
+        auto bytes = r_fs::read_file(path);
+        RTF_ASSERT_EQUAL((int64_t)atoll(string(bytes.begin(), bytes.end()).c_str()), r_process::get_current_pid().id());
+
+        r_app_instance second(name, path);
+        RTF_ASSERT(!second.held());
+
+        first.release();
+        RTF_ASSERT(!first.held());
+    }
+    // Free once the holder let go.
+    r_app_instance third(name, path);
+    RTF_ASSERT(third.held());
+    third.release();
+    if(r_fs::file_exists(path))
+        r_fs::remove_file(path);
+}
+
+void test_r_utils::test_app_instance_quit_when_not_running()
+{
+    const string name = "RUtilsTest" + r_uuid::generate();
+    const string path = "app_instance_absent.lock";
+    if(r_fs::file_exists(path))
+        r_fs::remove_file(path);
+    auto before = std::chrono::steady_clock::now();
+    RTF_ASSERT(r_app_instance::request_quit(name, path, std::chrono::seconds(10), std::chrono::seconds(5)));
+    // Nothing to wait for.
+    RTF_ASSERT(std::chrono::steady_clock::now() - before < std::chrono::seconds(2));
+}
+
+void test_r_utils::test_direct_file_write()
+{
+    const string path = "direct_file_test.tmp";
+    {
+        auto buf = r_direct_file::aligned_buffer(2 * r_direct_file::ALIGNMENT);
+        RTF_ASSERT(((uintptr_t)buf.get() % r_direct_file::ALIGNMENT) == 0);
+        memset(buf.get(), 0x5A, 2 * r_direct_file::ALIGNMENT);
+        r_direct_file f(path);
+        f.write(buf.get(), 2 * r_direct_file::ALIGNMENT);
+        f.write(buf.get(), r_direct_file::ALIGNMENT);
+        f.sync();
+    }
+    RTF_ASSERT_EQUAL(r_fs::file_size(path), (uint64_t)(3 * r_direct_file::ALIGNMENT));
+    auto bytes = r_fs::read_file(path);
+    RTF_ASSERT(bytes.front() == 0x5A && bytes.back() == 0x5A);
+    r_fs::remove_file(path);
+}
+
+void test_r_utils::test_platform_names()
+{
+    string os = r_platform::os_id();
+    RTF_ASSERT(os == "windows" || os == "macos" || os == "linux");
+    string arch = r_platform::arch_name();
+    RTF_ASSERT(arch == "x86_64" || arch == "arm64");
+    auto ext = r_dynamic_library::extension();
+    RTF_ASSERT(ext == ".dll" || ext == ".dylib" || ext == ".so");
+    RTF_ASSERT(r_platform::is_windows() == (ext == ".dll"));
+    RTF_ASSERT(r_platform::is_windows() == (string(r_platform::exe_suffix()) == ".exe"));
 }

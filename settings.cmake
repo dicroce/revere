@@ -57,7 +57,15 @@ endif()
 # Set RPATH for all targets to find libraries in the same directory
 # Skip for packaged builds (Flatpak/Snap) - they use standard library paths
 if(NOT PACKAGED_BUILD)
-    set(CMAKE_INSTALL_RPATH "$ORIGIN")
+    if(APPLE)
+        # macOS spells $ORIGIN @loader_path. @executable_path/../lib is where revere.app
+        # keeps revere's libraries, in a release and in a self-built bundle alike, so a
+        # system plugin built here finds them by @rpath from its own load commands,
+        # wherever its file is (~/Library/Application Support/Revere/revere/system_plugins).
+        set(CMAKE_INSTALL_RPATH "@loader_path;@executable_path/../lib")
+    else()
+        set(CMAKE_INSTALL_RPATH "$ORIGIN")
+    endif()
     set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 endif()
 

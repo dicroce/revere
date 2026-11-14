@@ -1,15 +1,16 @@
 #ifdef IS_LINUX
 
-#include "r_vss/r_keep_awake.h"
+#include "r_utils/r_power.h"
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
 #include <cstdlib>
 #include <dirent.h>
 #include <fstream>
 #include <stdexcept>
+#include <thread>
 #include <unistd.h>
 
-using namespace r_vss;
+using namespace r_utils;
 using namespace std;
 
 static string _gerror_text(GError* err)
@@ -292,7 +293,7 @@ static string _read_line(const string& path)
     return line;
 }
 
-r_power_source r_vss::current_power_source()
+r_power_source r_utils::current_power_source()
 {
     const string dir = "/sys/class/power_supply";
     DIR* d = opendir(dir.c_str());

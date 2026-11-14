@@ -259,6 +259,11 @@ R_API std::string r_network_signature_of(const std::vector<r_adapter_info>& adap
 // cameras that don't answer multicast probes.
 R_API std::vector<std::string> r_ipv4_subnet_hosts(const std::string& ipv4_addr, const std::string& netmask, size_t max_hosts);
 
+// The IPv4 address of this computer that the OS would send from to reach remote_ip (a UDP connect, which sends
+// nothing, picks the route). Empty if remote_ip isn't an IPv4 literal, there's no route, or the answer is the
+// wildcard or a loopback address.
+R_API std::string r_local_ip_for(const std::string& remote_ip);
+
 // A MAC address as "aa:bb:cc:dd:ee:ff" (lower case, colons, two digits each)
 // from any common spelling: colons or dashes, either case, single-digit groups
 // as macOS's arp prints them ("0:1b:2:..."). Null for anything else, and for

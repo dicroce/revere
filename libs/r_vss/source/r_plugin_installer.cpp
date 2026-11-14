@@ -9,8 +9,11 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_string_utils.h"
+#include "r_utils/3rdparty/json/json.h"
+#include <stdexcept>
 #include <mbedtls/ssl.h>
 #include <cctype>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <memory>
@@ -352,6 +355,11 @@ r_plugin_install_result r_vss::install_system_plugin(const r_plugin_release_asse
                 fs::remove(it->path(), rec);
             }
         }
+        // Installing again after choosing to uninstall: keep it.
+        error_code mec;
+        fs::remove(fs::u8path(plugin_uninstall_marker_path(plugin_path)), mec);
+        if(mec)
+            throw runtime_error("couldn't keep it from being uninstalled at the next start: " + mec.message());
         r_fs::atomic_write_file(signature_bytes.data(), signature_bytes.size(), plugin_signature_path(plugin_path));
         r_fs::atomic_write_file(manifest_bytes.data(), manifest_bytes.size(), plugin_manifest_path(plugin_path));
         r_fs::atomic_write_file(plugin.data(), plugin.size(), plugin_path);
@@ -372,20 +380,174 @@ r_plugin_install_result r_vss::install_system_plugin(const r_plugin_release_asse
     return r;
 }
 
+string r_vss::release_base_version(const string& version)
+{
+    // Three runs of digits, joined by dots.
+    size_t i = 0;
+    for(int part = 0; part < 3; ++part)
+    {
+        if(part > 0)
+        {
+            if(i >= version.size() || version[i] != '.')
+                return string();
+            ++i;
+        }
+        size_t start = i;
+        while(i < version.size() && isdigit((unsigned char)version[i]))
+            ++i;
+        if(i == start || i - start > 9)
+            return string();
+    }
+    if(i != version.size() && version[i] != '-')
+        return string();
+    return version.substr(0, i);
+}
+
+int r_vss::compare_release_versions(const string& a, const string& b)
+{
+    if(a.empty() || release_base_version(a) != a || b.empty() || release_base_version(b) != b)
+        R_STHROW(r_invalid_argument_exception, ("Not release versions: \"%s\", \"%s\"", a.c_str(), b.c_str()));
+    auto parts = [](const string& v) {
+        vector<uint64_t> p;
+        size_t i = 0;
+        while(i <= v.size() && p.size() < 3)
+        {
+            size_t dot = v.find('.', i);
+            if(dot == string::npos)
+                dot = v.size();
+            p.push_back(stoull(v.substr(i, dot - i)));
+            i = dot + 1;
+        }
+        return p;
+    };
+    auto pa = parts(a), pb = parts(b);
+    for(size_t i = 0; i < 3; ++i)
+    {
+        if(pa[i] != pb[i])
+            return pa[i] < pb[i] ? -1 : 1;
+    }
+    return 0;
+}
+
+vector<r_published_release> r_vss::parse_published_releases(const string& json)
+{
+    auto j = nlohmann::json::parse(json, nullptr, false);
+    if(!j.is_array())
+        R_STHROW(r_invalid_argument_exception, ("GitHub's releases aren't a JSON array"));
+
+    vector<r_published_release> out;
+    for(const auto& rel : j)
+    {
+        if(!rel.is_object() || !rel.contains("tag_name") || !rel["tag_name"].is_string())
+            continue;
+        if(rel.value("draft", false) || rel.value("prerelease", false))
+            continue;
+        auto tag = rel["tag_name"].get<string>();
+        if(tag.size() < 2 || tag[0] != 'v')
+            continue;
+        auto version = tag.substr(1);
+        if(release_base_version(version) != version)
+            continue;
+        r_published_release r;
+        r.version = version;
+        if(rel.contains("assets") && rel["assets"].is_array())
+        {
+            for(const auto& a : rel["assets"])
+            {
+                if(a.is_object() && a.contains("name") && a["name"].is_string())
+                    r.assets.push_back(a["name"].get<string>());
+            }
+        }
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+static string _url_file_name(const string& url)
+{
+    return url.substr(url.rfind('/') + 1);
+}
+
+string r_vss::choose_plugin_release(const vector<r_published_release>& releases,
+                                    const string& base_version,
+                                    const string& platform,
+                                    const string& arch)
+{
+    if(release_base_version(base_version) != base_version || base_version.empty())
+        return string();
+
+    string best;
+    for(const auto& r : releases)
+    {
+        if(compare_release_versions(r.version, base_version) > 0)
+            continue;
+        if(!best.empty() && compare_release_versions(r.version, best) <= 0)
+            continue;
+        auto a = revere_cloud_release_assets(r.version, platform, arch);
+        auto has = [&](const string& url) {
+            return find(r.assets.begin(), r.assets.end(), _url_file_name(url)) != r.assets.end();
+        };
+        if(has(a.plugin_url) && has(a.manifest_url) && has(a.signature_url))
+            best = r.version;
+    }
+    return best;
+}
+
+static const size_t MAX_RELEASES_BYTES = 16 * 1024 * 1024;
+
+r_plugin_install_result r_vss::install_revere_cloud_plugin(const string& dir,
+                                                         const string& revere_version,
+                                                         const string& file_name,
+                                                         const r_plugin_fetch& fetch,
+                                                         const vector<string>& trusted_keys,
+                                                         const string& platform,
+                                                         const string& arch)
+{
+    auto base = release_base_version(revere_version);
+    string release = revere_version;   // a release build: its own, exactly as before
+
+    if(base.empty())
+        return _result(r_plugin_install::not_available, "this build's version (" + revere_version + ") names no release");
+
+    if(base != revere_version)
+    {
+        // A dev build: the newest release at or below its base.
+        vector<r_published_release> releases;
+        try
+        {
+            auto body = fetch(REVERE_RELEASES_API_URL, MAX_RELEASES_BYTES);
+            releases = parse_published_releases(string(body.begin(), body.end()));
+        }
+        catch(const exception& e)
+        {
+            return _result(r_plugin_install::download_failed, string("the list of releases: ") + e.what());
+        }
+        release = choose_plugin_release(releases, base, platform, arch);
+        if(release.empty())
+            return _result(r_plugin_install::not_available,
+                           "no release at or below v" + base + " has a plugin for " + platform + " " + arch);
+        R_LOG_INFO("Dev build %s: installing Revere Cloud from release v%s, for testing", revere_version.c_str(), release.c_str());
+    }
+
+    // The manifest must be for exactly the release it comes from.
+    auto r = install_system_plugin(revere_cloud_release_assets(release, platform, arch),
+                                   dir, file_name, fetch, release, trusted_keys, platform, arch);
+    if(r.ok())
+        r.release_version = release;
+    return r;
+}
+
 r_plugin_install_result r_vss::install_revere_cloud_plugin(const string& dir)
 {
-    auto platform = plugin_platform();
-    auto arch = plugin_arch();
-    auto r = install_system_plugin(revere_cloud_release_assets(revere_version(), platform, arch),
-                                   dir,
-                                   revere_cloud_plugin_file(),
-                                   [](const string& url, size_t max_bytes) { return http_get(url, max_bytes); },
-                                   revere_version(),
-                                   trusted_plugin_keys(),
-                                   platform,
-                                   arch);
+    auto r = install_revere_cloud_plugin(dir,
+                                         revere_version(),
+                                         revere_cloud_plugin_file(),
+                                         [](const string& url, size_t max_bytes) { return http_get(url, max_bytes); },
+                                         trusted_plugin_keys(),
+                                         plugin_platform(),
+                                         plugin_arch());
     if(r.ok())
-        R_LOG_INFO("Installed Revere Cloud plugin %s", r.path.c_str());
+        R_LOG_INFO("Installed Revere Cloud plugin %s, from release v%s", r.path.c_str(), r.release_version.c_str());
     else
         R_LOG_ERROR("Revere Cloud plugin install failed (%s): %s", plugin_install_name(r.status), r.detail.c_str());
     return r;

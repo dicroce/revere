@@ -9,6 +9,8 @@
 #include <Windows.h>
 #include <Io.h>
 #include <direct.h>
+#include <ShlObj.h>
+#include <combaseapi.h>
 #else
 #if defined(IS_LINUX) || defined(IS_MACOS)
 #include <fcntl.h>
@@ -18,6 +20,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <errno.h>
+#include <pwd.h>
 #endif
 #ifdef IS_MACOS
 #include <mach-o/dyld.h>
@@ -506,5 +509,50 @@ void r_utils::r_fs::remove_file(const std::string& path)
 #else
     if(unlink(path.c_str()) != 0)
         R_STHROW(r_internal_exception, ("Unable to remove file: %s",path.c_str()));
+#endif
+}
+
+#ifdef IS_WINDOWS
+static string _known_folder(REFKNOWNFOLDERID id, const char* what)
+{
+    wchar_t* p = nullptr;
+    if(SHGetKnownFolderPath(id, 0, NULL, &p) != S_OK)
+    {
+        if(p)
+            CoTaskMemFree(p);
+        R_THROW(("Could not get the path to the %s folder.", what));
+    }
+    auto out = r_string_utils::convert_wide_string_to_multi_byte_string(p);
+    CoTaskMemFree(p);
+    return out;
+}
+#endif
+
+string r_utils::r_fs::home_dir()
+{
+#ifdef IS_WINDOWS
+    return _known_folder(FOLDERID_Profile, "home");
+#else
+    auto res = sysconf(_SC_GETPW_R_SIZE_MAX);
+    vector<char> buffer(res > 0 ? (size_t)res : (size_t)16384);
+    passwd pwd;
+    passwd* result = nullptr;
+    if(getpwuid_r(getuid(), &pwd, buffer.data(), buffer.size(), &result) != 0 || !result || !pwd.pw_dir)
+        R_THROW(("Could not get the path to the home folder."));
+    return string(pwd.pw_dir);
+#endif
+}
+
+string r_utils::r_fs::local_app_data_dir()
+{
+#if defined(IS_WINDOWS)
+    return _known_folder(FOLDERID_LocalAppData, "local application data");
+#elif defined(IS_MACOS)
+    return home_dir() + "/Library/Application Support";
+#else
+    auto xdg = getenv("XDG_DATA_HOME");
+    if(xdg && xdg[0] == '/')
+        return string(xdg);
+    return home_dir() + "/.local/share";
 #endif
 }
