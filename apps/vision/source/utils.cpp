@@ -11,15 +11,7 @@
 #include "r_http/r_client_response.h"
 #include "r_av/r_video_encoder.h"
 
-#ifdef IS_WINDOWS
-#include <shlobj_core.h>
-#endif
-
-#if defined(IS_LINUX) || defined(IS_MACOS)
-#include <unistd.h>
-#include <sys/types.h>
-#include <pwd.h>
-#endif
+#include "r_utils/r_local_api_token.h"
 
 #include <deque>
 #include <numeric>
@@ -34,65 +26,12 @@ using json = nlohmann::json;
 
 string vision::top_dir()
 {
-#ifdef IS_WINDOWS
-
-    wchar_t* localAppData = nullptr;
-    auto ret = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL, &localAppData);
-    if(ret != S_OK)
-        R_THROW(("Could not get path to LocalAppData folder."));
-
-    std::wstring wide_revere_path = std::wstring(localAppData) + L"\\revere";
-
-    auto revere_path = r_string_utils::convert_wide_string_to_multi_byte_string(wide_revere_path.c_str());
-
-    r_fs::mkdir_p(revere_path);  // mkdir_p: another process may make it at the same moment
-
-    revere_path += PATH_SLASH + "revere";
-
-    r_fs::mkdir_p(revere_path);  // mkdir_p: another process may make it at the same moment
-
-    CoTaskMemFree(localAppData);
-
-    return revere_path;
-#endif
-
-#ifdef IS_LINUX
-    auto res = sysconf(_SC_GETPW_R_SIZE_MAX);
-    if(res == -1)
-        R_THROW(("Could not get path to documents folder."));
-    vector<char> buffer(res);
-    passwd pwd;
-    passwd* result;
-    auto ret = getpwuid_r(getuid(), &pwd, buffer.data(), buffer.size(), &result);
-    if(ret != 0)
-        R_THROW(("Could not get path to documents folder."));
-    string path = string(pwd.pw_dir) + PATH_SLASH + "Documents" + PATH_SLASH + "revere";
-    // mkdir_p (not mkdir): a fresh/headless Linux account may not have ~/Documents
-    // yet; single-level mkdir would throw on the missing parent and abort startup.
-    if(!r_fs::file_exists(path))
-        r_fs::mkdir_p(path);
-    path += PATH_SLASH + "revere";
-    if(!r_fs::file_exists(path))
-        r_fs::mkdir_p(path);
-    return path;
-#endif
-
-#ifdef IS_MACOS
-    auto res = sysconf(_SC_GETPW_R_SIZE_MAX);
-    if(res == -1)
-        R_THROW(("Could not get path to application support folder."));
-    vector<char> buffer(res);
-    passwd pwd;
-    passwd* result;
-    auto ret = getpwuid_r(getuid(), &pwd, buffer.data(), buffer.size(), &result);
-    if(ret != 0)
-        R_THROW(("Could not get path to application support folder."));
-    string path = string(pwd.pw_dir) + PATH_SLASH + "Library" + PATH_SLASH + "Application Support" + PATH_SLASH + "Revere";
-    r_fs::mkdir_p(path);  // mkdir_p: another process may make it at the same moment
-    path += PATH_SLASH + "revere";
+    // The folder Revere, Vision and revere_mcp share for this user.
+    auto path = r_local_api_token::default_top_dir();
+    if(path.empty())
+        R_THROW(("Could not get the path to this user's data folder."));
     r_fs::mkdir_p(path);  // mkdir_p: another process may make it at the same moment
     return path;
-#endif
 }
 
 string vision::sub_dir(const string& subdir)
@@ -187,12 +126,7 @@ string vision::save_snapshot_png(const string& camera_label, const uint8_t* data
     auto pi = encoder.get();
 
     auto t = system_clock::to_time_t(system_clock::now());
-    struct tm bdt;
-#ifdef IS_WINDOWS
-    localtime_s(&bdt, &t);
-#else
-    localtime_r(&t, &bdt);
-#endif
+    auto bdt = r_utils::r_time_utils::to_local_tm(t);
     char ts[32];
     strftime(ts, sizeof(ts), "%Y-%m-%d_%H-%M-%S", &bdt);
 

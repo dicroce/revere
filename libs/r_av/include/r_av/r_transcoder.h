@@ -91,7 +91,9 @@ public:
         uint32_t min_bitrate,
         bool enable_dynamic_bitrate = true,
         const std::string& passphrase = "",
-        const std::optional<r_transcoder_audio>& audio = std::nullopt
+        const std::optional<r_transcoder_audio>& audio = std::nullopt,
+        // Seconds between key frames. 1 as it always was; a Low-Latency HLS live view asks for 2 (Cloudflare's advice).
+        uint16_t gop_seconds = 1
     );
 
     R_API ~r_transcoder();

@@ -13,6 +13,8 @@ add_executable(
     source/test_r_output_frame_selector.cpp
     include/test_r_bitrate_control.h
     source/test_r_bitrate_control.cpp
+    include/test_r_gop.h
+    source/test_r_gop.cpp
 )
 
 target_include_directories(

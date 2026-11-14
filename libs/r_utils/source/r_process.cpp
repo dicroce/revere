@@ -215,9 +215,13 @@ void r_process::start()
     si.cb = sizeof(si);
     ZeroMemory( &_pid.pi, sizeof(_pid.pi) );
 
+    // CreateProcess may write to the command line, so give it a copy.
+    std::vector<char> cmd_line(_cmd.begin(), _cmd.end());
+    cmd_line.push_back('\0');
+
     if(!CreateProcess(
         NULL,           // No module name (use command line)
-        (LPSTR)_cmd.c_str(),     // Command line
+        cmd_line.data(),     // Command line
         NULL,           // Process handle not inheritable
         NULL,           // Thread handle not inheritable
         FALSE,          // Set handle inheritance to FALSE
@@ -231,7 +235,29 @@ void r_process::start()
         R_THROW(( "CreateProcess failed (%d).\n", GetLastError()));
         return;
     }
+
+    if(_detached)
+    {
+        // Let it take the foreground (a window it opens comes to the front
+        // rather than flashing in the taskbar behind ours), then let it go: no
+        // handles kept, so nothing waits on it, as on Linux/macOS.
+        AllowSetForegroundWindow(_pid.pi.dwProcessId);
+        CloseHandle(_pid.pi.hProcess);
+        CloseHandle(_pid.pi.hThread);
+        _pid.clear();
+    }
 #endif
+}
+
+r_pid r_process::get_current_pid()
+{
+    r_pid p;
+#ifdef IS_WINDOWS
+    p.pi.dwProcessId = GetCurrentProcessId();
+#else
+    p.pid = getpid();
+#endif
+    return p;
 }
 
 bool r_process::running()

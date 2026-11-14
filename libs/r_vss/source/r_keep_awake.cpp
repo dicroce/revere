@@ -19,16 +19,6 @@ static int64_t _steady_ms()
     return chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-string r_vss::power_source_name(r_power_source source)
-{
-    switch(source)
-    {
-        case r_power_source::ac: return "ac";
-        case r_power_source::battery: return "battery";
-        default: return "unknown";
-    }
-}
-
 bool r_vss::keep_awake_wanted(const r_keep_awake_settings& settings, r_power_source source)
 {
     if(!settings.enabled)
@@ -52,33 +42,6 @@ r_keep_awake_settings r_vss::parse_keep_awake_settings(const string& json_text)
 string r_vss::keep_awake_settings_json(const r_keep_awake_settings& settings)
 {
     return json{{"enabled", settings.enabled}, {"on_battery", settings.on_battery}}.dump();
-}
-
-r_power_source r_vss::power_source_from_supplies(const vector<r_power_supply>& supplies)
-{
-    bool has_battery = false;
-    for(const auto& s : supplies)
-    {
-        // A wireless mouse's battery says nothing about the computer's power.
-        if(s.scope == "Device")
-            continue;
-        if(s.type == "Battery")
-            has_battery = true;
-        else if(s.online)
-            return r_power_source::ac;
-    }
-    return has_battery ? r_power_source::battery : r_power_source::ac;
-}
-
-r_power_source r_vss::power_source_from_status(uint8_t ac_line_status, uint8_t battery_flag)
-{
-    if(ac_line_status == 1)
-        return r_power_source::ac;
-    if(battery_flag != 255 && (battery_flag & 128))
-        return r_power_source::ac;
-    if(ac_line_status == 0)
-        return r_power_source::battery;
-    return r_power_source::unknown;
 }
 
 void r_sleep_gap_detector::on_sleep(int64_t wall_ms)

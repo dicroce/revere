@@ -4,15 +4,6 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_exception.h"
 
-#ifdef IS_WINDOWS
-#include <Windows.h>
-#endif
-#ifdef IS_LINUX
-#include <signal.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/ip.h>
-#endif
 
 using namespace r_fakey;
 using namespace r_utils;
