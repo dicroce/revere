@@ -9,10 +9,7 @@
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
 #include "r_gst_buffer.h"
-#ifdef IS_WINDOWS
-#pragma warning( push )
-#pragma warning( disable : 4244 )
-#endif
+R_THIRD_PARTY_HEADERS_BEGIN
 #include <gst/gst.h>
 #include <gst/rtsp/gstrtspmessage.h>
 #include <gst/sdp/gstsdpmessage.h>
@@ -20,9 +17,7 @@
 #define GST_USE_UNSTABLE_API
 #include <gst/codecparsers/gsth264parser.h>
 #include <gst/codecparsers/gsth265parser.h>
-#ifdef IS_WINDOWS
-#pragma warning( pop )
-#endif
+R_THIRD_PARTY_HEADERS_END
 #include <vector>
 #include <string>
 #include <functional>

@@ -240,13 +240,7 @@ int r_vss::choose_system_plugin_copy(const std::vector<r_plugin_check_result>& c
 namespace
 {
 
-#ifdef IS_WINDOWS
-const std::string PLUGIN_EXT = ".dll";
-#elif defined(IS_MACOS)
-const std::string PLUGIN_EXT = ".dylib";
-#else
-const std::string PLUGIN_EXT = ".so";
-#endif
+const std::string PLUGIN_EXT = r_utils::r_dynamic_library::extension();
 
 bool _has_plugin_ext(const std::string& filename)
 {

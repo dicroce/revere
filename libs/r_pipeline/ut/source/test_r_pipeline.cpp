@@ -20,14 +20,10 @@
 #include <algorithm>
 #include <iterator>
 #include <chrono>
-#ifdef IS_WINDOWS
-#pragma warning( push )
-#pragma warning( disable : 4244 )
-#endif
+#include "r_utils/r_macro.h"
+R_THIRD_PARTY_HEADERS_BEGIN
 #include <gst/gst.h>
-#ifdef IS_WINDOWS
-#pragma warning( pop )
-#endif
+R_THIRD_PARTY_HEADERS_END
 
 using namespace std;
 using namespace std::chrono;

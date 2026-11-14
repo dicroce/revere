@@ -107,6 +107,21 @@ else()
     target_link_libraries(r_utils PUBLIC dl Threads::Threads)
 endif()
 
+# Keeping the computer awake (r_power_*.cpp): IOKit power assertions on macOS,
+# power requests on Windows, logind and desktop inhibitors over GDBus on Linux.
+if(CMAKE_SYSTEM_NAME MATCHES "Darwin")
+    target_link_libraries(r_utils PRIVATE "-framework IOKit")
+elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
+    target_link_libraries(r_utils PRIVATE powrprof)
+elseif(CMAKE_SYSTEM_NAME MATCHES "Linux")
+    find_package(PkgConfig REQUIRED)
+    pkg_search_module(GIO REQUIRED gio-2.0)
+    pkg_search_module(GIO_UNIX REQUIRED gio-unix-2.0)
+    target_include_directories(r_utils PRIVATE ${GIO_INCLUDE_DIRS} ${GIO_UNIX_INCLUDE_DIRS})
+    target_link_directories(r_utils PRIVATE ${GIO_LIBRARY_DIRS})
+    target_link_libraries(r_utils PRIVATE ${GIO_LIBRARIES})
+endif()
+
 # Install the shared library (skip on macOS - bundled into .app)
 if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     install(TARGETS r_utils

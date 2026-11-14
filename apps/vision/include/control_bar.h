@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <chrono>
+#include "r_utils/r_time_utils.h"
 #include "timerange.h"
 #include "segment.h"
 #include "motion_event.h"
@@ -302,15 +303,8 @@ private:
     {
         auto t = std::chrono::system_clock::to_time_t(tp);
         char buf[64];
-#ifdef IS_WINDOWS
-        struct tm bdt;
-        localtime_s(&bdt, &t);
+        auto bdt = r_utils::r_time_utils::to_local_tm(t);
         std::strftime(buf, 64, "%b %d, %Y\n%r", &bdt);
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-        auto bdt = std::localtime(&t);
-        std::strftime(buf, 64, "%b %d, %Y\n%r", bdt);
-#endif
         return std::string(buf);
     }
 };

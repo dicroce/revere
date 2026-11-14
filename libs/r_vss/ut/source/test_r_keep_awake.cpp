@@ -1,13 +1,10 @@
 #include "test_r_keep_awake.h"
 #include "r_vss/r_keep_awake.h"
 #include "r_utils/r_file.h"
+#include "r_utils/r_process.h"
+#include "r_utils/r_std_utils.h"
 #include <filesystem>
 #include <fstream>
-#ifdef IS_WINDOWS
-#include <process.h>
-#else
-#include <unistd.h>
-#endif
 #ifdef IS_LINUX
 #include <gio/gio.h>
 #include <atomic>
@@ -27,11 +24,7 @@ static const int64_t SEC = 1000;
 
 static long _pid()
 {
-#ifdef IS_WINDOWS
-    return (long)_getpid();
-#else
-    return (long)getpid();
-#endif
+    return (long)r_process::get_current_pid().id();
 }
 
 static string _top_dir()
@@ -414,7 +407,7 @@ struct private_bus
         g_free(line);
         g_object_unref(out);
         // The process's session bus singleton is made on first use, from this.
-        setenv("DBUS_SESSION_BUS_ADDRESS", address.c_str(), 1);
+        r_std_utils::set_env("DBUS_SESSION_BUS_ADDRESS", address);
         return true;
     }
 
@@ -430,7 +423,7 @@ struct private_bus
 
     ~private_bus()
     {
-        unsetenv("DBUS_SESSION_BUS_ADDRESS");
+        r_std_utils::unset_env("DBUS_SESSION_BUS_ADDRESS");
         stop();
     }
 };

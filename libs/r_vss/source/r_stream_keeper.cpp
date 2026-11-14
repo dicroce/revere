@@ -21,11 +21,6 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_time_utils.h"
 
-#if defined(IS_MACOS) || defined(IS_LINUX)
-#include <pthread.h>
-#elif defined(IS_WINDOWS)
-#include <windows.h>
-#endif
 #include <algorithm>
 
 static gboolean _quit_rtsp_loop(gpointer loop)
@@ -1567,13 +1562,7 @@ void r_stream_keeper::_entry_point()
 // with no clients the thread is asleep (it used to wake every millisecond to ask whether anything was pending).
 void r_stream_keeper::_rtsp_server_entry_point()
 {
-#if defined(IS_MACOS)
-    pthread_setname_np("rtsp-server");
-#elif defined(IS_LINUX)
-    pthread_setname_np(pthread_self(), "rtsp-server");
-#elif defined(IS_WINDOWS)
-    SetThreadDescription(GetCurrentThread(), L"rtsp-server");
-#endif
+    r_utils::r_std_utils::set_thread_name("rtsp-server");
 
     GMainContext* context = g_main_context_new();
     GMainLoop* loop = g_main_loop_new(context, FALSE);

@@ -1,5 +1,6 @@
 
 #include "r_vss/r_plugin_manifest.h"
+#include "r_utils/r_platform.h"
 #include "r_vss/r_build_info.h"
 #include "r_utils/r_ecdsa.h"
 #include "r_utils/r_exception.h"
@@ -154,24 +155,12 @@ string r_vss::plugin_uninstall_marker_path(const string& plugin_path)
 
 string r_vss::plugin_platform()
 {
-#if defined(IS_WINDOWS)
-    return "windows";
-#elif defined(IS_MACOS)
-    return "macos";
-#else
-    return "linux";
-#endif
+    return r_utils::r_platform::os_id();
 }
 
 string r_vss::plugin_arch()
 {
-#if defined(_M_X64) || defined(__x86_64__)
-    return "x86_64";
-#elif defined(_M_ARM64) || defined(__aarch64__)
-    return "arm64";
-#else
-    return "unknown";
-#endif
+    return r_utils::r_platform::arch_name();
 }
 
 const vector<string>& r_vss::trusted_plugin_keys()

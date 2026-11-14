@@ -122,6 +122,16 @@ R_API void mkdir_p(const std::string& path);  // Create directory and all parent
 R_API void rmdir(const std::string& path);
 R_API void remove_file(const std::string& path);
 
+// This user's home folder (from the account database on Linux/macOS, not
+// $HOME, so a service account without one still gets an answer). Throws if
+// there isn't one.
+R_API std::string home_dir();
+
+// This user's folder for application data that stays on this computer:
+// %LOCALAPPDATA% on Windows, ~/Library/Application Support on macOS,
+// $XDG_DATA_HOME or ~/.local/share on Linux. Throws if there isn't one.
+R_API std::string local_app_data_dir();
+
 // GLIBC fwrite() attempts to write the requested number of bytes and returns the number of items
 // successfully written. If GLIBC fwrite() is unable to write any bytes at all the error flag is
 // set on the stream. NOTE: It looks like fwrite() can return 0 items written but have actually written

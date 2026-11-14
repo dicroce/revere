@@ -929,6 +929,43 @@ string r_utils::r_networking::r_network_signature_of(const vector<r_adapter_info
     return sig;
 }
 
+string r_utils::r_networking::r_local_ip_for(const string& remote_ip)
+{
+    struct sockaddr_in to;
+    memset(&to, 0, sizeof(to));
+    to.sin_family = AF_INET;
+    to.sin_port = htons(9);
+    if(inet_pton(AF_INET, remote_ip.c_str(), &to.sin_addr) != 1)
+        return string();
+
+    r_raw_socket::socket_startup();
+    sock_t s = (sock_t)::socket(AF_INET, SOCK_DGRAM, 0);
+    if(s == kInvalidSock)
+        return string();
+
+    string out;
+    if(::connect(s, (struct sockaddr*)&to, sizeof(to)) == 0)
+    {
+        struct sockaddr_in me;
+        memset(&me, 0, sizeof(me));
+        socklen_t len = sizeof(me);
+        if(::getsockname(s, (struct sockaddr*)&me, &len) == 0)
+        {
+            char buf[INET_ADDRSTRLEN] = {0};
+            if(inet_ntop(AF_INET, &me.sin_addr, buf, sizeof(buf)))
+                out = buf;
+        }
+    }
+#ifdef IS_WINDOWS
+    ::closesocket(s);
+#else
+    ::close(s);
+#endif
+    if(out == "0.0.0.0" || out.compare(0, 4, "127.") == 0)
+        return string();
+    return out;
+}
+
 vector<string> r_utils::r_networking::r_ipv4_subnet_hosts(const string& ipv4_addr, const string& netmask, size_t max_hosts)
 {
     vector<string> hosts;

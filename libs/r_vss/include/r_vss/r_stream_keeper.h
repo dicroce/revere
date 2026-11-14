@@ -43,22 +43,10 @@
 #include <functional>
 #include <chrono>
 
-#ifdef IS_WINDOWS
-#pragma warning( push )
-#pragma warning( disable : 4244 )
-#endif
-#ifdef IS_LINUX
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
+R_THIRD_PARTY_HEADERS_BEGIN
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h>
-#ifdef IS_LINUX
-#pragma GCC diagnostic pop
-#endif
-#ifdef IS_WINDOWS
-#pragma warning( pop )
-#endif
+R_THIRD_PARTY_HEADERS_END
 
 struct _GMainContext;
 typedef struct _GMainContext GMainContext;

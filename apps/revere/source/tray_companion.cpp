@@ -5,6 +5,7 @@
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_startup.h"
+#include "r_utils/r_instance_lock.h"
 #include <tray.hpp>
 #include <atomic>
 #include <chrono>
@@ -15,14 +16,6 @@
 #include <optional>
 #include <thread>
 
-#ifdef IS_WINDOWS
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <sys/file.h>
-#include <unistd.h>
-#endif
-
 using namespace std;
 using namespace r_utils;
 
@@ -32,52 +25,13 @@ static const char* WEB_UI_URL = "http://localhost:8088";
 static const int REVERE_PORT = 8088;
 static const auto POLL_INTERVAL = chrono::seconds(5);
 
-// Keeps a second `revere --tray` from adding a second icon. Separate from
-// revere.lock, which the service or desktop app holds.
-class tray_instance_lock
-{
-public:
-    tray_instance_lock(const string& top_dir)
-    {
-#ifdef IS_WINDOWS
-        _mutex = CreateMutexW(NULL, TRUE, L"Local\\RevereTrayMutex");
-        _acquired = _mutex && GetLastError() != ERROR_ALREADY_EXISTS;
-#else
-        auto path = top_dir + PATH_SLASH + "revere-tray.lock";
-        // O_CLOEXEC: the browser Open web UI starts must not inherit the lock.
-        _fd = open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-        _acquired = _fd >= 0 && flock(_fd, LOCK_EX | LOCK_NB) == 0;
-#endif
-    }
-    ~tray_instance_lock()
-    {
-#ifdef IS_WINDOWS
-        if(_mutex)
-            CloseHandle(_mutex);
-#else
-        if(_fd >= 0)
-            close(_fd);
-#endif
-    }
-    tray_instance_lock(const tray_instance_lock&) = delete;
-    tray_instance_lock& operator=(const tray_instance_lock&) = delete;
-
-    bool acquired() const { return _acquired; }
-
-private:
-#ifdef IS_WINDOWS
-    HANDLE _mutex {nullptr};
-#else
-    int _fd {-1};
-#endif
-    bool _acquired {false};
-};
-
 int revere::run_tray_companion(const string& icon_path)
 {
     const auto top_dir = revere::top_dir();
-    tray_instance_lock instance_lock(top_dir);
-    if(!instance_lock.acquired())
+    // Keeps a second `revere --tray` from adding a second icon. Separate from
+    // revere.lock, which the service or desktop app holds.
+    r_instance_lock instance_lock(top_dir + PATH_SLASH + "revere-tray.lock");
+    if(!instance_lock.held())
     {
         fprintf(stderr, "The Revere tray icon is already running.\n");
         return 1;

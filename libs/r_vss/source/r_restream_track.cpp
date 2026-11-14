@@ -2,14 +2,10 @@
 #include "r_vss/r_recording_context.h"
 #include "r_utils/r_string_utils.h"
 
-#ifdef IS_LINUX
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
+#include "r_utils/r_macro.h"
+R_THIRD_PARTY_HEADERS_BEGIN
 #include <gst/gst.h>
-#ifdef IS_LINUX
-#pragma GCC diagnostic pop
-#endif
+R_THIRD_PARTY_HEADERS_END
 
 using namespace r_vss;
 using namespace r_utils;

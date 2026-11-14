@@ -5,6 +5,7 @@
 #include "r_http/r_utils.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_string_utils.h"
+#include <cstdlib>
 
 #include <iostream>
 
@@ -531,13 +532,7 @@ parse_chunk_size:
             line = line.substr(0, semicolonPos);
 
         // Parse hex chunk size
-        uint32_t chunkLen = 0;
-#ifdef IS_WINDOWS
-        sscanf_s(line.c_str(), "%x", &chunkLen);
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-        sscanf(line.c_str(), "%x", &chunkLen);
-#endif
+        uint32_t chunkLen = (uint32_t)strtoul(line.c_str(), nullptr, 16);
 
         // Zero-length chunk signals end of body
         if(chunkLen == 0)
