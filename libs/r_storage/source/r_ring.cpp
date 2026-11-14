@@ -1,6 +1,7 @@
 
 #include "r_storage/r_ring.h"
 #include "r_utils/r_exception.h"
+#include "r_utils/r_file.h"
 
 using namespace std;
 using namespace std::chrono;
@@ -142,51 +143,17 @@ void r_ring::allocate(const string& path, size_t element_size, size_t n_elements
     size_t size = R_RING_HEADER_SIZE + (element_size * n_elements);
 
     {
-#ifdef IS_WINDOWS
-        FILE* fp = nullptr;
-        fopen_s(&fp, path.c_str(), "w+");
-#endif
-        std::unique_ptr<FILE, std::function<void(FILE*)>> f(
-        #ifdef IS_WINDOWS
-            fp
-        #elif defined(IS_LINUX) || defined(IS_MACOS)
-            fopen(path.c_str(), "w+")
-        #endif
-            ,
-            [](FILE* f) {
-                if (f) fclose(f);
-            }
-        );
+        auto f = r_file::open(path, "w+");
 
-        if(!f)
-            R_THROW(("unable to create r_ring file."));
-
-        if(r_fs::fallocate(f.get(), size) < 0)
+        if(r_fs::fallocate(f, size) < 0)
             R_THROW(("unable to allocate file."));
     }
 
     {
-#ifdef IS_WINDOWS
-        FILE* fp = nullptr;
-        fopen_s(&fp, path.c_str(), "r+");
-#endif
-        std::unique_ptr<FILE, std::function<void(FILE*)>> f(
-        #ifdef IS_WINDOWS
-            fp
-        #elif defined(IS_LINUX) || defined(IS_MACOS)
-            fopen(path.c_str(), "r+")
-        #endif
-            ,
-            [](FILE* f) {
-                if (f) fclose(f);
-            }
-        );
-
-        if(!f)
-            throw std::runtime_error("Unable to open r_ring file.");
+        auto f = r_file::open(path, "r+");
 
         r_memory_map mm(
-            r_fs::fileno(f.get()),
+            r_fs::fileno(f),
             0,
             (uint32_t)size,
             r_memory_map::RMM_PROT_READ | r_memory_map::RMM_PROT_WRITE,

@@ -1,23 +1,17 @@
 #include "cloud_download.h"
+#include "r_utils/r_platform.h"
 #include <cctype>
 
 using namespace std;
 
 revere::cloud_platform revere::this_cloud_platform()
 {
-#if defined(IS_WINDOWS)
-    return cloud_platform::windows;
-#elif defined(IS_LINUX) && defined(__aarch64__)
-    return cloud_platform::linux_arm64;
-#elif defined(IS_LINUX)
-    return cloud_platform::linux_x86_64;
-#elif defined(IS_MACOS) && defined(__x86_64__)
-    return cloud_platform::macos_x86_64;
-#elif defined(IS_MACOS)
-    return cloud_platform::macos_arm64;
-#else
-    #error "Unsupported platform"
-#endif
+    const string arch = r_utils::r_platform::arch_name();
+    if(r_utils::r_platform::is_windows())
+        return cloud_platform::windows;
+    if(r_utils::r_platform::is_linux())
+        return (arch == "arm64") ? cloud_platform::linux_arm64 : cloud_platform::linux_x86_64;
+    return (arch == "x86_64") ? cloud_platform::macos_x86_64 : cloud_platform::macos_arm64;
 }
 
 static bool _is_plain_version(const string& v)

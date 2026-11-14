@@ -32,6 +32,18 @@ public:
     R_API bool is_loaded() const;
     R_API std::string get_library_name() const;
 
+    // A shared library's file extension here: ".dll", ".dylib" or ".so".
+    static std::string extension()
+    {
+#if defined(IS_WINDOWS)
+        return ".dll";
+#elif defined(IS_MACOS)
+        return ".dylib";
+#else
+        return ".so";
+#endif
+    }
+
 private:
 #ifdef IS_WINDOWS
     HINSTANCE _library_handle;

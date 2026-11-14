@@ -1,5 +1,6 @@
 
 #include "r_av/r_transcoder.h"
+#include "r_av/r_gop.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_logger.h"
 #include <algorithm>
@@ -23,6 +24,7 @@ r_transcoder::r_transcoder(
     bool enable_dynamic_bitrate,
     const std::string& passphrase,
     const std::optional<r_transcoder_audio>& audio,
+    uint16_t gop_seconds,
     bool use_libsrt
 ) :
     _running(false),
@@ -61,7 +63,7 @@ r_transcoder::r_transcoder(
         framerate,
         AV_PIX_FMT_YUV420P,
         0,
-        (uint16_t)framerate.num,
+        r_gop_frames(framerate, gop_seconds),
         _profile,
         _level,
         "veryfast",

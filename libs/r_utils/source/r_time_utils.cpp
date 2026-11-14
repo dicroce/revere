@@ -330,17 +330,59 @@ chrono::system_clock::time_point r_utils::r_time_utils::epoch_millis_to_tp(int64
 	return system_clock::time_point() + milliseconds(t);
 }
 
+tm r_utils::r_time_utils::to_local_tm(time_t t)
+{
+    tm out;
+    memset(&out, 0, sizeof(out));
+#ifdef IS_WINDOWS
+    if(localtime_s(&out, &t) != 0)
+        R_THROW(("Unable to convert time to local time."));
+#else
+    if(localtime_r(&t, &out) == nullptr)
+        R_THROW(("Unable to convert time to local time."));
+#endif
+    return out;
+}
+
+tm r_utils::r_time_utils::to_utc_tm(time_t t)
+{
+    tm out;
+    memset(&out, 0, sizeof(out));
+#ifdef IS_WINDOWS
+    if(gmtime_s(&out, &t) != 0)
+        R_THROW(("Unable to convert time to UTC."));
+#else
+    if(gmtime_r(&t, &out) == nullptr)
+        R_THROW(("Unable to convert time to UTC."));
+#endif
+    return out;
+}
+
+time_t r_utils::r_time_utils::utc_tm_to_time_t(tm t)
+{
+#ifdef IS_WINDOWS
+    return _mkgmtime(&t);
+#else
+    return timegm(&t);
+#endif
+}
+
+string r_utils::r_time_utils::to_ctime_string(time_t t)
+{
+    char buf[64] = {0};
+#ifdef IS_WINDOWS
+    if(ctime_s(buf, sizeof(buf), &t) != 0)
+        R_THROW(("Unable to format time."));
+#else
+    if(ctime_r(&t, buf) == nullptr)
+        R_THROW(("Unable to format time."));
+#endif
+    return string(buf);
+}
+
 bool r_utils::r_time_utils::is_tz_utc()
 {
-    time_t ofs = 0;
-    struct tm timeInfo;
-#ifdef IS_WINDOWS
-    if(localtime_s(&timeInfo, &ofs) != 0)
-        R_THROW(("Unable to query local time."));
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-	timeInfo = *localtime(&ofs);
-#endif
+    auto timeInfo = to_local_tm(0);
     return (timeInfo.tm_hour == 0);
 }
 

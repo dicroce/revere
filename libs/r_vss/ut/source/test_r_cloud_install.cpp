@@ -300,3 +300,33 @@ void test_r_cloud_install::test_terms_kept()
         RTF_ASSERT(!ci.status().terms_accepted);
     }
 }
+
+// A dev build with a base version installs too, with a warning that names the base
+// before and the release after; a release build has no warning.
+void test_r_cloud_install::test_dev_build()
+{
+    {
+        fake_host host;
+        r_cloud_install ci(host.deps());
+        RTF_ASSERT(ci.status().dev_warning.empty());
+    }
+
+    fake_host host;
+    host.install_result.release_version = "0.0.41";
+    auto d = host.deps(false);
+    d.revere_version = "0.0.42-dirty";
+    d.dev_base_version = "0.0.42";
+    r_cloud_install ci(d);
+    auto s = ci.status();
+    RTF_ASSERT(s.can_install);
+    RTF_ASSERT(s.dev_warning.find("Dev build (0.0.42-dirty)") == 0);
+    RTF_ASSERT(s.dev_warning.find("at or below v0.0.42, for testing. It may not match this build.") != string::npos);
+
+    string why;
+    RTF_ASSERT(ci.start(REVERE_CLOUD_TERMS_VERSION, why));
+    s = _wait(ci);
+    RTF_ASSERT(s.state == r_cloud_state::installed);
+    RTF_ASSERT(s.error_kind.empty());
+    RTF_ASSERT(s.dev_warning == "Dev build (0.0.42-dirty): the cloud plugin was installed from release v0.0.41, for testing. It may not match this build.");
+    RTF_ASSERT_EQUAL(host.installs.load(), 1);
+}

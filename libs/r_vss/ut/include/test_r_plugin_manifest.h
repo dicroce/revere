@@ -11,6 +11,9 @@ public:
       TEST(test_r_plugin_manifest::test_check_signature);
       TEST(test_r_plugin_manifest::test_check_contents);
       TEST(test_r_plugin_manifest::test_names_and_paths);
+      TEST(test_r_plugin_manifest::test_plugin_api_versions);
+      TEST(test_r_plugin_manifest::test_check_plugin_api);
+      TEST(test_r_plugin_manifest::test_load_error_text);
     RTF_FIXTURE_END();
 
     virtual ~test_r_plugin_manifest() throw() {}
@@ -25,4 +28,7 @@ public:
     void test_check_signature();
     void test_check_contents();
     void test_names_and_paths();
+    void test_plugin_api_versions();
+    void test_check_plugin_api();
+    void test_load_error_text();
 };

@@ -71,12 +71,17 @@ add_executable(
     source/test_r_ws_auth.cpp
     include/test_r_rtsp_auth.h
     source/test_r_rtsp_auth.cpp
+    include/test_r_rtsp_logins.h
+    source/test_r_rtsp_logins.cpp
+    include/rtsp_test_client.h
     include/test_r_storage_ops.h
     source/test_r_storage_ops.cpp
     include/test_r_teardown_queue.h
     source/test_r_teardown_queue.cpp
     include/test_r_restream_opus.h
     source/test_r_restream_opus.cpp
+    include/test_r_opus_transcoder.h
+    source/test_r_opus_transcoder.cpp
     include/test_r_substream_recorder.h
     source/test_r_substream_recorder.cpp
     include/test_r_system_plugin_action.h
@@ -85,8 +90,10 @@ add_executable(
     source/test_r_system_plugin_frames.cpp
 )
 
-# Two system plugins for test_r_system_plugin_action: one with system_plugin_action, one without.
-foreach(variant action no_action)
+# System plugins for test_r_system_plugin_action and test_r_plugin_loader: one with
+# system_plugin_action, one without it (and without get_system_plugin_api_version), and
+# one for another plugin API (test_plugin/test_action_system_plugin.cpp).
+foreach(variant action no_action other_api)
     add_library(test_${variant}_system_plugin SHARED test_plugin/test_action_system_plugin.cpp)
     target_link_libraries(test_${variant}_system_plugin PRIVATE r_utils)
     target_include_directories(test_${variant}_system_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
@@ -94,7 +101,8 @@ foreach(variant action no_action)
     set_target_properties(test_${variant}_system_plugin PROPERTIES PREFIX "")
     add_dependencies(r_vss_ut test_${variant}_system_plugin)
 endforeach()
-target_compile_definitions(test_no_action_system_plugin PRIVATE NO_ACTION_EXPORT)
+target_compile_definitions(test_no_action_system_plugin PRIVATE NO_ACTION_EXPORT NO_API_EXPORT)
+target_compile_definitions(test_other_api_system_plugin PRIVATE "TEST_PLUGIN_API_VERSION=(R_SYSTEM_PLUGIN_API_VERSION + 1)" RECORD_LOAD)
 
 # A system plugin for test_r_system_plugin_frames: it reads frame feeds through the host's functions.
 add_library(test_frames_system_plugin SHARED test_plugin/test_frames_system_plugin.cpp)
@@ -105,6 +113,7 @@ add_dependencies(r_vss_ut test_frames_system_plugin)
 target_compile_definitions(r_vss_ut PRIVATE
     TEST_ACTION_PLUGIN="$<TARGET_FILE:test_action_system_plugin>"
     TEST_NO_ACTION_PLUGIN="$<TARGET_FILE:test_no_action_system_plugin>"
+    TEST_OTHER_API_PLUGIN="$<TARGET_FILE:test_other_api_system_plugin>"
     TEST_FRAMES_PLUGIN="$<TARGET_FILE:test_frames_system_plugin>"
     # test_r_recording_context reads the video callback's source for its wiring.
     R_VSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../source"

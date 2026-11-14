@@ -74,6 +74,12 @@ r_cloud_install::~r_cloud_install()
         _thread.join();
 }
 
+// A dev build (a base version and not a release) may install too, for testing.
+bool r_cloud_install::_can_install_build() const
+{
+    return _deps.release_build || !_deps.dev_base_version.empty();
+}
+
 bool r_cloud_install::_terms_accepted_locked() const
 {
     return _accepted_terms_version == REVERE_CLOUD_TERMS_VERSION;
@@ -89,6 +95,14 @@ r_cloud_install_status r_cloud_install::status() const
         s.terms_accepted = _terms_accepted_locked();
         s.error_kind = _error_kind;
         s.error_detail = _error_detail;
+        if(!_deps.release_build && !_deps.dev_base_version.empty())
+        {
+            s.dev_warning = _installed_release.empty()
+                ? "Dev build (" + _deps.revere_version + "): this installs the cloud plugin from the newest release at or below v" +
+                  _deps.dev_base_version + ", for testing. It may not match this build."
+                : "Dev build (" + _deps.revere_version + "): the cloud plugin was installed from release v" + _installed_release +
+                  ", for testing. It may not match this build.";
+        }
     }
 
     auto loaded = _deps.loaded ? _deps.loaded() : vector<string>();
@@ -109,16 +123,16 @@ r_cloud_install_status r_cloud_install::status() const
             s.detail = string(plugin_check_name(sk.check.status)) + (sk.check.detail.empty() ? string() : ": " + sk.check.detail);
         }
     }
-    s.can_install = _deps.release_build && !installing && !is_loaded;
+    s.can_install = _can_install_build() && !installing && !is_loaded;
     return s;
 }
 
 bool r_cloud_install::start(const string& accepted_terms_version, string& why)
 {
     lock_guard<mutex> g(_lock);
-    if(!_deps.release_build)
+    if(!_can_install_build())
     {
-        why = "only a release build of revere installs Revere Cloud itself";
+        why = "only a release build of revere, or a dev build with a release version, installs Revere Cloud itself";
         return false;
     }
     if(_installing)
@@ -178,6 +192,11 @@ void r_cloud_install::_run()
             detail = r.detail;
         }
         else
+        {
+            lock_guard<mutex> g(_lock);
+            _installed_release = r.release_version;
+        }
+        if(kind.empty())
         {
             string why;
             if(!_deps.load(r.path, why))

@@ -13,6 +13,28 @@ extern "C" {
 // Opaque handle
 typedef void* r_system_plugin_handle;
 
+// The plugin interface: this header's exports and the r_* library functions and classes
+// a plugin calls, versioned major.minor. (Not R_SYSTEM_PLUGIN_HOST_API_VERSION below,
+// which versions only the live-frame table.)
+//   - Major: raised by any change that breaks a plugin built before it (a function
+//     removed or changed, a struct's layout, what a call means), and minor back to 0.
+//     revere loads only plugins for its own major.
+//   - Minor: raised by a change that only adds (a new optional export, function or
+//     class). revere loads a plugin for its major and any minor up to its own.
+//
+// A plugin says which it was built for in two places, so revere can refuse it with a
+// clear message ("needs plugin interface v2"), and never open a plugin it can't run:
+//   - get_system_plugin_api_version() below, checked once the plugin is opened;
+//   - its manifest's "plugin_api" (r_plugin_manifest.h), checked before it's opened.
+// A plugin links only revere's libraries (r_*, by @rpath on macOS) and the system's,
+// never FFmpeg, GStreamer, OpenCV or another library revere links: those are revere's
+// to choose, and differ between builds (a release bundles its own, a self-built
+// revere uses the system's), so a plugin linking one loads in only some of them.
+#define R_SYSTEM_PLUGIN_API_MAJOR 1
+#define R_SYSTEM_PLUGIN_API_MINOR 0
+// Both in one number, as get_system_plugin_api_version() returns it: major << 16 | minor.
+#define R_SYSTEM_PLUGIN_API_VERSION ((uint32_t)(R_SYSTEM_PLUGIN_API_MAJOR) << 16 | (uint32_t)(R_SYSTEM_PLUGIN_API_MINOR))
+
 // Required exports from each plugin shared library
 
 // Get the plugin's unique identifier (GUID)
@@ -47,6 +69,12 @@ R_API bool system_plugin_enabled(r_system_plugin_handle plugin);
 // Enable or disable the plugin
 // enabled: true to enable, false to disable
 R_API void system_plugin_set_enabled(r_system_plugin_handle plugin, bool enabled);
+
+// Optional for now: the plugin interface the plugin was built for. Return
+// R_SYSTEM_PLUGIN_API_VERSION, as this header defines it when the plugin is built.
+// Called before load_system_plugin: a plugin for another major, or a later minor, is
+// closed again, not loaded. A plugin without this export loads as before, with a warning.
+R_API uint32_t get_system_plugin_api_version();
 
 // Optional: Get the plugin's current status string
 // Returns: A status string (e.g., "disabled", "authenticating", "connected", "not_connected")
