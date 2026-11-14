@@ -6,6 +6,7 @@
 #include "r_http/r_methods.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_string_utils.h"
+#include <cstdlib>
 #include <sstream>
 #include <algorithm>
 #include <cstdint>

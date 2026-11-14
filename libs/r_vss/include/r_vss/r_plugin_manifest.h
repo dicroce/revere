@@ -27,11 +27,17 @@ struct r_plugin_manifest
     std::string file;             // the plugin's file name, no folder
     uint64_t size {0};            // the plugin file's size in bytes
     std::string sha256;           // the plugin file's sha256, 64 lowercase hex digits
+    // Optional: the plugin interface it was built for, "plugin_api": "<major>.<minor>"
+    // (R_SYSTEM_PLUGIN_API_MAJOR and _MINOR, r_system_plugin.h), here as
+    // R_SYSTEM_PLUGIN_API_VERSION packs them. 0 if the manifest names none, as those
+    // written before it don't.
+    uint32_t plugin_api {0};
 };
 
 // The manifest in json. Throws r_invalid_argument_exception if it isn't one:
 // not json, a field missing or of the wrong type, an unknown format, an empty
-// file name or one with a folder in it, or a sha256 that isn't 64 lowercase hex digits.
+// file name or one with a folder in it, a sha256 that isn't 64 lowercase hex digits, or a
+// "plugin_api" that isn't a plugin interface version (parse_plugin_api()).
 R_API r_plugin_manifest parse_plugin_manifest(const std::string& json);
 
 // What a plugin's check found. Anything but ok means: don't load it.
@@ -46,7 +52,10 @@ enum class r_plugin_check
     wrong_version,     // built for another revere version; "needs updating"
     size_mismatch,     // the plugin file isn't the size the manifest says
     hash_mismatch,     // the plugin file isn't the one the manifest says
-    unreadable         // a file couldn't be read
+    unreadable,        // a file couldn't be read
+    wrong_plugin_api,  // built for another plugin interface major, or a later minor; "needs updating"
+    wont_load          // it couldn't be opened: most often, it needs a library this revere doesn't
+                       // have (it links one revere doesn't provide, or was built for another build); "needs updating"
 };
 
 struct r_plugin_check_result
@@ -76,7 +85,8 @@ R_API const std::vector<std::string>& trusted_plugin_keys();
 
 // Checks a manifest and its signature in memory (one just downloaded), in this
 // order: one of trusted_keys signed it; it parses; it names file_name; it's for this
-// platform and arch; it's for this revere_version, exactly. On ok, manifest is set.
+// platform and arch; it's for this revere_version, exactly; its plugin interface, if it
+// names one, is one this revere loads (check_plugin_api_version()). On ok, manifest is set.
 R_API r_plugin_check_result check_plugin_manifest(const std::string& manifest_json,
                                                   const std::string& signature,
                                                   const std::string& file_name,
@@ -89,7 +99,8 @@ R_API r_plugin_check_result check_plugin_manifest(const std::string& manifest_js
 // Checks the plugin at plugin_path, in this order, stopping at the first that fails:
 // its manifest is there; its signature is there and one of trusted_keys made it;
 // the manifest parses; it names this file; it's for this platform and arch; it's for
-// this revere_version, exactly; the file's size and sha256 match it.
+// this revere_version, exactly; its plugin interface, if it names one, is one this revere
+// loads; the file's size and sha256 match it.
 R_API r_plugin_check_result check_system_plugin(const std::string& plugin_path,
                                                 const std::string& revere_version,
                                                 const std::vector<std::string>& trusted_keys,
@@ -98,6 +109,31 @@ R_API r_plugin_check_result check_system_plugin(const std::string& plugin_path,
 
 // The same, for this build: revere_version(), trusted_plugin_keys(), plugin_platform() and plugin_arch().
 R_API r_plugin_check_result check_system_plugin(const std::string& plugin_path);
+
+// A plugin interface version (R_SYSTEM_PLUGIN_API_VERSION's packing) as "<major>.<minor>",
+// and back: "1.0" is major 1, minor 0. parse_plugin_api() takes only digits, a major from
+// 1 to 65535 and a minor from 0 to 65535, and is false for anything else.
+R_API std::string plugin_api_name(uint32_t api_version);
+R_API bool parse_plugin_api(const std::string& name, uint32_t& api_version);
+
+// Whether a host on host_api loads a plugin built for plugin_api: the same major, and a
+// minor no later than the host's. Else wrong_plugin_api, with a detail for the user:
+// "it needs plugin interface v2, this revere has v1" (another major), or "it needs plugin
+// interface v1.3, this revere has v1.2" (a later minor).
+R_API r_plugin_check_result check_plugin_api_version(uint32_t plugin_api, uint32_t host_api);
+
+// The same for the plugin at plugin_path, by its manifest's "plugin_api", before it's
+// opened. ok when there's no manifest, it can't be read or parsed, or it names no plugin
+// interface (the plugin's own get_system_plugin_api_version() is checked once it's opened).
+// Done in every build, signed or not: the manifest's signature isn't checked, since this
+// only ever refuses a plugin.
+R_API r_plugin_check_result check_plugin_api(const std::string& plugin_path, uint32_t host_api);
+
+// Why a plugin couldn't be opened, from the loader's error (r_dynamic_library's), for the
+// user: the library it needs that this revere doesn't have, when the error names one
+// (macOS "Library not loaded: <path>", Linux "<file>: cannot open shared object file"),
+// or Windows' module-not-found code. Otherwise the error itself.
+R_API std::string plugin_load_error_text(const std::string& error);
 
 }
 

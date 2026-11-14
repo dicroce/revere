@@ -3,6 +3,7 @@
 #include "r_http/r_http_exception.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_string_utils.h"
+#include "r_utils/r_time_utils.h"
 
 #include <ctime>
 
@@ -130,23 +131,8 @@ void r_server_response::write_response(r_socket_base& socket, uint64_t timeout_m
 {
     _responseWritten = true;
 
-    time_t now = time(0);
-
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    char* cstr = ctime(&now);
-
-    if( cstr == nullptr )
-        R_STHROW(r_http_exception_generic, ("Please set Content-Type: before calling write_response()."));
-#endif
-#ifdef IS_WINDOWS
-    char cstr[1024];
-    memset(cstr, 0, 1024);
-    if(ctime_s(cstr, 1024, &now) != 0)
-        R_STHROW(r_http_exception_generic, ("Unable to get time string with ctime_s()."));
-#endif
-
     // RStrip to remove \n added by ctime
-    string timeString = r_string_utils::rstrip(string(cstr));
+    string timeString = r_string_utils::rstrip(r_time_utils::to_ctime_string(time(0)));
 
     if( (_body.size() > 0) && (_contentType.length() <= 0) )
         R_STHROW(r_http_exception_generic, ("Please set Content-Type: before calling write_response()."));
@@ -192,7 +178,9 @@ void r_server_response::write_chunk(r_socket_base& socket, size_t sizeChunk, con
     if(!_headerWritten)
         _write_header(socket, timeout_millis);
 
-    auto chunkSizeString = r_string_utils::format("%s;\r\n", r_string_utils::format("%x", (unsigned int)sizeChunk).c_str());
+    // The size in hex and CRLF, nothing else: a ";" with no extension after it isn't valid HTTP/1.1
+    // (chunk-ext = *( ";" chunk-ext-name ... )), and strict parsers stop on it.
+    auto chunkSizeString = r_string_utils::format("%x\r\n", (unsigned int)sizeChunk);
     r_networking::r_send(socket, chunkSizeString.c_str(), chunkSizeString.length(), timeout_millis);
     if( !socket.valid() )
         R_STHROW( r_http_io_exception, ("Socket invalid."));
@@ -328,22 +316,8 @@ string r_server_response::_get_status_message(status_code sc) const
 
 bool r_server_response::_write_header(r_socket_base& socket, uint64_t timeout_millis)
 {
-    time_t now = time(0);
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    char* cstr = ctime(&now);
-
-    if( cstr == nullptr )
-        R_STHROW(r_http_exception_generic, ("Please set Content-Type: before calling WriteResponse()."));
-#endif
-#ifdef IS_WINDOWS
-    char cstr[1024];
-    memset(cstr, 0, 1024);
-    if(ctime_s(cstr, 1024, &now) != 0)
-        R_STHROW(r_http_exception_generic, ("Unable to get time string with ctime_s()."));
-#endif
-
     // RStrip to remove \n added by ctime
-    string timeString = r_string_utils::rstrip(string(cstr));
+    string timeString = r_string_utils::rstrip(r_time_utils::to_ctime_string(time(0)));
 
     if(_contentType.length() <= 0)
         R_STHROW(r_http_exception_generic, ("Please set Content-Type: before calling WriteChunk()."));

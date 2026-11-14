@@ -1,6 +1,7 @@
 
 #include "r_vss/r_camera_stats.h"
 #include "r_utils/r_file.h"
+#include "r_utils/r_time_utils.h"
 #include "r_utils/r_string_utils.h"
 #include "r_utils/3rdparty/json/json.h"
 #include <algorithm>
@@ -285,12 +286,7 @@ camera_stats r_vss::gather_camera_stats(
 system_clock::time_point r_vss::local_day_start(system_clock::time_point now)
 {
     time_t t = system_clock::to_time_t(now);
-    tm local {};
-#ifdef IS_WINDOWS
-    localtime_s(&local, &t);
-#else
-    localtime_r(&t, &local);
-#endif
+    tm local = r_utils::r_time_utils::to_local_tm(t);
     local.tm_hour = 0;
     local.tm_min = 0;
     local.tm_sec = 0;

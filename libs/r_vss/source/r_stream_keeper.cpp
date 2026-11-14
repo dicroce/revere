@@ -21,11 +21,6 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_time_utils.h"
 
-#if defined(IS_MACOS) || defined(IS_LINUX)
-#include <pthread.h>
-#elif defined(IS_WINDOWS)
-#include <windows.h>
-#endif
 #include <algorithm>
 
 static gboolean _quit_rtsp_loop(gpointer loop)
@@ -95,6 +90,9 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
         d.install_dir = _system_plugin_host.user_plugin_dir();
         d.terms_path = top_dir + PATH_SLASH + "revere_cloud_terms.json";
         d.release_build = is_release_version(revere_version());
+        d.revere_version = revere_version();
+        if(!d.release_build)
+            d.dev_base_version = release_base_version(revere_version());
         d.install = [](const std::string& dir) { return install_revere_cloud_plugin(dir); };
         d.load = [this](const std::string& path, std::string& why) { return _system_plugin_host.load_and_start(path, why); };
         d.loaded = [this]() { return _system_plugin_host.get_loaded_plugins(); };
@@ -125,6 +123,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
     _rtsp_password = r_rtsp_auth::load_or_create_password(top_dir);
     _rtsp_auth = r_rtsp_auth::make_auth(_rtsp_password);
     gst_rtsp_server_set_auth(_server, _rtsp_auth);
+    _rtsp_logins = std::make_unique<r_rtsp_logins>(_server, _rtsp_auth);
 
     // A person on a camera's first significant key frame starts its event at
     // once, rather than after MOG2's confirmation (see r_motion_engine).
@@ -176,6 +175,9 @@ r_stream_keeper::~r_stream_keeper() noexcept
         g_object_unref(_mounts);
         _mounts = nullptr;
     }
+
+    // Before the server and the auth it works on.
+    _rtsp_logins.reset();
 
     if(_server)
     {
@@ -1567,13 +1569,7 @@ void r_stream_keeper::_entry_point()
 // with no clients the thread is asleep (it used to wake every millisecond to ask whether anything was pending).
 void r_stream_keeper::_rtsp_server_entry_point()
 {
-#if defined(IS_MACOS)
-    pthread_setname_np("rtsp-server");
-#elif defined(IS_LINUX)
-    pthread_setname_np(pthread_self(), "rtsp-server");
-#elif defined(IS_WINDOWS)
-    SetThreadDescription(GetCurrentThread(), L"rtsp-server");
-#endif
+    r_utils::r_std_utils::set_thread_name("rtsp-server");
 
     GMainContext* context = g_main_context_new();
     GMainLoop* loop = g_main_loop_new(context, FALSE);

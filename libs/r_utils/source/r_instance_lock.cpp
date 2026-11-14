@@ -2,6 +2,7 @@
 #include "r_utils/r_instance_lock.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_string_utils.h"
+#include "r_utils/r_process.h"
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -40,11 +41,7 @@ static string _read_text(const string& path)
 
 static int64_t _current_pid()
 {
-#ifdef IS_WINDOWS
-    return (int64_t)GetCurrentProcessId();
-#else
-    return (int64_t)getpid();
-#endif
+    return r_process::get_current_pid().id();
 }
 
 r_instance_lock::r_instance_lock(const string& path) :
@@ -67,7 +64,9 @@ r_instance_lock::r_instance_lock(const string& path) :
     else if(h)
         CloseHandle(h);
 #else
-    _fd = open(path.c_str(), O_CREAT | O_RDWR, 0600);
+    // O_CLOEXEC: a program the holder starts (a browser) must not inherit the
+    // lock, or the next start would find it taken until that program exits.
+    _fd = open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
     if(_fd >= 0 && flock(_fd, LOCK_EX | LOCK_NB) == 0)
         _held = true;
 #endif

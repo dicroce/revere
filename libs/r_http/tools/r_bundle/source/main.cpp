@@ -53,11 +53,7 @@ static uint64_t fnv1a_64(const std::vector<uint8_t>& data)
 static std::string compute_etag(const std::vector<uint8_t>& data)
 {
     char buf[17];
-#ifdef _WIN32
-    sprintf_s(buf, sizeof(buf), "%016llx", (unsigned long long)fnv1a_64(data));
-#else
     snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)fnv1a_64(data));
-#endif
     return std::string(buf);
 }
 

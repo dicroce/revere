@@ -1,16 +1,7 @@
 #include "r_utils/r_local_api_token.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_string_utils.h"
-
-#ifdef IS_WINDOWS
-#include <Windows.h>
-#include <ShlObj.h>
-#include <combaseapi.h>
-#else
-#include <pwd.h>
-#include <unistd.h>
-#include <vector>
-#endif
+#include "r_utils/r_platform.h"
 
 using namespace std;
 using namespace r_utils;
@@ -66,31 +57,18 @@ void r_utils::r_local_api_token::remove(const string& top_dir)
 
 string r_utils::r_local_api_token::default_top_dir()
 {
-#ifdef IS_WINDOWS
-    wchar_t* local_app_data = nullptr;
-    if(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL, &local_app_data) != S_OK)
+    try
     {
-        if(local_app_data)
-            CoTaskMemFree(local_app_data);
+        if(r_platform::is_windows())
+            return r_fs::local_app_data_dir() + PATH_SLASH + "revere" + PATH_SLASH + "revere";
+        if(r_platform::is_macos())
+            return r_fs::local_app_data_dir() + "/Revere/revere";
+        return r_fs::home_dir() + "/Documents/revere/revere";
+    }
+    catch(...)
+    {
         return string();
     }
-    wstring wide = wstring(local_app_data) + L"\\revere\\revere";
-    CoTaskMemFree(local_app_data);
-    return r_string_utils::convert_wide_string_to_multi_byte_string(wide.c_str());
-#else
-    auto res = sysconf(_SC_GETPW_R_SIZE_MAX);
-    vector<char> buffer(res > 0 ? (size_t)res : (size_t)16384);
-    passwd pwd;
-    passwd* result = nullptr;
-    if(getpwuid_r(getuid(), &pwd, buffer.data(), buffer.size(), &result) != 0 || !result || !pwd.pw_dir)
-        return string();
-    string home = pwd.pw_dir;
-#ifdef IS_MACOS
-    return home + "/Library/Application Support/Revere/revere";
-#else
-    return home + "/Documents/revere/revere";
-#endif
-#endif
 }
 
 bool r_utils::r_local_api_token::is_loopback_host(const string& host)

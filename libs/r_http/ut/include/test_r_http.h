@@ -12,6 +12,7 @@ public:
       TEST(test_r_http::test_client_response_default_constructor);
       TEST(test_r_http::test_client_response_receive);
       TEST(test_r_http::test_client_response_streaming);
+      TEST(test_r_http::test_server_response_chunk_framing);
       TEST(test_r_http::test_client_response_100_continue);
       TEST(test_r_http::test_client_response_multi_part);
       TEST(test_r_http::test_client_request_chunked_single);
@@ -28,6 +29,9 @@ public:
       TEST(test_r_http::test_web_server_port_taken);
       TEST(test_r_http::test_web_server_destroyed_with_request_in_flight);
       TEST(test_r_http::test_web_server_https);
+      TEST(test_r_http::test_tls_peer_closed);
+      TEST(test_r_http::test_tls_peer_closed_partial_record);
+      TEST(test_r_http::test_tls_peer_closed_before_handshake);
       TEST(test_r_http::test_web_server_https_survives_plaintext_probe);
       TEST(test_r_http::test_web_server_https_busy_silent_client);
     RTF_FIXTURE_END();
@@ -44,6 +48,7 @@ public:
     void test_client_response_default_constructor();
     void test_client_response_receive();
     void test_client_response_streaming();
+    void test_server_response_chunk_framing();
     void test_client_response_100_continue();
     void test_client_response_multi_part();
     void test_client_request_chunked_single();
@@ -60,6 +65,9 @@ public:
     void test_web_server_port_taken();
     void test_web_server_destroyed_with_request_in_flight();
     void test_web_server_https();
+    void test_tls_peer_closed();
+    void test_tls_peer_closed_partial_record();
+    void test_tls_peer_closed_before_handshake();
     void test_web_server_https_survives_plaintext_probe();
     void test_web_server_https_busy_silent_client();
 };

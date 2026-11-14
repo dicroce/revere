@@ -92,6 +92,14 @@ private:
 
 R_API std::string get_env(const std::string& name);
 
+// Sets (or, with unset_env, removes) a variable in this process's environment.
+R_API void set_env(const std::string& name, const std::string& value);
+R_API void unset_env(const std::string& name);
+
+// Names the calling thread for debuggers and crash dumps. Linux keeps only the
+// first 15 characters.
+R_API void set_thread_name(const std::string& name);
+
 }
 
 }
