@@ -19,6 +19,7 @@ extern "C" {
 #include <vector>
 
 #ifndef IS_WINDOWS
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <errno.h>
@@ -308,7 +309,7 @@ void r_ssl_server_socket::set_io_timeout(uint64_t ioTimeOut)
 
 int r_ssl_server_socket::_bio_send(void* ctx, const unsigned char* buf, size_t len)
 {
-    int ret = static_cast<r_raw_socket*>(ctx)->send(buf, len);
+    int ret = static_cast<tls_state*>(ctx)->sok.send(buf, len);
     if(ret < 0)
     {
 #ifdef IS_WINDOWS
@@ -326,7 +327,27 @@ int r_ssl_server_socket::_bio_send(void* ctx, const unsigned char* buf, size_t l
 
 int r_ssl_server_socket::_bio_recv(void* ctx, unsigned char* buf, size_t len)
 {
-    int ret = static_cast<r_raw_socket*>(ctx)->recv(buf, len);
+    auto st = static_cast<tls_state*>(ctx);
+    if(st->no_wait)
+    {
+        // Only the bytes already here: none (or the peer's FIN) is WANT_READ,
+        // and mbedtls keeps a partial record until the next read.
+        size_t here = 0;
+#ifdef IS_WINDOWS
+        u_long n = 0;
+        if(ioctlsocket((SOCKET)st->sok.get_sok_id(), FIONREAD, &n) == 0)
+            here = (size_t)n;
+#else
+        int n = 0;
+        if(ioctl((int)st->sok.get_sok_id(), FIONREAD, &n) == 0 && n > 0)
+            here = (size_t)n;
+#endif
+        if(here == 0)
+            return MBEDTLS_ERR_SSL_WANT_READ;
+        if(len > here)
+            len = here;
+    }
+    int ret = st->sok.recv(buf, len);
     if(ret < 0)
     {
 #ifdef IS_WINDOWS
@@ -441,7 +462,7 @@ r_ssl_server_socket r_ssl_server_socket::accept()
     if(ret != 0)
         R_THROW(("mbedtls_ssl_setup() failed: %s", _mbedtls_err(ret).c_str()));
 
-    mbedtls_ssl_set_bio(&conn._st->ssl, &conn._st->sok, _bio_send, _bio_recv, nullptr);
+    mbedtls_ssl_set_bio(&conn._st->ssl, conn._st.get(), _bio_send, _bio_recv, nullptr);
 
     return conn;
 }
@@ -642,8 +663,12 @@ bool r_ssl_server_socket::peer_closed() const
     uint64_t millis = 0;
     if(!_st->sok.wait_till_recv_wont_block(millis))
         return false;
+    // Without waiting: a client that has sent only part of a record (say,
+    // just its header) mustn't hold this for the socket's timeout.
     unsigned char none = 0;
+    _st->no_wait = true;
     int ret = mbedtls_ssl_read(&_st->ssl, &none, 0);
+    _st->no_wait = false;
     if(ret == 0)
         return mbedtls_ssl_get_bytes_avail(&_st->ssl) == 0;   // 0 with nothing buffered is the end of the stream
     if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
