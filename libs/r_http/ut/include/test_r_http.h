@@ -18,6 +18,9 @@ public:
       TEST(test_r_http::test_client_request_chunked_multiple);
       TEST(test_r_http::test_server_request_chunked_accumulate);
       TEST(test_r_http::test_server_request_chunked_callback);
+      TEST(test_r_http::test_server_request_max_body);
+      TEST(test_r_http::test_server_request_chunked_max_body);
+      TEST(test_r_http::test_web_server_max_request_body);
       TEST(test_r_http::test_web_server_skips_abandoned_request);
       TEST(test_r_http::test_web_server_busy_503);
       TEST(test_r_http::test_web_server_busy_503_trickling_client);
@@ -47,6 +50,9 @@ public:
     void test_client_request_chunked_multiple();
     void test_server_request_chunked_accumulate();
     void test_server_request_chunked_callback();
+    void test_server_request_max_body();
+    void test_server_request_chunked_max_body();
+    void test_web_server_max_request_body();
     void test_web_server_skips_abandoned_request();
     void test_web_server_busy_503();
     void test_web_server_busy_503_trickling_client();

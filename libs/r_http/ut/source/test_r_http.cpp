@@ -1075,3 +1075,192 @@ void test_r_http::test_web_server_https_busy_silent_client()
 
     queued.close();
 }
+
+namespace
+{
+
+// What r_server_request made of one request, sent as raw bytes, read with a body limit.
+struct raw_read
+{
+    std::string outcome;  // "ok", "413", "400" or "other"
+    std::string body;
+    size_t body_capacity {0};
+    size_t chunks {0};
+};
+
+raw_read _read_raw(const std::string& raw, size_t max_body, bool with_chunk_callback = false)
+{
+    int port = RTF_NEXT_PORT();
+    raw_read result;
+    std::atomic<bool> listening {false};
+    auto th = std::thread([&]() {
+        try
+        {
+            r_socket listener;
+            listener.bind(port, "127.0.0.1");
+            listener.listen();
+            listening = true;
+            auto conn = listener.accept();
+            r_server_request request;
+            request.set_max_body_size(max_body);
+            if(with_chunk_callback)
+                request.register_chunk_callback([&](const std::vector<uint8_t>&, const r_server_request&) { ++result.chunks; });
+            try
+            {
+                request.read_request(conn, 5000);
+                result.outcome = "ok";
+                result.body = request.get_body_as_string();
+            }
+            catch(r_http_413_exception&) { result.outcome = "413"; }
+            catch(r_http_400_exception&) { result.outcome = "400"; }
+            catch(...) { result.outcome = "other"; }
+            result.body_capacity = request.get_body_size();
+        }
+        catch(...)
+        {
+            result.outcome = "server";
+        }
+    });
+    RTF_ASSERT(_wait_for([&]() { return listening.load(); }));
+    r_socket client;
+    client.connect("127.0.0.1", port);
+    r_networking::r_send(client, raw.data(), raw.size());
+    th.join();
+    return result;
+}
+
+std::string _post(const std::string& content_length, const std::string& body)
+{
+    return "POST /in HTTP/1.1\r\nHost: x\r\nContent-Type: text/plain\r\nContent-Length: " + content_length + "\r\n\r\n" + body;
+}
+
+std::string _chunked(const std::vector<std::string>& sizes_and_data)
+{
+    std::string raw = "POST /in HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n";
+    for(const auto& part : sizes_and_data)
+        raw += part;
+    return raw;
+}
+
+}
+
+// A body over the server's limit is refused before it's read or any room made for it: by its declared
+// Content-Length, whatever is actually sent. At the limit it's read whole, across many reads for a large one. A
+// Content-Length that isn't a number is a bad request.
+void test_r_http::test_server_request_max_body()
+{
+    auto over = _read_raw(_post("17", std::string(17, 'x')), 16);
+    RTF_ASSERT(over.outcome == "413");
+    RTF_ASSERT(over.body_capacity == 0);
+
+    auto at = _read_raw(_post("16", "0123456789abcdef"), 16);
+    RTF_ASSERT(at.outcome == "ok");
+    RTF_ASSERT(at.body == "0123456789abcdef");
+
+    // Declared far past the limit, with nothing sent after it: refused at once, not waited for.
+    auto t0 = std::chrono::steady_clock::now();
+    auto huge = _read_raw(_post("18446744073709551615", ""), r_server_request::DEFAULT_MAX_BODY_SIZE);
+    RTF_ASSERT(huge.outcome == "413");
+    RTF_ASSERT(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+    auto just_over = _read_raw(_post(std::to_string(r_server_request::DEFAULT_MAX_BODY_SIZE + 1), "x"), r_server_request::DEFAULT_MAX_BODY_SIZE);
+    RTF_ASSERT(just_over.outcome == "413");
+
+    for(const char* bad : {"18446744073709551616", "12abc", "-1", "0x10", "", " "})
+    {
+        auto r = _read_raw(_post(bad, "x"), 16);
+        RTF_ASSERT(r.outcome == "400");
+    }
+
+    // A large body under the limit comes through whole.
+    std::string big(300000, ' ');
+    for(size_t i = 0; i < big.size(); ++i)
+        big[i] = (char)('a' + (i % 26));
+    auto large = _read_raw(_post(std::to_string(big.size()), big), r_server_request::DEFAULT_MAX_BODY_SIZE);
+    RTF_ASSERT(large.outcome == "ok");
+    RTF_ASSERT(large.body == big);
+
+    // The default, and a copy keeps a request's limit.
+    r_server_request request;
+    RTF_ASSERT(request.get_max_body_size() == r_server_request::DEFAULT_MAX_BODY_SIZE);
+    request.set_max_body_size(4096);
+    r_server_request copy(request);
+    RTF_ASSERT(copy.get_max_body_size() == 4096);
+    r_server_request assigned;
+    assigned = request;
+    RTF_ASSERT(assigned.get_max_body_size() == 4096);
+}
+
+// Chunks are held to the same limit, together: the chunk that would take the body past it is refused before it's
+// read, with or without a chunk callback. A chunk size that isn't a hex number is a bad request.
+void test_r_http::test_server_request_chunked_max_body()
+{
+    auto parts = std::vector<std::string>{"a\r\n0123456789\r\n", "7\r\n0123456\r\n", "0\r\n\r\n"};
+    RTF_ASSERT(_read_raw(_chunked(parts), 16).outcome == "413");
+    auto fits = _read_raw(_chunked(parts), 17);
+    RTF_ASSERT(fits.outcome == "ok");
+    RTF_ASSERT(fits.body == "01234567890123456");
+
+    auto streamed = _read_raw(_chunked(parts), 16, true);
+    RTF_ASSERT(streamed.outcome == "413");
+    RTF_ASSERT(streamed.chunks == 1);
+    auto streamed_fits = _read_raw(_chunked(parts), 17, true);
+    RTF_ASSERT(streamed_fits.outcome == "ok");
+    RTF_ASSERT(streamed_fits.chunks == 2);
+
+    // One chunk declared past the limit, nothing after it: refused at once.
+    RTF_ASSERT(_read_raw(_chunked({"FFFFFFFFFFFFFFFF\r\n"}), r_server_request::DEFAULT_MAX_BODY_SIZE).outcome == "413");
+    // A chunk extension is still allowed.
+    RTF_ASSERT(_read_raw(_chunked({"3;name=v\r\nabc\r\n", "0\r\n\r\n"}), 16).body == "abc");
+    for(const char* bad : {"10000000000000000\r\n", "1g\r\nx\r\n", "-1\r\n", "\r\n"})
+        RTF_ASSERT(_read_raw(_chunked({bad, "0\r\n\r\n"}), 16).outcome == "400");
+}
+
+// A web server's own limit: a request over it is answered 413 and its connection closed, before any route runs; one
+// at it reaches its route. A Content-Length that isn't a number is answered 400.
+void test_r_http::test_web_server_max_request_body()
+{
+    int port = RTF_NEXT_PORT();
+    std::atomic<int> ran {0};
+    r_web_server<r_socket> ws(port, "127.0.0.1");
+    RTF_ASSERT(ws.max_request_body() == r_server_request::DEFAULT_MAX_BODY_SIZE);
+    ws.set_max_request_body(4096);
+    RTF_ASSERT(ws.max_request_body() == 4096);
+    ws.add_route(METHOD_POST, "/in", [&](const r_web_server<r_socket>&, r_socket&, const r_server_request& req) {
+        ++ran;
+        r_server_response response;
+        response.set_body(std::to_string(req.get_body_size()));
+        return response;
+    });
+    ws.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    auto send_raw = [&](const std::string& raw) {
+        r_socket sok;
+        sok.connect("127.0.0.1", port);
+        r_networking::r_send(sok, raw.data(), raw.size());
+        r_client_response response;
+        response.read_response(sok);
+        return response;
+    };
+
+    // Over: declared 4097, only part of it sent.
+    auto over = send_raw(_post("4097", std::string(100, 'x')));
+    RTF_ASSERT(over.get_status() == 413);
+    RTF_ASSERT(r_string_utils::to_lower(over.get_header("Connection")) == "close");
+    RTF_ASSERT(ran == 0);
+
+    auto chunked_over = send_raw(_chunked({"1000\r\n" + std::string(4096, 'y') + "\r\n", "1\r\nz\r\n", "0\r\n\r\n"}));
+    RTF_ASSERT(chunked_over.get_status() == 413);
+    RTF_ASSERT(ran == 0);
+
+    auto bad = send_raw(_post("lots", "x"));
+    RTF_ASSERT(bad.get_status() == 400);
+    RTF_ASSERT(ran == 0);
+
+    auto at = send_raw(_post("4096", std::string(4096, 'x')));
+    RTF_ASSERT(at.get_status() == 200);
+    RTF_ASSERT(at.get_body_as_string().value() == "4096");
+    RTF_ASSERT(ran == 1);
+
+    ws.stop();
+}
