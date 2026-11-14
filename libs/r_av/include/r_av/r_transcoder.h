@@ -10,6 +10,7 @@ extern "C"
 #include "r_av/r_video_decoder.h"
 #include "r_av/r_video_encoder.h"
 #include "r_av/r_muxer.h"
+#include "r_av/r_bitrate_control.h"
 #include "r_utils/r_macro.h"
 
 #include <string>
@@ -128,7 +129,7 @@ public:
 
 private:
     void _worker_thread();
-    void _adjust_bitrate();
+    void _adjust_bitrate(uint32_t window_ms);
 
     // Threading
     std::thread _worker;
@@ -154,9 +155,7 @@ private:
     r_muxer _muxer;
 
     // Bitrate management
-    uint32_t _current_bitrate;
-    uint32_t _max_bitrate;
-    uint32_t _min_bitrate;
+    r_bitrate_control _bitrate_control;
     bool _enable_dynamic_bitrate;
 
     // Timing & rate control
