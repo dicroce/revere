@@ -233,6 +233,10 @@ private:
     int64_t _net_jit_max {0};
     std::chrono::steady_clock::time_point _net_window_start;
     bool _net_window_started {false};
+    // As stream_stats: logged when frames came out of order, else the first window
+    // and then one every STATS_HEARTBEAT_SECONDS.
+    std::chrono::steady_clock::time_point _net_last_logged;
+    bool _net_logged_once {false};
 
     // TEMP DIAGNOSTIC (vision_pair log line): identify what the buffers in
     // <=2ms pts pairs actually are (SEI-only AU? duplicate picture? slice?).

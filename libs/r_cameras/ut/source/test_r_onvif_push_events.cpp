@@ -2,6 +2,7 @@
 #include "r_cameras/onvif/r_onvif_events.h"
 #include "r_http/r_web_server.h"
 #include "r_utils/r_socket.h"
+#include "r_utils/r_std_utils.h"
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -203,21 +204,13 @@ struct events_rig
             lock_guard<mutex> g(lock);
             got.push_back(t);
         }));
-#ifdef IS_WINDOWS
-        _putenv_s("REVERE_ONVIF_PUSH_BIND", "127.0.0.1");
-#else
-        setenv("REVERE_ONVIF_PUSH_BIND", "127.0.0.1", 1);
-#endif
+        r_utils::r_std_utils::set_env("REVERE_ONVIF_PUSH_BIND", "127.0.0.1");
         events->start();
     }
     ~events_rig()
     {
         events.reset();
-#ifdef IS_WINDOWS
-        _putenv_s("REVERE_ONVIF_PUSH_BIND", "");
-#else
-        unsetenv("REVERE_ONVIF_PUSH_BIND");
-#endif
+        r_utils::r_std_utils::unset_env("REVERE_ONVIF_PUSH_BIND");
     }
     size_t transitions()
     {

@@ -1,7 +1,3 @@
-#ifdef IS_WINDOWS
-#define _CRT_RAND_S
-#include <stdlib.h>
-#endif
 //#include "utils.h"
 #include "r_storage/r_storage_file.h"
 #include "r_storage/r_storage_file_reader.h"
@@ -32,15 +28,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <random>
 #include <sys/types.h>
-#ifdef IS_WINDOWS
-#pragma warning( push )
-#pragma warning( disable : 4244 )
-#endif
-//#include <gst/gst.h>
-#ifdef IS_WINDOWS
-#pragma warning( pop )
-#endif
 
 using namespace std;
 using namespace std::chrono;
@@ -699,13 +688,8 @@ void test_r_storage::test_r_storage_file_sync_after_async_stop()
 
 static int _random()
 {
-#ifdef IS_WINDOWS
-    unsigned int rand_val;
-    rand_s(&rand_val);
-    return abs((int)rand_val);
-#else
-    return random();
-#endif
+    static std::mt19937 gen{std::random_device{}()};
+    return (int)(gen() & 0x7fffffff);
 }
 
 void test_r_storage::test_r_dumbdex_writing()

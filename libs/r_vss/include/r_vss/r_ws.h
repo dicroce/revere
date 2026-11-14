@@ -294,6 +294,8 @@ private:
     r_http::r_web_server<r_utils::r_ssl_server_socket> _https;
     std::shared_ptr<r_utils::r_ssl_server_config> _tls;
     bool _remote_access_active {false};
+    // This recorder's id (r_utils/r_recorder_id.h), read or made once at start; empty if it couldn't be kept.
+    std::string _recorder_id;
     // Sessions are shared so a /transcode keeps its own alive while finalize or
     // eviction drops it from the map. _sessions_mutex guards only the map (and
     // last_used); it is never held across a transcode.

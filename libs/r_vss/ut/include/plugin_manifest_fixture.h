@@ -43,6 +43,23 @@ inline const std::string NOT_A_MANIFEST_SIG_HEX =
     "3046022100d9b1c6cd98ad414254590fdfab44680d53c66eedd261beecd9141f916ebf28b1"
     "022100a049fbcb445b226a795da8f83748866fa6347a64528853ebd992fa04c67ff4a5";
 
+// The same manifest for plugin interface v65535.0, which no revere will have, signed by API_TEST_KEY,
+// a third key, made the same way (its private half thrown away too).
+inline const std::string API_TEST_KEY =
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEY04bF1pADIUtLBC3dykp5XVjvLoc\n"
+    "0lYpLgwyyaR7BmjeeAXxddkbTv+g8GUVjfnYqMDZshiFkI6TDjTPnJ+oBw==\n"
+    "-----END PUBLIC KEY-----\n";
+
+inline const std::string OTHER_API_MANIFEST =
+    "{\"format\":1,\"platform\":\"windows\",\"arch\":\"x86_64\",\"revere_version\":\"0.0.41\","
+    "\"file\":\"test_system_plugin.dll\",\"size\":19,"
+    "\"sha256\":\"20616576e59d83e78286ed236fe12429c6830f0e851b8e69c882a0f637f5755e\",\"plugin_api\":\"65535.0\"}";
+
+inline const std::string OTHER_API_MANIFEST_SIG_HEX =
+    "3046022100a94503a1a3c0f023403a8344a81b51859b7d2d8b30a1f633db85dc589420d0f3"
+    "022100f07763f870116768358bff6a00cae2f23376658eae721bb911781ca43f51a8d5";
+
 inline std::string unhex(const std::string& hex)
 {
     std::string out;

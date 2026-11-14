@@ -1,7 +1,3 @@
-#ifdef IS_WINDOWS
-#define _WINSOCK_DEPRECATED_NO_WARNINGS 1
-#endif
-
 #include <thread>
 #include <sstream>
 #include <map>
@@ -20,6 +16,7 @@
 #include <math.h>
 #include <sys/stat.h>
 #include "r_onvif/r_onvif_session.h"
+#include "r_onvif/r_onvif_push.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_string_utils.h"
@@ -34,27 +31,6 @@
 #include "r_http/r_client_response.h"
 #include "r_http/r_status_codes.h"
 #include "r_http/r_utils.h"
-
-#ifdef IS_WINDOWS
-    #include <ws2tcpip.h>
-    #include <winsock2.h>
-    #include <wincrypt.h>
-    #include <iphlpapi.h>
-    #include <io.h>
-    #include <fcntl.h>
-    #include <stdio.h>
-    #include <time.h>
-#else
-    #include <sys/socket.h>
-    #include <arpa/inet.h>
-    #include <unistd.h>
-    #include <ifaddrs.h>
-    #include <sys/ioctl.h>
-    #include <sys/types.h>
-    #include <net/if.h>
-    #include <netinet/in.h>
-    #include <sys/time.h>
-#endif
 
 #include <pugixml.hpp>
 
@@ -204,28 +180,6 @@ retry_redirect:
     throw std::runtime_error("HTTP interaction failed after retries");
 }
 
-static time_t _portable_timegm(struct tm* t)
-{
-#ifdef IS_WINDOWS
-    // Windows implementation
-    return _mkgmtime(t); // Windows has _mkgmtime for UTC time
-#elif defined(IS_MACOS)
-    // macOS has timegm
-    return timegm(t);
-#else
-    // Linux/POSIX implementation
-    char* tz = getenv("TZ");
-    setenv("TZ", "UTC", 1);
-    tzset();
-    time_t result = mktime(t);
-    if (tz)
-        setenv("TZ", tz, 1);
-    else unsetenv("TZ");
-    tzset();
-    return result;
-#endif
-}
-
 // Forward declarations for namespace-agnostic XPath helpers (defined later)
 static string _xpath_local(const string& local_name, const string& ns_uri = "");
 static pugi::xpath_node _select_node_local(const pugi::xml_node& parent, const string& local_name, const string& ns_uri = "");
@@ -360,7 +314,7 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
     if (!useUtc && !timezone.empty())
     {
         // First convert the local time to a time_t (treating it temporarily as UTC)
-        time_t localAsUtc = _portable_timegm(&timeinfo);
+        time_t localAsUtc = r_time_utils::utc_tm_to_time_t(timeinfo);
         
         // Parse timezone in format like "GMT-05:00" or "GMT+01:00"
         int offsetSeconds = 0;
@@ -403,7 +357,7 @@ static r_nullable<time_t> _parse_onvif_date_time(const std::string& xmlResponse)
         timestamp = localAsUtc + offsetSeconds;
     }
     else if (useUtc)
-        timestamp = _portable_timegm(&timeinfo); // We already have UTC time, just convert it
+        timestamp = r_time_utils::utc_tm_to_time_t(timeinfo); // We already have UTC time, just convert it
     else
     {
         // No timezone info, assume it's in local timezone
@@ -490,235 +444,87 @@ static bool _is_link_local_address(const string& host)
 // once is not worth waiting for. Without a limit, a sendto held by something
 // outside revere (a network filter such as Little Snitch, a stalled interface)
 // blocks the discovery thread forever, and r_agent::stop() joins it forever.
-// POSIX sends use MSG_DONTWAIT as well; Windows has no per-call flag, so it
-// relies on SO_SNDTIMEO alone.
-static const int PROBE_SEND_TIMEOUT_MS = 1000;
-#ifdef IS_WINDOWS
-static void _set_probe_send_timeout(SOCKET sock)
-{
-    DWORD sendTimeout = PROBE_SEND_TIMEOUT_MS;
-    ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&sendTimeout, sizeof(sendTimeout));
-}
-#define PROBE_SEND_FLAGS 0
-#else
-static void _set_probe_send_timeout(int sock)
-{
-    struct timeval sendTimeout;
-    sendTimeout.tv_sec = PROBE_SEND_TIMEOUT_MS / 1000;
-    sendTimeout.tv_usec = (PROBE_SEND_TIMEOUT_MS % 1000) * 1000;
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, sizeof(sendTimeout));
-}
-#define PROBE_SEND_FLAGS MSG_DONTWAIT
-#endif
+// Sends are don't-wait where the OS has that, with a send timeout everywhere.
+static const chrono::milliseconds PROBE_SEND_TIMEOUT(1000);
+static const char* WS_DISCOVERY_GROUP = "239.255.255.250";
+static const int WS_DISCOVERY_PORT = 3702;
 
-// Helper function to discover ONVIF devices on a specific interface
-// The IPv4 address a datagram came from ("" if it can't be read).
-static string _sender_ip(const struct sockaddr_in& from)
+// Reads replies into discovered until the socket's receive timeout has run out
+// max_timeouts times, a receive fails, or the caller asks to stop.
+static void _read_probe_replies(r_udp_socket& sock, int max_timeouts, const std::function<bool()>& should_continue, vector<r_onvif::discovery_reply>& discovered)
 {
-    char ip[INET_ADDRSTRLEN] = {0};
-    if (inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip)) == nullptr)
-        return string();
-    return string(ip);
+    uint8_t buf[8192];
+    int timeouts = 0;
+    while (timeouts < max_timeouts)
+    {
+        if (should_continue && !should_continue())
+            break;
+        r_socket_address from(0);
+        int len = sock.recvfrom(buf, sizeof(buf), from);
+        if (len < 0)
+        {
+            if (sock.timed_out())
+                timeouts++;
+            else
+                break;
+        }
+        else if (len > 0)
+            discovered.push_back({from.address(), string((const char*)buf, len)});
+    }
 }
 
+// Discover ONVIF devices on the interface with this address.
 static vector<r_onvif::discovery_reply> _discover_on_interface(const string& interface_ip, const string& broadcast_message, const std::function<bool()>& should_continue)
 {
     vector<r_onvif::discovery_reply> discovered;
 
-#ifdef IS_WINDOWS
-    SOCKET sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET)
-        return discovered;
-
-    // Enable address reuse
-    BOOL reuse = TRUE;
-    ::setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
-
-    // Set receive timeout. Cameras answer a WS-Discovery probe within tens of
-    // milliseconds, so 2s of silence is a reliable "everyone has replied" signal.
-    DWORD recvTimeout = 2000; // 2 seconds
-    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recvTimeout, sizeof(recvTimeout));
-    _set_probe_send_timeout(sock);
-
-    // Convert interface IP string to IN_ADDR
-    IN_ADDR iface_addr;
-    inet_pton(AF_INET, interface_ip.c_str(), &iface_addr);
-
-    // Bind to ANY address on a dynamic port
-    struct sockaddr_in localAddr;
-    memset(&localAddr, 0, sizeof(localAddr));
-    localAddr.sin_family = AF_INET;
-    localAddr.sin_port = htons(0);
-    localAddr.sin_addr.s_addr = INADDR_ANY;
-
-    if (::bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) != 0) {
-        closesocket(sock);
-        return discovered;
-    }
-
-    // Set multicast interface
-    ::setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, (const char*)&iface_addr, sizeof(iface_addr));
-
-    // Join multicast group on this interface
-    struct ip_mreq mreq;
-    mreq.imr_multiaddr.s_addr = inet_addr("239.255.255.250");
-    mreq.imr_interface = iface_addr;
-    ::setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char*)&mreq, sizeof(mreq));
-
-    // Set multicast TTL
-    DWORD ttl = 1;
-    ::setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, (const char*)&ttl, sizeof(ttl));
-
-    // Multicast destination
-    struct sockaddr_in multicastAddr;
-    memset(&multicastAddr, 0, sizeof(multicastAddr));
-    multicastAddr.sin_family = AF_INET;
-    multicastAddr.sin_port = htons(3702);
-    multicastAddr.sin_addr.s_addr = inet_addr("239.255.255.250");
-
-    // Send discovery probe 3 times for reliability (multicast UDP can be dropped)
-    bool any_sent = false;
-    for (int probe = 0; probe < 3; ++probe)
+    try
     {
-        if (should_continue && !should_continue())
-            break;
-        if (probe > 0)
-            this_thread::sleep_for(chrono::milliseconds(150));
-        int bytesSent = ::sendto(sock, broadcast_message.c_str(), (int)broadcast_message.length(), PROBE_SEND_FLAGS,
-                                (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
-        if (bytesSent > 0)
-            any_sent = true;
-    }
+        r_udp_socket sock;
+        sock.set_reuse_addr(true);
+        // Cameras answer a WS-Discovery probe within tens of milliseconds, so 2s
+        // of silence is a reliable "everyone has replied" signal.
+        sock.set_recv_timeout(chrono::milliseconds(2000));
+        sock.set_send_timeout(PROBE_SEND_TIMEOUT);
+        sock.bind(0);
+        sock.set_multicast_interface(interface_ip);
+        sock.join_multicast_group(WS_DISCOVERY_GROUP, interface_ip);
+        sock.set_multicast_ttl(1);
 
-    if (!any_sent) {
-        closesocket(sock);
-        return discovered;
-    }
+        r_socket_address group(WS_DISCOVERY_PORT, WS_DISCOVERY_GROUP);
 
-    // Receive responses
-    char buf[8192];
-    int timeoutCounts = 0;
-    while (timeoutCounts < 1) {
-        if (should_continue && !should_continue())
-            break;
-        struct sockaddr_in fromAddr;
-        int fromAddrLen = sizeof(fromAddr);
-        int len = ::recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
-
-        if (len < 0) {
-            int error = WSAGetLastError();
-            if (error == WSAETIMEDOUT)
-                timeoutCounts++;
-            else
+        // Send discovery probe 3 times for reliability (multicast UDP can be dropped)
+        bool any_sent = false;
+        for (int probe = 0; probe < 3; ++probe)
+        {
+            if (should_continue && !should_continue())
                 break;
+            if (probe > 0)
+                this_thread::sleep_for(chrono::milliseconds(150));
+            if (sock.sendto((const uint8_t*)broadcast_message.c_str(), broadcast_message.length(), group, true) > 0)
+                any_sent = true;
         }
-        else if (len > 0) {
-            buf[len] = '\0';
-            discovered.push_back({_sender_ip(fromAddr), string(buf, len)});
-        }
+
+        if (any_sent)
+            _read_probe_replies(sock, 1, should_continue, discovered);
     }
-
-    closesocket(sock);
-#endif
-
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock < 0)
-        return discovered;
-
-    // Enable address reuse
-    int reuse = 1;
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    // Set receive timeout. Cameras answer a WS-Discovery probe within tens of
-    // milliseconds, so 2s of silence is a reliable "everyone has replied" signal.
-    struct timeval recvTimeout;
-    recvTimeout.tv_sec = 2;
-    recvTimeout.tv_usec = 0;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout));
-    _set_probe_send_timeout(sock);
-
-    // Convert interface IP string to in_addr
-    struct in_addr iface_addr;
-    inet_pton(AF_INET, interface_ip.c_str(), &iface_addr);
-
-    // Bind to ANY address on a dynamic port
-    struct sockaddr_in localAddr;
-    memset(&localAddr, 0, sizeof(localAddr));
-    localAddr.sin_family = AF_INET;
-    localAddr.sin_port = htons(0);
-    localAddr.sin_addr.s_addr = INADDR_ANY;
-
-    if (::bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) < 0) {
-        close(sock);
-        return discovered;
-    }
-
-    // Set multicast interface
-    setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, &iface_addr, sizeof(iface_addr));
-
-    // Join multicast group on this interface
-    struct ip_mreq mreq;
-    mreq.imr_multiaddr.s_addr = inet_addr("239.255.255.250");
-    mreq.imr_interface = iface_addr;
-    setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
-
-    // Set multicast TTL
-    int ttl = 1;
-    setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
-
-    // Multicast destination
-    struct sockaddr_in multicastAddr;
-    memset(&multicastAddr, 0, sizeof(multicastAddr));
-    multicastAddr.sin_family = AF_INET;
-    multicastAddr.sin_port = htons(3702);
-    multicastAddr.sin_addr.s_addr = inet_addr("239.255.255.250");
-
-    // Send discovery probe 3 times for reliability (multicast UDP can be dropped)
-    bool any_sent = false;
-    for (int probe = 0; probe < 3; ++probe)
+    catch (const std::exception& e)
     {
-        if (should_continue && !should_continue())
-            break;
-        if (probe > 0)
-            this_thread::sleep_for(chrono::milliseconds(150));
-        int bytesSent = sendto(sock, broadcast_message.c_str(), broadcast_message.length(), PROBE_SEND_FLAGS,
-                              (struct sockaddr*)&multicastAddr, sizeof(multicastAddr));
-        if (bytesSent > 0)
-            any_sent = true;
+        R_LOG_INFO("WS-Discovery on %s failed: %s", interface_ip.c_str(), e.what());
     }
-
-    if (!any_sent) {
-        close(sock);
-        return discovered;
-    }
-
-    // Receive responses
-    char buf[8192];
-    int timeoutCounts = 0;
-    while (timeoutCounts < 1) {
-        if (should_continue && !should_continue())
-            break;
-        struct sockaddr_in fromAddr;
-        socklen_t fromAddrLen = sizeof(fromAddr);
-        int len = recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
-
-        if (len < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                timeoutCounts++;
-            else
-                break;
-        }
-        else if (len > 0) {
-            buf[len] = '\0';
-            discovered.push_back({_sender_ip(fromAddr), string(buf, len)});
-        }
-    }
-
-    close(sock);
-#endif
 
     return discovered;
+}
+
+// The wsu:Created timestamp: now, moved by the camera's clock offset, as
+// "YYYY-MM-DDTHH:MM:SS.mmmZ".
+static string _wsse_created(int time_offset_seconds)
+{
+    auto ms = chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count();
+    auto then = r_time_utils::to_utc_tm((time_t)(ms / 1000) + time_offset_seconds);
+    char buf[64] = {0};
+    size_t len = strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.", &then);
+    return string(buf, len) + r_string_utils::format("%03dZ", (int)(ms % 1000));
 }
 
 // New function that supports both SHA-256 and SHA-1
@@ -734,71 +540,13 @@ static void _add_username_digest_header_with_algorithm(
 {
     srand((unsigned int)time(NULL));
 
-#ifdef IS_WINDOWS
-    _setmode(0, O_BINARY);
-#endif
-
-    unsigned int nonce_chunk_size = 20;
+    const unsigned int nonce_chunk_size = 20;
     unsigned char nonce_buffer[20];
-    char nonce_base64[1024] = {0};
-    char time_holder[1024] = {0};
-    char digest_base64[1024] = {0};
-
     for (unsigned int i=0; i<nonce_chunk_size; i++)
         nonce_buffer[i] = (unsigned char)rand();
 
-    unsigned char nonce_result[30];
-    memset(nonce_result, 0, 30);
-
-    auto b64_encoded = r_utils::r_string_utils::to_base64(nonce_buffer, nonce_chunk_size);
-    memcpy(nonce_result, b64_encoded.c_str(), b64_encoded.length());
-
-#ifdef IS_WINDOWS
-    strcpy_s(nonce_base64, 1024, (char*)nonce_result);
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    strcpy(nonce_base64, (char*)nonce_result);
-#endif
-
-    auto now = chrono::system_clock::now();
-    auto delta = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch());
-
-    struct timeval tv;
-    tv.tv_sec = (long)(delta.count() / 1000);
-    tv.tv_usec = (delta.count() % 1000) * 1000;
-
-    int millisec = tv.tv_usec / 1000;
-
-    char time_buffer[1024];
-    struct tm* this_tm = nullptr;
-#ifdef IS_WINDOWS
-    struct tm tm_storage;
-    time_t then = tv.tv_sec + time_offset_seconds;
-    auto err = gmtime_s(&tm_storage, &then);
-    if(err != 0)
-        R_THROW(("gmtime_s failed"));
-    this_tm = &tm_storage;
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    time_t then = tv.tv_sec + time_offset_seconds;
-    this_tm = gmtime((time_t*)&then);
-#endif
-    size_t time_buffer_length = strftime(time_buffer, 1024, "%Y-%m-%dT%H:%M:%S.", this_tm);
-    time_buffer[time_buffer_length] = '\0';
-
-    char milli_buf[16] = {0};
-#ifdef IS_WINDOWS
-    sprintf_s(milli_buf, 16, "%03dZ", millisec);
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    sprintf(milli_buf, "%03dZ", millisec);
-#endif
-#ifdef IS_WINDOWS
-    strcat_s(time_buffer, 1024, milli_buf);
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    strcat(time_buffer, milli_buf);
-#endif
+    auto nonce_base64 = r_utils::r_string_utils::to_base64(nonce_buffer, nonce_chunk_size);
+    auto created = _wsse_created(time_offset_seconds);
 
     unsigned char hash[32];  // Max size for SHA-256
     unsigned int digest_chunk_size;
@@ -808,7 +556,7 @@ static void _add_username_digest_header_with_algorithm(
         // Use SHA-256 authentication
         r_sha256 ctx;
         ctx.update(nonce_buffer, nonce_chunk_size);
-        ctx.update((const unsigned char*)time_buffer, strlen(time_buffer));
+        ctx.update((const unsigned char*)created.c_str(), created.length());
         ctx.update((const unsigned char*)password.c_str(), strlen(password.c_str()));
         ctx.finalize();
         ctx.get(&hash[0]);
@@ -819,26 +567,14 @@ static void _add_username_digest_header_with_algorithm(
         // Use SHA-1 authentication (legacy, for compatibility)
         r_sha1 ctx;
         ctx.update(nonce_buffer, nonce_chunk_size);
-        ctx.update((const unsigned char*)time_buffer, strlen(time_buffer));
+        ctx.update((const unsigned char*)created.c_str(), created.length());
         ctx.update((const unsigned char*)password.c_str(), strlen(password.c_str()));
         ctx.finalize();
         ctx.get(&hash[0]);
         digest_chunk_size = 20;
     }
 
-    unsigned char digest_result[128];
-    b64_encoded = r_string_utils::to_base64(&hash[0], digest_chunk_size);
-    memset(digest_result, 0, 128);
-    memcpy(digest_result, b64_encoded.c_str(), b64_encoded.length());
-
-#ifdef IS_WINDOWS
-    strcpy_s(time_holder, 1024, time_buffer);
-    strcpy_s(digest_base64, 1024, (char*)digest_result);
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    strcpy(time_holder, time_buffer);
-    strcpy(digest_base64, (const char *)digest_result);
-#endif
+    auto digest_base64 = r_string_utils::to_base64(&hash[0], digest_chunk_size);
 
     // Add WSSE and WSU namespaces
     root.append_attribute("xmlns:wsse") = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd";
@@ -862,17 +598,17 @@ static void _add_username_digest_header_with_algorithm(
     pugi::xml_node passwordElem = usernameToken.append_child("wsse:Password");
     passwordElem.append_attribute("Type") =
         "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest";
-    passwordElem.text().set(digest_base64);
+    passwordElem.text().set(digest_base64.c_str());
 
     // Create Nonce element
     pugi::xml_node nonceElem = usernameToken.append_child("wsse:Nonce");
     nonceElem.append_attribute("EncodingType") =
         "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary";
-    nonceElem.text().set(nonce_base64);
+    nonceElem.text().set(nonce_base64.c_str());
 
     // Create Created element
     pugi::xml_node createdElem = usernameToken.append_child("wsu:Created");
-    createdElem.text().set(time_holder);
+    createdElem.text().set(created.c_str());
 }
 
 // Legacy function - wrapper that uses SHA-1 for backward compatibility
@@ -897,42 +633,7 @@ static void _add_username_text_header(
     int time_offset_seconds
 )
 {
-    // Generate timestamp
-    auto now = chrono::system_clock::now();
-    auto delta = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch());
-
-    struct timeval tv;
-    tv.tv_sec = (long)(delta.count() / 1000);
-    tv.tv_usec = (delta.count() % 1000) * 1000;
-
-    int millisec = tv.tv_usec / 1000;
-
-    char time_buffer[1024];
-    struct tm* this_tm = nullptr;
-#ifdef IS_WINDOWS
-    struct tm tm_storage;
-    time_t then = tv.tv_sec + time_offset_seconds;
-    auto err = gmtime_s(&tm_storage, &then);
-    if(err != 0)
-        R_THROW(("gmtime_s failed"));
-    this_tm = &tm_storage;
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    time_t then = tv.tv_sec + time_offset_seconds;
-    this_tm = gmtime((time_t*)&then);
-#endif
-    size_t time_buffer_length = strftime(time_buffer, 1024, "%Y-%m-%dT%H:%M:%S.", this_tm);
-    time_buffer[time_buffer_length] = '\0';
-
-    char milli_buf[16] = {0};
-#ifdef IS_WINDOWS
-    sprintf_s(milli_buf, 16, "%03dZ", millisec);
-    strcat_s(time_buffer, 1024, milli_buf);
-#endif
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    sprintf(milli_buf, "%03dZ", millisec);
-    strcat(time_buffer, milli_buf);
-#endif
+    auto created = _wsse_created(time_offset_seconds);
 
     // Add WSSE and WSU namespaces
     root.append_attribute("xmlns:wsse") = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd";
@@ -960,7 +661,7 @@ static void _add_username_text_header(
 
     // Create Created element
     pugi::xml_node createdElem = usernameToken.append_child("wsu:Created");
-    createdElem.text().set(time_buffer);
+    createdElem.text().set(created.c_str());
 }
 
 // Build the WS-Discovery Probe SOAP envelope (NetworkVideoTransmitter type).
@@ -1004,124 +705,30 @@ static vector<r_onvif::discovery_reply> _probe_unicast(const vector<string>& tar
     if (targets.empty())
         return discovered;
 
-#ifdef IS_WINDOWS
-    SOCKET sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET)
-        return discovered;
-
-    BOOL reuse = TRUE;
-    ::setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
-
-    DWORD recvTimeout = 1000; // 1 second
-    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recvTimeout, sizeof(recvTimeout));
-    _set_probe_send_timeout(sock);
-
-    struct sockaddr_in localAddr;
-    memset(&localAddr, 0, sizeof(localAddr));
-    localAddr.sin_family = AF_INET;
-    localAddr.sin_port = htons(0);
-    localAddr.sin_addr.s_addr = INADDR_ANY;
-    if (::bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) != 0) {
-        closesocket(sock);
-        return discovered;
-    }
-
-    for (const auto& tip : targets)
+    try
     {
-        if (should_continue && !should_continue())
-            break;
-        struct sockaddr_in dst;
-        memset(&dst, 0, sizeof(dst));
-        dst.sin_family = AF_INET;
-        dst.sin_port = htons(3702);
-        if (inet_pton(AF_INET, tip.c_str(), &dst.sin_addr) != 1)
-            continue;
-        ::sendto(sock, broadcast_message.c_str(), (int)broadcast_message.length(), PROBE_SEND_FLAGS,
-                 (struct sockaddr*)&dst, sizeof(dst));
-    }
+        r_udp_socket sock;
+        sock.set_reuse_addr(true);
+        sock.set_recv_timeout(chrono::milliseconds(1000));
+        sock.set_send_timeout(PROBE_SEND_TIMEOUT);
+        sock.bind(0);
 
-    char buf[8192];
-    int timeoutCounts = 0;
-    while (timeoutCounts < 2) {
-        if (should_continue && !should_continue())
-            break;
-        struct sockaddr_in fromAddr;
-        int fromAddrLen = sizeof(fromAddr);
-        int len = ::recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
-        if (len < 0) {
-            int error = WSAGetLastError();
-            if (error == WSAETIMEDOUT)
-                timeoutCounts++;
-            else
+        for (const auto& tip : targets)
+        {
+            if (should_continue && !should_continue())
                 break;
+            if (!r_onvif::is_ipv4_literal(tip))
+                continue;
+            r_socket_address dst(WS_DISCOVERY_PORT, tip);
+            sock.sendto((const uint8_t*)broadcast_message.c_str(), broadcast_message.length(), dst, true);
         }
-        else if (len > 0) {
-            buf[len] = '\0';
-            discovered.push_back({_sender_ip(fromAddr), string(buf, len)});
-        }
+
+        _read_probe_replies(sock, 2, should_continue, discovered);
     }
-    closesocket(sock);
-#endif
-
-#if defined(IS_LINUX) || defined(IS_MACOS)
-    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock < 0)
-        return discovered;
-
-    int reuse = 1;
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    struct timeval recvTimeout;
-    recvTimeout.tv_sec = 1;
-    recvTimeout.tv_usec = 0;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout));
-    _set_probe_send_timeout(sock);
-
-    struct sockaddr_in localAddr;
-    memset(&localAddr, 0, sizeof(localAddr));
-    localAddr.sin_family = AF_INET;
-    localAddr.sin_port = htons(0);
-    localAddr.sin_addr.s_addr = INADDR_ANY;
-    if (::bind(sock, (struct sockaddr*)&localAddr, sizeof(localAddr)) < 0) {
-        close(sock);
-        return discovered;
-    }
-
-    for (const auto& tip : targets)
+    catch (const std::exception& e)
     {
-        if (should_continue && !should_continue())
-            break;
-        struct sockaddr_in dst;
-        memset(&dst, 0, sizeof(dst));
-        dst.sin_family = AF_INET;
-        dst.sin_port = htons(3702);
-        if (inet_pton(AF_INET, tip.c_str(), &dst.sin_addr) != 1)
-            continue;
-        sendto(sock, broadcast_message.c_str(), broadcast_message.length(), PROBE_SEND_FLAGS,
-               (struct sockaddr*)&dst, sizeof(dst));
+        R_LOG_INFO("Unicast WS-Discovery failed: %s", e.what());
     }
-
-    char buf[8192];
-    int timeoutCounts = 0;
-    while (timeoutCounts < 2) {
-        if (should_continue && !should_continue())
-            break;
-        struct sockaddr_in fromAddr;
-        socklen_t fromAddrLen = sizeof(fromAddr);
-        int len = recvfrom(sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&fromAddr, &fromAddrLen);
-        if (len < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                timeoutCounts++;
-            else
-                break;
-        }
-        else if (len > 0) {
-            buf[len] = '\0';
-            discovered.push_back({_sender_ip(fromAddr), string(buf, len)});
-        }
-    }
-    close(sock);
-#endif
 
     return discovered;
 }
@@ -2811,14 +2418,7 @@ r_onvif::onvif_system_date_time r_onvif::parse_system_date_and_time(const string
 
 void r_onvif::append_set_system_date_and_time(pugi::xml_node body, time_t utc, const onvif_system_date_time& current)
 {
-    struct tm tm_utc {};
-#ifdef IS_WINDOWS
-    if (gmtime_s(&tm_utc, &utc) != 0)
-        throw std::runtime_error("gmtime_s failed");
-#else
-    if (!gmtime_r(&utc, &tm_utc))
-        throw std::runtime_error("gmtime_r failed");
-#endif
+    auto tm_utc = r_time_utils::to_utc_tm(utc);
 
     // Element order is the schema's: DateTimeType, DaylightSavings, TimeZone, UTCDateTime.
     auto req = body.append_child("tds:SetSystemDateAndTime");

@@ -27,6 +27,7 @@ typedef void (*system_plugin_set_enabled_func)(r_system_plugin_handle, bool);
 typedef const char* (*system_plugin_get_status_func)(r_system_plugin_handle);
 typedef const char* (*system_plugin_get_status_message_func)(r_system_plugin_handle);
 typedef const char* (*get_system_plugin_version_func)();
+typedef uint32_t (*get_system_plugin_api_version_func)();
 typedef void (*system_plugin_set_api_result_cb_func)(r_system_plugin_handle, system_plugin_api_result_cb, void*);
 typedef void (*system_plugin_cameras_changed_func)(r_system_plugin_handle);
 
@@ -240,13 +241,7 @@ int r_vss::choose_system_plugin_copy(const std::vector<r_plugin_check_result>& c
 namespace
 {
 
-#ifdef IS_WINDOWS
-const std::string PLUGIN_EXT = ".dll";
-#elif defined(IS_MACOS)
-const std::string PLUGIN_EXT = ".dylib";
-#else
-const std::string PLUGIN_EXT = ".so";
-#endif
+const std::string PLUGIN_EXT = r_utils::r_dynamic_library::extension();
 
 bool _has_plugin_ext(const std::string& filename)
 {
@@ -334,6 +329,17 @@ r_system_plugin_host::r_system_plugin_host(const std::string& top_dir, const r_s
                 std::string filename = entry.path().filename().string();
                 if (!_has_plugin_ext(filename))
                     continue;
+                // Uninstalled by the user: deleted, not loaded, even if deleting fails.
+                std::error_code mec;
+                if (fs::exists(fs::path(plugin_uninstall_marker_path(entry.path().string())), mec))
+                {
+                    std::string why;
+                    if (remove_uninstalled_system_plugin(entry.path().string(), why))
+                        R_LOG_INFO("Uninstalled system plugin %s", entry.path().string().c_str());
+                    else R_LOG_ERROR("System plugin %s was uninstalled, so it isn't loaded, but it couldn't be deleted (%s). Revere tries again at its next start.",
+                                     entry.path().string().c_str(), why.c_str());
+                    continue;
+                }
                 auto& paths = copies[filename];
                 if (paths.empty())
                     filenames.push_back(filename);
@@ -406,11 +412,52 @@ bool r_system_plugin_host::_load(const std::string& path, std::string& why)
         return false;
     }
 
+    std::string plugin_name = _plugin_name(filename);
+
+    // Not this revere's plugin: say so, so the UI can offer to update it. Checked in every
+    // build, signed or not, since nothing else would stop it.
+    auto refuse = [&](const r_plugin_check_result& check) {
+        r_skipped_system_plugin skipped;
+        skipped.name = plugin_name;
+        skipped.path = path;
+        skipped.check = check;
+        _skip(skipped);
+        why = "it can't run in this revere (" + std::string(plugin_check_name(check.status)) + "): " + check.detail +
+              ". Install the one made for this version of revere.";
+        return false;
+    };
+
+    // Before it's opened: opening runs its static initializers, and opening one built for
+    // another revere can fail, or crash.
+    auto api_check = check_plugin_api(path, R_SYSTEM_PLUGIN_API_VERSION);
+    if (!api_check.ok())
+        return refuse(api_check);
+
     try
     {
-        std::string plugin_name = _plugin_name(filename);
+        std::unique_ptr<r_dynamic_library> lib;
+        try
+        {
+            lib = std::make_unique<r_dynamic_library>(path);
+        }
+        catch (const std::exception& e)
+        {
+            R_LOG_ERROR("System plugin %s couldn't be opened: %s", path.c_str(), e.what());
+            r_plugin_check_result check;
+            check.status = r_plugin_check::wont_load;
+            check.detail = plugin_load_error_text(e.what());
+            return refuse(check);
+        }
 
-        auto lib = std::make_unique<r_dynamic_library>(path);
+        auto api_func = _symbol<get_system_plugin_api_version_func>(*lib, "get_system_plugin_api_version");
+        if (api_func)
+        {
+            auto check = check_plugin_api_version(api_func(), R_SYSTEM_PLUGIN_API_VERSION);
+            if (!check.ok())
+                return refuse(check);   // closed again (lib's destructor), never loaded
+        }
+        else R_LOG_WARNING("System plugin %s doesn't say which plugin interface it was built for (get_system_plugin_api_version); loading it as before", path.c_str());
+
         _loaded_filenames.insert(filename);
 
         auto guid_func = _symbol<get_system_plugin_guid_func>(*lib, "get_system_plugin_guid");
@@ -493,6 +540,7 @@ bool r_system_plugin_host::_load(const std::string& path, std::string& why)
         p.camera_state_func = camera_state_func;
         if (post_motion_func || camera_state_func)
             p.notifier = std::make_shared<r_plugin_notifier>();
+        p.path = path;
 
         // Wired up before anything else can see it.
         if (set_api_result_cb_func && _api_result_fn)
@@ -721,6 +769,76 @@ std::vector<std::string> r_system_plugin_host::get_loaded_plugins() const
     for(auto p : _snapshot())
         plugin_names.push_back(p->name);
     return plugin_names;
+}
+
+bool r_vss::remove_uninstalled_system_plugin(const std::string& plugin_path, std::string& why)
+{
+    // The manifest first: without it a release build won't load what's left.
+    for (const auto& path : {plugin_manifest_path(plugin_path), plugin_signature_path(plugin_path), plugin_path})
+    {
+        std::error_code ec;
+        fs::remove(fs::path(path), ec);
+        if (ec)
+        {
+            why = "couldn't delete " + path + ": " + ec.message();
+            return false;
+        }
+    }
+    std::error_code ec;
+    fs::remove(fs::path(plugin_uninstall_marker_path(plugin_path)), ec);
+    if (ec)
+        R_LOG_WARNING("Uninstalled system plugin %s, but couldn't delete %s: %s", plugin_path.c_str(),
+                      plugin_uninstall_marker_path(plugin_path).c_str(), ec.message().c_str());
+    return true;
+}
+
+std::string r_system_plugin_host::_uninstallable_path(const std::string& plugin_name) const
+{
+    if (_user_dir.empty())
+        return std::string();
+    auto in_user_dir = [&](const std::string& path) {
+        std::error_code ec;
+        return !path.empty() && fs::equivalent(fs::path(path).parent_path(), fs::path(_user_dir), ec) && !ec;
+    };
+    std::lock_guard<std::mutex> g(_list_lock);
+    for (const auto& p : _plugins)
+    {
+        if (p.name == plugin_name)
+            return in_user_dir(p.path) ? p.path : std::string();
+    }
+    for (const auto& s : _skipped)
+    {
+        if (s.name == plugin_name)
+            return in_user_dir(s.path) ? s.path : std::string();
+    }
+    return std::string();
+}
+
+bool r_system_plugin_host::can_uninstall(const std::string& plugin_name) const
+{
+    return !_uninstallable_path(plugin_name).empty();
+}
+
+bool r_system_plugin_host::mark_for_uninstall(const std::string& plugin_name, std::string& why)
+{
+    auto path = _uninstallable_path(plugin_name);
+    if (path.empty())
+    {
+        why = plugin_name + " isn't installed in " + (_user_dir.empty() ? std::string("the user's plugin folder") : _user_dir);
+        return false;
+    }
+    try
+    {
+        const std::string mark = "uninstall\n";
+        r_fs::atomic_write_file((const uint8_t*)mark.data(), mark.size(), plugin_uninstall_marker_path(path));
+    }
+    catch (const std::exception& e)
+    {
+        why = std::string("couldn't mark it: ") + e.what();
+        return false;
+    }
+    R_LOG_INFO("System plugin %s will be uninstalled at the next start (%s)", plugin_name.c_str(), path.c_str());
+    return true;
 }
 
 bool r_system_plugin_host::is_plugin_enabled(const std::string& plugin_name) const

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <string>
 #include <cstdint>
+#include <ctime>
 
 namespace r_utils
 {
@@ -34,6 +35,18 @@ R_API INT convert_clock_freq(INT ticks, INT srcTicksPerSecond, INT dstTicksPerSe
 R_API bool is_tz_utc();
 
 R_API bool is_valid_iso_8601(const std::string& str);
+
+// Thread-safe time_t to broken-down time (localtime_r / gmtime_r). Throw if t
+// can't be converted.
+R_API std::tm to_local_tm(std::time_t t);
+R_API std::tm to_utc_tm(std::time_t t);
+
+// The time_t for a broken-down UTC time (timegm). Normalizes out-of-range
+// fields, as mktime does.
+R_API std::time_t utc_tm_to_time_t(std::tm t);
+
+// t in local time as ctime() writes it ("Wed Jun 30 21:49:08 1993\n").
+R_API std::string to_ctime_string(std::time_t t);
 
 }
 

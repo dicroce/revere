@@ -1,5 +1,6 @@
 #include "test_r_plugin_loader.h"
 #include "r_vss/r_system_plugin_host.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -79,7 +80,8 @@ void test_r_plugin_loader::test_choose_copy()
 void test_r_plugin_loader::test_needs_update()
 {
     r_skipped_system_plugin s;
-    for(auto status : {r_plugin_check::no_manifest, r_plugin_check::wrong_version})
+    for(auto status : {r_plugin_check::no_manifest, r_plugin_check::wrong_version, r_plugin_check::wrong_plugin_api,
+                       r_plugin_check::wont_load})
     {
         s.check = _check(status);
         RTF_ASSERT(s.needs_update());
@@ -206,4 +208,177 @@ void test_r_plugin_loader::test_load_and_start_checks()
     // A second try replaces the entry rather than adding one.
     RTF_ASSERT(!host.load_and_start(TEST_ACTION_PLUGIN, why));
     RTF_ASSERT_EQUAL(host.get_skipped_plugins().size(), (size_t)1);
+}
+
+void test_r_plugin_loader::test_uninstall()
+{
+    // One plugin next to the exe, one in the user folder: only the user's can be
+    // uninstalled. Marking it changes nothing now; at the next start it's deleted,
+    // with its manifest and signature, and not loaded.
+    auto exe_dir = (fs::path(_top) / "exe" / "system_plugins").string();
+    auto user_dir = (fs::path(_top) / "system_plugins").string();
+    fs::copy_file(TEST_NO_ACTION_PLUGIN, fs::path(exe_dir) / _file(TEST_NO_ACTION_PLUGIN));
+    auto user_copy = (fs::path(user_dir) / _file(TEST_ACTION_PLUGIN)).string();
+    fs::copy_file(TEST_ACTION_PLUGIN, user_copy);
+    _write(plugin_manifest_path(user_copy), "{\"format\": 1}");
+    _write(plugin_signature_path(user_copy), "not a signature");
+
+    r_system_plugin_dirs dirs;
+    dirs.load = {exe_dir, user_dir};
+    {
+        r_system_plugin_host host(_top, dirs, false);
+        RTF_ASSERT_EQUAL(host.get_loaded_plugins().size(), (size_t)2);
+        RTF_ASSERT(host.can_uninstall(_name(TEST_ACTION_PLUGIN)));
+        RTF_ASSERT(!host.can_uninstall(_name(TEST_NO_ACTION_PLUGIN)));
+        RTF_ASSERT(!host.can_uninstall("not_a_plugin"));
+
+        string why;
+        RTF_ASSERT(!host.mark_for_uninstall(_name(TEST_NO_ACTION_PLUGIN), why));
+        RTF_ASSERT(!why.empty());
+        RTF_ASSERT(!fs::exists(plugin_uninstall_marker_path((fs::path(exe_dir) / _file(TEST_NO_ACTION_PLUGIN)).string())));
+
+        RTF_ASSERT(host.mark_for_uninstall(_name(TEST_ACTION_PLUGIN), why));
+        RTF_ASSERT(fs::exists(plugin_uninstall_marker_path(user_copy)));
+        RTF_ASSERT_EQUAL(host.get_loaded_plugins().size(), (size_t)2);
+    }
+
+    r_system_plugin_host host(_top, dirs, false);
+    auto loaded = host.get_loaded_plugins();
+    RTF_ASSERT_EQUAL(loaded.size(), (size_t)1);
+    RTF_ASSERT(loaded[0] == _name(TEST_NO_ACTION_PLUGIN));
+    for(const auto& path : {user_copy, plugin_manifest_path(user_copy), plugin_signature_path(user_copy), plugin_uninstall_marker_path(user_copy)})
+        RTF_ASSERT(!fs::exists(path));
+    RTF_ASSERT(fs::exists(fs::path(exe_dir) / _file(TEST_NO_ACTION_PLUGIN)));
+}
+
+void test_r_plugin_loader::test_uninstall_skipped()
+{
+    // A copy in the user folder that isn't loaded (it needs updating) can be uninstalled too.
+    auto user_dir = (fs::path(_top) / "system_plugins").string();
+    auto user_copy = (fs::path(user_dir) / _file(TEST_ACTION_PLUGIN)).string();
+    fs::copy_file(TEST_ACTION_PLUGIN, user_copy);
+
+    r_system_plugin_dirs dirs;
+    dirs.load = {(fs::path(_top) / "exe" / "system_plugins").string(), user_dir};
+    {
+        r_system_plugin_host host(_top, dirs, true);
+        RTF_ASSERT(host.get_loaded_plugins().empty());
+        RTF_ASSERT(host.can_uninstall(_name(TEST_ACTION_PLUGIN)));
+        string why;
+        RTF_ASSERT(host.mark_for_uninstall(_name(TEST_ACTION_PLUGIN), why));
+    }
+    r_system_plugin_host host(_top, dirs, true);
+    RTF_ASSERT(host.get_skipped_plugins().empty());
+    RTF_ASSERT(!fs::exists(user_copy));
+}
+
+void test_r_plugin_loader::test_uninstall_when_delete_fails()
+{
+    // The plugin can't be deleted: it still isn't loaded, and the mark stays for the next start.
+    auto user_dir = (fs::path(_top) / "system_plugins").string();
+    auto user_copy = (fs::path(user_dir) / _file(TEST_ACTION_PLUGIN)).string();
+    fs::copy_file(TEST_ACTION_PLUGIN, user_copy);
+    _write(plugin_uninstall_marker_path(user_copy), "uninstall\n");
+
+    r_system_plugin_dirs dirs;
+    dirs.load = {(fs::path(_top) / "exe" / "system_plugins").string(), user_dir};
+#ifdef IS_WINDOWS
+    {
+        // An open file can't be deleted on Windows.
+        ifstream held(user_copy, ios::binary);
+        RTF_ASSERT(held.is_open());
+        r_system_plugin_host host(_top, dirs, false);
+        RTF_ASSERT(host.get_loaded_plugins().empty());
+        RTF_ASSERT(fs::exists(user_copy));
+        RTF_ASSERT(fs::exists(plugin_uninstall_marker_path(user_copy)));
+    }
+#endif
+    // Once it can be, it is.
+    r_system_plugin_host host(_top, dirs, false);
+    RTF_ASSERT(host.get_loaded_plugins().empty());
+    RTF_ASSERT(!fs::exists(user_copy));
+    RTF_ASSERT(!fs::exists(plugin_uninstall_marker_path(user_copy)));
+}
+
+void test_r_plugin_loader::test_plugin_interface()
+{
+    // In a build that doesn't require signatures too: a plugin for this interface loads;
+    // one from before get_system_plugin_api_version loads as before; one for a later minor
+    // is opened, refused by its export, and closed again without load_system_plugin.
+    auto user_dir = (fs::path(_top) / "system_plugins").string();
+    for(auto plugin : {TEST_ACTION_PLUGIN, TEST_NO_ACTION_PLUGIN, TEST_OTHER_API_PLUGIN})
+        fs::copy_file(plugin, fs::path(user_dir) / _file(plugin));
+
+    r_system_plugin_dirs dirs;
+    dirs.load = {user_dir};
+    r_system_plugin_host host(_top, dirs, false);
+    auto loaded = host.get_loaded_plugins();
+    RTF_ASSERT_EQUAL(loaded.size(), (size_t)2);
+    RTF_ASSERT(find(loaded.begin(), loaded.end(), _name(TEST_ACTION_PLUGIN)) != loaded.end());
+    RTF_ASSERT(find(loaded.begin(), loaded.end(), _name(TEST_NO_ACTION_PLUGIN)) != loaded.end());
+    RTF_ASSERT(!fs::exists(_top + "/loaded.txt"));
+
+    auto skipped = host.get_skipped_plugins();
+    RTF_ASSERT_EQUAL(skipped.size(), (size_t)1);
+    RTF_ASSERT(skipped[0].name == _name(TEST_OTHER_API_PLUGIN));
+    RTF_ASSERT(skipped[0].check.status == r_plugin_check::wrong_plugin_api);
+    RTF_ASSERT(skipped[0].needs_update());
+    RTF_ASSERT(skipped[0].check.detail == "it needs plugin interface v" + plugin_api_name(R_SYSTEM_PLUGIN_API_VERSION + 1) +
+                                          ", this revere has v" + plugin_api_name(R_SYSTEM_PLUGIN_API_VERSION));
+
+    // load_and_start says why too.
+    string why;
+    RTF_ASSERT(!host.load_and_start(TEST_OTHER_API_PLUGIN, why));
+    RTF_ASSERT(why.find("needs plugin interface v") != string::npos);
+    RTF_ASSERT(why.find("Install the one made for this version of revere") != string::npos);
+    RTF_ASSERT(!fs::exists(_top + "/loaded.txt"));
+}
+
+void test_r_plugin_loader::test_manifest_interface_checked_before_opening()
+{
+    // A manifest for another major: refused before it's opened, signed or not, though the
+    // plugin itself (this interface) would load.
+    auto user_dir = (fs::path(_top) / "system_plugins").string();
+    auto path = (fs::path(user_dir) / _file(TEST_ACTION_PLUGIN)).string();
+    fs::copy_file(TEST_ACTION_PLUGIN, path);
+    _write(plugin_manifest_path(path), "{\"plugin_api\":\"" + to_string(R_SYSTEM_PLUGIN_API_MAJOR + 1) + ".0\"}");
+
+    r_system_plugin_dirs dirs;
+    dirs.load = {user_dir};
+    r_system_plugin_host host(_top, dirs, false);
+    RTF_ASSERT(host.get_loaded_plugins().empty());
+    auto skipped = host.get_skipped_plugins();
+    RTF_ASSERT_EQUAL(skipped.size(), (size_t)1);
+    RTF_ASSERT(skipped[0].check.status == r_plugin_check::wrong_plugin_api);
+    RTF_ASSERT(skipped[0].check.detail == "it needs plugin interface v" + to_string(R_SYSTEM_PLUGIN_API_MAJOR + 1) +
+                                          ", this revere has v" + to_string(R_SYSTEM_PLUGIN_API_MAJOR));
+
+    // Its manifest names this interface: it loads.
+    _write(plugin_manifest_path(path), "{\"plugin_api\":\"" + plugin_api_name(R_SYSTEM_PLUGIN_API_VERSION) + "\"}");
+    string why;
+    RTF_ASSERT(host.load_and_start(path, why));
+    RTF_ASSERT(host.get_skipped_plugins().empty());
+}
+
+void test_r_plugin_loader::test_unopenable_plugin()
+{
+    // A file that won't open (here, not a library at all): skipped as needing an update,
+    // with the loader's error, and nothing else stops.
+    auto user_dir = (fs::path(_top) / "system_plugins").string();
+    auto broken = (fs::path(user_dir) / ("broken_system_plugin" + fs::path(TEST_ACTION_PLUGIN).extension().string())).string();
+    _write(broken, "not a library");
+    fs::copy_file(TEST_ACTION_PLUGIN, fs::path(user_dir) / _file(TEST_ACTION_PLUGIN));
+
+    r_system_plugin_dirs dirs;
+    dirs.load = {user_dir};
+    r_system_plugin_host host(_top, dirs, false);
+    auto loaded = host.get_loaded_plugins();
+    RTF_ASSERT_EQUAL(loaded.size(), (size_t)1);
+    RTF_ASSERT(loaded[0] == _name(TEST_ACTION_PLUGIN));
+    auto skipped = host.get_skipped_plugins();
+    RTF_ASSERT_EQUAL(skipped.size(), (size_t)1);
+    RTF_ASSERT(skipped[0].name == "broken_system_plugin");
+    RTF_ASSERT(skipped[0].check.status == r_plugin_check::wont_load);
+    RTF_ASSERT(skipped[0].needs_update());
+    RTF_ASSERT(skipped[0].check.detail.find("broken_system_plugin") != string::npos);
 }

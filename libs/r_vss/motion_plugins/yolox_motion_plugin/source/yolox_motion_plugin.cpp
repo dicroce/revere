@@ -21,12 +21,6 @@
 #include <cpu.h>
 #include <opencv2/opencv.hpp>
 
-#ifdef IS_WINDOWS
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
-
 using namespace r_utils;
 
 namespace
