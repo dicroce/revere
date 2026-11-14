@@ -12,6 +12,7 @@ public:
       TEST(test_r_http::test_client_response_default_constructor);
       TEST(test_r_http::test_client_response_receive);
       TEST(test_r_http::test_client_response_streaming);
+      TEST(test_r_http::test_server_response_chunk_framing);
       TEST(test_r_http::test_client_response_100_continue);
       TEST(test_r_http::test_client_response_multi_part);
       TEST(test_r_http::test_client_request_chunked_single);
@@ -41,6 +42,7 @@ public:
     void test_client_response_default_constructor();
     void test_client_response_receive();
     void test_client_response_streaming();
+    void test_server_response_chunk_framing();
     void test_client_response_100_continue();
     void test_client_response_multi_part();
     void test_client_request_chunked_single();
