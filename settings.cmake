@@ -58,10 +58,11 @@ endif()
 # Skip for packaged builds (Flatpak/Snap) - they use standard library paths
 if(NOT PACKAGED_BUILD)
     if(APPLE)
-        # macOS spells $ORIGIN @loader_path. @executable_path/../lib is where revere.app
-        # keeps revere's libraries, in a release and in a self-built bundle alike, so a
-        # system plugin built here finds them by @rpath from its own load commands,
-        # wherever its file is (~/Library/Application Support/Revere/revere/system_plugins).
+        # macOS spells $ORIGIN @loader_path. @executable_path/../lib is where a revere.app
+        # built from source keeps revere's libraries, so a system plugin built here finds
+        # them by @rpath from its own load commands, wherever its file is
+        # (~/Library/Application Support/Revere/revere/system_plugins). A release keeps
+        # them in Contents/libs; the release workflow gives the cloud plugin both.
         set(CMAKE_INSTALL_RPATH "@loader_path;@executable_path/../lib")
     else()
         set(CMAKE_INSTALL_RPATH "$ORIGIN")
