@@ -209,59 +209,6 @@ private:
 // names the session in logs.
 R_API void live_restream_configure_video_only(r_live_restream_host* sk, GstRTSPMedia* media, const std::string& key, const std::string& name, const r_pipeline::r_gst_caps& caps);
 
-struct playback_restreaming_state
-{
-    playback_restreaming_state(const std::string& top_dir, r_disco::r_devices& devices)
-        : top_dir(top_dir)
-        , devices(devices)
-        , video_samples(PLAYBACK_RESTREAM_MAX_QUEUE_SIZE)
-        , audio_samples(PLAYBACK_RESTREAM_MAX_QUEUE_SIZE)
-    {}
-
-    r_recording_context* rc {nullptr};
-    GstRTSPMedia* media {nullptr};
-    std::string top_dir;
-    r_disco::r_devices& devices;
-
-    std::string friendly_name;
-    std::chrono::system_clock::time_point start_time;
-    std::chrono::system_clock::time_point end_time;
-    std::chrono::system_clock::time_point query_start;
-    std::chrono::system_clock::time_point query_end;
-    std::string camera_id;
-    r_utils::r_nullable<int64_t> first_ts;
-
-    contents con;
-    std::chrono::milliseconds playback_duration {0};
-
-    bool has_audio {false};
-    std::string video_codec_name;
-    std::string video_codec_parameters;
-    std::string audio_codec_name;
-    std::string audio_codec_parameters;
-    r_pipeline::r_encoding video_encoding;
-    r_utils::r_nullable<r_pipeline::r_encoding> maybe_audio_encoding;
-    // Each 5s fetch starts at the keyframe BEFORE its query start, so
-    // consecutive chunks overlap; these track the newest posted ts per stream
-    // so the overlap isn't re-posted (re-posting rewound the client's timeline
-    // by up to a GOP at every chunk boundary).
-    int64_t last_posted_v_ts {-1}; // stored ts are epoch ms, always positive
-    int64_t last_posted_a_ts {-1};
-    // Start of the recording segment holding (or following) start_time. The
-    // first fetch's keyframe-before lookup can reach back across a gap into the
-    // previous segment; frames older than this are dropped so the stream
-    // doesn't open with that segment's tail followed by a gap-long pause.
-    int64_t min_ts {0};
-    // Bounded queues - drop oldest frames when full to prevent memory exhaustion
-    r_utils::r_blocking_q<struct _frame_context> video_samples;
-    r_utils::r_blocking_q<struct _frame_context> audio_samples;
-    std::thread playback_thread;
-    bool running;
-
-    GstElement* v_appsrc {nullptr};
-    GstElement* a_appsrc {nullptr};
-};
-
 class r_recording_context
 {
 public:
@@ -351,17 +298,8 @@ private:
 public:
     R_API std::vector<r_cameras::r_camera_span> camera_spans(int64_t since_ms) const;
 
-    R_API void create_playback_mount(GstRTSPServer* server, GstRTSPMountPoints* mounts, const std::string& url, uint64_t start_ts, uint64_t end_ts);
-
 private:
-    std::tuple<std::string, std::chrono::system_clock::time_point, std::chrono::system_clock::time_point> _get_playback_url_parts();
-
     static void _live_restream_cleanup_cbs(live_restreaming_state* lrs);
-
-    static void _playback_restream_media_configure_cbs(GstRTSPMediaFactory* factory, GstRTSPMedia* media, r_recording_context* rc);
-    void _playback_restream_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media);
-
-    static void _playback_restream_cleanup_cbs(playback_restreaming_state* prs);
 
     r_stream_keeper* _sk;
     r_disco::r_camera _camera;
@@ -384,8 +322,6 @@ private:
     r_utils::r_nullable<r_pipeline::r_gst_caps> _audio_caps;
     mutable std::mutex _restream_mount_lock;
     std::string _restream_mount_path;
-    std::mutex _playback_restreaming_states_lok;
-    std::map<GstRTSPMedia*, std::shared_ptr<playback_restreaming_state>> _playback_restreaming_states;
     bool _got_first_audio_sample;
     std::atomic<bool> _got_first_video_sample;
     std::atomic<bool> _motion_from_sub {false};

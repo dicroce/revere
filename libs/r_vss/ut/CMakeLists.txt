@@ -43,6 +43,8 @@ add_executable(
     source/test_r_rtsp_transport.cpp
     include/test_r_restart_backoff.h
     source/test_r_restart_backoff.cpp
+    include/test_r_playback_restream.h
+    source/test_r_playback_restream.cpp
     include/test_r_network_watch.h
     source/test_r_network_watch.cpp
     include/test_r_lag_watchdog.h
