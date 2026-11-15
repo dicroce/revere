@@ -391,6 +391,22 @@ jobs:
           [ "$fail" -eq 0 ] || { echo "::error::gstreamer plugin bundling had failures"; exit 1; }
           echo "PHASE: gstreamer plugins bundled into all app bundles"
 
+      # dylibbundler -p rewrites every rpath a library already has to the one -p
+      # path, so each library CMake gave two rpaths (@loader_path and
+      # @executable_path/../lib) leaves with @executable_path/../libs/ twice, and
+      # dyld on macOS 15.4+ refuses to load it ("duplicate LC_RPATH"). Keep one of
+      # each. Also drop the project dylibs the CMake install copies into
+      # Contents/MacOS: after bundling nothing loads them (every reference is to
+      # Contents/libs), and they carried the same repeat.
+      - name: Remove repeated rpaths and unused dylib copies
+        run: |
+          set -euo pipefail
+          for app in macos-install/Revere.app macos-install/Vision.app; do
+            [ -d "$app" ] || continue
+            find "$app/Contents/MacOS" -maxdepth 1 -name '*.dylib' \( -type f -o -type l \) -print -delete
+            bash revere/scripts/macos/rpaths.sh --fix "$app"
+          done
+
       # The bundles must carry exactly one FFmpeg, revere's LGPL build: no second
       # libavcodec (Homebrew's, by way of a GStreamer plugin or OpenCV) and no
       # GPL library or plugin.
@@ -482,6 +498,15 @@ jobs:
             codesign --verify --deep --verbose=2 "$app" && echo "verify OK: $app"
           done
 
+      # Fails the build on any Mach-O in the bundles that lists an rpath twice,
+      # which dyld on macOS 15.4+ refuses to load.
+      - name: Verify no duplicate LC_RPATH
+        run: |
+          set -euo pipefail
+          apps=()
+          for app in macos-install/Revere.app macos-install/Vision.app; do [ -d "$app" ] && apps+=( "$app" ); done
+          bash revere/scripts/macos/rpaths.sh "${apps[@]}"
+
       # Build the .dmg directly with hdiutil (the repo's CPack DragNDrop config
       # references a background image + ds_store script that aren't in the repo).
       - name: Create .dmg
@@ -570,6 +595,7 @@ jobs:
           # dlopen can be rejected for a bad signature on arm64.
           codesign --force --sign - "$plugin"
           codesign --verify --verbose=2 "$plugin" && echo "plugin verify OK"
+          bash revere/scripts/macos/rpaths.sh "$plugin"
 
       # The cloud plugin as its .command will install it (after the install_name_tool
       # and codesign above), and its manifest. The .command is packed by
