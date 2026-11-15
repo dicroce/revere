@@ -277,12 +277,12 @@ struct revere_ui_state
         r_nullable<string> output;
         if(recording_selected())
         {
-            if(recording_selected_item != -1)
+            if(recording_selected_item >= 0 && recording_selected_item < (int)recording_items.size())
                 output.set_value(recording_items[recording_selected_item].camera_id);
         }
         else
         {
-            if(discovered_selected_item != -1)
+            if(discovered_selected_item >= 0 && discovered_selected_item < (int)discovered_items.size())
                 output.set_value(discovered_items[discovered_selected_item].camera_id);
         }
         return output;
