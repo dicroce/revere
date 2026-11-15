@@ -821,6 +821,138 @@ void about_revere_cloud_modal(
     }
 }
 
+// Asks to update a Revere Cloud built for an older Revere, once its update is found
+// (r_cloud_install::check_for_update()), and shows the update through to the end.
+// The terms are shown first only if their version changed since they were accepted.
+//   update_cb(bool accept_terms): start the update; accept_terms when the user
+//     agreed to the terms just now.
+//   open_url_cb(url): open a link.  close_cb(): "Not now", or close when done.
+template<typename UPDATE_CB, typename OPEN_URL_CB, typename CLOSE_CB>
+void update_revere_cloud_modal(
+    ImGuiContext*,
+    const std::string& name,
+    const r_vss::r_cloud_install_status& s,
+    UPDATE_CB update_cb,
+    OPEN_URL_CB open_url_cb,
+    CLOSE_CB close_cb
+)
+{
+    using r_vss::r_cloud_state;
+    const float width = 600.0f;
+    ImGui::SetNextWindowSize(ImVec2(width, 0));
+    if (begin_modal(name.c_str()))
+    {
+        auto paragraph = [&](const std::string& text, const ImVec4* color = nullptr) {
+            ImGui::SetCursorPosX(16.0f);
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width - 32.0f);
+            if(color)
+                ImGui::PushStyleColor(ImGuiCol_Text, *color);
+            ImGui::TextWrapped("%s", text.c_str());
+            if(color)
+                ImGui::PopStyleColor();
+            ImGui::PopTextWrapPos();
+        };
+        auto buttons = [&](const std::vector<std::string>& labels) {
+            const float bw = 180.0f;
+            const float total = bw * labels.size() + ImGui::GetStyle().ItemSpacing.x * (labels.size() - 1);
+            ImGui::SetCursorPosX((width - total) * 0.5f);
+            int clicked = -1;
+            for(size_t i = 0; i < labels.size(); ++i)
+            {
+                if(i > 0)
+                    ImGui::SameLine();
+                if(ImGui::Button(labels[i].c_str(), ImVec2(bw, 0)))
+                    clicked = (int)i;
+            }
+            return clicked;
+        };
+        auto close = [&]() {
+            close_cb();
+            ImGui::CloseCurrentPopup();
+        };
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        if(s.state == r_cloud_state::installing)
+        {
+            paragraph("Updating Revere Cloud...");
+            ImGui::Spacing();
+            // It carries on if the window closes; About Revere Cloud shows how it went.
+            if(buttons({"Hide"}) == 0)
+                close();
+        }
+        else if(s.state == r_cloud_state::installed)
+        {
+            paragraph("Revere Cloud is updated and running.");
+            ImGui::Spacing();
+            if(buttons({"Close"}) == 0)
+                close();
+        }
+        else if(!s.error_kind.empty())
+        {
+            paragraph(cloud_install_error_text(s.error_kind), &r_ui_utils::theme::status_danger_text);
+            if(!s.error_detail.empty())
+                paragraph(s.error_detail, &r_ui_utils::theme::text_secondary);
+            ImGui::Spacing();
+            std::vector<std::string> labels;
+            if(s.can_install)
+                labels.push_back("Try again");
+            labels.push_back("Close");
+            int clicked = buttons(labels);
+            if(clicked >= 0 && labels[clicked] == "Try again")
+                update_cb(false);
+            else if(clicked >= 0)
+                close();
+        }
+        else
+        {
+            std::string text = "This version of Revere needs a newer Revere Cloud, so Revere Cloud isn't running. ";
+            text += s.update_version.empty() ? std::string("An update is available.")
+                                             : "An update (from release " + s.update_version + ") is available.";
+            paragraph(text);
+            ImGui::Spacing();
+            paragraph("Update Revere Cloud now?");
+            if(!s.dev_warning.empty())
+            {
+                ImGui::Spacing();
+                paragraph(s.dev_warning, &r_ui_utils::theme::status_warning_text);
+            }
+            if(!s.terms_accepted)
+            {
+                ImGui::Spacing();
+                paragraph(std::string("The Revere Cloud terms have changed. By updating you agree to the Revere Cloud terms (version ") +
+                          r_vss::REVERE_CLOUD_TERMS_VERSION + ").");
+            }
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            std::vector<std::string> labels;
+            if(!s.terms_accepted)
+                labels.push_back("View the terms");
+            const std::string update = s.terms_accepted ? "Update" : "Agree and update";
+            if(s.can_install)
+                labels.push_back(update);
+            labels.push_back("Not now");
+            int clicked = buttons(labels);
+            if(clicked >= 0)
+            {
+                const auto& label = labels[clicked];
+                if(label == "View the terms")
+                    open_url_cb(r_vss::REVERE_CLOUD_TERMS_URL);
+                else if(label == update)
+                    update_cb(!s.terms_accepted);
+                else
+                    close();
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::EndPopup();
+    }
+}
+
 }
 
 #endif

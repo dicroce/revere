@@ -107,6 +107,7 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
         d.load = [this](const std::string& path, std::string& why) { return _system_plugin_host.load_and_start(path, why); };
         d.loaded = [this]() { return _system_plugin_host.get_loaded_plugins(); };
         d.skipped = [this]() { return _system_plugin_host.get_skipped_plugins(); };
+        d.check = []() { return check_revere_cloud_update(); };
         return d;
     }()),
     _keep_awake(top_dir),
@@ -152,6 +153,10 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
         return _streams.find(camera_id) != _streams.end();
     });
     _system_plugin_host.start_all();
+
+    // A Revere Cloud built for an older revere wasn't loaded: see whether this
+    // release has its update, so the UIs can offer it.
+    _cloud_install.check_for_update();
 }
 
 r_stream_keeper::~r_stream_keeper() noexcept

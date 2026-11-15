@@ -1651,6 +1651,27 @@ void configure_camera_setup_wizard(
     );
 
     camera_setup_wizard.add_step(
+        "update_revere_cloud",
+        [&camera_setup_wizard, &stream_keeper](){
+            ImGui::OpenPopup("Update Revere Cloud");
+            revere::update_revere_cloud_modal(
+                GImGui,
+                "Update Revere Cloud",
+                stream_keeper.get_cloud_install_status(),
+                [&](bool accept_terms){
+                    std::string why;
+                    if(!stream_keeper.start_cloud_install(accept_terms ? r_vss::REVERE_CLOUD_TERMS_VERSION : "", why))
+                        R_LOG_ERROR("Revere Cloud update didn't start: %s", why.c_str());
+                },
+                [&](const std::string& url){
+                    revere::open_url_in_browser(url);
+                },
+                [&](){camera_setup_wizard.cancel();}
+            );
+        }
+    );
+
+    camera_setup_wizard.add_step(
         "uninstall_plugin_modal",
         [&ui_state, &camera_setup_wizard, &stream_keeper](){
             ImGui::OpenPopup("Uninstall plugin");
@@ -3680,6 +3701,9 @@ int main(int argc, char** argv)
     const auto placement_debounce = chrono::seconds(1);
     bool placement_changed = false;
     auto placement_changed_at = chrono::steady_clock::now();
+    // Whether this run asked to update Revere Cloud, and when the loop last looked.
+    bool cloud_update_asked = false;
+    auto cloud_update_checked_at = chrono::steady_clock::now();
 
     // Main loop
     while(!close_requested)
@@ -4098,6 +4122,24 @@ int main(int argc, char** argv)
         record_section("recording", main_window_state.recording_open, last_recording_open);
         record_section("discovered", main_window_state.discovered_open, last_discovered_open);
         record_section("plugins", main_window_state.plugins_open, last_plugins_open);
+
+        // Revere Cloud was built for an older Revere and its update was found: ask
+        // the user once a run, when no other dialog is up. A minimized window asks
+        // when it's shown.
+        if(!cloud_update_asked && !camera_setup_wizard.active() &&
+           chrono::steady_clock::now() - cloud_update_checked_at >= chrono::seconds(1))
+        {
+            cloud_update_checked_at = chrono::steady_clock::now();
+            auto cloud = streamKeeper.get_cloud_install_status();
+            if(cloud.state == r_vss::r_cloud_state::needs_update && cloud.can_install &&
+               cloud.update_check == r_vss::r_cloud_update_check::available)
+            {
+                cloud_update_asked = true;
+                camera_setup_wizard.next("update_revere_cloud");
+            }
+            else if(cloud.state == r_vss::r_cloud_state::installed)
+                cloud_update_asked = true;   // nothing to ask this run
+        }
 
         camera_setup_wizard();
 

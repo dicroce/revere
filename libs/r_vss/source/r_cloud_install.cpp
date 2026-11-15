@@ -48,6 +48,18 @@ const char* r_vss::cloud_state_name(r_cloud_state state)
     return "unknown";
 }
 
+const char* r_vss::cloud_update_check_name(r_cloud_update_check check)
+{
+    switch(check)
+    {
+        case r_cloud_update_check::not_checked: return "not_checked";
+        case r_cloud_update_check::checking: return "checking";
+        case r_cloud_update_check::available: return "available";
+        case r_cloud_update_check::unavailable: return "unavailable";
+    }
+    return "unknown";
+}
+
 r_cloud_install::r_cloud_install(const deps& d) :
     _deps(d)
 {
@@ -72,6 +84,8 @@ r_cloud_install::~r_cloud_install()
 {
     if(_thread.joinable())
         _thread.join();
+    if(_check_thread.joinable())
+        _check_thread.join();
 }
 
 // A dev build (a base version and not a release) may install too, for testing.
@@ -95,6 +109,9 @@ r_cloud_install_status r_cloud_install::status() const
         s.terms_accepted = _terms_accepted_locked();
         s.error_kind = _error_kind;
         s.error_detail = _error_detail;
+        s.update_check = _update_check;
+        s.update_version = _update_version;
+        s.update_detail = _update_detail;
         if(!_deps.release_build && !_deps.dev_base_version.empty())
         {
             s.dev_warning = _installed_release.empty()
@@ -177,6 +194,51 @@ bool r_cloud_install::start(const string& accepted_terms_version, string& why)
     _error_detail.clear();
     _thread = std::thread(&r_cloud_install::_run, this);
     return true;
+}
+
+void r_cloud_install::check_for_update()
+{
+    if(!_can_install_build() || !_deps.check)
+        return;
+    if(status().state != r_cloud_state::needs_update)
+        return;
+
+    lock_guard<mutex> g(_lock);
+    if(_update_check == r_cloud_update_check::checking)
+        return;
+    if(_check_thread.joinable())
+        _check_thread.join();   // the last check's thread, already done
+    _update_check = r_cloud_update_check::checking;
+    _update_version.clear();
+    _update_detail.clear();
+    _check_thread = std::thread(&r_cloud_install::_run_check, this);
+}
+
+void r_cloud_install::_run_check()
+{
+    r_plugin_install_result r;
+    try
+    {
+        R_LOG_INFO("Revere Cloud needs updating; checking for an update");
+        r = _deps.check();
+    }
+    catch(const exception& e)
+    {
+        r.status = r_plugin_install::download_failed;
+        r.detail = e.what();
+    }
+
+    lock_guard<mutex> g(_lock);
+    if(r.ok())
+    {
+        _update_check = r_cloud_update_check::available;
+        _update_version = r.release_version;
+    }
+    else
+    {
+        _update_check = r_cloud_update_check::unavailable;
+        _update_detail = string(plugin_install_name(r.status)) + (r.detail.empty() ? string() : ": " + r.detail);
+    }
 }
 
 void r_cloud_install::_run()

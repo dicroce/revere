@@ -6,6 +6,7 @@
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <thread>
 
 using namespace r_vss;
@@ -30,11 +31,16 @@ struct fake_host
     atomic<int> installs {0};
     vector<string> load_paths;
     atomic<bool> hold {false};   // keeps an install running until cleared
+    r_plugin_install_result check_result;
+    atomic<int> checks {0};
+    atomic<bool> hold_check {false};   // keeps a check running until cleared
 
     fake_host()
     {
         install_result.status = r_plugin_install::ok;
         install_result.path = "/plugins/revere_cloud_system_plugin.dll";
+        check_result.status = r_plugin_install::ok;
+        check_result.release_version = "0.0.44";
     }
 
     r_cloud_install::deps deps(bool release = true)
@@ -66,6 +72,12 @@ struct fake_host
         };
         d.loaded = [this]() { lock_guard<mutex> g(lock); return loaded; };
         d.skipped = [this]() { lock_guard<mutex> g(lock); return skipped; };
+        d.check = [this]() {
+            ++checks;
+            while(hold_check)
+                this_thread::sleep_for(chrono::milliseconds(5));
+            return check_result;
+        };
         return d;
     }
 };
@@ -87,6 +99,19 @@ r_cloud_install_status _wait(r_cloud_install& ci)
     {
         auto s = ci.status();
         if(s.state != r_cloud_state::installing)
+            return s;
+        this_thread::sleep_for(chrono::milliseconds(5));
+    }
+    return ci.status();
+}
+
+// Waits for a started check to finish.
+r_cloud_install_status _wait_check(r_cloud_install& ci)
+{
+    for(int i = 0; i < 1000; ++i)
+    {
+        auto s = ci.status();
+        if(s.update_check != r_cloud_update_check::checking)
             return s;
         this_thread::sleep_for(chrono::milliseconds(5));
     }
@@ -329,4 +354,82 @@ void test_r_cloud_install::test_dev_build()
     RTF_ASSERT(s.error_kind.empty());
     RTF_ASSERT(s.dev_warning == "Dev build (0.0.42-dirty): the cloud plugin was installed from release v0.0.41, for testing. It may not match this build.");
     RTF_ASSERT_EQUAL(host.installs.load(), 1);
+}
+
+// A plugin that needs updating is checked for an update in the background; nothing
+// else is, and the update itself waits for start().
+void test_r_cloud_install::test_check_for_update()
+{
+    {
+        // Not installed, loaded, or failed its check: no check.
+        fake_host host;
+        r_cloud_install ci(host.deps());
+        ci.check_for_update();
+        host.loaded = {REVERE_CLOUD_PLUGIN_NAME};
+        ci.check_for_update();
+        host.loaded.clear();
+        host.skipped = {_skipped(r_plugin_check::hash_mismatch, "")};
+        ci.check_for_update();
+        RTF_ASSERT_EQUAL(host.checks.load(), 0);
+        RTF_ASSERT(ci.status().update_check == r_cloud_update_check::not_checked);
+    }
+    {
+        // A build that can't install doesn't check.
+        fake_host host;
+        host.skipped = {_skipped(r_plugin_check::wrong_version, "built for revere 0.0.43")};
+        r_cloud_install ci(host.deps(false));
+        ci.check_for_update();
+        RTF_ASSERT_EQUAL(host.checks.load(), 0);
+    }
+    {
+        // Needs updating, and the release has it: available, and nothing installed yet.
+        fake_host host;
+        host.skipped = {_skipped(r_plugin_check::wrong_version, "built for revere 0.0.43")};
+        host.hold_check = true;
+        r_cloud_install ci(host.deps());
+        ci.check_for_update();
+        RTF_ASSERT(ci.status().update_check == r_cloud_update_check::checking);
+        ci.check_for_update();   // one at a time
+        host.hold_check = false;
+        auto s = _wait_check(ci);
+        RTF_ASSERT_EQUAL(host.checks.load(), 1);
+        RTF_ASSERT(s.state == r_cloud_state::needs_update);
+        RTF_ASSERT(s.update_check == r_cloud_update_check::available);
+        RTF_ASSERT(s.update_version == "0.0.44");
+        RTF_ASSERT(s.can_install);
+        RTF_ASSERT_EQUAL(host.installs.load(), 0);
+
+        // The user says yes.
+        string why;
+        RTF_ASSERT(ci.start(REVERE_CLOUD_TERMS_VERSION, why));
+        s = _wait(ci);
+        RTF_ASSERT(s.state == r_cloud_state::installed);
+        RTF_ASSERT_EQUAL(host.installs.load(), 1);
+    }
+    {
+        // None found: unavailable, with why.
+        fake_host host;
+        host.skipped = {_skipped(r_plugin_check::no_manifest, "no manifest")};
+        host.check_result = r_plugin_install_result();
+        host.check_result.status = r_plugin_install::not_available;
+        host.check_result.detail = "this release has no plugin for windows x86_64";
+        r_cloud_install ci(host.deps());
+        ci.check_for_update();
+        auto s = _wait_check(ci);
+        RTF_ASSERT(s.update_check == r_cloud_update_check::unavailable);
+        RTF_ASSERT(s.update_version.empty());
+        RTF_ASSERT(s.update_detail == "not_available: this release has no plugin for windows x86_64");
+    }
+    {
+        // A check that throws is unavailable too.
+        fake_host host;
+        host.skipped = {_skipped(r_plugin_check::wrong_version, "")};
+        auto d = host.deps();
+        d.check = []() -> r_plugin_install_result { throw runtime_error("no network"); };
+        r_cloud_install ci(d);
+        ci.check_for_update();
+        auto s = _wait_check(ci);
+        RTF_ASSERT(s.update_check == r_cloud_update_check::unavailable);
+        RTF_ASSERT(s.update_detail == "download_failed: no network");
+    }
 }

@@ -266,7 +266,9 @@ export async function setSystemPluginEnabled(name, enabled) {
 // { state: 'not_installed'|'installing'|'installed'|'needs_update'|'failed_check',
 //   detail, can_install, terms_accepted, terms_url, terms_version,
 //   error_kind: ''|'not_available'|'download_failed'|'check_failed'|'write_failed'|'load_failed',
-//   error_detail, download_url }
+//   error_detail, download_url,
+//   update_check: 'not_checked'|'checking'|'available'|'unavailable' (for needs_update),
+//   update_version, update_detail }
 export async function getRevereCloudInstall() {
   const res = await apiFetch('/revere_cloud_install')
   return res.json()

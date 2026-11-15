@@ -158,6 +158,20 @@ R_API r_plugin_install_result install_revere_cloud_plugin(const std::string& dir
 // http_get, trusted_plugin_keys(), plugin_platform() and plugin_arch().
 R_API r_plugin_install_result install_revere_cloud_plugin(const std::string& dir);
 
+// Whether install_revere_cloud_plugin() would find a plugin, without downloading it:
+// chooses the release the same way, then fetches its manifest and signature and
+// checks them. ok, with release_version, if they pass; otherwise not_available,
+// download_failed or check_failed, as an install would fail. Nothing is written.
+R_API r_plugin_install_result check_revere_cloud_update(const std::string& revere_version,
+                                                        const std::string& file_name,
+                                                        const r_plugin_fetch& fetch,
+                                                        const std::vector<std::string>& trusted_keys,
+                                                        const std::string& platform,
+                                                        const std::string& arch);
+
+// The same for this build, from GitHub, with a shorter timeout than an install's.
+R_API r_plugin_install_result check_revere_cloud_update();
+
 }
 
 #endif

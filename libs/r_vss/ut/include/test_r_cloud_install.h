@@ -11,6 +11,7 @@ public:
       TEST(test_r_cloud_install::test_failed_install);
       TEST(test_r_cloud_install::test_terms_kept);
       TEST(test_r_cloud_install::test_dev_build);
+      TEST(test_r_cloud_install::test_check_for_update);
     RTF_FIXTURE_END();
 
     virtual ~test_r_cloud_install() throw() {}
@@ -25,4 +26,5 @@ public:
     void test_failed_install();
     void test_terms_kept();
     void test_dev_build();
+    void test_check_for_update();
 };
