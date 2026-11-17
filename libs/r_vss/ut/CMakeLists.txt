@@ -69,6 +69,8 @@ add_executable(
     source/test_r_substream_setting.cpp
     include/test_r_ws_auth.h
     source/test_r_ws_auth.cpp
+    include/test_r_appliance.h
+    source/test_r_appliance.cpp
     include/test_r_rtsp_auth.h
     source/test_r_rtsp_auth.cpp
     include/test_r_rtsp_logins.h

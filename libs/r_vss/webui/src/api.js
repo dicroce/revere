@@ -70,7 +70,7 @@ export async function getVersion() {
 export async function getAuthStatus() {
   const res = await fetch('/auth_status')
   if (!res.ok) throw new Error(`auth_status ${res.status}`)
-  return res.json() // { password_set: bool }
+  return res.json() // { password_set: bool, appliance: bool, local: bool } (older Revere: password_set only)
 }
 
 // A token restored from localStorage has no cookie yet (or an expired one):

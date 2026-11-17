@@ -4,6 +4,7 @@
   <LoginView
     v-else-if="!authed"
     :password-set="passwordSet"
+    :appliance="appliance"
     @authenticated="onAuthenticated"
   />
 
@@ -67,6 +68,7 @@ import CloudUpdatePrompt from './components/CloudUpdatePrompt.vue'
 
 const authChecked = ref(false)
 const passwordSet = ref(true)
+const appliance = ref(false)
 const authed = computed(() => isAuthed())
 
 const tab = ref('manage')
@@ -151,7 +153,9 @@ function signOut() {
 
 onMounted(async () => {
   try {
-    passwordSet.value = !!(await getAuthStatus()).password_set
+    const status = await getAuthStatus()
+    passwordSet.value = !!status.password_set
+    appliance.value = status.appliance === true
   } catch {
     passwordSet.value = true
   }

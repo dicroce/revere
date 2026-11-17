@@ -3,8 +3,15 @@
     <div class="login-card">
       <img src="/logos/revere-lockup-white.svg" alt="Revere" class="logo" />
 
+      <!-- appliance, not paired yet: it's set up from the Revere app, never here -->
+      <template v-if="mode === 'not_set_up'">
+        <h1 class="title">This Revere box isn't set up yet</h1>
+        <p class="sub">Scan the QR sticker on the box with your phone to set it up in the Revere app.</p>
+        <p class="sub"><a :href="CLAIM_URL" target="_blank" rel="noopener">app.revere.video/claim</a></p>
+      </template>
+
       <!-- first run: no local web password yet (stored as the system password) -->
-      <template v-if="passwordSet === false">
+      <template v-else-if="mode === 'create'">
         <p class="sub">Welcome. Create a local web password. Anyone opening Revere's web interface on this computer will need it.</p>
         <input
           type="password"
@@ -29,7 +36,8 @@
 
       <!-- normal: sign in -->
       <template v-else>
-        <p class="sub">Enter the local web password to continue.</p>
+        <p v-if="appliance" class="sub">Enter this box's local password. You'll find it under Local access in the Revere app.</p>
+        <p v-else class="sub">Enter the local web password to continue.</p>
         <input
           type="password"
           v-model="password"
@@ -41,6 +49,7 @@
         <button class="primary" :disabled="busy || !password" @click="doLogin">
           {{ busy ? 'Signing in…' : 'Sign in' }}
         </button>
+        <p v-if="appliance" class="managed">Managed in the Revere app</p>
       </template>
 
       <p v-if="error" class="err">{{ error }}</p>
@@ -51,11 +60,16 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { login, setSystemPassword } from '../api.js'
+import { authMode, CLAIM_URL } from '../utils/authMode.js'
 
 const props = defineProps({
   // null = unknown/checking, true = password exists, false = first run
   passwordSet: { type: Boolean, default: true },
+  // An appliance (GET /auth_status): its password is managed in the Revere app.
+  appliance: { type: Boolean, default: false },
 })
+
+const mode = computed(() => authMode({ password_set: props.passwordSet, appliance: props.appliance }))
 const emit = defineEmits(['authenticated'])
 
 const password = ref('')
@@ -122,7 +136,10 @@ async function doCreate() {
   align-self: center;
   margin-bottom: 0.5rem;
 }
+.title { color: #eee; font-size: 1.15rem; font-weight: 600; text-align: center; margin: 0; }
 .sub { color: #aaa; font-size: 0.9rem; text-align: center; }
+.sub a { color: #6b9bf0; }
+.managed { color: #888; font-size: 0.8rem; text-align: center; }
 .login-card input {
   background: #111;
   border: 1px solid #333;
