@@ -11,7 +11,6 @@
 #include "r_vss/r_camera_source_info.h"
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_build_info.h"
-#include "r_vss/r_appliance.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_string_utils.h"
@@ -224,11 +223,11 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     // vision and browsers elsewhere on the network can connect (every endpoint
     // requires a token; see r_ws_auth.h).
     _http(WEB_SERVER_PORT, "127.0.0.1"),
-    _https(WEB_SERVER_TLS_PORT, _read_remote_access(top_dir) ? string() : string("127.0.0.1"))
+    _https(WEB_SERVER_TLS_PORT, _read_remote_access(top_dir) ? string() : string("127.0.0.1")),
+    _password(top_dir, _auth)
 {
     _remote_access_active = _read_remote_access(top_dir);
-    _appliance = r_appliance::read_flag(top_dir);
-    if(_appliance)
+    if(_password.appliance())
         R_LOG_INFO("r_ws: appliance mode: the local web password is managed by the Revere app");
     _recorder_id = r_recorder_id::get_or_create(top_dir);
     if(_recorder_id.empty())
@@ -239,7 +238,7 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     // Cache the OS-protected master key once (used to encrypt/decrypt the system
     // password). Best-effort: if secure storage is unavailable the auth helpers
     // will fail closed (no token can be issued).
-    try { _master_key = r_secure_store().get_master_key(); }
+    try { _password.set_master_key(r_secure_store().get_master_key()); }
     catch(const exception& ex) { R_LOG_WARNING("r_ws: secure store unavailable, auth disabled: %s", ex.what()); }
 
     // TLS identity for the HTTPS listener: a self-signed certificate persisted
@@ -351,26 +350,17 @@ void r_ws::_publish_local_token()
 
 r_nullable<string> r_ws::_request_token(const r_server_request& request)
 {
-    auto method = request.get_method();
-    bool safe = (method == METHOD_GET || method == METHOD_HEAD);
-    return r_ws_auth::extract_token(request.get_header("authorization"), request.get_header("cookie"), safe);
+    return r_web_password::request_token(request);
 }
 
 string r_ws::_peer_ip(r_socket_base& conn)
 {
-    try
-    {
-        return conn.get_peer_ip();
-    }
-    catch(...)
-    {
-        return string();
-    }
+    return r_web_password::peer_ip(conn);
 }
 
 bool r_ws::_is_tls(r_socket_base& conn)
 {
-    return dynamic_cast<r_ssl_server_socket*>(&conn) != nullptr;
+    return r_web_password::is_tls(conn);
 }
 
 void r_ws::_load_or_create_tls()
@@ -439,7 +429,7 @@ bool r_ws::remote_access_configured() const
 
 bool r_ws::appliance() const
 {
-    return _appliance;
+    return _password.appliance();
 }
 
 bool r_ws::remote_access_active() const
@@ -4683,37 +4673,19 @@ r_http::r_server_response r_ws::_post_storage_op_cancel(r_utils::r_socket_base&,
     return _json_reply(json{{"status", "ok"}});
 }
 
-std::string r_ws::_password_path() const
-{
-    return _top_dir + PATH_SLASH + "system_password";
-}
-
 bool r_ws::_system_password_set() const
 {
-    return r_fs::file_exists(_password_path());
+    return _password.password_set();
 }
 
 r_utils::r_nullable<std::string> r_ws::_load_system_password()
 {
-    r_nullable<string> out;
-    if(_master_key.empty() || !r_fs::file_exists(_password_path()))
-        return out;
-    auto bytes = r_fs::read_file(_password_path());
-    string enc(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    out.set_value(r_credential_crypto::decrypt_credential(enc, _master_key));
-    return out;
+    return _password.load();
 }
 
 void r_ws::_store_system_password(const std::string& password)
 {
-    if(_master_key.empty())
-        R_THROW(("Secure storage unavailable; cannot set the local web password."));
-    auto enc = r_credential_crypto::encrypt_credential(password, _master_key);
-    // Write to a temp file then atomically rename, so a crash mid-write can't
-    // leave a truncated (undecryptable) password file.
-    auto tmp = _password_path() + ".tmp";
-    r_fs::write_file(reinterpret_cast<const uint8_t*>(enc.data()), enc.size(), tmp);
-    r_fs::atomic_rename_file(tmp, _password_path());
+    _password.store(password);
 }
 
 void r_ws::set_system_password(const std::string& password)
@@ -4732,9 +4704,7 @@ bool r_ws::system_password_set() const
 
 void r_ws::clear_system_password()
 {
-    auto path = _password_path();
-    if(r_fs::file_exists(path))
-        r_fs::remove_file(path);
+    _password.clear();
     // Invalidate any outstanding web sessions.
     _auth.revoke_all_sessions();
 }
@@ -4751,19 +4721,9 @@ void r_ws::_require_auth(const r_http::r_server_request& request)
         R_STHROW(r_http_401_exception, ("Unauthorized."));
 }
 
-r_http::r_server_response r_ws::_get_auth_status(r_utils::r_socket_base& conn, const r_http::r_server_request&)
+r_http::r_server_response r_ws::_get_auth_status(r_utils::r_socket_base& conn, const r_http::r_server_request& request)
 {
-    // Unauthenticated on purpose: lets the web UI decide between a first-run
-    // "create password" screen, an appliance's "not set up yet" page and a
-    // "login" screen. Only leaks whether a system password has been
-    // configured, whether this is an appliance, and whether the caller is on
-    // this machine (which it knows already).
-    auto j = r_appliance::auth_status(_system_password_set(), _appliance, r_local_api_token::is_loopback_host(_peer_ip(conn)));
-
-    r_server_response response;
-    response.set_content_type("text/json");
-    response.set_body(j.dump());
-    return response;
+    return _password.get_auth_status(conn, request);
 }
 
 r_http::r_server_response r_ws::_post_login(r_utils::r_socket_base& conn, const r_http::r_server_request& request)
@@ -4863,87 +4823,7 @@ r_http::r_server_response r_ws::_post_logout(r_utils::r_socket_base& conn, const
 
 r_http::r_server_response r_ws::_post_set_password(r_utils::r_socket_base& conn, const r_http::r_server_request& request)
 {
-    auto address = _peer_ip(conn);
-    try
-    {
-        auto req = json::parse(request.get_body_as_string());
-        if(!req.contains("new_password") || !req["new_password"].is_string())
-            R_STHROW(r_http_400_exception, ("Missing new_password."));
-        auto new_password = req["new_password"].get<string>();
-        if(new_password.empty())
-            R_STHROW(r_http_400_exception, ("Password must not be empty."));
-
-        // r_appliance::check_set_password has the rule. A change needs a
-        // valid token or the current password; on an appliance only the
-        // local token. The current-password path counts toward the same
-        // per-address lockout as /login, so it can't be used to guess around it.
-        bool password_set = _system_password_set();
-        auto auth = r_appliance::set_password_auth::none;
-        if(password_set)
-        {
-            auto token = _request_token(request);
-            auto local = _auth.local_token();
-            if(!token.is_null() && !local.empty() && r_ws_auth::constant_time_equal(token.value(), local))
-                auth = r_appliance::set_password_auth::local_token;
-            else if(_token_valid(request))
-                auth = r_appliance::set_password_auth::session_token;
-            else if(!_appliance)
-            {
-                if(_auth.locked_out(address))
-                    R_STHROW(r_http_401_exception, ("Too many failed attempts; try again later."));
-                if(req.contains("current_password") && req["current_password"].is_string())
-                {
-                    auto stored = _load_system_password();
-                    bool ok = !stored.is_null() && r_ws_auth::constant_time_equal(req["current_password"].get<string>(), stored.value());
-                    if(ok)
-                    {
-                        _auth.record_success(address);
-                        auth = r_appliance::set_password_auth::current_password;
-                    }
-                    else _auth.record_failure(address);
-                }
-            }
-        }
-
-        switch(r_appliance::check_set_password(_appliance, password_set, r_local_api_token::is_loopback_host(address), auth))
-        {
-            case r_appliance::set_password_verdict::allow:
-                break;
-            case r_appliance::set_password_verdict::loopback_only:
-                R_STHROW(r_http_403_exception, ("The first password must be set on the Revere machine itself."));
-            case r_appliance::set_password_verdict::unauthorized:
-                R_STHROW(r_http_401_exception, ("Provide a valid token or current_password to change the local web password."));
-            case r_appliance::set_password_verdict::cloud_managed:
-                R_STHROW(r_http_403_exception, ("This Revere box's local password is managed in the Revere app."));
-        }
-
-        _store_system_password(new_password);
-
-        // Every outstanding session must sign in again with the new password.
-        _auth.revoke_all_sessions();
-
-        json j;
-        j["status"] = "ok";
-
-        r_server_response response;
-        response.set_content_type("text/json");
-        response.set_body(j.dump());
-        // The caller's own cookie (if any) died with its session.
-        response.add_additional_header("Set-Cookie", r_ws_auth::clear_session_cookie(_is_tls(conn)));
-        return response;
-    }
-    catch(const r_http_400_exception&) { throw; }
-    catch(const r_http_401_exception&) { throw; }
-    catch(const r_http_403_exception&) { throw; }
-    catch(const json::exception&)
-    {
-        R_STHROW(r_http_400_exception, ("Malformed set_password request."));
-    }
-    catch(const std::exception& ex)
-    {
-        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
-    }
-    R_STHROW(r_http_500_exception, ("Failed to set the local web password."));
+    return _password.post_set_password(conn, request);
 }
 
 r_server_response r_ws::_post_mcp(r_socket_base&, const r_server_request& request)

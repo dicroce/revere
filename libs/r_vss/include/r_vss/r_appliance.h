@@ -46,14 +46,14 @@ enum class set_password_verdict
     allow,
     loopback_only,   // 403: the first password is set on this machine only
     unauthorized,    // 401: a change needs a token or the current password
-    cloud_managed    // 403: an appliance's password changes only with the local token
+    cloud_managed    // 403: an appliance's password is set only with the local token
 };
 
-// The rule /set_password applies. The first password (none set yet) may be
-// set without credentials, but only from loopback, appliance or not. Changing
-// one that is set needs a valid token or the current password; on an appliance
-// it needs the local token, so the cloud (through the box's agent) is the only
-// owner of the password.
+// The rule /set_password applies. On a normal install the first password
+// (none set yet) may be set without credentials, but only from loopback, and
+// changing one that is set needs a valid token or the current password. On an
+// appliance both need the local token (and the first, loopback too), so the
+// cloud, through the box's agent, is the only owner of the password.
 R_API set_password_verdict check_set_password(bool appliance, bool password_set, bool caller_loopback, set_password_auth auth);
 
 }

@@ -50,10 +50,17 @@ r_appliance::set_password_verdict r_appliance::check_set_password(bool appliance
 {
     // Bootstrap: the first password needs no credentials, but only from this
     // machine. Otherwise anyone who could reach the HTTPS port of an
-    // unconfigured install could claim it. The same on an appliance, where the
-    // agent sets it over loopback.
+    // unconfigured install could claim it. An appliance also wants the local
+    // token, which its agent holds: no other process or loopback request can
+    // claim an unclaimed box first.
     if(!password_set)
-        return caller_loopback ? set_password_verdict::allow : set_password_verdict::loopback_only;
+    {
+        if(!caller_loopback)
+            return set_password_verdict::loopback_only;
+        if(appliance && auth != set_password_auth::local_token)
+            return set_password_verdict::cloud_managed;
+        return set_password_verdict::allow;
+    }
 
     if(appliance)
         return auth == set_password_auth::local_token ? set_password_verdict::allow : set_password_verdict::cloud_managed;
