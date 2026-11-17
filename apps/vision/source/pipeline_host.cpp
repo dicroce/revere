@@ -167,6 +167,7 @@ void pipeline_host::change_layout(int window, layout l)
             _stream_infos[si.name] = si;
 
         _stalled.clear();  // keyed by old layout names; tiles show Connecting until frames flow
+        _resume_paused.clear();
 
         _pipes = std::move(new_pipes);
         _render_contexts = std::move(new_rc);
@@ -242,6 +243,7 @@ void pipeline_host::disconnect_stream(int window, const string& name)
         _views.erase(name);
         _stream_infos.erase(name);
         _stalled.erase(name);
+        _resume_paused.erase(name);
     }  // Lock is released here
 
     // Destroy the old pipeline outside the critical section
@@ -480,7 +482,14 @@ r_nullable<shared_ptr<render_context>> pipeline_host::lookup_render_context(cons
             try
             {
                 auto ps = make_shared<pipeline_state>(found_si->second, this, w, h, _cfg);
-                ps->play_live();
+                // A playback pane the dead check paused comes back paused where its picture stopped; any other, live.
+                auto paused = _resume_paused.find(name);
+                if(paused != end(_resume_paused))
+                {
+                    ps->set_last_control_bar_pos(paused->second);
+                    _resume_paused.erase(paused);
+                }
+                else ps->play_live();
                 ps->set_audio_active(!_active_audio_stream.empty() && name == _active_audio_stream);
                 _pipes.insert(make_pair(name, ps));
                 _views[name].presented = false;
@@ -1524,10 +1533,20 @@ void pipeline_host::_entry_point()
                     {
                         // A recorded range that stopped delivering (revere unreachable, or nothing it can serve): hold
                         // the picture and the position, as Pause does. Restarted as live it lost the user's place, and
-                        // for a camera that's offline live has nothing to show either.
+                        // for a camera that's offline live has nothing to show either. Stopped off the lock, as a live
+                        // restart is: a dead source can take seconds to stop. Its render context stays, so the pane
+                        // keeps its picture, and lookup_render_context makes the pane again, paused there.
                         R_LOG_WARNING("playback[%s]: no video since the last check, pausing", curr->first.c_str());
-                        _pause_pipe(curr->first, curr->second);
-                        ++curr;
+                        auto resume_pos = curr->second->get_last_control_bar_pos();
+                        auto rc_it = _render_contexts.find(curr->first);
+                        if(rc_it != end(_render_contexts) && rc_it->second->pts > 0)
+                            resume_pos = system_clock::time_point(milliseconds(rc_it->second->pts));
+                        _playback_start_positions.erase(curr->first);
+                        _playback_start_pts.erase(curr->first);
+                        _reset_presentation(curr->first);
+                        _resume_paused[curr->first] = resume_pos;
+                        dead_pipes.push_back(curr->second);
+                        curr = _pipes.erase(curr);
                     }
                     else if(verdict == r_ui_utils::pane_check::restart_live)
                     {
