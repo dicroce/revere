@@ -111,3 +111,48 @@ void test_view_status::test_texts()
     RTF_ASSERT(string(view_stage_text(view_stage::waiting_for_video)) == "Waiting for video...");
     RTF_ASSERT(string(view_stage_text(view_stage::reconnecting)) == "Reconnecting...");
 }
+
+void test_view_status::test_check_pane()
+{
+    pane_progress p;
+    p.running = true;
+    p.due = true;
+    RTF_ASSERT(check_pane(p) == pane_check::fine);
+
+    // Live with no new video: ended and started again.
+    p.video_moved = false;
+    RTF_ASSERT(check_pane(p) == pane_check::restart_live);
+
+    // Not checked yet (just started), or not playing: left alone.
+    auto young = p;
+    young.due = false;
+    RTF_ASSERT(check_pane(young) == pane_check::fine);
+    auto stopped = p;
+    stopped.running = false;
+    RTF_ASSERT(check_pane(stopped) == pane_check::fine);
+
+    // Audio counts only for a stream that has it.
+    p.video_moved = true;
+    p.audio_moved = false;
+    RTF_ASSERT(check_pane(p) == pane_check::fine);
+    p.has_audio = true;
+    RTF_ASSERT(check_pane(p) == pane_check::restart_live);
+}
+
+void test_view_status::test_quiet_playback_pauses()
+{
+    // A recorded range that stopped delivering is paused where it is, never
+    // swapped to live, whichever stream went quiet.
+    pane_progress p;
+    p.running = true;
+    p.due = true;
+    p.playback = true;
+    p.video_moved = false;
+    RTF_ASSERT(check_pane(p) == pane_check::pause);
+    p.video_moved = true;
+    p.has_audio = true;
+    p.audio_moved = false;
+    RTF_ASSERT(check_pane(p) == pane_check::pause);
+    p.audio_moved = true;
+    RTF_ASSERT(check_pane(p) == pane_check::fine);
+}

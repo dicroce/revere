@@ -1510,19 +1510,26 @@ void pipeline_host::_entry_point()
                 auto curr = begin(_pipes);
                 while(curr != end(_pipes))
                 {
-                    bool found_dead = false;
+                    // Recently started pipelines aren't checked yet (playback needs time to start).
+                    r_ui_utils::pane_progress progress;
+                    progress.running = curr->second->running();
+                    progress.playback = curr->second->is_playback();
+                    progress.due = curr->second->ready_for_dead_check();
+                    progress.video_moved = curr->second->last_v_pts() != curr->second->v_pts_at_check();
+                    progress.has_audio = curr->second->has_audio();
+                    progress.audio_moved = curr->second->last_a_pts() != curr->second->a_pts_at_check();
+                    auto verdict = r_ui_utils::check_pane(progress);
 
-                    // Skip dead check for recently-started pipelines (playback needs time to start)
-                    if(curr->second->ready_for_dead_check())
+                    if(verdict == r_ui_utils::pane_check::pause)
                     {
-                        if(curr->second->running() && curr->second->last_v_pts() == curr->second->v_pts_at_check())
-                            found_dead = true;
-
-                        if(curr->second->running() && curr->second->has_audio() && curr->second->last_a_pts() == curr->second->a_pts_at_check())
-                            found_dead = true;
+                        // A recorded range that stopped delivering (revere unreachable, or nothing it can serve): hold
+                        // the picture and the position, as Pause does. Restarted as live it lost the user's place, and
+                        // for a camera that's offline live has nothing to show either.
+                        R_LOG_WARNING("playback[%s]: no video since the last check, pausing", curr->first.c_str());
+                        _pause_pipe(curr->first, curr->second);
+                        ++curr;
                     }
-
-                    if(found_dead)
+                    else if(verdict == r_ui_utils::pane_check::restart_live)
                     {
                         R_LOG_ERROR("Dead stream detected");
                         _stalled.insert(curr->first);  // tile shows "Offline" until a frame arrives

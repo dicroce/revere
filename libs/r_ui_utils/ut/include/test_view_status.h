@@ -12,6 +12,8 @@ public:
       TEST(test_view_status::test_not_live);
       TEST(test_view_status::test_label_holds);
       TEST(test_view_status::test_texts);
+      TEST(test_view_status::test_check_pane);
+      TEST(test_view_status::test_quiet_playback_pauses);
     RTF_FIXTURE_END();
 
     virtual ~test_view_status() throw() {}
@@ -27,4 +29,6 @@ public:
     void test_not_live();
     void test_label_holds();
     void test_texts();
+    void test_check_pane();
+    void test_quiet_playback_pauses();
 };

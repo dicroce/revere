@@ -41,3 +41,15 @@ view_stage view_status::update(const view_signals& s, steady_clock::time_point n
     _shown_at = now;
     return _shown;
 }
+
+pane_check r_ui_utils::check_pane(const pane_progress& p)
+{
+    if(!p.running || !p.due)
+        return pane_check::fine;
+    bool dead = !p.video_moved || (p.has_audio && !p.audio_moved);
+    if(!dead)
+        return pane_check::fine;
+    // A recorded range can't be brought back by following live: for a camera
+    // that's offline, live has nothing to show either.
+    return p.playback ? pane_check::pause : pane_check::restart_live;
+}
