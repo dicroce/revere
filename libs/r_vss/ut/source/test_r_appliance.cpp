@@ -116,15 +116,19 @@ void test_r_appliance::test_auth_status_fields()
 
 void test_r_appliance::test_set_password_bootstrap()
 {
-    // No password yet: from loopback only, with or without credentials, appliance or not.
+    // No password yet: from loopback only, appliance or not.
     for(bool appliance : {false, true})
-    {
         for(auto a : {auth::none, auth::current_password, auth::session_token, auth::local_token})
-        {
-            RTF_ASSERT(r_appliance::check_set_password(appliance, false, true, a) == verdict::allow);
             RTF_ASSERT(r_appliance::check_set_password(appliance, false, false, a) == verdict::loopback_only);
-        }
-    }
+
+    // A normal install needs no credentials on loopback (unchanged).
+    for(auto a : {auth::none, auth::current_password, auth::session_token, auth::local_token})
+        RTF_ASSERT(r_appliance::check_set_password(false, false, true, a) == verdict::allow);
+
+    // An appliance needs the local token too: only its agent sets the first one.
+    RTF_ASSERT(r_appliance::check_set_password(true, false, true, auth::local_token) == verdict::allow);
+    for(auto a : {auth::none, auth::current_password, auth::session_token})
+        RTF_ASSERT(r_appliance::check_set_password(true, false, true, a) == verdict::cloud_managed);
 }
 
 void test_r_appliance::test_set_password_normal_install()

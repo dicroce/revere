@@ -318,6 +318,10 @@ public:
     R_API r_disco::r_devices& get_devices();
 
     // System-password administration from the trusted local (desktop) admin UI.
+    // These bypass /set_password's appliance rule (r_vss/r_appliance.h: only the
+    // local token sets an appliance's password). That's deliberate: they're
+    // reached only from the desktop window, which a headless appliance never
+    // shows, so the cloud stays the only owner of an appliance's password.
     R_API void set_system_password(const std::string& password);
     R_API bool system_password_set() const;
     R_API void clear_system_password();

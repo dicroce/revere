@@ -7,6 +7,7 @@
 #include "r_utils/r_socket.h"
 #include "r_utils/r_ssl_server_socket.h"
 #include "r_vss/r_ws_auth.h"
+#include "r_vss/r_web_password.h"
 #include "r_utils/r_macro.h"
 #include "r_disco/r_devices.h"
 #include "r_disco/r_agent.h"
@@ -122,6 +123,8 @@ public:
     // System-password administration, intended for the trusted local (desktop)
     // admin surface. Setting from here needs no current-password check — local
     // access is the trust boundary. Invalidates outstanding web tokens.
+    // Nor does it apply the appliance rule (r_vss/r_appliance.h): the desktop
+    // UI is its only caller, and a headless appliance never runs it.
     R_API void set_system_password(const std::string& password);
     R_API bool system_password_set() const;
     // Remove the stored system password (web UI returns to first-run setup).
@@ -273,7 +276,6 @@ private:
     r_http::r_server_response _post_set_password(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     // Auth helpers for the camera-management ("Record") endpoints.
-    std::string _password_path() const;
     bool _system_password_set() const;
     r_utils::r_nullable<std::string> _load_system_password();
     void _store_system_password(const std::string& password);
@@ -298,7 +300,6 @@ private:
     r_http::r_web_server<r_utils::r_ssl_server_socket> _https;
     std::shared_ptr<r_utils::r_ssl_server_config> _tls;
     bool _remote_access_active {false};
-    bool _appliance {false};
     // This recorder's id (r_utils/r_recorder_id.h), read or made once at start; empty if it couldn't be kept.
     std::string _recorder_id;
     // Sessions are shared so a /transcode keeps its own alive while finalize or
@@ -369,8 +370,9 @@ private:
     // token for same-user processes, and the per-address login throttle. The
     // system password itself is stored encrypted-at-rest with the OS-protected
     // master key (same scheme as camera credentials).
-    std::vector<uint8_t> _master_key;
     r_ws_auth _auth;
+    // The local web password and its routes (/auth_status, /set_password).
+    r_web_password _password;
 };
 
 }
