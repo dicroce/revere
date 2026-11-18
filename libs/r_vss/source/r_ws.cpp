@@ -1641,13 +1641,18 @@ r_http::r_server_response r_ws::_get_video(r_utils::r_socket_base&, const r_http
                 R_THROW(("Unknown stream: %s", args["stream"].c_str()));
         }
 
+        // newest_gop=1: a live view's first read, which answers a start past the newest frame with the newest GOP
+        // rather than nothing (r_storage_file_reader::query). Anything else is as before.
+        auto newest_gop = args.find("newest_gop") != args.end() && args["newest_gop"] == "1";
+
         auto qr_buffer = query_get_video(
             _top_dir,
             _devices,
             args["camera_id"],
             r_time_utils::iso_8601_to_tp(args["start_time"]),
             r_time_utils::iso_8601_to_tp(args["end_time"]),
-            substream
+            substream,
+            newest_gop
         );
 
         r_server_response response;

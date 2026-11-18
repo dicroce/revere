@@ -50,7 +50,10 @@ static void _whack_files()
 
     for(auto& f : {"ts_test.nts", "ts_test.db", "ts_test.db-wal", "ts_test.db-shm",
                    "av_query_test.nts", "av_query_test.db", "av_query_test.db-wal", "av_query_test.db-shm",
-                   "bad_magic_test.nts", "bad_magic_test.db"})
+                   "bad_magic_test.nts", "bad_magic_test.db",
+                   "gop_past_end_test.nts", "gop_past_end_test.db", "gop_past_end_test.db-wal", "gop_past_end_test.db-shm",
+                   "gop_blocks_test.nts", "gop_blocks_test.db", "gop_blocks_test.db-wal", "gop_blocks_test.db-shm",
+                   "gop_empty_test.nts", "gop_empty_test.db", "gop_empty_test.db-wal", "gop_empty_test.db-shm"})
         if(r_fs::file_exists(f))
             r_fs::remove_file(f);
 
@@ -479,6 +482,101 @@ void test_r_storage::test_r_storage_file_query_key_empty()
     uint32_t version = 0;
     auto bt = r_blob_tree::deserialize(buf.data(), buf.size(), version);
     RTF_ASSERT(bt["frames"].size() == 0);
+}
+
+// The video frames of a query's answer, as the byte each frame's data starts with (its index).
+static vector<int> _answer_indexes(const vector<uint8_t>& buf)
+{
+    uint32_t version = 0;
+    auto bt = r_blob_tree::deserialize(buf.data(), buf.size(), version);
+    vector<int> out;
+    if(!bt.has_key("frames"))
+        return out;
+    for(size_t i = 0; i < bt["frames"].size(); ++i)
+        out.push_back((int)bt["frames"][i]["data"].get_blob()[0]);
+    return out;
+}
+
+// A live view's first read, newest_gop_past_end: a start past the newest frame answers with the newest GOP (its key
+// frame to the end) instead of nothing, but only when the newest frame is at most NEWEST_GOP_REACH_MS before the start,
+// and a start the recording reaches is as it was.
+void test_r_storage::test_r_storage_file_query_newest_gop_past_end()
+{
+    r_storage_file::allocate("gop_past_end_test.nts", 65536, 10);
+    r_storage_file sf("gop_past_end_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    // Frames 0..59, a key frame every 10th, 33 ms apart; each frame's first byte is its index.
+    int64_t base = _wall_now_ms() - 20000;
+    for(int i = 0; i < 60; ++i)
+    {
+        vector<uint8_t> frame(64, (uint8_t)i);
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), (i % 10) == 0, base + i * 33, i * 33);
+    }
+    const int64_t newest = base + 59 * 33;
+    const int64_t end = newest + 30000;
+    const vector<int> last_gop = {50, 51, 52, 53, 54, 55, 56, 57, 58, 59};
+
+    r_storage_file_reader sfr("gop_past_end_test.nts");
+
+    // Past the newest frame: nothing as before, the newest GOP with the flag.
+    RTF_ASSERT(_answer_indexes(sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, newest + 5000, end)).empty());
+    RTF_ASSERT(_answer_indexes(sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, newest + 5000, end, false)).empty());
+    RTF_ASSERT(_answer_indexes(sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, newest + 5000, end, true)) == last_gop);
+    RTF_ASSERT(_answer_indexes(sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, newest + 1, end, true)) == last_gop);
+
+    // The reach: at it the newest GOP answers, a millisecond past it nothing does.
+    RTF_ASSERT(_answer_indexes(sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, newest + r_storage_file_reader::NEWEST_GOP_REACH_MS, end, true)) == last_gop);
+    RTF_ASSERT(_answer_indexes(sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, newest + r_storage_file_reader::NEWEST_GOP_REACH_MS + 1, end + 1000, true)).empty());
+
+    // A start the recording reaches is unchanged by the flag: from the key frame before it.
+    auto from_55 = _answer_indexes(sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, base + 55 * 33, end, false));
+    RTF_ASSERT(from_55 == last_gop);
+    RTF_ASSERT(_answer_indexes(sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, base + 55 * 33, end, true)) == from_55);
+    auto from_5 = _answer_indexes(sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, base + 5 * 33, end, true));
+    RTF_ASSERT(from_5.size() == 60 && from_5.front() == 0 && from_5.back() == 59);
+
+    // The end bounds the answer as it does anywhere: a window that ends before the newest GOP's later frames.
+    RTF_ASSERT((_answer_indexes(sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, newest + 5000, base + 53 * 33 + 1, true)) ==
+                vector<int>{50, 51, 52, 53}));
+}
+
+// Backing up from the newest frame to its key frame crosses blocks: frames big enough that a block holds at most 8.
+void test_r_storage::test_r_storage_file_query_newest_gop_across_blocks()
+{
+    r_storage_file::allocate("gop_blocks_test.nts", 65536, 40);
+    r_storage_file sf("gop_blocks_test.nts");
+
+    r_nullable<string> vp;
+    vp.set_value(string("vparams"));
+    auto wc = sf.create_write_context("h264", vp, R_STORAGE_MEDIA_TYPE_VIDEO);
+
+    int64_t base = _wall_now_ms() - 20000;
+    for(int i = 0; i < 100; ++i)
+    {
+        vector<uint8_t> frame(8000, (uint8_t)i);
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), (i % 30) == 0, base + i * 33, i * 33);
+    }
+    const int64_t newest = base + 99 * 33;
+
+    r_storage_file_reader sfr("gop_blocks_test.nts");
+    auto got = _answer_indexes(sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, newest + 3000, newest + 30000, true));
+    RTF_ASSERT(got.size() == 10);   // 90..99: the newest key frame is 90
+    RTF_ASSERT(got.front() == 90 && got.back() == 99);
+}
+
+// A recording with no frames answers empty with the flag, and doesn't throw.
+void test_r_storage::test_r_storage_file_query_newest_gop_empty()
+{
+    r_storage_file::allocate("gop_empty_test.nts", 65536, 10);
+
+    r_storage_file_reader sfr("gop_empty_test.nts");
+    vector<uint8_t> buf;
+    RTF_ASSERT_NO_THROW(buf = sfr.query(R_STORAGE_MEDIA_TYPE_VIDEO, _wall_now_ms(), _wall_now_ms() + 30000, true));
+    RTF_ASSERT(_answer_indexes(buf).empty());
 }
 
 // Async writes: frame n carries n in its first two bytes, so a readback shows
