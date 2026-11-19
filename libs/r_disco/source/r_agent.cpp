@@ -482,7 +482,7 @@ void r_agent::apply_discovered_changes(const vector<pair<r_stream_config, string
             continue;
         cam.mac = mac;
         _save_camera_cb(cam);
-        R_LOG_INFO("Camera %s: noted its MAC address", id.c_str());
+        R_LOG_INFO("Camera %s: noted its MAC address, %s, at %s", id.c_str(), mac.value().c_str(), cam.ipv4.value().c_str());
     }
 }
 
@@ -504,6 +504,37 @@ void r_agent::_follow(const std::string& id, _held_move held, const std::string&
     m.set_value(held.move);
     _notify_move(id, m);
     _maybe_schedule_reinterrogation(held.discovered);
+}
+
+void r_agent::_confirm(const std::string& id, _held_move held)
+{
+    // The person vouched that what answers at the new address is this camera, so its MAC is the camera's from now
+    // on: a stored MAC from another interface (wired and Wi-Fi differ) or an earlier device would otherwise hold
+    // every later move, however often they're confirmed. Saved before the move is followed, which writes the new
+    // address over the same row; read outside the lock, as it talks to the camera.
+    if(_camera_lookup_cb && _save_camera_cb)
+    {
+        auto cam_n = _camera_lookup_cb(id);
+        if(!cam_n.is_null())
+        {
+            auto cam = cam_n.value();
+            auto lookup = _mac_lookup ? _mac_lookup : mac_lookup(_default_mac_lookup);
+            auto seen = lookup(held.move.new_ipv4, held.move.new_port);
+            auto norm = [](const r_nullable<string>& m) {
+                return m.is_null() ? r_nullable<string>() : r_utils::r_networking::r_normalize_mac(m.value());
+            };
+            auto was = norm(cam.mac), now = norm(seen);
+            if(was.is_null() != now.is_null() || (!was.is_null() && was.value() != now.value()))
+            {
+                R_LOG_INFO("Camera %s: confirmed at %s, so its MAC is %s now (was %s)", id.c_str(), held.move.new_ipv4.c_str(),
+                           now.is_null() ? "unknown until it's noted there" : now.value().c_str(),
+                           was.is_null() ? "none" : was.value().c_str());
+                cam.mac = now;
+                _save_camera_cb(cam);
+            }
+        }
+    }
+    _follow(id, held, "confirmed by the user");
 }
 
 void r_agent::recheck_held_moves()
@@ -570,9 +601,12 @@ void r_agent::recheck_held_moves()
         }
         if(!changed.is_null())
         {
-            R_LOG_WARNING("Camera %s at %s: the move stays held, the new address's MAC %s", id.c_str(), h.move.new_ipv4.c_str(),
+            // The MACs are named, so a held move can be read from the log alone: stored, and seen at the new address.
+            auto shown = [](const r_nullable<string>& m) { return m.is_null() ? string("none") : m.value(); };
+            R_LOG_WARNING("Camera %s at %s: the move stays held, the new address's MAC %s (stored %s, seen %s)", id.c_str(), h.move.new_ipv4.c_str(),
                           reason == "no_stored_mac" ? "can't be checked (no MAC stored for the camera)"
-                                                    : (reason == "mac_unknown" ? "couldn't be read" : "doesn't match"));
+                                                    : (reason == "mac_unknown" ? "couldn't be read" : "doesn't match"),
+                          shown(stored.mac).c_str(), shown(new_mac).c_str());
             _notify_move(id, changed);
         }
     }
@@ -614,7 +648,7 @@ move_answer r_agent::answer_camera_move(const std::string& camera_id, const std:
         }
     }
     if(follow)
-        _follow(camera_id, h, "confirmed by the user");
+        _confirm(camera_id, h);
     else
     {
         if(was_held)
@@ -634,7 +668,7 @@ bool r_agent::confirm_camera_move(const std::string& camera_id)
             return false;
         h = it->second;
     }
-    _follow(camera_id, h, "confirmed by the user");
+    _confirm(camera_id, h);
     return true;
 }
 
