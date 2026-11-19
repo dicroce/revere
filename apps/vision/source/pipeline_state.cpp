@@ -240,40 +240,17 @@ pipeline_state::pipeline_state(const stream_info& si, pipeline_host* ph, uint16_
 
     _source.set_video_sample_cb([this](const sample_context& sc, const r_gst_buffer& buffer, bool key, int64_t pts){
 
-        if(_video_decoder.is_null())
+        if(!_have_video_decoder)
         {
             auto media = sc.sdp_media(VIDEO_MEDIA);
 
             auto video_encoding = media.rtpmaps[media.formats.front()].encoding;
 
-            if(video_encoding == H264_ENCODING)
-            {
-                this->_video_decoder.assign(r_av::r_video_decoder(AV_CODEC_ID_H264, r_av::r_find_best_hw_accel(AV_CODEC_ID_H264)));
+            string video_codec_name, video_codec_parameters;
+            int video_timebase;
+            tie(video_codec_name, video_codec_parameters, video_timebase) = sdp_media_to_s(media);
 
-                string video_codec_name, h264_codec_parameters;
-                int video_timebase;
-                tie(video_codec_name, h264_codec_parameters, video_timebase) = sdp_media_to_s(media);
-
-                auto h264_sps_b = get_h264_sps(h264_codec_parameters);
-                auto h264_pps_b = get_h264_pps(h264_codec_parameters);
-
-                this->_video_decoder.raw().set_extradata(make_h264_extradata(h264_sps_b, h264_pps_b));
-            }
-            else if(video_encoding == H265_ENCODING)
-            {
-                this->_video_decoder.assign(r_av::r_video_decoder(AV_CODEC_ID_H265, r_av::r_find_best_hw_accel(AV_CODEC_ID_H265)));
-
-                string video_codec_name, h265_codec_parameters;
-                int video_timebase;
-                tie(video_codec_name, h265_codec_parameters, video_timebase) = sdp_media_to_s(media);
-
-                auto h265_vps_b = get_h265_vps(h265_codec_parameters);
-                auto h265_sps_b = get_h265_sps(h265_codec_parameters);
-                auto h265_pps_b = get_h265_pps(h265_codec_parameters);
-
-                this->_video_decoder.raw().set_extradata(make_h265_extradata(h265_vps_b, h265_sps_b, h265_pps_b));
-            }
-            else R_THROW(("Unsupported video codec."));
+            _make_video_decoder(video_encoding, video_codec_parameters);
         }
 
         if(_live)
@@ -589,12 +566,26 @@ void pipeline_state::_poster_entry_point(string revere_ip, uint16_t w, uint16_t 
     }
 }
 
+void pipeline_state::_make_video_decoder(r_encoding encoding, const string& codec_parameters)
+{
+    if(encoding != H264_ENCODING && encoding != H265_ENCODING)
+        R_THROW(("Unsupported video codec."));
+
+    lock_guard<mutex> g(_decoder_lok);
+    if(!_video_decoder.is_null())
+        return;
+    auto codec = (encoding == H264_ENCODING) ? AV_CODEC_ID_H264 : AV_CODEC_ID_H265;
+    _video_decoder.assign(r_av::r_video_decoder(codec, r_av::r_find_best_hw_accel(codec)));
+    if(encoding == H264_ENCODING)
+        _video_decoder.raw().set_extradata(make_h264_extradata(get_h264_sps(codec_parameters), get_h264_pps(codec_parameters)));
+    else
+        _video_decoder.raw().set_extradata(make_h265_extradata(get_h265_vps(codec_parameters), get_h265_sps(codec_parameters), get_h265_pps(codec_parameters)));
+    _have_video_decoder = true;
+}
+
 void pipeline_state::control_bar(const system_clock::time_point& pos)
 {
     _last_control_bar_pos = pos;
-
-    if(_video_decoder.is_null())
-        return;
 
     auto maybe_revere_ipv4 = _cfg_state.get_revere_ipv4();
     if(maybe_revere_ipv4.is_null())
@@ -615,6 +606,16 @@ void pipeline_state::control_bar(const system_clock::time_point& pos)
             {
                 if(bt["frames"][0].has_key("data"))
                 {
+                    // A camera that has never sent this pane video (one that's offline) has no decoder yet: make it
+                    // from the recording's codec, as the reply gives it. Without, scrubbing showed nothing at all.
+                    if(!_have_video_decoder)
+                    {
+                        if(!bt.has_key("video_codec_name"))
+                            return;
+                        auto codec_parameters = bt.has_key("video_codec_parameters") ? bt["video_codec_parameters"].get_string() : string();
+                        _make_video_decoder(str_to_encoding(bt["video_codec_name"].get_string()), codec_parameters);
+                    }
+
                     auto frame = bt["frames"][0]["data"].get_blob();
 
                     auto s_ts = bt["frames"][0]["ts"].get_string();

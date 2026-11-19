@@ -9,6 +9,7 @@
 #include "r_av/r_audio_decoder.h"
 #include <SDL.h>
 #include <atomic>
+#include <mutex>
 #include <thread>
 #include <chrono>
 #include <cstdint>
@@ -171,6 +172,13 @@ private:
     std::thread _process_th;
     r_utils::r_work_q<sample, bool> _process_q;
     r_utils::r_nullable<sample> _last_video_sample;
+    // Makes _video_decoder, once, with the parameter sets in codec_parameters (an SDP's fmtp, or the recording's
+    // as revere stores them) as Annex-B extradata. Called by whichever comes first: a video sample from the source
+    // (live or playback), or a still from the timeline (control_bar), which a camera that has never sent this pane
+    // video needs. _decoder_lok covers making it; the decode thread uses it only for samples posted after it exists.
+    void _make_video_decoder(r_pipeline::r_encoding encoding, const std::string& codec_parameters);
+    std::mutex _decoder_lok;
+    std::atomic<bool> _have_video_decoder {false};
     r_utils::r_nullable<r_av::r_video_decoder> _video_decoder;
     r_utils::r_nullable<r_av::r_audio_decoder> _audio_decoder;
     SDL_AudioDeviceID _sdl_audio_device;
