@@ -343,6 +343,9 @@ private:
     // Layout names whose pipeline the dead check tore down for a stall and
     // which haven't posted a frame since (drives the "Offline" tile badge).
     std::set<std::string> _stalled;
+    // Playback panes the dead check paused, and where: each is taken out of _pipes and stopped off the lock (a dead
+    // source can take seconds to stop), and lookup_render_context makes it again, paused there instead of live.
+    std::map<std::string, std::chrono::system_clock::time_point> _resume_paused;
 
     // Playback tracking for relative timestamp calculation
     std::map<std::string, std::chrono::system_clock::time_point> _playback_start_positions;

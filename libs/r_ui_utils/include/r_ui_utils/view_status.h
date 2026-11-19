@@ -41,6 +41,27 @@ R_API view_stage view_stage_now(const view_signals& s, std::chrono::steady_clock
 // The words shown for a stage; empty for none.
 R_API const char* view_stage_text(view_stage stage);
 
+// A pane's stream at the dead check (vision's pipeline_host, every 10 s).
+struct pane_progress
+{
+    bool running {false};     // its source is playing
+    bool playback {false};    // playing a recorded range, not live
+    bool due {false};         // started long enough ago to be checked
+    bool video_moved {true};  // video arrived since the last check
+    bool has_audio {false};
+    bool audio_moved {true};  // audio arrived since the last check
+};
+
+enum class pane_check
+{
+    fine,
+    restart_live, // a live stream that went quiet: ended and started again
+    pause         // a recorded range that went quiet: paused where its picture stopped, never swapped to live
+};
+
+// What the dead check does with a pane.
+R_API pane_check check_pane(const pane_progress& p);
+
 // The stage a pane shows: view_stage_now, except that a label, once shown,
 // stays for at least VIEW_LABEL_MIN_SHOW.
 class R_API view_status final
