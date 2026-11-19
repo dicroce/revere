@@ -231,6 +231,9 @@ private:
     r_http::r_server_response _post_update_camera_properties(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _post_forget_camera(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _post_camera_move_confirm(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _post_camera_move_dismiss(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _answer_camera_move(const r_http::r_server_request& request, bool confirm);
 
     r_http::r_server_response _post_add_rtsp_camera(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 

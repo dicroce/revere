@@ -91,9 +91,9 @@ void test_r_disco::test_r_disco_r_agent_basics()
 }
 
 // ---------------------------------------------------------------------------
-// An assigned camera found at a new address (r_camera_move.h): followed only
-// when its old address has gone silent for MOVE_FOLLOW_AFTER and the new one
-// has the camera's stored MAC; otherwise held, and nothing is written.
+// An assigned camera found at a new address (r_camera_move.h): followed at
+// once when the new address has the camera's stored MAC, whatever its old
+// address does; otherwise held, and nothing is written.
 
 namespace
 {
@@ -131,9 +131,10 @@ struct fake_host
     vector<r_stream_config> written;
     map<string, r_nullable<r_camera_move>> moves;
     vector<r_camera> saved;
-    bool old_alive {true};
     r_nullable<string> new_mac;
     int64_t now_ms {1'800'000'000'000LL};
+    // Every move change the host was told, in order.
+    vector<pair<string, r_nullable<r_camera_move>>> told;
 
     void wire(r_agent& agent)
     {
@@ -146,9 +147,8 @@ struct fake_host
         agent.set_stream_change_cb([this](const vector<pair<r_stream_config, string>>& scs){
             for(auto& p : scs) written.push_back(p.first);
         });
-        agent.set_camera_move_cb([this](const string& id, const r_nullable<r_camera_move>& m){ moves[id] = m; });
+        agent.set_camera_move_cb([this](const string& id, const r_nullable<r_camera_move>& m){ moves[id] = m; told.push_back({id, m}); });
         agent.set_save_camera_cb([this](const r_camera& c){ saved.push_back(c); cameras[c.id] = c; });
-        agent.set_address_alive_probe([this](const r_camera&){ return old_alive; });
         agent.set_mac_lookup([this](const string&, int){ return new_mac; });
         agent.set_clock_ms([this](){ return now_ms; });
     }
@@ -187,22 +187,115 @@ void test_r_disco::test_camera_move_from()
 
 void test_r_disco::test_decide_camera_move()
 {
-    using namespace std::chrono;
     auto mac = _s("00:1b:2c:3d:4e:5f");
-    auto five = duration_cast<milliseconds>(MOVE_FOLLOW_AFTER);
 
-    // The old address still answers: not a move.
-    RTF_ASSERT(decide_camera_move(true, five, mac, mac) == move_outcome::hold);
-    // The new address's MAC isn't the camera's.
-    RTF_ASSERT(decide_camera_move(false, five, mac, _s("aa:aa:aa:aa:aa:aa")) == move_outcome::hold);
-    // The old address silent long enough, and the MAC matches (in any spelling): followed.
-    RTF_ASSERT(decide_camera_move(false, five, mac, mac) == move_outcome::follow);
-    RTF_ASSERT(decide_camera_move(false, five, mac, _s("00-1B-2C-3D-4E-5F")) == move_outcome::follow);
-    // No stored MAC, or none read for the new address.
-    RTF_ASSERT(decide_camera_move(false, five, r_nullable<string>(), mac) == move_outcome::hold);
-    RTF_ASSERT(decide_camera_move(false, five, mac, r_nullable<string>()) == move_outcome::hold);
-    // Silent, but not for long enough yet.
-    RTF_ASSERT(decide_camera_move(false, five - milliseconds(1), mac, mac) == move_outcome::hold);
+    // The new address has the camera's MAC (in any spelling): followed.
+    RTF_ASSERT(decide_camera_move(mac, mac) == move_outcome::follow);
+    RTF_ASSERT(decide_camera_move(mac, _s("00-1B-2C-3D-4E-5F")) == move_outcome::follow);
+    // A different MAC, none read for the new address, or none stored: held.
+    RTF_ASSERT(decide_camera_move(mac, _s("aa:aa:aa:aa:aa:aa")) == move_outcome::hold);
+    RTF_ASSERT(decide_camera_move(mac, r_nullable<string>()) == move_outcome::hold);
+    RTF_ASSERT(decide_camera_move(r_nullable<string>(), mac) == move_outcome::hold);
+}
+
+void test_r_disco::test_hold_reason_for()
+{
+    auto mac = _s("00:1b:2c:3d:4e:5f");
+    auto none = r_nullable<string>();
+
+    RTF_ASSERT(hold_reason_for(mac, _s("00-1B-2C-3D-4E-5F")) == "");
+    RTF_ASSERT(hold_reason_for(none, mac) == "no_stored_mac");
+    RTF_ASSERT(hold_reason_for(_s("not a mac"), mac) == "no_stored_mac");
+    RTF_ASSERT(hold_reason_for(none, none) == "no_stored_mac");
+    RTF_ASSERT(hold_reason_for(mac, none) == "mac_unknown");
+    RTF_ASSERT(hold_reason_for(mac, _s("garbage")) == "mac_unknown");
+    RTF_ASSERT(hold_reason_for(mac, _s("aa:aa:aa:aa:aa:aa")) == "mac_mismatch");
+}
+
+void test_r_disco::test_agent_reports_why_a_move_is_held()
+{
+    // A different MAC at the new address: held, with the reason, from the
+    // poll that found it; told again only when the reason changes.
+    {
+        r_agent agent("top_dir");
+        fake_host host;
+        host.cameras["cam1"] = _assigned("cam1", "10.0.0.5", _s("00:1b:2c:3d:4e:5f"));
+        host.wire(agent);
+        host.new_mac = _s("66:77:88:99:aa:bb");
+        agent.apply_discovered_changes({{_discovered("cam1", "10.0.0.9"), "h1"}});
+        RTF_ASSERT(host.moves["cam1"].value().hold_reason.empty());
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["cam1"].value().hold_reason == "mac_mismatch");
+        RTF_ASSERT(agent.camera_moves().at("cam1").hold_reason == "mac_mismatch");
+        auto told = host.told.size();
+        host.minutes(10);
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.told.size() == told);
+        host.new_mac = r_nullable<string>();
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["cam1"].value().hold_reason == "mac_unknown");
+        RTF_ASSERT(host.told.size() == told + 1);
+        RTF_ASSERT(host.written.empty());
+        // The camera's MAC readable there after all: followed, its reason gone.
+        host.new_mac = _s("00:1b:2c:3d:4e:5f");
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.written.size() == 1);
+        RTF_ASSERT(host.moves["cam1"].value().status == "followed");
+        RTF_ASSERT(host.moves["cam1"].value().hold_reason.empty());
+        RTF_ASSERT(agent.camera_moves().at("cam1").hold_reason.empty());
+    }
+    // No MAC stored for the camera.
+    {
+        r_agent agent("top_dir");
+        fake_host host;
+        host.cameras["cam1"] = _assigned("cam1", "10.0.0.5", r_nullable<string>());
+        host.wire(agent);
+        host.new_mac = _s("00:1b:2c:3d:4e:5f");
+        agent.apply_discovered_changes({{_discovered("cam1", "10.0.0.9"), "h1"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["cam1"].value().hold_reason == "no_stored_mac");
+        RTF_ASSERT(host.written.empty());
+    }
+}
+
+void test_r_disco::test_agent_answer_camera_move()
+{
+    r_agent agent("top_dir");
+    fake_host host;
+    host.cameras["cam1"] = _assigned("cam1", "10.0.0.5", r_nullable<string>());
+    host.wire(agent);
+
+    // Nothing to answer.
+    RTF_ASSERT(agent.answer_camera_move("cam1", "10.0.0.9", true) == move_answer::no_move);
+    RTF_ASSERT(agent.answer_camera_move("cam1", "10.0.0.9", false) == move_answer::no_move);
+
+    // An answer to the address the person was shown, not another.
+    agent.apply_discovered_changes({{_discovered("cam1", "10.0.0.9"), "h1"}});
+    RTF_ASSERT(agent.answer_camera_move("cam1", "10.0.0.7", true) == move_answer::moved_again);
+    RTF_ASSERT(agent.answer_camera_move("cam1", "10.0.0.7", false) == move_answer::moved_again);
+    RTF_ASSERT(host.written.empty());
+    RTF_ASSERT(host.moves["cam1"].value().status == "held");
+
+    // Keep current: gone, and the same address isn't raised again.
+    RTF_ASSERT(agent.answer_camera_move("cam1", "10.0.0.9", false) == move_answer::ok);
+    RTF_ASSERT(host.moves["cam1"].is_null());
+    agent.apply_discovered_changes({{_discovered("cam1", "10.0.0.9"), "h2"}});
+    RTF_ASSERT(host.moves["cam1"].is_null());
+    RTF_ASSERT(host.written.empty());
+
+    // Use new address: written at once, followed.
+    agent.apply_discovered_changes({{_discovered("cam1", "10.0.0.10"), "h3"}});
+    RTF_ASSERT(agent.answer_camera_move("cam1", "10.0.0.10", true) == move_answer::ok);
+    RTF_ASSERT(host.written.size() == 1 && host.written[0].ipv4.value() == "10.0.0.10");
+    RTF_ASSERT(host.moves["cam1"].value().status == "followed");
+
+    // A followed move: nothing to confirm; dismissing the address shown marks it seen.
+    RTF_ASSERT(agent.answer_camera_move("cam1", "10.0.0.10", true) == move_answer::no_move);
+    RTF_ASSERT(agent.answer_camera_move("cam1", "10.0.0.11", false) == move_answer::moved_again);
+    RTF_ASSERT(agent.answer_camera_move("cam1", "10.0.0.10", false) == move_answer::ok);
+    RTF_ASSERT(host.moves["cam1"].is_null());
+    RTF_ASSERT(agent.camera_moves().count("cam1") == 0);
+    RTF_ASSERT(host.written.size() == 1);
 }
 
 void test_r_disco::test_agent_holds_a_move_and_writes_nothing()
@@ -229,8 +322,11 @@ void test_r_disco::test_agent_holds_a_move_and_writes_nothing()
     RTF_ASSERT(agent.camera_moves().count("cam1") == 0);
 }
 
-void test_r_disco::test_agent_follows_when_old_silent_and_mac_matches()
+void test_r_disco::test_agent_follows_at_once_when_mac_matches()
 {
+    // After a power cut: the camera answers at a new address with its MAC.
+    // Followed by the poll that found it, so it keeps recording; whatever
+    // answers at its old address doesn't matter.
     r_agent agent("top_dir");
     fake_host host;
     host.cameras["cam1"] = _assigned("cam1", "10.0.0.5", _s("00:1b:2c:3d:4e:5f"));
@@ -238,15 +334,10 @@ void test_r_disco::test_agent_follows_when_old_silent_and_mac_matches()
     host.new_mac = _s("00:1B:2C:3D:4E:5F");
 
     agent.apply_discovered_changes({{_discovered("cam1", "10.0.0.9"), "h1"}});
-    host.old_alive = false;
-    agent.recheck_held_moves();          // silent from now
-    host.minutes(4);
-    agent.recheck_held_moves();          // 4 minutes: not yet
-    RTF_ASSERT(host.written.empty());
-    host.minutes(1);
-    agent.recheck_held_moves();          // 5 minutes: followed
+    agent.recheck_held_moves();
     RTF_ASSERT(host.written.size() == 1 && host.written[0].ipv4.value() == "10.0.0.9");
     RTF_ASSERT(host.moves["cam1"].value().status == "followed");
+    RTF_ASSERT(host.moves["cam1"].value().hold_reason.empty());
     RTF_ASSERT(agent.camera_moves().at("cam1").status == "followed");
 
     // The followed notice stays a day, then goes.
@@ -255,55 +346,22 @@ void test_r_disco::test_agent_follows_when_old_silent_and_mac_matches()
     RTF_ASSERT(host.moves["cam1"].is_null());
 }
 
-void test_r_disco::test_agent_holds_when_old_alive_mac_differs_or_unknown()
+void test_r_disco::test_agent_holds_when_mac_differs_unknown_or_none()
 {
-    // The old address answers again partway: the silence starts over.
+    struct holding { r_nullable<string> stored, at_new; };
+    for(auto& c : vector<holding>{
+        {_s("00:1b:2c:3d:4e:5f"), _s("66:77:88:99:aa:bb")},
+        {_s("00:1b:2c:3d:4e:5f"), r_nullable<string>()},
+        {r_nullable<string>(), _s("00:1b:2c:3d:4e:5f")}})
     {
         r_agent agent("top_dir");
         fake_host host;
-        host.cameras["cam1"] = _assigned("cam1", "10.0.0.5", _s("00:1b:2c:3d:4e:5f"));
+        host.cameras["cam1"] = _assigned("cam1", "10.0.0.5", c.stored);
         host.wire(agent);
-        host.new_mac = _s("00:1b:2c:3d:4e:5f");
+        host.new_mac = c.at_new;
         agent.apply_discovered_changes({{_discovered("cam1", "10.0.0.9"), "h1"}});
-        host.old_alive = false;
         agent.recheck_held_moves();
-        host.minutes(3);
-        host.old_alive = true;
-        agent.recheck_held_moves();
-        host.old_alive = false;
-        host.minutes(3);
-        agent.recheck_held_moves();
-        host.minutes(3);
-        agent.recheck_held_moves();
-        RTF_ASSERT(host.written.empty());
-        RTF_ASSERT(host.moves["cam1"].value().status == "held");
-    }
-    // A different MAC at the new address.
-    {
-        r_agent agent("top_dir");
-        fake_host host;
-        host.cameras["cam1"] = _assigned("cam1", "10.0.0.5", _s("00:1b:2c:3d:4e:5f"));
-        host.wire(agent);
-        host.new_mac = _s("66:77:88:99:aa:bb");
-        agent.apply_discovered_changes({{_discovered("cam1", "10.0.0.9"), "h1"}});
-        host.old_alive = false;
-        agent.recheck_held_moves();
-        host.minutes(10);
-        agent.recheck_held_moves();
-        RTF_ASSERT(host.written.empty());
-        RTF_ASSERT(host.moves["cam1"].value().status == "held");
-    }
-    // No MAC stored for the camera.
-    {
-        r_agent agent("top_dir");
-        fake_host host;
-        host.cameras["cam1"] = _assigned("cam1", "10.0.0.5", r_nullable<string>());
-        host.wire(agent);
-        host.new_mac = _s("00:1b:2c:3d:4e:5f");
-        agent.apply_discovered_changes({{_discovered("cam1", "10.0.0.9"), "h1"}});
-        host.old_alive = false;
-        agent.recheck_held_moves();
-        host.minutes(10);
+        host.minutes(60);
         agent.recheck_held_moves();
         RTF_ASSERT(host.written.empty());
         RTF_ASSERT(host.moves["cam1"].value().status == "held");

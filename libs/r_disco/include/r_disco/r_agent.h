@@ -62,9 +62,8 @@ typedef std::function<std::vector<r_camera>()> assigned_cameras_cb;
 // followed (see r_camera_move.h). The host app keeps it for its UI and API.
 typedef std::function<void(const std::string& camera_id, const r_utils::r_nullable<r_camera_move>& move)> camera_move_cb;
 
-// Whether a camera still answers at its stored address (its ONVIF service or
-// its RTSP port). Replaceable for tests.
-typedef std::function<bool(const r_camera& stored)> address_alive_probe;
+// r_agent::answer_camera_move's outcome.
+enum class move_answer { ok, no_move, moved_again };
 
 // The MAC address of the host at ipv4 (port: one to talk to first, so the
 // neighbour table has it), or null. Replaceable for tests.
@@ -89,7 +88,6 @@ public:
     R_API void set_camera_alert_cb(camera_alert_cb cb) {_camera_alert_cb = cb;}
     R_API void set_assigned_cameras_cb(assigned_cameras_cb cb) {_assigned_cameras_cb = cb;}
     R_API void set_camera_move_cb(camera_move_cb cb) {_camera_move_cb = cb;}
-    R_API void set_address_alive_probe(address_alive_probe p) {_address_alive = p;}
     R_API void set_mac_lookup(mac_lookup l) {_mac_lookup = l;}
     R_API void set_clock_ms(clock_ms c) {_clock_ms = c;}
 
@@ -100,9 +98,10 @@ public:
     // address without a stored MAC gets its MAC filled in.
     R_API void apply_discovered_changes(const std::vector<std::pair<r_stream_config, std::string>>& changed);
 
-    // Called after each poll: probes each held move's old address and follows
-    // the move when decide_camera_move says so; drops followed entries after
-    // a day.
+    // Called after each poll (right after apply_discovered_changes): reads the
+    // MAC at each held move's new address and follows the move when
+    // decide_camera_move says so, else notes why it's held (hold_reason_for);
+    // drops followed entries after a day.
     R_API void recheck_held_moves();
 
     // The user's answer to a held move: confirm writes the new address and
@@ -113,6 +112,14 @@ public:
     R_API bool dismiss_camera_move(const std::string& camera_id);
     // Clears a followed move's notice (the user has seen it).
     R_API void clear_followed_move(const std::string& camera_id);
+
+    // An answer from elsewhere (the local API, for the cloud) to the move the
+    // person was shown, its new address `new_ipv4`. confirm follows a held move
+    // (writes the new address, then re-checks the camera there in the
+    // background); dismiss keeps the current address of a held move, or marks a
+    // followed one seen. no_move: the camera has no such move (or confirm of a
+    // followed one); moved_again: its move now has another new address.
+    R_API move_answer answer_camera_move(const std::string& camera_id, const std::string& new_ipv4, bool confirm);
 
     // The moves now held or followed, by camera id.
     R_API std::map<std::string, r_camera_move> camera_moves() const;
@@ -267,7 +274,6 @@ private:
         r_camera_move move;
     };
     camera_move_cb _camera_move_cb;
-    address_alive_probe _address_alive;
     mac_lookup _mac_lookup;
     clock_ms _clock_ms;
     int64_t _now() const;

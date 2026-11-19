@@ -174,6 +174,8 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_POST, "/remove_camera", &r_ws::_post_remove_camera);
     route(METHOD_POST, "/update_camera_properties", &r_ws::_post_update_camera_properties);
     route(METHOD_POST, "/forget_camera", &r_ws::_post_forget_camera);
+    route(METHOD_POST, "/camera_move_confirm", &r_ws::_post_camera_move_confirm);
+    route(METHOD_POST, "/camera_move_dismiss", &r_ws::_post_camera_move_dismiss);
     route(METHOD_POST, "/add_rtsp_camera", &r_ws::_post_add_rtsp_camera);
     route(METHOD_GET, "/storage_info", &r_ws::_get_storage_info);
     route(METHOD_POST, "/storage_move", &r_ws::_post_storage_move);
@@ -930,10 +932,13 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     {"old_port", mv.old_port},
                     {"new_port", mv.new_port},
                     {"seen_at_ms", mv.seen_at_ms},
-                    {"old_dead_since_ms", mv.old_dead_since_ms},
                     {"followed_at_ms", mv.followed_at_ms},
                     {"message", r_disco::camera_move_message(mv)}
                 };
+                // Why a held move isn't followed yet (r_disco::hold_reason_for);
+                // left out until the first check.
+                if(mv.status == "held" && !mv.hold_reason.empty())
+                    camera_move["hold_reason"] = mv.hold_reason;
             }
 
             j["cameras"].push_back(
@@ -4071,6 +4076,63 @@ r_http::r_server_response r_ws::_post_forget_camera(r_utils::r_socket_base&, con
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to forget camera."));
+}
+
+// A person's answer to a camera's address change, from elsewhere than the
+// desktop (the cloud plugin, for the app and portal): body {camera_id,
+// new_ipv4}, new_ipv4 being the address the person was shown. The reply is
+// always {"ok": true} or {"ok": false, "code": "no_move" | "moved_again" |
+// "failed"}. A confirm answers once the new address is saved; the camera is
+// re-checked there in the background, and that shows in /cameras after.
+r_http::r_server_response r_ws::_answer_camera_move(const r_http::r_server_request& request, bool confirm)
+{
+    _require_auth(request);
+
+    string camera_id, new_ipv4;
+    try
+    {
+        auto req = json::parse(request.get_body_as_string());
+        if(req.contains("camera_id") && req["camera_id"].is_string())
+            camera_id = req["camera_id"].get<string>();
+        if(req.contains("new_ipv4") && req["new_ipv4"].is_string())
+            new_ipv4 = req["new_ipv4"].get<string>();
+    }
+    catch(const std::exception&)
+    {
+    }
+    if(camera_id.empty() || new_ipv4.empty())
+        R_STHROW(r_http_400_exception, ("Missing camera_id or new_ipv4."));
+
+    json j;
+    try
+    {
+        auto answer = _agent.answer_camera_move(camera_id, new_ipv4, confirm);
+        j["ok"] = answer == r_disco::move_answer::ok;
+        if(answer == r_disco::move_answer::no_move)
+            j["code"] = "no_move";
+        else if(answer == r_disco::move_answer::moved_again)
+            j["code"] = "moved_again";
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+        j = {{"ok", false}, {"code", "failed"}};
+    }
+
+    r_server_response response;
+    response.set_content_type("text/json");
+    response.set_body(j.dump());
+    return response;
+}
+
+r_http::r_server_response r_ws::_post_camera_move_confirm(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    return _answer_camera_move(request, true);
+}
+
+r_http::r_server_response r_ws::_post_camera_move_dismiss(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    return _answer_camera_move(request, false);
 }
 
 r_http::r_server_response r_ws::_post_add_rtsp_camera(r_utils::r_socket_base&, const r_http::r_server_request& request)
