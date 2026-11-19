@@ -32,7 +32,17 @@ public:
     R_API r_storage_file_reader& operator=(r_storage_file_reader&& other) noexcept = delete;
 
     // query() returns an r_blob_tree populated with the query results (same format as original)
-    R_API std::vector<uint8_t> query(r_storage_media_type media_type, int64_t start_ts, int64_t end_ts);
+    //
+    // newest_gop_past_end: a live view's first read. When start_ts is later than the newest stored video frame (the
+    // recording's times trail the clock, so a window that starts a little before now holds nothing yet), the answer is
+    // the newest GOP, from its key frame to the end of the video, instead of no frames. Only when that frame is at
+    // most NEWEST_GOP_REACH_MS before start_ts: a camera that stopped recording earlier still answers with no frames.
+    // Off, a start past the newest frame is empty, which callers that wait for new video (a live view's later chunks,
+    // an export's end) rely on.
+    R_API std::vector<uint8_t> query(r_storage_media_type media_type, int64_t start_ts, int64_t end_ts, bool newest_gop_past_end = false);
+
+    // How far before start_ts the newest frame may be for newest_gop_past_end to answer.
+    static constexpr int64_t NEWEST_GOP_REACH_MS = 60000;
 
     // The key frame of the GOP showing at ts: the key frame at or before ts.
     // Past the newest frame (by up to 5 minutes), the newest key frame; before

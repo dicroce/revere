@@ -64,7 +64,7 @@ r_storage_file_reader::~r_storage_file_reader() noexcept
 {
 }
 
-vector<uint8_t> r_storage_file_reader::query(r_storage_media_type media_type, int64_t start_ts, int64_t end_ts)
+vector<uint8_t> r_storage_file_reader::query(r_storage_media_type media_type, int64_t start_ts, int64_t end_ts, bool newest_gop_past_end)
 {
     vector<frame_data> video_frames;
     vector<frame_data> audio_frames;
@@ -85,7 +85,12 @@ vector<uint8_t> r_storage_file_reader::query(r_storage_media_type media_type, in
     if (media_type == R_STORAGE_MEDIA_TYPE_VIDEO || media_type == R_STORAGE_MEDIA_TYPE_ALL) {
         read_stream_or_warn("video", start_ts, end_ts, [&]() {
             nanots_iterator video_iterator(nanots_file_name, "video");
-            video_iterator.find(start_ts);
+            auto found = video_iterator.find(start_ts);
+
+            // The start is past the newest frame: from the newest key frame, if that frame is recent (see the header).
+            if (!found && newest_gop_past_end && video_iterator.seek_end() && video_iterator.valid() &&
+                video_iterator->timestamp < start_ts - NEWEST_GOP_REACH_MS)
+                return;  // the newest frame is old: a camera that stopped, not one that trails the clock
 
             // Back up to find previous key frame
             while (video_iterator.valid() && video_iterator->flags == 0) {

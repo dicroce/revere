@@ -666,7 +666,7 @@ vector<uint8_t> r_vss::query_get_rgb24_frame(const std::string& top_dir, r_devic
     R_THROW(("Unable to decode frame."));
 }
 
-vector<uint8_t> r_vss::query_get_video(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end, bool substream)
+vector<uint8_t> r_vss::query_get_video(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end, bool substream, bool newest_gop_past_end)
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
 
@@ -689,7 +689,8 @@ vector<uint8_t> r_vss::query_get_video(const std::string& top_dir, r_devices& de
     return sf.query(
         R_STORAGE_MEDIA_TYPE_ALL,
         chrono::duration_cast<std::chrono::milliseconds>(start.time_since_epoch()).count(),
-        chrono::duration_cast<std::chrono::milliseconds>(end.time_since_epoch()).count()
+        chrono::duration_cast<std::chrono::milliseconds>(end.time_since_epoch()).count(),
+        newest_gop_past_end
     );
 }
 
