@@ -11,6 +11,7 @@
 #include "r_vss/r_camera_source_info.h"
 #include "r_vss/r_motion_engine.h"
 #include "r_vss/r_build_info.h"
+#include "r_vss/r_appliance.h"
 #include "r_utils/3rdparty/json/json.h"
 #include "r_utils/r_time_utils.h"
 #include "r_utils/r_string_utils.h"
@@ -224,6 +225,9 @@ r_ws::r_ws(const string& top_dir, r_devices& devices, r_agent& agent, r_stream_k
     _https(WEB_SERVER_TLS_PORT, _read_remote_access(top_dir) ? string() : string("127.0.0.1"))
 {
     _remote_access_active = _read_remote_access(top_dir);
+    _appliance = r_appliance::read_flag(top_dir);
+    if(_appliance)
+        R_LOG_INFO("r_ws: appliance mode: the local web password is managed by the Revere app");
     _recorder_id = r_recorder_id::get_or_create(top_dir);
     if(_recorder_id.empty())
         R_LOG_WARNING("r_ws: couldn't keep a recorder id in %s; /version reports none", top_dir.c_str());
@@ -429,6 +433,11 @@ bool r_ws::_read_remote_access(const string& top_dir)
 bool r_ws::remote_access_configured() const
 {
     return _read_remote_access(_top_dir);
+}
+
+bool r_ws::appliance() const
+{
+    return _appliance;
 }
 
 bool r_ws::remote_access_active() const
@@ -4675,13 +4684,14 @@ void r_ws::_require_auth(const r_http::r_server_request& request)
         R_STHROW(r_http_401_exception, ("Unauthorized."));
 }
 
-r_http::r_server_response r_ws::_get_auth_status(r_utils::r_socket_base&, const r_http::r_server_request&)
+r_http::r_server_response r_ws::_get_auth_status(r_utils::r_socket_base& conn, const r_http::r_server_request&)
 {
     // Unauthenticated on purpose: lets the web UI decide between a first-run
-    // "create password" screen and a "login" screen. Only leaks whether a
-    // system password has been configured.
-    json j;
-    j["password_set"] = _system_password_set();
+    // "create password" screen, an appliance's "not set up yet" page and a
+    // "login" screen. Only leaks whether a system password has been
+    // configured, whether this is an appliance, and whether the caller is on
+    // this machine (which it knows already).
+    auto j = r_appliance::auth_status(_system_password_set(), _appliance, r_local_api_token::is_loopback_host(_peer_ip(conn)));
 
     r_server_response response;
     response.set_content_type("text/json");
@@ -4796,35 +4806,48 @@ r_http::r_server_response r_ws::_post_set_password(r_utils::r_socket_base& conn,
         if(new_password.empty())
             R_STHROW(r_http_400_exception, ("Password must not be empty."));
 
-        if(!_system_password_set())
+        // r_appliance::check_set_password has the rule. A change needs a
+        // valid token or the current password; on an appliance only the
+        // local token. The current-password path counts toward the same
+        // per-address lockout as /login, so it can't be used to guess around it.
+        bool password_set = _system_password_set();
+        auto auth = r_appliance::set_password_auth::none;
+        if(password_set)
         {
-            // Bootstrap: the first password needs no credentials, but only
-            // from this machine. Otherwise anyone who could reach the HTTPS
-            // port of an unconfigured install could claim it.
-            if(!r_local_api_token::is_loopback_host(address))
-                R_STHROW(r_http_403_exception, ("The first password must be set on the Revere machine itself."));
-        }
-        else
-        {
-            // A change needs a valid token or the current password. The
-            // current-password path counts toward the same per-address
-            // lockout as /login, so it can't be used to guess around it.
-            bool authorized = _token_valid(request);
-            if(!authorized)
+            auto token = _request_token(request);
+            auto local = _auth.local_token();
+            if(!token.is_null() && !local.empty() && r_ws_auth::constant_time_equal(token.value(), local))
+                auth = r_appliance::set_password_auth::local_token;
+            else if(_token_valid(request))
+                auth = r_appliance::set_password_auth::session_token;
+            else if(!_appliance)
             {
                 if(_auth.locked_out(address))
                     R_STHROW(r_http_401_exception, ("Too many failed attempts; try again later."));
                 if(req.contains("current_password") && req["current_password"].is_string())
                 {
                     auto stored = _load_system_password();
-                    authorized = !stored.is_null() && r_ws_auth::constant_time_equal(req["current_password"].get<string>(), stored.value());
-                    if(authorized)
+                    bool ok = !stored.is_null() && r_ws_auth::constant_time_equal(req["current_password"].get<string>(), stored.value());
+                    if(ok)
+                    {
                         _auth.record_success(address);
+                        auth = r_appliance::set_password_auth::current_password;
+                    }
                     else _auth.record_failure(address);
                 }
             }
-            if(!authorized)
+        }
+
+        switch(r_appliance::check_set_password(_appliance, password_set, r_local_api_token::is_loopback_host(address), auth))
+        {
+            case r_appliance::set_password_verdict::allow:
+                break;
+            case r_appliance::set_password_verdict::loopback_only:
+                R_STHROW(r_http_403_exception, ("The first password must be set on the Revere machine itself."));
+            case r_appliance::set_password_verdict::unauthorized:
                 R_STHROW(r_http_401_exception, ("Provide a valid token or current_password to change the local web password."));
+            case r_appliance::set_password_verdict::cloud_managed:
+                R_STHROW(r_http_403_exception, ("This Revere box's local password is managed in the Revere app."));
         }
 
         _store_system_password(new_password);

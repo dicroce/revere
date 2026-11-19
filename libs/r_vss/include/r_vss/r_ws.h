@@ -141,6 +141,10 @@ public:
     R_API bool remote_access_configured() const;
     R_API bool remote_access_active() const;
     R_API void set_remote_access(bool enabled);
+
+    // Appliance mode (r_vss/r_appliance.h): read from <top_dir>/appliance.json
+    // once, at startup.
+    R_API bool appliance() const;
 private:
     // Route table, registered on both the HTTP and HTTPS servers.
     template<class SOK_T>
@@ -294,6 +298,7 @@ private:
     r_http::r_web_server<r_utils::r_ssl_server_socket> _https;
     std::shared_ptr<r_utils::r_ssl_server_config> _tls;
     bool _remote_access_active {false};
+    bool _appliance {false};
     // This recorder's id (r_utils/r_recorder_id.h), read or made once at start; empty if it couldn't be kept.
     std::string _recorder_id;
     // Sessions are shared so a /transcode keeps its own alive while finalize or

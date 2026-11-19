@@ -28,6 +28,12 @@ the web UI at:
 
   http://localhost:8088/
 
+Tests
+-----
+
+  cd libs/r_vss/webui
+  npm test             # node's built-in test runner; no install needed
+
 Development Mode (live reload)
 -------------------------------
 
