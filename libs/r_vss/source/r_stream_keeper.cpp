@@ -6,6 +6,7 @@
 #include "r_av/r_muxer.h"
 #include "r_av/r_audio_decoder.h"
 #include "r_vss/r_recording_context.h"
+#include "r_vss/r_playback_restream.h"
 #include "r_vss/r_storage_ops.h"
 #include "r_disco/r_substream.h"
 #include "r_vss/r_query.h"
@@ -1607,9 +1608,13 @@ void r_stream_keeper::_entry_point()
                 else if(cmd.first.cmd == R_SK_CREATE_PLAYBACK_MOUNT)
                 {
                     r_stream_keeper_result result;
+                    try
                     {
-                        std::lock_guard<std::mutex> lock(_streams_mutex);
                         _create_playback_mount(cmd.first.friendly_name, cmd.first.url, cmd.first.start_ts, cmd.first.end_ts);
+                    }
+                    catch(const std::exception& e)
+                    {
+                        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
                     }
                     cmd.second.set_value(result);
                 }
@@ -2146,18 +2151,15 @@ void r_stream_keeper::_options_cb(GstRTSPClient* client, GstRTSPContext* ctx)
 
 void r_stream_keeper::_create_playback_mount(const string& friendly_name, const string& url, uint64_t start_ts, uint64_t end_ts)
 {
-    for(auto s : _streams)
+    // Any assigned camera, connected or not: playback reads only storage. Looked up among the recording contexts, a
+    // camera between reconnects (its context dropped, waiting out its restart backoff) had no playback at all.
+    auto camera = playback_camera(_devices.get_assigned_cameras(), friendly_name);
+    if(camera.is_null())
     {
-        // Normalize the camera's friendly name the same way URLs are created (friendly_mount_path, less its "/")
-        // so we can match against the friendly_name extracted from the URL
-        string normalized_name = friendly_mount_path(s.second->camera().friendly_name.value()).substr(1);
-
-        if(normalized_name == friendly_name)
-        {
-            s.second->create_playback_mount(_server, _mounts, url, start_ts, end_ts);
-            return;
-        }
+        R_LOG_ERROR("no camera for playback restream mount: %s", friendly_name.c_str());
+        return;
     }
+    add_playback_mount(_mounts, url, _top_dir, _devices, camera.value().id, start_ts, end_ts);
 }
 
 void r_stream_keeper::add_live_restreaming_state(GstRTSPMedia* media, std::shared_ptr<live_restreaming_state> lrs)
