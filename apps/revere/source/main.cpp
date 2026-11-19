@@ -1044,6 +1044,10 @@ void configure_camera_setup_wizard(
             );
         }
     );
+    // Sets or clears the local web password directly (r_stream_keeper), not
+    // through /set_password, so the appliance rule (only the local token may set
+    // an appliance's password, r_vss/r_appliance.h) doesn't apply here. This
+    // window never opens on a headless appliance, so it can't be reached there.
     camera_setup_wizard.add_step(
         "set_system_password",
         [&as, &camera_setup_wizard, &stream_keeper](){
