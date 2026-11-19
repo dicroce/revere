@@ -39,20 +39,31 @@ string r_disco::camera_move_message(const r_camera_move& move)
     auto change = where(move.old_ipv4, move.old_port) + " -> " + where(move.new_ipv4, move.new_port);
     if(move.status == "followed")
         return "Camera moved: " + change + ". Recording continues at the new address.";
-    return "Camera moved? It answers discovery at a new address: " + change +
-           ". Confirm the new address, or keep the current one.";
+    string why;
+    if(move.hold_reason == "no_stored_mac")
+        why = " There is no hardware (MAC) address on file to check it's the same camera.";
+    else if(move.hold_reason == "mac_unknown")
+        why = " Its hardware (MAC) address couldn't be read there to check it's the same camera.";
+    else if(move.hold_reason == "mac_mismatch")
+        why = " The device there has a different hardware (MAC) address.";
+    return "Camera moved? It answers discovery at a new address: " + change + "." + why +
+           " Confirm the new address, or keep the current one.";
 }
 
-move_outcome r_disco::decide_camera_move(bool old_alive, chrono::milliseconds old_dead_for,
-                                         const r_nullable<string>& stored_mac, const r_nullable<string>& new_mac)
+string r_disco::hold_reason_for(const r_nullable<string>& stored_mac, const r_nullable<string>& new_mac)
 {
-    if(old_alive || old_dead_for < MOVE_FOLLOW_AFTER)
-        return move_outcome::hold;
-    if(stored_mac.is_null() || new_mac.is_null())
-        return move_outcome::hold;
-    auto a = r_utils::r_networking::r_normalize_mac(stored_mac.value());
-    auto b = r_utils::r_networking::r_normalize_mac(new_mac.value());
-    if(a.is_null() || b.is_null() || a.value() != b.value())
-        return move_outcome::hold;
-    return move_outcome::follow;
+    auto a = stored_mac.is_null() ? r_nullable<string>() : r_utils::r_networking::r_normalize_mac(stored_mac.value());
+    if(a.is_null())
+        return "no_stored_mac";
+    auto b = new_mac.is_null() ? r_nullable<string>() : r_utils::r_networking::r_normalize_mac(new_mac.value());
+    if(b.is_null())
+        return "mac_unknown";
+    if(a.value() != b.value())
+        return "mac_mismatch";
+    return string();
+}
+
+move_outcome r_disco::decide_camera_move(const r_nullable<string>& stored_mac, const r_nullable<string>& new_mac)
+{
+    return hold_reason_for(stored_mac, new_mac).empty() ? move_outcome::follow : move_outcome::hold;
 }
