@@ -298,6 +298,84 @@ void test_r_disco::test_agent_answer_camera_move()
     RTF_ASSERT(host.written.size() == 1);
 }
 
+void test_r_disco::test_agent_confirm_stores_the_mac_seen()
+{
+    // A camera whose stored MAC is from another interface (wired and Wi-Fi differ) or an earlier device: its moves
+    // hold as a mismatch. Confirming one stores the MAC seen at the new address, so the next move follows.
+    {
+        r_agent agent("top_dir");
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.104", _s("aa:bb:cc:00:00:01"));
+        host.wire(agent);
+        // The camera answers at its new addresses; another device has the one it left.
+        agent.set_mac_lookup([](const string& ip, int){
+            return ip == "10.0.0.104" ? _s("fa:da:0c:48:b4:f2") : _s("0C-CD-D0-03-7B-D9");
+        });
+
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.93"), "h1"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].value().hold_reason == "mac_mismatch");
+        RTF_ASSERT(host.saved.empty());
+
+        RTF_ASSERT(agent.answer_camera_move("garage", "10.0.0.93", true) == move_answer::ok);
+        RTF_ASSERT(host.saved.size() == 1);
+        RTF_ASSERT(host.saved[0].mac.value() == "0c:cd:d0:03:7b:d9");
+        // Saved over the row as it was, before the move wrote the new address.
+        RTF_ASSERT(host.saved[0].ipv4.value() == "10.0.0.104");
+        RTF_ASSERT(host.written.size() == 1 && host.written[0].ipv4.value() == "10.0.0.93");
+        RTF_ASSERT(host.moves["garage"].value().status == "followed");
+
+        // The next move, with the same hardware: followed by the poll that finds it.
+        host.cameras["garage"].ipv4 = _s("10.0.0.93");
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h2"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].value().status == "followed");
+        RTF_ASSERT(host.moves["garage"].value().new_ipv4 == "10.0.0.78");
+        RTF_ASSERT(host.written.size() == 2 && host.written[1].ipv4.value() == "10.0.0.78");
+    }
+
+    // The desktop's confirm does the same.
+    {
+        r_agent agent("top_dir");
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.104", _s("aa:bb:cc:00:00:01"));
+        host.wire(agent);
+        host.new_mac = _s("0c:cd:d0:03:7b:d9");
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.93"), "h1"}});
+        RTF_ASSERT(agent.confirm_camera_move("garage"));
+        RTF_ASSERT(host.saved.size() == 1 && host.saved[0].mac.value() == "0c:cd:d0:03:7b:d9");
+    }
+
+    // No MAC readable at the new address: the stored one is cleared, and noted again at the confirmed address.
+    {
+        r_agent agent("top_dir");
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.104", _s("aa:bb:cc:00:00:01"));
+        host.wire(agent);
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.93"), "h1"}});
+        RTF_ASSERT(agent.answer_camera_move("garage", "10.0.0.93", true) == move_answer::ok);
+        RTF_ASSERT(host.saved.size() == 1 && host.saved[0].mac.is_null());
+        host.cameras["garage"].ipv4 = _s("10.0.0.93");
+        host.new_mac = _s("0c:cd:d0:03:7b:d9");
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.93"), "h2"}});
+        RTF_ASSERT(host.saved.size() == 2 && host.saved[1].mac.value() == "0c:cd:d0:03:7b:d9");
+    }
+
+    // The same MAC in another spelling: nothing to save.
+    {
+        r_agent agent("top_dir");
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.104", _s("0c:cd:d0:03:7b:d9"));
+        host.wire(agent);
+        host.new_mac = r_nullable<string>();
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.93"), "h1"}});
+        host.new_mac = _s("0C-CD-D0-03-7B-D9");
+        RTF_ASSERT(agent.answer_camera_move("garage", "10.0.0.93", true) == move_answer::ok);
+        RTF_ASSERT(host.saved.empty());
+        RTF_ASSERT(host.written.size() == 1);
+    }
+}
+
 void test_r_disco::test_agent_holds_a_move_and_writes_nothing()
 {
     r_agent agent("top_dir");

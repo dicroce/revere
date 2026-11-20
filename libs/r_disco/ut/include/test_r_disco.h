@@ -11,6 +11,7 @@ public:
       TEST(test_r_disco::test_hold_reason_for);
       TEST(test_r_disco::test_agent_reports_why_a_move_is_held);
       TEST(test_r_disco::test_agent_answer_camera_move);
+      TEST(test_r_disco::test_agent_confirm_stores_the_mac_seen);
       TEST(test_r_disco::test_agent_holds_a_move_and_writes_nothing);
       TEST(test_r_disco::test_agent_follows_at_once_when_mac_matches);
       TEST(test_r_disco::test_agent_holds_when_mac_differs_unknown_or_none);
@@ -43,6 +44,7 @@ public:
     void test_hold_reason_for();
     void test_agent_reports_why_a_move_is_held();
     void test_agent_answer_camera_move();
+    void test_agent_confirm_stores_the_mac_seen();
     void test_agent_holds_a_move_and_writes_nothing();
     void test_agent_follows_at_once_when_mac_matches();
     void test_agent_holds_when_mac_differs_unknown_or_none();

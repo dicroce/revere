@@ -283,6 +283,9 @@ private:
     // A dismissed move's new address, per camera: not raised again.
     std::map<std::string, std::string> _dismissed_moves;
     void _notify_move(const std::string& id, const r_utils::r_nullable<r_camera_move>& move);
+    // A person confirmed the move: the camera's MAC becomes the one seen at the new address (none when it
+    // can't be read there, so it's noted again at the confirmed address), then the move is followed.
+    void _confirm(const std::string& id, _held_move held);
     void _follow(const std::string& id, _held_move held, const std::string& why);
 };
 
