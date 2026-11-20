@@ -66,6 +66,9 @@ typedef std::function<void()> r_ready_cb;
 typedef std::function<void(const sample_context& ctx, const r_gst_buffer& buffer, bool key, int64_t pts)> r_sample_cb;
 typedef std::function<void(const std::map<std::string, r_sdp_media>& sdp_medias)> r_sdp_media_cb;
 typedef std::function<void(r_media type, const r_pad_info& pad_info)> r_pad_added_cb;
+// The stream ended on its own: the camera closed it (end of stream), or the pipeline failed (why says which). Called on
+// the GStreamer thread that posted it, so it must only note it; never from or after stop().
+typedef std::function<void(const std::string& why)> r_ended_cb;
 
 struct r_camera_params
 {
@@ -228,6 +231,8 @@ public:
     R_API void set_ready_cb(r_ready_cb cb) {_ready_cb = cb;}
     R_API void set_sdp_media_cb(r_sdp_media_cb cb) {_sdp_media_cb = cb;}
     R_API void set_pad_added_cb(r_pad_added_cb cb) {_pad_added_cb = cb;}
+    // Set before play(). It needs no GLib main loop: the bus's sync handler calls it.
+    R_API void set_ended_cb(r_ended_cb cb) {_ended_cb = cb;}
 
     // valid after ready callback
     R_API r_utils::r_nullable<r_gst_caps> get_video_caps() const;
@@ -275,6 +280,21 @@ private:
     r_utils::r_nullable<r_ready_cb> _ready_cb;
     r_utils::r_nullable<r_sdp_media_cb> _sdp_media_cb;
     r_utils::r_nullable<r_pad_added_cb> _pad_added_cb;
+    r_ended_cb _ended_cb;
+
+    // What the bus's sync handler reaches: the ended callback, switched off by stop() before the pipeline goes. Shared
+    // with the bus (freed when the bus lets go of the handler), so a message posted while stop()'s state change runs
+    // on after it, or after this source is gone, finds it switched off rather than a freed source.
+    struct _ended_state
+    {
+        std::mutex m;
+        bool on {false};
+        bool reported {false};
+        r_ended_cb cb;
+    };
+    std::shared_ptr<_ended_state> _ended;
+    static GstBusSyncReply _bus_sync_handlerS(GstBus* bus, GstMessage* message, gpointer data);
+    void _switch_off_ended();
 
     std::map<std::string, r_utils::r_nullable<std::string>> _args;
 

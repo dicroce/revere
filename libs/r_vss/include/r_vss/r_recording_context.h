@@ -220,6 +220,7 @@ public:
     R_API r_recording_context& operator=(const r_recording_context&) = delete;
     R_API r_recording_context& operator=(r_recording_context&&) noexcept = delete;
 
+    // 20 s without video (or audio, when it has some), the camera ended the stream or it failed, or drop().
     R_API bool dead() const;
     // Marks this stream dead now, so the stream keeper ends it (a TEARDOWN, the sockets closed) and starts it again,
     // without waiting for it to go quiet: the network it was on changed.
