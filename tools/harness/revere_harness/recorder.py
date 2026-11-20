@@ -86,6 +86,16 @@ class Recorder:
         log_lines = self._read_last_log(20)
         raise RecorderError(f"Recorder did not become ready within {ready_timeout}s. Log:\n{log_lines}")
 
+    def token(self, timeout: float = 10.0) -> str:
+        """Poll for the local API token file written by this throwaway recorder."""
+        token_file = self.data_dir / "local_api_token"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if token_file.exists() and token_file.stat().st_size > 0:
+                return token_file.read_text().strip()
+            time.sleep(0.2)
+        raise RecorderError("the recorder did not publish its local API token")
+
     def get(self, path: str, token: str | None = None, timeout: float = 5.0) -> tuple[int, bytes]:
         if self.proc is None or self.proc.poll() is not None:
             raise RecorderError("Recorder is not running")
