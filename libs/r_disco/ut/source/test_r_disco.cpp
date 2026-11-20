@@ -417,14 +417,46 @@ void test_r_disco::test_agent_keeps_recording_when_not_pausing()
         auto msg = camera_move_message(host.moves["garage"].value());
         RTF_ASSERT(msg.find("Recording continues at the new address.") != string::npos);
         RTF_ASSERT((msg.find("MAC") != string::npos) == (c.check != "match"));
-        // A different MAC that could be read is the camera's now, saved before the new address was written.
-        if(c.check == "changed")
-        {
-            RTF_ASSERT(host.saved.size() == 1 && host.saved[0].mac.value() == "0c:cd:d0:03:7b:d9");
-            RTF_ASSERT(host.saved[0].ipv4.value() == "10.0.0.93");
-        }
-        else
-            RTF_ASSERT(host.saved.empty());
+        // The stored MAC stays as it was: only a person's confirm teaches a new one.
+        RTF_ASSERT(host.saved.empty());
+    }
+
+    // Off, something else answers at a new address with the camera's discovery id: followed, and its MAC isn't
+    // learned. When the org then turns pausing on, the real camera coming back is followed, and the other device
+    // turning up again is held.
+    {
+        r_agent agent("top_dir");
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.93", _s("0c:cd:d0:03:7b:d9"));
+        host.wire(agent, false);
+        host.new_mac = _s("aa:bb:cc:00:00:01");
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].value().status == "followed");
+        RTF_ASSERT(host.moves["garage"].value().mac_check == "changed");
+        RTF_ASSERT(host.saved.empty());
+        RTF_ASSERT(host.cameras["garage"].mac.value() == "0c:cd:d0:03:7b:d9");
+        host.cameras["garage"].ipv4 = _s("10.0.0.78");
+
+        agent.set_pause_on_address_change(true);
+
+        // The real camera, back at its old address with its MAC.
+        host.new_mac = _s("0C-CD-D0-03-7B-D9");
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.93"), "h2"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].value().status == "followed");
+        RTF_ASSERT(host.moves["garage"].value().new_ipv4 == "10.0.0.93");
+        RTF_ASSERT(host.moves["garage"].value().mac_check == "match");
+        RTF_ASSERT(host.written.size() == 2 && host.written[1].ipv4.value() == "10.0.0.93");
+        host.cameras["garage"].ipv4 = _s("10.0.0.93");
+
+        // The other device again, at another address: held.
+        host.new_mac = _s("aa:bb:cc:00:00:01");
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.50"), "h3"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].value().status == "held");
+        RTF_ASSERT(host.moves["garage"].value().hold_reason == "mac_mismatch");
+        RTF_ASSERT(host.written.size() == 2 && host.saved.empty());
     }
 
     // On: the same move is held, as before.
