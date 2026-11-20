@@ -1,5 +1,8 @@
 #include "r_disco/r_camera_move.h"
 #include "r_utils/r_socket.h"
+#include "r_utils/r_file.h"
+#include "r_utils/r_logger.h"
+#include "r_utils/3rdparty/json/json.h"
 #include <chrono>
 
 using namespace r_disco;
@@ -38,7 +41,16 @@ string r_disco::camera_move_message(const r_camera_move& move)
     };
     auto change = where(move.old_ipv4, move.old_port) + " -> " + where(move.new_ipv4, move.new_port);
     if(move.status == "followed")
-        return "Camera moved: " + change + ". Recording continues at the new address.";
+    {
+        string mac;
+        if(move.mac_check == "changed")
+            mac = " The device there has a different hardware (MAC) address, so check it's the same camera.";
+        else if(move.mac_check == "unknown")
+            mac = " Its hardware (MAC) address couldn't be read there, so check it's the same camera.";
+        else if(move.mac_check == "none")
+            mac = " There was no hardware (MAC) address on file to check it's the same camera.";
+        return "Camera moved: " + change + ". Recording continues at the new address." + mac;
+    }
     string why;
     if(move.hold_reason == "no_stored_mac")
         why = " There is no hardware (MAC) address on file to check it's the same camera.";
@@ -66,4 +78,125 @@ string r_disco::hold_reason_for(const r_nullable<string>& stored_mac, const r_nu
 move_outcome r_disco::decide_camera_move(const r_nullable<string>& stored_mac, const r_nullable<string>& new_mac)
 {
     return hold_reason_for(stored_mac, new_mac).empty() ? move_outcome::follow : move_outcome::hold;
+}
+
+string r_disco::mac_check_for(const string& hold_reason)
+{
+    if(hold_reason.empty())
+        return "match";
+    if(hold_reason == "mac_mismatch")
+        return "changed";
+    if(hold_reason == "mac_unknown")
+        return "unknown";
+    return "none";
+}
+
+bool r_disco::parse_camera_move_policy(const string& json_text)
+{
+    auto j = nlohmann::json::parse(json_text, nullptr, false);
+    return j.is_object() && j.contains("pause_on_address_change") && j["pause_on_address_change"].is_boolean() &&
+           j["pause_on_address_change"].get<bool>();
+}
+
+string r_disco::camera_move_policy_json(bool pause_on_address_change)
+{
+    return nlohmann::json{{"pause_on_address_change", pause_on_address_change}}.dump();
+}
+
+static string _policy_path(const string& top_dir)
+{
+    return top_dir + PATH_SLASH + "config" + PATH_SLASH + "camera_moves.json";
+}
+
+bool r_disco::load_camera_move_policy(const string& top_dir)
+{
+    auto path = _policy_path(top_dir);
+    try
+    {
+        if(!r_fs::file_exists(path))
+            return false;
+        auto buf = r_fs::read_file(path);
+        return parse_camera_move_policy(string((char*)buf.data(), buf.size()));
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_WARNING("Camera moves: couldn't read %s, so a camera at a new address keeps recording: %s", path.c_str(), ex.what());
+        return false;
+    }
+}
+
+bool r_disco::save_camera_move_policy(const string& top_dir, bool pause_on_address_change)
+{
+    auto path = _policy_path(top_dir);
+    auto txt = camera_move_policy_json(pause_on_address_change);
+    try
+    {
+        r_fs::mkdir_p(top_dir + PATH_SLASH + "config");
+        r_fs::atomic_write_file((const uint8_t*)txt.c_str(), txt.size(), path);
+        return true;
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_ERROR("Camera moves: couldn't save %s: %s", path.c_str(), ex.what());
+        return false;
+    }
+}
+
+std::map<string, string> r_disco::parse_unconfirmed_addresses(const string& json_text)
+{
+    std::map<string, string> out;
+    auto j = nlohmann::json::parse(json_text, nullptr, false);
+    if(!j.is_object())
+        return out;
+    for(auto it = j.begin(); it != j.end(); ++it)
+        if(it.value().is_string())
+            out[it.key()] = it.value().get<string>();
+    return out;
+}
+
+string r_disco::unconfirmed_addresses_json(const std::map<string, string>& addresses)
+{
+    nlohmann::json j = nlohmann::json::object();
+    for(const auto& [id, ipv4] : addresses)
+        j[id] = ipv4;
+    return j.dump();
+}
+
+static string _unconfirmed_path(const string& top_dir)
+{
+    return top_dir + PATH_SLASH + "config" + PATH_SLASH + "camera_moves_unconfirmed.json";
+}
+
+std::map<string, string> r_disco::load_unconfirmed_addresses(const string& top_dir)
+{
+    auto path = _unconfirmed_path(top_dir);
+    try
+    {
+        if(!r_fs::file_exists(path))
+            return {};
+        auto buf = r_fs::read_file(path);
+        return parse_unconfirmed_addresses(string((char*)buf.data(), buf.size()));
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_WARNING("Camera moves: couldn't read %s: %s", path.c_str(), ex.what());
+        return {};
+    }
+}
+
+bool r_disco::save_unconfirmed_addresses(const string& top_dir, const std::map<string, string>& addresses)
+{
+    auto path = _unconfirmed_path(top_dir);
+    auto txt = unconfirmed_addresses_json(addresses);
+    try
+    {
+        r_fs::mkdir_p(top_dir + PATH_SLASH + "config");
+        r_fs::atomic_write_file((const uint8_t*)txt.c_str(), txt.size(), path);
+        return true;
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_ERROR("Camera moves: couldn't save %s: %s", path.c_str(), ex.what());
+        return false;
+    }
 }

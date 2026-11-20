@@ -6,6 +6,7 @@
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
 #include <cstdint>
+#include <map>
 #include <string>
 
 namespace r_disco
@@ -41,7 +42,43 @@ struct r_camera_move
     // Why a held move isn't followed yet (hold_reason_for); empty until the
     // first check, and for a followed move.
     std::string hold_reason;
+    // A followed move only: how the camera's MAC compared at the new address
+    // (mac_check_for): "match", or, when the computer doesn't pause on an
+    // address change (load_camera_move_policy), "changed", "unknown" or "none".
+    // Empty for a move a person confirmed.
+    std::string mac_check;
 };
+
+// What a move's hold_reason says about the camera's MAC at the new address:
+// "" -> "match", "mac_mismatch" -> "changed", "mac_unknown" -> "unknown",
+// "no_stored_mac" -> "none".
+R_API std::string mac_check_for(const std::string& hold_reason);
+
+// Whether this computer pauses recording a camera that turns up at a new
+// address its MAC doesn't vouch for (no MAC stored, none readable there, a
+// different one) until a person confirms. Off unless the cloud said otherwise:
+// the camera keeps recording at the new address, and the move says how its MAC
+// compared. A move whose MAC matches is followed either way.
+//
+// config/camera_moves.json: {"pause_on_address_change": false}. A missing
+// file, bad JSON or a non-boolean value is off.
+R_API bool parse_camera_move_policy(const std::string& json_text);
+R_API std::string camera_move_policy_json(bool pause_on_address_change);
+R_API bool load_camera_move_policy(const std::string& top_dir);
+// Saves the choice; false when it couldn't be written.
+R_API bool save_camera_move_policy(const std::string& top_dir, bool pause_on_address_change);
+
+// Cameras followed to a new address, without pausing, while no MAC was on
+// file to check them by: camera id -> that address. While a camera is still
+// there its MAC isn't noted, since nothing vouched that what answers there is
+// the camera; a person's confirm, or a move elsewhere, ends it.
+//
+// config/camera_moves_unconfirmed.json: {"<camera id>": "<ipv4>"}. A missing
+// file or bad JSON is none; entries that aren't strings are left out.
+R_API std::map<std::string, std::string> parse_unconfirmed_addresses(const std::string& json_text);
+R_API std::string unconfirmed_addresses_json(const std::map<std::string, std::string>& addresses);
+R_API std::map<std::string, std::string> load_unconfirmed_addresses(const std::string& top_dir);
+R_API bool save_unconfirmed_addresses(const std::string& top_dir, const std::map<std::string, std::string>& addresses);
 
 enum class move_outcome { hold, follow };
 

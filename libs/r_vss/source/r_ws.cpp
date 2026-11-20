@@ -176,6 +176,8 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_POST, "/forget_camera", &r_ws::_post_forget_camera);
     route(METHOD_POST, "/camera_move_confirm", &r_ws::_post_camera_move_confirm);
     route(METHOD_POST, "/camera_move_dismiss", &r_ws::_post_camera_move_dismiss);
+    route(METHOD_GET, "/camera_move_policy", &r_ws::_get_camera_move_policy);
+    route(METHOD_POST, "/camera_move_policy", &r_ws::_post_camera_move_policy);
     route(METHOD_POST, "/add_rtsp_camera", &r_ws::_post_add_rtsp_camera);
     route(METHOD_GET, "/storage_info", &r_ws::_get_storage_info);
     route(METHOD_POST, "/storage_move", &r_ws::_post_storage_move);
@@ -938,6 +940,9 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                 // left out until the first check.
                 if(mv.status == "held" && !mv.hold_reason.empty())
                     camera_move["hold_reason"] = mv.hold_reason;
+                // How the camera's MAC compared at the new address, on a followed move (r_disco::mac_check_for).
+                if(mv.status == "followed" && !mv.mac_check.empty())
+                    camera_move["mac_check"] = mv.mac_check;
             }
 
             j["cameras"].push_back(
@@ -4614,6 +4619,32 @@ static json _keep_awake_json(const r_keep_awake_status& s)
         {"unavailable", s.unavailable},
         {"events", events}
     };
+}
+
+// Whether this computer pauses recording a camera whose address changes until a person confirms
+// (r_disco::load_camera_move_policy): {"pause_on_address_change": bool}. Set by the cloud plugin from the
+// organization's setting, and kept in config/camera_moves.json for when the cloud is out of reach.
+r_http::r_server_response r_ws::_get_camera_move_policy(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    return _json_reply(json::parse(r_disco::camera_move_policy_json(_agent.pause_on_address_change())));
+}
+
+r_http::r_server_response r_ws::_post_camera_move_policy(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    auto req = json::parse(request.get_body_as_string(), nullptr, false);
+    if(!req.is_object() || !req.contains("pause_on_address_change") || !req["pause_on_address_change"].is_boolean())
+        return _json_error(response_bad_request, "Expected {\"pause_on_address_change\": true|false}.");
+    auto pause = req["pause_on_address_change"].get<bool>();
+    if(pause != _agent.pause_on_address_change())
+    {
+        _agent.set_pause_on_address_change(pause);
+        r_disco::save_camera_move_policy(_top_dir, pause);
+        R_LOG_INFO("Camera moves: %s", pause ? "a camera whose address changes pauses until its move is confirmed"
+                                             : "a camera whose address changes keeps recording at the new address");
+    }
+    return _json_reply(json::parse(r_disco::camera_move_policy_json(pause)));
 }
 
 // {"enabled", "on_battery", "power": "ac"|"battery"|"unknown", "wanted",
