@@ -64,17 +64,19 @@ void test_r_pipeline::test_stream_info_get_video_codec_framerate()
 
 void test_r_pipeline::test_gst_source_h264_aac()
 {
+    printf("test_gst_source_h264_aac\n");
+    int port = RTF_NEXT_PORT();
+
+    // Skipped without FAKEY_ROOT (no media to serve). Checked before the main loop's thread starts: returning with it
+    // still joinable ended the whole run (std::terminate), so none of the tests after this one ran.
+    auto fc = _create_fc(port);
+    if(!fc)
+        return;
+
     GMainLoop *loop = g_main_loop_new(nullptr, FALSE);
     std::thread loopThread([&] {
         g_main_loop_run(loop);
     });
-
-    printf("test_gst_source_h264_aac\n");
-    int port = RTF_NEXT_PORT();
-
-    auto fc = _create_fc(port);
-    if(!fc)
-        return;
 
     auto fct = thread([&](){
         fc->start();
