@@ -1,3 +1,4 @@
+#include <thread>
 #include "test_r_disco.h"
 #include "r_disco/r_agent.h"
 #include "r_disco/r_devices.h"
@@ -524,6 +525,44 @@ void test_r_disco::test_agent_keeps_recording_when_not_pausing()
         RTF_ASSERT(host.moves["garage"].value().status == "held");
         RTF_ASSERT(host.moves["garage"].value().hold_reason == "mac_mismatch");
         RTF_ASSERT(host.written.empty() && host.saved.empty());
+    }
+}
+
+void test_r_disco::test_agent_forget_drops_unconfirmed_address()
+{
+    // Followed without pausing with no MAC on file, then forgotten: the address goes, and the camera added again at
+    // it has its MAC noted there.
+    {
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.93", r_nullable<string>());
+        r_agent agent("top_dir");
+        host.wire(agent, false);
+        host.new_mac = _s("aa:bb:cc:00:00:01");
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(load_unconfirmed_addresses("top_dir").count("garage") == 1);
+        agent.forget("garage");
+        RTF_ASSERT(load_unconfirmed_addresses("top_dir").empty());
+        host.cameras["garage"].ipv4 = _s("10.0.0.78");
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h2"}});
+        RTF_ASSERT(host.saved.size() == 1 && host.saved[0].mac.value() == "aa:bb:cc:00:00:01");
+    }
+
+    // Many cameras forgotten at once: each change is written in turn, so the file ends with none, never an older
+    // list.
+    for(int round = 0; round < 40; ++round)
+    {
+        std::map<string, string> seeded;
+        for(int i = 0; i < 8; ++i)
+            seeded["cam" + to_string(i)] = "10.0.0." + to_string(10 + i);
+        RTF_ASSERT(save_unconfirmed_addresses("top_dir", seeded));
+        r_agent agent("top_dir");
+        vector<thread> forgetting;
+        for(const auto& [id, ipv4] : seeded)
+            forgetting.emplace_back([&agent, id = id]() { agent.forget(id); });
+        for(auto& t : forgetting)
+            t.join();
+        RTF_ASSERT(load_unconfirmed_addresses("top_dir").empty());
     }
 }
 
