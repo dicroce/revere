@@ -536,3 +536,118 @@ void test_r_motion_engine::test_skips_to_newest_key_frame()
     RTF_ASSERT_EQUAL(seen[1], (int64_t)5000);
     RTF_ASSERT_EQUAL(seen[2], (int64_t)2500);
 }
+
+namespace
+{
+// A storage sink that keeps the ranges written, in a list that outlives the work context that owns the sink.
+class recording_storage_sink : public r_motion_storage_sink
+{
+public:
+    explicit recording_storage_sink(std::shared_ptr<std::vector<std::pair<int64_t, int64_t>>> ranges) : _ranges(ranges) {}
+    void write(const system_clock::time_point&, const uint8_t*) override {}
+    void write_range(const system_clock::time_point& start, const system_clock::time_point& end, const uint8_t*) override
+    {
+        _ranges->push_back({duration_cast<milliseconds>(start.time_since_epoch()).count(),
+                            duration_cast<milliseconds>(end.time_since_epoch()).count()});
+    }
+private:
+    std::shared_ptr<std::vector<std::pair<int64_t, int64_t>>> _ranges;
+};
+
+struct reset_run
+{
+    std::vector<captured_event> events;
+    std::vector<std::pair<int64_t, int64_t>> ranges;
+    int64_t start_ts {-1};
+    int64_t last_ts {-1};
+};
+
+// Feeds bad_guy.mp4's key frames 1 s apart (a probe confirms, so an event starts on the first significant one), and
+// once the event has started and seen one more key frame, `reset` (a frame of another stream, or a removal).
+reset_run _reset_mid_event(const std::function<void(r_motion_engine&, const r_pipeline::r_gst_buffer&, int64_t)>& reset)
+{
+    r_pipeline::gstreamer_init();
+    r_fs::write_file(bad_guy_mp4, bad_guy_mp4_len, "bad_guy.mp4");
+    AVCodecID codec_id;
+    vector<uint8_t> extradata;
+    int vsi;
+    {
+        r_demuxer d("bad_guy.mp4", false);
+        vsi = d.get_video_stream_index();
+        codec_id = d.get_stream_info(vsi).codec_id;
+        extradata = d.get_extradata(vsi);
+    }
+    auto ranges = std::make_shared<std::vector<std::pair<int64_t, int64_t>>>();
+    capturing_event_sink sink;
+    reset_run run;
+    {
+        r_motion_engine engine([&](const r_motion_work_item& item) -> std::shared_ptr<r_motion_work_context> {
+            return make_shared<r_motion_work_context>(codec_id, item.id, extradata, make_unique<recording_storage_sink>(ranges));
+        }, sink);
+        engine.set_probe([](const std::string&, int64_t, const std::vector<uint8_t>&, uint16_t, uint16_t,
+                            const motion_region&, const std::vector<motion_region>&) { return true; });
+        engine.start();
+        r_demuxer demuxer("bad_guy.mp4", false);
+        int64_t ts = 1000000;
+        size_t posted = 0;
+        bool reset_done = false;
+        auto wait = [&](){ for(int i = 0; i < 500 && engine.processed_count() < posted; ++i) rtf_usleep(10000); };
+        while(!reset_done && demuxer.read_frame())
+        {
+            auto fi = demuxer.get_frame_info();
+            if(fi.index != vsi || !fi.key)
+                continue;
+            r_pipeline::r_gst_buffer buf(fi.data, fi.size);
+            auto events = sink.events();
+            bool started = std::any_of(events.begin(), events.end(), [](const captured_event& e){ return e.evt == motion_event_start; });
+            if(started && run.last_ts > run.start_ts)
+            {
+                reset(engine, buf, ts);
+                ++posted;
+                wait();
+                reset_done = true;
+                break;
+            }
+            engine.post_frame(buf, ts, "h264", "", "cam", true);
+            ++posted;
+            wait();
+            run.last_ts = ts;
+            if(run.start_ts < 0)
+                for(auto& e : sink.events())
+                    if(e.evt == motion_event_start) { run.start_ts = e.ts; break; }
+            ts += 1000;
+        }
+        engine.stop();
+    }
+    r_fs::remove_file("bad_guy.mp4");
+    run.events = sink.events();
+    run.ranges = *ranges;
+    return run;
+}
+}
+
+void test_r_motion_engine::test_event_ends_when_its_state_is_reset()
+{
+    // An event in progress when the camera's motion state goes (a frame of the camera's other stream, or its motion
+    // source removed) ends then, at its newest key frame: its seconds reach the motion ring (/motion_events), and the
+    // plugins get motion_event_end. It used to be dropped with the state, never ended.
+    auto other_stream = _reset_mid_event([](r_motion_engine& e, const r_pipeline::r_gst_buffer& b, int64_t ts){
+        e.post_frame(b, ts, "h264", "other-stream-params", "cam", true);
+    });
+    auto removed = _reset_mid_event([](r_motion_engine& e, const r_pipeline::r_gst_buffer&, int64_t){
+        e.remove_work_context("cam");
+    });
+    for(auto* run : {&other_stream, &removed})
+    {
+        RTF_ASSERT(run->start_ts > 0);
+        int ends = 0;
+        int64_t end_ts = -1;
+        for(auto& e : run->events)
+            if(e.evt == motion_event_end) { ++ends; end_ts = e.ts; }
+        RTF_ASSERT_EQUAL(ends, 1);
+        RTF_ASSERT_EQUAL(end_ts, run->last_ts);
+        RTF_ASSERT_EQUAL(run->ranges.size(), (size_t)1);
+        RTF_ASSERT_EQUAL(run->ranges[0].first, run->start_ts);
+        RTF_ASSERT_EQUAL(run->ranges[0].second, run->last_ts);
+    }
+}

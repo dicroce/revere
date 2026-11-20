@@ -114,6 +114,43 @@ void r_motion_engine::post_frame(r_pipeline::r_gst_buffer buffer, int64_t ts, co
     _work.post(item);
 }
 
+void r_motion_engine::_end_event_before_reset(r_motion_work_context& wc, const char* why)
+{
+    if(!wc.get_in_event())
+        return;
+    auto& kfs = wc.keyframe_motion_buffer();
+    auto start_ts = wc.get_event_start_ts();
+    auto end_ts = kfs.empty() ? start_ts : (std::max)(start_ts, kfs.at(kfs.size() - 1).ts);
+    try
+    {
+        if(wc.first_ts_valid() && start_ts > 0)
+        {
+            uint8_t motion_flag = 1;
+            wc.storage_sink().write_range(system_clock::time_point{milliseconds{start_ts}},
+                                          system_clock::time_point{milliseconds{end_ts}}, &motion_flag);
+            wc.set_last_written_second(end_ts / 1000);
+        }
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("motion: couldn't write camera %s's event before its motion state was reset: %s",
+                    wc.get_camera_id().c_str(), e.what());
+    }
+    wc.set_in_event(false);
+    wc.set_no_motion_count(0);
+    wc.set_event_start_ts(-1);
+    if(kfs.empty())
+        _meph.post(r_vss::motion_event_end, wc.get_camera_id(), end_ts, std::vector<uint8_t>(), 0, 0, motion_region{});
+    else
+    {
+        const auto& last = kfs.at(kfs.size() - 1);
+        _meph.post(r_vss::motion_event_end, wc.get_camera_id(), end_ts, last.decoded_image, last.width, last.height,
+                   last.bbox, last.regions);
+    }
+    R_LOG_INFO("motion: camera %s's event ended at %lld, as its motion state was reset (%s)",
+               wc.get_camera_id().c_str(), (long long)end_ts, why);
+}
+
 void r_motion_engine::remove_work_context(const string& camera_id)
 {
     // Post a special work item to trigger removal in the worker thread
@@ -152,6 +189,7 @@ void r_motion_engine::_entry_point()
                 auto found_wc = _work_contexts.find(work.id);
                 if(found_wc != _work_contexts.end())
                 {
+                    _end_event_before_reset(*found_wc->second, "its motion source was removed");
                     _work_contexts.erase(found_wc);
                 }
                 ++_processed;
@@ -186,6 +224,7 @@ void r_motion_engine::_entry_point()
                 // from this frame, as after a removal, instead of decoding it with the other stream's decoder.
                 if(found_wc != _work_contexts.end() && !found_wc->second->is_source(work.video_codec_name, work.video_codec_parameters))
                 {
+                    _end_event_before_reset(*found_wc->second, "a frame of another stream");
                     _work_contexts.erase(found_wc);
                     found_wc = _work_contexts.end();
                 }
@@ -396,7 +435,13 @@ void r_motion_engine::_entry_point()
                 R_LOG_ERROR("MOTION DECODE ERROR for camera ID: %s, work.ts = %lld, work.is_key_frame = %s: %s", work.id.c_str(), work.ts, work.is_key_frame?"true":"false", e.what());
                 printf("MOTION DECODE ERROR: %s\n", e.what());
                 fflush(stdout);
-                _work_contexts.erase(work.id);
+                auto failed = _work_contexts.find(work.id);
+                if(failed != _work_contexts.end())
+                {
+                    try { _end_event_before_reset(*failed->second, "a decode error"); }
+                    catch(const std::exception& end_e) { R_LOG_EXCEPTION_AT(end_e, __FILE__, __LINE__); }
+                    _work_contexts.erase(failed);
+                }
             }
             ++_processed;
         }
