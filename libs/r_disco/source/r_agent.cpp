@@ -256,8 +256,13 @@ void r_agent::interrogate_camera(
 
 void r_agent::forget(const std::string& id)
 {
-    lock_guard<mutex> lock(_device_config_hashes_mutex);
-    _device_config_hashes.erase(id);
+    {
+        lock_guard<mutex> lock(_device_config_hashes_mutex);
+        _device_config_hashes.erase(id);
+    }
+    // A forgotten camera's unconfirmed address goes with it: added again, it's a camera a person chose, and its MAC
+    // is noted where it is.
+    _set_unconfirmed_address(id, string());
 }
 
 pair<r_nullable<string>, r_nullable<string>> r_agent::_get_credentials(const std::string& id)
@@ -549,6 +554,7 @@ void r_agent::_confirm(const std::string& id, _held_move held)
 
 void r_agent::_set_unconfirmed_address(const std::string& id, const std::string& ipv4)
 {
+    lock_guard<mutex> saving(_unconfirmed_save_mutex);
     std::map<string, string> now;
     {
         lock_guard<mutex> g(_moves_mutex);

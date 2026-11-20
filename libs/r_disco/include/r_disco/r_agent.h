@@ -215,6 +215,7 @@ public:
         const std::string& only_profile_token = ""
     );
 
+    // Drops what the agent remembers of a camera that was removed, its unconfirmed address included.
     R_API void forget(const std::string& id);
 
 private:
@@ -291,6 +292,9 @@ private:
     std::map<std::string, std::string> _unconfirmed_addresses;
     // Records (ipv4) or ends (empty) a camera's unconfirmed address, and saves the list when it changed.
     void _set_unconfirmed_address(const std::string& id, const std::string& ipv4);
+    // Held from a change to the list through its write, so two changes at once are written in the order they were
+    // made and the file never ends with the older list. Taken before _moves_mutex, which the write doesn't hold.
+    std::mutex _unconfirmed_save_mutex;
     // A dismissed move's new address, per camera: not raised again.
     std::map<std::string, std::string> _dismissed_moves;
     void _notify_move(const std::string& id, const r_utils::r_nullable<r_camera_move>& move);
