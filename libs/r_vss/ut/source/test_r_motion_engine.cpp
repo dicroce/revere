@@ -564,7 +564,8 @@ struct reset_run
 
 // Feeds bad_guy.mp4's key frames 1 s apart (a probe confirms, so an event starts on the first significant one), and
 // once the event has started and seen one more key frame, `reset` (a frame of another stream, or a removal).
-reset_run _reset_mid_event(const std::function<void(r_motion_engine&, const r_pipeline::r_gst_buffer&, int64_t)>& reset)
+reset_run _reset_mid_event(const std::function<void(r_motion_engine&, const r_pipeline::r_gst_buffer&, int64_t)>& reset,
+                           bool in_event = true)
 {
     r_pipeline::gstreamer_init();
     r_fs::write_file(bad_guy_mp4, bad_guy_mp4_len, "bad_guy.mp4");
@@ -600,7 +601,7 @@ reset_run _reset_mid_event(const std::function<void(r_motion_engine&, const r_pi
             r_pipeline::r_gst_buffer buf(fi.data, fi.size);
             auto events = sink.events();
             bool started = std::any_of(events.begin(), events.end(), [](const captured_event& e){ return e.evt == motion_event_start; });
-            if(started && run.last_ts > run.start_ts)
+            if((in_event && started && run.last_ts > run.start_ts) || (!in_event && posted == 1))
             {
                 reset(engine, buf, ts);
                 ++posted;
@@ -637,6 +638,20 @@ void test_r_motion_engine::test_event_ends_when_its_state_is_reset()
     auto removed = _reset_mid_event([](r_motion_engine& e, const r_pipeline::r_gst_buffer&, int64_t){
         e.remove_work_context("cam");
     });
+    // Reset with no event in progress (after one key frame, still warming up): nothing to end.
+    for(bool by_removal : {false, true})
+    {
+        auto idle = _reset_mid_event([by_removal](r_motion_engine& e, const r_pipeline::r_gst_buffer& b, int64_t ts){
+            if(by_removal)
+                e.remove_work_context("cam");
+            else
+                e.post_frame(b, ts, "h264", "other-stream-params", "cam", true);
+        }, false);
+        RTF_ASSERT(idle.start_ts < 0);
+        RTF_ASSERT(std::none_of(idle.events.begin(), idle.events.end(), [](const captured_event& x){ return x.evt == motion_event_end; }));
+        RTF_ASSERT(idle.ranges.empty());
+    }
+
     for(auto* run : {&other_stream, &removed})
     {
         RTF_ASSERT(run->start_ts > 0);
