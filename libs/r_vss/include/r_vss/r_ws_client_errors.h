@@ -4,24 +4,65 @@
 #include "r_http/r_http_exception.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/3rdparty/json/json.h"
+#include "r_utils/r_time_utils.h"
+#include <chrono>
 #include <stdexcept>
+#include <string>
 
-// A client's mistake inside a handler's try, passed on so the web server answers it as a 4xx with {"error": why} and
-// one log line (r_web_server.h), instead of the catch-all after this logging a stack trace and answering 500:
-// a 4xx thrown on purpose, a resource that isn't there (an unknown camera: r_not_found_exception), a bad argument
-// (a time that isn't ISO 8601: r_invalid_argument_exception), a request body that isn't the JSON asked for, and a
-// number that isn't one (r_string_utils::s_to_*).
+// What a handler's catch-all lets through to the web server, which answers it as its 4xx (or other status) with
+// {"error": why} and one log line (r_web_server.h), instead of logging a stack trace and answering 500: an
+// r_http_exception thrown on purpose (the request's own input, through request_time, request_number and request_json
+// below), and a resource that isn't there (an unknown camera: r_not_found_exception). Nothing else: the same parse
+// failing on the server's own data (a stored codec parameter, a truncated blob tree) is a fault, and stays a logged 500.
 #define R_WS_PASS_CLIENT_ERRORS \
     catch(const r_http::r_http_exception&) { throw; } \
-    catch(const r_utils::r_not_found_exception&) { throw; } \
-    catch(const r_utils::r_invalid_argument_exception&) { throw; } \
-    catch(const nlohmann::json::exception& bad_json) \
-    { \
-        R_STHROW(r_http::r_http_400_exception, ("The request isn't the JSON expected: %s", bad_json.what())); \
-    } \
-    catch(const std::invalid_argument&) \
-    { \
-        R_STHROW(r_http::r_http_400_exception, ("A number in the request isn't valid.")); \
+    catch(const r_utils::r_not_found_exception&) { throw; }
+
+namespace r_vss
+{
+
+// The request's input, quoted in an error: cut short, so a long value doesn't fill the answer and the log.
+inline std::string request_value_shown(const std::string& value)
+{
+    return value.size() > 64 ? value.substr(0, 64) + "..." : value;
+}
+
+// A time from the request (a query argument): 400 when it isn't ISO 8601.
+inline std::chrono::system_clock::time_point request_time(const std::string& value, const char* name)
+{
+    try
+    {
+        return r_utils::r_time_utils::iso_8601_to_tp(value);
     }
+    catch(const std::exception&)
+    {
+        R_STHROW(r_http::r_http_400_exception, ("%s isn't an ISO 8601 time: %s", name, request_value_shown(value).c_str()));
+    }
+}
+
+// A number from the request with `parse` (an r_string_utils::s_to_*): 400 when it isn't one.
+template<class F>
+inline auto request_number(const std::string& value, const char* name, F parse) -> decltype(parse(value))
+{
+    try
+    {
+        return parse(value);
+    }
+    catch(const std::exception&)
+    {
+        R_STHROW(r_http::r_http_400_exception, ("%s isn't a number: %s", name, request_value_shown(value).c_str()));
+    }
+}
+
+// The request's body as a JSON object: 400 when it isn't one.
+inline nlohmann::json request_json(const std::string& body)
+{
+    auto j = nlohmann::json::parse(body, nullptr, false);
+    if(j.is_discarded() || !j.is_object())
+        R_STHROW(r_http::r_http_400_exception, ("The request body isn't a JSON object."));
+    return j;
+}
+
+}
 
 #endif

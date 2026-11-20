@@ -308,7 +308,7 @@ measured_camera r_vss::query_measure_camera(const string& top_dir, r_devices& de
     auto camera = maybe_camera.value();
 
     if(camera.rtsp_url.is_null())
-        R_STHROW(r_invalid_argument_exception, ("Camera has not been interrogated (no rtsp_url)."));
+        throw r_http::r_http_exception(r_http::response_conflict, "Camera has not been interrogated (no rtsp_url).");
 
     // Streams the camera for ~15s to measure its bitrate and grab a keyframe.
     auto cp = r_pipeline::fetch_camera_params(camera.rtsp_url.value(), username, password,
@@ -389,7 +389,7 @@ void r_vss::query_configure_camera(const string& top_dir, r_devices& devices, co
     auto camera = maybe_camera.value();
 
     if(camera.rtsp_url.is_null())
-        R_STHROW(r_invalid_argument_exception, ("Camera has not been interrogated (no rtsp_url)."));
+        throw r_http::r_http_exception(r_http::response_conflict, "Camera has not been interrogated (no rtsp_url).");
 
     auto video_path = top_dir + PATH_SLASH + "video";
     if(!r_fs::file_exists(video_path))
@@ -477,7 +477,7 @@ void r_vss::query_update_camera_properties(const string& top_dir, r_devices& dev
 {
     if(!motion_tier.is_null() && motion_tier.value() != "auto" && motion_tier.value() != "1" &&
        motion_tier.value() != "2" && motion_tier.value() != "3")
-        R_STHROW(r_invalid_argument_exception, ("motion_tier must be auto, 1, 2 or 3."));
+        R_STHROW(r_http::r_http_400_exception, ("motion_tier must be auto, 1, 2 or 3."));
 
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())

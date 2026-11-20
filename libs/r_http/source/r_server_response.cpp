@@ -298,6 +298,9 @@ string r_server_response::_get_status_message(status_code sc) const
     case response_payload_too_large:
         return string("Payload Too Large");
 
+    case response_conflict:
+        return string("Conflict");
+
     case response_internal_server_error:
         return string("Internal Server Error");
 

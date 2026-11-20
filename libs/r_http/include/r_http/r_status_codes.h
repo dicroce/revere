@@ -29,6 +29,7 @@ enum status_code
     response_forbidden               = 403, ///< Request was refused.
     response_not_found               = 404, ///< Resource not found.
     response_method_not_allowed      = 405, ///< Could not use specified method for this resource.
+    response_conflict                = 409, ///< The request conflicts with the resource's state (a camera not set up yet).
     response_gone                    = 410, ///< Resource no longer available, no forwarding address.
     response_length_required         = 411, ///< Request requires Content-Length header field.
     response_payload_too_large       = 413, ///< Request body is larger than the server accepts.

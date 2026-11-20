@@ -92,7 +92,7 @@ struct server_fixture
         };
         route("/missing", [](){ R_STHROW(r_http_400_exception, ("Missing camera_id.")); });
         route("/unknown", [](){ R_STHROW(r_not_found_exception, ("Unknown camera id: nope")); });
-        route("/badtime", [](){ r_time_utils::iso_8601_to_tp("not a time"); });
+        route("/badtime", [](){ request_time("not a time", "start_time"); });
         route("/full", [](){ throw r_http_exception(response_insufficient_storage, "Not enough free disk space: it needs 9 GB and 1 GB is free."); });
         route("/fault", [](){ R_STHROW(r_http_500_exception, ("Failed.")); });
         ws.start();
@@ -126,26 +126,45 @@ struct server_fixture
 
 void test_r_client_errors::test_handlers_pass_client_errors_on()
 {
-    // What reaches the web server from a handler's try: a client's mistake keeps its 4xx; anything else is 500.
+    // What reaches the web server from a handler's try: the request's own bad input keeps its 4xx, through the
+    // request_* helpers, and so does a resource that isn't there.
     RTF_ASSERT_EQUAL(_status_of([](){ R_STHROW(r_http_400_exception, ("Missing camera_id.")); }), 400);
     RTF_ASSERT_EQUAL(_status_of([](){ R_STHROW(r_http_404_exception, ("Unknown camera id: x")); }), 404);
     RTF_ASSERT_EQUAL(_status_of([](){ R_STHROW(r_not_found_exception, ("Unknown camera id: x")); }), 404);
-    RTF_ASSERT_EQUAL(_status_of([](){ r_time_utils::iso_8601_to_tp("yesterday"); }), 400);
-    RTF_ASSERT_EQUAL(_status_of([](){ (void)nlohmann::json::parse("{\"camera_id\":"); }), 400);
-    RTF_ASSERT_EQUAL(_status_of([](){ nlohmann::json j = {{"byte_rate", "fast"}}; (void)j["byte_rate"].get<int64_t>(); }), 400);
-    RTF_ASSERT_EQUAL(_status_of([](){ (void)r_string_utils::s_to_int64("twelve"); }), 400);
+    RTF_ASSERT_EQUAL(_status_of([](){ (void)request_time("yesterday", "start_time"); }), 400);
+    RTF_ASSERT_EQUAL(_status_of([](){ (void)request_number("twelve", "since_ms", r_string_utils::s_to_int64); }), 400);
+    RTF_ASSERT_EQUAL(_status_of([](){ (void)request_json("{\"camera_id\":"); }), 400);
+    RTF_ASSERT_EQUAL(_status_of([](){ (void)request_json("[1, 2]"); }), 400);
     RTF_ASSERT_EQUAL(_status_of([](){ throw r_http_exception(response_insufficient_storage, "full"); }), 507);
-    // A fault of the server's own is still 500.
+
+    // The same failures on the server's own data are faults: 500, with the handler's stack trace. A truncated blob
+    // tree (r_blob_tree throws r_invalid_argument_exception), a stored codec parameter that isn't a number, a JSON
+    // type error on data the server built, a stored time that doesn't parse.
+    RTF_ASSERT_EQUAL(_status_of([](){ R_STHROW(r_invalid_argument_exception, ("r_blob_tree: truncated input")); }), 500);
+    RTF_ASSERT_EQUAL(_status_of([](){ (void)r_string_utils::s_to_int("forty-eight-thousand"); }), 500);
+    RTF_ASSERT_EQUAL(_status_of([](){ nlohmann::json j = {{"byte_rate", "fast"}}; (void)j["byte_rate"].get<int64_t>(); }), 500);
+    RTF_ASSERT_EQUAL(_status_of([](){ (void)nlohmann::json::parse("{\"frames\":"); }), 500);
+    RTF_ASSERT_EQUAL(_status_of([](){ r_time_utils::iso_8601_to_tp("stored garbage"); }), 500);
     RTF_ASSERT_EQUAL(_status_of([](){ R_THROW(("Blob tree missing frames array.")); }), 500);
     RTF_ASSERT_EQUAL(_status_of([](){ R_STHROW(r_http_500_exception, ("Failed.")); }), 500);
 }
 
-void test_r_client_errors::test_a_bad_time_is_a_bad_argument()
+void test_r_client_errors::test_request_input_is_a_400()
 {
-    RTF_ASSERT_THROWS(r_time_utils::iso_8601_to_tp("not a time"), r_invalid_argument_exception);
-    RTF_ASSERT_THROWS(r_time_utils::iso_8601_to_tp(""), r_invalid_argument_exception);
-    // A good one still parses.
-    RTF_ASSERT(r_time_utils::iso_8601_to_tp("2026-11-20T08:00:00.000Z").time_since_epoch().count() > 0);
+    // The request helpers: a 400 that names the input, or the parsed value.
+    string why;
+    try { request_time("not a time", "start_time"); } catch(const r_http_400_exception& e) { why = e.what(); }
+    RTF_ASSERT(why.find("start_time isn't an ISO 8601 time: not a time") != string::npos);
+    RTF_ASSERT_THROWS(request_time("", "end_time"), r_http_400_exception);
+    RTF_ASSERT(request_time("2026-11-20T08:00:00.000Z", "start_time") == r_time_utils::iso_8601_to_tp("2026-11-20T08:00:00.000Z"));
+    RTF_ASSERT_EQUAL(request_number("640", "width", r_string_utils::s_to_uint16), (uint16_t)640);
+    RTF_ASSERT_THROWS(request_number("wide", "width", r_string_utils::s_to_uint16), r_http_400_exception);
+    RTF_ASSERT_EQUAL(request_json("{\"camera_id\": \"a\"}")["camera_id"].get<string>(), string("a"));
+    RTF_ASSERT_THROWS(request_json(""), r_http_400_exception);
+    // A long bad value is cut short in the message.
+    why.clear();
+    try { request_time(string(500, 'x'), "start_time"); } catch(const r_http_400_exception& e) { why = r_http::first_line(e.what()); }
+    RTF_ASSERT(why.size() < 120);
 }
 
 void test_r_client_errors::test_queries_say_not_found()
@@ -177,6 +196,22 @@ void test_r_client_errors::test_a_full_disk_is_507()
     RTF_ASSERT_EQUAL(status, 507);
     RTF_ASSERT(why.find("Not enough free disk space") != string::npos);
     RTF_ASSERT(why.find("is free") != string::npos);
+
+    // A camera not interrogated yet (no RTSP URL): 409, its state, not the request, is the problem.
+    r_disco::r_camera raw;
+    raw.id = "cam-raw";
+    raw.state = "assigned";
+    fx.devices->save_camera(raw);
+    status = 0;
+    try
+    {
+        query_configure_camera(TOP, *fx.devices, "cam-raw", r_nullable<string>(), r_nullable<string>(), "Raw", false, 1.0, 1000);
+    }
+    catch(const r_http_exception& e)
+    {
+        status = e.get_status();
+    }
+    RTF_ASSERT_EQUAL(status, 409);
 }
 
 void test_r_client_errors::test_server_answers_client_errors_with_json()
@@ -194,7 +229,7 @@ void test_r_client_errors::test_server_answers_client_errors_with_json()
 
     r = fx.get("/badtime");
     RTF_ASSERT_EQUAL(r.first, 400);
-    RTF_ASSERT(nlohmann::json::parse(r.second)["error"].get<string>().find("ISO 8601") != string::npos);
+    RTF_ASSERT(nlohmann::json::parse(r.second)["error"].get<string>().find("start_time isn't an ISO 8601 time") != string::npos);
 
     r = fx.get("/full");
     RTF_ASSERT_EQUAL(r.first, 507);

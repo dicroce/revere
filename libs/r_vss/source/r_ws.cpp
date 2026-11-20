@@ -512,16 +512,16 @@ r_http::r_server_response r_ws::_get_jpg(r_utils::r_socket_base&, const r_http::
         uint16_t w = 640, h = 480;
         if(args.find("long_edge") != end(args))
         {
-            uint16_t le = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["long_edge"]), 640);
+            uint16_t le = _clamp_snapshot_dim(request_number(args["long_edge"], "long_edge", r_string_utils::s_to_uint16), 640);
             w = le;
             h = le;
         }
         else
         {
             if(args.find("width") != end(args))
-                w = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["width"]), 640);
+                w = _clamp_snapshot_dim(request_number(args["width"], "width", r_string_utils::s_to_uint16), 640);
             if(args.find("height") != end(args))
-                h = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["height"]), 480);
+                h = _clamp_snapshot_dim(request_number(args["height"], "height", r_string_utils::s_to_uint16), 480);
         }
 
         auto t_start = steady_clock::now();
@@ -530,7 +530,7 @@ r_http::r_server_response r_ws::_get_jpg(r_utils::r_socket_base&, const r_http::
         // A "now" picture can come from the camera's smaller stream: its newest key frame is held in memory, so
         // there is no disk read, and the decode is of a fraction of the pixels. Only when the box fits inside that
         // stream and has main's shape; anything else (a picture at a time, a bigger box) is main's, as before.
-        const auto requested_tp = r_time_utils::iso_8601_to_tp(args["start_time"]);
+        const auto requested_tp = request_time(args["start_time"], "start_time");
         {
             const auto off_now_ms = duration_cast<milliseconds>(system_clock::now() - requested_tp).count();
             if(off_now_ms >= -SNAPSHOT_NOW_MS && off_now_ms <= SNAPSHOT_NOW_MS)
@@ -614,16 +614,16 @@ r_http::r_server_response r_ws::_get_webp(r_utils::r_socket_base&, const r_http:
         uint16_t w = 640, h = 480;
         if(args.find("long_edge") != end(args))
         {
-            uint16_t le = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["long_edge"]), 640);
+            uint16_t le = _clamp_snapshot_dim(request_number(args["long_edge"], "long_edge", r_string_utils::s_to_uint16), 640);
             w = le;
             h = le;
         }
         else
         {
             if(args.find("width") != end(args))
-                w = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["width"]), 640);
+                w = _clamp_snapshot_dim(request_number(args["width"], "width", r_string_utils::s_to_uint16), 640);
             if(args.find("height") != end(args))
-                h = _clamp_snapshot_dim(r_string_utils::s_to_uint16(args["height"]), 480);
+                h = _clamp_snapshot_dim(request_number(args["height"], "height", r_string_utils::s_to_uint16), 480);
         }
 
         int64_t frame_ts = 0;
@@ -631,7 +631,7 @@ r_http::r_server_response r_ws::_get_webp(r_utils::r_socket_base&, const r_http:
             _top_dir,
             _devices,
             args["camera_id"],
-            r_time_utils::iso_8601_to_tp(args["start_time"]),
+            request_time(args["start_time"], "start_time"),
             w,
             h,
             &frame_ts
@@ -669,7 +669,7 @@ r_http::r_server_response r_ws::_get_key_frame(r_utils::r_socket_base&, const r_
             _top_dir,
             _devices,
             args["camera_id"],
-            r_time_utils::iso_8601_to_tp(args["start_time"])
+            request_time(args["start_time"], "start_time")
         );
 
         r_server_response response;
@@ -704,8 +704,8 @@ r_http::r_server_response r_ws::_get_recap(r_utils::r_socket_base&, const r_http
     std::chrono::system_clock::time_point start, end_tp;
     try
     {
-        start = r_time_utils::iso_8601_to_tp(args["start_time"]);
-        end_tp = r_time_utils::iso_8601_to_tp(args["end_time"]);
+        start = request_time(args["start_time"], "start_time");
+        end_tp = request_time(args["end_time"], "end_time");
     }
     catch(const std::exception&)
     {
@@ -762,8 +762,8 @@ r_http::r_server_response r_ws::_get_contents(r_utils::r_socket_base&, const r_h
             _top_dir,
             _devices,
             args["camera_id"],
-            r_time_utils::iso_8601_to_tp(start_time_s),
-            r_time_utils::iso_8601_to_tp(end_time_s)            
+            request_time(start_time_s, "start_time"),
+            request_time(end_time_s, "end_time")            
         );
 
         json j;
@@ -1201,8 +1201,8 @@ r_http::r_server_response r_ws::_get_export(r_utils::r_socket_base&, const r_htt
         job.id = r_uuid::generate();
         job.type = export_type::standard;
         job.camera_id = args["camera_id"];
-        job.start_time = r_time_utils::iso_8601_to_tp(args["start_time"]);
-        job.end_time = r_time_utils::iso_8601_to_tp(args["end_time"]);
+        job.start_time = request_time(args["start_time"], "start_time");
+        job.end_time = request_time(args["end_time"], "end_time");
         job.file_name = args["file_name"];
         job.exports_path = exports_path;
 
@@ -1465,13 +1465,13 @@ r_http::r_server_response r_ws::_get_analytics(r_utils::r_socket_base&, const r_
             R_STHROW(r_http_400_exception, ("Missing start_time."));
 
         auto start_time_s = args["start_time"];
-        auto start_tp = r_time_utils::iso_8601_to_tp(start_time_s);
+        auto start_tp = request_time(start_time_s, "start_time");
 
         if(args.find("end_time") == args.end())
             R_STHROW(r_http_400_exception, ("Missing end_time."));
 
         auto end_time_s = args["end_time"];
-        auto end_tp = r_time_utils::iso_8601_to_tp(end_time_s);
+        auto end_tp = request_time(end_time_s, "end_time");
 
         // Check for optional stream_tag parameter
         r_nullable<string> stream_tag;
@@ -1526,7 +1526,7 @@ r_http::r_server_response r_ws::_get_camera_events(r_utils::r_socket_base&, cons
         _camera_or_404(_devices, args["camera_id"]);
         int64_t since_ms = 0;
         if(args.find("since_ms") != args.end())
-            since_ms = r_string_utils::s_to_int64(args["since_ms"]);
+            since_ms = request_number(args["since_ms"], "since_ms", r_string_utils::s_to_int64);
 
         json j;
         j["camera_events"] = json::array();
@@ -1583,7 +1583,7 @@ r_http::r_server_response r_ws::_get_motion_events(r_utils::r_socket_base&, cons
 
         auto start_time_s = args["start_time"];
 
-        auto start_tp = r_time_utils::iso_8601_to_tp(start_time_s);
+        auto start_tp = request_time(start_time_s, "start_time");
 
         bool input_z_time = start_time_s.find("Z") != std::string::npos;
 
@@ -1592,7 +1592,7 @@ r_http::r_server_response r_ws::_get_motion_events(r_utils::r_socket_base&, cons
         
         auto end_time_s = args["end_time"];
 
-        auto end_tp = r_time_utils::iso_8601_to_tp(end_time_s);
+        auto end_tp = request_time(end_time_s, "end_time");
 
         auto motion_events = query_get_motion_events(_top_dir, _devices, args["camera_id"], start_tp, end_tp);
 
@@ -1664,8 +1664,8 @@ r_http::r_server_response r_ws::_get_video(r_utils::r_socket_base&, const r_http
             _top_dir,
             _devices,
             args["camera_id"],
-            r_time_utils::iso_8601_to_tp(args["start_time"]),
-            r_time_utils::iso_8601_to_tp(args["end_time"]),
+            request_time(args["start_time"], "start_time"),
+            request_time(args["end_time"], "end_time"),
             substream,
             newest_gop
         );
@@ -1723,19 +1723,19 @@ r_http::r_server_response r_ws::_get_create_transcode_stream(r_utils::r_socket_b
             R_STHROW(r_http_400_exception, ("Unsupported output codec: %s", output_codec.c_str()));
 
         auto session = make_shared<r_transcode_session>();
-        session->output_width      = r_string_utils::s_to_uint16(args["width"]);
-        session->output_height     = r_string_utils::s_to_uint16(args["height"]);
-        session->bitrate           = r_string_utils::s_to_uint32(args["bitrate"]);
-        session->framerate_num     = r_string_utils::s_to_uint32(args["framerate_num"]);
-        session->framerate_den     = r_string_utils::s_to_uint32(args["framerate_den"]);
+        session->output_width      = request_number(args["width"], "width", r_string_utils::s_to_uint16);
+        session->output_height     = request_number(args["height"], "height", r_string_utils::s_to_uint16);
+        session->bitrate           = request_number(args["bitrate"], "bitrate", r_string_utils::s_to_uint32);
+        session->framerate_num     = request_number(args["framerate_num"], "framerate_num", r_string_utils::s_to_uint32);
+        session->framerate_den     = request_number(args["framerate_den"], "framerate_den", r_string_utils::s_to_uint32);
         session->output_codec_name = output_codec;
         session->codec_initialized = false;
         session->last_used         = steady_clock::now();
 
         if(args.find("audio_sample_rate") != args.end())
-            session->target_audio_sample_rate = r_string_utils::s_to_int(args["audio_sample_rate"]);
+            session->target_audio_sample_rate = request_number(args["audio_sample_rate"], "audio_sample_rate", r_string_utils::s_to_int);
         if(args.find("audio_channels") != args.end())
-            session->target_audio_channels = r_string_utils::s_to_int(args["audio_channels"]);
+            session->target_audio_channels = request_number(args["audio_channels"], "audio_channels", r_string_utils::s_to_int);
 
         auto handle = r_utils::r_uuid::generate();
 
@@ -1821,8 +1821,8 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
             R_STHROW(r_http_400_exception, ("Missing end_time."));
 
         auto handle    = args["handle"];
-        auto start_tp  = r_time_utils::iso_8601_to_tp(args["start_time"]);
-        auto end_tp    = r_time_utils::iso_8601_to_tp(args["end_time"]);
+        auto start_tp  = request_time(args["start_time"], "start_time");
+        auto end_tp    = request_time(args["end_time"], "end_time");
         // Pre-roll frames (ts < start_ms) are needed to prime the decoder but must
         // not appear in the output blob tree — the cloud service uses start_ms as
         // its PTS=0 reference and would clamp earlier frames to 0, causing a frozen
@@ -2422,15 +2422,15 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(r_utils::r_socket_base& conn
                 R_STHROW(r_http_400_exception, ("Missing %s.", k));
 
         auto camera_id = args["camera_id"];
-        auto start_tp  = r_time_utils::iso_8601_to_tp(args["start_time"]);
-        auto end_tp    = r_time_utils::iso_8601_to_tp(args["end_time"]);
+        auto start_tp  = request_time(args["start_time"], "start_time");
+        auto end_tp    = request_time(args["end_time"], "end_time");
         int64_t start_ms = chrono::duration_cast<chrono::milliseconds>(start_tp.time_since_epoch()).count();
 
-        uint16_t output_width  = r_string_utils::s_to_uint16(args["width"]);
-        uint16_t output_height = r_string_utils::s_to_uint16(args["height"]);
-        uint32_t bitrate       = r_string_utils::s_to_uint32(args["bitrate"]);
-        uint32_t framerate_num = r_string_utils::s_to_uint32(args["framerate_num"]);
-        uint32_t framerate_den = r_string_utils::s_to_uint32(args["framerate_den"]);
+        uint16_t output_width  = request_number(args["width"], "width", r_string_utils::s_to_uint16);
+        uint16_t output_height = request_number(args["height"], "height", r_string_utils::s_to_uint16);
+        uint32_t bitrate       = request_number(args["bitrate"], "bitrate", r_string_utils::s_to_uint32);
+        uint32_t framerate_num = request_number(args["framerate_num"], "framerate_num", r_string_utils::s_to_uint32);
+        uint32_t framerate_den = request_number(args["framerate_den"], "framerate_den", r_string_utils::s_to_uint32);
 
         string output_codec = (args.find("codec") != args.end()) ? r_string_utils::to_lower(args["codec"]) : "h264";
         if(output_codec != "h264" && output_codec != "h265" && output_codec != "hevc")
@@ -2664,8 +2664,8 @@ r_http::r_server_response r_ws::_get_passthrough_fmp4(r_utils::r_socket_base& co
                 R_STHROW(r_http_400_exception, ("Missing %s.", k));
 
         auto camera_id = args["camera_id"];
-        auto start_tp  = r_time_utils::iso_8601_to_tp(args["start_time"]);
-        auto end_tp    = r_time_utils::iso_8601_to_tp(args["end_time"]);
+        auto start_tp  = request_time(args["start_time"], "start_time");
+        auto end_tp    = request_time(args["end_time"], "end_time");
         int64_t start_ms = r_time_utils::tp_to_epoch_millis(start_tp);
 
         auto flag = [&](const char* k) {
@@ -2812,8 +2812,8 @@ r_http::r_server_response r_ws::_get_passthrough_fmp4(r_utils::r_socket_base& co
         {
             if(args.find("width") != args.end() && args.find("height") != args.end())
             {
-                width  = r_string_utils::s_to_uint16(args["width"]);
-                height = r_string_utils::s_to_uint16(args["height"]);
+                width  = request_number(args["width"], "width", r_string_utils::s_to_uint16);
+                height = request_number(args["height"], "height", r_string_utils::s_to_uint16);
             }
             else R_THROW(("Passthrough fmp4: no SPS in stored codec parameters and no width/height given."));
         }
@@ -2990,15 +2990,15 @@ r_http::r_server_response r_ws::_get_transcode_export(r_utils::r_socket_base&, c
         job.id = r_uuid::generate();
         job.type = export_type::transcode;
         job.camera_id = args["camera_id"];
-        job.start_time = r_time_utils::iso_8601_to_tp(args["start_time"]);
-        job.end_time = r_time_utils::iso_8601_to_tp(args["end_time"]);
+        job.start_time = request_time(args["start_time"], "start_time");
+        job.end_time = request_time(args["end_time"], "end_time");
         job.file_name = args["file_name"];
         job.exports_path = exports_path;
-        job.width = r_string_utils::s_to_uint16(args["width"]);
-        job.height = r_string_utils::s_to_uint16(args["height"]);
-        job.bitrate = r_string_utils::s_to_uint32(args["bitrate"]);
-        job.framerate_num = r_string_utils::s_to_uint32(args["framerate_num"]);
-        job.framerate_den = r_string_utils::s_to_uint32(args["framerate_den"]);
+        job.width = request_number(args["width"], "width", r_string_utils::s_to_uint16);
+        job.height = request_number(args["height"], "height", r_string_utils::s_to_uint16);
+        job.bitrate = request_number(args["bitrate"], "bitrate", r_string_utils::s_to_uint32);
+        job.framerate_num = request_number(args["framerate_num"], "framerate_num", r_string_utils::s_to_uint32);
+        job.framerate_den = request_number(args["framerate_den"], "framerate_den", r_string_utils::s_to_uint32);
         job.codec = (args.find("codec") != args.end()) ? r_string_utils::to_lower(args["codec"]) : "h264";
 
         {
@@ -3670,11 +3670,11 @@ r_http::r_server_response r_ws::_get_ptz_view_frame(r_utils::r_socket_base&, con
     {
         if(args.find("long_edge") != end(args))
         {
-            auto le = r_string_utils::s_to_uint16(args["long_edge"]);
+            auto le = request_number(args["long_edge"], "long_edge", r_string_utils::s_to_uint16);
             long_edge = le < PTZ_VIEW_MIN_EDGE ? PTZ_VIEW_MIN_EDGE : le > PTZ_VIEW_MAX_EDGE ? PTZ_VIEW_MAX_EDGE : le;
         }
         if(args.find("after") != end(args))
-            after = r_string_utils::s_to_int64(args["after"]);
+            after = request_number(args["after"], "after", r_string_utils::s_to_int64);
     }
     catch(const std::exception&)
     {
@@ -3946,7 +3946,7 @@ r_http::r_server_response r_ws::_post_configure_camera(r_utils::r_socket_base&, 
 
     try
     {
-        auto req = json::parse(request.get_body_as_string());
+        auto req = request_json(request.get_body_as_string());
 
         if(!req.contains("camera_id"))
             R_STHROW(r_http_400_exception, ("Missing camera_id."));
@@ -3990,7 +3990,7 @@ r_http::r_server_response r_ws::_post_remove_camera(r_utils::r_socket_base&, con
 
     try
     {
-        auto req = json::parse(request.get_body_as_string());
+        auto req = request_json(request.get_body_as_string());
 
         if(!req.contains("camera_id"))
             R_STHROW(r_http_400_exception, ("Missing camera_id."));
@@ -4024,7 +4024,7 @@ r_http::r_server_response r_ws::_post_update_camera_properties(r_utils::r_socket
 
     try
     {
-        auto req = json::parse(request.get_body_as_string());
+        auto req = request_json(request.get_body_as_string());
 
         if(!req.contains("camera_id"))
             R_STHROW(r_http_400_exception, ("Missing camera_id."));
@@ -4066,7 +4066,7 @@ r_http::r_server_response r_ws::_post_forget_camera(r_utils::r_socket_base&, con
 
     try
     {
-        auto req = json::parse(request.get_body_as_string());
+        auto req = request_json(request.get_body_as_string());
 
         if(!req.contains("camera_id"))
             R_STHROW(r_http_400_exception, ("Missing camera_id."));
@@ -4114,7 +4114,7 @@ r_http::r_server_response r_ws::_answer_camera_move(const r_http::r_server_reque
     string camera_id, new_ipv4;
     try
     {
-        auto req = json::parse(request.get_body_as_string());
+        auto req = request_json(request.get_body_as_string());
         if(req.contains("camera_id") && req["camera_id"].is_string())
             camera_id = req["camera_id"].get<string>();
         if(req.contains("new_ipv4") && req["new_ipv4"].is_string())
@@ -4164,7 +4164,7 @@ r_http::r_server_response r_ws::_post_add_rtsp_camera(r_utils::r_socket_base&, c
 
     try
     {
-        auto req = json::parse(request.get_body_as_string());
+        auto req = request_json(request.get_body_as_string());
 
         if(!req.contains("rtsp_url") || req["rtsp_url"].get<string>().empty())
             R_STHROW(r_http_400_exception, ("Missing rtsp_url."));
@@ -4285,7 +4285,7 @@ r_http::r_server_response r_ws::_get_storage_info(r_utils::r_socket_base&, const
         // With days: the file size Change retention would make, for the dialog.
         if(args.find("days") != args.end())
         {
-            double days = r_string_utils::s_to_double(args["days"]);
+            double days = request_number(args["days"], "days", r_string_utils::s_to_double);
             if(bps > 0 && days > 0.0)
             {
                 auto sz = required_file_size_for_retention_hours((int64_t)(days * 24.0), bps);
@@ -4310,7 +4310,7 @@ r_http::r_server_response r_ws::_post_storage_move(r_utils::r_socket_base&, cons
 
     try
     {
-        auto req = json::parse(request.get_body_as_string());
+        auto req = request_json(request.get_body_as_string());
 
         auto maybe_camera = _devices.get_camera_by_id(req.value("camera_id", string()));
         if(maybe_camera.is_null())
@@ -4364,7 +4364,7 @@ r_http::r_server_response r_ws::_post_storage_change_retention(r_utils::r_socket
 
     try
     {
-        auto req = json::parse(request.get_body_as_string());
+        auto req = request_json(request.get_body_as_string());
 
         auto maybe_camera = _devices.get_camera_by_id(req.value("camera_id", string()));
         if(maybe_camera.is_null())
