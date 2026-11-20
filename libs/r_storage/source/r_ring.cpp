@@ -69,8 +69,6 @@ void r_ring::write(const system_clock::time_point& tp, const uint8_t* p)
 {
     r_file_lock_guard g(_lock);
 
-    auto n_elements = _n_elements();
-
     auto unwrapped_idx = _unwrapped_idx(tp);
 
     if(_last_write_idx != -1)
@@ -81,7 +79,7 @@ void r_ring::write(const system_clock::time_point& tp, const uint8_t* p)
         {
             for(int i = 0; i < delta-1; i++)
             {
-                auto ofs = ((_last_write_idx + 1 + i) % n_elements) * _element_size;
+                auto ofs = _slot(_last_write_idx + 1 + i) * _element_size;
                 memset(_ring_start() + ofs, 0, _element_size);
             }
         }
@@ -89,7 +87,7 @@ void r_ring::write(const system_clock::time_point& tp, const uint8_t* p)
 
     _last_write_idx = unwrapped_idx;
 
-    memcpy(_ring_start() + ((unwrapped_idx % n_elements) * _element_size), p, _element_size);
+    memcpy(_ring_start() + (_slot(unwrapped_idx) * _element_size), p, _element_size);
 }
 
 void r_ring::write_range(const system_clock::time_point& start,
@@ -98,15 +96,13 @@ void r_ring::write_range(const system_clock::time_point& start,
 {
     r_file_lock_guard g(_lock);
 
-    auto n_elements = _n_elements();
-
     auto start_idx = _unwrapped_idx(start);
     auto end_idx = _unwrapped_idx(end);
 
     // Write the value to all seconds in the range [start, end]
     for(auto idx = start_idx; idx <= end_idx; ++idx)
     {
-        memcpy(_ring_start() + ((idx % n_elements) * _element_size), p, _element_size);
+        memcpy(_ring_start() + (_slot(idx) * _element_size), p, _element_size);
     }
 
     _last_write_idx = end_idx;
@@ -130,12 +126,20 @@ system_clock::time_point r_ring::_created_at() const
 
 size_t r_ring::_idx(const system_clock::time_point& tp) const
 {
-    return _unwrapped_idx(tp) % _n_elements();
+    return _slot(_unwrapped_idx(tp));
 }
 
-size_t r_ring::_unwrapped_idx(const std::chrono::system_clock::time_point& tp) const
+int64_t r_ring::_unwrapped_idx(const std::chrono::system_clock::time_point& tp) const
 {
-    return duration_cast<seconds>((tp - _created_at())).count();
+    // Signed and rounded down: a time before the ring was created (a query whose window starts earlier) is a negative
+    // second, not a huge unsigned one that lands on an unrelated slot.
+    return std::chrono::floor<seconds>(tp - _created_at()).count();
+}
+
+size_t r_ring::_slot(int64_t unwrapped_idx) const
+{
+    auto n = (int64_t)_n_elements();
+    return (size_t)(((unwrapped_idx % n) + n) % n);
 }
 
 void r_ring::allocate(const string& path, size_t element_size, size_t n_elements)
