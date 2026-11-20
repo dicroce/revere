@@ -41,7 +41,31 @@ struct r_camera_move
     // Why a held move isn't followed yet (hold_reason_for); empty until the
     // first check, and for a followed move.
     std::string hold_reason;
+    // A followed move only: how the camera's MAC compared at the new address
+    // (mac_check_for): "match", or, when the computer doesn't pause on an
+    // address change (load_camera_move_policy), "changed", "unknown" or "none".
+    // Empty for a move a person confirmed.
+    std::string mac_check;
 };
+
+// What a move's hold_reason says about the camera's MAC at the new address:
+// "" -> "match", "mac_mismatch" -> "changed", "mac_unknown" -> "unknown",
+// "no_stored_mac" -> "none".
+R_API std::string mac_check_for(const std::string& hold_reason);
+
+// Whether this computer pauses recording a camera that turns up at a new
+// address its MAC doesn't vouch for (no MAC stored, none readable there, a
+// different one) until a person confirms. Off unless the cloud said otherwise:
+// the camera keeps recording at the new address, and the move says how its MAC
+// compared. A move whose MAC matches is followed either way.
+//
+// config/camera_moves.json: {"pause_on_address_change": false}. A missing
+// file, bad JSON or a non-boolean value is off.
+R_API bool parse_camera_move_policy(const std::string& json_text);
+R_API std::string camera_move_policy_json(bool pause_on_address_change);
+R_API bool load_camera_move_policy(const std::string& top_dir);
+// Saves the choice; false when it couldn't be written.
+R_API bool save_camera_move_policy(const std::string& top_dir, bool pause_on_address_change);
 
 enum class move_outcome { hold, follow };
 

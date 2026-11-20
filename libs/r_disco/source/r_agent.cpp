@@ -583,7 +583,34 @@ void r_agent::recheck_held_moves()
 
         if(reason.empty())
         {
+            h.move.mac_check = mac_check_for(reason);
             _follow(id, h, "the new address has the camera's MAC address");
+            continue;
+        }
+
+        // This computer doesn't pause recording when a camera's address changes (the default, and the cloud's
+        // setting): the camera keeps recording at the new address, and the move says how its MAC compared. A
+        // different MAC that could be read becomes the camera's, as a person's confirm would make it, saved before
+        // the move writes the new address over the same row.
+        if(!_pause_on_address_change.load())
+        {
+            auto shown = [](const r_nullable<string>& m) { return m.is_null() ? string("none") : m.value(); };
+            if(reason == "mac_mismatch" && !new_mac.is_null() && _save_camera_cb)
+            {
+                auto cam = stored;
+                cam.mac = r_utils::r_networking::r_normalize_mac(new_mac.value());
+                if(!cam.mac.is_null())
+                {
+                    R_LOG_INFO("Camera %s: its MAC at %s is %s now (was %s)", id.c_str(), h.move.new_ipv4.c_str(),
+                               cam.mac.value().c_str(), shown(stored.mac).c_str());
+                    _save_camera_cb(cam);
+                }
+            }
+            h.move.mac_check = mac_check_for(reason);
+            _follow(id, h, "this computer doesn't pause recording when a camera's address changes; its MAC " +
+                    (reason == "no_stored_mac" ? string("wasn't on file")
+                                               : (reason == "mac_unknown" ? string("couldn't be read there")
+                                                                          : "differs there (stored " + shown(stored.mac) + ", seen " + shown(new_mac) + ")")));
             continue;
         }
 
