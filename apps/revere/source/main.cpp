@@ -3112,6 +3112,7 @@ int main(int argc, char** argv)
     agent.set_stream_change_cb(bind(&r_disco::r_devices::insert_or_update_devices, &devices, placeholders::_1));
     agent.set_credential_cb(bind(&r_disco::r_devices::get_credentials, &devices, placeholders::_1));
     agent.set_is_recording_cb(bind(&r_vss::r_stream_keeper::is_recording, &streamKeeper, placeholders::_1));
+    agent.set_receiving_video_cb(bind(&r_vss::r_stream_keeper::receiving_video_now, &streamKeeper, placeholders::_1));
 
     // Background re-interrogation pipeline: when ONVIF discovery sees an
     // assigned camera move (new IP after a router reboot etc.), r_agent uses

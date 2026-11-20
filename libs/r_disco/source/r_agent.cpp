@@ -353,8 +353,13 @@ void r_agent::_process_new_or_changed_streams_configs()
 
     recheck_held_moves();
     // A camera discovery never reports as new or changed (assigned after it was first seen, or added by its RTSP URL)
-    // would otherwise have no MAC until the next restart, and its first move would be held for want of one.
-    note_missing_macs();
+    // would otherwise have no MAC until the next restart, and its first move would be held for want of one. Every
+    // device this pass saw, changed or not, vouches for its own address.
+    std::map<std::string, std::string> seen_at;
+    for(const auto& sc : devices)
+        if(!sc.ipv4.is_null())
+            seen_at[sc.id] = sc.ipv4.value();
+    note_missing_macs(seen_at);
 }
 
 namespace
@@ -507,12 +512,38 @@ bool r_agent::_note_mac(const std::string& id)
     return true;
 }
 
-void r_agent::note_missing_macs()
+namespace
+{
+// The host an RTSP URL names (rtsp://user:pass@host:port/path -> host); empty when it has none.
+std::string _rtsp_host(const std::string& url)
+{
+    auto at = url.find("://");
+    if(at == std::string::npos)
+        return std::string();
+    auto rest = url.substr(at + 3);
+    rest = rest.substr(0, rest.find('/'));
+    auto creds = rest.rfind('@');
+    if(creds != std::string::npos)
+        rest = rest.substr(creds + 1);
+    if(!rest.empty() && rest[0] == '[')
+        return rest.substr(1, rest.find(']') - 1);
+    return rest.substr(0, rest.find(':'));
+}
+}
+
+void r_agent::note_missing_macs(const std::map<std::string, std::string>& seen_at)
 {
     auto now = _now();
     for(const auto& cam : _get_assigned_cameras())
     {
         if(!cam.mac.is_null() || cam.ipv4.is_null())
+            continue;
+        // The camera itself must be at its stored address now, not just something that answers there.
+        auto seen = seen_at.find(cam.id);
+        bool vouched = seen != seen_at.end() && seen->second == cam.ipv4.value();
+        if(!vouched && _receiving_video_cb && !cam.rtsp_url.is_null() && _rtsp_host(cam.rtsp_url.value()) == cam.ipv4.value())
+            vouched = _receiving_video_cb(cam.id);
+        if(!vouched)
             continue;
         {
             lock_guard<mutex> g(_moves_mutex);

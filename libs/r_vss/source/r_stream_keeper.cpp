@@ -1061,6 +1061,13 @@ r_nullable<r_frame_tap_result> r_stream_keeper::ptz_view_frame(const string& cam
     return r_nullable<r_frame_tap_result>(_frame_taps.newest(camera_id, long_edge, after));
 }
 
+bool r_stream_keeper::receiving_video_now(const string& camera_id)
+{
+    std::lock_guard<std::mutex> lock(_streams_mutex);
+    auto it = _streams.find(camera_id);
+    return it != _streams.end() && it->second->video_age_ms() < RECEIVING_NOW_MS;
+}
+
 std::chrono::hours r_stream_keeper::get_retention_hours(const string& camera_id)
 {
     std::lock_guard<std::mutex> lock(_retention_cache_mutex);
