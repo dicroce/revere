@@ -38,6 +38,10 @@ class Sampler:
         with self._lock:
             self._watched.pop(label, None)
 
+    def rows(self, label: str) -> list[dict]:
+        with self._lock:
+            return list(self._data.get(label, []))
+
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
@@ -112,6 +116,9 @@ class Sampler:
                             "pid": pid,
                             "cpu_percent": round(cpu, 1),
                             "rss_mb": round(rss_mb, 1),
+                            # Private memory: resident minus file-backed pages. The recorder maps its
+                            # pre-allocated recording files, so total resident memory grows as they fill.
+                            "private_mb": round((mem.rss - getattr(mem, "shared", 0)) / (1024 * 1024), 1),
                             "vms_mb": round(vms_mb, 1),
                             "threads": threads,
                             "fds": fds,
@@ -139,7 +146,7 @@ class Sampler:
             return
         file_exists = self._csv_path.exists()
         with open(self._csv_path, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["time", "label", "pid", "cpu_percent", "rss_mb", "vms_mb", "threads", "fds"])
+            writer = csv.DictWriter(f, fieldnames=["time", "label", "pid", "cpu_percent", "rss_mb", "private_mb", "vms_mb", "threads", "fds"])
             if not file_exists:
                 writer.writeheader()
             for row in rows:

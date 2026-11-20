@@ -1,6 +1,6 @@
 # Revere Recorder Test Harness
 
-This is an end-to-end test harness for the Revere recorder. It includes fake cameras, two new suites, and a smoke suite. Still to come are recording checks, API tests, desktop UI tests, and stress runs.
+This is an end-to-end test harness for the Revere recorder. It includes fake cameras and a recording suite. Stress runs, a local web page, API tests and desktop UI tests are still to come.
 
 ## Platform Requirements
 
@@ -35,12 +35,22 @@ tools/harness/run.sh smoke
 
 Use `--revere-dir DIR` to specify the recorder location. Use `--out DIR` to set the output directory. The default is `tools/harness/out/<date-time>-<suite>`. Use `--keep` to keep the recorder's data, secret and home directories after a passing run. After a failed run they are always kept for inspection.
 
+Use `--param NAME=VALUE` (repeatable) to pass suite parameters. Example:
+
+```bash
+tools/harness/run.sh recording --param long_drop=60
+```
+
+Unknown or out-of-range parameters are refused before anything starts. Exit code 2 means a bad parameter; 130 means the run was interrupted.
+
 ## Exit Codes
 
 - 0: All steps passed.
 - 1: A step failed.
+- 2: A bad parameter was provided.
 - 3: The sandbox could not be set up or its guard refused to run.
 - 4: A recorder or viewer that was running outside the sandbox before the run is gone after it.
+- 130: The run was interrupted.
 
 ## Sandbox and Safety
 
@@ -54,9 +64,9 @@ The sandbox mounts empty tmpfs directories over /run/dbus, /run/user, /tmp/.X11-
 
 It mounts its own sysfs. The guard stops the run unless the only network interface is lo. Later guard calls allow lo plus the bridge (br0) and camera links (vc...) the harness itself creates.
 
-The recorder logs through syslog. A private log socket inside the sandbox collects those lines into `syslog.log` in the output folder, so they do not land in the machine's journal.
+The recorder logs through syslog. A private log socket inside the sandbox collects those lines into `syslog.log` in the output folder, so they do not land in the machine's journal. The private log socket is also bind-mounted over /dev/log when the machine has a syslog socket there, with a self-check that a test line reaches the private log.
 
-Each run gets fresh temporary data, secret, and home directories under the output folder. It never touches a real installation's data.
+Each run gets fresh temporary data, secret, and home directories under the output folder. It never touches a real installation's data. The guard now compares the visible network interfaces with the exact set the harness created (not a name pattern).
 
 ## Output
 
@@ -66,9 +76,11 @@ The output folder contains:
 - `report.md`: Summary, steps table, and resource table.
 - `results.json`: Raw results.
 - `junit.xml`: JUnit compatible XML.
-- `resources.csv`: Time, label, pid, cpu_percent, rss_mb, vms_mb, threads, and fds. One row per process per second.
+- `resources.csv`: Time, label, pid, cpu_percent, rss_mb, vms_mb, private_mb, threads, and fds. One row per process per second.
 - `recorder/recorder.log`: The recorder log.
 - `syslog.log`: The recorder's own log lines.
+- `events.jsonl`: One JSON object per line: run_started, step_started, step_finished, note, sample, snapshot, run_finished.
+- `snapshots/`: JPEG frames taken at key moments.
 - Temporary directories for the recorder are present only after a failed run or with `--keep`.
 - `cameras/<name>.log`: Log output from each fake camera.
 
@@ -87,6 +99,12 @@ The smoke suite verifies:
 The cameras suite starts six fake cameras. It uses H.264, H.264 with AAC and a substream, H.264 with MuLaw, H.265, H.265 with AAC and a substream, and H.264 without auth. It checks every stream with ffprobe. It checks password handling, multicast and unicast discovery. It proves each fault control has its effect. No recorder is involved.
 
 The discovery suite starts four fake cameras and a headless recorder. It checks that the recorder lists every camera as discovered with the right address. It checks that each camera saw the recorder's probe.
+
+The recording suite (about 6 minutes) adds four fake cameras through the same API calls the web UI makes. Checks: each receives video; the pre-allocated recording file is written in place; the recorded range grows; one continuous segment; an outage shorter than the recorder's dead-stream timeout does not restart the stream; an unplugged cable, a stopped RTSP server and a stalled stream each show as a gap that starts when the data stopped; other cameras keep recording; a still picture gives no motion events and a scripted 15 second scroll gives exactly one with the right start and end; removing a camera stops its recording. Parameters: `long_drop` (seconds, default 40) and `short_drop` (seconds, default 8).
+
+## Findings
+
+When a check shows recorder behaviour that looks like a defect but is outside what the step asserts, the harness prints a note starting with FINDING and, where it applies, skips the step with the reason. Findings appear in the terminal and in events.jsonl.
 
 ## Fake Cameras
 
@@ -119,13 +137,16 @@ Each fake camera is its own process in its own network namespace. It joins a bri
 - `reporter.py`: Terminal output formatting.
 - `sampler.py`: Resource sampling.
 - `report.py`: Report file generation.
+- `api.py`: Client for the recorder's local API.
+- `catalog.py`: Suites and their parameters.
 - `suites/smoke.py`: Smoke suite definition.
 - `suites/cameras.py`: Cameras suite definition.
 - `suites/discovery.py`: Discovery suite definition.
+- `suites/recording.py`: Recording suite definition.
 
 ## Adding a Suite
 
-Write `suites/<name>.py` with a `run(run, ctx)` function. Wrap each check in `with run.step("..."):`. Use `run.check(condition, message)` for assertions. Use `run.skip(reason)` to skip steps. Register the suite in `SUITES` in cli.py.
+Write `suites/<name>.py` with a `run(run, ctx)` function. Wrap each check in `with run.step("..."):`. Use `run.check(condition, message)` for assertions. Use `run.skip(reason)` to skip steps. Also add an entry to `catalog.py`. Parameters arrive in `ctx.params`. `ctx.snap(caption, rtsp_url)` saves a snapshot. `ctx.reporter.note(text)` adds a note. Register the suite in `SUITES` in cli.py.
 
 ## Build Note
 

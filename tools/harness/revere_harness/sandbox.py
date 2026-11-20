@@ -3,6 +3,7 @@ The harness never signals a process by name.
 guard() aborts the run if a recorder or viewer from outside is visible.
 isolate() hides session sockets and the journal to prevent leakage."""
 
+import tempfile
 import os
 import sys
 import shutil
@@ -11,6 +12,7 @@ import psutil
 import pathlib
 import socket
 import threading
+import time
 
 ENV_FLAG = "REVERE_HARNESS_IN_SANDBOX"
 
@@ -166,10 +168,34 @@ def guard(check_network: bool = True) -> None:
         raise SandboxError(f"host recorder or viewer visible: {recorders}")
 
     if check_network:
+        from revere_harness import net
+        allowed = {"lo"} | net.created_interfaces()
         interfaces = visible_interfaces()
         for iface in interfaces:
-            if iface not in ("lo", "br0") and not iface.startswith("vc"):
+            if iface not in allowed:
                 raise SandboxError(f"unexpected network interface visible: {iface}")
+
+
+def syslog_reaches_sink(sink: SyslogSink) -> bool:
+    """Send a test datagram to /dev/log and check if the sink receives it."""
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sock.sendto(b"<14>harness: sink check", "/dev/log")
+        sock.close()
+    except OSError:
+        return False
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        try:
+            with open(sink.log_path, "r") as f:
+                content = f.read()
+            if "sink check" in content:
+                return True
+        except OSError:
+            pass
+        time.sleep(0.1)
+    return False
 
 
 def isolate(log_path: pathlib.Path) -> "SyslogSink":
@@ -199,8 +225,29 @@ def isolate(log_path: pathlib.Path) -> "SyslogSink":
     if os.path.exists("/run/systemd/journal"):
         sink = SyslogSink("/run/systemd/journal/dev-log", log_path)
         sink.start()
-        return sink
-    return SyslogSink("/run/systemd/journal/dev-log", log_path)
+    else:
+        # Journal dir missing; use a private temp dir for the socket to avoid conflicts
+        tmp_dir = tempfile.mkdtemp(prefix="harness-log-")
+        sink_socket_path = os.path.join(tmp_dir, "dev-log")
+        sink = SyslogSink(sink_socket_path, log_path)
+        sink.start()
+
+    # If /dev/log exists on the host but points elsewhere, bind-mount our sink over it.
+    # This ensures syslog lines from sandboxed processes reach our private socket instead of the host's.
+    if os.path.lexists("/dev/log"):
+        real_log = os.path.realpath("/dev/log")
+        if real_log != sink.socket_path:
+            try:
+                subprocess.run(["mount", "--bind", sink.socket_path, "/dev/log"], check=True)
+            except subprocess.CalledProcessError as e:
+                raise SandboxError(f"failed to bind-mount /dev/log: {e}")
+
+    # Verify syslog connectivity before returning
+    if os.path.lexists("/dev/log"):
+        if not syslog_reaches_sink(sink):
+            raise SandboxError("syslog lines would not reach the private log socket")
+
+    return sink
 
 
 def check_only_loopback() -> None:
