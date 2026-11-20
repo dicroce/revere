@@ -32,6 +32,7 @@ r_agent::r_agent(const std::string& top_dir) :
     _device_config_hashes(),
     _credential_cb()
 {
+    _unconfirmed_addresses = load_unconfirmed_addresses(top_dir);
 }
 
 r_agent::~r_agent() noexcept
@@ -476,6 +477,14 @@ void r_agent::apply_discovered_changes(const vector<pair<r_stream_config, string
         if(cam_n.is_null() || cam_n.value().ipv4.is_null() || !cam_n.value().mac.is_null())
             continue;
         auto cam = cam_n.value();
+        // Followed here without pausing and with no MAC to check it by: nothing vouched that this is the camera, so
+        // what answers here isn't taught as its MAC. A person's confirm does that.
+        {
+            lock_guard<mutex> g(_moves_mutex);
+            auto u = _unconfirmed_addresses.find(id);
+            if(u != _unconfirmed_addresses.end() && u->second == cam.ipv4.value())
+                continue;
+        }
         auto lookup = _mac_lookup ? _mac_lookup : mac_lookup(_default_mac_lookup);
         auto mac = lookup(cam.ipv4.value(), cam.onvif_port.is_null() ? 80 : cam.onvif_port.value());
         if(mac.is_null())
@@ -534,7 +543,31 @@ void r_agent::_confirm(const std::string& id, _held_move held)
             }
         }
     }
+    _set_unconfirmed_address(id, string());
     _follow(id, held, "confirmed by the user");
+}
+
+void r_agent::_set_unconfirmed_address(const std::string& id, const std::string& ipv4)
+{
+    std::map<string, string> now;
+    {
+        lock_guard<mutex> g(_moves_mutex);
+        auto it = _unconfirmed_addresses.find(id);
+        if(ipv4.empty())
+        {
+            if(it == _unconfirmed_addresses.end())
+                return;
+            _unconfirmed_addresses.erase(it);
+        }
+        else
+        {
+            if(it != _unconfirmed_addresses.end() && it->second == ipv4)
+                return;
+            _unconfirmed_addresses[id] = ipv4;
+        }
+        now = _unconfirmed_addresses;
+    }
+    save_unconfirmed_addresses(_top_dir, now);
 }
 
 void r_agent::recheck_held_moves()
@@ -596,6 +629,8 @@ void r_agent::recheck_held_moves()
         {
             auto shown = [](const r_nullable<string>& m) { return m.is_null() ? string("none") : m.value(); };
             h.move.mac_check = mac_check_for(reason);
+            // No MAC on file: the new address isn't vouched for, so its MAC isn't noted there either.
+            _set_unconfirmed_address(id, reason == "no_stored_mac" ? h.move.new_ipv4 : string());
             _follow(id, h, "this computer doesn't pause recording when a camera's address changes; its MAC " +
                     (reason == "no_stored_mac" ? string("wasn't on file")
                                                : (reason == "mac_unknown" ? string("couldn't be read there")

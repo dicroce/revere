@@ -53,6 +53,15 @@ void test_r_disco::teardown()
     auto policy_file = policy_dir + PATH_SLASH + "config" + PATH_SLASH + "camera_moves.json";
     if(r_fs::file_exists(policy_file))
         r_fs::remove_file(policy_file);
+    // The unconfirmed-address lists the policy test and the agents (top_dir "top_dir") write.
+    for(auto dir : {policy_dir, string("top_dir")})
+    {
+        auto unconfirmed = dir + PATH_SLASH + "config" + PATH_SLASH + "camera_moves_unconfirmed.json";
+        if(r_fs::file_exists(unconfirmed))
+            r_fs::remove_file(unconfirmed);
+    }
+    if(r_fs::file_exists(string("top_dir") + PATH_SLASH + "config"))
+        r_fs::rmdir(string("top_dir") + PATH_SLASH + "config");
     if(r_fs::file_exists(policy_dir + PATH_SLASH + "config"))
         r_fs::rmdir(policy_dir + PATH_SLASH + "config");
     if(r_fs::file_exists(policy_dir))
@@ -459,6 +468,50 @@ void test_r_disco::test_agent_keeps_recording_when_not_pausing()
         RTF_ASSERT(host.written.size() == 2 && host.saved.empty());
     }
 
+    // Off, with no MAC on file: followed, and what answers at the new address isn't noted as the camera's MAC, there
+    // or after a restart. A camera that never moved is noted as before. Once pausing is on, the next move is held, and
+    // a person's confirm teaches the MAC seen there.
+    {
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.93", r_nullable<string>());
+        host.cameras["porch"] = _assigned("porch", "10.0.0.20", r_nullable<string>());
+        {
+            r_agent agent("top_dir");
+            host.wire(agent, false);
+            host.new_mac = _s("aa:bb:cc:00:00:01");
+            agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
+            agent.recheck_held_moves();
+            RTF_ASSERT(host.moves["garage"].value().status == "followed");
+            RTF_ASSERT(host.moves["garage"].value().mac_check == "none");
+            host.cameras["garage"].ipv4 = _s("10.0.0.78");
+            // Seen at the address it was followed to: not noted.
+            agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h2"}});
+            RTF_ASSERT(host.saved.empty() && host.cameras["garage"].mac.is_null());
+            // A camera that never moved, at its own address: noted.
+            agent.apply_discovered_changes({{_discovered("porch", "10.0.0.20"), "p1"}});
+            RTF_ASSERT(host.saved.size() == 1 && host.saved[0].id == "porch");
+        }
+        {
+            // After a restart, still not noted there.
+            r_agent agent("top_dir");
+            host.wire(agent, false);
+            agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h3"}});
+            RTF_ASSERT(host.saved.size() == 1 && host.cameras["garage"].mac.is_null());
+
+            // Pausing on: the next move is held, and the confirm teaches the MAC seen at the new address.
+            agent.set_pause_on_address_change(true);
+            host.new_mac = _s("0c:cd:d0:03:7b:d9");
+            agent.apply_discovered_changes({{_discovered("garage", "10.0.0.50"), "h4"}});
+            agent.recheck_held_moves();
+            RTF_ASSERT(host.moves["garage"].value().status == "held");
+            RTF_ASSERT(host.moves["garage"].value().hold_reason == "no_stored_mac");
+            RTF_ASSERT(agent.answer_camera_move("garage", "10.0.0.50", true) == move_answer::ok);
+            RTF_ASSERT(host.cameras["garage"].mac.value() == "0c:cd:d0:03:7b:d9");
+        }
+        // The confirm ended the unconfirmed address.
+        RTF_ASSERT(load_unconfirmed_addresses("top_dir").empty());
+    }
+
     // On: the same move is held, as before.
     {
         r_agent agent("top_dir");
@@ -495,6 +548,17 @@ void test_r_disco::test_camera_move_policy_file()
     RTF_ASSERT(load_camera_move_policy(dir));
     RTF_ASSERT(save_camera_move_policy(dir, false));
     RTF_ASSERT(!load_camera_move_policy(dir));
+
+    // The unconfirmed addresses: none when missing or bad, strings only, and kept across restarts.
+    RTF_ASSERT(parse_unconfirmed_addresses("").empty());
+    RTF_ASSERT(parse_unconfirmed_addresses("[\"garage\"]").empty());
+    auto parsed = parse_unconfirmed_addresses("{\"garage\": \"10.0.0.78\", \"porch\": 5}");
+    RTF_ASSERT(parsed.size() == 1 && parsed["garage"] == "10.0.0.78");
+    RTF_ASSERT(load_unconfirmed_addresses(dir).empty());
+    RTF_ASSERT(save_unconfirmed_addresses(dir, {{"garage", "10.0.0.78"}}));
+    RTF_ASSERT(load_unconfirmed_addresses(dir) == (std::map<string, string>{{"garage", "10.0.0.78"}}));
+    RTF_ASSERT(save_unconfirmed_addresses(dir, {}));
+    RTF_ASSERT(load_unconfirmed_addresses(dir).empty());
     // teardown removes what this leaves.
 }
 

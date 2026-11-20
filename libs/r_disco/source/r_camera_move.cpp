@@ -141,3 +141,62 @@ bool r_disco::save_camera_move_policy(const string& top_dir, bool pause_on_addre
         return false;
     }
 }
+
+std::map<string, string> r_disco::parse_unconfirmed_addresses(const string& json_text)
+{
+    std::map<string, string> out;
+    auto j = nlohmann::json::parse(json_text, nullptr, false);
+    if(!j.is_object())
+        return out;
+    for(auto it = j.begin(); it != j.end(); ++it)
+        if(it.value().is_string())
+            out[it.key()] = it.value().get<string>();
+    return out;
+}
+
+string r_disco::unconfirmed_addresses_json(const std::map<string, string>& addresses)
+{
+    nlohmann::json j = nlohmann::json::object();
+    for(const auto& [id, ipv4] : addresses)
+        j[id] = ipv4;
+    return j.dump();
+}
+
+static string _unconfirmed_path(const string& top_dir)
+{
+    return top_dir + PATH_SLASH + "config" + PATH_SLASH + "camera_moves_unconfirmed.json";
+}
+
+std::map<string, string> r_disco::load_unconfirmed_addresses(const string& top_dir)
+{
+    auto path = _unconfirmed_path(top_dir);
+    try
+    {
+        if(!r_fs::file_exists(path))
+            return {};
+        auto buf = r_fs::read_file(path);
+        return parse_unconfirmed_addresses(string((char*)buf.data(), buf.size()));
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_WARNING("Camera moves: couldn't read %s: %s", path.c_str(), ex.what());
+        return {};
+    }
+}
+
+bool r_disco::save_unconfirmed_addresses(const string& top_dir, const std::map<string, string>& addresses)
+{
+    auto path = _unconfirmed_path(top_dir);
+    auto txt = unconfirmed_addresses_json(addresses);
+    try
+    {
+        r_fs::mkdir_p(top_dir + PATH_SLASH + "config");
+        r_fs::atomic_write_file((const uint8_t*)txt.c_str(), txt.size(), path);
+        return true;
+    }
+    catch(const exception& ex)
+    {
+        R_LOG_ERROR("Camera moves: couldn't save %s: %s", path.c_str(), ex.what());
+        return false;
+    }
+}

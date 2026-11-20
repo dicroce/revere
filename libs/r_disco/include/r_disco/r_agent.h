@@ -286,6 +286,11 @@ private:
     std::map<std::string, _held_move> _held_moves;
     std::map<std::string, r_camera_move> _followed_moves;
     std::atomic<bool> _pause_on_address_change {false};
+    // Cameras followed without pausing while no MAC was on file: id -> that address (load_unconfirmed_addresses).
+    // Kept across restarts; under _moves_mutex.
+    std::map<std::string, std::string> _unconfirmed_addresses;
+    // Records (ipv4) or ends (empty) a camera's unconfirmed address, and saves the list when it changed.
+    void _set_unconfirmed_address(const std::string& id, const std::string& ipv4);
     // A dismissed move's new address, per camera: not raised again.
     std::map<std::string, std::string> _dismissed_moves;
     void _notify_move(const std::string& id, const r_utils::r_nullable<r_camera_move>& move);

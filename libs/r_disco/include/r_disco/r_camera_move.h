@@ -6,6 +6,7 @@
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
 #include <cstdint>
+#include <map>
 #include <string>
 
 namespace r_disco
@@ -66,6 +67,18 @@ R_API std::string camera_move_policy_json(bool pause_on_address_change);
 R_API bool load_camera_move_policy(const std::string& top_dir);
 // Saves the choice; false when it couldn't be written.
 R_API bool save_camera_move_policy(const std::string& top_dir, bool pause_on_address_change);
+
+// Cameras followed to a new address, without pausing, while no MAC was on
+// file to check them by: camera id -> that address. While a camera is still
+// there its MAC isn't noted, since nothing vouched that what answers there is
+// the camera; a person's confirm, or a move elsewhere, ends it.
+//
+// config/camera_moves_unconfirmed.json: {"<camera id>": "<ipv4>"}. A missing
+// file or bad JSON is none; entries that aren't strings are left out.
+R_API std::map<std::string, std::string> parse_unconfirmed_addresses(const std::string& json_text);
+R_API std::string unconfirmed_addresses_json(const std::map<std::string, std::string>& addresses);
+R_API std::map<std::string, std::string> load_unconfirmed_addresses(const std::string& top_dir);
+R_API bool save_unconfirmed_addresses(const std::string& top_dir, const std::map<std::string, std::string>& addresses);
 
 enum class move_outcome { hold, follow };
 
