@@ -57,6 +57,13 @@ r_storage_write_context r_storage_file::create_write_context(
 // re-anchored instead — see write_frame.
 static const int64_t MAX_BACKWARD_TS_WOBBLE_MS = 5000;
 
+// Video that resumes more than this long after the previous frame starts a new
+// segment: the stream stalled (or the camera was unplugged) for less than the
+// recorder's 20 s silence timer, so it was never restarted, and the hole would
+// otherwise sit inside one segment where /contents can't show it. Above any
+// normal frame spacing, a 1 fps stream's included.
+static const int64_t MAX_FORWARD_TS_GAP_MS = 5000;
+
 // If the written video timeline drifts this far from the wall clock, scream.
 // The write path is otherwise silent about this failure mode: writes succeed,
 // receiving_video() is true, but time-based queries can't see new video.
@@ -181,6 +188,18 @@ void r_storage_file::_write(write_context& wc, r_storage_media_type media_type, 
     // one is a block transition or a page that had to come from disk — on a
     // busy recording disk, hundreds of ms.
     auto write_start = std::chrono::steady_clock::now();
+    if(media_type == R_STORAGE_MEDIA_TYPE_VIDEO && wc.last_timestamp && ts - *wc.last_timestamp > MAX_FORWARD_TS_GAP_MS)
+    {
+        // Close the segment at the last frame before the gap (it frees the stream tag), then start the next one here.
+        // In place, on the thread that writes: queued frames point at this context.
+        auto tag = wc.stream_tag, metadata = wc.metadata;
+        auto gap_ms = ts - *wc.last_timestamp;
+        if(int rc = wc.close())
+            R_LOG_ERROR("storage: closing the segment before a %lld ms gap failed (errno %d)", (long long)gap_ms, rc);
+        wc = _writer->create_write_context(tag, metadata);
+        R_LOG_INFO("storage: no video for %lld ms in %s; a new segment starts at %lld",
+                   (long long)gap_ms, _file_name.c_str(), (long long)ts);
+    }
     _writer->write(wc, p, size, flags, ts);
     auto write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - write_start).count();
     if(write_ms > 50)
