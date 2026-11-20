@@ -96,6 +96,13 @@ public:
     R_API bool pause_on_address_change() const {return _pause_on_address_change.load();}
     R_API void set_clock_ms(clock_ms c) {_clock_ms = c;}
 
+    // Notes the MAC of each assigned camera that has none, at its stored address, as discovery does for a camera it
+    // reports: one added and never changed would otherwise keep none. Not where a move is held, nor at an address
+    // followed without a MAC (load_unconfirmed_addresses); a camera whose MAC couldn't be read is tried again after
+    // MAC_NOTE_RETRY_MS. Each discovery pass calls it.
+    R_API void note_missing_macs();
+    static constexpr int64_t MAC_NOTE_RETRY_MS = 10 * 60 * 1000;
+
     // Discovery's new or changed cameras (and each config's hash), after a
     // poll. Each is written through the changed-streams callback, except an
     // assigned camera now found at another address: that is held as a move
@@ -290,6 +297,10 @@ private:
     // Cameras followed without pausing while no MAC was on file: id -> that address (load_unconfirmed_addresses).
     // Kept across restarts; under _moves_mutex.
     std::map<std::string, std::string> _unconfirmed_addresses;
+    // When note_missing_macs last failed to read a camera's MAC (the agent's clock, ms); under _moves_mutex.
+    std::map<std::string, int64_t> _mac_note_tries;
+    // Notes a MAC-less camera's MAC at its stored address, unless that address is unconfirmed; true when it did.
+    bool _note_mac(const std::string& id);
     // Records (ipv4) or ends (empty) a camera's unconfirmed address, and saves the list when it changed.
     void _set_unconfirmed_address(const std::string& id, const std::string& ipv4);
     // Held from a change to the list through its write, so two changes at once are written in the order they were

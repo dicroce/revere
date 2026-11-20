@@ -352,6 +352,9 @@ void r_agent::_process_new_or_changed_streams_configs()
     }
 
     recheck_held_moves();
+    // A camera discovery never reports as new or changed (assigned after it was first seen, or added by its RTSP URL)
+    // would otherwise have no MAC until the next restart, and its first move would be held for want of one.
+    note_missing_macs();
 }
 
 namespace
@@ -475,28 +478,57 @@ void r_agent::apply_discovered_changes(const vector<pair<r_stream_config, string
     // A camera seen at its stored address without a MAC: note it now, so a
     // later move can be checked against it.
     for(const auto& id : backfill_mac)
+        _note_mac(id);
+}
+
+bool r_agent::_note_mac(const std::string& id)
+{
+    if(!_camera_lookup_cb || !_save_camera_cb)
+        return false;
+    auto cam_n = _camera_lookup_cb(id);
+    if(cam_n.is_null() || cam_n.value().ipv4.is_null() || !cam_n.value().mac.is_null())
+        return false;
+    auto cam = cam_n.value();
+    // Followed here without pausing and with no MAC to check it by: nothing vouched that this is the camera, so
+    // what answers here isn't taught as its MAC. A person's confirm does that.
     {
-        if(!_camera_lookup_cb || !_save_camera_cb)
-            break;
-        auto cam_n = _camera_lookup_cb(id);
-        if(cam_n.is_null() || cam_n.value().ipv4.is_null() || !cam_n.value().mac.is_null())
+        lock_guard<mutex> g(_moves_mutex);
+        auto u = _unconfirmed_addresses.find(id);
+        if(u != _unconfirmed_addresses.end() && u->second == cam.ipv4.value())
+            return false;
+    }
+    auto lookup = _mac_lookup ? _mac_lookup : mac_lookup(_default_mac_lookup);
+    auto mac = lookup(cam.ipv4.value(), cam.onvif_port.is_null() ? 80 : cam.onvif_port.value());
+    if(mac.is_null())
+        return false;
+    cam.mac = mac;
+    _save_camera_cb(cam);
+    R_LOG_INFO("Camera %s: noted its MAC address, %s, at %s", id.c_str(), mac.value().c_str(), cam.ipv4.value().c_str());
+    return true;
+}
+
+void r_agent::note_missing_macs()
+{
+    auto now = _now();
+    for(const auto& cam : _get_assigned_cameras())
+    {
+        if(!cam.mac.is_null() || cam.ipv4.is_null())
             continue;
-        auto cam = cam_n.value();
-        // Followed here without pausing and with no MAC to check it by: nothing vouched that this is the camera, so
-        // what answers here isn't taught as its MAC. A person's confirm does that.
         {
             lock_guard<mutex> g(_moves_mutex);
-            auto u = _unconfirmed_addresses.find(id);
-            if(u != _unconfirmed_addresses.end() && u->second == cam.ipv4.value())
+            // A held move: what answers at the stored address now may be another device.
+            if(_held_moves.count(cam.id))
+                continue;
+            auto tried = _mac_note_tries.find(cam.id);
+            if(tried != _mac_note_tries.end() && now - tried->second < MAC_NOTE_RETRY_MS)
                 continue;
         }
-        auto lookup = _mac_lookup ? _mac_lookup : mac_lookup(_default_mac_lookup);
-        auto mac = lookup(cam.ipv4.value(), cam.onvif_port.is_null() ? 80 : cam.onvif_port.value());
-        if(mac.is_null())
-            continue;
-        cam.mac = mac;
-        _save_camera_cb(cam);
-        R_LOG_INFO("Camera %s: noted its MAC address, %s, at %s", id.c_str(), mac.value().c_str(), cam.ipv4.value().c_str());
+        bool noted = _note_mac(cam.id);
+        lock_guard<mutex> g(_moves_mutex);
+        if(noted)
+            _mac_note_tries.erase(cam.id);
+        else
+            _mac_note_tries[cam.id] = now;
     }
 }
 
