@@ -38,6 +38,7 @@ enum status_code
     response_not_implemented         = 501, ///< Server does not support the functionality to fulfill the request.
     response_bad_gateway             = 502, ///< Server received an invalid response from upstream server.
     response_service_unavailable     = 503, ///< Server temporarily unable to handle request.
+    response_insufficient_storage    = 507, ///< The server can't store what the request needs (a full disk).
     response_http_version_not_supported = 505 ///< Server does not support requested HTTP protocol version.
 };
 

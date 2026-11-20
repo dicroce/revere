@@ -110,8 +110,8 @@ system_clock::time_point r_utils::r_time_utils::iso_8601_to_tp(const string& str
         return tp_ms - seconds(offset);
     }
 
-    // If all parsing attempts failed, throw an exception
-    R_THROW(("Failed to parse ISO 8601 timestamp: %s", str.c_str()));
+    // If all parsing attempts failed: a bad argument (a client sending a malformed time gets a 400, not a 500).
+    R_STHROW(r_invalid_argument_exception, ("Failed to parse ISO 8601 timestamp: %s", str.c_str()));
 }
 
 string r_utils::r_time_utils::tp_to_iso_8601(const system_clock::time_point& tp, bool UTC)

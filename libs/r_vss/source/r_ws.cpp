@@ -2,6 +2,7 @@
 #include "r_vss/r_substream_recorder.h"
 #include "r_disco/r_substream.h"
 #include "r_vss/r_ws.h"
+#include "r_vss/r_ws_client_errors.h"
 #include "r_vss/r_recap.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_rtsp_auth.h"
@@ -49,6 +50,15 @@ using namespace std;
 using namespace std::chrono;
 using namespace std::placeholders;
 using json = nlohmann::json;
+
+// The camera with this id: 404 for one this recorder doesn't have, rather than an empty answer.
+static r_camera _camera_or_404(r_devices& devices, const string& camera_id)
+{
+    auto maybe_camera = devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        R_STHROW(r_http::r_http_404_exception, ("Unknown camera id: %s", camera_id.c_str()));
+    return maybe_camera.value();
+}
 
 const int WEB_SERVER_PORT = 8088;
 const int WEB_SERVER_TLS_PORT = 8443;
@@ -491,10 +501,10 @@ r_http::r_server_response r_ws::_get_jpg(r_utils::r_socket_base&, const r_http::
         auto args = request.get_uri().get_get_args();
 
         if(args.find("camera_id") == end(args))
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
 
         if(args.find("start_time") == end(args))
-            R_THROW(("Missing start_time."));
+            R_STHROW(r_http_400_exception, ("Missing start_time."));
 
         // w/h are a bounding box (query_get_jpg preserves aspect ratio inside it).
         // long_edge=N is shorthand for an NxN box, i.e. "cap the longer edge at N"
@@ -577,10 +587,7 @@ r_http::r_server_response r_ws::_get_jpg(r_utils::r_socket_base&, const r_http::
         response.add_additional_header("X-Frame-Ts", std::to_string(frame_ts));
         return response;
     }
-    catch(const r_utils::r_not_found_exception&)
-    {
-        throw; // no recording for this camera (yet): 404, not a logged 500
-    }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -596,10 +603,10 @@ r_http::r_server_response r_ws::_get_webp(r_utils::r_socket_base&, const r_http:
         auto args = request.get_uri().get_get_args();
 
         if(args.find("camera_id") == end(args))
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
 
         if(args.find("start_time") == end(args))
-            R_THROW(("Missing start_time."));
+            R_STHROW(r_http_400_exception, ("Missing start_time."));
 
         // w/h are a bounding box (query_get_webp preserves aspect ratio inside it).
         // long_edge=N is shorthand for an NxN box, i.e. "cap the longer edge at N"
@@ -637,10 +644,7 @@ r_http::r_server_response r_ws::_get_webp(r_utils::r_socket_base&, const r_http:
         response.add_additional_header("X-Frame-Ts", std::to_string(frame_ts));
         return response;
     }
-    catch(const r_utils::r_not_found_exception&)
-    {
-        throw; // no recording for this camera (yet): 404, not a logged 500
-    }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -656,10 +660,10 @@ r_http::r_server_response r_ws::_get_key_frame(r_utils::r_socket_base&, const r_
         auto args = request.get_uri().get_get_args();
 
         if(args.find("camera_id") == end(args))
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
 
         if(args.find("start_time") == end(args))
-            R_THROW(("Missing start_time."));
+            R_STHROW(r_http_400_exception, ("Missing start_time."));
 
         auto result = query_get_key_frame(
             _top_dir,
@@ -673,10 +677,7 @@ r_http::r_server_response r_ws::_get_key_frame(r_utils::r_socket_base&, const r_
         response.set_body(result.size(), result.data());
         return response;
     }
-    catch(const r_utils::r_not_found_exception&)
-    {
-        throw; // no recording for this camera (yet): 404, not a logged 500
-    }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -733,10 +734,7 @@ r_http::r_server_response r_ws::_get_recap(r_utils::r_socket_base&, const r_http
         response.add_additional_header("X-Recap-Fps", std::to_string(recap.fps));
         return response;
     }
-    catch(const r_utils::r_not_found_exception&)
-    {
-        throw; // no recording in the span: 404
-    }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -756,7 +754,7 @@ r_http::r_server_response r_ws::_get_contents(r_utils::r_socket_base&, const r_h
         bool input_z_time = start_time_s.find("Z") != std::string::npos;
 
         if(args.find("end_time") == args.end())
-            R_THROW(("Missing end_time."));
+            R_STHROW(r_http_400_exception, ("Missing end_time."));
         
         auto end_time_s = args["end_time"];
 
@@ -784,10 +782,7 @@ r_http::r_server_response r_ws::_get_contents(r_utils::r_socket_base&, const r_h
         response.set_body(j.dump());
         return response;
     }
-    catch(const r_utils::r_not_found_exception&)
-    {
-        throw; // no recording for this camera (yet): 404, not a logged 500
-    }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -828,6 +823,7 @@ r_http::r_server_response r_ws::_get_version(r_utils::r_socket_base&, const r_ht
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -1020,6 +1016,7 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -1189,15 +1186,16 @@ r_http::r_server_response r_ws::_get_export(r_utils::r_socket_base&, const r_htt
         auto args = request.get_uri().get_get_args();
 
         if(args.find("camera_id") == args.end())
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
         if(args.find("start_time") == args.end())
-            R_THROW(("Missing start_time."));
+            R_STHROW(r_http_400_exception, ("Missing start_time."));
         if(args.find("end_time") == args.end())
-            R_THROW(("Missing end_time."));
+            R_STHROW(r_http_400_exception, ("Missing end_time."));
         if(args.find("file_name") == args.end())
-            R_THROW(("Missing file name."));
+            R_STHROW(r_http_400_exception, ("Missing file name."));
         if(!is_safe_export_filename(args["file_name"]))
-            R_THROW(("Invalid file_name."));
+            R_STHROW(r_http_400_exception, ("Invalid file_name."));
+        _camera_or_404(_devices, args["camera_id"]);
 
         export_job job;
         job.id = r_uuid::generate();
@@ -1233,6 +1231,7 @@ r_http::r_server_response r_ws::_get_export(r_utils::r_socket_base&, const r_htt
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -1460,16 +1459,16 @@ r_http::r_server_response r_ws::_get_analytics(r_utils::r_socket_base&, const r_
         auto args = request.get_uri().get_get_args();
 
         if(args.find("camera_id") == args.end())
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
 
         if(args.find("start_time") == args.end())
-            R_THROW(("Missing start_time."));
+            R_STHROW(r_http_400_exception, ("Missing start_time."));
 
         auto start_time_s = args["start_time"];
         auto start_tp = r_time_utils::iso_8601_to_tp(start_time_s);
 
         if(args.find("end_time") == args.end())
-            R_THROW(("Missing end_time."));
+            R_STHROW(r_http_400_exception, ("Missing end_time."));
 
         auto end_time_s = args["end_time"];
         auto end_tp = r_time_utils::iso_8601_to_tp(end_time_s);
@@ -1503,6 +1502,7 @@ r_http::r_server_response r_ws::_get_analytics(r_utils::r_socket_base&, const r_
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -1522,7 +1522,8 @@ r_http::r_server_response r_ws::_get_camera_events(r_utils::r_socket_base&, cons
     {
         auto args = request.get_uri().get_get_args();
         if(args.find("camera_id") == args.end())
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
+        _camera_or_404(_devices, args["camera_id"]);
         int64_t since_ms = 0;
         if(args.find("since_ms") != args.end())
             since_ms = r_string_utils::s_to_int64(args["since_ms"]);
@@ -1559,6 +1560,7 @@ r_http::r_server_response r_ws::_get_camera_events(r_utils::r_socket_base&, cons
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -1573,8 +1575,11 @@ r_http::r_server_response r_ws::_get_motion_events(r_utils::r_socket_base&, cons
     {
         auto args = request.get_uri().get_get_args();
 
+        if(args.find("camera_id") == args.end())
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
+
         if(args.find("start_time") == args.end())
-            R_THROW(("Missing start_time."));
+            R_STHROW(r_http_400_exception, ("Missing start_time."));
 
         auto start_time_s = args["start_time"];
 
@@ -1583,7 +1588,7 @@ r_http::r_server_response r_ws::_get_motion_events(r_utils::r_socket_base&, cons
         bool input_z_time = start_time_s.find("Z") != std::string::npos;
 
         if(args.find("end_time") == args.end())
-            R_THROW(("Missing end_time."));
+            R_STHROW(r_http_400_exception, ("Missing end_time."));
         
         auto end_time_s = args["end_time"];
 
@@ -1612,6 +1617,7 @@ r_http::r_server_response r_ws::_get_motion_events(r_utils::r_socket_base&, cons
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -1627,13 +1633,13 @@ r_http::r_server_response r_ws::_get_video(r_utils::r_socket_base&, const r_http
         auto args = request.get_uri().get_get_args();
 
         if(args.find("camera_id") == args.end())
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
 
         if(args.find("start_time") == args.end())
-            R_THROW(("Missing start_time."));
+            R_STHROW(r_http_400_exception, ("Missing start_time."));
 
         if(args.find("end_time") == args.end())
-            R_THROW(("Missing end_time."));
+            R_STHROW(r_http_400_exception, ("Missing end_time."));
 
         // stream=sub: the camera's substream ring, for live view; main otherwise.
         bool substream = false;
@@ -1647,7 +1653,7 @@ r_http::r_server_response r_ws::_get_video(r_utils::r_socket_base&, const r_http
                 substream = true;
             }
             else if(args["stream"] != "main")
-                R_THROW(("Unknown stream: %s", args["stream"].c_str()));
+                R_STHROW(r_http_400_exception, ("Unknown stream: %s", args["stream"].c_str()));
         }
 
         // newest_gop=1: a live view's first read, which answers a start past the newest frame with the newest GOP
@@ -1669,10 +1675,7 @@ r_http::r_server_response r_ws::_get_video(r_utils::r_socket_base&, const r_http
         response.set_body(qr_buffer.size(), qr_buffer.data());
         return response;
     }
-    catch(const r_utils::r_not_found_exception&)
-    {
-        throw; // no recording for this camera (yet): 404, not a logged 500
-    }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -1701,15 +1704,15 @@ r_http::r_server_response r_ws::_get_create_transcode_stream(r_utils::r_socket_b
         auto args = request.get_uri().get_get_args();
 
         if(args.find("width") == args.end())
-            R_THROW(("Missing width."));
+            R_STHROW(r_http_400_exception, ("Missing width."));
         if(args.find("height") == args.end())
-            R_THROW(("Missing height."));
+            R_STHROW(r_http_400_exception, ("Missing height."));
         if(args.find("bitrate") == args.end())
-            R_THROW(("Missing bitrate."));
+            R_STHROW(r_http_400_exception, ("Missing bitrate."));
         if(args.find("framerate_num") == args.end())
-            R_THROW(("Missing framerate_num."));
+            R_STHROW(r_http_400_exception, ("Missing framerate_num."));
         if(args.find("framerate_den") == args.end())
-            R_THROW(("Missing framerate_den."));
+            R_STHROW(r_http_400_exception, ("Missing framerate_den."));
 
         // codec defaults to "h264"; "h265" is also supported.
         string output_codec = "h264";
@@ -1717,7 +1720,7 @@ r_http::r_server_response r_ws::_get_create_transcode_stream(r_utils::r_socket_b
             output_codec = r_string_utils::to_lower(args["codec"]);
 
         if(output_codec != "h264" && output_codec != "h265" && output_codec != "hevc")
-            R_THROW(("Unsupported output codec: %s", output_codec.c_str()));
+            R_STHROW(r_http_400_exception, ("Unsupported output codec: %s", output_codec.c_str()));
 
         auto session = make_shared<r_transcode_session>();
         session->output_width      = r_string_utils::s_to_uint16(args["width"]);
@@ -1751,6 +1754,7 @@ r_http::r_server_response r_ws::_get_create_transcode_stream(r_utils::r_socket_b
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -1808,13 +1812,13 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
         auto args = request.get_uri().get_get_args();
 
         if(args.find("handle") == args.end())
-            R_THROW(("Missing handle."));
+            R_STHROW(r_http_400_exception, ("Missing handle."));
         if(args.find("camera_id") == args.end())
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
         if(args.find("start_time") == args.end())
-            R_THROW(("Missing start_time."));
+            R_STHROW(r_http_400_exception, ("Missing start_time."));
         if(args.find("end_time") == args.end())
-            R_THROW(("Missing end_time."));
+            R_STHROW(r_http_400_exception, ("Missing end_time."));
 
         auto handle    = args["handle"];
         auto start_tp  = r_time_utils::iso_8601_to_tp(args["start_time"]);
@@ -1835,7 +1839,7 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
             lock_guard<mutex> map_lock(_sessions_mutex);
             auto it = _sessions.find(handle);
             if(it == _sessions.end())
-                R_THROW(("Unknown transcode handle: %s", handle.c_str()));
+                R_STHROW(r_http_404_exception, ("Unknown transcode handle: %s", handle.c_str()));
             session_ptr = it->second;
             session_ptr->last_used = steady_clock::now();
         }
@@ -2233,6 +2237,7 @@ r_http::r_server_response r_ws::_get_transcode(r_utils::r_socket_base& conn, con
         response.set_body(serialized.size(), serialized.data());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -2414,7 +2419,7 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(r_utils::r_socket_base& conn
         for(auto k : {"camera_id", "start_time", "end_time", "width", "height",
                       "bitrate", "framerate_num", "framerate_den"})
             if(args.find(k) == args.end())
-                R_THROW(("Missing %s.", k));
+                R_STHROW(r_http_400_exception, ("Missing %s.", k));
 
         auto camera_id = args["camera_id"];
         auto start_tp  = r_time_utils::iso_8601_to_tp(args["start_time"]);
@@ -2429,7 +2434,7 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(r_utils::r_socket_base& conn
 
         string output_codec = (args.find("codec") != args.end()) ? r_string_utils::to_lower(args["codec"]) : "h264";
         if(output_codec != "h264" && output_codec != "h265" && output_codec != "hevc")
-            R_THROW(("Unsupported output codec: %s", output_codec.c_str()));
+            R_STHROW(r_http_400_exception, ("Unsupported output codec: %s", output_codec.c_str()));
 
         AVRational framerate{(int)framerate_num, (int)framerate_den};
 
@@ -2575,6 +2580,7 @@ r_http::r_server_response r_ws::_get_transcode_fmp4(r_utils::r_socket_base& conn
         response.set_body(muxer.buffer_size(), muxer.buffer());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -2655,7 +2661,7 @@ r_http::r_server_response r_ws::_get_passthrough_fmp4(r_utils::r_socket_base& co
     {
         for(auto k : {"camera_id", "start_time", "end_time"})
             if(args.find(k) == args.end())
-                R_THROW(("Missing %s.", k));
+                R_STHROW(r_http_400_exception, ("Missing %s.", k));
 
         auto camera_id = args["camera_id"];
         auto start_tp  = r_time_utils::iso_8601_to_tp(args["start_time"]);
@@ -2910,6 +2916,7 @@ r_http::r_server_response r_ws::_get_passthrough_fmp4(r_utils::r_socket_base& co
         response.set_body(muxer.buffer_size(), muxer.buffer());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -2924,7 +2931,7 @@ r_http::r_server_response r_ws::_get_finalize_transcode_stream(r_utils::r_socket
         auto args = request.get_uri().get_get_args();
 
         if(args.find("handle") == args.end())
-            R_THROW(("Missing handle."));
+            R_STHROW(r_http_400_exception, ("Missing handle."));
 
         auto handle = args["handle"];
 
@@ -2932,13 +2939,14 @@ r_http::r_server_response r_ws::_get_finalize_transcode_stream(r_utils::r_socket
             lock_guard<mutex> lock(_sessions_mutex);
             auto it = _sessions.find(handle);
             if(it == _sessions.end())
-                R_THROW(("Unknown transcode handle: %s", handle.c_str()));
+                R_STHROW(r_http_404_exception, ("Unknown transcode handle: %s", handle.c_str()));
             _sessions.erase(it);
         }
 
         r_server_response response;
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -2957,25 +2965,26 @@ r_http::r_server_response r_ws::_get_transcode_export(r_utils::r_socket_base&, c
         auto args = request.get_uri().get_get_args();
 
         if(args.find("camera_id") == args.end())
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
         if(args.find("start_time") == args.end())
-            R_THROW(("Missing start_time."));
+            R_STHROW(r_http_400_exception, ("Missing start_time."));
         if(args.find("end_time") == args.end())
-            R_THROW(("Missing end_time."));
+            R_STHROW(r_http_400_exception, ("Missing end_time."));
         if(args.find("file_name") == args.end())
-            R_THROW(("Missing file_name."));
+            R_STHROW(r_http_400_exception, ("Missing file_name."));
         if(!is_safe_export_filename(args["file_name"]))
-            R_THROW(("Invalid file_name."));
+            R_STHROW(r_http_400_exception, ("Invalid file_name."));
+        _camera_or_404(_devices, args["camera_id"]);
         if(args.find("width") == args.end())
-            R_THROW(("Missing width."));
+            R_STHROW(r_http_400_exception, ("Missing width."));
         if(args.find("height") == args.end())
-            R_THROW(("Missing height."));
+            R_STHROW(r_http_400_exception, ("Missing height."));
         if(args.find("bitrate") == args.end())
-            R_THROW(("Missing bitrate."));
+            R_STHROW(r_http_400_exception, ("Missing bitrate."));
         if(args.find("framerate_num") == args.end())
-            R_THROW(("Missing framerate_num."));
+            R_STHROW(r_http_400_exception, ("Missing framerate_num."));
         if(args.find("framerate_den") == args.end())
-            R_THROW(("Missing framerate_den."));
+            R_STHROW(r_http_400_exception, ("Missing framerate_den."));
 
         export_job job;
         job.id = r_uuid::generate();
@@ -3014,6 +3023,7 @@ r_http::r_server_response r_ws::_get_transcode_export(r_utils::r_socket_base&, c
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -3286,7 +3296,7 @@ r_http::r_server_response r_ws::_get_export_progress(r_utils::r_socket_base&, co
         auto args = request.get_uri().get_get_args();
 
         if(args.find("id") == args.end())
-            R_THROW(("Missing id."));
+            R_STHROW(r_http_400_exception, ("Missing id."));
 
         auto id = args["id"];
 
@@ -3305,10 +3315,7 @@ r_http::r_server_response r_ws::_get_export_progress(r_utils::r_socket_base&, co
         response.set_body(j.dump());
         return response;
     }
-    catch(const r_http_404_exception&)
-    {
-        throw;
-    }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -3322,7 +3329,7 @@ r_http::r_server_response r_ws::_get_export_download(r_utils::r_socket_base&, co
     {
         auto args = request.get_uri().get_get_args();
         if(args.find("id") == args.end())
-            R_THROW(("Missing id."));
+            R_STHROW(r_http_400_exception, ("Missing id."));
         auto id = args["id"];
 
         std::string file_path;
@@ -3364,7 +3371,7 @@ r_http::r_server_response r_ws::_get_export_download(r_utils::r_socket_base&, co
 
         return response;
     }
-    catch(const r_http_404_exception&) { throw; }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -3381,15 +3388,15 @@ r_http::r_server_response r_ws::_get_camera_profiles(r_utils::r_socket_base&, co
         auto args = request.get_uri().get_get_args();
 
         if(args.find("camera_id") == args.end())
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
 
         auto maybe_camera = _devices.get_camera_by_id(args["camera_id"]);
         if(maybe_camera.is_null())
-            R_THROW(("Unknown camera id: %s", args["camera_id"].c_str()));
+            R_STHROW(r_http_404_exception, ("Unknown camera id: %s", args["camera_id"].c_str()));
         auto camera = maybe_camera.value();
 
         if(camera.ipv4.is_null() || camera.xaddrs.is_null())
-            R_THROW(("Camera is missing ipv4/xaddrs (not an ONVIF discovery)."));
+            R_STHROW(r_http_400_exception, ("Camera is missing ipv4/xaddrs (not an ONVIF discovery)."));
 
         r_nullable<string> username, password;
         if(args.find("username") != args.end()) username.set_value(args["username"]);
@@ -3417,6 +3424,7 @@ r_http::r_server_response r_ws::_get_camera_profiles(r_utils::r_socket_base&, co
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -3706,7 +3714,8 @@ r_http::r_server_response r_ws::_get_measure_camera(r_utils::r_socket_base&, con
         auto args = request.get_uri().get_get_args();
 
         if(args.find("camera_id") == args.end())
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
+        _camera_or_404(_devices, args["camera_id"]);
 
         measure_job job;
         job.camera_id = args["camera_id"];
@@ -3732,6 +3741,7 @@ r_http::r_server_response r_ws::_get_measure_camera(r_utils::r_socket_base&, con
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -3858,7 +3868,7 @@ r_http::r_server_response r_ws::_get_measure_progress(r_utils::r_socket_base&, c
     {
         auto args = request.get_uri().get_get_args();
         if(args.find("id") == args.end())
-            R_THROW(("Missing id."));
+            R_STHROW(r_http_400_exception, ("Missing id."));
 
         lock_guard<mutex> lock(_measure_mutex);
         auto it = _measure_results.find(args["id"]);
@@ -3877,7 +3887,7 @@ r_http::r_server_response r_ws::_get_measure_progress(r_utils::r_socket_base&, c
         response.set_body(j.dump());
         return response;
     }
-    catch(const r_http_404_exception&) { throw; }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -3893,7 +3903,7 @@ r_http::r_server_response r_ws::_get_measure_result(r_utils::r_socket_base&, con
     {
         auto args = request.get_uri().get_get_args();
         if(args.find("id") == args.end())
-            R_THROW(("Missing id."));
+            R_STHROW(r_http_400_exception, ("Missing id."));
         auto id = args["id"];
 
         json j;
@@ -3922,7 +3932,7 @@ r_http::r_server_response r_ws::_get_measure_result(r_utils::r_socket_base&, con
         response.set_body(j.dump());
         return response;
     }
-    catch(const r_http_404_exception&) { throw; }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -3939,11 +3949,11 @@ r_http::r_server_response r_ws::_post_configure_camera(r_utils::r_socket_base&, 
         auto req = json::parse(request.get_body_as_string());
 
         if(!req.contains("camera_id"))
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
         if(!req.contains("byte_rate"))
-            R_THROW(("Missing byte_rate."));
+            R_STHROW(r_http_400_exception, ("Missing byte_rate."));
         if(!req.contains("retention_days"))
-            R_THROW(("Missing retention_days."));
+            R_STHROW(r_http_400_exception, ("Missing retention_days."));
 
         auto camera_id      = req["camera_id"].get<string>();
         auto friendly_name  = req.value("friendly_name", string());
@@ -3966,6 +3976,7 @@ r_http::r_server_response r_ws::_post_configure_camera(r_utils::r_socket_base&, 
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -3982,7 +3993,7 @@ r_http::r_server_response r_ws::_post_remove_camera(r_utils::r_socket_base&, con
         auto req = json::parse(request.get_body_as_string());
 
         if(!req.contains("camera_id"))
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
 
         auto camera_id    = req["camera_id"].get<string>();
         bool delete_files = req.value("delete_files", false);
@@ -3999,6 +4010,7 @@ r_http::r_server_response r_ws::_post_remove_camera(r_utils::r_socket_base&, con
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -4015,7 +4027,7 @@ r_http::r_server_response r_ws::_post_update_camera_properties(r_utils::r_socket
         auto req = json::parse(request.get_body_as_string());
 
         if(!req.contains("camera_id"))
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
 
         auto camera_id     = req["camera_id"].get<string>();
         bool do_motion     = req.value("do_motion_detection", false);
@@ -4040,6 +4052,7 @@ r_http::r_server_response r_ws::_post_update_camera_properties(r_utils::r_socket
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -4056,13 +4069,13 @@ r_http::r_server_response r_ws::_post_forget_camera(r_utils::r_socket_base&, con
         auto req = json::parse(request.get_body_as_string());
 
         if(!req.contains("camera_id"))
-            R_THROW(("Missing camera_id."));
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
 
         auto camera_id = req["camera_id"].get<string>();
 
         auto maybe_camera = _devices.get_camera_by_id(camera_id);
         if(maybe_camera.is_null())
-            R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+            R_STHROW(r_http_404_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
         // Drop the camera's row and clear the discovery agent's memory of it.
         // If the camera is still broadcasting ONVIF it will be re-discovered on
@@ -4080,6 +4093,7 @@ r_http::r_server_response r_ws::_post_forget_camera(r_utils::r_socket_base&, con
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -4153,7 +4167,7 @@ r_http::r_server_response r_ws::_post_add_rtsp_camera(r_utils::r_socket_base&, c
         auto req = json::parse(request.get_body_as_string());
 
         if(!req.contains("rtsp_url") || req["rtsp_url"].get<string>().empty())
-            R_THROW(("Missing rtsp_url."));
+            R_STHROW(r_http_400_exception, ("Missing rtsp_url."));
 
         // Manually-added RTSP camera. Mirrors the desktop "Add RTSP Source
         // Camera" dialog: a bare camera row in the discovered state, identified
@@ -4184,6 +4198,7 @@ r_http::r_server_response r_ws::_post_add_rtsp_camera(r_utils::r_socket_base&, c
         response.set_body(j.dump());
         return response;
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -4281,6 +4296,7 @@ r_http::r_server_response r_ws::_get_storage_info(r_utils::r_socket_base&, const
 
         return _json_reply(j);
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -4334,6 +4350,7 @@ r_http::r_server_response r_ws::_post_storage_move(r_utils::r_socket_base&, cons
 
         return _json_reply(json{{"status", "started"}});
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -4379,6 +4396,7 @@ r_http::r_server_response r_ws::_post_storage_change_retention(r_utils::r_socket
 
         return _json_reply(json{{"status", "started"}});
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -4519,6 +4537,7 @@ r_http::r_server_response r_ws::_get_system_plugins(r_utils::r_socket_base&, con
         }
         return _json_reply(json{{"plugins", plugins}});
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -4544,6 +4563,7 @@ r_http::r_server_response r_ws::_post_system_plugin_enabled(r_utils::r_socket_ba
         _stream_keeper.set_system_plugin_enabled(name, req["enabled"].get<bool>());
         return _json_reply(json{{"name", name}, {"enabled", _stream_keeper.is_system_plugin_enabled(name)}});
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -4658,6 +4678,7 @@ r_http::r_server_response r_ws::_get_keep_awake(r_utils::r_socket_base&, const r
     {
         return _json_reply(_keep_awake_json(_stream_keeper.keep_awake().get_status()));
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
@@ -4687,6 +4708,7 @@ r_http::r_server_response r_ws::_post_keep_awake(r_utils::r_socket_base&, const 
         ka.set_settings(settings);
         return _json_reply(_keep_awake_json(ka.get_status()));
     }
+    R_WS_PASS_CLIENT_ERRORS
     catch(const std::exception& ex)
     {
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);

@@ -307,6 +307,9 @@ string r_server_response::_get_status_message(status_code sc) const
     case response_service_unavailable:
         return string("Service Unavailable");
 
+    case response_insufficient_storage:
+        return string("Insufficient Storage");
+
     default:
         break;
     };

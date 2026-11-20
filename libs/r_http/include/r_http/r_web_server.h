@@ -15,6 +15,7 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_logger.h"
 #include <functional>
+#include <mutex>
 #include <thread>
 #include <map>
 #include <string>
@@ -33,23 +34,84 @@
     }
 
 // Client-error variant: logs the exception message only (first line of
-// what()), without the captured backtrace. 4xx responses are routine
-// (unknown route, missing recording, bad token) and a stack per request
-// just buries real errors in the log.
+// what()), without the captured backtrace, and at most a few such lines a
+// second (r_http::log_client_error): 4xx responses are routine (unknown route,
+// missing recording, bad token), and a client hammering bad requests would
+// otherwise fill the log. The response says why as {"error": message}.
 #define WS_CATCH_QUIET(type, code) \
     catch(type& ex) \
     { \
-        R_LOG_WARNING("%s:%d %s", __FILE__, __LINE__, r_utils::r_string_utils::split(std::string(ex.what()), '\n').front().c_str()); \
+        auto why = r_http::first_line(ex.what()); \
+        r_http::log_client_error(__FILE__, __LINE__, (int)code, why); \
         if(conn.valid()) \
-        { \
-            r_server_response response; \
-            response.set_status_code(code); \
-            response.write_response(conn); \
-        } \
+            r_http::client_error_response(code, why).write_response(conn); \
     }
 
 namespace r_http
 {
+
+// The first line of an exception's what(): r_exception appends its backtrace after it.
+inline std::string first_line(const char* what)
+{
+    std::string s(what ? what : "");
+    auto nl = s.find('\n');
+    return (nl == std::string::npos) ? s : s.substr(0, nl);
+}
+
+// A client error's answer: the status, and {"error": why}.
+inline r_server_response client_error_response(status_code code, const std::string& why)
+{
+    r_server_response response(code);
+    response.set_content_type("application/json");
+    std::string body = "{\"error\":\"";
+    for(char c : why)
+    {
+        if(c == '"' || c == '\\') { body += '\\'; body += c; }
+        else if((unsigned char)c < 0x20) body += ' ';
+        else body += c;
+    }
+    body += "\"}";
+    response.set_body(body);
+    return response;
+}
+
+// How many client-error lines may be logged in each CLIENT_ERROR_LOG_WINDOW_MS; the rest are counted and said in one
+// line when the next window opens.
+static constexpr int CLIENT_ERROR_LOG_BURST = 20;
+static constexpr int64_t CLIENT_ERROR_LOG_WINDOW_MS = 10000;
+
+// One warning line per client error (no backtrace), rate-limited across the process.
+inline void log_client_error(const char* file, int line, int code, const std::string& why)
+{
+    static std::mutex m;
+    static int64_t window_start = 0;
+    static int logged = 0;
+    static int64_t left_out = 0;
+    auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    int64_t report_left_out = 0;
+    bool log = false;
+    {
+        std::lock_guard<std::mutex> g(m);
+        if(now - window_start >= CLIENT_ERROR_LOG_WINDOW_MS)
+        {
+            report_left_out = left_out;
+            left_out = 0;
+            logged = 0;
+            window_start = now;
+        }
+        if(logged < CLIENT_ERROR_LOG_BURST)
+        {
+            ++logged;
+            log = true;
+        }
+        else
+            ++left_out;
+    }
+    if(report_left_out > 0)
+        R_LOG_WARNING("%lld more client errors were answered and not logged", (long long)report_left_out);
+    if(log)
+        R_LOG_WARNING("%s:%d %d %s", file, line, code, why.c_str());
+}
 
 template<class SOK_T>
 class r_web_server;
@@ -306,6 +368,19 @@ private:
         WS_CATCH(r_utils::r_timeout_exception, response_internal_server_error)
         WS_CATCH(r_utils::r_io_exception, response_internal_server_error)
         WS_CATCH(r_utils::r_internal_exception, response_internal_server_error)
+        catch(r_http_exception& ex)
+        {
+            // Any other status a handler chose (507 for a full disk, say): answered with it and {"error": why}.
+            // A stack trace only for a server fault; a refusal (507, 503) is one line, like a client error.
+            auto code = (status_code)ex.get_status();
+            auto why = first_line(ex.what());
+            if(code >= 500 && code != response_insufficient_storage && code != response_service_unavailable)
+                R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+            else
+                log_client_error(__FILE__, __LINE__, (int)code, why);
+            if(conn.valid())
+                client_error_response(code, why).write_response(conn);
+        }
         catch(std::exception& ex)
         {
             // Note: we cannot write a response here because this exception
