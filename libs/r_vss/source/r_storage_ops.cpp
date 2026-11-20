@@ -2,6 +2,7 @@
 #include "r_vss/r_storage_ops.h"
 #include "r_vss/r_substream_recorder.h"
 #include "r_vss/r_stream_keeper.h"
+#include "r_vss/r_motion_engine.h"
 #include "r_disco/r_devices.h"
 #include "r_storage/r_storage_file.h"
 #include "r_storage/r_storage_file_reader.h"
@@ -36,7 +37,10 @@ void r_vss::create_motion_files(const string& motion_path)
 {
     if(r_fs::file_exists(motion_path))
         return;
-    r_ring::allocate(motion_path, 11, 2592000);          // 1 flag/sec, ~30 days
+    // One motion flag (RING_MOTION_FLAG_SIZE, a byte) per second, 11 x 30 days of them: about 330 days, 28.5 MB.
+    // The 11 dates from the first version and the file has always held this many one-byte flags (the ring counts them
+    // from the file's size); spelled out, not changed, so motion history stays as long as recordings can be kept.
+    r_ring::allocate(motion_path, RING_MOTION_FLAG_SIZE, 11 * 2592000);
     r_md_storage_file::allocate(motion_path, 524288, 30); // 512KB blocks x 30
 }
 

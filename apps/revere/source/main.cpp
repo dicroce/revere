@@ -86,6 +86,7 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 #include "dialogs.h"
 #include "r_vss/r_camera_source_info.h"
 #include "r_vss/r_camera_stats.h"
+#include "r_vss/r_motion_engine.h"
 #include "assignment_state.h"
 #include "streams_state.h"
 #include "configure_state.h"
@@ -565,7 +566,10 @@ void _create_motion_files(const string& motion_path)
     if(r_fs::file_exists(motion_path))
         return;
 
-    r_storage::r_ring::allocate(motion_path, 11, 2592000);
+    // One motion flag (RING_MOTION_FLAG_SIZE, a byte) per second, 11 x 30 days of them: about 330 days, 28.5 MB.
+    // The 11 dates from the first version and the file has always held this many one-byte flags (the ring counts them
+    // from the file's size); spelled out, not changed, so motion history stays as long as recordings can be kept.
+    r_storage::r_ring::allocate(motion_path, r_vss::RING_MOTION_FLAG_SIZE, 11 * 2592000);
 
     // Also allocate metadata storage for analytics (person detection, etc.)
     // Use 512KB blocks, 30 blocks total

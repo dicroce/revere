@@ -138,6 +138,15 @@ size_t r_ring::_unwrapped_idx(const std::chrono::system_clock::time_point& tp) c
     return duration_cast<seconds>((tp - _created_at())).count();
 }
 
+system_clock::time_point r_ring::oldest()
+{
+    r_file_lock_guard g(_lock, false);
+    auto now_et = system_clock::to_time_t(system_clock::now());
+    auto reach = system_clock::from_time_t(now_et - (std::time_t)_n_elements() + 2);
+    auto created = _created_at();
+    return (created > reach) ? created : reach;
+}
+
 void r_ring::allocate(const string& path, size_t element_size, size_t n_elements)
 {
     size_t size = R_RING_HEADER_SIZE + (element_size * n_elements);

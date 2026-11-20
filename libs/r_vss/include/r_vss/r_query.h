@@ -6,6 +6,7 @@
 #include "r_utils/r_nullable.h"
 #include "r_disco/r_devices.h"
 #include "r_storage/r_md_storage_file_reader.h"
+#include "r_storage/r_ring.h"
 #include "r_vss/r_display_key_frame.h"
 #include <vector>
 #include <chrono>
@@ -104,6 +105,10 @@ R_API contents query_get_contents(const std::string& top_dir, r_disco::r_devices
 R_API r_utils::r_nullable<std::chrono::system_clock::time_point> query_get_first_ts(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id);
 
 R_API std::vector<r_disco::r_camera> query_get_cameras(r_disco::r_devices& devices);
+
+// The motion events in a camera's motion ring between start and end: runs of at least 2 s of motion flags. A window
+// that starts before what the ring holds (r_ring::oldest()) reads from there: it used to come back empty.
+R_API std::vector<motion_event_info> motion_events_in_ring(r_storage::r_ring& ring, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
 
 R_API std::vector<motion_event_info> query_get_motion_events(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end);
 

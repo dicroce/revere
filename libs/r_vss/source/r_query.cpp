@@ -760,6 +760,77 @@ vector<r_camera> r_vss::query_get_cameras(r_devices& devices)
     return devices.get_all_cameras();
 }
 
+vector<r_vss::motion_event_info> r_vss::motion_events_in_ring(r_ring& ring, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
+{
+    vector<motion_event_info> result;
+
+    // Nothing before what the ring holds: read from there, rather than have query_raw call the window too old.
+    auto oldest = ring.oldest();
+    if(start < oldest)
+        start = oldest;
+    if(end <= start)
+        return result;
+
+    vector<uint8_t> motion_data = ring.query_raw(start, end);
+
+    // Each byte is a motion flag: 1 = motion, 0 = no motion
+    // Find contiguous runs of 1s and create events from those
+
+    int64_t start_seconds = duration_cast<seconds>(start.time_since_epoch()).count();
+
+    bool in_event = false;
+    int64_t event_start_second = 0;
+
+    for(size_t i = 0; i < motion_data.size(); ++i)
+    {
+        bool has_motion = (motion_data[i] != 0);
+        int64_t current_second = start_seconds + (int64_t)i;
+
+        if(has_motion && !in_event)
+        {
+            // Start of a new event
+            in_event = true;
+            event_start_second = current_second;
+        }
+        else if(!has_motion && in_event)
+        {
+            // End of current event
+            in_event = false;
+
+            if((current_second - event_start_second) >= 2)
+            {
+                motion_event_info mi;
+                mi.start = system_clock::time_point(seconds(event_start_second));
+                mi.end = system_clock::time_point(seconds(current_second));
+                mi.motion = 0;      // Dummy value for now
+                mi.avg_motion = 0;  // Dummy value for now
+                mi.stddev = 0;      // Dummy value for now
+
+                result.push_back(mi);
+            }
+        }
+    }
+
+    // Handle case where event extends to end of query range
+    if(in_event)
+    {
+        int64_t end_second = start_seconds + (int64_t)motion_data.size();
+        if((end_second - event_start_second) >= 2)
+        {
+            motion_event_info mi;
+            mi.start = system_clock::time_point(seconds(event_start_second));
+            mi.end = system_clock::time_point(seconds(end_second));
+            mi.motion = 0;      // Dummy value for now
+            mi.avg_motion = 0;  // Dummy value for now
+            mi.stddev = 0;      // Dummy value for now
+
+            result.push_back(mi);
+        }
+    }
+
+    return result;
+}
+
 vector<r_vss::motion_event_info> r_vss::query_get_motion_events(const std::string& top_dir, r_devices& devices, const std::string& camera_id, std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end)
 {
     vector<motion_event_info> result;
@@ -784,62 +855,7 @@ vector<r_vss::motion_event_info> r_vss::query_get_motion_events(const std::strin
 
         r_ring r(motion_path, RING_MOTION_FLAG_SIZE);
 
-        vector<uint8_t> motion_data = r.query_raw(start, end);
-
-        // Each byte is a motion flag: 1 = motion, 0 = no motion
-        // Find contiguous runs of 1s and create events from those
-
-        int64_t start_seconds = duration_cast<seconds>(start.time_since_epoch()).count();
-
-        bool in_event = false;
-        int64_t event_start_second = 0;
-
-        for(size_t i = 0; i < motion_data.size(); ++i)
-        {
-            bool has_motion = (motion_data[i] != 0);
-            int64_t current_second = start_seconds + (int64_t)i;
-
-            if(has_motion && !in_event)
-            {
-                // Start of a new event
-                in_event = true;
-                event_start_second = current_second;
-            }
-            else if(!has_motion && in_event)
-            {
-                // End of current event
-                in_event = false;
-
-                if((current_second - event_start_second) >= 2)
-                {
-                    motion_event_info mi;
-                    mi.start = system_clock::time_point(seconds(event_start_second));
-                    mi.end = system_clock::time_point(seconds(current_second));
-                    mi.motion = 0;      // Dummy value for now
-                    mi.avg_motion = 0;  // Dummy value for now
-                    mi.stddev = 0;      // Dummy value for now
-
-                    result.push_back(mi);
-                }
-            }
-        }
-
-        // Handle case where event extends to end of query range
-        if(in_event)
-        {
-            int64_t end_second = start_seconds + (int64_t)motion_data.size();
-            if((end_second - event_start_second) >= 2)
-            {
-                motion_event_info mi;
-                mi.start = system_clock::time_point(seconds(event_start_second));
-                mi.end = system_clock::time_point(seconds(end_second));
-                mi.motion = 0;      // Dummy value for now
-                mi.avg_motion = 0;  // Dummy value for now
-                mi.stddev = 0;      // Dummy value for now
-
-                result.push_back(mi);
-            }
-        }
+        result = motion_events_in_ring(r, start, end);
     }
     catch(const std::exception& e)
     {
