@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Revere test harness</title>
+<style>
+:root { --bg: #fff; --fg: #000; --card: #f5f5f5; --border: #ccc; --err: #d32f2f; --ok: #2e7d32; --warn: #ed6c02; --dim: #666; }
+@media (prefers-color-scheme: dark) { :root { --bg: #121212; --fg: #eee; --card: #1e1e1e; --border: #444; --err: #ef9a9a; --ok: #a5d6a7; --warn: #ffcc80; --dim: #aaa; } }
+body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: var(--bg); color: var(--fg); display: grid; gap: 1rem; max-width: 1200px; margin-inline: auto; }
+header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+h1, h2, h3 { margin: 0; }
+button { cursor: pointer; padding: 0.5rem 1rem; background: var(--card); border: 1px solid var(--border); color: var(--fg); border-radius: 4px; }
+button:hover:not(:disabled) { background: var(--border); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.grid { display: grid; gap: 1rem; grid-template-columns: 300px 1fr; }
+@media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+.card { background: var(--card); padding: 1rem; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; margin-bottom: 0.5rem; transition: background 0.2s; }
+.card.selected { border-color: var(--fg); font-weight: bold; }
+.form-group { margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
+label { flex: 1; }
+input[type="number"], input[type="text"] { padding: 0.25rem; width: 60px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); }
+.status-pill { padding: 0.25rem 0.75rem; border-radius: 99px; background: var(--card); border: 1px solid var(--border); font-size: 0.875rem; white-space: nowrap; }
+.summary { display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.tile { padding: 0.5rem; background: var(--card); border: 1px solid var(--border); border-radius: 4px; min-width: 80px; text-align: center; display: inline-flex; flex-direction: column; align-items: center; justify-content: space-between; }
+.tile .label { font-size: 0.75rem; color: var(--dim); margin-bottom: 2px; }
+.sparkline { width: 120px; height: 28px; display: block; margin-top: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid var(--border); }
+.table-wrap { overflow-x: auto; }
+a { color: var(--fg); text-decoration: underline; cursor: pointer; margin-right: 8px; }
+.step-row { display: flex; align-items: baseline; padding: 4px 0; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.step-status { width: 3.5rem; flex: none; font-weight: bold; text-transform: uppercase; }
+.step-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 8px; }
+.step-time { flex: none; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+.row-fail { border-left: 4px solid var(--err); background: transparent; }
+.row-skip { border-left: 4px solid var(--warn); background: transparent; }
+.row-find { background: rgba(255, 193, 7, 0.2); font-weight: bold; }
+.note-row { padding-left: 20px; color: var(--dim); font-size: 0.85rem; margin-top: 2px; }
+.detail-text { padding-left: 3.5rem; color: var(--dim); font-size: 0.8rem; margin-top: -2px; margin-bottom: 4px; }
+.snap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem; }
+.snap-item { text-align: center; cursor: pointer; }
+.snap-thumb { width: 100%; height: auto; border-radius: 4px; border: 1px solid var(--border); max-height: 200px; object-fit: contain; background: #000; }
+.modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: none; justify-content: center; align-items: center; z-index: 10; }
+.modal img { max-width: 90%; max-height: 90%; border-radius: 4px; }
+.error-msg { color: var(--err); font-size: 0.8rem; margin-top: 0.5rem; }
+.help-text { font-size: 0.75rem; color: var(--dim); display: block; margin-top: 2px; }
+</style>
+</head>
+<body>
+<header><h1>Revere test harness</h1><div id="status" class="status-pill">idle</div></header>
+<div class="grid">
+<aside>
+<h2>Run a suite</h2>
+<div id="suites"></div>
+<div id="params" style="display:none; margin-top:1rem;"></div>
+<div style="margin-top:1rem;">
+<label><input type="checkbox" id="keep"> Keep recorder files</label>
+<button id="btn-start">Start</button>
+<button id="btn-stop" style="display:none;">Stop</button>
+<div id="err" class="error-msg"></div>
+</div>
+</aside>
+<main>
+<h2>Live run</h2>
+<div id="live-content"></div>
+</main>
+</div>
+<h2>Past runs</h2>
+<div class="table-wrap">
+<table id="runs-table"><thead><tr><th>Run</th><th>Suite</th><th>Result</th><th>Duration</th><th>Links</th></tr></thead><tbody></tbody></table>
+</div>
+<div id="modal" class="modal"><img id="modal-img"></div>
+
+<script>
+const el = (tag, cls, text) => { const e = document.createElement(tag); if(cls) e.className = cls; if(text !== undefined) e.textContent = text; return e; };
+let currentRunId = null;
+let eventSource = null;
+let runStartTime = 0;
+let statusInterval = null;
+
+// Fetch helper
+async function api(path, method='GET', body=null) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if(body) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  if(!r.ok) {
+    const e = await r.json().catch(() => ({error: r.statusText}));
+    throw new Error(e.error || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+// Status & Suites
+async function loadSuites() {
+  const data = await api('/api/suites');
+  const cont = document.getElementById('suites');
+  cont.innerHTML = '';
+  data.suites.forEach(s => {
+    const c = el('div', 'card', s.title);
+    c.appendChild(el('div', '', s.description));
+    c.onclick = () => selectSuite(s, c);
+    cont.appendChild(c);
+  });
+}
+
+let selectedSuite = null;
+function selectSuite(suite, card) {
+  document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+  card.classList.add('selected');
+  selectedSuite = suite;
+  const pCont = document.getElementById('params');
+  pCont.innerHTML = '';
+  if(suite.params && suite.params.length > 0) {
+    pCont.style.display = 'block';
+    suite.params.forEach(p => {
+      const g = el('div', 'form-group');
+      const lbl = el('label', '', p.label);
+      let inp;
+      if(p.type === 'int' || p.type === 'float') {
+        inp = el('input', '', p.default);
+        inp.type = p.type;
+        if(p.min !== undefined) inp.min = p.min;
+        if(p.max !== undefined) inp.max = p.max;
+      } else if(p.type === 'bool') {
+        inp = el('input', '', '');
+        inp.type = 'checkbox';
+        if(p.default) inp.checked = true;
+      } else if(p.type === 'choice') {
+        inp = el('select', '');
+        p.choices.forEach(c => {
+          const o = el('option', '', c);
+          if(c == p.default) o.selected = true;
+          inp.appendChild(o);
+        });
+      }
+      inp.dataset.name = p.name;
+      g.appendChild(lbl);
+      g.appendChild(inp);
+      if(p.help) {
+        const h = el('span', 'help-text', p.help);
+        g.appendChild(h);
+      }
+      pCont.appendChild(g);
+    });
+  } else {
+    pCont.style.display = 'none';
+  }
+}
+
+// Start/Stop
+document.getElementById('btn-start').onclick = async () => {
+  if(!selectedSuite) return;
+  const pCont = document.getElementById('params');
+  const keep = document.getElementById('keep').checked;
+  const paramsObj = {};
+  pCont.querySelectorAll('[data-name]').forEach(inp => {
+    let val = inp.value;
+    if(inp.type === 'checkbox') val = inp.checked;
+    else if(inp.type === 'number') val = parseFloat(val);
+    paramsObj[inp.dataset.name] = val;
+  });
+
+  try {
+    const res = await api('/api/run', 'POST', { suite: selectedSuite.name, keep, params: paramsObj });
+    currentRunId = res.id;
+    location.hash = `run=${currentRunId}`;
+    document.getElementById('btn-start').disabled = true;
+    document.getElementById('btn-stop').style.display = 'inline-block';
+    document.getElementById('err').textContent = '';
+    connectEvents(currentRunId);
+    loadPastRuns();
+  } catch(e) {
+    document.getElementById('err').textContent = e.message;
+  }
+};
+
+document.getElementById('btn-stop').onclick = async () => {
+  if(!currentRunId) return;
+  try {
+    await api('/api/stop', 'POST');
+    document.getElementById('err').textContent = 'Stopping...';
+  } catch(e) {
+    document.getElementById('err').textContent = e.message;
+  }
+};
+
+// Events & Live Run
+function connectEvents(id) {
+  if(eventSource) eventSource.close();
+  
+  // Clear live area
+  const liveCont = document.getElementById('live-content');
+  liveCont.innerHTML = '';
+
+  const src = new EventSource(`/api/runs/${id}/events?from=0`);
+  eventSource = src;
+  
+  let passed=0, failed=0, skipped=0, elapsed=0, stepName='', startT=0, suiteName='', finalCounts='';
+  let runStartedTime = null;
+  let isFinished = false;
+
+  const stepsCont = el('div', 'steps-list'); // Container for steps
+  const resCont = el('div', 'summary'); // Resource tiles container
+  const summaryLine = el('div', 'summary'); // Summary line
+  
+  // Structure: Heading -> Summary -> Resources -> Steps -> Snapshots (handled by grid)
+  const heading = el('h3', '', id);
+  liveCont.appendChild(heading);
+  liveCont.appendChild(summaryLine);
+  liveCont.appendChild(resCont);
+  liveCont.appendChild(stepsCont);
+
+  runStartTime = Date.now();
+  if(statusInterval) clearInterval(statusInterval);
+
+  src.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    // Elapsed time comes from the events' own clock, so a replayed run reads the same as a live one.
+    if(ev.type === 'run_started') startT = ev.t;
+    if(ev.type === 'step_started') stepName = ev.name;
+    if(ev.type === 'step_finished') stepName = '';
+    if(ev.type === 'run_finished') { isFinished = true; finalCounts = `${ev.passed} passed, ${ev.failed} failed`; }
+    setTimeout(() => {
+      const secs = Math.max(0, Math.floor((ev.t || startT) - startT));
+      const clock = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+      summaryLine.textContent = `${passed} passed, ${failed} failed, ${skipped} skipped   ${clock}` + (stepName ? `   running: ${stepName}` : '');
+      document.getElementById('status').textContent = isFinished ? `finished: ${finalCounts}` : `running ${suiteName} ${clock}`;
+    }, 0);
+    
+    if(ev.type === 'run_started') {
+      passed=0; failed=0; skipped=0; elapsed=0; stepName='';
+      runStartedTime = ev.t;
+      isFinished = false;
+      heading.textContent = id;
+      suiteName = ev.suite || '';
+      resCont.innerHTML = '';
+      stepsCont.innerHTML = '';
+    } else if(ev.type === 'step_started') {
+      stepName = ev.name;
+      const row = el('div', 'step-row');
+      row.appendChild(el('span', 'step-status', 'RUN'));
+      row.appendChild(el('span', 'step-name', ev.name));
+      row.appendChild(el('span', 'step-time', ''));
+      stepsCont.appendChild(row);
+    } else if(ev.type === 'step_finished') {
+      passed += ev.status === 'passed' ? 1 : 0;
+      failed += ev.status === 'failed' ? 1 : 0;
+      skipped += ev.status === 'skipped' ? 1 : 0;
+      
+      // Find and update row
+      const rows = stepsCont.querySelectorAll('.step-row');
+      let targetRow = null;
+      for(let r of rows) {
+        if(r.querySelector('.step-name').textContent === ev.name && r.querySelector('.step-status').textContent === 'RUN') {
+          targetRow = r;
+          break;
+        }
+      }
+      
+      if(targetRow) {
+        const statusSpan = targetRow.querySelector('.step-status');
+        statusSpan.textContent = {passed: 'PASS', failed: 'FAIL', skipped: 'SKIP'}[ev.status] || ev.status;
+        statusSpan.style.color = ev.status === 'failed' ? 'var(--err)' : (ev.status === 'skipped' ? 'var(--warn)' : 'var(--ok)');
+        if(ev.status === 'failed') targetRow.classList.add('row-fail');
+        if(ev.status === 'skipped') targetRow.classList.add('row-skip');
+        
+        const timeSpan = targetRow.querySelector('.step-time');
+        timeSpan.textContent = ev.seconds.toFixed(2) + ' s';
+        
+        if(ev.detail) {
+          const det = el('div', 'detail-text', ev.detail);
+          stepsCont.appendChild(det);
+        }
+      }
+    } else if(ev.type === 'note') {
+      const isFinding = ev.text.startsWith('FINDING');
+      const row = el('div', `note-row ${isFinding ? 'row-find' : ''}`);
+      if(isFinding) row.textContent = 'FINDING: ' + ev.text.substring(9);
+      else row.textContent = ev.text;
+      stepsCont.appendChild(row);
+    } else if(ev.type === 'sample') {
+      renderResourceTile(ev, resCont);
+    } else if(ev.type === 'snapshot') {
+      const snapGrid = document.getElementById('snapshots');
+      if(!snapGrid) return; // Should be created in finish or init
+      
+      const item = el('div', 'snap-item');
+      const img = el('img', 'snap-thumb');
+      img.src = `/api/runs/${id}/file/${ev.file}`;
+      img.alt = ev.caption;
+      img.onclick = () => showSnapshot(img.src);
+      
+      const cap = el('div', '', ev.caption);
+      item.appendChild(img);
+      item.appendChild(cap);
+      snapGrid.appendChild(item);
+    } else if(ev.type === 'run_finished') {
+      isFinished = true;
+      finish();
+    }
+  };
+
+  // The stream is over: stop here, or the browser reconnects and replays it for ever.
+  let done = false;
+  function finish() {
+    if(done) return;
+    done = true;
+    src.close();
+    if(!isFinished) document.getElementById('status').textContent = finalCounts ? `finished: ${finalCounts}` : 'finished';
+    
+    // Update Start/Stop buttons based on status
+    api('/api/status').then(s => {
+      if(!s.running) {
+        document.getElementById('btn-start').disabled = !selectedSuite;
+        document.getElementById('btn-stop').style.display = 'none';
+      }
+    });
+
+    loadPastRuns();
+  }
+  src.addEventListener('end', finish);
+  src.onerror = finish;
+}
+
+function renderResourceTile(sample, container) {
+  // Find existing tile or create new
+  let tile = document.getElementById(`res-${sample.label}`);
+  if(!tile) {
+    tile = el('div', 'tile');
+    tile.id = `res-${sample.label}`;
+    const lbl = el('span', 'label', sample.label);
+    tile.appendChild(lbl);
+    
+    // Sparkline SVG
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "sparkline");
+    svg.setAttribute("viewBox", "0 0 120 28");
+    svg.setAttribute("title", "memory over the run");
+    tile.appendChild(svg);
+    
+    // Memory history array
+    tile.dataset.history = JSON.stringify([]);
+    container.appendChild(tile);
+  }
+  
+  // Update values
+  const vals = tile.querySelectorAll('span');
+  if(vals.length < 3) {
+    const cpu = el('span', '', `CPU ${sample.cpu_percent} %`);
+    const mem = el('span', '', `Memory ${sample.rss_mb} MB`);
+    const thr = el('span', '', `Threads ${sample.threads}`);
+    tile.appendChild(cpu);
+    tile.appendChild(mem);
+    tile.appendChild(thr);
+  } else {
+    vals[1].textContent = `CPU ${sample.cpu_percent} %`;
+    vals[2].textContent = `Memory ${sample.rss_mb} MB`;
+    if(vals.length > 3) vals[3].textContent = `Threads ${sample.threads}`;
+  }
+  
+  // Update sparkline
+  const svg = tile.querySelector('svg');
+  let history = JSON.parse(tile.dataset.history);
+  history.push(sample.rss_mb);
+  if(history.length > 600) history.shift();
+  tile.dataset.history = JSON.stringify(history);
+  
+  if(history.length > 1) {
+    const min = Math.min(...history);
+    const max = Math.max(...history);
+    const range = max - min || 1;
+    const points = history.map((v, i) => {
+      const x = (i / (history.length - 1)) * 120;
+      const y = 28 - ((v - min) / range) * 28;
+      return `${x},${y}`;
+    }).join(' ');
+    
+    // Clear and redraw path
+    svg.innerHTML = '';
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", `M ${points}`);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "var(--fg)");
+    path.setAttribute("stroke-width", "1");
+    svg.appendChild(path);
+  }
+}
+
+function showSnapshot(src) {
+  const modal = document.getElementById('modal');
+  const img = document.getElementById('modal-img');
+  img.src = src;
+  modal.style.display = 'flex';
+  modal.onclick = () => modal.style.display = 'none';
+}
+
+// Past Runs
+async function loadPastRuns() {
+  const data = await api('/api/runs');
+  const tbody = document.querySelector('#runs-table tbody');
+  tbody.innerHTML = '';
+  data.runs.forEach(r => {
+    const tr = el('tr');
+    
+    // Run ID (clickable)
+    const tdId = el('td', '', r.id);
+    tdId.onclick = () => openRun(r.id);
+    tdId.style.cursor = 'pointer';
+    tr.appendChild(tdId);
+    
+    tr.appendChild(el('td', '', r.suite));
+    
+    // Result
+    if(r.finished) {
+      const resText = `${r.passed} passed, ${r.failed} failed, ${r.skipped} skipped`;
+      tr.appendChild(el('td', '', resText));
+    } else {
+      tr.appendChild(el('td', '', 'not finished'));
+    }
+    
+    // Duration
+    const dur = r.seconds ? (r.seconds / 60).toFixed(1) + 'm' : '';
+    tr.appendChild(el('td', '', dur));
+    
+    // Links
+    const linksTd = el('td', '');
+    if(r.finished) {
+      const aRep = el('a', '', 'Report');
+      aRep.href = `/api/runs/${r.id}/report`;
+      aRep.target = '_blank';
+      
+      const aCon = el('a', '', 'Console');
+      aCon.href = `/api/runs/${r.id}/console`;
+      aCon.target = '_blank';
+      
+      const aSys = el('a', '', 'Syslog');
+      aSys.href = `/api/runs/${r.id}/syslog`;
+      aSys.target = '_blank';
+      
+      linksTd.appendChild(aRep);
+      linksTd.appendChild(document.createTextNode(' '));
+      linksTd.appendChild(aCon);
+      linksTd.appendChild(document.createTextNode(' '));
+      linksTd.appendChild(aSys);
+    } else {
+      linksTd.appendChild(el('span', '', 'Incomplete'));
+    }
+    tr.appendChild(linksTd);
+    
+    tbody.appendChild(tr);
+  });
+}
+
+function openRun(id) {
+  currentRunId = id;
+  location.hash = `run=${id}`;
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-stop').style.display = 'inline-block';
+  connectEvents(id);
+}
+
+// Status Pill Timer
+function updateStatusTimer() {
+  if(!currentRunId || !eventSource) return;
+  const pill = document.getElementById('status');
+  
+  // Check if stream is still open (readyState 1) and no run_finished event yet
+  if(eventSource.readyState === EventSource.OPEN && !isFinished) {
+    // Calculate elapsed time from events
+    let m, s;
+    if(runStartedTime) {
+      const diff = Math.floor((eventSource.lastEventId ? Date.now() : (Date.now() - runStartTime)) / 1000); 
+      // Fallback to browser clock for live stream as per requirement "Use events' own times... for replayed"
+      // For live, we use browser time relative to start
+      const elapsed = Math.floor((Date.now() - runStartTime) / 1000);
+      m = Math.floor(elapsed / 60);
+      s = elapsed % 60;
+    } else {
+      m = 0;
+      s = 0;
+    }
+    
+    // If we have a step running, show that
+    if(stepName) {
+       pill.textContent = `running: ${stepName}`;
+    } else {
+       pill.textContent = `running ${selectedSuite?.title || ''} ${m}:${s.toString().padStart(2, '0')}`;
+    }
+  } else {
+    // Stream closed or finished event received
+    pill.textContent = `finished: ${passed} passed, ${failed} failed`;
+  }
+}
+
+// Init
+(async () => {
+  await loadSuites();
+  
+  // Handle Deep Link
+  const hash = window.location.hash.replace(/^#/, '');
+  if(hash.startsWith('run=')) {
+    const id = hash.substring(4);
+    openRun(id);
+  } else {
+    const status = await api('/api/status');
+    if(status.running) {
+      currentRunId = status.run.id;
+      document.getElementById('btn-start').disabled = true;
+      document.getElementById('btn-stop').style.display = 'inline-block';
+      connectEvents(currentRunId);
+    } else {
+       // Enable start button if no run in progress and suite selected (or just generally)
+       document.getElementById('btn-start').disabled = false;
+    }
+  }
+  
+  loadPastRuns();
+})();
+</script>
+</body>
+</html>

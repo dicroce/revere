@@ -6,6 +6,7 @@ import threading
 import time
 from typing import Optional
 
+from revere_harness.redact import redact, redact_obj
 from revere_harness.steps import StepResult
 from rich.console import Console
 from rich.markup import escape
@@ -37,7 +38,7 @@ class Reporter:
     def _event(self, type: str, **fields) -> None:
         if self._events_path is None:
             return
-        record = {"t": time.time(), "type": type, **fields}
+        record = {"t": time.time(), "type": type, **redact_obj(fields)}
         with self._events_lock:
             if self._events_file is None:
                 self._events_file = open(self._events_path, "a")
@@ -77,18 +78,19 @@ class Reporter:
         self.console.print(f"  [{color}]{symbol}[/{color}] {escape(result.name)} ({result.seconds:.2f}s)", highlight=False)
         if result.detail:
             for line in result.detail.splitlines():
-                self.console.print(f"    [dim]{escape(line)}[/dim]", highlight=False)
+                self.console.print(f"    [dim]{escape(redact(line))}[/dim]", highlight=False)
 
         summary = f"  passed {self.passed_count}  failed {self.failed_count}  skipped {self.skipped_count}  elapsed {elapsed_str}  {self.status_text}"
         self.console.print(f"[dim]{escape(summary)}[/dim]", highlight=False, soft_wrap=True)
-        self._event("step_finished", name=result.name, status=result.status, seconds=round(result.seconds, 3), detail=result.detail or "")
+        self._event("step_finished", name=redact(result.name), status=result.status, seconds=round(result.seconds, 3), detail=redact(result.detail or ""))
 
     def set_status(self, text: str) -> None:
         self.status_text = text
 
     def note(self, text: str) -> None:
-        self.console.print(f"  [dim]note:[/dim] {escape(text)}", highlight=False)
-        self._event("note", text=text)
+        redacted_text = redact(text)
+        self.console.print(f"  [dim]note:[/dim] {escape(redacted_text)}", highlight=False)
+        self._event("note", text=redacted_text)
 
     def run_finished(self, results: list[StepResult], report_path: pathlib.Path) -> None:
         elapsed_str = self._elapsed()
@@ -113,8 +115,9 @@ class Reporter:
         self._event("sample", label=row.get("label"), cpu_percent=row.get("cpu_percent"), rss_mb=row.get("rss_mb"), threads=row.get("threads"), fds=row.get("fds"))
 
     def snapshot(self, file: str, caption: str) -> None:
-        self._event("snapshot", file=file, caption=caption)
-        self.console.print(f"  [dim]snapshot: {caption} -> {file}[/dim]", highlight=False)
+        redacted_caption = redact(caption)
+        self._event("snapshot", file=file, caption=redacted_caption)
+        self.console.print(f"  [dim]snapshot: {escape(redacted_caption)} -> {file}[/dim]", highlight=False)
 
     def close(self) -> None:
         if self._events_file is not None:

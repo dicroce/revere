@@ -66,7 +66,7 @@ It mounts its own sysfs. The guard stops the run unless the only network interfa
 
 The recorder logs through syslog. A private log socket inside the sandbox collects those lines into `syslog.log` in the output folder, so they do not land in the machine's journal. The private log socket is also bind-mounted over /dev/log when the machine has a syslog socket there, with a self-check that a test line reaches the private log.
 
-Each run gets fresh temporary data, secret, and home directories under the output folder. It never touches a real installation's data. The guard now compares the visible network interfaces with the exact set the harness created (not a name pattern).
+Each run gets fresh temporary data, secret, and home directories under the output folder. It never touches a real installation's data. The guard now compares the visible network interfaces with the exact set the harness created (not a name pattern). URLs with credentials, Bearer tokens and password or token values are masked in the terminal output, `events.jsonl` and all report files.
 
 ## Output
 
@@ -83,6 +83,7 @@ The output folder contains:
 - `snapshots/`: JPEG frames taken at key moments.
 - Temporary directories for the recorder are present only after a failed run or with `--keep`.
 - `cameras/<name>.log`: Log output from each fake camera.
+- For runs started from the web page, `console.log` is also created.
 
 ## Suites
 
@@ -105,6 +106,10 @@ The recording suite (about 6 minutes) adds four fake cameras through the same AP
 ## Findings
 
 When a check shows recorder behaviour that looks like a defect but is outside what the step asserts, the harness prints a note starting with FINDING and, where it applies, skips the step with the reason. Findings appear in the terminal and in events.jsonl.
+
+## Web page
+
+`tools/harness/run.sh web` (options `--port`, default 8090, and `--revere-dir`, used for every run it starts) serves a control page and prints its address, which includes a secret token. The page lists the suites and their parameters, starts and stops a run (one at a time), and shows the run live: counts and elapsed time, a tile per watched process with CPU, memory, threads and a memory sparkline, every step as it passes, fails or is skipped, notes and findings, and snapshots taken along the way. Past runs are listed with links to their report and logs and can be replayed. Safety: the server listens on 127.0.0.1 only; every request needs the token (from the address, then a cookie); requests with another Host header are refused; it only signals the run it started; each run enters its own sandbox exactly as from the command line. The page can start processes on the machine, so do not expose the port.
 
 ## Fake Cameras
 
@@ -143,6 +148,8 @@ Each fake camera is its own process in its own network namespace. It joins a bri
 - `suites/cameras.py`: Cameras suite definition.
 - `suites/discovery.py`: Discovery suite definition.
 - `suites/recording.py`: Recording suite definition.
+- `web.py` and `web_page.html`: The control page.
+- `redact.py`: Masks credentials in everything written to the terminal, the event log and the reports.
 
 ## Adding a Suite
 

@@ -5,6 +5,7 @@ import pathlib
 import xml.etree.ElementTree as ET
 from typing import Any
 
+from revere_harness.redact import redact, redact_obj
 from revere_harness.steps import StepResult
 
 
@@ -51,10 +52,10 @@ def write_reports(
     }
 
     json_path = out_dir / "results.json"
-    json_path.write_text(json.dumps(json_data, indent=2))
+    json_path.write_text(json.dumps(redact_obj(json_data), indent=2))
 
     root = ET.Element("testsuite")
-    root.set("name", suite)
+    root.set("name", redact(suite))
     root.set("tests", str(len(results)))
     root.set("failures", str(failed))
     root.set("skipped", str(skipped))
@@ -62,18 +63,18 @@ def write_reports(
 
     for r in results:
         tc = ET.SubElement(root, "testcase")
-        tc.set("name", r.name)
-        tc.set("classname", r.suite)
+        tc.set("name", redact(r.name))
+        tc.set("classname", redact(r.suite))
         tc.set("time", f"{r.seconds:.2f}")
         if r.status == "failed":
             detail_lines = r.detail.splitlines()
             msg = detail_lines[0] if detail_lines else ""
             fail_el = ET.SubElement(tc, "failure")
-            fail_el.set("message", msg)
-            fail_el.text = r.detail
+            fail_el.set("message", redact(msg))
+            fail_el.text = redact(r.detail)
         elif r.status == "skipped":
             skip_el = ET.SubElement(tc, "skipped")
-            skip_el.set("message", r.detail)
+            skip_el.set("message", redact(r.detail))
 
     junit_path = out_dir / "junit.xml"
     tree = ET.ElementTree(root)
@@ -81,10 +82,10 @@ def write_reports(
     tree.write(junit_path, encoding="unicode", xml_declaration=True)
 
     md_lines: list[str] = []
-    md_lines.append(f"# Harness report: {suite}")
+    md_lines.append(f"# Harness report: {redact(suite)}")
     
     if "suite_error" in meta:
-        md_lines.append(f"**The suite stopped early:** {meta['suite_error']}")
+        md_lines.append(f"**The suite stopped early:** {redact(meta['suite_error'])}")
     
     md_lines.append("")
     md_lines.append(
@@ -95,14 +96,14 @@ def write_reports(
     md_lines.append("| Key | Value |")
     md_lines.append("| --- | ----- |")
     for k, v in meta.items():
-        md_lines.append(f"| {k} | {v} |")
+        md_lines.append(f"| {redact(k)} | {redact(v)} |")
     md_lines.append("")
     md_lines.append("## Steps")
     md_lines.append("| Step | Result | Seconds | Detail |")
     md_lines.append("| ---- | ------ | ------- | ------ |")
     for r in results:
-        detail = _escape_md(r.detail) if r.detail else ""
-        md_lines.append(f"| {r.name} | {r.status} | {r.seconds:.2f} | {detail} |")
+        detail = _escape_md(redact(r.detail)) if r.detail else ""
+        md_lines.append(f"| {redact(r.name)} | {r.status} | {r.seconds:.2f} | {detail} |")
     md_lines.append("")
     md_lines.append("## Resources")
     md_lines.append("| Process | Samples | Max CPU % | RSS first MB | RSS last MB | RSS max MB | Max threads | Max fds |")
@@ -110,7 +111,7 @@ def write_reports(
     if resources:
         for label, stats in resources.items():
             md_lines.append(
-                f"| {label} | {stats['samples']} | {stats['cpu_percent_max']:.1f} "
+                f"| {redact(label)} | {stats['samples']} | {stats['cpu_percent_max']:.1f} "
                 f"| {stats['rss_mb_first']:.1f} | {stats['rss_mb_last']:.1f} "
                 f"| {stats['rss_mb_max']:.1f} | {stats['threads_max']} | {stats['fds_max']} |"
             )
