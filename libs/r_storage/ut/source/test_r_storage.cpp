@@ -2278,3 +2278,35 @@ void test_r_storage::test_r_ring_empty_and_backwards_ranges()
     }
     r_fs::remove_file("ring_buffer_ranges");
 }
+
+void test_r_storage::test_r_ring_query_from_before_it_was_created()
+{
+    // A window that starts before the ring was created (the start of recording, for /motion_events) reads the seconds
+    // before it as nothing and finds what was written after, at the right offset. The earlier second count was
+    // unsigned there, and the read started at an unrelated slot that was all zeros.
+    r_ring::allocate("ring_buffer_before", 1, 60);
+    {
+        r_ring r("ring_buffer_before", 1);
+        auto written = system_clock::now();
+        uint8_t one = 1;
+        r.write(written, &one);
+        rtf_usleep(1100000);
+
+        auto qs = written - seconds(30);
+        auto raw = r.query_raw(qs, system_clock::now());
+        RTF_ASSERT(raw.size() >= 31);
+        RTF_ASSERT_EQUAL((int)raw[30], 1);
+        int others = 0;
+        for(size_t i = 0; i < raw.size(); ++i)
+            if(i != 30)
+                others += raw[i];
+        RTF_ASSERT_EQUAL(others, 0);
+
+        // The callback form reads the same slots.
+        int ones = 0, at = -1, i = 0;
+        r.query(qs, system_clock::now(), [&](const uint8_t* p){ if(*p) { ++ones; at = i; } ++i; });
+        RTF_ASSERT_EQUAL(ones, 1);
+        RTF_ASSERT_EQUAL(at, 30);
+    }
+    r_fs::remove_file("ring_buffer_before");
+}

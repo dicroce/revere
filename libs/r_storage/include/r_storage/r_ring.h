@@ -125,7 +125,10 @@ private:
     R_API size_t _n_elements() const;
     std::chrono::system_clock::time_point _created_at() const;
     R_API size_t _idx(const std::chrono::system_clock::time_point& tp) const;
-    size_t _unwrapped_idx(const std::chrono::system_clock::time_point& tp) const;
+    // Whole seconds from the ring's creation to tp, rounded down: negative before it was created.
+    int64_t _unwrapped_idx(const std::chrono::system_clock::time_point& tp) const;
+    // The slot that second lands in, 0 to n - 1, a negative second included.
+    size_t _slot(int64_t unwrapped_idx) const;
 
     r_utils::r_file _file;
     r_utils::r_file_lock _lock;
