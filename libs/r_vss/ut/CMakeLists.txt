@@ -33,6 +33,8 @@ add_executable(
     source/test_r_recap.cpp
     include/test_r_motion_events_query.h
     source/test_r_motion_events_query.cpp
+    include/test_r_client_errors.h
+    source/test_r_client_errors.cpp
     include/test_r_event_timing.h
     source/test_r_event_timing.cpp
     include/test_r_detection_cap.h

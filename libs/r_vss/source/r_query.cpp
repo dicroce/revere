@@ -9,6 +9,8 @@
 #include "r_utils/r_blob_tree.h"
 #include "r_disco/r_camera.h"
 #include "r_storage/r_storage_file.h"
+#include "r_http/r_http_exception.h"
+#include "r_http/r_status_codes.h"
 #include "r_storage/r_storage_file_reader.h"
 #include "r_storage/r_ring.h"
 #include "r_storage/r_md_storage_file.h"
@@ -176,10 +178,10 @@ string _recording_path(const string& top_dir, r_devices& devices, const string& 
     auto maybe_camera = devices.get_camera_by_id(camera_id);
 
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
+        R_STHROW(r_not_found_exception, ("Camera has no recording file."));
 
     return _get_storage_path(maybe_camera.value().record_file_path.value(), top_dir);
 }
@@ -301,12 +303,12 @@ measured_camera r_vss::query_measure_camera(const string& top_dir, r_devices& de
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     auto camera = maybe_camera.value();
 
     if(camera.rtsp_url.is_null())
-        R_THROW(("Camera has not been interrogated (no rtsp_url)."));
+        throw r_http::r_http_exception(r_http::response_conflict, "Camera has not been interrogated (no rtsp_url).");
 
     // Streams the camera for ~15s to measure its bitrate and grab a keyframe.
     auto cp = r_pipeline::fetch_camera_params(camera.rtsp_url.value(), username, password,
@@ -382,12 +384,12 @@ void r_vss::query_configure_camera(const string& top_dir, r_devices& devices, co
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     auto camera = maybe_camera.value();
 
     if(camera.rtsp_url.is_null())
-        R_THROW(("Camera has not been interrogated (no rtsp_url)."));
+        throw r_http::r_http_exception(r_http::response_conflict, "Camera has not been interrogated (no rtsp_url).");
 
     auto video_path = top_dir + PATH_SLASH + "video";
     if(!r_fs::file_exists(video_path))
@@ -410,8 +412,13 @@ void r_vss::query_configure_camera(const string& top_dir, r_devices& devices, co
 
     uint64_t fs_size = 0, fs_free = 0;
     r_fs::get_fs_usage(video_path, fs_size, fs_free);
+    // Refused, not a server fault: 507 with the sizes, so the person sees why (the web server answers an
+    // r_http_exception with its own status and {"error"}).
     if(fs_free < (uint64_t)(block_size * num_blocks))
-        R_THROW(("Not enough free space on storage device."));
+        throw r_http::r_http_exception(r_http::response_insufficient_storage,
+                                       "Not enough free disk space for this camera's recording: it needs %s and %s is free.",
+                                       r_storage::human_readable_file_size((double)(block_size * num_blocks)).c_str(),
+                                       r_storage::human_readable_file_size((double)fs_free).c_str());
 
     string motion_path;
     if(do_motion_detection)
@@ -448,7 +455,7 @@ void r_vss::query_remove_camera(const string& top_dir, r_devices& devices, const
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     auto camera = maybe_camera.value();
 
@@ -470,11 +477,11 @@ void r_vss::query_update_camera_properties(const string& top_dir, r_devices& dev
 {
     if(!motion_tier.is_null() && motion_tier.value() != "auto" && motion_tier.value() != "1" &&
        motion_tier.value() != "2" && motion_tier.value() != "3")
-        R_THROW(("motion_tier must be auto, 1, 2 or 3."));
+        R_STHROW(r_http::r_http_400_exception, ("motion_tier must be auto, 1, 2 or 3."));
 
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     auto camera = maybe_camera.value();
 
@@ -548,10 +555,10 @@ chrono::hours r_vss::query_get_retention_hours(const std::string& top_dir, r_dev
     auto maybe_camera = devices.get_camera_by_id(camera_id);
 
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
+        R_STHROW(r_not_found_exception, ("Camera has no recording file."));
 
     r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
@@ -568,10 +575,10 @@ vector<uint8_t> r_vss::query_get_key_frame(const std::string& top_dir, r_devices
     auto maybe_camera = devices.get_camera_by_id(camera_id);
 
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
+        R_STHROW(r_not_found_exception, ("Camera has no recording file."));
 
     r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
@@ -583,10 +590,10 @@ vector<uint8_t> r_vss::query_get_bgr24_frame(const std::string& top_dir, r_devic
     auto maybe_camera = devices.get_camera_by_id(camera_id);
 
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
+        R_STHROW(r_not_found_exception, ("Camera has no recording file."));
 
     r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
@@ -627,10 +634,10 @@ vector<uint8_t> r_vss::query_get_rgb24_frame(const std::string& top_dir, r_devic
     auto maybe_camera = devices.get_camera_by_id(camera_id);
 
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
+        R_STHROW(r_not_found_exception, ("Camera has no recording file."));
 
     r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
@@ -671,10 +678,10 @@ vector<uint8_t> r_vss::query_get_video(const std::string& top_dir, r_devices& de
     auto maybe_camera = devices.get_camera_by_id(camera_id);
 
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
+        R_STHROW(r_not_found_exception, ("Camera has no recording file."));
 
     auto path = _get_storage_path(maybe_camera.value().record_file_path.value(), top_dir);
     if(substream)
@@ -698,10 +705,10 @@ contents r_vss::query_get_contents(const string& top_dir, r_devices& devices, co
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
+        R_STHROW(r_not_found_exception, ("Camera has no recording file."));
 
     r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
@@ -739,10 +746,10 @@ r_nullable<system_clock::time_point> r_vss::query_get_first_ts(const std::string
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
+        R_STHROW(r_not_found_exception, ("Camera has no recording file."));
 
     r_storage_file_reader sfr(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
@@ -835,13 +842,13 @@ vector<r_vss::motion_event_info> r_vss::query_get_motion_events(const std::strin
 {
     vector<motion_event_info> result;
 
+    // An unknown camera is the caller's mistake (404); a known one with no motion recorded yet is no events.
+    auto maybe_camera = devices.get_camera_by_id(camera_id);
+    if(maybe_camera.is_null())
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
+
     try
     {
-        auto maybe_camera = devices.get_camera_by_id(camera_id);
-
-        if(maybe_camera.is_null())
-            R_THROW(("Unknown camera id: %s", camera_id.c_str()));
-
         if(maybe_camera.value().motion_detection_file_path.is_null())
             R_THROW(("Camera has no motion recording file!"));
 
@@ -869,10 +876,10 @@ vector<r_vss::segment> r_vss::query_get_blocks(const string& top_dir, r_devices&
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
+        R_STHROW(r_not_found_exception, ("Camera has no recording file."));
 
     r_storage_file_reader sf(_get_storage_path(maybe_camera.value().record_file_path.value(), top_dir));
 
@@ -901,10 +908,10 @@ void r_vss::query_remove_blocks(const std::string& top_dir, r_devices& devices, 
 {
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
+        R_STHROW(r_not_found_exception, ("Camera has no recording file."));
     
     auto file_name = _get_storage_path(maybe_camera.value().record_file_path.value(), top_dir);
 
@@ -917,10 +924,10 @@ vector<r_metadata_entry> r_vss::query_get_analytics(const string& top_dir, r_dev
 
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
-        R_THROW(("Unknown camera id: %s", camera_id.c_str()));
+        R_STHROW(r_not_found_exception, ("Unknown camera id: %s", camera_id.c_str()));
 
     if(maybe_camera.value().record_file_path.is_null())
-        R_THROW(("Camera has no recording file!"));
+        R_STHROW(r_not_found_exception, ("Camera has no recording file."));
 
     // Construct metadata file path (same as recording file but with .mdnts extension)
     auto record_file_path = maybe_camera.value().record_file_path.value();
