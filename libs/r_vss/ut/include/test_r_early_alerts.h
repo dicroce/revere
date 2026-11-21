@@ -6,6 +6,7 @@ public:
     RTF_FIXTURE(test_r_early_alerts);
       TEST(test_r_early_alerts::test_box_iou);
       TEST(test_r_early_alerts::test_floor_and_once_per_class);
+      TEST(test_r_early_alerts::test_once_per_class_across_a_chain);
       TEST(test_r_early_alerts::test_look_interval);
       TEST(test_r_early_alerts::test_parked_car_anchor);
       TEST(test_r_early_alerts::test_parked_vehicle_left_out_of_the_record);
@@ -25,6 +26,7 @@ public:
 
     void test_box_iou();
     void test_floor_and_once_per_class();
+    void test_once_per_class_across_a_chain();
     void test_look_interval();
     void test_parked_car_anchor();
     void test_parked_vehicle_left_out_of_the_record();

@@ -27,10 +27,13 @@ string r_vss::alert_group_of(const string& class_name)
     return "";
 }
 
-void r_early_alerts::event_started(const string& camera_id)
+void r_early_alerts::event_started(const string& camera_id, bool continues)
 {
     lock_guard<mutex> g(_mtx);
-    _events[camera_id] = event_state();
+    auto& ev = _events[camera_id];
+    auto chain_sent = continues ? ev.classes_sent : set<string>();
+    ev = event_state();
+    ev.classes_sent = std::move(chain_sent);
 }
 
 r_early_alerts::r_decision r_early_alerts::consider(const string& camera_id, const string& class_name, float confidence, const r_box& box, int64_t ts)

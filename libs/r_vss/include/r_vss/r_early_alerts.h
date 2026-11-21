@@ -109,7 +109,11 @@ public:
         r_box box;
     };
 
-    R_API void event_started(const std::string& camera_id);
+    // An event started. `continues`: it carries straight on from the camera's previous one (motion_event_continue:
+    // the same motion, cut at the max event length), so the classes that chain already sent early stay sent. A
+    // person in motion that goes on for an hour is pushed once, not every five minutes; a vehicle that turns up later
+    // in it is still new.
+    R_API void event_started(const std::string& camera_id, bool continues = false);
     // Decides for one detection YOLO found over the motion at ts, and
     // records it as sent if it is.
     R_API r_decision consider(const std::string& camera_id, const std::string& class_name, float confidence, const r_box& box, int64_t ts);

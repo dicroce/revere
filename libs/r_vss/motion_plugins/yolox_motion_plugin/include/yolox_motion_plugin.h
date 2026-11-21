@@ -68,6 +68,21 @@ private:
     r_utils::r_blocking_q<MotionEventMessage> _event_queue;
     std::map<std::string, std::list<Detection>> _camera_detections;
     std::map<std::string, int64_t> _camera_motion_start_time;
+    // The camera's chain of events (see motion_event_continue): when its first started, and this event's place in it.
+    std::map<std::string, int64_t> _camera_chain_start;
+    std::map<std::string, int> _camera_chain_index;
+    // Static anchors are learnt once a chain: from the frame that started its first event and the frame that ended
+    // its last. An end is held here until the camera's next event says whether it was the chain's last (a plain
+    // start: learn from it then, before that event looks for anything) or a cut (a continue: drop it). Learning from a
+    // cut's frames, mid-motion, would make an anchor of someone standing still across it.
+    struct pending_anchors
+    {
+        int64_t ts {0};
+        std::vector<r_vss::r_early_alerts::r_seen> start_seen, end_seen;
+    };
+    std::map<std::string, std::vector<r_vss::r_early_alerts::r_seen>> _camera_chain_start_seen;
+    std::map<std::string, pending_anchors> _camera_pending_anchors;
+    void _learn_pending_anchors(const std::string& camera_id);
     std::map<std::string, std::set<int>> _camera_disproven_classes; // Classes detected but not overlapping motion
     std::mutex _buffer_mutex; // Protects _camera_buffered_update and _camera_last_periodic_ts
     std::map<std::string, MotionEventMessage> _camera_buffered_update; // Most recent UPDATE frame per camera
