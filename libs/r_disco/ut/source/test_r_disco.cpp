@@ -528,6 +528,123 @@ void test_r_disco::test_agent_keeps_recording_when_not_pausing()
     }
 }
 
+void test_r_disco::test_agent_notes_mac_of_an_unchanged_camera()
+{
+    auto assigned_of = [](fake_host& host){
+        return [&host](){ vector<r_camera> out; for(auto& [id, c] : host.cameras) out.push_back(c); return out; };
+    };
+    const map<string, string> here{{"garage", "10.0.0.93"}};
+    const map<string, string> nowhere;
+
+    // Added and never changed, so discovery never reports it, but it saw it at its address this pass: its MAC is
+    // noted there, and its first move with that MAC is followed rather than held for want of one.
+    {
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.93", r_nullable<string>());
+        r_agent agent("top_dir");
+        host.wire(agent);
+        agent.set_assigned_cameras_cb(assigned_of(host));
+        host.new_mac = _s("0c:cd:d0:03:7b:d9");
+        agent.note_missing_macs(here);
+        RTF_ASSERT(host.saved.size() == 1 && host.saved[0].mac.value() == "0c:cd:d0:03:7b:d9");
+        RTF_ASSERT(host.saved[0].ipv4.value() == "10.0.0.93");
+        agent.note_missing_macs(here);
+        RTF_ASSERT(host.saved.size() == 1);   // it has one now
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].value().status == "followed");
+        RTF_ASSERT(host.moves["garage"].value().mac_check == "match");
+    }
+
+    // Its address given to another device (the camera unplugged, its lease lapsed): discovery doesn't see the camera
+    // there, so the other device's MAC isn't noted as its own; nor when discovery sees the camera somewhere else.
+    // Seen at its address later, it's noted then.
+    {
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.93", r_nullable<string>());
+        r_agent agent("top_dir");
+        host.wire(agent);
+        agent.set_assigned_cameras_cb(assigned_of(host));
+        host.new_mac = _s("aa:bb:cc:00:00:01");
+        agent.note_missing_macs(nowhere);
+        RTF_ASSERT(host.saved.empty());
+        agent.note_missing_macs({{"garage", "10.0.0.78"}});
+        RTF_ASSERT(host.saved.empty());
+        host.new_mac = _s("0c:cd:d0:03:7b:d9");
+        agent.note_missing_macs(here);
+        RTF_ASSERT(host.saved.size() == 1 && host.saved[0].mac.value() == "0c:cd:d0:03:7b:d9");
+    }
+
+    // Added by its RTSP URL, so discovery never names it: noted while its recording receives video from that address,
+    // and not otherwise, nor when the URL names another host.
+    for(auto [receiving, url, noted] : vector<tuple<bool, string, bool>>{
+            {true, "rtsp://user:pw@10.0.0.93:554/stream1", true},
+            {false, "rtsp://user:pw@10.0.0.93:554/stream1", false},
+            {true, "rtsp://10.0.0.50/stream1", false}})
+    {
+        fake_host host;
+        auto cam = _assigned("porch", "10.0.0.93", r_nullable<string>());
+        cam.rtsp_url = _s(url);
+        host.cameras["porch"] = cam;
+        r_agent agent("top_dir");
+        host.wire(agent);
+        agent.set_assigned_cameras_cb(assigned_of(host));
+        agent.set_receiving_video_cb([receiving = receiving](const string&){ return receiving; });
+        host.new_mac = _s("0c:cd:d0:03:7b:d9");
+        agent.note_missing_macs(nowhere);
+        RTF_ASSERT(host.saved.size() == (noted ? 1u : 0u));
+    }
+
+    // Not readable: tried again only after MAC_NOTE_RETRY_MS.
+    {
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.93", r_nullable<string>());
+        r_agent agent("top_dir");
+        host.wire(agent);
+        agent.set_assigned_cameras_cb(assigned_of(host));
+        agent.note_missing_macs(here);
+        RTF_ASSERT(host.saved.empty());
+        host.new_mac = _s("0c:cd:d0:03:7b:d9");
+        host.now_ms += r_agent::MAC_NOTE_RETRY_MS - 1;
+        agent.note_missing_macs(here);
+        RTF_ASSERT(host.saved.empty());
+        host.now_ms += 1;
+        agent.note_missing_macs(here);
+        RTF_ASSERT(host.saved.size() == 1);
+    }
+
+    // A held move: what answers at the stored address may be another device now, so nothing is noted there.
+    {
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.93", r_nullable<string>());
+        r_agent agent("top_dir");
+        host.wire(agent, true);
+        agent.set_assigned_cameras_cb(assigned_of(host));
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].value().status == "held");
+        host.new_mac = _s("aa:bb:cc:00:00:01");
+        agent.note_missing_macs(here);
+        RTF_ASSERT(host.saved.empty());
+    }
+
+    // An address followed without a MAC on file: not noted there either, though discovery sees it there.
+    {
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.93", r_nullable<string>());
+        r_agent agent("top_dir");
+        host.wire(agent, false);
+        agent.set_assigned_cameras_cb(assigned_of(host));
+        host.new_mac = _s("aa:bb:cc:00:00:01");
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].value().status == "followed");
+        host.cameras["garage"].ipv4 = _s("10.0.0.78");
+        agent.note_missing_macs({{"garage", "10.0.0.78"}});
+        RTF_ASSERT(host.saved.empty());
+    }
+}
+
 void test_r_disco::test_agent_forget_drops_unconfirmed_address()
 {
     // Followed without pausing with no MAC on file, then forgotten: the address goes, and the camera added again at

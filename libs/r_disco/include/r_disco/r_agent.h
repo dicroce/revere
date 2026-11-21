@@ -36,6 +36,8 @@ namespace r_disco
 typedef std::function<void(const std::vector<std::pair<r_stream_config, std::string>>&)> changed_streams_cb;
 typedef std::function<std::pair<r_utils::r_nullable<std::string>, r_utils::r_nullable<std::string>>(const std::string&)> credential_cb;
 typedef std::function<bool(const std::string&)> is_recording_cb;
+// Whether the camera's recording is receiving video from it right now (frames in the last few seconds).
+typedef std::function<bool(const std::string&)> receiving_video_cb;
 
 // Look up an assigned camera by id, returning the persisted record (with
 // rtsp_url, codec params, profile token, etc.). Returns null if the camera
@@ -83,6 +85,7 @@ public:
     R_API void set_stream_change_cb(changed_streams_cb cb) {_changed_streams_cb = cb;}
     R_API void set_credential_cb(credential_cb cb) {_credential_cb = cb;}
     R_API void set_is_recording_cb(is_recording_cb cb) {_is_recording_cb = cb;}
+    R_API void set_receiving_video_cb(receiving_video_cb cb) {_receiving_video_cb = cb;}
     R_API void set_camera_lookup_cb(camera_lookup_cb cb) {_camera_lookup_cb = cb;}
     R_API void set_save_camera_cb(save_camera_cb cb) {_save_camera_cb = cb;}
     R_API void set_camera_alert_cb(camera_alert_cb cb) {_camera_alert_cb = cb;}
@@ -95,6 +98,16 @@ public:
     R_API void set_pause_on_address_change(bool pause) {_pause_on_address_change = pause;}
     R_API bool pause_on_address_change() const {return _pause_on_address_change.load();}
     R_API void set_clock_ms(clock_ms c) {_clock_ms = c;}
+
+    // Notes the MAC of each assigned camera that has none, at its stored address, as discovery does for a camera it
+    // reports: one added and never changed would otherwise keep none. Only with evidence the camera itself is there
+    // now: discovery saw its identity at that address in this pass (`seen_at`: id -> ipv4), or, for one added by its
+    // RTSP URL, its recording is receiving video from that address (set_receiving_video_cb). Otherwise the device
+    // that took over the address (a lapsed lease) would have its MAC saved as the camera's. Not where a move is held,
+    // nor at an address followed without a MAC (load_unconfirmed_addresses); a camera whose MAC couldn't be read is
+    // tried again after MAC_NOTE_RETRY_MS. Each discovery pass calls it.
+    R_API void note_missing_macs(const std::map<std::string, std::string>& seen_at);
+    static constexpr int64_t MAC_NOTE_RETRY_MS = 10 * 60 * 1000;
 
     // Discovery's new or changed cameras (and each config's hash), after a
     // poll. Each is written through the changed-streams callback, except an
@@ -255,6 +268,7 @@ private:
     std::mutex _interrogation_mutex;
     credential_cb _credential_cb;
     is_recording_cb _is_recording_cb;
+    receiving_video_cb _receiving_video_cb;
     camera_lookup_cb _camera_lookup_cb;
     save_camera_cb _save_camera_cb;
     camera_alert_cb _camera_alert_cb;
@@ -290,6 +304,10 @@ private:
     // Cameras followed without pausing while no MAC was on file: id -> that address (load_unconfirmed_addresses).
     // Kept across restarts; under _moves_mutex.
     std::map<std::string, std::string> _unconfirmed_addresses;
+    // When note_missing_macs last failed to read a camera's MAC (the agent's clock, ms); under _moves_mutex.
+    std::map<std::string, int64_t> _mac_note_tries;
+    // Notes a MAC-less camera's MAC at its stored address, unless that address is unconfirmed; true when it did.
+    bool _note_mac(const std::string& id);
     // Records (ipv4) or ends (empty) a camera's unconfirmed address, and saves the list when it changed.
     void _set_unconfirmed_address(const std::string& id, const std::string& ipv4);
     // Held from a change to the list through its write, so two changes at once are written in the order they were

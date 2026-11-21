@@ -275,6 +275,10 @@ public:
     // PTZ view: a camera's newest decoded picture (r_frame_taps), for pictures that
     // show a move as it happens. Null when the camera isn't recording here.
     R_API r_utils::r_nullable<r_frame_tap_result> ptz_view_frame(const std::string& camera_id, uint16_t long_edge, int64_t after);
+    // Whether the camera's recording has had a video frame in the last RECEIVING_NOW_MS: the camera is answering at the
+    // address it records from now (discovery's MAC noting, for a camera added by its RTSP URL).
+    R_API bool receiving_video_now(const std::string& camera_id);
+    static constexpr int64_t RECEIVING_NOW_MS = 5000;
 
     // Every frame a camera records goes here too; only a tapped camera's are kept.
     R_API void post_frame_to_frame_taps(const std::string& camera_id, const uint8_t* data, size_t size, bool key, int64_t ts, const std::string& codec_name, const std::string& codec_params)
