@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import socket
 import uuid
@@ -128,3 +129,20 @@ def picture_change(url: str, seconds: int = 3, timeout: float = 40.0) -> float |
         return sum(values) / len(values)
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
+
+
+def snapshot(url: str, path: pathlib.Path, timeout: float = 20.0) -> bool:
+    """Save one frame of an RTSP stream as a JPEG. Returns False on any failure."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-rtsp_transport", "tcp", "-i", url, "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "4", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if proc.returncode != 0:
+            return False
+        return path.exists() and path.stat().st_size > 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False

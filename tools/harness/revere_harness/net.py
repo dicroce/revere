@@ -12,6 +12,13 @@ class NetError(RuntimeError):
     pass
 
 
+created: set[str] = set()
+
+
+def created_interfaces() -> set[str]:
+    return set(created)
+
+
 def sh(args: list[str], netns_pid: int | None = None) -> str:
     if netns_pid is not None:
         args = ["nsenter", f"--net=/proc/{netns_pid}/ns/net"] + args
@@ -30,14 +37,17 @@ def sh(args: list[str], netns_pid: int | None = None) -> str:
 def setup_bridge() -> None:
     try:
         sh(["ip", "link", "show", BRIDGE])
-        return
     except NetError:
         pass
+    else:
+        created.add(BRIDGE)
+        return
 
     sh(["ip", "link", "add", BRIDGE, "type", "bridge", "mcast_snooping", "0"])
     sh(["ip", "addr", "add", f"{BRIDGE_IP}/{PREFIX}", "dev", BRIDGE])
     sh(["ip", "link", "set", BRIDGE, "up"])
     sh(["ip", "route", "add", "239.255.255.250/32", "dev", BRIDGE])
+    created.add(BRIDGE)
 
 
 def attach(index: int, pid: int, ip: str, mac: str) -> str:
@@ -52,6 +62,7 @@ def attach(index: int, pid: int, ip: str, mac: str) -> str:
     sh(["ip", "link", "set", "eth0", "up"], netns_pid=pid)
     sh(["ip", "route", "add", "239.0.0.0/8", "dev", "eth0"], netns_pid=pid)
 
+    created.add(veth_name)
     return veth_name
 
 
@@ -106,10 +117,12 @@ def arp_mac(ip: str) -> str | None:
         return None
 
     for line in output.strip().splitlines():
-        if ip in line:
-            parts = line.split()
-            if len(parts) >= 4:
-                mac = parts[3].lower()
-                if mac != "00:00:00:00:00:00":
-                    return mac
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        if parts[0] != ip:
+            continue
+        mac = parts[3].lower()
+        if mac != "00:00:00:00:00:00":
+            return mac
     return None
