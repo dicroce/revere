@@ -4,18 +4,26 @@ using namespace r_vss;
 using namespace std;
 using namespace std::chrono;
 
-void r_restart_backoff::ended(bool received_video, bool answered, clock::time_point now, const string& config)
+void r_restart_backoff::ended(bool received_video, bool answered, milliseconds streamed_for, clock::time_point now, const string& config)
 {
     // New settings: what failed before says nothing about these.
     if(config != _config)
+    {
         _failures = 0;
+        _short_sessions = 0;
+    }
     _config = config;
 
     if(received_video)
     {
         _failures = 0;
-        _wait = seconds(0);
-        _next_start = now;
+        if(streamed_for >= LONG_SESSION)
+            _short_sessions = 0;
+        else
+            ++_short_sessions;
+        // At once, then 2 s, 4 s, 8 s, ... up to SHORT_SESSION_MAX_WAIT.
+        _wait = (_short_sessions <= 1) ? seconds(0) : min(SHORT_SESSION_MAX_WAIT, seconds(1LL << min(_short_sessions - 1, 6)));
+        _next_start = now + _wait;
         return;
     }
 

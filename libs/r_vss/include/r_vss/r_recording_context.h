@@ -241,6 +241,8 @@ public:
     R_API int64_t key_interval_ms() const { return _key_interval.interval_ms(); }
     // Milliseconds since the newest video frame arrived; a very large number when none has.
     R_API int64_t video_age_ms() const;
+    // From the first video frame to the newest; zero before the first.
+    R_API std::chrono::milliseconds streamed_for() const;
 
     // The camera answered: its SDP arrived, so it is reachable and speaks RTSP
     R_API bool answered() const { return _answered; }
@@ -325,6 +327,7 @@ private:
     std::string _restream_mount_path;
     bool _got_first_audio_sample;
     std::atomic<bool> _got_first_video_sample;
+    std::chrono::system_clock::time_point _first_v_time {};   // set before _got_first_video_sample
     std::atomic<bool> _motion_from_sub {false};
     r_key_interval _key_interval;
     std::atomic<bool> _answered {false};

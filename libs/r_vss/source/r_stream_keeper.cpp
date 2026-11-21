@@ -1427,10 +1427,16 @@ void r_stream_keeper::_entry_point()
                                transport.attempt_ended(it->second->answered(), it->second->receiving_video()))
                                 R_LOG_WARNING("Camera %s answered but sent no video over RTSP/%s; retrying over %s",
                                               it->first.c_str(), was.c_str(), transport.protocols().c_str());
-                            // One that never sent a frame waits before the next try, longer each time.
+                            // One that never sent a frame, or keeps streaming for only seconds, waits before the
+                            // next try, longer each time.
                             auto& backoff = _restart_backoffs[it->first];
-                            backoff.ended(it->second->receiving_video(), it->second->answered(), std::chrono::steady_clock::now(), it->second->camera().stream_config_hash);
-                            if(backoff.wait().count() > 0)
+                            auto streamed_for = it->second->streamed_for();
+                            backoff.ended(it->second->receiving_video(), it->second->answered(), streamed_for, std::chrono::steady_clock::now(), it->second->camera().stream_config_hash);
+                            if(backoff.wait().count() > 0 && it->second->receiving_video())
+                                R_LOG_WARNING("Camera %s streamed for only %d s (%d short sessions in a row); trying again in %d s",
+                                              it->first.c_str(), (int)(streamed_for.count() / 1000), backoff.short_sessions(),
+                                              (int)backoff.wait().count());
+                            else if(backoff.wait().count() > 0)
                                 R_LOG_WARNING("Camera %s sent no video (%d in a row, %s); trying again in %d s",
                                               it->first.c_str(), backoff.failures(),
                                               it->second->answered() ? "it answered" : "it didn't answer",
