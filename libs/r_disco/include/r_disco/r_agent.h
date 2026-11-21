@@ -142,6 +142,9 @@ public:
     // The moves now held or followed, by camera id.
     R_API std::map<std::string, r_camera_move> camera_moves() const;
 
+    // Empty, or a warning that discovery replies may be blocked (r_discovery_health), for the UI's discovered list.
+    R_API std::string discovery_warning() const { return _onvif_provider ? _onvif_provider->discovery_warning() : std::string(); }
+
     R_API void start();
     R_API void stop();
 

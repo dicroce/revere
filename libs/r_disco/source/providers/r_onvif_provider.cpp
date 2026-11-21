@@ -882,6 +882,7 @@ vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir, 
 
     // 1. Multicast discovery (unchanged default behavior).
     ingest(r_onvif::discover(r_uuid::generate(), should_continue));
+    const auto multicast_found = configs.size();
 
     // 2. Unicast self-heal: relocate assigned cameras that multicast didn't
     //    surface (cheap cams routinely ignore multicast Probe). No-op when the
@@ -930,6 +931,22 @@ vector<r_stream_config> r_onvif_provider::_fetch_configs(const string& top_dir, 
                            still.size(), sweep_targets.size());
                 ingest(r_onvif::discover_unicast(r_uuid::generate(), sweep_targets, should_continue));
             }
+        }
+    }
+
+    // Cameras answering only direct probes, pass after pass, with none answering multicast: the replies to the
+    // multicast probe are likely dropped on the way in (see r_discovery_health). A pass cut short says nothing.
+    if(!should_continue || should_continue())
+    {
+        const auto unicast_only = configs.size() - multicast_found;
+        if(_discovery_health.pass(multicast_found, unicast_only))
+        {
+            if(_discovery_health.replies_blocked())
+                R_LOG_WARNING("onvif: %zu camera(s) answered direct probes but none answered multicast discovery, %d passes in a row: "
+                              "discovery replies may be blocked by a firewall, and new cameras won't appear. Allow incoming UDP from port 3702.",
+                              unicast_only, (int)r_discovery_health::PASSES_TO_WARN);
+            else
+                R_LOG_INFO("onvif: cameras answer multicast discovery again");
         }
     }
 

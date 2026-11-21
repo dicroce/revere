@@ -57,6 +57,14 @@ export async function getCameras() {
   return (await res.json()).cameras ?? []
 }
 
+// Whether discovery's replies look blocked: cameras answer direct probes but
+// none answers network discovery (a firewall dropping them, so new cameras
+// don't appear). { replies_blocked, warning }; warning is '' when they don't.
+export async function getDiscoveryStatus() {
+  const res = await apiFetch('/discovery_status')
+  return await res.json()
+}
+
 // Which build this is (no auth needed):
 // { version, build_number, build_time, git_revision, plugins: [{ name, version }] }
 export async function getVersion() {
