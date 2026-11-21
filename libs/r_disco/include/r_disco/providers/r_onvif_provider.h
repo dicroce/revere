@@ -2,6 +2,7 @@
 #ifndef r_disco_r_onvif_provider_h
 #define r_disco_r_onvif_provider_h
 
+#include "r_disco/r_discovery_health.h"
 #include "r_disco/r_stream_config.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
@@ -166,10 +167,15 @@ public:
     // a network change (IP/port) so we don't return a stale rtsp_url.
     R_API void invalidate_cache(const std::string& id);
 
+    // Empty, or why new cameras may not be appearing (r_discovery_health): cameras answer direct probes and none
+    // answers multicast discovery, pass after pass.
+    R_API std::string discovery_warning() const { return _discovery_health.warning(); }
+
 private:
     std::vector<r_stream_config> _fetch_configs(const std::string& top_dir, const std::function<bool()>& should_continue);
     void _cache_check_expiration(const std::string& id);
     std::string _top_dir;
+    r_discovery_health _discovery_health;
     r_agent* _agent;
 
     struct _r_onvif_provider_cache_entry

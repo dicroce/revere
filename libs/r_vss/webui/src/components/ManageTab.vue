@@ -10,6 +10,7 @@
       <!-- discovered -->
       <section>
         <h2>Discovered <span class="count">{{ discovered.length }}</span></h2>
+        <p v-if="discoveryWarning" class="discovery-warning">{{ discoveryWarning }}</p>
         <p v-if="discovered.length === 0" class="empty">No new cameras discovered.</p>
         <ul v-else class="cam-list">
           <li v-for="c in discovered" :key="c.id">
@@ -216,7 +217,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
-  isAuthed, getCameras,
+  isAuthed, getCameras, getDiscoveryStatus,
   removeCamera, updateCameraProperties, forgetCamera, addRtspCamera,
 } from '../api.js'
 import KeepAwakeSection from './KeepAwakeSection.vue'
@@ -302,12 +303,20 @@ const discovered = computed(() => cameras.value.filter((c) => c.state === 'disco
 
 let pollId = null
 
+const discoveryWarning = ref('')
+
 async function refresh() {
   try {
     cameras.value = await getCameras()
     error.value = null
   } catch (e) {
     error.value = `Could not reach Revere: ${e.message}`
+  }
+  // On its own: an older Revere without /discovery_status still lists cameras.
+  try {
+    discoveryWarning.value = (await getDiscoveryStatus()).warning || ''
+  } catch (e) {
+    discoveryWarning.value = ''
   }
 }
 
@@ -455,6 +464,16 @@ onUnmounted(() => clearInterval(pollId))
 .manage { display: flex; flex-direction: column; gap: 1.5rem; }
 
 .toolbar { display: flex; }
+
+.discovery-warning {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
 .field-row { display: flex; align-items: center; gap: 0.75rem; }
 .field-row span { width: 130px; flex: none; color: #bbb; font-size: 0.85rem; }
 .field-row input {

@@ -188,6 +188,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_POST, "/camera_move_dismiss", &r_ws::_post_camera_move_dismiss);
     route(METHOD_GET, "/camera_move_policy", &r_ws::_get_camera_move_policy);
     route(METHOD_POST, "/camera_move_policy", &r_ws::_post_camera_move_policy);
+    route(METHOD_GET, "/discovery_status", &r_ws::_get_discovery_status);
     route(METHOD_POST, "/add_rtsp_camera", &r_ws::_post_add_rtsp_camera);
     route(METHOD_GET, "/storage_info", &r_ws::_get_storage_info);
     route(METHOD_POST, "/storage_move", &r_ws::_post_storage_move);
@@ -4648,6 +4649,18 @@ r_http::r_server_response r_ws::_get_camera_move_policy(r_utils::r_socket_base&,
 {
     _require_auth(request);
     return _json_reply(json::parse(r_disco::camera_move_policy_json(_agent.pause_on_address_change())));
+}
+
+// {"replies_blocked": bool, "warning": "..."}: whether discovery's replies look blocked (r_discovery_health), and what
+// to tell the user. The web UI shows the warning over its discovered list.
+r_http::r_server_response r_ws::_get_discovery_status(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    auto warning = _agent.discovery_warning();
+    json j;
+    j["replies_blocked"] = !warning.empty();
+    j["warning"] = warning;
+    return _json_reply(j);
 }
 
 r_http::r_server_response r_ws::_post_camera_move_policy(r_utils::r_socket_base&, const r_http::r_server_request& request)

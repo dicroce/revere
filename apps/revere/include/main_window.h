@@ -130,6 +130,8 @@ struct main_window_state
     // False until r_devices' first cache fill; the camera sections say
     // "Loading cameras..." rather than that they're empty.
     bool cameras_loaded {true};
+    // Empty, or why new cameras may not be appearing (r_agent::discovery_warning): shown under Discovered.
+    std::string discovery_warning;
 
     // A note at the bottom right of the window that fades out by itself (see
     // show_toast). toast_id non-empty offers "Don't show again".
@@ -1545,6 +1547,14 @@ inline void main_window(
 
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
         section_header("##discovered_section", "Discovered", discovered.size(), state.discovered_open, fonts);
+        if(state.discovered_open && !state.discovery_warning.empty())
+        {
+            ImGui::PushFont(font(fonts.key_18));
+            ImGui::Indent(10.0f);
+            wrapped_text(status_warning_text, state.discovery_warning);
+            ImGui::Unindent(10.0f);
+            ImGui::PopFont();
+        }
         if(state.discovered_open && discovered.empty())
             empty_state(state.cameras_loaded ? "Nothing discovered yet" : "Loading cameras...", fonts);
         for(int i = 0; state.discovered_open && i < (int)discovered.size(); ++i)
