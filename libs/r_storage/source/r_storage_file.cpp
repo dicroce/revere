@@ -190,6 +190,17 @@ void r_storage_file::_write(write_context& wc, r_storage_media_type media_type, 
     auto write_start = std::chrono::steady_clock::now();
     if(media_type == R_STORAGE_MEDIA_TYPE_VIDEO && wc.last_timestamp && ts - *wc.last_timestamp > MAX_FORWARD_TS_GAP_MS)
     {
+        // The new segment starts at a key frame: one that started on a P-frame couldn't be decoded until the next key
+        // frame anyway, and a reader starting there (a query, an export) would hand a decoder frames it can't use.
+        // Until a key frame comes, the frames after the gap are dropped; the context's last timestamp stays before the
+        // gap, so the key frame starts the segment here.
+        if(!(flags & 1))
+        {
+            ++_dropped_after_gap;
+            _written_video_arrival_ms.store(arrival_ms, std::memory_order_release);   // the disk is keeping up
+            return;
+        }
+
         // Close the segment at the last frame before the gap (it frees the stream tag), then start the next one here.
         // In place, on the thread that writes: queued frames point at this context.
         auto tag = wc.stream_tag, metadata = wc.metadata;
@@ -197,8 +208,9 @@ void r_storage_file::_write(write_context& wc, r_storage_media_type media_type, 
         if(int rc = wc.close())
             R_LOG_ERROR("storage: closing the segment before a %lld ms gap failed (errno %d)", (long long)gap_ms, rc);
         wc = _writer->create_write_context(tag, metadata);
-        R_LOG_INFO("storage: no video for %lld ms in %s; a new segment starts at %lld",
-                   (long long)gap_ms, _file_name.c_str(), (long long)ts);
+        R_LOG_INFO("storage: no video for %lld ms in %s; a new segment starts at the key frame at %lld (%zu frames before it dropped)",
+                   (long long)gap_ms, _file_name.c_str(), (long long)ts, _dropped_after_gap);
+        _dropped_after_gap = 0;
     }
     _writer->write(wc, p, size, flags, ts);
     auto write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - write_start).count();

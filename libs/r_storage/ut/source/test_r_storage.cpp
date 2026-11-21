@@ -2311,13 +2311,13 @@ void test_r_storage::test_r_ring_query_from_before_it_was_created()
     r_fs::remove_file("ring_buffer_before");
 }
 
-// Writes 10 video frames 100 ms apart from `from`, the first a key frame; returns the next ts.
-static int64_t _write_run(r_storage_file& sf, const r_storage_write_context& wc, int64_t from)
+// Writes 10 video frames 100 ms apart from `from`, frame `key_at` a key frame; returns the next ts.
+static int64_t _write_run(r_storage_file& sf, const r_storage_write_context& wc, int64_t from, int key_at = 0)
 {
     vector<uint8_t> frame(256);
     std::iota(begin(frame), end(frame), 0);
     for(int i = 0; i < 10; ++i)
-        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), i == 0, from + i * 100, from + i * 100);
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), i == key_at, from + i * 100, from + i * 100);
     return from + 1000;
 }
 
@@ -2354,4 +2354,43 @@ void test_r_storage::test_r_storage_file_gap_starts_a_new_segment()
         RTF_ASSERT_EQUAL(segs[1].first, base + 900 + 3000 + 900 + 8000);
         RTF_ASSERT_EQUAL(segs[1].second, base + 900 + 3000 + 900 + 8000 + 900);
     }
+}
+
+void test_r_storage::test_r_storage_file_gap_segment_starts_at_a_key_frame()
+{
+    // Video that resumes after a gap with P-frames (the camera was mid-GOP when it stalled): they're dropped, and the
+    // new segment starts at the next key frame, so a reader starting there gets a frame it can decode. Before the gap
+    // nothing is dropped, key frame or not.
+    const int64_t base = 1'800'000'000'000LL;
+    for(bool async : {false, true})
+    {
+        const string name = async ? "gap_key_file_async" : "gap_key_file";
+        for(auto ext : {".nts", ".db", ".db-shm", ".db-wal"})
+            if(r_fs::file_exists(name + ext))
+                r_fs::remove_file(name + ext);
+        r_storage_file::allocate(name + ".rvd", 65536, 10);
+        {
+            r_storage_file sf(name + ".rvd");
+            if(async)
+                sf.start_async_writes(1024 * 1024);
+            {
+                auto wc = sf.create_write_context("h264", r_nullable<string>(), R_STORAGE_MEDIA_TYPE_VIDEO);
+                auto next = _write_run(sf, wc, base);                  // base .. base + 900
+                next = _write_run(sf, wc, next - 100 + 3000, 4);       // a 3 s pause, P-frames first: kept
+                next = _write_run(sf, wc, next - 100 + 8000, 3);       // an 8 s gap, the key frame 4th
+                if(async)
+                    sf.stop_async_writes();
+            }
+        }
+        auto segs = r_storage_file_reader(name + ".rvd").query_segments();
+        RTF_ASSERT_EQUAL((int)segs.size(), 2);
+        RTF_ASSERT_EQUAL(segs[0].first, base);
+        RTF_ASSERT_EQUAL(segs[0].second, base + 900 + 3000 + 900);
+        RTF_ASSERT_EQUAL(segs[1].first, base + 900 + 3000 + 900 + 8000 + 300);
+        RTF_ASSERT_EQUAL(segs[1].second, base + 900 + 3000 + 900 + 8000 + 900);
+    }
+    for(auto name : {"gap_key_file", "gap_key_file_async"})
+        for(auto ext : {".rvd", ".nts", ".db", ".db-shm", ".db-wal"})
+            if(r_fs::file_exists(string(name) + ext))
+                r_fs::remove_file(string(name) + ext);
 }
