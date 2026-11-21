@@ -34,6 +34,12 @@ public:
                            const std::chrono::system_clock::time_point& end,
                            const uint8_t* p);
 
+    // The oldest second a query can start at and find what was written: the ring's creation, or its length back from
+    // now, whichever is later. That length back is moved 2 s on, because its slot is the one being written now (and a
+    // query a second later would call it too old). A query that starts earlier than its length back throws "query
+    // start time is too old"; callers clamp to this instead.
+    R_API std::chrono::system_clock::time_point oldest();
+
     template<typename CB>
     void query(const std::chrono::system_clock::time_point& qs, const std::chrono::system_clock::time_point& qe, CB cb)
     {
