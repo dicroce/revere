@@ -24,9 +24,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from revere_harness import catalog
+from revere_harness.redact import redact
 
 RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[a-z_]+$")
 MAX_BODY = 64 * 1024
+# Served as text, so masked on the way out: these can hold what a child process printed.
+TEXT_SUFFIXES = {".log", ".txt", ".md", ".json", ".jsonl", ".xml", ".csv"}
 CONTENT_TYPES = {
     ".jpg": "image/jpeg",
     ".png": "image/png",
@@ -48,6 +51,7 @@ class _State:
         self.harness_dir = harness_dir
         self.runs_dir = runs_dir
         self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        self.origins = {f"http://{host}" for host in self.hosts}
         self.token = secrets.token_urlsafe(24)
         self.lock = threading.Lock()
         self.proc: subprocess.Popen | None = None
@@ -173,8 +177,22 @@ class _Handler(BaseHTTPRequestHandler):
         if gate is None:
             return
         path, _ = gate
-        length = int(self.headers.get("Content-Length", 0) or 0)
+        # The cookie goes to every port on this machine, so a page served from another
+        # local port could post here. Only this page's own origin may.
+        if self.headers.get("Origin", "") not in self.state.origins:
+            self.close_connection = True
+            self._json(403, {"error": "forbidden origin"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            length = -1
+        if length < 0:
+            self.close_connection = True
+            self._json(411, {"error": "a Content-Length is required"})
+            return
         if length > MAX_BODY:
+            self.close_connection = True
             self._json(413, {"error": "request too large"})
             return
         try:
@@ -230,6 +248,8 @@ class _Handler(BaseHTTPRequestHandler):
             if root not in target.parents or not target.is_file():
                 raise FileNotFoundError(relative)
             data = target.read_bytes()
+            if target.suffix.lower() in TEXT_SUFFIXES:
+                data = redact(data.decode(errors="replace")).encode()
         except OSError:
             self._json(404, {"error": "not found"})
             return
