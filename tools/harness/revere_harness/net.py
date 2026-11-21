@@ -35,13 +35,15 @@ def sh(args: list[str], netns_pid: int | None = None) -> str:
 
 
 def setup_bridge() -> None:
+    if BRIDGE in created:
+        return
+
     try:
         sh(["ip", "link", "show", BRIDGE])
     except NetError:
         pass
     else:
-        created.add(BRIDGE)
-        return
+        raise NetError("an interface named br0 already exists and was not made by this run")
 
     sh(["ip", "link", "add", BRIDGE, "type", "bridge", "mcast_snooping", "0"])
     sh(["ip", "addr", "add", f"{BRIDGE_IP}/{PREFIX}", "dev", BRIDGE])

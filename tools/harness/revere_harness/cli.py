@@ -2,6 +2,7 @@
 
 Outside the sandbox it re-runs itself inside one and then checks that outside
 recorders were not disturbed; inside, it runs the suite and writes the reports.
+The "web" command serves the local control page instead.
 """
 from __future__ import annotations
 
@@ -47,13 +48,20 @@ class Context:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="run.sh", description="End-to-end test harness for the recorder.")
-    parser.add_argument("suite", choices=sorted(SUITES), help="the suite to run")
+    parser.add_argument("suite", choices=sorted(SUITES) + ["web"], help='a suite, or "web" for the local control page')
     parser.add_argument("--revere-dir", default=None, help="folder holding the revere binary and its libraries")
     parser.add_argument("--out", default=None, help="output folder for this run")
     parser.add_argument("--keep", action="store_true",
                         help="keep the recorder's data, secret and home directories after a passing run")
     parser.add_argument("--param", action="append", default=[], metavar="NAME=VALUE", help="a suite parameter")
+    parser.add_argument("--port", type=int, default=8090, help="port for the web page (loopback only)")
     args = parser.parse_args(argv)
+
+    if args.suite == "web":
+        # The page starts runs as separate processes, and each of those enters its own sandbox.
+        from revere_harness import web
+        return web.serve(HARNESS_DIR, HARNESS_DIR / "out", port=args.port,
+                         revere_dir=pathlib.Path(args.revere_dir).resolve() if args.revere_dir else None)
 
     try:
         params = catalog.validate(args.suite, catalog.parse_param_args(args.param))
