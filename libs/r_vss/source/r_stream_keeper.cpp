@@ -667,13 +667,13 @@ void r_stream_keeper::_on_mog2_event(r_motion_event evt, const string& camera_id
     }
     else if(evt == motion_event_end)
     {
-        _system_plugin_host.notify_motion(camera_id, false, ts);
-        auto it = _mog2_starts.find(camera_id);
-        if(it != _mog2_starts.end())
-        {
-            _tiers.mog2_event(camera_id, it->second, ts);
-            _mog2_starts.erase(it);
-        }
+        // Only a window still open: a removal closes it here at once (_remove_motion_work_context), and the engine's
+        // end for it comes after, so the plugins would be told it stopped twice.
+        auto opened = end_mog2_window(_mog2_starts, camera_id, ts, [this](const string& id, bool started, int64_t at) {
+            _system_plugin_host.notify_motion(id, started, at);
+        });
+        if(opened)
+            _tiers.mog2_event(camera_id, *opened, ts);
     }
 }
 

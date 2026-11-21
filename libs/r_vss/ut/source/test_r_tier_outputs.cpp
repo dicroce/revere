@@ -111,4 +111,17 @@ void test_r_tier_outputs::test_leaving_tier_1_closes_an_open_mog2_window()
     // No window open: nothing to say.
     RTF_ASSERT(!close_open_mog2_window(starts, "cam-1", T0 + 900, notify));
     RTF_ASSERT_EQUAL(told.size(), (size_t)1);
+
+    // MOG2's end for cam-1 arriving after that close (a removal): not told again.
+    RTF_ASSERT(!end_mog2_window(starts, "cam-1", T0 + 300, notify));
+    RTF_ASSERT_EQUAL(told.size(), (size_t)1);
+
+    // An open window's end: told once, with when it opened, and a second end says nothing.
+    auto opened = end_mog2_window(starts, "cam-2", T0 + 700, notify);
+    RTF_ASSERT(opened && *opened == T0);
+    RTF_ASSERT_EQUAL(told.size(), (size_t)2);
+    RTF_ASSERT(told[1] == make_tuple(string("cam-2"), false, T0 + 700));
+    RTF_ASSERT(starts.empty());
+    RTF_ASSERT(!end_mog2_window(starts, "cam-2", T0 + 800, notify));
+    RTF_ASSERT_EQUAL(told.size(), (size_t)2);
 }

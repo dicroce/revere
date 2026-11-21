@@ -217,6 +217,10 @@ public:
 private:
     void _entry_point();
     std::map<std::string, std::shared_ptr<r_motion_work_context>>::iterator _create_work_context(const r_motion_work_item& item);
+    // Ends the camera's event, if it's in one, before its motion state goes (a removal, a frame of another stream, a
+    // decode error): its seconds are written to the motion ring and the plugins get motion_event_end, at its newest key
+    // frame. Without it the event never reached the ring (/motion_events) and the plugins never saw it end.
+    void _end_event_before_reset(r_motion_work_context& wc, const char* why);
     r_motion_work_context_factory _factory;
     // Bounded queue to prevent memory exhaustion if motion processing can't keep up
     r_utils::r_blocking_q<r_motion_work_item> _work{MOTION_ENGINE_MAX_QUEUE_SIZE};

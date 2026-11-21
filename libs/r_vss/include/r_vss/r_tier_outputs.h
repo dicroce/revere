@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,21 @@ inline bool close_open_mog2_window(std::map<std::string, int64_t>& starts, const
         return false;
     notify_motion(camera_id, false, now_ms);
     return true;
+}
+
+// MOG2's end event: if a window is open in `starts`, forgets it, says it closed at `ts`, and returns when it opened.
+// Nothing when none is open, as when close_open_mog2_window already closed it (a removal, whose end event the motion
+// engine still sends), so the plugins are told it stopped once.
+inline std::optional<int64_t> end_mog2_window(std::map<std::string, int64_t>& starts, const std::string& camera_id, int64_t ts,
+                                              const std::function<void(const std::string&, bool, int64_t)>& notify_motion)
+{
+    auto it = starts.find(camera_id);
+    if(it == starts.end())
+        return std::nullopt;
+    auto opened = it->second;
+    starts.erase(it);
+    notify_motion(camera_id, false, ts);
+    return opened;
 }
 
 }
