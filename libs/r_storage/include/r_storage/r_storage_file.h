@@ -118,6 +118,7 @@ private:
     int64_t _video_ts_correction {0};
     int64_t _audio_ts_correction {0};
     int64_t _last_drift_alarm_ms {0};
+    size_t _dropped_after_gap {0};   // video frames after a gap, before its key frame (only the writing thread)
 
     std::atomic<int64_t> _written_video_ts {-1};
     std::atomic<int64_t> _written_video_arrival_ms {0};
