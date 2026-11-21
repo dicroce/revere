@@ -496,6 +496,14 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             this->_has_audio = true;
     });
 
+    // The camera closed the stream, or it failed: dead now, so the stream keeper starts it again on its next pass
+    // (r_restart_backoff decides how soon) rather than after 20 s without video. Only noted here: this runs on a
+    // GStreamer thread.
+    _source.set_ended_cb([this](const std::string& why){
+        R_LOG_WARNING("Camera %s: %s; reconnecting", this->_camera.id.c_str(), why.c_str());
+        this->_die = true;
+    });
+
     if(sim_mttf_seconds > 0)
         _source.set_sim_mttf_seconds(sim_mttf_seconds);
 

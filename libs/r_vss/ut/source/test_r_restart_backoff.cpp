@@ -21,7 +21,7 @@ void test_r_restart_backoff::test_stream_that_had_video_restarts_at_once()
     auto t = r_restart_backoff::clock::now();
     for(int i = 0; i < 5; ++i)
     {
-        b.ended(true, t, "h1");
+        b.ended(true, true, t, "h1");
         RTF_ASSERT(b.may_start(t, "h1"));
         RTF_ASSERT(b.wait() == seconds(0));
     }
@@ -36,7 +36,7 @@ void test_r_restart_backoff::test_no_video_waits_longer_each_time()
     const seconds expected[] = {seconds(20), seconds(60), seconds(120), seconds(120), seconds(120)};
     for(auto w : expected)
     {
-        b.ended(false, t, "h1");
+        b.ended(false, true, t, "h1");
         RTF_ASSERT(b.wait() == w);
         RTF_ASSERT(!b.may_start(t, "h1"));
         RTF_ASSERT(!b.may_start(t + w - milliseconds(1), "h1"));
@@ -50,12 +50,12 @@ void test_r_restart_backoff::test_first_frame_resets_the_wait()
 {
     r_restart_backoff b;
     auto t = r_restart_backoff::clock::now();
-    b.ended(false, t, "h1");
-    b.ended(false, t, "h1");
+    b.ended(false, true, t, "h1");
+    b.ended(false, true, t, "h1");
     RTF_ASSERT(b.wait() == seconds(60));
-    b.ended(true, t, "h1");
+    b.ended(true, true, t, "h1");
     RTF_ASSERT(b.may_start(t, "h1") && b.failures() == 0);
-    b.ended(false, t, "h1");
+    b.ended(false, true, t, "h1");
     RTF_ASSERT(b.wait() == seconds(20));
 }
 
@@ -64,11 +64,47 @@ void test_r_restart_backoff::test_new_settings_start_at_once()
     // The camera's stream settings changed (a fixed URL): it starts at once, and its count starts over.
     r_restart_backoff b;
     auto t = r_restart_backoff::clock::now();
-    b.ended(false, t, "h1");
-    b.ended(false, t, "h1");
+    b.ended(false, true, t, "h1");
+    b.ended(false, true, t, "h1");
     RTF_ASSERT(!b.may_start(t, "h1"));
     RTF_ASSERT(b.may_start(t, "h2"));
-    b.ended(false, t, "h2");
+    b.ended(false, true, t, "h2");
     RTF_ASSERT(b.failures() == 1 && b.wait() == seconds(20));
     RTF_ASSERT(!b.may_start(t, "h2"));
+}
+
+void test_r_restart_backoff::test_no_answer_retries_quickly_at_first()
+{
+    // The camera didn't answer (its RTSP server stopped, it was unplugged): 1 s, 2 s, 4 s, then every 5 s, so one back
+    // from a short outage records again within seconds; after 2 minutes of that, every 2 minutes.
+    r_restart_backoff b;
+    auto t = r_restart_backoff::clock::now();
+    const seconds quick[] = {seconds(1), seconds(2), seconds(4), seconds(5), seconds(5)};
+    auto began = t;
+    for(auto w : quick)
+    {
+        b.ended(false, false, t, "h1");
+        RTF_ASSERT(b.wait() == w);
+        RTF_ASSERT(!b.may_start(t + w - milliseconds(1), "h1"));
+        RTF_ASSERT(b.may_start(t + w, "h1"));
+        t += w;
+    }
+    while(t - began < minutes(2))
+    {
+        b.ended(false, false, t, "h1");
+        RTF_ASSERT(b.wait() == seconds(5));
+        t += b.wait();
+    }
+    b.ended(false, false, t, "h1");
+    RTF_ASSERT(b.wait() == seconds(120));
+
+    // Video again resets it: the next outage starts quick again.
+    b.ended(true, true, t, "h1");
+    b.ended(false, false, t, "h1");
+    RTF_ASSERT(b.wait() == seconds(1));
+
+    // Answered but no video (a stuck session) keeps the long waits.
+    r_restart_backoff s;
+    s.ended(false, true, t, "h1");
+    RTF_ASSERT(s.wait() == seconds(20));
 }

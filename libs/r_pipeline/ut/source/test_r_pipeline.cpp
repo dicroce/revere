@@ -180,6 +180,7 @@ struct fake_silent_camera
     std::atomic<bool> listening{false};
     std::atomic<bool> done{false};
     std::atomic<bool> mute{false};      // stops answering: a path that has died under a session
+    std::atomic<bool> hang_up{false};   // closes the connection and stops listening: its RTSP server stopped
     std::thread th;
 
     explicit fake_silent_camera(int p) : port(p)
@@ -211,6 +212,11 @@ struct fake_silent_camera
                            "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1\r\na=control:track1\r\n";
         while(!done)
         {
+            if(hang_up)
+            {
+                conn.close();
+                return;
+            }
             uint64_t millis = 200;
             if(!conn.wait_till_recv_wont_block(millis))
                 continue;
@@ -320,6 +326,97 @@ void test_r_pipeline::test_gst_source_stop_is_bounded_when_the_camera_stops_answ
     while(!cam.saw("TEARDOWN") && steady_clock::now() < deadline)
         std::this_thread::sleep_for(milliseconds(50));
     RTF_ASSERT(cam.saw("TEARDOWN S1"));
+}
+
+// Waits up to `limit` for an ended callback; its reason, or empty.
+static string _wait_for_end(std::mutex& m, string& why, std::chrono::milliseconds limit)
+{
+    auto deadline = steady_clock::now() + limit;
+    while(steady_clock::now() < deadline)
+    {
+        {
+            std::lock_guard<std::mutex> g(m);
+            if(!why.empty())
+                return why;
+        }
+        std::this_thread::sleep_for(milliseconds(20));
+    }
+    return string();
+}
+
+void test_r_pipeline::test_gst_source_reports_a_camera_that_hangs_up()
+{
+    // The camera's RTSP server closes the connection: reported at once, with no GLib main loop running (as in the
+    // recorder), rather than noticed only after 20 s without video.
+    int port = RTF_NEXT_PORT();
+    fake_silent_camera cam(port);
+
+    std::mutex m;
+    string why;
+    vector<r_arg> arguments;
+    add_argument(arguments, "url", r_string_utils::format("rtsp://127.0.0.1:%d/x", port));
+    r_gst_source src;
+    src.set_args(arguments);
+    src.set_ended_cb([&](const string& w){ std::lock_guard<std::mutex> g(m); why = w; });
+    src.play();
+
+    auto deadline = steady_clock::now() + seconds(10);
+    while(!cam.saw("PLAY") && steady_clock::now() < deadline)
+        std::this_thread::sleep_for(milliseconds(20));
+    RTF_ASSERT(cam.saw("PLAY S1"));
+    {
+        std::lock_guard<std::mutex> g(m);
+        RTF_ASSERT(why.empty());   // playing, nothing ended yet
+    }
+
+    cam.hang_up = true;
+    RTF_ASSERT(!_wait_for_end(m, why, milliseconds(5000)).empty());
+    src.stop();
+}
+
+void test_r_pipeline::test_gst_source_reports_a_refused_connection()
+{
+    // Nothing listens there (the camera's RTSP server is down): reported at once, so a restart that fails is tried
+    // again on the restart backoff's terms instead of after 20 s.
+    int port = RTF_NEXT_PORT();
+    std::mutex m;
+    string why;
+    vector<r_arg> arguments;
+    add_argument(arguments, "url", r_string_utils::format("rtsp://127.0.0.1:%d/x", port));
+    r_gst_source src;
+    src.set_args(arguments);
+    src.set_ended_cb([&](const string& w){ std::lock_guard<std::mutex> g(m); why = w; });
+    src.play();
+    auto got = _wait_for_end(m, why, milliseconds(5000));
+    RTF_ASSERT(got.rfind("the stream failed: ", 0) == 0);
+    src.stop();
+}
+
+void test_r_pipeline::test_gst_source_reports_nothing_after_stop()
+{
+    // stop() switches the callback off before the pipeline goes. Its state change can run on after stop() returned
+    // (a bounded stop) and the source is freed: here the camera hangs up during that change, while rtspsrc still
+    // reads, and nothing is reported.
+    int port = RTF_NEXT_PORT();
+    fake_silent_camera cam(port);
+    std::atomic<int> calls{0};
+    {
+        vector<r_arg> arguments;
+        add_argument(arguments, "url", r_string_utils::format("rtsp://127.0.0.1:%d/x", port));
+        r_gst_source src;
+        src.set_args(arguments);
+        src.set_ended_cb([&](const string&){ ++calls; });
+        src.play();
+        auto deadline = steady_clock::now() + seconds(10);
+        while(!cam.saw("PLAY") && steady_clock::now() < deadline)
+            std::this_thread::sleep_for(milliseconds(20));
+        RTF_ASSERT(cam.saw("PLAY S1"));
+        set_stop_for_tests(milliseconds(300), [&cam](){ cam.hang_up = true; std::this_thread::sleep_for(milliseconds(1500)); });
+        src.stop();
+    }
+    std::this_thread::sleep_for(milliseconds(2500));
+    set_stop_for_tests(milliseconds(0), nullptr);
+    RTF_ASSERT(calls == 0);
 }
 
 void test_r_pipeline::test_gst_source_stop_lets_go_of_rtspsrc_handlers()

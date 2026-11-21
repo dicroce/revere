@@ -488,6 +488,16 @@ void r_gst_source::play()
 
     _bus_watch_id = gst_bus_add_watch(_bus, _bus_callbackS, this);
 
+    // The watch above runs only where something iterates GLib's default main context, which revere's recorder doesn't.
+    // The sync handler runs on the thread that posts the message, so an end of stream or a failure is noticed at once
+    // (r_ended_cb) and the stream can be started again, instead of waiting out the silence timer.
+    _switch_off_ended();
+    _ended = std::make_shared<_ended_state>();
+    _ended->cb = _ended_cb;
+    _ended->on = static_cast<bool>(_ended_cb);
+    gst_bus_set_sync_handler(_bus, _bus_sync_handlerS, new std::shared_ptr<_ended_state>(_ended),
+                             [](gpointer p){ delete static_cast<std::shared_ptr<_ended_state>*>(p); });
+
     gst_element_set_state(_pipeline, GST_STATE_PLAYING);
 
     if(_sim_mttf_seconds > 0)
@@ -518,6 +528,7 @@ void r_gst_source::stop()
     {
         // Disconnect before state change so no callbacks fire during RTSP teardown.
         // The bus watch removal is safe to call from within the bus callback itself (GLib allows it).
+        _switch_off_ended();
         if(_bus_watch_id)
         {
             g_source_remove(_bus_watch_id);
@@ -1388,6 +1399,70 @@ GstFlowReturn r_gst_source::_new_audio_sample(GstElement* elt, r_gst_source* src
     return result;
 }
 
+void r_gst_source::_switch_off_ended()
+{
+    if(!_ended)
+        return;
+    // Once this returns no ended callback is running or will run: the handler calls it holding this lock.
+    std::lock_guard<std::mutex> g(_ended->m);
+    _ended->on = false;
+    _ended->cb = nullptr;
+}
+
+GstBusSyncReply r_gst_source::_bus_sync_handlerS(GstBus*, GstMessage* message, gpointer data)
+{
+    try
+    {
+        auto type = GST_MESSAGE_TYPE(message);
+        if(type != GST_MESSAGE_EOS && type != GST_MESSAGE_ERROR && type != GST_MESSAGE_WARNING)
+            return GST_BUS_PASS;
+        std::string why = "the camera ended the stream";
+        if(type == GST_MESSAGE_ERROR)
+        {
+            GError* err = nullptr;
+            gst_message_parse_error(message, &err, nullptr);
+            why = std::string("the stream failed: ") + (err && err->message ? err->message : "unknown error");
+            if(err)
+                g_error_free(err);
+        }
+        else if(type == GST_MESSAGE_WARNING)
+        {
+            // rtspsrc says the connection is gone ("The server closed the connection.", or a read that failed) with a
+            // resource-read warning, and sends EOS downstream; the pipeline's own EOS comes only once every sink has
+            // it, and never when none is linked yet. Any other warning is only logged, as before.
+            auto from = GST_MESSAGE_SRC(message);
+            if(!from || !GST_IS_ELEMENT(from) || std::string(GST_OBJECT_NAME(from)) != "src")
+                return GST_BUS_PASS;
+            GError* err = nullptr;
+            gchar* debug = nullptr;
+            gst_message_parse_warning(message, &err, &debug);
+            bool read_failed = err && g_error_matches(err, GST_RESOURCE_ERROR, GST_RESOURCE_ERROR_READ);
+            std::string detail = debug ? debug : "";
+            if(err)
+                g_error_free(err);
+            g_free(debug);
+            if(!read_failed)
+                return GST_BUS_PASS;
+            auto nl = detail.rfind('\n');
+            why = "the camera's connection ended: " + (nl == std::string::npos ? detail : detail.substr(nl + 1));
+        }
+        auto& state = *static_cast<std::shared_ptr<_ended_state>*>(data);
+        std::lock_guard<std::mutex> g(state->m);
+        // Once per connection: an error usually follows another.
+        if(state->on && !state->reported && state->cb)
+        {
+            state->reported = true;
+            state->cb(why);
+        }
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_EXCEPTION_AT(e, __FILE__, __LINE__);
+    }
+    // The watch (where a main loop runs) still sees it.
+    return GST_BUS_PASS;
+}
+
 gboolean r_gst_source::_bus_callbackS(GstBus* bus, GstMessage* message, gpointer data)
 {
     try
@@ -1833,6 +1908,7 @@ void r_gst_source::_sei_ts_hack(GstBuffer* buffer, bool& has_pts, bool is_pictur
 
 void r_gst_source::_clear() noexcept
 {
+    try { _switch_off_ended(); } catch(...) {}
     if(_pipeline)
         GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(_pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "before-teardown");
     
