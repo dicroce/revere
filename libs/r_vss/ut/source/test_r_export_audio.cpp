@@ -13,22 +13,22 @@ using namespace std;
 
 REGISTER_TEST_FIXTURE(test_r_export_audio);
 
-static const char* const DIR = "export_audio_dir";
+static const char* const TEST_DIR = "export_audio_dir";
 
 void test_r_export_audio::setup()
 {
     teardown();
-    std::filesystem::create_directories(DIR);
+    std::filesystem::create_directories(TEST_DIR);
 }
 
 void test_r_export_audio::teardown()
 {
-    std::filesystem::remove_all(DIR);
+    std::filesystem::remove_all(TEST_DIR);
 }
 
 static string _path(const string& name)
 {
-    return string(DIR) + PATH_SLASH + name;
+    return string(TEST_DIR) + PATH_SLASH + name;
 }
 
 // Stored G.711 packets as a camera sends them: 8 kHz mono, 20 ms (160 bytes) each, from from_ms up to to_ms.

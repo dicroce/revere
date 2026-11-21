@@ -7,8 +7,8 @@ using namespace r_vss;
 
 REGISTER_TEST_FIXTURE(test_r_restart_backoff);
 
-static const milliseconds NONE {0};
-static const milliseconds LONG {duration_cast<milliseconds>(r_restart_backoff::LONG_SESSION)};
+static const milliseconds STREAMED_NONE {0};
+static const milliseconds STREAMED_LONG {duration_cast<milliseconds>(r_restart_backoff::LONG_SESSION)};
 
 void test_r_restart_backoff::test_new_camera_starts_at_once()
 {
@@ -24,7 +24,7 @@ void test_r_restart_backoff::test_stream_that_had_video_restarts_at_once()
     auto t = r_restart_backoff::clock::now();
     for(int i = 0; i < 5; ++i)
     {
-        b.ended(true, true, LONG, t, "h1");
+        b.ended(true, true, STREAMED_LONG, t, "h1");
         RTF_ASSERT(b.may_start(t, "h1"));
         RTF_ASSERT(b.wait() == seconds(0));
     }
@@ -39,7 +39,7 @@ void test_r_restart_backoff::test_no_video_waits_longer_each_time()
     const seconds expected[] = {seconds(20), seconds(60), seconds(120), seconds(120), seconds(120)};
     for(auto w : expected)
     {
-        b.ended(false, true, NONE, t, "h1");
+        b.ended(false, true, STREAMED_NONE, t, "h1");
         RTF_ASSERT(b.wait() == w);
         RTF_ASSERT(!b.may_start(t, "h1"));
         RTF_ASSERT(!b.may_start(t + w - milliseconds(1), "h1"));
@@ -53,12 +53,12 @@ void test_r_restart_backoff::test_first_frame_resets_the_wait()
 {
     r_restart_backoff b;
     auto t = r_restart_backoff::clock::now();
-    b.ended(false, true, NONE, t, "h1");
-    b.ended(false, true, NONE, t, "h1");
+    b.ended(false, true, STREAMED_NONE, t, "h1");
+    b.ended(false, true, STREAMED_NONE, t, "h1");
     RTF_ASSERT(b.wait() == seconds(60));
-    b.ended(true, true, LONG, t, "h1");
+    b.ended(true, true, STREAMED_LONG, t, "h1");
     RTF_ASSERT(b.may_start(t, "h1") && b.failures() == 0);
-    b.ended(false, true, NONE, t, "h1");
+    b.ended(false, true, STREAMED_NONE, t, "h1");
     RTF_ASSERT(b.wait() == seconds(20));
 }
 
@@ -67,11 +67,11 @@ void test_r_restart_backoff::test_new_settings_start_at_once()
     // The camera's stream settings changed (a fixed URL): it starts at once, and its count starts over.
     r_restart_backoff b;
     auto t = r_restart_backoff::clock::now();
-    b.ended(false, true, NONE, t, "h1");
-    b.ended(false, true, NONE, t, "h1");
+    b.ended(false, true, STREAMED_NONE, t, "h1");
+    b.ended(false, true, STREAMED_NONE, t, "h1");
     RTF_ASSERT(!b.may_start(t, "h1"));
     RTF_ASSERT(b.may_start(t, "h2"));
-    b.ended(false, true, NONE, t, "h2");
+    b.ended(false, true, STREAMED_NONE, t, "h2");
     RTF_ASSERT(b.failures() == 1 && b.wait() == seconds(20));
     RTF_ASSERT(!b.may_start(t, "h2"));
 }
@@ -86,7 +86,7 @@ void test_r_restart_backoff::test_no_answer_retries_quickly_at_first()
     auto began = t;
     for(auto w : quick)
     {
-        b.ended(false, false, NONE, t, "h1");
+        b.ended(false, false, STREAMED_NONE, t, "h1");
         RTF_ASSERT(b.wait() == w);
         RTF_ASSERT(!b.may_start(t + w - milliseconds(1), "h1"));
         RTF_ASSERT(b.may_start(t + w, "h1"));
@@ -94,21 +94,21 @@ void test_r_restart_backoff::test_no_answer_retries_quickly_at_first()
     }
     while(t - began < minutes(2))
     {
-        b.ended(false, false, NONE, t, "h1");
+        b.ended(false, false, STREAMED_NONE, t, "h1");
         RTF_ASSERT(b.wait() == seconds(5));
         t += b.wait();
     }
-    b.ended(false, false, NONE, t, "h1");
+    b.ended(false, false, STREAMED_NONE, t, "h1");
     RTF_ASSERT(b.wait() == seconds(120));
 
     // Video again resets it: the next outage starts quick again.
-    b.ended(true, true, LONG, t, "h1");
-    b.ended(false, false, NONE, t, "h1");
+    b.ended(true, true, STREAMED_LONG, t, "h1");
+    b.ended(false, false, STREAMED_NONE, t, "h1");
     RTF_ASSERT(b.wait() == seconds(1));
 
     // Answered but no video (a stuck session) keeps the long waits.
     r_restart_backoff s;
-    s.ended(false, true, NONE, t, "h1");
+    s.ended(false, true, STREAMED_NONE, t, "h1");
     RTF_ASSERT(s.wait() == seconds(20));
 }
 
@@ -154,7 +154,7 @@ void test_r_restart_backoff::test_short_sessions_and_failures_mix()
     b.ended(true, true, seconds(3), t, "h1");
     b.ended(true, true, seconds(3), t, "h1");
     RTF_ASSERT(b.wait() == seconds(2));
-    b.ended(false, true, NONE, t, "h1");
+    b.ended(false, true, STREAMED_NONE, t, "h1");
     RTF_ASSERT(b.wait() == seconds(20) && b.failures() == 1 && b.short_sessions() == 2);
     b.ended(true, true, seconds(3), t, "h1");
     RTF_ASSERT(b.wait() == seconds(4) && b.failures() == 0 && b.short_sessions() == 3);
