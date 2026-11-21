@@ -4112,6 +4112,7 @@ int main(int argc, char** argv)
         }
 
         main_window_state.cameras_loaded = cameras_loaded;
+        main_window_state.discovery_warning = agent.discovery_warning();
         revere::main_window(
             client_top,
             window_width,

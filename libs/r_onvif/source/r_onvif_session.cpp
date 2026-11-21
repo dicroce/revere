@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cctype>
 #include <tuple>
+#include <random>
+#include <chrono>
 #include "r_http/r_client_request.h"
 #include "r_http/r_methods.h"
 #include "r_utils/r_sha1.h"
@@ -538,12 +540,20 @@ static void _add_username_digest_header_with_algorithm(
     bool use_sha256
 )
 {
-    srand((unsigned int)time(NULL));
+    // A fresh nonce for every request. Cameras with WS-Security replay protection
+    // (Amcrest/Dahua) refuse a nonce they have already seen, and requests in one
+    // session go out within the same second: a generator reseeded from time()
+    // gave them all the same nonce, so the second authenticated request failed.
+    thread_local std::mt19937 nonce_rng([](){
+        std::random_device rd;
+        std::seed_seq seq{rd(), rd(), rd(), rd(), (unsigned)std::chrono::steady_clock::now().time_since_epoch().count()};
+        return std::mt19937(seq);
+    }());
 
     const unsigned int nonce_chunk_size = 20;
     unsigned char nonce_buffer[20];
     for (unsigned int i=0; i<nonce_chunk_size; i++)
-        nonce_buffer[i] = (unsigned char)rand();
+        nonce_buffer[i] = (unsigned char)(nonce_rng() & 0xff);
 
     auto nonce_base64 = r_utils::r_string_utils::to_base64(nonce_buffer, nonce_chunk_size);
     auto created = _wsse_created(time_offset_seconds);

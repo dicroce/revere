@@ -51,6 +51,7 @@ public:
       TEST(test_r_storage::test_r_ring_empty_and_backwards_ranges);
       TEST(test_r_storage::test_r_ring_query_from_before_it_was_created);
       TEST(test_r_storage::test_r_storage_file_gap_starts_a_new_segment);
+      TEST(test_r_storage::test_r_storage_file_gap_segment_starts_at_a_key_frame);
     RTF_FIXTURE_END();
 
     virtual ~test_r_storage() throw() {}
@@ -106,4 +107,5 @@ public:
     void test_r_ring_empty_and_backwards_ranges();
     void test_r_ring_query_from_before_it_was_created();
     void test_r_storage_file_gap_starts_a_new_segment();
+    void test_r_storage_file_gap_segment_starts_at_a_key_frame();
 };

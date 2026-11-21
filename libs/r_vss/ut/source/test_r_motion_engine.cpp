@@ -666,3 +666,93 @@ void test_r_motion_engine::test_event_ends_when_its_state_is_reset()
         RTF_ASSERT_EQUAL(run->ranges[0].second, run->last_ts);
     }
 }
+
+void test_r_motion_engine::test_long_motion_is_a_chain_of_events()
+{
+    // Motion that goes on past the max event length (2 s here, 5 minutes by default) is cut into events back to
+    // back: at the first significant key frame at or past it, the event ends there (its seconds to the motion ring)
+    // and the next starts on the same frame as a motion_event_continue. No gap between them, and no update for that
+    // frame.
+    RTF_ASSERT_EQUAL((int)DEFAULT_MAX_EVENT_MS, 300000);
+    r_pipeline::gstreamer_init();
+    r_fs::write_file(bad_guy_mp4, bad_guy_mp4_len, "bad_guy.mp4");
+    AVCodecID codec_id;
+    vector<uint8_t> extradata;
+    int vsi;
+    {
+        r_demuxer d("bad_guy.mp4", false);
+        vsi = d.get_video_stream_index();
+        codec_id = d.get_stream_info(vsi).codec_id;
+        extradata = d.get_extradata(vsi);
+    }
+    const int64_t MAX_MS = 2000;
+    auto ranges = std::make_shared<std::vector<std::pair<int64_t, int64_t>>>();
+    capturing_event_sink sink;
+    {
+        r_motion_engine engine([&](const r_motion_work_item& item) -> std::shared_ptr<r_motion_work_context> {
+            auto wc = make_shared<r_motion_work_context>(codec_id, item.id, extradata, make_unique<recording_storage_sink>(ranges));
+            wc->set_max_event_ms(MAX_MS);
+            return wc;
+        }, sink);
+        engine.set_probe([](const std::string&, int64_t, const std::vector<uint8_t>&, uint16_t, uint16_t,
+                            const motion_region&, const std::vector<motion_region>&) { return true; });
+        engine.start();
+        r_demuxer demuxer("bad_guy.mp4", false);
+        int64_t ts = 1000000;
+        size_t posted = 0;
+        while(demuxer.read_frame())
+        {
+            auto fi = demuxer.get_frame_info();
+            if(fi.index != vsi || !fi.key)
+                continue;
+            r_pipeline::r_gst_buffer buf(fi.data, fi.size);
+            engine.post_frame(buf, ts, "h264", "", "cam", true);
+            ++posted;
+            for(int i = 0; i < 500 && engine.processed_count() < posted; ++i)
+                rtf_usleep(10000);
+            ts += 1000;
+        }
+        engine.stop();
+    }
+    r_fs::remove_file("bad_guy.mp4");
+
+    auto events = sink.events();
+    int starts = 0, continues = 0;
+    int64_t event_start = -1;
+    for(size_t i = 0; i < events.size(); ++i)
+    {
+        const auto& e = events[i];
+        if(e.evt == motion_event_start)
+        {
+            ++starts;
+            event_start = e.ts;
+        }
+        else if(e.evt == motion_event_continue)
+        {
+            ++continues;
+            // Right after the end of the event it continues, at the same time: back to back.
+            RTF_ASSERT(i > 0);
+            RTF_ASSERT(events[i - 1].evt == motion_event_end);
+            RTF_ASSERT_EQUAL(events[i - 1].ts, e.ts);
+            // Cut at the first key frame at or past the max length (they're 1 s apart).
+            RTF_ASSERT(e.ts - event_start >= MAX_MS && e.ts - event_start < MAX_MS + 1000);
+            // No update for that frame.
+            RTF_ASSERT(!(i + 1 < events.size() && events[i + 1].evt == motion_event_update && events[i + 1].ts == e.ts));
+            event_start = e.ts;
+        }
+        else if(e.evt == motion_event_update && event_start >= 0)
+            RTF_ASSERT(e.ts - event_start < MAX_MS);
+    }
+    RTF_ASSERT(starts >= 1);
+    RTF_ASSERT(continues >= 1);
+
+    // The motion ring has each event's range (one per cut, and one more if the last event ended), each starting
+    // where the one before it ended, and none longer than the cut.
+    RTF_ASSERT(ranges->size() >= (size_t)continues);
+    for(size_t i = 0; i < ranges->size(); ++i)
+    {
+        if(i > 0)
+            RTF_ASSERT_EQUAL((*ranges)[i].first, (*ranges)[i - 1].second);
+        RTF_ASSERT((*ranges)[i].second - (*ranges)[i].first < MAX_MS + 1000);
+    }
+}

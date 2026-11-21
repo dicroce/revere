@@ -1,4 +1,4 @@
-"""The suites the harness can run, with the parameters each accepts. Used by the command line."""
+"""The suites the harness can run, with the parameters each accepts. Used by the command line and the web page."""
 
 from __future__ import annotations
 
@@ -50,10 +50,6 @@ SUITES: list[dict] = [
         ],
     },
 ]
-
-
-
-
 
 
 def get(name: str) -> dict | None:

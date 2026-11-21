@@ -151,6 +151,23 @@ void r_motion_engine::_end_event_before_reset(r_motion_work_context& wc, const c
                wc.get_camera_id().c_str(), (long long)end_ts, why);
 }
 
+void r_motion_engine::_continue_event(r_motion_work_context& wc, const r_keyframe_motion_entry& kf)
+{
+    auto start_ts = wc.get_event_start_ts();
+    if(wc.first_ts_valid() && start_ts > 0)
+    {
+        uint8_t motion_flag = 1;
+        wc.storage_sink().write_range(system_clock::time_point{milliseconds{start_ts}},
+                                      system_clock::time_point{milliseconds{kf.ts}}, &motion_flag);
+        wc.set_last_written_second(kf.ts / 1000);
+    }
+    _meph.post(r_vss::motion_event_end, wc.get_camera_id(), kf.ts, kf.decoded_image, kf.width, kf.height, kf.bbox, kf.regions);
+    wc.set_event_start_ts(kf.ts);
+    _meph.post(r_vss::motion_event_continue, wc.get_camera_id(), kf.ts, kf.decoded_image, kf.width, kf.height, kf.bbox, kf.regions);
+    R_LOG_INFO("motion: camera %s's event reached %lld ms with the motion still going; the next one carries on from %lld",
+               wc.get_camera_id().c_str(), (long long)(kf.ts - start_ts), (long long)kf.ts);
+}
+
 void r_motion_engine::remove_work_context(const string& camera_id)
 {
     // Post a special work item to trigger removal in the worker thread
@@ -369,8 +386,11 @@ void r_motion_engine::_entry_point()
                                     {
                                         // Reset no-motion counter and send update
                                         wc->set_no_motion_count(0);
-                                        _meph.post(r_vss::motion_event_update, wc->get_camera_id(), work.ts,
-                                                   letterbox_data, 640, 640, motion_bbox, motion_regions);
+                                        if(work.ts - wc->get_event_start_ts() >= wc->get_max_event_ms())
+                                            _continue_event(*wc, wc->keyframe_motion_buffer().at(wc->keyframe_motion_buffer().size() - 1));
+                                        else
+                                            _meph.post(r_vss::motion_event_update, wc->get_camera_id(), work.ts,
+                                                       letterbox_data, 640, 640, motion_bbox, motion_regions);
                                     }
                                     else
                                     {

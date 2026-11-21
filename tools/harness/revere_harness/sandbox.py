@@ -27,9 +27,10 @@ class SandboxError(RuntimeError):
 class SyslogSink:
     """Receives the syslog lines of processes in the sandbox and appends them to a file."""
 
-    def __init__(self, socket_path: str, log_path: pathlib.Path):
+    def __init__(self, socket_path: str, log_path: pathlib.Path, private_dir: str | None = None):
         self.socket_path = socket_path
         self.log_path = log_path
+        self.private_dir = private_dir
         self.started = False
         self._thread = None
         self._socket = None
@@ -66,6 +67,9 @@ class SyslogSink:
         if self._thread:
             self._thread.join(timeout=2.0)
             self._thread = None
+        # Clean up private directory used for socket when journal dir is missing
+        if self.private_dir:
+            shutil.rmtree(self.private_dir, ignore_errors=True)
 
     def _run(self):
         while self.started:
@@ -222,32 +226,39 @@ def isolate(log_path: pathlib.Path) -> "SyslogSink":
     check_only_loopback()
 
     # Start syslog sink if journal directory exists
-    if os.path.exists("/run/systemd/journal"):
-        sink = SyslogSink("/run/systemd/journal/dev-log", log_path)
-        sink.start()
-    else:
-        # Journal dir missing; use a private temp dir for the socket to avoid conflicts
-        tmp_dir = tempfile.mkdtemp(prefix="harness-log-")
-        sink_socket_path = os.path.join(tmp_dir, "dev-log")
-        sink = SyslogSink(sink_socket_path, log_path)
-        sink.start()
+    private_dir = None
+    try:
+        if os.path.exists("/run/systemd/journal"):
+            sink = SyslogSink("/run/systemd/journal/dev-log", log_path)
+            sink.start()
+        else:
+            # Journal dir missing; use a private temp dir for the socket to avoid conflicts
+            private_dir = tempfile.mkdtemp(prefix="harness-log-")
+            sink_socket_path = os.path.join(private_dir, "dev-log")
+            sink = SyslogSink(sink_socket_path, log_path, private_dir=private_dir)
+            sink.start()
 
-    # If /dev/log exists on the host but points elsewhere, bind-mount our sink over it.
-    # This ensures syslog lines from sandboxed processes reach our private socket instead of the host's.
-    if os.path.lexists("/dev/log"):
-        real_log = os.path.realpath("/dev/log")
-        if real_log != sink.socket_path:
-            try:
-                subprocess.run(["mount", "--bind", sink.socket_path, "/dev/log"], check=True)
-            except subprocess.CalledProcessError as e:
-                raise SandboxError(f"failed to bind-mount /dev/log: {e}")
+        # If /dev/log exists on the host but points elsewhere, bind-mount our sink over it.
+        # This ensures syslog lines from sandboxed processes reach our private socket instead of the host's.
+        if os.path.lexists("/dev/log"):
+            real_log = os.path.realpath("/dev/log")
+            if real_log != sink.socket_path:
+                try:
+                    subprocess.run(["mount", "--bind", sink.socket_path, "/dev/log"], check=True)
+                except subprocess.CalledProcessError as e:
+                    raise SandboxError(f"failed to bind-mount /dev/log: {e}")
 
-    # Verify syslog connectivity before returning
-    if os.path.lexists("/dev/log"):
-        if not syslog_reaches_sink(sink):
-            raise SandboxError("syslog lines would not reach the private log socket")
+        # Verify syslog connectivity before returning
+        if os.path.lexists("/dev/log"):
+            if not syslog_reaches_sink(sink):
+                raise SandboxError("syslog lines would not reach the private log socket")
 
-    return sink
+        return sink
+    except Exception:
+        # Clean up private directory if creation failed after making it
+        if private_dir:
+            shutil.rmtree(private_dir, ignore_errors=True)
+        raise
 
 
 def check_only_loopback() -> None:

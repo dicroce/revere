@@ -350,3 +350,30 @@ void test_r_early_alerts::test_probe_confirms()
     // No motion evidence at all: no.
     RTF_ASSERT(!probe_confirms({{"person", 0.9f, on_motion}}, {0, 0, 0, 0, false}, {}));
 }
+
+void test_r_early_alerts::test_once_per_class_across_a_chain()
+{
+    // Motion that goes on past the max event length is a chain of events (motion_event_continue): a class the chain
+    // already sent early isn't sent again in a later event of it, and a class new to the chain still is. A new
+    // chain (a plain start) sends again.
+    E e;
+    e.event_started("c");
+    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.9f, LEAVES, T0).verdict, (int)E::early_sent);
+    e.event_started("c", true);
+    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.9f, LEAVES, T0 + 5 * MIN).verdict, (int)E::early_already_sent);
+    RTF_ASSERT(!e.sent_early("c", "person", T0 + 5 * MIN));
+    RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.8f, PARKED_CAR, T0 + 6 * MIN).verdict, (int)E::early_sent);
+    RTF_ASSERT(e.sent_early("c", "car", T0 + 6 * MIN));
+    e.event_started("c", true);
+    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.9f, LEAVES, T0 + 10 * MIN).verdict, (int)E::early_already_sent);
+    RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.8f, PARKED_CAR, T0 + 10 * MIN).verdict, (int)E::early_already_sent);
+    // The detections themselves are per event: the first event's person isn't "sent early" in the third.
+    RTF_ASSERT(!e.sent_early("c", "person", T0));
+
+    e.event_started("c");
+    RTF_ASSERT_EQUAL((int)e.consider("c", "person", 0.9f, LEAVES, T0 + 20 * MIN).verdict, (int)E::early_sent);
+
+    // A continue on a camera with no event before it is a plain start.
+    e.event_started("d", true);
+    RTF_ASSERT_EQUAL((int)e.consider("d", "person", 0.9f, LEAVES, T0).verdict, (int)E::early_sent);
+}

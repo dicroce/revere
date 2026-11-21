@@ -4,6 +4,7 @@
 #include "r_vss/r_ws.h"
 #include "r_vss/r_ws_client_errors.h"
 #include "r_vss/r_export_output.h"
+#include "r_vss/r_export_audio.h"
 #include "r_vss/r_recap.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_rtsp_auth.h"
@@ -189,6 +190,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_POST, "/camera_move_dismiss", &r_ws::_post_camera_move_dismiss);
     route(METHOD_GET, "/camera_move_policy", &r_ws::_get_camera_move_policy);
     route(METHOD_POST, "/camera_move_policy", &r_ws::_post_camera_move_policy);
+    route(METHOD_GET, "/discovery_status", &r_ws::_get_discovery_status);
     route(METHOD_POST, "/add_rtsp_camera", &r_ws::_post_add_rtsp_camera);
     route(METHOD_GET, "/storage_info", &r_ws::_get_storage_info);
     route(METHOD_POST, "/storage_move", &r_ws::_post_storage_move);
@@ -1130,6 +1132,15 @@ static void _check_timestamps(const r_blob_tree& bt)
     }
 }
 
+// Says how an export carries the camera's audio when it isn't copied as stored.
+static void _log_export_audio(const string& job_id, const string& codec_name, const r_export_audio& audio)
+{
+    if(audio.what() == r_export_audio::mode::aac)
+        R_LOG_INFO("[EXPORT] Job %s: the camera's %s audio is encoded as AAC for this file type.", job_id.c_str(), codec_name.c_str());
+    else if(audio.what() == r_export_audio::mode::drop)
+        R_LOG_WARNING("[EXPORT] Job %s: exported without audio: %s.", job_id.c_str(), audio.why_dropped().c_str());
+}
+
 void r_ws::_export_entry_point()
 {
     while(true)
@@ -1261,6 +1272,8 @@ void r_ws::_export(export_job& job)
     // last timestamp written for that stream.
     export_ts_filter ts_filter;
 
+    unique_ptr<r_export_audio> audio;
+
     while(!done)
     {
         if(!_export_running) break;
@@ -1355,37 +1368,9 @@ void r_ws::_export(export_job& job)
 
                 if(has_audio)
                 {
-                    r_nullable<int> audio_rate, audio_channels;
-                    auto audio_codec_parameter_parts = r_string_utils::split(audio_codec_parameters, ",");
-                    for(auto part : audio_codec_parameter_parts)
-                    {
-                        auto inner_parts = r_string_utils::split(part, "=");
-                        if(inner_parts.size() == 2)
-                        {
-                            if(r_string_utils::strip(inner_parts[0]) == "sc_audio_rate")
-                                audio_rate.set_value(r_string_utils::s_to_int(inner_parts[1]));
-                            if(r_string_utils::strip(inner_parts[0]) == "sc_audio_channels")
-                                audio_channels.set_value(r_string_utils::s_to_int(inner_parts[1]));
-                        }
-                    }
-
-                    auto audio_codec_id = r_av::encoding_to_av_codec_id(audio_codec_name);
-
-                    if(audio_channels.is_null())
-                        audio_channels.set_value(1);
-
-                    if(audio_rate.is_null())
-                    {
-                        if(audio_codec_id == AV_CODEC_ID_PCM_MULAW)
-                            audio_rate.set_value(8000);
-                        else if(audio_codec_id == AV_CODEC_ID_PCM_ALAW)
-                            audio_rate.set_value(8000);
-                    }
-
-                    if(audio_rate.is_null())
-                        R_THROW(("Missing audio rate."));
-
-                    muxer.add_audio_stream(audio_codec_id, (uint8_t)audio_channels.value(), (uint16_t)audio_rate.value());
+                    audio = make_unique<r_export_audio>(audio_codec_name, audio_codec_parameters, job.file_name);
+                    _log_export_audio(job.id, audio_codec_name, *audio);
+                    audio->add_stream(muxer);
                 }
 
                 muxer.open();
@@ -1428,8 +1413,8 @@ void r_ws::_export(export_job& job)
 
                 if(sid == R_STORAGE_MEDIA_TYPE_VIDEO)
                     muxer.write_video_frame(frame.data(), frame.size(), ts-ts_first_frame, ts-ts_first_frame, {1, 1000}, key);
-                else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO)
-                    muxer.write_audio_frame(frame.data(), frame.size(), ts-ts_first_frame, {1, 1000});
+                else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO && audio)
+                    audio->write(muxer, frame.data(), frame.size(), ts-ts_first_frame);
             }
         }
         catch(const exception& ex)
@@ -1442,6 +1427,9 @@ void r_ws::_export(export_job& job)
             output.skipped(ex.what());
         }
     }
+
+    if(output.is_open() && audio)
+        audio->flush(muxer);
 
     output.finish(muxer);
 }
@@ -3057,6 +3045,8 @@ void r_ws::_transcode_export(export_job& job)
     // overlapping audio went backwards, making the muxer throw and drop the rest of the chunk.
     export_ts_filter ts_filter;
 
+    unique_ptr<r_export_audio> audio;
+
     bool done = false;
     while(!done)
     {
@@ -3138,32 +3128,12 @@ void r_ws::_transcode_export(export_job& job)
 
                 if(has_audio)
                 {
-                    auto audio_codec_name   = bt["audio_codec_name"].get_string();
-                    auto audio_codec_params = bt["audio_codec_parameters"].get_string();
-
-                    r_nullable<int> audio_rate, audio_channels;
-                    for(auto& part : r_string_utils::split(audio_codec_params, ","))
-                    {
-                        auto kv = r_string_utils::split(part, "=");
-                        if(kv.size() != 2) continue;
-                        if(r_string_utils::strip(kv[0]) == "sc_audio_rate")
-                            audio_rate.set_value(r_string_utils::s_to_int(kv[1]));
-                        if(r_string_utils::strip(kv[0]) == "sc_audio_channels")
-                            audio_channels.set_value(r_string_utils::s_to_int(kv[1]));
-                    }
-
-                    auto audio_codec_id = r_av::encoding_to_av_codec_id(audio_codec_name);
-
-                    if(audio_channels.is_null()) audio_channels.set_value(1);
-                    if(audio_rate.is_null())
-                    {
-                        if(audio_codec_id == AV_CODEC_ID_PCM_MULAW || audio_codec_id == AV_CODEC_ID_PCM_ALAW)
-                            audio_rate.set_value(8000);
-                    }
-                    if(audio_rate.is_null())
-                        R_THROW(("Missing audio rate."));
-
-                    muxer.add_audio_stream(audio_codec_id, (uint8_t)audio_channels.value(), (uint16_t)audio_rate.value());
+                    if(!bt.has_key("audio_codec_name") || !bt.has_key("audio_codec_parameters"))
+                        R_THROW(("Blob tree missing audio codec name or parameters but has audio!"));
+                    auto audio_codec_name = bt["audio_codec_name"].get_string();
+                    audio = make_unique<r_export_audio>(audio_codec_name, bt["audio_codec_parameters"].get_string(), job.file_name);
+                    _log_export_audio(job.id, audio_codec_name, *audio);
+                    audio->add_stream(muxer);
                 }
 
                 muxer.open();
@@ -3224,9 +3194,9 @@ void r_ws::_transcode_export(export_job& job)
                         muxer.write_video_frame(pi.data, pi.size, pi.pts, out_dts, pi.time_base, pi.key);
                     }
                 }
-                else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO && has_audio)
+                else if(sid == R_STORAGE_MEDIA_TYPE_AUDIO && audio)
                 {
-                    muxer.write_audio_frame(frame_data.data(), frame_data.size(), rel_ts, {1, 1000});
+                    audio->write(muxer, frame_data.data(), frame_data.size(), rel_ts);
                 }
             }
         }
@@ -3256,6 +3226,9 @@ void r_ws::_transcode_export(export_job& job)
             flush_state = encoder->flush();
         }
     }
+
+    if(output.is_open() && audio)
+        audio->flush(muxer);
 
     output.finish(muxer);
 }
@@ -4619,6 +4592,18 @@ r_http::r_server_response r_ws::_get_camera_move_policy(r_utils::r_socket_base&,
 {
     _require_auth(request);
     return _json_reply(json::parse(r_disco::camera_move_policy_json(_agent.pause_on_address_change())));
+}
+
+// {"replies_blocked": bool, "warning": "..."}: whether discovery's replies look blocked (r_discovery_health), and what
+// to tell the user. The web UI shows the warning over its discovered list.
+r_http::r_server_response r_ws::_get_discovery_status(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    auto warning = _agent.discovery_warning();
+    json j;
+    j["replies_blocked"] = !warning.empty();
+    j["warning"] = warning;
+    return _json_reply(j);
 }
 
 r_http::r_server_response r_ws::_post_camera_move_policy(r_utils::r_socket_base&, const r_http::r_server_request& request)

@@ -360,10 +360,12 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 _maybe_video_storage_write_context->codec_parameters = video_codec_parameters;
             }
 
-            if(!this->_got_first_video_sample)
-                this->_got_first_video_sample = true;
-
             _last_v_time = system_clock::now();
+            if(!this->_got_first_video_sample)
+            {
+                _first_v_time = _last_v_time;
+                this->_got_first_video_sample = true;
+            }
             auto ingest_lag_ms = _watch_lag(pts);
             auto mi = buffer.map(r_gst_buffer::MT_READ);
             _v_bytes_received += mi.size();
@@ -603,6 +605,13 @@ int64_t r_recording_context::video_age_ms() const
     if(!_got_first_video_sample)
         return INT64_MAX / 2;
     return duration_cast<milliseconds>(system_clock::now() - _last_v_time).count();
+}
+
+milliseconds r_recording_context::streamed_for() const
+{
+    if(!_got_first_video_sample)
+        return milliseconds(0);
+    return duration_cast<milliseconds>(_last_v_time - _first_v_time);
 }
 
 int64_t r_recording_context::storage_write_lag_ms() const

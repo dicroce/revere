@@ -5,6 +5,8 @@ add_executable(
     source/test_r_disco.cpp
     include/test_r_substream.h
     source/test_r_substream.cpp
+    include/test_r_discovery_health.h
+    source/test_r_discovery_health.cpp
 )
 
 target_include_directories(
