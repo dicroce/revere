@@ -107,7 +107,7 @@ r_export_audio::~r_export_audio() noexcept = default;
 unique_ptr<r_av::r_audio_encoder> r_export_audio::_new_encoder() const
 {
     // AAC's top rate is about 6 bits a sample per channel; G.711 at 8 kHz gets 32 kb/s.
-    auto bit_rate = (uint32_t)(_channels * min(64000, _rate * 4));
+    auto bit_rate = (uint32_t)(_channels * (std::min)(64000, _rate * 4));
     return make_unique<r_av::r_audio_encoder>(AV_CODEC_ID_AAC, bit_rate, _rate, _channels, AV_SAMPLE_FMT_FLTP);
 }
 

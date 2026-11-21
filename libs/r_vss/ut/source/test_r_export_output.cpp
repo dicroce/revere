@@ -13,17 +13,17 @@ using namespace std;
 
 REGISTER_TEST_FIXTURE(test_r_export_output);
 
-static const char* const DIR = "export_output_dir";
+static const char* const TEST_DIR = "export_output_dir";
 
 void test_r_export_output::setup()
 {
     teardown();
-    std::filesystem::create_directories(DIR);
+    std::filesystem::create_directories(TEST_DIR);
 }
 
 void test_r_export_output::teardown()
 {
-    std::filesystem::remove_all(DIR);
+    std::filesystem::remove_all(TEST_DIR);
 }
 
 static size_t _files_in(const string& dir)
@@ -54,11 +54,11 @@ void test_r_export_output::test_header_failure_fails_and_cleans_up()
     bool threw = false;
     string what;
     {
-        r_export_output out(DIR, "clip.mp4");
+        r_export_output out(TEST_DIR, "clip.mp4");
         temp = out.temp_path();
         RTF_ASSERT(temp.size() > 4 && temp.substr(temp.size() - 4) == ".mp4");
         RTF_ASSERT(temp.find("tmp_") != string::npos);
-        RTF_ASSERT_EQUAL(out.output_path(), string(DIR) + PATH_SLASH + "clip.mp4");
+        RTF_ASSERT_EQUAL(out.output_path(), string(TEST_DIR) + PATH_SLASH + "clip.mp4");
         {
             r_av::r_muxer muxer(out.temp_path());
             try
@@ -90,19 +90,19 @@ void test_r_export_output::test_header_failure_fails_and_cleans_up()
     RTF_ASSERT(what.find("Unable to write header") != string::npos);
     RTF_ASSERT(what.find("a later chunk") == string::npos);
     RTF_ASSERT(!r_fs::file_exists(temp));
-    RTF_ASSERT(!r_fs::file_exists(string(DIR) + PATH_SLASH + "clip.mp4"));
-    RTF_ASSERT_EQUAL(_files_in(DIR), (size_t)0);
+    RTF_ASSERT(!r_fs::file_exists(string(TEST_DIR) + PATH_SLASH + "clip.mp4"));
+    RTF_ASSERT_EQUAL(_files_in(TEST_DIR), (size_t)0);
 
     // Nothing skipped and nothing written (the export stopped first) still fails.
     {
-        r_export_output out(DIR, "none.mp4");
+        r_export_output out(TEST_DIR, "none.mp4");
         r_av::r_muxer muxer(out.temp_path());
         threw = false;
         try { out.finish(muxer); } catch(const exception& ex) { threw = true; what = ex.what(); }
         RTF_ASSERT(threw);
         RTF_ASSERT(what.find("Export wrote nothing: no chunk was written") != string::npos);
     }
-    RTF_ASSERT_EQUAL(_files_in(DIR), (size_t)0);
+    RTF_ASSERT_EQUAL(_files_in(TEST_DIR), (size_t)0);
 }
 
 void test_r_export_output::test_finished_export_is_renamed()
@@ -112,7 +112,7 @@ void test_r_export_output::test_finished_export_is_renamed()
     // to finalize before it renames.
     string temp, output;
     {
-        r_export_output out(DIR, "clip.mov");
+        r_export_output out(TEST_DIR, "clip.mov");
         temp = out.temp_path();
         output = out.output_path();
         r_av::r_muxer muxer(out.temp_path());
@@ -126,7 +126,7 @@ void test_r_export_output::test_finished_export_is_renamed()
     RTF_ASSERT(!r_fs::file_exists(temp));
     RTF_ASSERT(r_fs::file_exists(output));
     RTF_ASSERT(std::filesystem::file_size(output) > 8000);
-    RTF_ASSERT_EQUAL(_files_in(DIR), (size_t)1);
+    RTF_ASSERT_EQUAL(_files_in(TEST_DIR), (size_t)1);
 
     // And it was finalized: it plays (reads back) with the second of audio written.
     int packets = 0;
@@ -148,7 +148,7 @@ void test_r_export_output::test_unfinished_export_is_removed()
     // file is removed and there's no output.
     string temp, output;
     {
-        r_export_output out(DIR, "clip.mov");
+        r_export_output out(TEST_DIR, "clip.mov");
         temp = out.temp_path();
         output = out.output_path();
         r_av::r_muxer muxer(out.temp_path());
@@ -160,5 +160,5 @@ void test_r_export_output::test_unfinished_export_is_removed()
     }
     RTF_ASSERT(!r_fs::file_exists(temp));
     RTF_ASSERT(!r_fs::file_exists(output));
-    RTF_ASSERT_EQUAL(_files_in(DIR), (size_t)0);
+    RTF_ASSERT_EQUAL(_files_in(TEST_DIR), (size_t)0);
 }

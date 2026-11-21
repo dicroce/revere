@@ -22,7 +22,7 @@ void r_restart_backoff::ended(bool received_video, bool answered, milliseconds s
         else
             ++_short_sessions;
         // At once, then 2 s, 4 s, 8 s, ... up to SHORT_SESSION_MAX_WAIT.
-        _wait = (_short_sessions <= 1) ? seconds(0) : min(SHORT_SESSION_MAX_WAIT, seconds(1LL << min(_short_sessions - 1, 6)));
+        _wait = (_short_sessions <= 1) ? seconds(0) : (std::min)(SHORT_SESSION_MAX_WAIT, seconds(1LL << (std::min)(_short_sessions - 1, 6)));
         _next_start = now + _wait;
         return;
     }
