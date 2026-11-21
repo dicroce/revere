@@ -3,6 +3,7 @@
 #include "r_disco/r_substream.h"
 #include "r_vss/r_ws.h"
 #include "r_vss/r_ws_client_errors.h"
+#include "r_vss/r_export_output.h"
 #include "r_vss/r_recap.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_rtsp_auth.h"
@@ -1242,18 +1243,14 @@ r_http::r_server_response r_ws::_get_export(r_utils::r_socket_base&, const r_htt
 
 void r_ws::_export(export_job& job)
 {
-    auto dot = job.file_name.rfind('.');
-    auto ext = (dot != string::npos) ? job.file_name.substr(dot) : string{};
-    auto output_path = job.exports_path + PATH_SLASH + job.file_name;
-    auto temp_path = r_fs::temp_file_name(job.exports_path, "tmp_") + ext;
+    r_export_output output(job.exports_path, job.file_name);   // before the muxer: see r_export_output
 
-    r_muxer muxer(temp_path);
+    r_muxer muxer(output.temp_path());
     muxer.enable_faststart();
 
     auto qs = job.start_time;
     auto qe = job.end_time;
 
-    bool muxer_opened = false;
     int64_t ts_first_frame = 0;
     bool done = false;
 
@@ -1296,7 +1293,7 @@ void r_ws::_export(export_job& job)
 
             _check_timestamps(bt);
 
-            if(!muxer_opened)
+            if(!output.is_open())
             {
                 if(!bt.has_key("has_audio"))
                     R_THROW(("Blob tree missing audio indicator."));
@@ -1392,7 +1389,7 @@ void r_ws::_export(export_job& job)
                 }
 
                 muxer.open();
-                muxer_opened = true;
+                output.opened();
             }
 
             if(!bt.has_key("frames"))
@@ -1442,14 +1439,11 @@ void r_ws::_export(export_job& job)
                 r_time_utils::tp_to_iso_8601(re, false).c_str(),
                 ex.what()
             );
+            output.skipped(ex.what());
         }
     }
 
-    if(muxer_opened)
-    {
-        muxer.finalize();
-        r_fs::atomic_rename_file(temp_path, output_path);
-    }
+    output.finish(muxer);
 }
 
 r_http::r_server_response r_ws::_get_analytics(r_utils::r_socket_base&, const r_http::r_server_request& request)
@@ -3034,28 +3028,9 @@ r_http::r_server_response r_ws::_get_transcode_export(r_utils::r_socket_base&, c
 
 void r_ws::_transcode_export(export_job& job)
 {
-    auto dot = job.file_name.rfind('.');
-    auto ext = (dot != string::npos) ? job.file_name.substr(dot) : string{};
-    auto output_path = job.exports_path + PATH_SLASH + job.file_name;
-    auto temp_path = r_fs::temp_file_name(job.exports_path, "tmp_") + ext;
+    r_export_output output(job.exports_path, job.file_name);   // before the muxer: see r_export_output
 
-    // A failed export leaves no tmp_ file behind. Removed on the way out, once the muxer (declared after this, so
-    // destroyed first) has closed it: Windows can't delete an open file. A finished export has been renamed away.
-    struct temp_file_cleanup
-    {
-        const string& path;
-        ~temp_file_cleanup()
-        {
-            try
-            {
-                if(r_fs::file_exists(path))
-                    r_fs::remove_file(path);
-            }
-            catch(...) {}
-        }
-    } cleanup{temp_path};
-
-    r_muxer muxer(temp_path);
+    r_muxer muxer(output.temp_path());
     muxer.enable_faststart();
     size_t video_in = 0, video_decoded = 0;  // transcode_mostly_failed
 
@@ -3070,7 +3045,6 @@ void r_ws::_transcode_export(export_job& job)
     auto qs = job.start_time;
     auto qe = job.end_time;
 
-    bool initialized = false;
     bool has_audio = false;
     int64_t ts_first_frame = 0;
     int64_t encoder_frame_count = 0;
@@ -3114,7 +3088,7 @@ void r_ws::_transcode_export(export_job& job)
             uint32_t version = 0;
             auto bt = r_blob_tree::deserialize(qr_buffer.data(), qr_buffer.size(), version);
 
-            if(!initialized)
+            if(!output.is_open())
             {
                 if(!bt.has_key("video_codec_name"))
                     R_THROW(("Blob tree missing video_codec_name."));
@@ -3193,7 +3167,7 @@ void r_ws::_transcode_export(export_job& job)
                 }
 
                 muxer.open();
-                initialized = true;
+                output.opened();
             }
 
             if(!bt.has_key("frames"))
@@ -3263,30 +3237,27 @@ void r_ws::_transcode_export(export_job& job)
                 r_time_utils::tp_to_iso_8601(re, false).c_str(),
                 ex.what()
             );
+            output.skipped(ex.what());
         }
     }
 
     // The whole export mostly didn't decode: fail it, rather than ship the last good picture repeated.
-    if(initialized && transcode_mostly_failed(video_in, video_decoded))
+    if(output.is_open() && transcode_mostly_failed(video_in, video_decoded))
         R_THROW(("Transcode export failed: %zu of %zu video frames decoded.", video_decoded, video_in));
 
-    if(initialized)
+    if(output.is_open() && encoder)
     {
-        if(encoder)
+        auto flush_state = encoder->flush();
+        while(flush_state == R_CODEC_STATE_HAS_OUTPUT)
         {
-            auto flush_state = encoder->flush();
-            while(flush_state == R_CODEC_STATE_HAS_OUTPUT)
-            {
-                auto pi = encoder->get();
-                int64_t out_dts = max((int64_t)0, pi.dts);
-                muxer.write_video_frame(pi.data, pi.size, pi.pts, out_dts, pi.time_base, pi.key);
-                flush_state = encoder->flush();
-            }
+            auto pi = encoder->get();
+            int64_t out_dts = max((int64_t)0, pi.dts);
+            muxer.write_video_frame(pi.data, pi.size, pi.pts, out_dts, pi.time_base, pi.key);
+            flush_state = encoder->flush();
         }
-
-        muxer.finalize();
-        r_fs::atomic_rename_file(temp_path, output_path);
     }
+
+    output.finish(muxer);
 }
 
 r_http::r_server_response r_ws::_get_export_progress(r_utils::r_socket_base&, const r_http::r_server_request& request)

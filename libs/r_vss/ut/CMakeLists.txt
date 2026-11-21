@@ -59,6 +59,8 @@ add_executable(
     source/test_r_failure_reason.cpp
     include/test_r_transcode_check.h
     source/test_r_transcode_check.cpp
+    include/test_r_export_output.h
+    source/test_r_export_output.cpp
     include/test_r_system_plugin_dirs.h
     source/test_r_system_plugin_dirs.cpp
     include/test_r_plugin_manifest.h
