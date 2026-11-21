@@ -2310,3 +2310,48 @@ void test_r_storage::test_r_ring_query_from_before_it_was_created()
     }
     r_fs::remove_file("ring_buffer_before");
 }
+
+// Writes 10 video frames 100 ms apart from `from`, the first a key frame; returns the next ts.
+static int64_t _write_run(r_storage_file& sf, const r_storage_write_context& wc, int64_t from)
+{
+    vector<uint8_t> frame(256);
+    std::iota(begin(frame), end(frame), 0);
+    for(int i = 0; i < 10; ++i)
+        sf.write_frame(wc, R_STORAGE_MEDIA_TYPE_VIDEO, frame.data(), frame.size(), i == 0, from + i * 100, from + i * 100);
+    return from + 1000;
+}
+
+void test_r_storage::test_r_storage_file_gap_starts_a_new_segment()
+{
+    // Video that resumes more than 5 s after the previous frame (a stall shorter than the recorder's 20 s silence
+    // timer, so no restart) starts a new segment, and /contents shows the hole. A shorter pause doesn't split.
+    const int64_t base = 1'800'000'000'000LL;
+    for(bool async : {false, true})
+    {
+        const string name = async ? "gap_file_async" : "gap_file";
+        for(auto ext : {".nts", ".db", ".db-shm", ".db-wal"})
+            if(r_fs::file_exists(name + ext))
+                r_fs::remove_file(name + ext);
+        r_storage_file::allocate(name + ".rvd", 65536, 10);
+        {
+            r_storage_file sf(name + ".rvd");
+            if(async)
+                sf.start_async_writes(1024 * 1024);
+            {
+                auto wc = sf.create_write_context("h264", r_nullable<string>(), R_STORAGE_MEDIA_TYPE_VIDEO);
+                auto next = _write_run(sf, wc, base);               // base .. base + 900
+                next = _write_run(sf, wc, next - 100 + 3000);       // a 3 s pause: same segment
+                next = _write_run(sf, wc, next - 100 + 8000);       // an 8 s gap: a new one
+                // As the recorder does: the queue is written out before the context goes.
+                if(async)
+                    sf.stop_async_writes();
+            }
+        }
+        auto segs = r_storage_file_reader(name + ".rvd").query_segments();
+        RTF_ASSERT_EQUAL((int)segs.size(), 2);
+        RTF_ASSERT_EQUAL(segs[0].first, base);
+        RTF_ASSERT_EQUAL(segs[0].second, base + 900 + 3000 + 900);
+        RTF_ASSERT_EQUAL(segs[1].first, base + 900 + 3000 + 900 + 8000);
+        RTF_ASSERT_EQUAL(segs[1].second, base + 900 + 3000 + 900 + 8000 + 900);
+    }
+}
