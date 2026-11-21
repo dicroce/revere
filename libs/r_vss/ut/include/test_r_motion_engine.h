@@ -15,6 +15,7 @@ public:
       TEST(test_r_motion_engine::test_other_stream_frame_rebuilds_context);
       TEST(test_r_motion_engine::test_same_stream_keeps_context);
       TEST(test_r_motion_engine::test_event_ends_when_its_state_is_reset);
+      TEST(test_r_motion_engine::test_long_motion_is_a_chain_of_events);
     RTF_FIXTURE_END();
 
     virtual ~test_r_motion_engine() throw() {}
@@ -33,4 +34,5 @@ public:
     void test_other_stream_frame_rebuilds_context();
     void test_same_stream_keeps_context();
     void test_event_ends_when_its_state_is_reset();
+    void test_long_motion_is_a_chain_of_events();
 };

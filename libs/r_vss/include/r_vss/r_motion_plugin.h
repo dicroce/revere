@@ -93,8 +93,9 @@ typedef void* r_motion_event_plugin_host_handle;
 // The motion plugin ABI. A plugin reaches the host's C++ types through its
 // host handle (r_motion_event_plugin_host, r_detection, r_devices, r_camera),
 // so it must be built against the same headers. Bump this when any of them
-// changes layout. Version 2: r_detection gained source.
-#define R_MOTION_PLUGIN_ABI_VERSION 2
+// changes layout, or the events change. Version 2: r_detection gained source. Version 3: motion_event_continue
+// (evt 3), which a plugin built before it would ignore, missing every event's start after the first in a chain.
+#define R_MOTION_PLUGIN_ABI_VERSION 3
 
 // Plugin entry points that must be implemented by each plugin
 // motion_plugin_abi_version: R_MOTION_PLUGIN_ABI_VERSION as the plugin was
@@ -117,7 +118,7 @@ R_API void destroy_plugin(r_motion_plugin_handle plugin);
 // This is the callback that plugins must implement to receive motion events
 R_API void post_motion_event(
     r_motion_plugin_handle plugin,
-    int evt,                      // r_motion_event as int (0=start, 1=update, 2=end)
+    int evt,                      // r_motion_event as int (0=start, 1=update, 2=end, 3=continue)
     const char* camera_id,
     int64_t ts,
     const uint8_t* frame_data,    // BGR format: 3 bytes per pixel

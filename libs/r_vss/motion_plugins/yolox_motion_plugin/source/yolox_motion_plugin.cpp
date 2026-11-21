@@ -134,6 +134,28 @@ void yolox_motion_plugin::stop()
         if (_thread.joinable()) {
             _thread.join();
         }
+
+        // The worker is gone: learn what each camera's last chain left pending.
+        std::vector<std::string> pending;
+        for (const auto& p : _camera_pending_anchors)
+            pending.push_back(p.first);
+        for (const auto& camera_id : pending)
+            _learn_pending_anchors(camera_id);
+    }
+}
+
+void yolox_motion_plugin::_learn_pending_anchors(const std::string& camera_id)
+{
+    auto it = _camera_pending_anchors.find(camera_id);
+    if (it == _camera_pending_anchors.end())
+        return;
+    auto p = std::move(it->second);
+    _camera_pending_anchors.erase(it);
+    try {
+        if (_early.event_ended(camera_id, p.ts, p.start_seen, p.end_seen))
+            _save_anchors();
+    } catch (const std::exception& e) {
+        R_LOG_ERROR("yolox_motion_plugin: couldn't learn anchors for %s: %s", camera_id.c_str(), e.what());
     }
 }
 
@@ -226,7 +248,20 @@ void yolox_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
     }
 
     try {
-        if (msg.evt == r_vss::motion_event_start) {
+        const bool continues = (msg.evt == r_vss::motion_event_continue);
+        if (msg.evt == r_vss::motion_event_start || continues) {
+            // The chain: an event that continues the camera's last one (cut at the engine's max event length) keeps
+            // the chain's start and counts on, for the record (chain_start_time, chain_index).
+            const bool in_chain = continues && _camera_chain_start.count(msg.camera_id);
+            if (in_chain) {
+                ++_camera_chain_index[msg.camera_id];
+                _camera_pending_anchors.erase(msg.camera_id);   // that end was a cut
+            } else {
+                _learn_pending_anchors(msg.camera_id);          // the last chain's end was its last
+                _camera_chain_start[msg.camera_id] = msg.ts;
+                _camera_chain_index[msg.camera_id] = 0;
+                _camera_chain_start_seen.erase(msg.camera_id);
+            }
             // Clear any existing detections for this camera (handle missing end events)
             _camera_detections[msg.camera_id].clear();
             _camera_disproven_classes[msg.camera_id].clear();
@@ -239,7 +274,7 @@ void yolox_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             }
             // Record motion start time
             _camera_motion_start_time[msg.camera_id] = msg.ts;
-            _early.event_started(msg.camera_id);
+            _early.event_started(msg.camera_id, continues);
             _camera_timing[msg.camera_id] = r_vss::r_event_timing();
             _camera_timing[msg.camera_id].confirmed_at = msg.handed_at;
 
@@ -248,6 +283,11 @@ void yolox_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             if (msg.frame_data.size() == expected_size) {
                 std::vector<Detection> endpoint_detections;
                 auto detections = detect_persons(msg.frame_data.data(), msg.width, msg.height, msg.camera_id, msg.ts, msg.motion_bbox, msg.motion_regions, &endpoint_detections);
+                if (!in_chain) {
+                    auto& seen = _camera_chain_start_seen[msg.camera_id];
+                    for (const auto& d : endpoint_detections)
+                        seen.push_back({get_class_name(d.class_id), {d.x1, d.y1, d.x2, d.y2}});
+                }
                 _camera_start_frame_detections[msg.camera_id] = std::move(endpoint_detections);
                 const bool kept = r_vss::has_valid_motion_evidence(msg.motion_bbox, msg.motion_regions);
                 _record_look(msg.camera_id, msg.ts, kept ? detections.size() : 0);
@@ -324,14 +364,14 @@ void yolox_motion_plugin::_process_motion_event(const MotionEventMessage& msg)
             // Analyze all detections for this motion sequence and log results
             _analyze_and_log_detections(msg.camera_id, msg.ts);
 
-            // Learn static anchors from the frames that started and ended it.
-            std::vector<r_vss::r_early_alerts::r_seen> start_seen, end_seen;
-            for (const auto& d : _camera_start_frame_detections[msg.camera_id])
-                start_seen.push_back({get_class_name(d.class_id), {d.x1, d.y1, d.x2, d.y2}});
+            // Static anchors, from the frames that started the chain and ended this event: held until the next event
+            // says whether this end was the chain's last (see _camera_pending_anchors).
+            pending_anchors pending;
+            pending.ts = msg.ts;
+            pending.start_seen = _camera_chain_start_seen[msg.camera_id];
             for (const auto& d : _camera_end_frame_detections[msg.camera_id])
-                end_seen.push_back({get_class_name(d.class_id), {d.x1, d.y1, d.x2, d.y2}});
-            if (_early.event_ended(msg.camera_id, msg.ts, start_seen, end_seen))
-                _save_anchors();
+                pending.end_seen.push_back({get_class_name(d.class_id), {d.x1, d.y1, d.x2, d.y2}});
+            _camera_pending_anchors[msg.camera_id] = std::move(pending);
 
             // Clear the detection list for this camera
             _camera_detections[msg.camera_id].clear();
@@ -671,8 +711,15 @@ void yolox_motion_plugin::_analyze_and_log_detections(const std::string& camera_
 
     // Construct JSON metadata object with analytics schema
     std::string json_metadata = R"({"analytics": {"motion_start_time": ")" + start_time_str +
-                                R"(", "motion_end_time": ")" + end_time_str +
-                                R"(", "detections": [)";
+                                R"(", "motion_end_time": ")" + end_time_str + "\"";
+    // One motion that went on past the engine's max event length is several events back to back, a chain: when the
+    // chain started (this event's own start for its first), and which one of it this is (0 for the first).
+    auto chain_it = _camera_chain_start.find(camera_id);
+    int64_t chain_start_ms = (chain_it != _camera_chain_start.end()) ? chain_it->second : start_time_ms;
+    int chain_index = (chain_it != _camera_chain_start.end()) ? _camera_chain_index[camera_id] : 0;
+    json_metadata += R"(, "chain_start_time": ")" + r_time_utils::tp_to_iso_8601(r_time_utils::epoch_millis_to_tp(chain_start_ms), true) +
+                     R"(", "chain_index": )" + std::to_string(chain_index) +
+                     R"(, "detections": [)";
 
     // The event's detections, and the ones the record keeps: a long busy
     // event is capped (whole frames, see r_vss::cap_event_detections) so the

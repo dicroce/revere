@@ -658,7 +658,8 @@ bool r_stream_keeper::_motion_detection_on(const string& camera_id)
 void r_stream_keeper::_on_mog2_event(r_motion_event evt, const string& camera_id, int64_t ts)
 {
     std::lock_guard<std::mutex> g(_tier_lock);
-    if(evt == motion_event_start)
+    // A continue opens the next window where the last one's end closed it (the same ts): back to back.
+    if(evt == motion_event_start || evt == motion_event_continue)
     {
         _mog2_starts[camera_id] = ts;
         // Tier 1's window: it opens at the first frame that moved, and closes at the end event's time, the

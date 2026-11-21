@@ -32,7 +32,11 @@ enum
     // This prevents memory exhaustion if motion processing can't keep up
     // At 30fps * 10 cameras = 300 frames/sec, 1000 frames = ~3 seconds buffer
     MOTION_ENGINE_MAX_QUEUE_SIZE = 1000,
-    DEFAULT_MIN_MOTION_DISPLACEMENT = 15  // pixels
+    DEFAULT_MIN_MOTION_DISPLACEMENT = 15,  // pixels
+    // The longest a motion event runs. Motion that goes on longer is cut into events of this length, back to back:
+    // each is ended (and written to the motion ring, and analysed by the plugins) and the next starts at once as a
+    // motion_event_continue. As the detection planner's MAX_SESSION_MS for camera-reported motion.
+    DEFAULT_MAX_EVENT_MS = 300000
 };
 
 struct r_motion_tuning
@@ -125,6 +129,10 @@ public:
     size_t get_no_motion_count() const { return _no_motion_count; }
     void set_no_motion_count(size_t v) { _no_motion_count = v; }
 
+    // See DEFAULT_MAX_EVENT_MS.
+    int64_t get_max_event_ms() const { return _max_event_ms; }
+    void set_max_event_ms(int64_t ms) { _max_event_ms = ms; }
+
     // Frame time of the last probe (see r_motion_probe_fn), -1 for none.
     int64_t get_last_probe_ts() const { return _last_probe_ts; }
     void set_last_probe_ts(int64_t ts) { _last_probe_ts = ts; }
@@ -155,6 +163,7 @@ private:
     size_t _no_motion_count {0};
 
     int64_t _last_probe_ts {-1};
+    int64_t _max_event_ms {DEFAULT_MAX_EVENT_MS};
     std::string _codec_name;
     std::string _codec_parameters;
 };
@@ -221,6 +230,9 @@ private:
     // decode error): its seconds are written to the motion ring and the plugins get motion_event_end, at its newest key
     // frame. Without it the event never reached the ring (/motion_events) and the plugins never saw it end.
     void _end_event_before_reset(r_motion_work_context& wc, const char* why);
+    // The camera's event has run its max length with the motion still going: ends it at this key frame (its seconds
+    // to the motion ring, motion_event_end) and starts the next at once on the same frame (motion_event_continue).
+    void _continue_event(r_motion_work_context& wc, const r_keyframe_motion_entry& kf);
     r_motion_work_context_factory _factory;
     // Bounded queue to prevent memory exhaustion if motion processing can't keep up
     r_utils::r_blocking_q<r_motion_work_item> _work{MOTION_ENGINE_MAX_QUEUE_SIZE};
