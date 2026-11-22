@@ -9,8 +9,19 @@ if TYPE_CHECKING:
 
 # Private memory, not resident: mapped recording files make resident memory grow by design.
 THRESHOLDS: dict[str, float] = {"private_mb": 2.0, "threads": 0.5, "fds": 0.5}
-# Smaller rises than these, from the start to the end of the judged part, are taken as noise.
-MIN_RISE: dict[str, float] = {"private_mb": 16.0, "threads": 8.0, "fds": 16.0}
+# A rise smaller than this, from the start to the end of the judged part, is taken as noise
+# however steep the fitted line is: a client that connects, a buffer that fills once.
+NOISE: dict[str, float] = {"private_mb": 4.0, "threads": 2.0, "fds": 4.0}
+
+
+def min_rise(metric: str, minutes: float) -> float:
+    """The rise a metric must show over a judged part of this length before it counts as growth.
+
+    Half of what steady growth at the threshold rate would add in that time, and never less than NOISE.
+    So a longer run catches slower growth: at 2 MB a minute, 4 MB for a judged part of up to four
+    minutes, 15 MB for one of fifteen.
+    """
+    return max(NOISE[metric], 0.5 * THRESHOLDS[metric] * minutes)
 
 
 def slope_per_minute(points: list[tuple[float, float]]) -> float:
@@ -57,9 +68,9 @@ def analyse(rows: list[dict[str, Any]], min_seconds: float = 60.0, since: float 
     The first half is left out, so growth while the load settles is ignored. If the second half
     covers less than min_seconds, returns [] (too short to judge).
     For each metric in THRESHOLDS returns {"metric", "per_minute": slope, "threshold", "first", "last",
-    "flagged"}. "first" and "last" are medians of the first and the last quarter of that half, so one
-    odd sample does not decide. A metric is flagged only when its slope is above the threshold and it
-    also rose by more than MIN_RISE: a few descriptors or megabytes coming and going is not growth.
+    "min_rise", "flagged"}. "first" and "last" are medians of the first and the last quarter of that
+    half, so one odd sample does not decide. A metric is flagged only when its slope is above the
+    threshold and it also rose by more than min_rise(metric, minutes of that half).
     """
     if since is not None:
         rows = [row for row in rows if row["time"] >= since]
@@ -71,6 +82,7 @@ def analyse(rows: list[dict[str, Any]], min_seconds: float = 60.0, since: float 
     if not half or half[-1]["time"] - half[0]["time"] < min_seconds:
         return []
 
+    minutes = (half[-1]["time"] - half[0]["time"]) / 60.0
     results = []
     for metric, threshold in THRESHOLDS.items():
         values = [(r["time"], r[metric]) for r in half if metric in r]
@@ -86,7 +98,8 @@ def analyse(rows: list[dict[str, Any]], min_seconds: float = 60.0, since: float 
             "threshold": threshold,
             "first": first_val,
             "last": last_val,
-            "flagged": slope > threshold and (last_val - first_val) > MIN_RISE[metric],
+            "min_rise": min_rise(metric, minutes),
+            "flagged": slope > threshold and (last_val - first_val) > min_rise(metric, minutes),
         })
     return results
 

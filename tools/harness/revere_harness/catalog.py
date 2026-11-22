@@ -65,7 +65,7 @@ SUITES.append({
         {"name": "cameras", "label": "Cameras", "type": "int", "default": 8, "min": 1, "max": 64,
          "help": "Number of fake cameras (api_hammer always uses 2)."},
         {"name": "minutes", "label": "Minutes", "type": "float", "default": 3, "min": 0.5, "max": 1440,
-         "help": "How long the scenario's main step runs. Growth is only judged on runs of 2 minutes or more."},
+         "help": "How long the scenario's main step runs. Growth is only judged when this is 2.5 minutes (150 s) or more."},
         {"name": "resolution", "label": "Resolution", "type": "choice", "default": "640x360",
          "choices": ["640x360", "1280x720", "1920x1080"], "help": "Picture size of every camera."},
         {"name": "fps", "label": "Frames per second", "type": "int", "default": 10, "min": 1, "max": 30,

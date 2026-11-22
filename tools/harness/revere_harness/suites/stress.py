@@ -34,6 +34,7 @@ class _Rig:
         self.ids: dict[str, str] = {}
         # When the scenario's load began, on the sampler's clock; growth is judged from here, not from the set-up.
         self.load_started: float | None = None
+        self.growth_min_seconds = 75.0
 
     @property
     def names(self) -> list[str]:
@@ -76,7 +77,15 @@ class _Rig:
                 recorder.data_dir.mkdir(parents=True, exist_ok=True)
                 subprocess.run(["mount", "-t", "tmpfs", "-o", f"size={DISK_MB}m", "tmpfs", str(recorder.data_dir)],
                                check=True, capture_output=True, text=True)
+            # Without the small disk every camera would pre-allocate its file on the real one.
+            if self.run.results[-1].status != "passed":
+                return
         with self.run.step("recorder starts headless"):
+            if small_disk:
+                total_mb = shutil.disk_usage(recorder.data_dir).total / 2**20
+                self.run.check(0.9 * DISK_MB <= total_mb <= 1.1 * DISK_MB,
+                               f"the data directory holds {total_mb:.0f} MB, not the {DISK_MB} MB test disk; "
+                               "the recorder was not started")
             recorder.start()
             self.recorder = recorder
             self.ctx.sampler.watch("recorder", recorder.pid)
@@ -152,9 +161,9 @@ class _Rig:
         with self.run.step("no resource growth in the recorder"):
             self.need_recorder()
             # A short run is still warming up; its second half says nothing about growth.
-            results = growth.analyse(self.ctx.sampler.rows("recorder"), min_seconds=75.0, since=self.load_started)
+            results = growth.analyse(self.ctx.sampler.rows("recorder"), min_seconds=self.growth_min_seconds, since=self.load_started)
             if not results:
-                self.run.skip("run too short to judge growth (needs at least 150 s of load; use minutes=3 or more)")
+                self.run.skip(f"run too short to judge growth (needs at least {2 * self.growth_min_seconds:.0f} s of load)")
             flagged = []
             for result in results:
                 text = growth.describe("recorder", result)
@@ -188,10 +197,16 @@ def run(run: Run, ctx: object) -> None:
     seconds = float(params["minutes"]) * 60
     rig = _Rig(run, ctx)
     try:
+        # A step records its failure instead of raising, so each of these is checked before going on:
+        # nothing below may run outside the sandbox or without its own network.
         with run.step("sandbox hides host processes"):
             sandbox.guard()
+        if run.results[-1].status != "passed":
+            return
         with run.step("bridge is up"):
             net.setup_bridge()
+        if run.results[-1].status != "passed":
+            return
         ctx.reporter.note(f"scenario {scenario}: {params}")
 
         if scenario in ("many_cameras", "soak"):
@@ -259,8 +274,12 @@ def _reconnect_storm(rig: _Rig, seconds: float) -> None:
         rig.need_recording()
         started = time.monotonic()
         rig.load_started = rig.ctx.sampler.elapsed()
+        # Memory settles over the first ten minutes of a storm; a shorter one cannot tell that from growth.
+        rig.growth_min_seconds = 300.0
         cycles = []
+        drops = []
         while time.monotonic() - started < seconds:
+            drops.append(utcnow())
             for cam in rig.cams:
                 cam.unplug()
             time.sleep(STORM_DOWN)
@@ -279,11 +298,21 @@ def _reconnect_storm(rig: _Rig, seconds: float) -> None:
     with run.step("every camera shows one gap per storm cycle"):
         rig.need_recording()
         wrong = {}
+        overwritten = 0
         for name, camera_id in rig.ids.items():
             segments = rig.api.contents(camera_id, utcnow() - timedelta(hours=2), utcnow())
-            if len(segments) != len(cycles) + 1:
-                wrong[name] = len(segments) - 1
-        run.check(not wrong, f"expected {len(cycles)} gaps per camera; gaps found: {wrong}")
+            if not segments:
+                wrong[name] = "nothing recorded"
+                continue
+            # A recording is a ring: in a long storm the oldest video, and its gaps, are overwritten.
+            # Only the drops that happened after the oldest video still on disk can show.
+            expected = sum(1 for drop in drops if drop > segments[0][0])
+            overwritten = max(overwritten, len(drops) - expected)
+            if len(segments) - 1 != expected:
+                wrong[name] = f"{len(segments) - 1} of {expected}"
+        if overwritten:
+            ctx.reporter.note(f"up to {overwritten} of {len(drops)} drops were before the oldest video still recorded")
+        run.check(not wrong, f"gaps found of gaps expected, by camera: {wrong}")
 
 
 def _add_remove(rig: _Rig, seconds: float) -> None:
@@ -392,6 +421,7 @@ def _disk_full(rig: _Rig) -> None:
     outcomes = []
     with run.step("add cameras until the disk is full"):
         rig.need_recorder()
+        rig.load_started = rig.ctx.sampler.elapsed()
         for cam in rig.cams:
             spec = cam.spec
             try:
