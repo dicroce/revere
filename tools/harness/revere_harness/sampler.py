@@ -42,6 +42,10 @@ class Sampler:
         with self._lock:
             return list(self._data.get(label, []))
 
+    def elapsed(self) -> float:
+        """Seconds since sampling began: the clock the rows' "time" is on."""
+        return time.time() - self._start_time
+
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
