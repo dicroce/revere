@@ -3932,9 +3932,10 @@ int main(int argc, char** argv)
                     {
                         ui_state.friendly_name = status.camera.friendly_name.value();
                         ui_state.ipv4 = status.camera.ipv4.value();
-                        // With the credential, so the URL works as copied (e.g. into VLC).
-                        ui_state.restream_url = r_string_utils::format("rtsp://%s:%s@127.0.0.1:8554/%s",
-                            r_vss::r_rtsp_auth::RTSP_USER, streamKeeper.rtsp_password().c_str(), ui_state.friendly_name.c_str());
+                        // With the credential, so the URL works as copied (e.g. into VLC), and at the path the camera is
+                        // mounted at: a name's spaces are underscores there, so the raw name gave a 404.
+                        ui_state.restream_url = r_vss::restream_url("127.0.0.1", 8554, ui_state.friendly_name,
+                            r_vss::r_rtsp_auth::RTSP_USER, streamKeeper.rtsp_password());
                         ui_state.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
                         auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
                         ui_state.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
