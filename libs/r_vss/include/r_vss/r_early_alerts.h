@@ -38,7 +38,7 @@ R_API bool same_place(const std::string& class_name, const r_box& a, const r_box
 
 // Whether part lies mostly inside whole: CONTAINED_FRACTION of part's area; or,
 // across, CONTAINED_ACROSS of its width, with CONTAINED_DOWN of its height
-// overlapping whole. How a parked pickup's cab, all YOLO boxes while a person
+// overlapping whole and none of it below whole. How a parked pickup's cab, all YOLO boxes while a person
 // stands at its door, is told to be part of the pickup (its IoU with the whole
 // truck's box is 0.12 to 0.16). YOLO's box for the cab reaches above the truck's
 // (on a real clip: the truck [0,246 157,500], the cab [29,207 127,313], 63% of it

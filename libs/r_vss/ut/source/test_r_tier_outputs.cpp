@@ -434,7 +434,22 @@ void test_r_tier_outputs::test_pass_part_of_parked_vehicle()
             return vector<r_detection>{truck(ts)};
         });
         RTF_ASSERT(pulled_up.finished);
-        RTF_ASSERT(mostly_inside({30, 330, 150, 560}, anchor) && box_iou({30, 330, 150, 560}, anchor) < 0.5f);
+        RTF_ASSERT(box_iou({30, 330, 150, 560}, anchor) < 0.5f);
+        // It sticks out below the truck, so it's never part of it: not even in a look where it hides the truck and
+        // YOLO boxes only the car.
+        RTF_ASSERT(!mostly_inside({30, 330, 150, 560}, anchor));
+        // At the bottom edge (63% inside by area, so only the across rule decides): ending at the truck's bottom is
+        // part of it, 5 px below it is not.
+        RTF_ASSERT(mostly_inside({29, 95, 127, 500}, anchor));
+        RTF_ASSERT(!mostly_inside({29, 100, 127, 505}, anchor));
+        auto hides_it = run_pass(real, T, [&](r_look_kind k, int64_t ts) {
+            if (k != look_pre_roll && ts >= T + 3000 && ts <= T + 15000)
+                return vector<r_detection>{in_front(ts)};
+            return vector<r_detection>{truck(ts)};
+        });
+        RTF_ASSERT(hides_it.finished);
+        RTF_ASSERT(hides_it.alerted.size() == 1 && hides_it.alerted[0].y1 == 330);
+        RTF_ASSERT(!hides_it.kept.empty() && all_of(hides_it.kept.begin(), hides_it.kept.end(), [](const r_detection& d) { return d.y1 == 330; }));
         RTF_ASSERT(pulled_up.alerted.size() == 1 && pulled_up.alerted[0].y1 == 330);
         RTF_ASSERT(!pulled_up.kept.empty() && all_of(pulled_up.kept.begin(), pulled_up.kept.end(), [](const r_detection& d) { return d.y1 == 330; }));
         auto cab_too = run_pass(real, T, [&](r_look_kind k, int64_t ts) {

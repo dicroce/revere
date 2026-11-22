@@ -53,8 +53,10 @@ bool r_vss::mostly_inside(const r_box& part, const r_box& whole)
         return false;
     if((ix2 - ix1) * (iy2 - iy1) >= CONTAINED_FRACTION * pa)
         return true;
-    // Within it across, and overlapping it for at least half its height: a cab whose box reaches above the truck's.
-    return (ix2 - ix1) >= CONTAINED_ACROSS * (part.x2 - part.x1) && (iy2 - iy1) >= CONTAINED_DOWN * (part.y2 - part.y1);
+    // Within it across, and overlapping it for at least half its height, sticking out only above it: a cab whose box
+    // reaches above the truck's. A car in front of the truck sticks out below it (it's nearer the camera), so it isn't.
+    return part.y2 <= whole.y2 && (ix2 - ix1) >= CONTAINED_ACROSS * (part.x2 - part.x1) &&
+           (iy2 - iy1) >= CONTAINED_DOWN * (part.y2 - part.y1);
 }
 
 bool r_vss::upper_part_of(const r_box& part, const r_box& whole)
