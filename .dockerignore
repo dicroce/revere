@@ -1,0 +1,13 @@
+# Keeps the image build's context small: only the sources are needed.
+.git
+.github
+.claude
+build*
+**/build
+# The harness is mounted into the container, not built into the image.
+tools/harness
+**/__pycache__
+*.db
+*.db-shm
+*.db-wal
+*.nts

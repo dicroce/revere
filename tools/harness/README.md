@@ -6,6 +6,8 @@ This is an end-to-end test harness for the Revere recorder. It includes fake cam
 
 This harness works on Linux only. It requires Python 3.11 or newer. You need GStreamer 1.x with gst-rtsp-server, the good, bad and libav plugin sets, the openh264 and x265 encoder plugins, PyGObject, `ffprobe` and `ffmpeg`, `nsenter`, `tc` and `mount`. The kernel must have unprivileged user namespaces enabled. Install the Python packages listed in requirements.txt. These include rich and psutil. No root privileges are needed.
 
+On macOS, or to keep the harness apart from the machine, it runs in a Linux container: `tools/harness/run.sh mac smoke`. See [container/CONTAINER.md](container/CONTAINER.md).
+
 ## Setup
 
 Build Revere first. Then install it to a local folder:

@@ -267,3 +267,17 @@ def test_get_run_file_redaction(server):
     assert status == 200
     assert "rtsp://***:***@10.0.0.9/main" in data
     assert "hunter2" not in data
+
+def test_other_bind_address_is_refused_outside_the_container(monkeypatch, tmp_path):
+    """Only the harness container may listen on an address other than loopback."""
+    monkeypatch.delenv("REVERE_HARNESS_CONTAINER", raising=False)
+    assert web.serve(tmp_path, tmp_path, port=0, bind="0.0.0.0") == 2
+
+
+def test_out_folder_can_be_moved(monkeypatch, tmp_path):
+    """REVERE_HARNESS_OUT moves the run folders, for a harness folder that is read-only."""
+    from revere_harness import cli
+    monkeypatch.setenv("REVERE_HARNESS_OUT", str(tmp_path))
+    assert cli.resolve_out_dir(None, "smoke").parent == tmp_path
+    monkeypatch.delenv("REVERE_HARNESS_OUT")
+    assert cli.resolve_out_dir(None, "smoke").parent == cli.HARNESS_DIR / "out"
