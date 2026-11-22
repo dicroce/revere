@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import pathlib
 import platform
 import re
@@ -55,13 +56,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--keep", action="store_true",
                         help="keep the recorder's data, secret and home directories after a passing run")
     parser.add_argument("--param", action="append", default=[], metavar="NAME=VALUE", help="a suite parameter")
-    parser.add_argument("--port", type=int, default=8090, help="port for the web page (loopback only)")
+    parser.add_argument("--port", type=int, default=8090, help="port for the web page")
+    parser.add_argument("--bind", default="127.0.0.1",
+                        help="address the web page listens on; only a container that publishes the port to its "
+                             "host's loopback should change it")
     args = parser.parse_args(argv)
 
     if args.suite == "web":
         # The page starts runs as separate processes, and each of those enters its own sandbox.
         from revere_harness import web
-        return web.serve(HARNESS_DIR, HARNESS_DIR / "out", port=args.port,
+        return web.serve(HARNESS_DIR, out_base(), port=args.port, bind=args.bind,
                          revere_dir=pathlib.Path(args.revere_dir).resolve() if args.revere_dir else None)
 
     try:
@@ -86,11 +90,17 @@ def resolve_revere_dir(cli_path: str | None) -> pathlib.Path:
     return pathlib.Path("/usr/local/revere")
 
 
+def out_base() -> pathlib.Path:
+    """Where run folders go: tools/harness/out, or REVERE_HARNESS_OUT when the harness folder is read-only."""
+    override = os.environ.get("REVERE_HARNESS_OUT")
+    return pathlib.Path(override).resolve() if override else HARNESS_DIR / "out"
+
+
 def resolve_out_dir(cli_path: str | None, suite_name: str) -> pathlib.Path:
     if cli_path:
         return pathlib.Path(cli_path).resolve()
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    return HARNESS_DIR / "out" / f"{stamp}-{suite_name}"
+    return out_base() / f"{stamp}-{suite_name}"
 
 
 def run_host(revere_dir: pathlib.Path, out_dir: pathlib.Path, args: argparse.Namespace) -> int:
