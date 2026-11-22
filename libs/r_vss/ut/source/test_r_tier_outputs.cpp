@@ -125,3 +125,100 @@ void test_r_tier_outputs::test_leaving_tier_1_closes_an_open_mog2_window()
     RTF_ASSERT(!end_mog2_window(starts, "cam-2", T0 + 800, notify));
     RTF_ASSERT_EQUAL(told.size(), (size_t)2);
 }
+
+static r_detection _pd(const string& cls, float x, float y, float w, float h, int64_t ts, float conf = 0.9f)
+{
+    r_detection d;
+    d.camera_id = "cats";
+    d.ts = ts;
+    d.class_name = cls;
+    d.confidence = conf;
+    d.x1 = x; d.y1 = y; d.x2 = x + w; d.y2 = y + h;
+    return d;
+}
+
+static r_detection_session _ps(int64_t start, const vector<r_detection>& pre_roll, const vector<r_detection>& first,
+                               const vector<r_detection>& last, const vector<r_detection>& kept)
+{
+    r_detection_session s;
+    s.camera_id = "cats";
+    s.start_ms = start;
+    s.end_ms = start + 80000;
+    s.pre_roll = pre_roll;
+    s.first_frame = first;
+    s.last_frame = last;
+    s.detections = kept;
+    return s;
+}
+
+// A car parked far off on a street (a 20x12 px box that YOLO puts a few px off in each frame) went out as a car
+// alert in every session on tier 3, and was in the record of a cat's event on a porch.
+void test_r_tier_outputs::test_pass_parked_car()
+{
+    const int64_t H = 60 * 60 * 1000;
+    auto car = [](float dx, float dy, int64_t ts, float conf = 0.91f) { return _pd("car", 300 + dx, 200 + dy, 20, 12, ts, conf); };
+    r_early_alerts anchors;
+
+    // Nothing learnt: the car is sent, and the record keeps it.
+    vector<string> notes;
+    auto now = pass_alert_now(anchors, "cats", {car(0, 0, T0)}, &notes);
+    RTF_ASSERT_EQUAL(now.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(notes.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(notes[0], string("car [300,200 320,212] 20x12 at 91%: sent, no car anchor"));
+
+    // Two sessions with it sitting in their first and last frames (jittering): an anchor.
+    RTF_ASSERT(pass_learn(anchors, _ps(T0, {}, {car(0, 0, T0)}, {car(7, 1, T0 + 80000)}, {})));
+    RTF_ASSERT(anchors.anchor_count("cats", T0 + 80000) == 0);
+    notes.clear();
+    RTF_ASSERT(pass_learn(anchors, _ps(T0 + H, {}, {car(-3, 0, T0 + H)}, {car(4, -1, T0 + H + 80000)}, {}), &notes));
+    RTF_ASSERT(anchors.anchor_count("cats", T0 + H + 80000) == 1);
+    RTF_ASSERT_EQUAL(notes.size(), (size_t)1);
+    RTF_ASSERT(notes[0].find("anchor seen again") != string::npos && notes[0].find("2 sightings, weak, active") != string::npos);
+
+    // The cat's session: the car is held from the instant alert, the cat goes.
+    const int64_t T = T0 + 2 * H;
+    auto cat = _pd("cat", 200, 400, 90, 70, T + 2000, 0.86f);
+    notes.clear();
+    now = pass_alert_now(anchors, "cats", {car(5, 1, T + 2000), cat}, &notes);
+    RTF_ASSERT_EQUAL(now.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(now[0].class_name, string("cat"));
+    RTF_ASSERT_EQUAL(notes.size(), (size_t)1);
+    RTF_ASSERT(notes[0].find("car [305,201 325,213] 20x12 at 91%: held, on a recurring static anchor (IoU ") == 0);
+
+    // The record leaves the car out (it was in the pre-roll), keeps the cat.
+    notes.clear();
+    auto kept = pass_record(anchors, _ps(T, {car(1, 0, T - 3000)}, {car(-2, 1, T)}, {car(3, 0, T + 80000)},
+                                         {car(5, 1, T + 2000), cat, car(-4, 0, T + 6000), car(2, 2, T + 10000)}), &notes);
+    RTF_ASSERT_EQUAL(kept.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(kept[0].class_name, string("cat"));
+    RTF_ASSERT_EQUAL(notes.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(notes[0], string("car: 0 kept, 3 left out as parked"));
+
+    // Seen only in the first frame, not the pre-roll (YOLO missed it there): still parked before the session.
+    kept = pass_record(anchors, _ps(T, {}, {car(0, 0, T)}, {}, {car(5, 1, T + 2000)}));
+    RTF_ASSERT(kept.empty());
+    // And only in the pre-roll (the first frame missed it): the same.
+    kept = pass_record(anchors, _ps(T, {car(1, 0, T - 3000)}, {cat}, {}, {car(5, 1, T + 2000), cat}));
+    RTF_ASSERT_EQUAL(kept.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(kept[0].class_name, string("cat"));
+
+    // A car pulling into the spot during the session (not in the pre-roll or the first frame) is kept, and says why.
+    notes.clear();
+    kept = pass_record(anchors, _ps(T, {}, {cat}, {}, {cat, car(0, 0, T + 9000)}), &notes);
+    RTF_ASSERT_EQUAL(kept.size(), (size_t)2);
+    RTF_ASSERT_EQUAL(notes.size(), (size_t)1);
+    RTF_ASSERT(notes[0].find("car: 1 kept, 0 left out as parked; first kept [300,200 320,212] 20x12, nearest car anchor ") == 0);
+
+    // A car elsewhere is sent; another camera has no anchors; a camera's own report (no box) always goes.
+    now = pass_alert_now(anchors, "cats", {_pd("car", 100, 300, 20, 12, T)}, nullptr);
+    RTF_ASSERT_EQUAL(now.size(), (size_t)1);
+    now = pass_alert_now(anchors, "porch", {car(5, 1, T)}, nullptr);
+    RTF_ASSERT_EQUAL(now.size(), (size_t)1);
+    now = pass_alert_now(anchors, "cats", {camera_report("cats", "vehicle", T)}, nullptr);
+    RTF_ASSERT_EQUAL(now.size(), (size_t)1);
+    kept = pass_record(anchors, _ps(T, {car(0, 0, T)}, {car(0, 0, T)}, {}, {camera_report("cats", "vehicle", T)}));
+    RTF_ASSERT_EQUAL(kept.size(), (size_t)1);
+    // A day after it was last seen, the anchor has lapsed: the car alerts again.
+    now = pass_alert_now(anchors, "cats", {car(5, 1, T0 + H + 80000 + 25 * H)}, nullptr);
+    RTF_ASSERT_EQUAL(now.size(), (size_t)1);
+}

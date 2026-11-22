@@ -549,6 +549,11 @@ private:
     std::map<std::string, int64_t> _mog2_starts;                       // camera id -> its MOG2 event's start
     std::map<std::string, int64_t> _camera_class_starts;               // camera id + "|" + class -> start (tier 2)
     std::map<std::string, std::vector<r_detection>> _emitted_first;    // camera id -> first found, already on the bus (tier 3)
+    // Tier 3's parked cars (r_tier_outputs' pass_*): the detection pass's own static anchors, kept across restarts in
+    // the top dir's detection_pass_static_anchors.json. The YOLO plugin's are its own (tier 1). Thread-safe.
+    r_early_alerts _pass_anchors;
+    std::string _pass_anchors_path() const;
+    void _save_pass_anchors();
     std::set<std::string> _tiers_restored;                             // cameras whose saved verification was given back
 };
 

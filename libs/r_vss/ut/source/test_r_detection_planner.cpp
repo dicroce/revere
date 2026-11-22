@@ -222,6 +222,43 @@ void test_r_detection_planner::test_first_and_last_frame_static_check()
     RTF_ASSERT_EQUAL(f[0].dropped_static, 4);   // the bin in the first, start, follow-up and end looks
 }
 
+void test_r_detection_planner::test_small_parked_car_jitter()
+{
+    // A far parked car, 20x12 px, whose box YOLO puts a few px off in each frame: IoU under 0.5 with the pre-roll's,
+    // but the same car. A far person moving as little is still news.
+    P p;
+    vector<r_detection_session> f;
+    int look = 0;
+    p.motion("a", "", true, 1000);
+    _run(p, 1000, 4000, [&](const r_look& l) {
+        if (l.kind == look_pre_roll)
+            return vector<r_detection>{_det("car", 300, 200, 320, 212), _det("person", 100, 100, 110, 125)};
+        float dx = (++look % 2) ? 7.0f : -6.0f;
+        return vector<r_detection>{_det("car", 300 + dx, 201, 320 + dx, 213), _det("person", 100 + dx, 100, 110 + dx, 125)};
+    }, nullptr, &f);
+    p.motion("a", "", false, 4000);
+    _run(p, 4100, 40000, [&](const r_look&) {
+        return vector<r_detection>{_det("car", 305, 199, 325, 211)};
+    }, nullptr, &f);
+
+    RTF_ASSERT_EQUAL(f.size(), (size_t)1);
+    // The car isn't news, so not in the instant alert, and the record leaves it out.
+    RTF_ASSERT(!f[0].first_found.empty());
+    for (auto& d : f[0].first_found)
+        RTF_ASSERT_EQUAL(d.class_name, string("person"));
+    for (auto& d : f[0].detections)
+        RTF_ASSERT_EQUAL(d.class_name, string("person"));
+    RTF_ASSERT(f[0].dropped_static >= 3);
+    // The session carries its pre-roll and first and last frames, for the anchors.
+    RTF_ASSERT_EQUAL(f[0].pre_roll.size(), (size_t)2);
+    RTF_ASSERT(!f[0].first_frame.empty() && f[0].first_frame[0].class_name == "car");
+    RTF_ASSERT_EQUAL(f[0].last_frame.size(), (size_t)1);
+    RTF_ASSERT(f[0].last_frame[0].x1 == 305.0f);
+    RTF_ASSERT(P::same_object(_det("car", 300, 200, 320, 212), _det("car", 307, 201, 327, 213)));
+    RTF_ASSERT(!P::same_object(_det("person", 100, 100, 110, 125), _det("person", 107, 100, 117, 125)));
+    RTF_ASSERT(!P::same_object(_det("car", 300, 200, 320, 212), _det("truck", 300, 200, 320, 212)));
+}
+
 void test_r_detection_planner::test_failed_stored_look_retries_once()
 {
     P p;

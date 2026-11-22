@@ -1,4 +1,5 @@
 #include "r_vss/r_detection_planner.h"
+#include "r_vss/r_early_alerts.h"
 #include <algorithm>
 
 using namespace r_vss;
@@ -47,13 +48,9 @@ bool r_detection_planner::same_object(const r_detection& a, const r_detection& b
 {
     if (a.class_name != b.class_name)
         return false;
-    float ix1 = max(a.x1, b.x1), iy1 = max(a.y1, b.y1);
-    float ix2 = min(a.x2, b.x2), iy2 = min(a.y2, b.y2);
-    if (ix1 >= ix2 || iy1 >= iy2)
-        return false;
-    float inter = (ix2 - ix1) * (iy2 - iy1);
-    float uni = (a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - inter;
-    return uni > 0.0f && inter / uni >= 0.85f;
+    // IoU 0.85, or a vehicle's small box jittering in place (r_early_alerts' same_place): a far parked car's box
+    // moves a few px from frame to frame, which IoU alone took for a car arriving.
+    return same_place(a.class_name, {a.x1, a.y1, a.x2, a.y2}, {b.x1, b.y1, b.x2, b.y2}, 0.85f);
 }
 
 void r_detection_planner::_plan_live(_session& s, int64_t due_ms)
@@ -408,6 +405,9 @@ r_detection_session r_detection_planner::_finish(_session& s)
     };
 
     auto result = s.result;
+    result.pre_roll = s.pre_roll;
+    result.first_frame = s.first_frame;
+    result.last_frame = s.last_frame;
     for (auto& d : s.seen)
     {
         if (already_there(d))
