@@ -370,6 +370,9 @@ vector<r_detection_session> r_detection_planner::finished(int64_t now_ms)
             next.event_start_ms = now_ms;
             next.active_sources = s.active_sources;
             next.pre_roll = s.last_frame;
+            // The same motion: the chain's first frame goes with it, for learning anchors at the chain's end.
+            next.continues = true;
+            next.chain_first_frame = s.continues ? s.chain_first_frame : s.first_frame;
             _plan_live(next, now_ms);
 
             s.result.end_ms = now_ms;
@@ -408,6 +411,8 @@ r_detection_session r_detection_planner::_finish(_session& s)
     result.pre_roll = s.pre_roll;
     result.first_frame = s.first_frame;
     result.last_frame = s.last_frame;
+    result.continues = s.continues;
+    result.chain_first_frame = s.continues ? s.chain_first_frame : s.first_frame;
     for (auto& d : s.seen)
     {
         if (already_there(d))

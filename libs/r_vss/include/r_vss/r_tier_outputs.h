@@ -86,8 +86,11 @@ R_API std::vector<r_detection> pass_alert_now(const r_early_alerts& anchors, con
 R_API std::vector<r_detection> pass_record(const r_early_alerts& anchors, const r_detection_session& session,
                                            std::vector<std::string>* notes = nullptr);
 
-// Learns the anchors from the session's first and last frames, as tier 1
-// learns from an event's (r_early_alerts::event_ended); true if they changed.
+// Learns the anchors once per chain of sessions (motion cut at MAX_SESSION_MS
+// carries on in a new session), as tier 1 learns once per motion chain
+// (r_early_alerts::event_ended): nothing from a session that was cut, and from
+// the chain's first frame (chain_first_frame) to its final session's last
+// frame. True if they changed.
 R_API bool pass_learn(r_early_alerts& anchors, const r_detection_session& session, std::vector<std::string>* notes = nullptr);
 
 }

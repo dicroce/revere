@@ -889,7 +889,8 @@ void r_stream_keeper::_pass_session(const r_detection_session& session)
             R_LOG_INFO("detection pass [%s]: record: %s", _camera_name(session.camera_id).c_str(), n.c_str());
     }
 
-    // Anchors from every session, on any tier: a camera that moves to tier 3 already knows its parked cars.
+    // Anchors from every chain's end, on any tier (none at a cut: pass_learn): a camera that moves to tier 3 already
+    // knows its parked cars.
     {
         vector<string> notes;
         if(pass_learn(_pass_anchors, session, &notes))

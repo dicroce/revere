@@ -447,6 +447,14 @@ void test_r_detection_planner::test_cut_keeps_what_was_there()
     RTF_ASSERT(f[0].first_found[0].class_name == "car");
     RTF_ASSERT_EQUAL(f[1].first_found.size(), (size_t)1);
     RTF_ASSERT(f[1].first_found[0].class_name == "person");
+    // The first session was cut; the second carries on and has the chain's first frame (the first session's), not
+    // its own frame at the cut, which shows the person too.
+    RTF_ASSERT(f[0].cut && !f[0].continues);
+    RTF_ASSERT(f[1].continues);  // and cut in turn: the motion goes on past 600 s
+    RTF_ASSERT_EQUAL(f[0].chain_first_frame.size(), f[0].first_frame.size());
+    RTF_ASSERT_EQUAL(f[1].chain_first_frame.size(), (size_t)1);
+    RTF_ASSERT(f[1].chain_first_frame[0].class_name == "car" && f[1].chain_first_frame[0].ts == f[0].first_frame[0].ts);
+    RTF_ASSERT(f[1].first_frame[0].ts != f[0].first_frame[0].ts);
 }
 
 void test_r_detection_planner::test_cut_waits_for_looks()
@@ -497,5 +505,32 @@ void test_r_detection_planner::test_cut_waits_for_looks()
         RTF_ASSERT_EQUAL(f.size(), (size_t)1);
         RTF_ASSERT(f[0].cut);
         RTF_ASSERT(f[0].end_ms > (int64_t)P::MAX_SESSION_MS);
+    }
+}
+
+void test_r_detection_planner::test_cut_carries_the_chains_first_frame()
+{
+    // Motion for ~16 minutes: three cuts. Every session after the first has the first session's first frame (a
+    // bicycle, gone by the first cut) as the chain's, never its own or the one before it.
+    P p;
+    vector<r_detection_session> f;
+    auto scene = [](const r_look& l) {
+        vector<r_detection> d;
+        if (l.kind == look_pre_roll)
+            return d;
+        d.push_back(l.ts < 100000 ? _det("bicycle", 50, 50, 90, 90) : _det("dog", 300, 300, 360, 340));
+        return d;
+    };
+    p.motion("a", "", true, 0);
+    _run(p, 0, 960000, scene, nullptr, &f);
+    RTF_ASSERT_EQUAL(f.size(), (size_t)3);
+    RTF_ASSERT(f[0].first_frame.size() == 1 && f[0].first_frame[0].class_name == "bicycle");
+    RTF_ASSERT(!f[0].continues);
+    for (size_t i = 1; i < f.size(); ++i)
+    {
+        RTF_ASSERT(f[i].continues);
+        RTF_ASSERT(f[i].first_frame.size() == 1 && f[i].first_frame[0].class_name == "dog");
+        RTF_ASSERT_EQUAL(f[i].chain_first_frame.size(), (size_t)1);
+        RTF_ASSERT(f[i].chain_first_frame[0].class_name == "bicycle");
     }
 }

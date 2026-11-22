@@ -161,6 +161,12 @@ vector<r_detection> r_vss::pass_record(const r_early_alerts& anchors, const r_de
 
 bool r_vss::pass_learn(r_early_alerts& anchors, const r_detection_session& session, vector<string>* notes)
 {
+    // Never at a cut: the motion is still on, so what stands still across it (a van waiting, a person at the door)
+    // may only be waiting. The chain is learnt once, when it ends.
+    if(session.cut)
+        return false;
+    // From the chain's first frame, never a carried-on session's own (the frame at the cut).
+    const auto& start = session.continues ? session.chain_first_frame : session.first_frame;
     anchors.event_started(session.camera_id);
-    return anchors.event_ended(session.camera_id, session.end_ms, _seen(session.first_frame), _seen(session.last_frame), notes);
+    return anchors.event_ended(session.camera_id, session.end_ms, _seen(start), _seen(session.last_frame), notes);
 }

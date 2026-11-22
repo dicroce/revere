@@ -11,6 +11,7 @@ public:
       TEST(test_r_tier_outputs::test_plugins_get_a_report_with_no_box);
       TEST(test_r_tier_outputs::test_leaving_tier_1_closes_an_open_mog2_window);
       TEST(test_r_tier_outputs::test_pass_parked_car);
+      TEST(test_r_tier_outputs::test_pass_learns_once_per_chain);
     RTF_FIXTURE_END();
 
     virtual ~test_r_tier_outputs() throw() {}
@@ -24,4 +25,5 @@ public:
     void test_plugins_get_a_report_with_no_box();
     void test_leaving_tier_1_closes_an_open_mog2_window();
     void test_pass_parked_car();
+    void test_pass_learns_once_per_chain();
 };

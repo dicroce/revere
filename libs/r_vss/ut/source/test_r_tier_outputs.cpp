@@ -222,3 +222,52 @@ void test_r_tier_outputs::test_pass_parked_car()
     now = pass_alert_now(anchors, "cats", {car(5, 1, T0 + H + 80000 + 25 * H)}, nullptr);
     RTF_ASSERT_EQUAL(now.size(), (size_t)1);
 }
+
+// A van waiting with its engine on, a person at the door: still across a cut (the motion went on past
+// MAX_SESSION_MS), so the cut session's first and last frames both show them. Nothing is learnt at a cut, nor from
+// the frame the next session starts at; the chain is learnt once, from its first frame to its final last frame.
+void test_r_tier_outputs::test_pass_learns_once_per_chain()
+{
+    const int64_t M = 300000;
+    auto van = [](int64_t ts) { return _pd("truck", 400, 220, 120, 80, ts); };
+    auto person = [](int64_t ts) { return _pd("person", 100, 120, 40, 110, ts); };
+    r_early_alerts anchors;
+    auto chain_session = [](int64_t start, bool cut, bool continues, const vector<r_detection>& chain_first,
+                            const vector<r_detection>& first, const vector<r_detection>& last) {
+        auto s = _ps(start, first, first, last, {});
+        s.end_ms = start + 300000;
+        s.cut = cut;
+        s.continues = continues;
+        s.chain_first_frame = chain_first;
+        return s;
+    };
+
+    // Twice, a chain that starts empty: the van and the person arrive and stand through two cuts, then leave.
+    for (int64_t day = 0; day < 2; ++day)
+    {
+        const int64_t t = T0 + day * 3 * 60 * 60 * 1000;
+        vector<string> notes;
+        RTF_ASSERT(!pass_learn(anchors, chain_session(t, true, false, {}, {}, {van(t + M), person(t + M)}), &notes));
+        RTF_ASSERT(notes.empty());
+        RTF_ASSERT(!pass_learn(anchors, chain_session(t + M, true, true, {}, {van(t + M), person(t + M)}, {van(t + 2 * M), person(t + 2 * M)})));
+        // The chain ends: its first frame had neither, so nothing.
+        RTF_ASSERT(!pass_learn(anchors, chain_session(t + 2 * M, false, true, {}, {van(t + 2 * M), person(t + 2 * M)}, {van(t + 3 * M), person(t + 3 * M)})));
+        RTF_ASSERT_EQUAL(anchors.anchor_count("cats", t + 3 * M), (size_t)0);
+    }
+    // So a van arriving at that spot later alerts at once.
+    const int64_t later = T0 + 7 * 60 * 60 * 1000;
+    RTF_ASSERT_EQUAL(pass_alert_now(anchors, "cats", {van(later)}, nullptr).size(), (size_t)1);
+
+    // A car parked before the motion began and still there at the chain's end: learnt at the end, from the chain's
+    // first frame, even though the final session's own first frame (at the cut) doesn't show it.
+    auto car = [](int64_t ts) { return _pd("car", 300, 200, 20, 12, ts); };
+    for (int64_t n = 0; n < 2; ++n)
+    {
+        const int64_t t = later + (n + 1) * 60 * 60 * 1000;
+        RTF_ASSERT(!pass_learn(anchors, chain_session(t, true, false, {car(t)}, {car(t)}, {car(t + M)})));
+        RTF_ASSERT(pass_learn(anchors, chain_session(t + M, false, true, {car(t)}, {}, {car(t + 2 * M)})));
+    }
+    const int64_t after = later + 4 * 60 * 60 * 1000;
+    RTF_ASSERT_EQUAL(anchors.anchor_count("cats", after), (size_t)1);
+    RTF_ASSERT(pass_alert_now(anchors, "cats", {car(after)}, nullptr).empty());
+}

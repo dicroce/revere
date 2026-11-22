@@ -19,6 +19,7 @@ public:
       TEST(test_r_detection_planner::test_long_motion_still_finds);
       TEST(test_r_detection_planner::test_cut_keeps_what_was_there);
       TEST(test_r_detection_planner::test_cut_waits_for_looks);
+      TEST(test_r_detection_planner::test_cut_carries_the_chains_first_frame);
     RTF_FIXTURE_END();
 
     virtual ~test_r_detection_planner() throw() {}
@@ -41,4 +42,5 @@ public:
     void test_long_motion_still_finds();
     void test_cut_keeps_what_was_there();
     void test_cut_waits_for_looks();
+    void test_cut_carries_the_chains_first_frame();
 };
