@@ -539,7 +539,7 @@ private:
     void _tier_tick();
     void _remove_motion_work_context(const std::string& camera_id);
     void _camera_class_output(const std::string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms);
-    void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections);
+    void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections, const std::vector<r_detection>& frame);
     void _pass_session(const r_detection_session& session);
     bool _motion_detection_on(const std::string& camera_id);
     std::string _camera_name(const std::string& camera_id);

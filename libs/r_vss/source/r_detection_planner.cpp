@@ -412,6 +412,7 @@ r_detection_session r_detection_planner::_finish(_session& s)
     result.first_frame = s.first_frame;
     result.last_frame = s.last_frame;
     result.continues = s.continues;
+    result.seen = s.seen;
     result.chain_first_frame = s.continues ? s.chain_first_frame : s.first_frame;
     for (auto& d : s.seen)
     {

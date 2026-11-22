@@ -276,7 +276,7 @@ void r_stream_keeper::start()
                 return _meph.detect_objects(camera_id, frame.ts, frame.rgb, frame.size, frame.size, out);
             },
             [this](const string& camera_id) -> string { return _camera_name(camera_id); },
-            [this](const string& camera_id, const vector<r_detection>& detections) { _pass_found(camera_id, detections); },
+            [this](const string& camera_id, const vector<r_detection>& detections, const vector<r_detection>& frame) { _pass_found(camera_id, detections, frame); },
             [this](const r_detection_session& session) { _pass_session(session); });
         pass->start();
         std::lock_guard<std::mutex> g(_detection_pass_lock);
@@ -831,7 +831,7 @@ static bool _same_detection(const r_detection& a, const r_detection& b)
     return a.ts == b.ts && a.class_name == b.class_name && a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
 }
 
-void r_stream_keeper::_pass_found(const string& camera_id, const vector<r_detection>& detections)
+void r_stream_keeper::_pass_found(const string& camera_id, const vector<r_detection>& detections, const vector<r_detection>& frame)
 {
     if(motion_tier(camera_id) != motion_tier_3 || !_motion_detection_on(camera_id))
         return;
@@ -844,7 +844,7 @@ void r_stream_keeper::_pass_found(const string& camera_id, const vector<r_detect
     // On the bus at once: an alert shouldn't wait for the session to finish. Less what sits on a parked car's
     // anchor: that goes at the session's end, if the record keeps it.
     vector<string> notes;
-    reported = pass_alert_now(_pass_anchors, camera_id, reported, &notes);
+    reported = pass_alert_now(_pass_anchors, camera_id, reported, &notes, &frame);
     for(auto& n : notes)
         R_LOG_INFO("detection pass [%s]: alert: %s", _camera_name(camera_id).c_str(), n.c_str());
     for(auto& d : reported)
