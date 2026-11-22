@@ -1,6 +1,6 @@
 # Revere Recorder Test Harness
 
-This is an end-to-end test harness for the Revere recorder. It includes fake cameras and a recording suite. Stress runs, a local web page, API tests and desktop UI tests are still to come.
+This is an end-to-end test harness for the Revere recorder. It includes fake cameras, a recording suite, a stress suite and a local web page. API tests and desktop UI tests are still to come.
 
 ## Platform Requirements
 
@@ -39,6 +39,7 @@ Use `--param NAME=VALUE` (repeatable) to pass suite parameters. Example:
 
 ```bash
 tools/harness/run.sh recording --param long_drop=60
+tools/harness/run.sh stress --param scenario=reconnect_storm --param cameras=8 --param minutes=5
 ```
 
 Unknown or out-of-range parameters are refused before anything starts. Exit code 2 means a bad parameter; 130 means the run was interrupted.
@@ -103,6 +104,23 @@ The discovery suite starts four fake cameras and a headless recorder. It checks 
 
 The recording suite (about 6 minutes) adds four fake cameras through the same API calls the web UI makes. Checks: each receives video; the pre-allocated recording file is written in place; the recorded range grows; one continuous segment; an outage shorter than the recorder's dead-stream timeout does not restart the stream; an unplugged cable, a stopped RTSP server and a stalled stream each show as a gap that starts when the data stopped; other cameras keep recording; a still picture gives no motion events and a scripted 15 second scroll gives exactly one with the right start and end; removing a camera stops its recording. Parameters: `long_drop` (seconds, default 40) and `short_drop` (seconds, default 8).
 
+The stress suite runs one scenario per run, chosen with the `scenario` parameter.
+
+| Scenario | What it does |
+| :--- | :--- |
+| `many_cameras` | Records from N cameras for the given minutes and checks every camera every 15 seconds |
+| `soak` | Is the same as many_cameras, meant for long durations |
+| `reconnect_storm` | Unplugs every camera for 30 seconds and plugs them back, again and again, and checks all recover and each shows one gap per cycle |
+| `add_remove` | Adds and removes every camera in a loop and checks none is left assigned |
+| `api_hammer` | Runs parallel clients sending a mix of valid requests, bad requests and a wrong token, and checks the answers and that recording continues |
+| `disk_full` | Puts the recorder's data on a 96 MB tmpfs and adds cameras until one is refused, then checks the refusal is clean and the cameras that fit keep recording |
+
+Parameters: `scenario`, `cameras` (default 8), `minutes` (default 3), `resolution` (640x360, 1280x720 or 1920x1080), `fps` (default 10), `bitrate_kbps` (default 800), `clients` (default 8).
+
+Every stress scenario ends by checking the recorder is still running and stops cleanly, and by a growth check on the recorder's private memory, thread count and open file descriptors. The check looks only at the time the scenario's load was running, and only at the second half of that, so set-up and settling are left out. A line is fitted to each measure; a measure fails the step when it grows faster than 2 MB, 0.5 threads or 0.5 descriptors a minute and also ends clearly above where it began (medians of the first and last quarter). "Clearly" is half of what growth at that rate would add over the judged time, and at least 4 MB, 2 threads or 4 descriptors, so a few descriptors coming and going do not count and a longer run catches slower growth: growth of 3 MB a minute is caught from 4 minutes of load, and of 2 MB a minute from about 30. Private memory is resident memory minus file-backed pages; the recorder maps its pre-allocated files, so total resident memory grows by design. A second half under 75 seconds is not judged; use `minutes=3` or more for the check to count, and a soak of 30 minutes or more to see slow growth. A reconnect storm is judged only from `minutes=10`: the recorder's memory settles over the first ten minutes of a storm (measured: 388 MB early, 414 MB at 14 minutes, level at about 429 MB from 28 minutes), and a shorter storm cannot tell that from growth.
+
+Every fake camera encodes its own video, so many cameras cost the host CPU as well as the recorder. Measured on one desktop machine, a camera at 640x360 and 10 frames a second used about 4% of one core; 1920x1080 has nine times the pixels and costs roughly in proportion, so 64 cameras at 1080p need a machine with many free cores. When the host cannot keep up, the cameras themselves fall behind and the run reports lagging cameras that are not the recorder's doing. The resource table in the report shows what one camera and the recorder used.
+
 ## Findings
 
 When a check shows recorder behaviour that looks like a defect but is outside what the step asserts, the harness prints a note starting with FINDING and, where it applies, skips the step with the reason. Findings appear in the terminal and in events.jsonl.
@@ -151,7 +169,9 @@ Each fake camera is its own process in its own network namespace. It joins a bri
 - `suites/smoke.py`: Smoke suite definition.
 - `suites/cameras.py`: Cameras suite definition.
 - `suites/discovery.py`: Discovery suite definition.
+- `growth.py`: Growth check.
 - `suites/recording.py`: Recording suite definition.
+- `suites/stress.py`: Stress suite definition.
 - `web.py` and `web_page.html`: The control page.
 - `redact.py`: Masks credentials in everything written to the terminal, the event log and the reports.
 

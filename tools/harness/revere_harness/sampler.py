@@ -27,6 +27,7 @@ class Sampler:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._start_time: float = 0.0
+        self._procs: dict[str, psutil.Process] = {}
 
     def watch(self, label: str, pid: int) -> None:
         with self._lock:
@@ -41,6 +42,10 @@ class Sampler:
     def rows(self, label: str) -> list[dict]:
         with self._lock:
             return list(self._data.get(label, []))
+
+    def elapsed(self) -> float:
+        """Seconds since sampling began: the clock the rows' "time" is on."""
+        return time.time() - self._start_time
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -102,7 +107,12 @@ class Sampler:
                 for label in labels_to_check:
                     pid = self._watched[label]
                     try:
-                        proc = psutil.Process(pid)
+                        # CPU use is measured between two calls on the same object, so the object is kept:
+                        # a new one each time would always read zero.
+                        proc = self._procs.get(label)
+                        if proc is None or proc.pid != pid:
+                            proc = self._procs[label] = psutil.Process(pid)
+                            proc.cpu_percent(interval=None)
                         cpu = proc.cpu_percent(interval=None)
                         mem = proc.memory_info()
                         rss_mb = mem.rss / (1024 * 1024)

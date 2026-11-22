@@ -23,7 +23,7 @@ from revere_harness.report import write_reports
 from revere_harness.reporter import Reporter
 from revere_harness.sampler import Sampler
 from revere_harness.steps import Run
-from revere_harness.suites import cameras, discovery, recording, smoke
+from revere_harness.suites import cameras, discovery, recording, smoke, stress
 
 HARNESS_DIR = pathlib.Path(__file__).resolve().parent.parent
 
@@ -32,6 +32,7 @@ SUITES = {
     "cameras": cameras.run,
     "discovery": discovery.run,
     "recording": recording.run,
+    "stress": stress.run,
 }
 
 

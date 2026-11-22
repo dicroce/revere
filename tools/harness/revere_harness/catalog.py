@@ -52,6 +52,32 @@ SUITES: list[dict] = [
 ]
 
 
+SUITES.append({
+    "name": "stress",
+    "title": "Stress",
+    "description": "One stress scenario per run: many cameras, a reconnect storm, rapid add and remove, "
+                   "API hammering, a long soak, or a nearly full disk. Checks the recorder keeps working "
+                   "and flags growth in its memory, threads and file descriptors.",
+    "params": [
+        {"name": "scenario", "label": "Scenario", "type": "choice", "default": "many_cameras",
+         "choices": ["many_cameras", "reconnect_storm", "add_remove", "api_hammer", "soak", "disk_full"],
+         "help": "What to push: camera count, reconnects, add and remove, API requests, duration, or disk space."},
+        {"name": "cameras", "label": "Cameras", "type": "int", "default": 8, "min": 1, "max": 64,
+         "help": "Number of fake cameras (api_hammer always uses 2)."},
+        {"name": "minutes", "label": "Minutes", "type": "float", "default": 3, "min": 0.5, "max": 1440,
+         "help": "How long the scenario's main step runs. Growth is only judged when this is 2.5 minutes (150 s) or more."},
+        {"name": "resolution", "label": "Resolution", "type": "choice", "default": "640x360",
+         "choices": ["640x360", "1280x720", "1920x1080"], "help": "Picture size of every camera."},
+        {"name": "fps", "label": "Frames per second", "type": "int", "default": 10, "min": 1, "max": 30,
+         "help": "Frame rate of every camera."},
+        {"name": "bitrate_kbps", "label": "Bitrate, kbps", "type": "int", "default": 800, "min": 100, "max": 20000,
+         "help": "Target bitrate of every camera; raise it for a high-bitrate run."},
+        {"name": "clients", "label": "API clients", "type": "int", "default": 8, "min": 1, "max": 64,
+         "help": "Parallel clients in the api_hammer scenario."},
+    ],
+})
+
+
 def get(name: str) -> dict | None:
     """Return the suite entry with the given name, or None if not found."""
     for suite in SUITES:
