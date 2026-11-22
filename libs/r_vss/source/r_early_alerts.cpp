@@ -57,6 +57,15 @@ bool r_vss::mostly_inside(const r_box& part, const r_box& whole)
     return (ix2 - ix1) >= CONTAINED_ACROSS * (part.x2 - part.x1) && (iy2 - iy1) >= CONTAINED_DOWN * (part.y2 - part.y1);
 }
 
+bool r_vss::upper_part_of(const r_box& part, const r_box& whole)
+{
+    const float wh = whole.y2 - whole.y1;
+    const float pa = (part.x2 - part.x1) * (part.y2 - part.y1), wa = (whole.x2 - whole.x1) * wh;
+    if(pa <= 0 || wa <= 0)
+        return false;
+    return part.y2 <= whole.y1 + UPPER_PART_LINE * wh && pa < UPPER_PART_AREA * wa;
+}
+
 // How an anchor stands, for the log: "2 sightings, weak, active".
 static string anchor_state_text(int sightings, bool strong, bool active)
 {
@@ -142,7 +151,7 @@ r_early_alerts::r_decision r_early_alerts::_anchored_locked(const string& camera
 }
 
 const r_early_alerts::anchor* r_early_alerts::_containing_anchor_locked(const string& camera_id, const string& class_name, const r_box& box, int64_t ts,
-                                                                          const vector<r_seen>& same_frame) const
+                                                                          const vector<r_seen>& same_frame, bool* whole_in_frame) const
 {
     if(alert_group_of(class_name) != "vehicle")
         return nullptr;
@@ -153,13 +162,18 @@ const r_early_alerts::anchor* r_early_alerts::_containing_anchor_locked(const st
     {
         if(!a.strong || !a.active(ts) || alert_group_of(a.class_name) != "vehicle" || !mostly_inside(box, a.box))
             continue;
-        // The whole vehicle in the same frame: this box is something else in front of it.
+        // The whole vehicle in the same frame: this box is something else in front of it, unless it's an upper part
+        // of the vehicle (its cab, boxed as well as the truck).
         bool whole_seen = false;
         for(const auto& s : same_frame)
             if(alert_group_of(s.class_name) == "vehicle" && same_place(a.class_name, a.box, s.box, ANCHOR_MATCH_IOU))
                 whole_seen = true;
-        if(!whole_seen)
+        if(!whole_seen || upper_part_of(box, a.box))
+        {
+            if(whole_in_frame)
+                *whole_in_frame = whole_seen;
             return &a;
+        }
     }
     return nullptr;
 }
@@ -172,13 +186,17 @@ r_early_alerts::r_decision r_early_alerts::anchored(const string& camera_id, con
     lock_guard<mutex> g(_mtx);
     auto d = _anchored_locked(camera_id, class_name, box, ts);
     if(d.verdict != early_anchored && same_frame)
-        if(auto a = _containing_anchor_locked(camera_id, class_name, box, ts, *same_frame))
+    {
+        bool whole = false;
+        if(auto a = _containing_anchor_locked(camera_id, class_name, box, ts, *same_frame, &whole))
         {
+            d.whole_in_frame = whole;
             d.verdict = early_anchored;
             d.anchor_iou = box_iou(a->box, box);
             d.strong_anchor = true;
             d.part_of_vehicle = true;
         }
+    }
     return d;
 }
 

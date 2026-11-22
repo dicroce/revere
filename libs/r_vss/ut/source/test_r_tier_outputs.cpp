@@ -412,17 +412,52 @@ void test_r_tier_outputs::test_pass_part_of_parked_vehicle()
             auto at_door = frame({part, _pd("person", 140, 220, 60, 200, F)});
             auto sent = pass_alert_now(real, "cats", at_door, nullptr, &at_door);
             RTF_ASSERT(sent.size() == 1 && sent[0].class_name == "person");
-            // The whole truck in the same frame: a car in front of it, sent.
-            auto in_front = frame({part, truck(F)});
-            RTF_ASSERT_EQUAL(pass_alert_now(real, "cats", {part}, nullptr, &in_front).size(), (size_t)1);
-            // And the record leaves it out (the truck was there before), or keeps it (with the truck in its frame).
+            // The whole truck boxed in the same look as well (as on the real clip): still an upper part of it, held.
+            auto with_truck = frame({part, truck(F)});
+            vector<string> notes;
+            RTF_ASSERT(pass_alert_now(real, "cats", {part}, &notes, &with_truck).empty());
+            RTF_ASSERT(notes.size() == 1 && notes[0].find(": held, part of a parked vehicle (upper part, whole vehicle in frame, IoU ") != string::npos);
+            // And the record leaves it out, the truck in its frame or not (the truck was there before).
             auto s = _ps(T, {truck(T - 3000)}, {truck(T)}, {truck(T + 80000)}, {part});
             s.seen = {part, truck(T + 80000), truck(T)};
             RTF_ASSERT(pass_record(real, s).empty());
-            s.seen.push_back(truck(T));
-            s.seen.back().ts = part.ts;
-            RTF_ASSERT_EQUAL(pass_record(real, s).size(), (size_t)1);
+            s.seen.push_back(truck(F));
+            RTF_ASSERT(pass_record(real, s).empty());
         }
+        // A car pulling up in front of the truck, with the truck in every look: lower in the frame, about its size. Sent
+        // and kept. The cab with the truck in every look: held and left out. Both through the planner.
+        // (IoU 0.43 with the anchor: under ANCHOR_MATCH_IOU, so only the part rule decides it; mostly inside across.)
+        auto in_front = [](int64_t ts) { return _pd("car", 30, 330, 120, 230, ts); };
+        auto pulled_up = run_pass(real, T, [&](r_look_kind k, int64_t ts) {
+            if (k != look_pre_roll && ts >= T + 3000 && ts <= T + 15000)
+                return vector<r_detection>{truck(ts), in_front(ts)};
+            return vector<r_detection>{truck(ts)};
+        });
+        RTF_ASSERT(pulled_up.finished);
+        RTF_ASSERT(mostly_inside({30, 330, 150, 560}, anchor) && box_iou({30, 330, 150, 560}, anchor) < 0.5f);
+        RTF_ASSERT(pulled_up.alerted.size() == 1 && pulled_up.alerted[0].y1 == 330);
+        RTF_ASSERT(!pulled_up.kept.empty() && all_of(pulled_up.kept.begin(), pulled_up.kept.end(), [](const r_detection& d) { return d.y1 == 330; }));
+        auto cab_too = run_pass(real, T, [&](r_look_kind k, int64_t ts) {
+            if (k != look_pre_roll && ts >= T + 3000 && ts <= T + 15000)
+                return vector<r_detection>{truck(ts), _pd("car", 29, 207, 98, 106, ts), _pd("person", 140, 220, 60, 200, ts)};
+            return vector<r_detection>{truck(ts)};
+        });
+        RTF_ASSERT(cab_too.finished);
+        RTF_ASSERT(cab_too.alerted.size() == 1 && cab_too.alerted[0].class_name == "person");
+        RTF_ASSERT(none_of(cab_too.kept.begin(), cab_too.kept.end(), [](const r_detection& d) { return d.class_name == "car"; }));
+        RTF_ASSERT(any_of(cab_too.kept.begin(), cab_too.kept.end(), [](const r_detection& d) { return d.class_name == "person"; }));
+
+        // The upper half's line (373 here) and the area cap (19939 here): either side of each.
+        RTF_ASSERT(upper_part_of({29, 207, 127, 373}, anchor));
+        RTF_ASSERT(!upper_part_of({29, 207, 127, 374}, anchor));
+        RTF_ASSERT(upper_part_of({20, 207, 140, 373}, anchor));    // 120 x 166 = 19920
+        RTF_ASSERT(!upper_part_of({20, 207, 141, 373}, anchor));   // 121 x 166 = 20086
+        // So with the truck in its look, a box just below the line is new (sent), just above it held.
+        auto below = frame({_pd("car", 29, 207, 98, 167, T), truck(T)});
+        RTF_ASSERT_EQUAL(pass_alert_now(real, "cats", {below[0]}, nullptr, &below).size(), (size_t)1);
+        auto above = frame({_pd("car", 29, 207, 98, 166, T), truck(T)});
+        RTF_ASSERT(pass_alert_now(real, "cats", {above[0]}, nullptr, &above).empty());
+
         // Not within it across (a car off to the side, overlapping), or under half its height in it: not part of it.
         RTF_ASSERT(!mostly_inside({120, 207, 220, 313}, anchor));
         RTF_ASSERT(!mostly_inside({45, 207, 170, 313}, anchor));  // 89.6% across: just under

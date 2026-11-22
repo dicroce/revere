@@ -122,8 +122,10 @@ vector<r_detection> r_vss::pass_alert_now(const r_early_alerts& anchors, const s
         {
             if(notes)
             {
-                char buf[96];
-                if(a.part_of_vehicle)
+                char buf[128];
+                if(a.part_of_vehicle && a.whole_in_frame)
+                    snprintf(buf, sizeof(buf), ": held, part of a parked vehicle (upper part, whole vehicle in frame, IoU %.2f)", a.anchor_iou);
+                else if(a.part_of_vehicle)
                     snprintf(buf, sizeof(buf), ": held, part of a parked vehicle (inside its anchor, IoU %.2f)", a.anchor_iou);
                 else
                     snprintf(buf, sizeof(buf), ": held, on a %s static anchor (IoU %.2f)", a.strong_anchor ? "parked" : "recurring", a.anchor_iou);

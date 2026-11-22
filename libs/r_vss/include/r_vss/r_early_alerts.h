@@ -48,6 +48,16 @@ constexpr float CONTAINED_ACROSS = 0.9f;
 constexpr float CONTAINED_DOWN = 0.5f;
 R_API bool mostly_inside(const r_box& part, const r_box& whole);
 
+// Whether part is an upper part of whole: its bottom edge in whole's upper half
+// (UPPER_PART_LINE of its height), and under UPPER_PART_AREA of whole's area. A
+// parked pickup's cab, boxed apart from the whole truck with a person at its door
+// (on a real clip both came in the same look), is one; a car pulling up in front
+// of the truck is nearer the camera, so lower in the frame and about its size, and
+// isn't.
+constexpr float UPPER_PART_LINE = 0.5f;
+constexpr float UPPER_PART_AREA = 0.5f;
+R_API bool upper_part_of(const r_box& part, const r_box& whole);
+
 // "person", "vehicle" or "animal" for the classes that alert (as revere_cloud
 // and belfry group them), "" for the rest.
 R_API std::string alert_group_of(const std::string& class_name);
@@ -128,6 +138,7 @@ public:
         float anchor_iou {0}; // the anchor's IoU, for early_anchored
         bool strong_anchor {false};
         bool part_of_vehicle {false}; // early_anchored as part of a parked vehicle (part_of_parked_vehicle)
+        bool whole_in_frame {false};  // ... an upper part of it, the whole vehicle in the same frame too
     };
 
     struct r_seen
@@ -154,9 +165,10 @@ public:
                               const std::vector<r_seen>* same_frame = nullptr) const;
     // Whether a vehicle box is only part of the vehicle on one of the camera's strong vehicle anchors: mostly inside
     // the anchor (mostly_inside), while nothing else in the same frame (same_frame) is at the anchor itself, so the
-    // whole vehicle isn't seen there, only that part (a person at the cab's door hides the rest). Any vehicle class
-    // either side: YOLO may call a pickup's cab a car. A car pulling up in front of a parked truck is seen with the
-    // truck, so it isn't part of it.
+    // whole vehicle isn't seen there, only that part (a person at the cab's door hides the rest); or, with the whole
+    // vehicle in the frame too, while it is an upper part of the anchor (upper_part_of: YOLO may box the cab as well
+    // as the truck). Any vehicle class either side: YOLO may call a pickup's cab a car. A car pulling up in front of a
+    // parked truck is seen with the truck and reaches its lower half, so it isn't part of it.
     R_API bool part_of_parked_vehicle(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts,
                                       const std::vector<r_seen>& same_frame) const;
     // Whether a detection (class at ts) went out early this event.
@@ -217,8 +229,9 @@ private:
     // consider()'s anchor test. PRECONDITION: _mtx held.
     r_decision _anchored_locked(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts) const;
     // The strong vehicle anchor box is part of (part_of_parked_vehicle), or null. PRECONDITION: _mtx held.
+    // whole_in_frame, if given: whether it was taken as an upper part with the whole vehicle in the frame.
     const anchor* _containing_anchor_locked(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts,
-                                            const std::vector<r_seen>& same_frame) const;
+                                            const std::vector<r_seen>& same_frame, bool* whole_in_frame = nullptr) const;
 
     mutable std::mutex _mtx;
     std::map<std::string, std::vector<anchor>> _anchors;
