@@ -42,6 +42,18 @@ bool r_vss::same_place(const string& class_name, const r_box& a, const r_box& b,
     return dx <= min(VEHICLE_JITTER_PX, (aw + bw) / 4) && dy <= min(VEHICLE_JITTER_PX, (ah + bh) / 4);
 }
 
+bool r_vss::mostly_inside(const r_box& part, const r_box& whole)
+{
+    const float pa = (part.x2 - part.x1) * (part.y2 - part.y1), wa = (whole.x2 - whole.x1) * (whole.y2 - whole.y1);
+    if(pa <= 0 || wa <= 0)
+        return false;
+    float ix1 = (std::max)(part.x1, whole.x1), iy1 = (std::max)(part.y1, whole.y1);
+    float ix2 = (std::min)(part.x2, whole.x2), iy2 = (std::min)(part.y2, whole.y2);
+    if(ix1 >= ix2 || iy1 >= iy2)
+        return false;
+    return (ix2 - ix1) * (iy2 - iy1) >= CONTAINED_FRACTION * pa;
+}
+
 // How an anchor stands, for the log: "2 sightings, weak, active".
 static string anchor_state_text(int sightings, bool strong, bool active)
 {
@@ -126,15 +138,56 @@ r_early_alerts::r_decision r_early_alerts::_anchored_locked(const string& camera
     return d;
 }
 
-r_early_alerts::r_decision r_early_alerts::anchored(const string& camera_id, const string& class_name, const r_box& box, int64_t ts) const
+const r_early_alerts::anchor* r_early_alerts::_containing_anchor_locked(const string& camera_id, const string& class_name, const r_box& box, int64_t ts,
+                                                                          const vector<r_seen>& same_frame) const
+{
+    if(alert_group_of(class_name) != "vehicle")
+        return nullptr;
+    auto it = _anchors.find(camera_id);
+    if(it == _anchors.end())
+        return nullptr;
+    for(const auto& a : it->second)
+    {
+        if(!a.strong || !a.active(ts) || alert_group_of(a.class_name) != "vehicle" || !mostly_inside(box, a.box))
+            continue;
+        // The whole vehicle in the same frame: this box is something else in front of it.
+        bool whole_seen = false;
+        for(const auto& s : same_frame)
+            if(alert_group_of(s.class_name) == "vehicle" && same_place(a.class_name, a.box, s.box, ANCHOR_MATCH_IOU))
+                whole_seen = true;
+        if(!whole_seen)
+            return &a;
+    }
+    return nullptr;
+}
+
+r_early_alerts::r_decision r_early_alerts::anchored(const string& camera_id, const string& class_name, const r_box& box, int64_t ts,
+                                                    const vector<r_seen>* same_frame) const
 {
     if(alert_group_of(class_name).empty())
         return r_decision();
     lock_guard<mutex> g(_mtx);
-    return _anchored_locked(camera_id, class_name, box, ts);
+    auto d = _anchored_locked(camera_id, class_name, box, ts);
+    if(d.verdict != early_anchored && same_frame)
+        if(auto a = _containing_anchor_locked(camera_id, class_name, box, ts, *same_frame))
+        {
+            d.verdict = early_anchored;
+            d.anchor_iou = box_iou(a->box, box);
+            d.strong_anchor = true;
+            d.part_of_vehicle = true;
+        }
+    return d;
 }
 
-bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts, const vector<r_seen>& start_frame) const
+bool r_early_alerts::part_of_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts,
+                                            const vector<r_seen>& same_frame) const
+{
+    lock_guard<mutex> g(_mtx);
+    return _containing_anchor_locked(camera_id, class_name, box, ts, same_frame) != nullptr;
+}
+
+bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts, const vector<r_seen>& start_frame,
+                                       const vector<r_seen>* same_frame) const
 {
     if(alert_group_of(class_name) != "vehicle")
         return false;
@@ -150,6 +203,12 @@ bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& cl
                 if(s.class_name == class_name && same_place(class_name, a.box, s.box, ANCHOR_MATCH_IOU))
                     return true;
         }
+    // Only part of a parked vehicle (its cab, the rest hidden): parked if the whole vehicle was there before.
+    if(same_frame)
+        if(auto a = _containing_anchor_locked(camera_id, class_name, box, ts, *same_frame))
+            for(const auto& s : start_frame)
+                if(s.class_name == a->class_name && same_place(a->class_name, a->box, s.box, ANCHOR_MATCH_IOU))
+                    return true;
     return false;
 }
 

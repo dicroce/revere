@@ -271,3 +271,60 @@ void test_r_tier_outputs::test_pass_learns_once_per_chain()
     RTF_ASSERT_EQUAL(anchors.anchor_count("cats", after), (size_t)1);
     RTF_ASSERT(pass_alert_now(anchors, "cats", {car(after)}, nullptr).empty());
 }
+
+// A pickup parked in the drive, its anchor strong. While a person stands at its door, YOLO boxes only its cab (as a
+// car: IoU 0.12-0.16 with the pickup's anchor), which went out as a car alert in every such session.
+void test_r_tier_outputs::test_pass_part_of_parked_vehicle()
+{
+    const int64_t T = T0 + 60 * 60 * 1000;
+    auto pickup = [](int64_t ts, const string& cls = "car") { return _pd(cls, 200, 200, 300, 150, ts); };
+    auto cab = [](int64_t ts, float dx = 0) { return _pd("car", 380 + dx, 210, 110, 110, ts); };  // inside the pickup's box
+    auto person = [](int64_t ts) { return _pd("person", 470, 220, 50, 140, ts); };
+    r_early_alerts anchors;
+    RTF_ASSERT(pass_learn(anchors, _ps(T0, {}, {pickup(T0)}, {pickup(T0 + 80000)}, {})));
+    RTF_ASSERT(anchors.anchor_count("cats", T) == 1);
+    RTF_ASSERT(box_iou({200, 200, 500, 350}, {380, 210, 490, 320}) < 0.3f);
+
+    // The cab alone with the person: held as part of the pickup, the person goes.
+    vector<string> notes;
+    auto now = pass_alert_now(anchors, "cats", {cab(T), person(T)}, &notes);
+    RTF_ASSERT_EQUAL(now.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(now[0].class_name, string("person"));
+    RTF_ASSERT_EQUAL(notes.size(), (size_t)1);
+    RTF_ASSERT(notes[0].find("car [380,210 490,320] 110x110 at 90%: held, part of a parked vehicle (inside its anchor, IoU ") == 0);
+    // And the record leaves it out: the pickup was there before the session.
+    auto kept = pass_record(anchors, _ps(T, {pickup(T - 3000)}, {pickup(T)}, {pickup(T + 80000)}, {cab(T + 4000), person(T + 4000), cab(T + 8000)}));
+    RTF_ASSERT_EQUAL(kept.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(kept[0].class_name, string("person"));
+
+    // The pickup seen whole in another frame of the session doesn't matter: each frame is judged on its own.
+    kept = pass_record(anchors, _ps(T, {pickup(T - 3000)}, {pickup(T)}, {}, {cab(T + 4000), pickup(T + 9000)}));
+    RTF_ASSERT(kept.empty());  // the cab as part of it, and the pickup itself as parked
+    // A car pulling up in front of the pickup is seen with the pickup in the same frame: new, sent and kept.
+    now = pass_alert_now(anchors, "cats", {cab(T), pickup(T)}, nullptr);
+    RTF_ASSERT_EQUAL(now.size(), (size_t)1);
+    RTF_ASSERT(now[0].x1 == 380);
+    kept = pass_record(anchors, _ps(T, {pickup(T - 3000)}, {pickup(T)}, {}, {cab(T + 4000), pickup(T + 4000)}));
+    RTF_ASSERT(kept.size() == 1 && kept[0].x1 == 380);
+    // The pickup gone before the session (not in its pre-roll or first frame): a car in its spot is kept.
+    kept = pass_record(anchors, _ps(T, {}, {person(T)}, {}, {cab(T + 4000)}));
+    RTF_ASSERT_EQUAL(kept.size(), (size_t)1);
+    // Mostly outside the anchor: not part of it.
+    RTF_ASSERT_EQUAL(pass_alert_now(anchors, "cats", {cab(T, 60)}, nullptr).size(), (size_t)1);
+    // Not a vehicle: a person inside the pickup's box is never held by it.
+    RTF_ASSERT_EQUAL(pass_alert_now(anchors, "cats", {_pd("person", 400, 215, 40, 120, T)}, nullptr).size(), (size_t)1);
+    // Bigger than the anchor: not part of it.
+    RTF_ASSERT_EQUAL(pass_alert_now(anchors, "cats", {_pd("truck", 150, 150, 400, 250, T)}, nullptr).size(), (size_t)1);
+    // Vehicle classes match each other: YOLO's "truck" for the cab is part of the pickup's "car" anchor.
+    RTF_ASSERT(pass_alert_now(anchors, "cats", {_pd("truck", 380, 210, 110, 110, T)}, nullptr).empty());
+    // Another camera has no anchors.
+    RTF_ASSERT_EQUAL(pass_alert_now(anchors, "porch", {cab(T)}, nullptr).size(), (size_t)1);
+
+    // Only a strong anchor: a weak one (two jittering sightings) never takes a part as its vehicle.
+    r_early_alerts weak;
+    auto distant = [](float dx, int64_t ts) { return _pd("car", 300 + dx, 200, 40, 24, ts); };
+    RTF_ASSERT(pass_learn(weak, _ps(T0, {}, {distant(0, T0)}, {distant(7, T0 + 80000)}, {})));
+    RTF_ASSERT(pass_learn(weak, _ps(T0 + 1000, {}, {distant(-3, T0 + 1000)}, {distant(4, T0 + 81000)}, {})));
+    RTF_ASSERT(weak.anchor_count("cats", T) == 1);
+    RTF_ASSERT_EQUAL(pass_alert_now(weak, "cats", {_pd("car", 310, 205, 15, 12, T)}, nullptr).size(), (size_t)1);
+}

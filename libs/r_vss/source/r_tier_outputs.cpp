@@ -84,6 +84,16 @@ static vector<r_early_alerts::r_seen> _seen(const vector<r_detection>& dets)
     return out;
 }
 
+// The other detections from the same frame as dets[i] (the same ts), for telling part of a parked vehicle apart.
+static vector<r_early_alerts::r_seen> _same_frame(const vector<r_detection>& dets, size_t i)
+{
+    vector<r_early_alerts::r_seen> out;
+    for(size_t j = 0; j < dets.size(); ++j)
+        if(j != i && dets[j].ts == dets[i].ts && !is_camera_report(dets[j]))
+            out.push_back({dets[j].class_name, _box(dets[j])});
+    return out;
+}
+
 static string _at(const r_detection& d)
 {
     char buf[32];
@@ -94,16 +104,21 @@ static string _at(const r_detection& d)
 vector<r_detection> r_vss::pass_alert_now(const r_early_alerts& anchors, const string& camera_id, const vector<r_detection>& found, vector<string>* notes)
 {
     vector<r_detection> out;
-    for(const auto& d : found)
+    for(size_t i = 0; i < found.size(); ++i)
     {
+        const auto& d = found[i];
         // A camera's own report has no box and its own class word ("vehicle"), so no anchor ever holds it.
-        auto a = anchors.anchored(camera_id, d.class_name, _box(d), d.ts);
+        auto same = _same_frame(found, i);
+        auto a = anchors.anchored(camera_id, d.class_name, _box(d), d.ts, is_camera_report(d) ? nullptr : &same);
         if(a.verdict == r_early_alerts::early_anchored)
         {
             if(notes)
             {
-                char buf[64];
-                snprintf(buf, sizeof(buf), ": held, on a %s static anchor (IoU %.2f)", a.strong_anchor ? "parked" : "recurring", a.anchor_iou);
+                char buf[96];
+                if(a.part_of_vehicle)
+                    snprintf(buf, sizeof(buf), ": held, part of a parked vehicle (inside its anchor, IoU %.2f)", a.anchor_iou);
+                else
+                    snprintf(buf, sizeof(buf), ": held, on a %s static anchor (IoU %.2f)", a.strong_anchor ? "parked" : "recurring", a.anchor_iou);
                 notes->push_back(_at(d) + buf);
             }
             continue;
@@ -126,12 +141,14 @@ vector<r_detection> r_vss::pass_record(const r_early_alerts& anchors, const r_de
     map<string, tally> vehicles;
     vector<string> order;
     vector<r_detection> out;
-    for(const auto& d : session.detections)
+    for(size_t i = 0; i < session.detections.size(); ++i)
     {
+        const auto& d = session.detections[i];
         const bool vehicle = !is_camera_report(d) && alert_group_of(d.class_name) == "vehicle";
         if(vehicle && !vehicles.count(d.class_name))
             order.push_back(d.class_name);
-        if(vehicle && anchors.is_parked_vehicle(session.camera_id, d.class_name, _box(d), d.ts, before))
+        auto same = vehicle ? _same_frame(session.detections, i) : vector<r_early_alerts::r_seen>();
+        if(vehicle && anchors.is_parked_vehicle(session.camera_id, d.class_name, _box(d), d.ts, before, &same))
         {
             ++vehicles[d.class_name].parked;
             continue;
