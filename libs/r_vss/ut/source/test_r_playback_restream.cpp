@@ -347,3 +347,75 @@ void test_r_playback_restream::test_playback_camera()
     RTF_ASSERT(playback_camera(cameras, "").is_null());
     RTF_ASSERT(playback_camera(vector<r_disco::r_camera>(), "back").is_null());
 }
+
+// Whether something is mounted at exactly path.
+static bool mounted(GstRTSPMountPoints* mounts, const string& path)
+{
+    gint matched = 0;
+    auto f = gst_rtsp_mount_points_match(mounts, path.c_str(), &matched);
+    if(!f)
+        return false;
+    g_object_unref(f);
+    return matched == (gint)path.size();
+}
+
+void test_r_playback_restream::test_unplayed_mount_frees_its_mount_points()
+{
+    // A mount never played and never removed: its mount points still go when their last owner lets go (the mount
+    // used to hold a ref on them, a cycle through the factory that kept them past the server).
+    recording rec;
+    auto mounts = gst_rtsp_mount_points_new();
+    gpointer alive = mounts;
+    g_object_add_weak_pointer(G_OBJECT(mounts), &alive);
+    auto path = rec.path(0, 2000);
+    RTF_ASSERT(add_playback_mount(mounts, path, PB_TOP, *rec.devices, "cam-pb", rec.base, rec.base + 2000));
+    RTF_ASSERT(mounted(mounts, path));
+    g_object_unref(mounts);
+    RTF_ASSERT(alive == nullptr);
+}
+
+void test_r_playback_restream::test_unused_mount_expires()
+{
+    recording rec;
+    rtsp_server rs;
+    const int64_t t = playback_mount_clock_ms();
+
+    // Mounted by an OPTIONS whose client never got to a media: it goes UNUSED_PLAYBACK_MOUNT_MS later, not before.
+    auto quiet = rec.path(0, 1000);
+    RTF_ASSERT(add_playback_mount(rs.mounts, quiet, PB_TOP, *rec.devices, "cam-pb", rec.base, rec.base + 1000, t));
+    RTF_ASSERT_EQUAL(remove_unused_playback_mounts(rs.mounts, t + UNUSED_PLAYBACK_MOUNT_MS - 1), (size_t)0);
+    RTF_ASSERT(mounted(rs.mounts, quiet));
+    RTF_ASSERT_EQUAL(remove_unused_playback_mounts(rs.mounts, t + UNUSED_PLAYBACK_MOUNT_MS), (size_t)1);
+    RTF_ASSERT(!mounted(rs.mounts, quiet));
+    RTF_ASSERT_EQUAL(remove_unused_playback_mounts(rs.mounts, t + 10 * UNUSED_PLAYBACK_MOUNT_MS), (size_t)0);
+
+    // Mounted again later for the same URL: the newer mount's own time counts.
+    RTF_ASSERT(add_playback_mount(rs.mounts, quiet, PB_TOP, *rec.devices, "cam-pb", rec.base, rec.base + 1000, t));
+    RTF_ASSERT(add_playback_mount(rs.mounts, quiet, PB_TOP, *rec.devices, "cam-pb", rec.base, rec.base + 1000, t + 50000));
+    RTF_ASSERT_EQUAL(remove_unused_playback_mounts(rs.mounts, t + UNUSED_PLAYBACK_MOUNT_MS), (size_t)0);
+    RTF_ASSERT(mounted(rs.mounts, quiet));
+    // And the next mount request clears it once it's due, as it mounts its own.
+    auto other = rec.path(0, 2000);
+    RTF_ASSERT(add_playback_mount(rs.mounts, other, PB_TOP, *rec.devices, "cam-pb", rec.base, rec.base + 2000, t + 50000 + UNUSED_PLAYBACK_MOUNT_MS));
+    RTF_ASSERT(!mounted(rs.mounts, quiet));
+    RTF_ASSERT(mounted(rs.mounts, other));
+
+    // One a session is playing from is never taken by it; the session's end removes it.
+    {
+        viewer v(rs.url(other));
+        RTF_ASSERT(v.take(3) > 0);
+        RTF_ASSERT_EQUAL(remove_unused_playback_mounts(rs.mounts, t + 100 * UNUSED_PLAYBACK_MOUNT_MS), (size_t)0);
+        RTF_ASSERT(mounted(rs.mounts, other));
+        RTF_ASSERT(v.take(3) > 0);
+    }
+    RTF_ASSERT(describes_within(rs.port, rs.url(other), 404));
+
+    // Something else mounted at the URL since (not a playback mount): left where it is.
+    auto third = rec.path(500, 1500);
+    RTF_ASSERT(add_playback_mount(rs.mounts, third, PB_TOP, *rec.devices, "cam-pb", rec.base + 500, rec.base + 1500, t));
+    auto foreign = gst_rtsp_media_factory_new();
+    gst_rtsp_mount_points_add_factory(rs.mounts, third.c_str(), foreign);
+    RTF_ASSERT_EQUAL(remove_unused_playback_mounts(rs.mounts, t + 200 * UNUSED_PLAYBACK_MOUNT_MS), (size_t)0);
+    RTF_ASSERT(mounted(rs.mounts, third));
+    gst_rtsp_mount_points_remove_factory(rs.mounts, third.c_str());
+}
