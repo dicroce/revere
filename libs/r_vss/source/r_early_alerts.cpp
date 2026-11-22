@@ -51,7 +51,10 @@ bool r_vss::mostly_inside(const r_box& part, const r_box& whole)
     float ix2 = (std::min)(part.x2, whole.x2), iy2 = (std::min)(part.y2, whole.y2);
     if(ix1 >= ix2 || iy1 >= iy2)
         return false;
-    return (ix2 - ix1) * (iy2 - iy1) >= CONTAINED_FRACTION * pa;
+    if((ix2 - ix1) * (iy2 - iy1) >= CONTAINED_FRACTION * pa)
+        return true;
+    // Within it across, and overlapping it for at least half its height: a cab whose box reaches above the truck's.
+    return (ix2 - ix1) >= CONTAINED_ACROSS * (part.x2 - part.x1) && (iy2 - iy1) >= CONTAINED_DOWN * (part.y2 - part.y1);
 }
 
 // How an anchor stands, for the log: "2 sightings, weak, active".

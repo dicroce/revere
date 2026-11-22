@@ -395,6 +395,41 @@ void test_r_tier_outputs::test_pass_part_of_parked_vehicle()
     // Another camera has no anchors.
     RTF_ASSERT_EQUAL(pass_alert_now(anchors, "porch", alone, nullptr, &alone).size(), (size_t)1);
 
+    // From a real clip: the pickup's anchor [0,246 157,500]; YOLO's cab boxes reach above it (63-65% inside by area)
+    // but lie within it across and overlap it for more than half their height.
+    {
+        r_early_alerts real;
+        auto truck = [](int64_t ts) { return _pd("car", 0, 246, 157, 254, ts); };
+        RTF_ASSERT(pass_learn(real, _ps(T0, {}, {truck(T0)}, {truck(T0 + 80000)}, {})));
+        const r_box anchor {0, 246, 157, 500};
+        for (auto b : {r_box{29, 207, 127, 313}, r_box{16, 206, 127, 313}, r_box{24, 212, 121, 310}})
+        {
+            RTF_ASSERT(mostly_inside(b, anchor));
+            const float inside = (b.x2 - b.x1) * (b.y2 - 246) / ((b.x2 - b.x1) * (b.y2 - b.y1));
+            RTF_ASSERT(inside > 0.6f && inside < 0.66f);
+            const int64_t F = T + 4000;  // the cab's frame
+            auto part = _pd("car", b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1, F);
+            auto at_door = frame({part, _pd("person", 140, 220, 60, 200, F)});
+            auto sent = pass_alert_now(real, "cats", at_door, nullptr, &at_door);
+            RTF_ASSERT(sent.size() == 1 && sent[0].class_name == "person");
+            // The whole truck in the same frame: a car in front of it, sent.
+            auto in_front = frame({part, truck(F)});
+            RTF_ASSERT_EQUAL(pass_alert_now(real, "cats", {part}, nullptr, &in_front).size(), (size_t)1);
+            // And the record leaves it out (the truck was there before), or keeps it (with the truck in its frame).
+            auto s = _ps(T, {truck(T - 3000)}, {truck(T)}, {truck(T + 80000)}, {part});
+            s.seen = {part, truck(T + 80000), truck(T)};
+            RTF_ASSERT(pass_record(real, s).empty());
+            s.seen.push_back(truck(T));
+            s.seen.back().ts = part.ts;
+            RTF_ASSERT_EQUAL(pass_record(real, s).size(), (size_t)1);
+        }
+        // Not within it across (a car off to the side, overlapping), or under half its height in it: not part of it.
+        RTF_ASSERT(!mostly_inside({120, 207, 220, 313}, anchor));
+        RTF_ASSERT(!mostly_inside({45, 207, 170, 313}, anchor));  // 89.6% across: just under
+        RTF_ASSERT(!mostly_inside({29, 150, 127, 290}, anchor));
+        RTF_ASSERT(mostly_inside({29, 196, 127, 300}, anchor));   // just over half
+    }
+
     // Only a strong anchor: a weak one (two jittering sightings) never takes a part as its vehicle.
     r_early_alerts weak;
     auto distant = [](float dx, int64_t ts) { return _pd("car", 300 + dx, 200, 40, 24, ts); };

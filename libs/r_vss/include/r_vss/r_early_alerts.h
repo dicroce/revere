@@ -36,11 +36,16 @@ constexpr float VEHICLE_JITTER_PX = 8.0f;
 constexpr float VEHICLE_JITTER_SIZE = 1.5f;
 R_API bool same_place(const std::string& class_name, const r_box& a, const r_box& b, float iou);
 
-// Whether part lies mostly inside whole: CONTAINED_FRACTION of part's area. How
-// a parked pickup's cab, all YOLO boxes while a
-// person stands at its door, is told to be part of the pickup (its IoU with the
-// whole truck's box is 0.12 to 0.16).
+// Whether part lies mostly inside whole: CONTAINED_FRACTION of part's area; or,
+// across, CONTAINED_ACROSS of its width, with CONTAINED_DOWN of its height
+// overlapping whole. How a parked pickup's cab, all YOLO boxes while a person
+// stands at its door, is told to be part of the pickup (its IoU with the whole
+// truck's box is 0.12 to 0.16). YOLO's box for the cab reaches above the truck's
+// (on a real clip: the truck [0,246 157,500], the cab [29,207 127,313], 63% of it
+// inside), so the area rule alone missed it.
 constexpr float CONTAINED_FRACTION = 0.8f;
+constexpr float CONTAINED_ACROSS = 0.9f;
+constexpr float CONTAINED_DOWN = 0.5f;
 R_API bool mostly_inside(const r_box& part, const r_box& whole);
 
 // "person", "vehicle" or "animal" for the classes that alert (as revere_cloud
