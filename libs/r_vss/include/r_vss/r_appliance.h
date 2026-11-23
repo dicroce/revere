@@ -56,6 +56,18 @@ enum class set_password_verdict
 // cloud, through the box's agent, is the only owner of the password.
 R_API set_password_verdict check_set_password(bool appliance, bool password_set, bool caller_loopback, set_password_auth auth);
 
+// An appliance's local web password as sign-in compares it: upper case, with
+// no '-' and no spaces, tabs or line breaks. The app shows the password in
+// groups ("K7QM-X2PR-9DTF"); typed in lower case, without the hyphens or with
+// spaces, it is the same password. Only ASCII letters change case.
+R_API std::string normalize_password(const std::string& password);
+
+// Whether a typed /login password is the stored one. On an appliance both are
+// compared normalized (normalize_password), and a stored password that
+// normalizes to nothing matches nothing. Everywhere else the comparison is
+// exact. Both in constant time (r_ws_auth::constant_time_equal).
+R_API bool login_password_matches(bool appliance, const std::string& typed, const std::string& stored);
+
 }
 
 }

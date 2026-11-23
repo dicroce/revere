@@ -1,4 +1,5 @@
 #include "r_vss/r_appliance.h"
+#include "r_vss/r_ws_auth.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
 
@@ -66,4 +67,27 @@ r_appliance::set_password_verdict r_appliance::check_set_password(bool appliance
         return auth == set_password_auth::local_token ? set_password_verdict::allow : set_password_verdict::cloud_managed;
 
     return auth == set_password_auth::none ? set_password_verdict::unauthorized : set_password_verdict::allow;
+}
+
+string r_appliance::normalize_password(const string& password)
+{
+    string out;
+    out.reserve(password.size());
+    for(char c : password)
+    {
+        if(c == '-' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f')
+            continue;
+        out.push_back((c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c);
+    }
+    return out;
+}
+
+bool r_appliance::login_password_matches(bool appliance, const string& typed, const string& stored)
+{
+    if(!appliance)
+        return r_ws_auth::constant_time_equal(typed, stored);
+    auto want = normalize_password(stored);
+    if(want.empty())
+        return false;
+    return r_ws_auth::constant_time_equal(normalize_password(typed), want);
 }
