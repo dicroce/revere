@@ -2,6 +2,7 @@
 #include "r_vss/r_substream_recorder.h"
 #include "r_disco/r_substream.h"
 #include "r_vss/r_ws.h"
+#include "r_vss/r_appliance.h"
 #include "r_vss/r_ws_client_errors.h"
 #include "r_vss/r_export_output.h"
 #include "r_vss/r_export_audio.h"
@@ -4753,7 +4754,9 @@ r_http::r_server_response r_ws::_post_login(r_utils::r_socket_base& conn, const 
         if(stored.is_null())
             R_STHROW(r_http_401_exception, ("No local web password is set."));
 
-        if(!r_ws_auth::constant_time_equal(req["password"].get<string>(), stored.value()))
+        // An appliance's password (set by the Revere app) is accepted ignoring
+        // case, hyphens and spaces; any other install's, exactly as set.
+        if(!r_appliance::login_password_matches(appliance(), req["password"].get<string>(), stored.value()))
         {
             _auth.record_failure(address);
             R_LOG_WARNING("r_ws: failed login from %s", address.empty() ? "?" : address.c_str());

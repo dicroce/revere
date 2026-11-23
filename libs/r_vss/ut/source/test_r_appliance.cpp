@@ -154,3 +154,31 @@ void test_r_appliance::test_set_password_appliance()
         RTF_ASSERT(r_appliance::check_set_password(true, true, loopback, auth::none) == verdict::cloud_managed);
     }
 }
+
+void test_r_appliance::test_login_password_appliance()
+{
+    const string stored = "K7QM-X2PR-9DTF";
+    // As shown, without the hyphens, in lower case, with spaces, or all of these.
+    for(const string typed : {"K7QM-X2PR-9DTF", "K7QMX2PR9DTF", "k7qm-x2pr-9dtf", "K7QM X2PR 9DTF", " k7qm x2pr-9dtf\n", "\tK7QM--X2PR 9dtf"})
+        RTF_ASSERT(r_appliance::login_password_matches(true, typed, stored));
+    // A wrong one is still refused: another character, one short or one over, or nothing.
+    for(const string typed : {"K7QM-X2PR-9DTG", "K7QM-X2PR-9DT", "K7QM-X2PR-9DTFF", "", "---", "    "})
+        RTF_ASSERT(!r_appliance::login_password_matches(true, typed, stored));
+    // The older 20-character form works the same way.
+    RTF_ASSERT(r_appliance::login_password_matches(true, "abcd efgh jkmn pqrs tuvw", "ABCD-EFGH-JKMN-PQRS-TUVW"));
+    // A stored password that normalizes to nothing matches nothing, not even itself.
+    RTF_ASSERT(!r_appliance::login_password_matches(true, "", ""));
+    RTF_ASSERT(!r_appliance::login_password_matches(true, "- -", "- -"));
+
+    RTF_ASSERT(r_appliance::normalize_password(" ab-c\td\r\nE-9 ") == "ABCDE9");
+    // Only ASCII letters change case; anything else is kept as it is.
+    RTF_ASSERT(r_appliance::normalize_password("\xc3\xa9_x.") == "\xc3\xa9_X.");
+}
+
+void test_r_appliance::test_login_password_normal_install()
+{
+    // A person's own password on any other install is compared exactly.
+    RTF_ASSERT(r_appliance::login_password_matches(false, "My-Pass word", "My-Pass word"));
+    for(const string typed : {"my-pass word", "MY-PASS WORD", "MyPassword", "My-Password", "My Pass word"})
+        RTF_ASSERT(!r_appliance::login_password_matches(false, typed, "My-Pass word"));
+}
