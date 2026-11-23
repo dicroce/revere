@@ -182,8 +182,10 @@ public:
     // the spot during the event, or a visitor taking it, is kept.
     // With same_frame, a box that is only part of a parked vehicle (part_of_parked_vehicle) is parked too, if the
     // whole vehicle was there in start_frame.
+    // why, if given, gets the reason when it is, for the log: "on its anchor (IoU 0.91)", "part of a parked vehicle
+    // (inside its anchor, IoU 0.14)" or "part of a parked vehicle (upper part, whole vehicle in frame, IoU 0.14)".
     R_API bool is_parked_vehicle(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts, const std::vector<r_seen>& start_frame,
-                                 const std::vector<r_seen>* same_frame = nullptr) const;
+                                 const std::vector<r_seen>* same_frame = nullptr, std::string* why = nullptr) const;
     // How long to wait between looks during this camera's event.
     R_API int64_t look_interval_ms(const std::string& camera_id) const;
     // Learns anchors from the detections (unfiltered) in the frames that

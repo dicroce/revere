@@ -147,7 +147,9 @@ vector<r_detection> r_vss::pass_record(const r_early_alerts& anchors, const r_de
     auto first = _seen(session.first_frame);
     before.insert(before.end(), first.begin(), first.end());
 
-    struct tally { int kept {0}, parked {0}; const r_detection* first_kept {nullptr}; };
+    // Per vehicle class: what was kept and left out, and the first few left out with why, for the log.
+    struct tally { int kept {0}, parked {0}; const r_detection* first_kept {nullptr}; vector<string> left_out; };
+    const size_t LEFT_OUT_NOTES = 3;
     map<string, tally> vehicles;
     vector<string> order;
     vector<r_detection> out;
@@ -158,9 +160,14 @@ vector<r_detection> r_vss::pass_record(const r_early_alerts& anchors, const r_de
             order.push_back(d.class_name);
         // The rest of its frame from the session's unfiltered looks (session.seen), not the kept detections.
         auto same = vehicle ? _rest_of_frame(session.seen, d) : vector<r_early_alerts::r_seen>();
-        if(vehicle && anchors.is_parked_vehicle(session.camera_id, d.class_name, _box(d), d.ts, before, session.seen.empty() ? nullptr : &same))
+        string why;
+        if(vehicle && anchors.is_parked_vehicle(session.camera_id, d.class_name, _box(d), d.ts, before, session.seen.empty() ? nullptr : &same,
+                                                notes ? &why : nullptr))
         {
-            ++vehicles[d.class_name].parked;
+            auto& t = vehicles[d.class_name];
+            ++t.parked;
+            if(notes && t.left_out.size() < LEFT_OUT_NOTES)
+                t.left_out.push_back(_at(d) + ": left out, " + why);
             continue;
         }
         if(vehicle)
@@ -182,6 +189,8 @@ vector<r_detection> r_vss::pass_record(const r_early_alerts& anchors, const r_de
                 line += "; first kept " + box_text(_box(*t.first_kept)) + ", " +
                         anchors.nearest_anchor(session.camera_id, name, _box(*t.first_kept), t.first_kept->ts);
             notes->push_back(line);
+            for(const auto& l : t.left_out)
+                notes->push_back(l);
         }
     return out;
 }

@@ -194,8 +194,17 @@ void test_r_tier_outputs::test_pass_parked_car()
                                          {car(5, 1, T + 2000), cat, car(-4, 0, T + 6000), car(2, 2, T + 10000)}), &notes);
     RTF_ASSERT_EQUAL(kept.size(), (size_t)1);
     RTF_ASSERT_EQUAL(kept[0].class_name, string("cat"));
-    RTF_ASSERT_EQUAL(notes.size(), (size_t)1);
+    // The tally, then each one left out (up to three) with why.
+    RTF_ASSERT_EQUAL(notes.size(), (size_t)4);
     RTF_ASSERT_EQUAL(notes[0], string("car: 0 kept, 3 left out as parked"));
+    RTF_ASSERT(notes[1].find("car [305,201 325,213] 20x12 at 91%: left out, on its anchor (IoU ") == 0);
+    RTF_ASSERT(notes[3].find(": left out, on its anchor (IoU ") != string::npos);
+    // At most three of them listed, however many are left out.
+    notes.clear();
+    pass_record(anchors, _ps(T, {car(1, 0, T - 3000)}, {car(-2, 1, T)}, {}, {car(5, 1, T + 2000), car(-4, 0, T + 6000), car(2, 2, T + 10000),
+                                                                               car(1, 1, T + 14000), car(0, 0, T + 18000)}), &notes);
+    RTF_ASSERT_EQUAL(notes.size(), (size_t)4);
+    RTF_ASSERT_EQUAL(notes[0], string("car: 0 kept, 5 left out as parked"));
 
     // Seen only in the first frame, not the pre-roll (YOLO missed it there): still parked before the session.
     kept = pass_record(anchors, _ps(T, {}, {car(0, 0, T)}, {}, {car(5, 1, T + 2000)}));
@@ -417,12 +426,17 @@ void test_r_tier_outputs::test_pass_part_of_parked_vehicle()
             vector<string> notes;
             RTF_ASSERT(pass_alert_now(real, "cats", {part}, &notes, &with_truck).empty());
             RTF_ASSERT(notes.size() == 1 && notes[0].find(": held, part of a parked vehicle (upper part, whole vehicle in frame, IoU ") != string::npos);
-            // And the record leaves it out, the truck in its frame or not (the truck was there before).
+            // And the record leaves it out, the truck in its frame or not (the truck was there before), and says why.
             auto s = _ps(T, {truck(T - 3000)}, {truck(T)}, {truck(T + 80000)}, {part});
             s.seen = {part, truck(T + 80000), truck(T)};
-            RTF_ASSERT(pass_record(real, s).empty());
+            vector<string> rec;
+            RTF_ASSERT(pass_record(real, s, &rec).empty());
+            RTF_ASSERT(rec.size() == 2 && rec[0] == "car: 0 kept, 1 left out as parked");
+            RTF_ASSERT(rec[1].find(box_text(b) + " at 90%: left out, part of a parked vehicle (inside its anchor, IoU ") == 4);
             s.seen.push_back(truck(F));
-            RTF_ASSERT(pass_record(real, s).empty());
+            rec.clear();
+            RTF_ASSERT(pass_record(real, s, &rec).empty());
+            RTF_ASSERT(rec.size() == 2 && rec[1].find(": left out, part of a parked vehicle (upper part, whole vehicle in frame, IoU ") != string::npos);
         }
         // A car pulling up in front of the truck, with the truck in every look: lower in the frame, about its size. Sent
         // and kept. The cab with the truck in every look: held and left out. Both through the planner.

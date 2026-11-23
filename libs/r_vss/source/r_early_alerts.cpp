@@ -210,7 +210,7 @@ bool r_early_alerts::part_of_parked_vehicle(const string& camera_id, const strin
 }
 
 bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts, const vector<r_seen>& start_frame,
-                                       const vector<r_seen>* same_frame) const
+                                       const vector<r_seen>* same_frame, string* why) const
 {
     if(alert_group_of(class_name) != "vehicle")
         return false;
@@ -224,14 +224,24 @@ bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& cl
             // Parked before the event began? Otherwise it arrived at (or took) the spot during it.
             for(const auto& s : start_frame)
                 if(s.class_name == class_name && same_place(class_name, a.box, s.box, ANCHOR_MATCH_IOU))
+                {
+                    if(why)
+                        *why = "on its anchor (IoU " + iou_text(box_iou(a.box, box)) + ")";
                     return true;
+                }
         }
-    // Only part of a parked vehicle (its cab, the rest hidden): parked if the whole vehicle was there before.
+    // Only part of a parked vehicle (its cab, the rest hidden or boxed too): parked if the whole vehicle was there before.
+    bool whole = false;
     if(same_frame)
-        if(auto a = _containing_anchor_locked(camera_id, class_name, box, ts, *same_frame))
+        if(auto a = _containing_anchor_locked(camera_id, class_name, box, ts, *same_frame, &whole))
             for(const auto& s : start_frame)
                 if(s.class_name == a->class_name && same_place(a->class_name, a->box, s.box, ANCHOR_MATCH_IOU))
+                {
+                    if(why)
+                        *why = string("part of a parked vehicle (") + (whole ? "upper part, whole vehicle in frame" : "inside its anchor") +
+                               ", IoU " + iou_text(box_iou(a->box, box)) + ")";
                     return true;
+                }
     return false;
 }
 
