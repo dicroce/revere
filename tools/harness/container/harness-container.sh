@@ -13,7 +13,7 @@ port="${HARNESS_PORT:-8090}"
 usage() {
     cat <<'TEXT'
 usage: tools/harness/run.sh mac <command>
-  build [--no-cache]            build the image (done automatically the first time)
+  build [--no-cache]            build the image (done automatically the first time); HARNESS_BUILD_JOBS=6 caps the compile
   <suite>... [-- <arguments>]   run suites, for example:  mac smoke
                                                           mac recording stress -- --param minutes=1
   web                           the control page on http://127.0.0.1:8090 (HARNESS_PORT changes the port)
@@ -50,7 +50,7 @@ esac
 image_mb() { echo "$(( $("$docker" image inspect --format '{{.Size}}' "$image") / 1024 / 1024 )) MB"; }
 
 build_image() {
-    "$docker" build -f "$here/Dockerfile" -t "$image" "$@" "$repo"
+    "$docker" build -f "$here/Dockerfile" -t "$image" --build-arg "BUILD_JOBS=${HARNESS_BUILD_JOBS:-0}" "$@" "$repo"
     echo "image $image: $(image_mb)"
 }
 

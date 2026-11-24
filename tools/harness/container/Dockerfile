@@ -4,6 +4,8 @@
 ARG UBUNTU_VERSION=24.04
 
 FROM ubuntu:${UBUNTU_VERSION} AS build
+# Compile jobs: 0 is every core of the container's machine; the run script passes HARNESS_BUILD_JOBS here.
+ARG BUILD_JOBS=0
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
@@ -19,7 +21,7 @@ RUN apt-get update && \
 COPY . /src
 # REVERE_UI_AUTOMATION is the desktop app's test-only hook; a source tree without it ignores the setting.
 RUN cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREVERE_UI_AUTOMATION=ON -DSDL_PIPEWIRE=OFF && \
-    cmake --build /build --parallel "$(nproc)" && \
+    cmake --build /build --parallel "$([ "${BUILD_JOBS}" -gt 0 ] && echo "${BUILD_JOBS}" || nproc)" && \
     cmake --install /build --prefix /opt/stage && \
     test -x /opt/stage/revere/revere && \
     (find /opt/stage/revere -type f \( -name "*.so*" -o -name revere -o -name vision \) \
