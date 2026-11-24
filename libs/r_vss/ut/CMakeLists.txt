@@ -79,6 +79,8 @@ add_executable(
     source/test_r_substream_setting.cpp
     include/test_r_camera_kind.h
     source/test_r_camera_kind.cpp
+    include/test_r_doorbell_rings.h
+    source/test_r_doorbell_rings.cpp
     include/test_r_ws_auth.h
     source/test_r_ws_auth.cpp
     include/test_r_appliance.h
@@ -124,8 +126,9 @@ endforeach()
 target_compile_definitions(test_no_action_system_plugin PRIVATE NO_ACTION_EXPORT NO_API_EXPORT)
 target_compile_definitions(test_other_api_system_plugin PRIVATE "TEST_PLUGIN_API_VERSION=(R_SYSTEM_PLUGIN_API_VERSION + 1)" RECORD_LOAD)
 
-# Two system plugins for test_r_system_plugin_motion: one with system_plugin_post_motion and system_plugin_camera_state, one without.
-foreach(variant motion no_motion)
+# Three system plugins for test_r_system_plugin_motion: one with system_plugin_post_motion, system_plugin_camera_state and
+# system_plugin_doorbell_ring, one with none of them, and one with only system_plugin_doorbell_ring.
+foreach(variant motion no_motion ring_only)
     add_library(test_${variant}_system_plugin SHARED test_plugin/test_motion_system_plugin.cpp)
     target_link_libraries(test_${variant}_system_plugin PRIVATE r_utils)
     target_include_directories(test_${variant}_system_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
@@ -134,6 +137,7 @@ foreach(variant motion no_motion)
     add_dependencies(r_vss_ut test_${variant}_system_plugin)
 endforeach()
 target_compile_definitions(test_no_motion_system_plugin PRIVATE NO_MOTION_EXPORTS)
+target_compile_definitions(test_ring_only_system_plugin PRIVATE RING_ONLY)
 
 # A system plugin for test_r_system_plugin_frames: it reads frame feeds through the host's functions.
 add_library(test_frames_system_plugin SHARED test_plugin/test_frames_system_plugin.cpp)
@@ -148,6 +152,7 @@ target_compile_definitions(r_vss_ut PRIVATE
     TEST_FRAMES_PLUGIN="$<TARGET_FILE:test_frames_system_plugin>"
     TEST_MOTION_PLUGIN="$<TARGET_FILE:test_motion_system_plugin>"
     TEST_NO_MOTION_PLUGIN="$<TARGET_FILE:test_no_motion_system_plugin>"
+    TEST_RING_ONLY_PLUGIN="$<TARGET_FILE:test_ring_only_system_plugin>"
     # test_r_recording_context reads the video callback's source for its wiring.
     R_VSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../source"
 )
