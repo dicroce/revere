@@ -4,6 +4,8 @@
 #include "r_utils/r_exception.h"
 #include "r_utils/r_logger.h"
 #include "r_utils/r_std_utils.h"
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
@@ -136,6 +138,13 @@ namespace
 void r_av::r_video_decoder_open_override(int (*open)(AVCodecContext*, const AVCodec*, AVDictionary**))
 {
     g_open = open;
+}
+
+static std::atomic<int64_t> g_failure_window_ms {10000};
+
+void r_av::r_video_decoder_failure_window_override(int ms)
+{
+    g_failure_window_ms = ms > 0 ? ms : 10000;
 }
 
 void r_av::r_video_decoder_send_override(int (*send)(AVCodecContext*, const AVPacket*))
@@ -510,7 +519,7 @@ r_codec_state r_video_decoder::decode()
     if (send_result >= 0) {
         _hw_send_failures = 0;
         uint64_t run = 0;
-        if(auto left_out = _send_failure_run.recovered(&run))
+        if(auto left_out = _send_failure_run.recovered(std::chrono::steady_clock::now(), &run))
             R_LOG_WARNING("video decode: packets are accepted again after %llu failed in a row (%llu not logged above)",
                           (unsigned long long)run, (unsigned long long)left_out);
         if(_gaps)
@@ -569,6 +578,7 @@ r_codec_state r_video_decoder::decode()
     else {
         // One line per run of failures, then one every few seconds: a decoder that refuses every packet until the
         // next key frame logged this tens of thousands of times in two hours.
+        _send_failure_run.set_every(std::chrono::milliseconds(g_failure_window_ms.load()));
         if(_send_failure_run.failed(std::chrono::steady_clock::now()))
             R_LOG_ERROR("Failed to send packet: %s (%llu failed in a row)", _ff_rc_to_msg(send_result).c_str(),
                         (unsigned long long)_send_failure_run.count());

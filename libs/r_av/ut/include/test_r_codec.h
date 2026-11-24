@@ -21,6 +21,9 @@ public:
       TEST(test_r_codec::test_software_decoder_does_not_fall_back);
       TEST(test_r_codec::test_failure_run_logs_the_first_then_one_per_interval);
       TEST(test_r_codec::test_failure_run_counts_what_was_left_out);
+      TEST(test_r_codec::test_failures_with_successes_between_are_still_one_burst);
+      TEST(test_r_codec::test_a_burst_nobody_ended_is_over_after_the_quiet);
+      TEST(test_r_codec::test_alternating_send_failures_are_not_a_line_each);
       TEST(test_r_codec::test_a_run_of_send_failures_is_one_log_line);
       TEST(test_r_codec::test_send_failure_run_ends_when_sends_work_again);
       TEST(test_r_codec::test_hw_invalid_data_does_not_fall_back);
@@ -49,6 +52,9 @@ public:
     void test_software_decoder_does_not_fall_back();
     void test_failure_run_logs_the_first_then_one_per_interval();
     void test_failure_run_counts_what_was_left_out();
+    void test_failures_with_successes_between_are_still_one_burst();
+    void test_a_burst_nobody_ended_is_over_after_the_quiet();
+    void test_alternating_send_failures_are_not_a_line_each();
     void test_a_run_of_send_failures_is_one_log_line();
     void test_send_failure_run_ends_when_sends_work_again();
     void test_hw_invalid_data_does_not_fall_back();
