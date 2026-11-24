@@ -19,6 +19,10 @@ public:
       TEST(test_r_codec::test_hw_failure_on_one_format_keeps_others_in_hardware);
       TEST(test_r_codec::test_dead_hw_context_falls_back_to_software);
       TEST(test_r_codec::test_software_decoder_does_not_fall_back);
+      TEST(test_r_codec::test_failure_run_logs_the_first_then_one_per_interval);
+      TEST(test_r_codec::test_failure_run_counts_what_was_left_out);
+      TEST(test_r_codec::test_a_run_of_send_failures_is_one_log_line);
+      TEST(test_r_codec::test_send_failure_run_ends_when_sends_work_again);
       TEST(test_r_codec::test_hw_invalid_data_does_not_fall_back);
       TEST(test_r_codec::test_hw_failures_not_in_a_row_keep_the_hardware);
       TEST(test_r_codec::test_hw_decoder_that_wont_open_decodes_in_software);
@@ -43,6 +47,10 @@ public:
     void test_hw_failure_on_one_format_keeps_others_in_hardware();
     void test_dead_hw_context_falls_back_to_software();
     void test_software_decoder_does_not_fall_back();
+    void test_failure_run_logs_the_first_then_one_per_interval();
+    void test_failure_run_counts_what_was_left_out();
+    void test_a_run_of_send_failures_is_one_log_line();
+    void test_send_failure_run_ends_when_sends_work_again();
     void test_hw_invalid_data_does_not_fall_back();
     void test_hw_failures_not_in_a_row_keep_the_hardware();
     void test_hw_decoder_that_wont_open_decodes_in_software();

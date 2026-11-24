@@ -12,6 +12,7 @@ extern "C"
 }
 
 #include "r_av/r_codec_state.h"
+#include "r_av/r_failure_run.h"
 #include "r_av/r_hw_accel.h"
 #include "r_utils/r_macro.h"
 #include <vector>
@@ -106,6 +107,8 @@ private:
     bool _codec_opened;
     // Hardware sends that failed with AVERROR_EXTERNAL in a row (see _fall_back_to_software).
     int _hw_send_failures {0};
+    // Sends that failed one after another of any kind: logged once, then every few seconds with a count.
+    r_failure_run _send_failure_run;
 
     void _open_codec();
     static AVPixelFormat _get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);

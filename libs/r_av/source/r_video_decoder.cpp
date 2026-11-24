@@ -262,6 +262,7 @@ r_video_decoder::r_video_decoder(r_video_decoder&& obj) :
     _scalers(std::move(obj._scalers)),
     _codec_opened(std::move(obj._codec_opened)),
     _hw_send_failures(obj._hw_send_failures),
+    _send_failure_run(obj._send_failure_run),
     _gaps(std::move(obj._gaps))
 {
     obj._codec_id = AV_CODEC_ID_NONE;
@@ -323,6 +324,7 @@ r_video_decoder& r_video_decoder::operator=(r_video_decoder&& obj)
         _scalers = std::move(obj._scalers);
         _codec_opened = std::move(obj._codec_opened);
         _hw_send_failures = obj._hw_send_failures;
+        _send_failure_run = obj._send_failure_run;
         _gaps = std::move(obj._gaps);
 
         // _context->opaque points into obj's _hw_pix_fmt — redirect to ours
@@ -507,6 +509,10 @@ r_codec_state r_video_decoder::decode()
 
     if (send_result >= 0) {
         _hw_send_failures = 0;
+        uint64_t run = 0;
+        if(auto left_out = _send_failure_run.recovered(&run))
+            R_LOG_WARNING("video decode: packets are accepted again after %llu failed in a row (%llu not logged above)",
+                          (unsigned long long)run, (unsigned long long)left_out);
         if(_gaps)
             _gap_after_send(packet->data, packet->size);
 
@@ -561,7 +567,11 @@ r_codec_state r_video_decoder::decode()
         return R_CODEC_STATE_EOF;
     }
     else {
-        R_LOG_ERROR("Failed to send packet: %s", _ff_rc_to_msg(send_result).c_str());
+        // One line per run of failures, then one every few seconds: a decoder that refuses every packet until the
+        // next key frame logged this tens of thousands of times in two hours.
+        if(_send_failure_run.failed(std::chrono::steady_clock::now()))
+            R_LOG_ERROR("Failed to send packet: %s (%llu failed in a row)", _ff_rc_to_msg(send_result).c_str(),
+                        (unsigned long long)_send_failure_run.count());
         // A GPU fault leaves a hardware decoder's device dead: every send fails like this from then on, and it never
         // recovers (new decoders fall back already, when they can't create the device).
         if(_hw_accel != r_hw_accel::none && send_result == AVERROR_EXTERNAL &&
