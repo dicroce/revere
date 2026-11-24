@@ -250,6 +250,9 @@ private:
     // Move storage / Change retention (the desktop's Camera properties).
     r_http::r_server_response _get_storage_info(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
+    // The recordings' drive: its size and free space, and what the cameras' files reserve of it.
+    r_http::r_server_response _get_storage_summary(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+
     r_http::r_server_response _post_storage_move(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _post_storage_change_retention(r_utils::r_socket_base& conn, const r_http::r_server_request& request);

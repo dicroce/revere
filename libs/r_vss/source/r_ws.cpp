@@ -3,6 +3,7 @@
 #include "r_disco/r_substream.h"
 #include "r_vss/r_ws.h"
 #include "r_vss/r_appliance.h"
+#include "r_vss/r_storage_summary.h"
 #include "r_vss/r_ws_client_errors.h"
 #include "r_vss/r_export_output.h"
 #include "r_vss/r_export_audio.h"
@@ -194,6 +195,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_GET, "/discovery_status", &r_ws::_get_discovery_status);
     route(METHOD_POST, "/add_rtsp_camera", &r_ws::_post_add_rtsp_camera);
     route(METHOD_GET, "/storage_info", &r_ws::_get_storage_info);
+    route(METHOD_GET, "/storage_summary", &r_ws::_get_storage_summary);
     route(METHOD_POST, "/storage_move", &r_ws::_post_storage_move);
     route(METHOD_POST, "/storage_change_retention", &r_ws::_post_storage_change_retention);
     route(METHOD_GET, "/storage_op", &r_ws::_get_storage_op);
@@ -4247,6 +4249,55 @@ r_http::r_server_response r_ws::_get_storage_info(r_utils::r_socket_base&, const
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to get storage info."));
+}
+
+r_http::r_server_response r_ws::_get_storage_summary(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        vector<r_storage_camera> cams;
+        for(auto& camera : _devices.get_all_cameras())
+        {
+            if(camera.record_file_path.is_null())
+                continue;
+            int64_t nb = camera.n_record_file_blocks.is_null() ? 0 : camera.n_record_file_blocks.value();
+            int64_t bs = camera.record_file_block_size.is_null() ? 0 : camera.record_file_block_size.value();
+            auto path = storage_path(_top_dir, camera.record_file_path.value());
+            cams.push_back({std::filesystem::path(path).parent_path().string(), nb * bs, _camera_byte_rate(_stream_keeper, camera.id)});
+        }
+        auto summary = summarize_storage(cams);
+
+        // The drive the files are on, or the default video folder without cameras. A drive that can't be read gives
+        // nulls: the rest of the summary still stands.
+        auto dir = summary.main_dir.empty() ? _top_dir + PATH_SLASH + "video" : summary.main_dir;
+        json j;
+        j["path"] = dir;
+        j["total_bytes"] = nullptr;
+        j["free_bytes"] = nullptr;
+        try
+        {
+            uint64_t size = 0, free = 0;
+            r_utils::r_fs::get_fs_usage(dir, size, free);
+            j["total_bytes"] = size;
+            j["free_bytes"] = free;
+        }
+        catch(const std::exception&)
+        {
+        }
+        j["recordings_bytes"] = summary.recordings_bytes;
+        j["cameras"] = summary.cameras;
+        j["retention_days_min"] = summary.retention_days_min;
+        j["retention_days_max"] = summary.retention_days_max;
+        return _json_reply(j);
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to get the storage summary."));
 }
 
 r_http::r_server_response r_ws::_post_storage_move(r_utils::r_socket_base&, const r_http::r_server_request& request)
