@@ -4265,7 +4265,7 @@ r_http::r_server_response r_ws::_get_storage_summary(r_utils::r_socket_base&, co
             int64_t nb = camera.n_record_file_blocks.is_null() ? 0 : camera.n_record_file_blocks.value();
             int64_t bs = camera.record_file_block_size.is_null() ? 0 : camera.record_file_block_size.value();
             auto path = storage_path(_top_dir, camera.record_file_path.value());
-            cams.push_back({std::filesystem::path(path).parent_path().string(), nb * bs, _camera_byte_rate(_stream_keeper, camera.id)});
+            cams.push_back({std::filesystem::u8path(path).parent_path().u8string(), nb * bs, _camera_byte_rate(_stream_keeper, camera.id)});
         }
         auto summary = summarize_storage(cams);
 
@@ -4321,15 +4321,17 @@ r_http::r_server_response r_ws::_post_storage_move(r_utils::r_socket_base&, cons
 
         // A folder on the machine Revere runs on, which the web UI can't browse.
         std::error_code ec;
-        if(new_dir.empty() || !std::filesystem::path(new_dir).is_absolute())
+        // Paths are UTF-8 here and everywhere in the API: u8path, so a folder with non-ASCII letters is read as typed
+        // on Windows (a narrow string there is the ANSI code page's) and never a conversion error.
+        if(new_dir.empty() || !std::filesystem::u8path(new_dir).is_absolute())
             return _json_error(response_bad_request, "Enter the full path of a folder on the machine Revere runs on.");
-        if(!std::filesystem::is_directory(new_dir, ec))
+        if(!std::filesystem::is_directory(std::filesystem::u8path(new_dir), ec))
             return _json_error(response_bad_request, "There's no folder at " + new_dir + " on the machine Revere runs on.");
         if(start_fresh && !delete_confirmed)
             return _json_error(response_bad_request, "Starting fresh deletes this camera's recordings; confirm that first.");
 
-        auto current_dir = std::filesystem::path(storage_path(_top_dir, camera.record_file_path.value())).parent_path();
-        if(!start_fresh && std::filesystem::equivalent(current_dir, new_dir, ec))
+        auto current_dir = std::filesystem::u8path(storage_path(_top_dir, camera.record_file_path.value())).parent_path();
+        if(!start_fresh && std::filesystem::equivalent(current_dir, std::filesystem::u8path(new_dir), ec))
             return _json_error(response_bad_request, "The recording files are already in that folder.");
 
         auto top_dir = _top_dir;
