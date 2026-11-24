@@ -34,6 +34,9 @@ public:
       TEST(test_r_disco::test_sql_in_a_camera_id);
       TEST(test_r_disco::test_saved_camera_round_trips);
       TEST(test_r_disco::test_substream_saved_and_loaded);
+      TEST(test_r_disco::test_camera_kind);
+      TEST(test_r_disco::test_camera_kind_saved_and_loaded);
+      TEST(test_r_disco::test_db_upgrade_existing_camera_has_no_kind);
       TEST(test_r_disco::test_db_upgrade_existing_camera_has_no_substream);
     RTF_FIXTURE_END();
 
@@ -71,5 +74,8 @@ public:
     void test_sql_in_a_camera_id();
     void test_saved_camera_round_trips();
     void test_substream_saved_and_loaded();
+    void test_camera_kind();
+    void test_camera_kind_saved_and_loaded();
+    void test_db_upgrade_existing_camera_has_no_kind();
     void test_db_upgrade_existing_camera_has_no_substream();
 };

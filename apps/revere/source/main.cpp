@@ -216,6 +216,7 @@ struct revere_ui_state
     string retention;
 
     // camera properties dialog
+    bool is_doorbell {false};
     bool do_motion_detection {false};
     bool do_motion_pruning {false};
     std::string min_continuous_recording_hours {"24"};
@@ -1760,6 +1761,7 @@ void configure_camera_setup_wizard(
             revere::camera_properties_modal(
                 "Camera properties",
                 camera_name,
+                ui_state.is_doorbell,
                 ui_state.do_motion_detection,
                 ui_state.do_motion_pruning,
                 ui_state.min_continuous_recording_hours,
@@ -1800,6 +1802,12 @@ void configure_camera_setup_wizard(
                     camera.min_continuous_recording_hours.set_value(r_string_utils::s_to_int(ui_state.min_continuous_recording_hours));
                     camera.motion_tier.set_value(ui_state.motion_tier);
                     camera.rtsp_transport.set_value(ui_state.rtsp_transport);
+                    // Kept as a choice only once it differs from what the model suggests, or was chosen before.
+                    {
+                        const string kind = ui_state.is_doorbell ? "doorbell" : "camera";
+                        if(!camera.kind.is_null() || kind != r_disco::camera_kind(camera))
+                            camera.kind.set_value(kind);
+                    }
                     {
                         // The Streams section's choice, when it was changed.
                         std::lock_guard<std::mutex> g(streams.m);
@@ -3548,6 +3556,7 @@ int main(int argc, char** argv)
 
         // Go to camera properties modal
         auto camera = devices.get_camera_by_id(ui_state.selected_camera_id().value()).value();
+        ui_state.is_doorbell = r_disco::camera_kind(camera) == "doorbell";
         ui_state.do_motion_detection = camera.do_motion_detection.value();
         ui_state.do_motion_pruning = camera.do_motion_pruning.value();
         ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());

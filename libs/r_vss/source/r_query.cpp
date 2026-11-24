@@ -473,11 +473,13 @@ void r_vss::query_remove_camera(const string& top_dir, r_devices& devices, const
     }
 }
 
-void r_vss::query_update_camera_properties(const string& top_dir, r_devices& devices, const string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours, const r_nullable<string>& motion_tier)
+void r_vss::query_update_camera_properties(const string& top_dir, r_devices& devices, const string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours, const r_nullable<string>& motion_tier, const r_nullable<string>& kind)
 {
     if(!motion_tier.is_null() && motion_tier.value() != "auto" && motion_tier.value() != "1" &&
        motion_tier.value() != "2" && motion_tier.value() != "3")
         R_STHROW(r_http::r_http_400_exception, ("motion_tier must be auto, 1, 2 or 3."));
+    if(!kind.is_null() && !r_disco::valid_camera_kind(kind.value()))
+        R_STHROW(r_http::r_http_400_exception, ("kind must be camera or doorbell."));
 
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
@@ -512,6 +514,8 @@ void r_vss::query_update_camera_properties(const string& top_dir, r_devices& dev
     camera.min_continuous_recording_hours.set_value(min_continuous_recording_hours);
     if(!motion_tier.is_null())
         camera.motion_tier.set_value(motion_tier.value());
+    if(!kind.is_null())
+        camera.kind.set_value(kind.value());
 
     devices.save_camera(camera);
 }
