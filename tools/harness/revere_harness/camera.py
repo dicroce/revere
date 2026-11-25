@@ -22,10 +22,10 @@ class CameraSpec:
     substream: bool = False
     username: str = "admin"
     password: str = "harness-pw"
-    width: int = 1280
-    height: int = 720
-    fps: int = 15
-    bitrate_kbps: int = 1500
+    width: int = 640
+    height: int = 360
+    fps: int = 10
+    bitrate_kbps: int = 500
     scene: str = "moving"
 
     @property

@@ -6,6 +6,10 @@ set -u
 # while the container's /sys is read-only.
 mount -o remount,rw /sys 2>/dev/null || true
 
+# The recorder logs through syslog (/dev/log), which a container does not have. The harness's sandbox binds its own log
+# socket over /dev/log only when something is there, so without this the recorder's own log is lost (no syslog.log).
+[ -e /dev/log ] || touch /dev/log 2>/dev/null || true
+
 # Run folders stay on the container's own disk and are copied to the host's folder.
 # The recorder's databases are left out: a folder shared with the host is slow for
 # them, and they are deleted after a passing run anyway.
