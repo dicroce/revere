@@ -751,8 +751,16 @@ static string _random_text(size_t chars)
     return out;
 }
 
+namespace
+{
+// Making the login or certificate, and reading it back, one caller at a time: setup (an HTTP thread) and the listener
+// (the keeper's thread) may both ask first, and must both get the same one.
+std::mutex _made_once;
+}
+
 r_mail_login r_vss::load_or_make_mail_login(const string& path)
 {
+    std::lock_guard<std::mutex> g(_made_once);
     if (r_fs::file_exists(path))
     {
         auto bytes = r_fs::read_file(path);
@@ -779,6 +787,7 @@ r_mail_login r_vss::load_or_make_mail_login(const string& path)
 
 pair<string, string> r_vss::load_or_make_mail_cert(const string& cert_path, const string& key_path)
 {
+    std::lock_guard<std::mutex> g(_made_once);
     if (r_fs::file_exists(cert_path) && r_fs::file_exists(key_path))
     {
         try
