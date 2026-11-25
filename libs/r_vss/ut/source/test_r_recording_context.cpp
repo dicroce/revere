@@ -4,6 +4,7 @@
 #include "r_disco/r_camera.h"
 #include "r_vss/r_frame_feeds.h"
 #include "r_pipeline/r_gst_source.h"
+#include "r_utils/r_string_utils.h"
 #include <deque>
 #include <fstream>
 #include <sstream>
@@ -97,4 +98,42 @@ void test_r_recording_context::test_the_video_callback_stamps_the_gop_cache()
     // And the push to the cache (r_live_video_fanout::post) comes before the write, so the stamp lands on this frame.
     auto pushed = src.find("_video_fanout.post(pts, key, buffer,");
     RTF_ASSERT(pushed != std::string::npos && pushed < write);
+}
+
+void test_r_recording_context::test_audio_off_stops_audio_before_storage_feeds_and_restream()
+{
+    // The wiring of a camera whose audio is off (r_audio_policy.h), read from the source, like the test above: a
+    // recording context can't be run here, as it needs a stream keeper, whose web API listens on the recorder's own
+    // ports as it's made. The session takes the policy before its callbacks are set; the audio callback returns before
+    // anything else, so no audio write context is made and nothing is written, handed to plugins' feeds or queued for
+    // the restream; the SDP and the restream mount leave audio out.
+    std::ifstream in(std::string(R_VSS_SOURCE_DIR) + "/r_recording_context.cpp");
+    RTF_ASSERT(in.good());
+    std::stringstream ss;
+    ss << in.rdbuf();
+    auto src = ss.str();
+    auto taken = src.find("_records_audio = sk ? sk->records_audio(camera.id) : true;");
+    auto cb = src.find("_source.set_audio_sample_cb([this](const sample_context& sc, const r_gst_buffer& buffer, bool key, int64_t pts){");
+    RTF_ASSERT(taken != std::string::npos && cb != std::string::npos && taken < cb);
+    auto body = src.find("{", cb + 40) + 1;
+    auto gate = src.find("if(!this->_records_audio)\n            return;", cb);
+    RTF_ASSERT(gate != std::string::npos);
+    // Nothing but blank lines and comments before the gate.
+    for(auto& line : r_utils::r_string_utils::split(src.substr(body, gate - body), '\n'))
+    {
+        auto t = r_utils::r_string_utils::strip(line);
+        RTF_ASSERT(t.empty() || t.rfind("//", 0) == 0);
+    }
+    auto write_context = src.find("create_write_context(audio_codec_name, audio_codec_parameters, R_STORAGE_MEDIA_TYPE_AUDIO);", cb);
+    auto write = src.find("R_STORAGE_MEDIA_TYPE_AUDIO,\n                mi.data(),", cb);
+    auto feeds = src.find("this->_sk->post_audio_to_feeds(", cb);
+    auto restream = src.find("this->_sk->iterate_live_restreaming_states(this->_camera.id,", cb);
+    auto next_cb = src.find("_source.set_video_sample_cb(", cb);
+    RTF_ASSERT(write_context != std::string::npos && write != std::string::npos && feeds != std::string::npos && restream != std::string::npos);
+    RTF_ASSERT(gate < write_context && gate < write && gate < feeds && gate < restream);
+    RTF_ASSERT(restream < next_cb);
+    // The SDP the session keeps, and the restream mount the video callback makes, leave audio out too.
+    RTF_ASSERT(src.find("this->_sdp_medias = recording_sdp_medias(sdp_medias, this->_records_audio);") != std::string::npos);
+    auto mount = src.find("recording_audio_encoding(sc.audio_encoding(), this->_records_audio)");
+    RTF_ASSERT(mount != std::string::npos && mount > next_cb);
 }
