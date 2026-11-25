@@ -28,6 +28,7 @@
 #include <functional>
 #include "r_disco/r_devices.h"
 #include "r_vss/r_doorbell_rings.h"
+#include "r_vss/r_mail_rings.h"
 #include "r_disco/r_camera.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_work_q.h"
@@ -505,6 +506,14 @@ private:
     r_motion_tuning_fn _motion_tuning_fn;
     r_motion_event_plugin_host _meph;
     r_doorbell_rings _doorbell_rings;
+
+    // The mail listener for doorbells that send rings by email (r_mail_rings), running only while one is set to:
+    // keeper thread only, but for _mail_doorbells, which its connections read.
+    std::unique_ptr<r_mail_rings> _mail_rings;
+    std::string _mail_rings_bind;
+    mutable std::mutex _mail_doorbells_lock;
+    std::map<std::string, std::string> _mail_doorbells;   // by address, to the camera's id
+    void _tend_mail_rings(const std::vector<r_disco::r_camera>& assigned);
     r_motion_event_tee _motion_tee;
     r_motion_engine _motionEngine;
     r_system_plugin_host _system_plugin_host;
@@ -543,7 +552,8 @@ private:
     void _camera_class_output(const std::string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms);
     // A doorbell's press (a visitor event going active on a camera whose kind is "doorbell"): a ring, unless it's
     // within r_doorbell_rings::DEBOUNCE_MS of the last. Stored in the camera's metadata and handed to plugins.
-    void _doorbell_press(const std::string& camera_id, int64_t now_ms);
+    // A press of a doorbell at press_ms, as source reported it ("onvif", "reolink_email").
+    void _doorbell_press(const std::string& camera_id, int64_t press_ms, const std::string& source = "onvif");
     void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections);
     void _pass_session(const r_detection_session& session);
     bool _motion_detection_on(const std::string& camera_id);

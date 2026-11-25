@@ -164,6 +164,8 @@ r_stream_keeper::~r_stream_keeper() noexcept
 {
     if(_running)
         stop();
+    // Its rings reach the plugins and storage: it goes before they do.
+    _mail_rings.reset();
 
     _system_plugin_host.stop_all();
     _motionEngine.stop();
@@ -315,6 +317,8 @@ bool r_stream_keeper::stop()
         for(auto& t : stopping)
             t.join();
     }
+    // No more rings by email: before the plugins that hear them stop.
+    _mail_rings.reset();
 
     R_LOG_INFO("Stopping prune...");
     _prune.stop();
@@ -780,19 +784,78 @@ void r_stream_keeper::_tier_tick()
     }
 }
 
-void r_stream_keeper::_doorbell_press(const string& camera_id, int64_t now_ms)
+void r_stream_keeper::_doorbell_press(const string& camera_id, int64_t press_ms, const string& source)
 {
-    auto press = doorbell_press(_doorbell_rings, _devices.get_camera_by_id(camera_id), "visitor", true, now_ms);
+    auto press = doorbell_press(_doorbell_rings, _devices.get_camera_by_id(camera_id), "visitor", true, press_ms, source);
     if(press == r_doorbell_press::none)
         return;
     if(press == r_doorbell_press::repeat)
     {
-        R_LOG_INFO("doorbell [%s]: pressed again within %d s of its ring", _camera_name(camera_id).c_str(), r_doorbell_rings::DEBOUNCE_MS / 1000);
+        R_LOG_INFO("doorbell [%s]: the same press again (%s)", _camera_name(camera_id).c_str(), source.c_str());
         return;
     }
-    R_LOG_INFO("doorbell [%s]: ring", _camera_name(camera_id).c_str());
-    _system_plugin_host.notify_doorbell_ring(camera_id, now_ms);
-    write_metadata(camera_id, "doorbell_rings", doorbell_ring_json(now_ms), now_ms);
+    R_LOG_INFO("doorbell [%s]: ring (%s)", _camera_name(camera_id).c_str(), source.c_str());
+    _system_plugin_host.notify_doorbell_ring(camera_id, press_ms);
+    write_metadata(camera_id, "doorbell_rings", doorbell_ring_json(press_ms), press_ms);
+}
+
+void r_stream_keeper::_tend_mail_rings(const vector<r_disco::r_camera>& assigned)
+{
+    auto doorbells = mail_ring_doorbells(assigned);
+    {
+        std::lock_guard<std::mutex> g(_mail_doorbells_lock);
+        _mail_doorbells = doorbells;
+    }
+    if(doorbells.empty())
+    {
+        if(_mail_rings)
+        {
+            R_LOG_INFO("mail rings: no doorbell sends rings by email now; the listener stops");
+            _mail_rings.reset();
+            _mail_rings_bind.clear();
+        }
+        return;
+    }
+    // The box's address toward its first such doorbell: its LAN address, never every address.
+    auto bind = r_utils::r_networking::r_local_ip_for(doorbells.begin()->first);
+    if(bind.empty())
+        return;
+    if(_mail_rings && bind == _mail_rings_bind)
+        return;
+    _mail_rings.reset();
+    _mail_rings_bind.clear();
+    try
+    {
+        auto dir = _top_dir + PATH_SLASH + "mail_rings";
+        auto login = load_or_make_mail_login(dir + PATH_SLASH + "login");
+        auto pems = load_or_make_mail_cert(dir + PATH_SLASH + "mail_rings.crt", dir + PATH_SLASH + "mail_rings.key");
+        r_mail_rings_config c;
+        c.bind_ip = bind;
+        auto port = r_utils::r_std_utils::get_env("REVERE_MAIL_RINGS_PORT");
+        if(!port.empty())
+            c.port = r_utils::r_string_utils::s_to_int(port);
+        c.user = login.user;
+        c.password = login.password;
+        c.cert_pem = pems.first;
+        c.key_pem = pems.second;
+        auto rings = std::make_unique<r_mail_rings>(c,
+            [this](const string& ip) {
+                std::lock_guard<std::mutex> g(_mail_doorbells_lock);
+                auto it = _mail_doorbells.find(ip);
+                return it == _mail_doorbells.end() ? r_utils::r_nullable<string>() : r_utils::r_nullable<string>(it->second);
+            },
+            [this](const r_mail_ring& r) { _doorbell_press(r.camera_id, r.press_ms, "reolink_email"); },
+            // The camera's clock offset isn't kept yet: 0, and r_mail_rings checks the subject's time is near the mail's.
+            [](const string&) { return (int64_t)0; });
+        rings->start();
+        _mail_rings = std::move(rings);
+        _mail_rings_bind = bind;
+        R_LOG_INFO("mail rings: listening on %s:%d for %d doorbell(s)", bind.c_str(), c.port, (int)doorbells.size());
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("mail rings: the listener didn't start: %s", e.what());
+    }
 }
 
 void r_stream_keeper::_camera_class_output(const string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms)
@@ -1519,8 +1582,12 @@ void r_stream_keeper::_entry_point()
             // won't trigger this.
             {
                 std::set<std::string> assigned_ids;
-                for(const auto& c : _devices.get_assigned_cameras())
+                auto assigned = _devices.get_assigned_cameras();
+                for(const auto& c : assigned)
                     assigned_ids.insert(c.id);
+                // Doorbells that send rings by email: the mail listener runs while there are any.
+                if(!_stopping)
+                    _tend_mail_rings(assigned);
                 if(assigned_ids != _last_assigned_camera_ids)
                 {
                     _last_assigned_camera_ids = std::move(assigned_ids);

@@ -1,6 +1,7 @@
 #ifndef __r_vss_r_mail_rings_h
 #define __r_vss_r_mail_rings_h
 
+#include "r_disco/r_camera.h"
 #include "r_utils/r_macro.h"
 #include "r_utils/r_nullable.h"
 #include <atomic>
@@ -12,6 +13,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace r_utils { class r_ssl_server_socket; class r_ssl_server_config; template<class> class r_server_threaded; }
 
@@ -109,6 +112,19 @@ R_API r_utils::r_nullable<int64_t> ring_subject_time_ms(const std::string& subje
 R_API int64_t ring_press_ms(const r_utils::r_nullable<int64_t>& subject_ms, int64_t clock_offset_ms, int64_t arrival_ms, bool& clock_read);
 // A mail's Subject (encoded words decoded) and its text (a base64 body decoded), from the whole message.
 R_API void read_mail(const std::string& message, std::string& subject, std::string& text);
+
+// The doorbells that send rings by email: a doorbell (r_disco::camera_kind) set to "reolink_email", with an address.
+// By address, to the camera's id: who the listener lets in.
+R_API std::map<std::string, std::string> mail_ring_doorbells(const std::vector<r_disco::r_camera>& cameras);
+
+// The box's login for its doorbells' mail, shown in setup: made once (a random user and password) and kept in path,
+// readable by its owner only.
+struct r_mail_login { std::string user; std::string password; };
+R_API r_mail_login load_or_make_mail_login(const std::string& path);
+
+// The listener's certificate and key (PEM), made once and kept beside the login: the certificate in cert_path, the key
+// in key_path, readable by its owner only.
+R_API std::pair<std::string, std::string> load_or_make_mail_cert(const std::string& cert_path, const std::string& key_path);
 
 }
 

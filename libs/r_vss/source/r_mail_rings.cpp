@@ -4,6 +4,9 @@
 #include "r_utils/r_ssl_server_socket.h"
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_exception.h"
+#include "r_utils/r_file.h"
+#include "mbedtls/ctr_drbg.h"
+#include "mbedtls/entropy.h"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -685,4 +688,89 @@ void r_mail_rings::_mail(const string& camera_id, const string& message)
                ring.clock_read ? "" : ", its time not read");
     if (_on_ring)
         _on_ring(ring);
+}
+
+map<string, string> r_vss::mail_ring_doorbells(const vector<r_disco::r_camera>& cameras)
+{
+    map<string, string> out;
+    for (auto& c : cameras)
+        if (r_disco::camera_kind(c) == "doorbell" && r_disco::camera_press_source(c) == "reolink_email" &&
+            !c.ipv4.is_null() && !c.ipv4.value().empty())
+            out[c.ipv4.value()] = c.id;
+    return out;
+}
+
+static string _random_text(size_t chars)
+{
+    // Letters and digits that can't be misread when typed from a screen into an app.
+    static const char ALPHABET[] = "abcdefghjkmnpqrstuvwxyz23456789";
+    vector<unsigned char> bytes(chars);
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context drbg;
+    mbedtls_entropy_init(&entropy);
+    mbedtls_ctr_drbg_init(&drbg);
+    const char* pers = "r_mail_rings";
+    int ret = mbedtls_ctr_drbg_seed(&drbg, mbedtls_entropy_func, &entropy, (const unsigned char*)pers, strlen(pers));
+    if (ret == 0)
+        ret = mbedtls_ctr_drbg_random(&drbg, bytes.data(), bytes.size());
+    mbedtls_ctr_drbg_free(&drbg);
+    mbedtls_entropy_free(&entropy);
+    if (ret != 0)
+        R_THROW(("Unable to make a random login for the mail listener (%d).", ret));
+    string out;
+    for (auto b : bytes)
+        out += ALPHABET[b % (sizeof(ALPHABET) - 1)];
+    return out;
+}
+
+r_mail_login r_vss::load_or_make_mail_login(const string& path)
+{
+    if (r_fs::file_exists(path))
+    {
+        auto bytes = r_fs::read_file(path);
+        string text(bytes.begin(), bytes.end());
+        auto nl = text.find('\n');
+        if (nl != string::npos)
+        {
+            r_mail_login login{text.substr(0, nl), text.substr(nl + 1)};
+            while (!login.password.empty() && (login.password.back() == '\n' || login.password.back() == '\r'))
+                login.password.pop_back();
+            if (!login.user.empty() && !login.password.empty())
+                return login;
+        }
+        R_LOG_WARNING("mail rings: the stored login in %s is unreadable; making a new one", path.c_str());
+    }
+    r_mail_login login{"revere-" + _random_text(6), _random_text(20)};
+    string dir, name;
+    r_fs::break_path(path, dir, name);
+    r_fs::mkdir_p(dir);
+    string text = login.user + "\n" + login.password + "\n";
+    r_fs::atomic_write_private_file((const uint8_t*)text.data(), text.size(), path);
+    return login;
+}
+
+pair<string, string> r_vss::load_or_make_mail_cert(const string& cert_path, const string& key_path)
+{
+    if (r_fs::file_exists(cert_path) && r_fs::file_exists(key_path))
+    {
+        try
+        {
+            auto c = r_fs::read_file(cert_path);
+            auto k = r_fs::read_file(key_path);
+            pair<string, string> pems{string(c.begin(), c.end()), string(k.begin(), k.end())};
+            r_ssl_server_config check(pems.first, pems.second);   // throws if they're no good
+            return pems;
+        }
+        catch (const exception& e)
+        {
+            R_LOG_WARNING("mail rings: the stored certificate is unusable (%s); making a new one", e.what());
+        }
+    }
+    auto pems = r_ssl_server_config::generate_self_signed("revere");
+    string dir, name;
+    r_fs::break_path(cert_path, dir, name);
+    r_fs::mkdir_p(dir);
+    r_fs::atomic_write_file((const uint8_t*)pems.first.data(), pems.first.size(), cert_path);
+    r_fs::atomic_write_private_file((const uint8_t*)pems.second.data(), pems.second.size(), key_path);
+    return pems;
 }

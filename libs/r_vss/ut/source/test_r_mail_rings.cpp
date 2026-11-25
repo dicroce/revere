@@ -3,6 +3,8 @@
 #include "r_utils/r_ssl_server_socket.h"
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_string_utils.h"
+#include "r_utils/r_file.h"
+#include <sys/stat.h>
 #include <chrono>
 #include <ctime>
 #include <mutex>
@@ -520,4 +522,64 @@ void test_r_mail_rings::test_wrong_logins_counted_per_address()
         c.secure();
         RTF_ASSERT(client::code(c.auth_plain(USER, PASS), "235"));
     }
+}
+
+void test_r_mail_rings::test_which_doorbells_send_by_email()
+{
+    r_disco::r_camera door;
+    door.id = "door";
+    door.kind = string("doorbell");
+    door.ipv4 = string("10.0.0.9");
+    door.press_source = string("reolink_email");
+    r_disco::r_camera onvif_door = door;
+    onvif_door.id = "onvif_door";
+    onvif_door.ipv4 = string("10.0.0.10");
+    onvif_door.press_source.clear();
+    r_disco::r_camera cam = door;
+    cam.id = "cam";
+    cam.ipv4 = string("10.0.0.11");
+    cam.kind = string("camera");                 // set to email, but not a doorbell
+    r_disco::r_camera nowhere = door;
+    nowhere.id = "nowhere";
+    nowhere.ipv4.clear();
+    auto m = mail_ring_doorbells({door, onvif_door, cam, nowhere});
+    RTF_ASSERT_EQUAL(m.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(m["10.0.0.9"], string("door"));
+}
+
+void test_r_mail_rings::test_the_login_is_made_once_and_kept_private()
+{
+    string dir = "mail_rings_test_dir";
+    string path = dir + PATH_SLASH + "login";
+    if (r_fs::file_exists(path))
+        r_fs::remove_file(path);
+    auto a = load_or_make_mail_login(path);
+    RTF_ASSERT(a.user.compare(0, 7, "revere-") == 0);
+    RTF_ASSERT(a.password.size() == 20);
+    auto b = load_or_make_mail_login(path);
+    RTF_ASSERT(a.user == b.user && a.password == b.password);
+#ifndef IS_WINDOWS
+    struct stat st {};
+    RTF_ASSERT(stat(path.c_str(), &st) == 0);
+    RTF_ASSERT((st.st_mode & 0777) == 0600);
+#endif
+    // Another box's is another login.
+    r_fs::remove_file(path);
+    RTF_ASSERT(load_or_make_mail_login(path).password != a.password);
+
+    string crt = dir + PATH_SLASH + "mail_rings.crt", key = dir + PATH_SLASH + "mail_rings.key";
+    for (auto& f : {crt, key})
+        if (r_fs::file_exists(f))
+            r_fs::remove_file(f);
+    auto pems = load_or_make_mail_cert(crt, key);
+    RTF_ASSERT(load_or_make_mail_cert(crt, key) == pems);
+#ifndef IS_WINDOWS
+    RTF_ASSERT(stat(key.c_str(), &st) == 0);
+    RTF_ASSERT((st.st_mode & 0777) == 0600);
+#endif
+    // A spoiled one is made again.
+    r_fs::atomic_write_file((const uint8_t*)"junk", 4, crt);
+    auto again = load_or_make_mail_cert(crt, key);
+    RTF_ASSERT(again != pems);
+    r_ssl_server_config ok(again.first, again.second);
 }

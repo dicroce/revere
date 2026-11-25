@@ -23,6 +23,8 @@ public:
       TEST(test_r_mail_rings::test_a_connection_has_a_deadline);
       TEST(test_r_mail_rings::test_a_data_without_end);
       TEST(test_r_mail_rings::test_wrong_logins_counted_per_address);
+      TEST(test_r_mail_rings::test_which_doorbells_send_by_email);
+      TEST(test_r_mail_rings::test_the_login_is_made_once_and_kept_private);
     RTF_FIXTURE_END();
 
     virtual ~test_r_mail_rings() throw() {}
@@ -48,4 +50,6 @@ public:
     void test_a_connection_has_a_deadline();
     void test_a_data_without_end();
     void test_wrong_logins_counted_per_address();
+    void test_which_doorbells_send_by_email();
+    void test_the_login_is_made_once_and_kept_private();
 };
