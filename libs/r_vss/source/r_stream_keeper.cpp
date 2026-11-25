@@ -585,6 +585,10 @@ static int64_t _epoch_ms()
 void r_stream_keeper::camera_transition(const string& camera_id, const r_cameras::r_camera_transition& t)
 {
     auto now = _epoch_ms();
+
+    // A doorbell's press rings whatever the camera's tier and motion detection setting.
+    if(t.what == "visitor" && t.active)
+        _doorbell_press(camera_id, now);
     int tier;
     {
         std::lock_guard<std::mutex> g(_tier_lock);
@@ -774,6 +778,21 @@ void r_stream_keeper::_tier_tick()
             _remove_motion_work_context(c.first);
         }
     }
+}
+
+void r_stream_keeper::_doorbell_press(const string& camera_id, int64_t now_ms)
+{
+    auto press = doorbell_press(_doorbell_rings, _devices.get_camera_by_id(camera_id), "visitor", true, now_ms);
+    if(press == r_doorbell_press::none)
+        return;
+    if(press == r_doorbell_press::repeat)
+    {
+        R_LOG_INFO("doorbell [%s]: pressed again within %d s of its ring", _camera_name(camera_id).c_str(), r_doorbell_rings::DEBOUNCE_MS / 1000);
+        return;
+    }
+    R_LOG_INFO("doorbell [%s]: ring", _camera_name(camera_id).c_str());
+    _system_plugin_host.notify_doorbell_ring(camera_id, now_ms);
+    write_metadata(camera_id, "doorbell_rings", doorbell_ring_json(now_ms), now_ms);
 }
 
 void r_stream_keeper::_camera_class_output(const string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms)

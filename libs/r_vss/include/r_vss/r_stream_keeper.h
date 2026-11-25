@@ -27,6 +27,7 @@
 #include "r_vss/r_live_restream_host.h"
 #include <functional>
 #include "r_disco/r_devices.h"
+#include "r_vss/r_doorbell_rings.h"
 #include "r_disco/r_camera.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_work_q.h"
@@ -503,6 +504,7 @@ private:
     std::vector<GstRTSPMediaFactory*> _factories;
     r_motion_tuning_fn _motion_tuning_fn;
     r_motion_event_plugin_host _meph;
+    r_doorbell_rings _doorbell_rings;
     r_motion_event_tee _motion_tee;
     r_motion_engine _motionEngine;
     r_system_plugin_host _system_plugin_host;
@@ -539,6 +541,9 @@ private:
     void _tier_tick();
     void _remove_motion_work_context(const std::string& camera_id);
     void _camera_class_output(const std::string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms);
+    // A doorbell's press (a visitor event going active on a camera whose kind is "doorbell"): a ring, unless it's
+    // within r_doorbell_rings::DEBOUNCE_MS of the last. Stored in the camera's metadata and handed to plugins.
+    void _doorbell_press(const std::string& camera_id, int64_t now_ms);
     void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections);
     void _pass_session(const r_detection_session& session);
     bool _motion_detection_on(const std::string& camera_id);
