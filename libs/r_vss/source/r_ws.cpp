@@ -4612,7 +4612,9 @@ r_http::r_server_response r_ws::_get_camera_move_policy(r_utils::r_socket_base&,
 // Whether each camera's audio is recorded (r_audio_policy.h): {"default_audio": bool, "cameras": {"<id>": bool}}. Set
 // by the cloud plugin from the organization's, the site's and each camera's settings, as a whole each time, and kept
 // in config/audio.json for when the cloud is out of reach. A camera whose audio turns off or on starts its stream
-// again, so its next segment follows.
+// again, so its next segment follows. Anyone signed in may read it; only the local token (the plugin) may set it. An
+// organization may turn audio off for legal reasons, so a person signed in to this computer can't turn it back on.
+// The plugin also reads it back and sets it again if it ever differs from the cloud's.
 r_http::r_server_response r_ws::_get_audio_policy(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
@@ -4622,6 +4624,12 @@ r_http::r_server_response r_ws::_get_audio_policy(r_utils::r_socket_base&, const
 r_http::r_server_response r_ws::_post_audio_policy(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
+    auto token = _request_token(request);
+    if(token.is_null() || !_auth.is_local_token(token.value()))
+    {
+        R_LOG_WARNING("Audio: refused a change to the audio policy from a signed-in session; it's set by Revere Cloud");
+        return _json_error(response_forbidden, "Audio is set by Revere Cloud, in the organization's settings.");
+    }
     auto policy = parse_audio_policy(request.get_body_as_string());
     if(policy.is_null())
         return _json_error(response_bad_request, "Expected {\"default_audio\": true|false, \"cameras\": {\"<camera id>\": true|false}}.");
