@@ -511,25 +511,19 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
     _source.play();
 
-    if(r_cameras::camera_events_wanted(_camera))
-    {
-        // The subscriber is reset before this context is gone (see the destructor).
-        _camera_events = r_cameras::make_camera_events(_camera, [this](const r_cameras::r_camera_transition& t) {
-            _on_camera_transition(t);
-            _sk->camera_transition(_camera.id, t);
-        });
-        _camera_events->start();
-    }
+    // The camera's events are the stream keeper's, kept across reconnects: it attaches this context to them
+    // (on_camera_transition) once it's made.
 }
 
 r_recording_context::~r_recording_context() noexcept
 {
     // Each step is logged first, so a teardown that never finishes names the
-    // call it is stuck in. The event subscription is asked to stop before the
-    // steps that can block, so a stuck teardown doesn't leave it polling.
+    // call it is stuck in. The camera's event subscription isn't this context's
+    // (the stream keeper keeps it across reconnects): it only detaches.
     auto id = _camera.id.substr(0, 8);
-    R_LOG_INFO("teardown %s: events stop", id.c_str());
-    stop_camera_events();
+    // First: the camera's events stop reaching this context, and what's open ends for it.
+    R_LOG_INFO("teardown %s: events detach", id.c_str());
+    _sk->camera_events_detach(_camera.id, this);
 
     R_LOG_INFO("teardown %s: mount", id.c_str());
     _sk->remove_restream_mount(_restream_mount_path);
@@ -537,10 +531,6 @@ r_recording_context::~r_recording_context() noexcept
 
     R_LOG_INFO("teardown %s: source stop", id.c_str());
     _source.stop();
-
-    // Waits for the subscriber's thread (asked to finish above).
-    R_LOG_INFO("teardown %s: events join", id.c_str());
-    _camera_events.reset();
 
     R_LOG_INFO("teardown %s: storage", id.c_str());
 
@@ -957,29 +947,11 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
 
 void r_recording_context::stop()
 {
-    // Asks without waiting, so stopping every camera at shutdown winds their
-    // subscribers down in parallel; the destructor waits.
-    stop_camera_events();
+    // Its camera's events are the stream keeper's: it stops them itself (r_stream_keeper::stop).
     _source.stop();
 }
 
-void r_recording_context::stop_camera_events()
-{
-    if(_camera_events)
-        _camera_events->request_stop();
-}
-
-bool r_recording_context::has_camera_events() const
-{
-    return (bool)_camera_events;
-}
-
-r_cameras::r_camera_events_status r_recording_context::camera_events_status() const
-{
-    return _camera_events ? _camera_events->status() : r_cameras::r_camera_events_status();
-}
-
-void r_recording_context::_on_camera_transition(const r_cameras::r_camera_transition& t)
+void r_recording_context::on_camera_transition(const r_cameras::r_camera_transition& t)
 {
     if(t.what != "motion")
         return;
@@ -1107,11 +1079,6 @@ r_nullable<r_live_key_frame> r_recording_context::latest_key_frame() const
     kf.data.assign(mi.data(), mi.data() + mi.size());
     out.set_value(std::move(kf));
     return out;
-}
-
-vector<r_cameras::r_camera_span> r_recording_context::camera_spans(int64_t since_ms) const
-{
-    return _camera_events ? _camera_events->spans(since_ms) : vector<r_cameras::r_camera_span>();
 }
 
 void r_recording_context::_live_restream_cleanup_cbs(live_restreaming_state* lrs)

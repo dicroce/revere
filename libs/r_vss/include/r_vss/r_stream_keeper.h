@@ -45,6 +45,9 @@
 #include <chrono>
 
 R_THIRD_PARTY_HEADERS_BEGIN
+#include "r_vss/r_camera_events_keeper.h"
+#include <future>
+#include <list>
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h>
 R_THIRD_PARTY_HEADERS_END
@@ -250,6 +253,9 @@ public:
 
     // A camera's event subscription reporting a start or end (any thread).
     R_API void camera_transition(const std::string& camera_id, const r_cameras::r_camera_transition& t);
+    // A recording context going away: its camera's events stop reaching it (r_camera_events_keeper::detach), and it's
+    // told the events open now end. Called first in its destructor.
+    R_API void camera_events_detach(const std::string& camera_id, const r_recording_context* rc);
 
     // The detection pass's finished sessions for a camera.
     R_API std::vector<r_detection_session> detection_sessions(const std::string& camera_id, int64_t since_ms);
@@ -419,6 +425,20 @@ private:
     mutable std::mutex _streams_mutex;  // Protects _streams and _suspended_cameras
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
     std::set<std::string> _suspended_cameras;
+
+    // Each camera's event subscription, kept across its stream's reconnects; its recording context attaches while
+    // it's up. Contexts made under _streams_mutex are attached, and subscriptions of cameras that were changed or
+    // removed are ended, after the lock is let go: those tell the context what's open, and it tells the plugins.
+    r_camera_events_keeper _camera_events {
+        [](const r_disco::r_camera& camera, r_cameras::r_camera_events::transition_fn t) { return r_cameras::make_camera_events(camera, std::move(t)); },
+        [this](const std::string& camera_id, const r_cameras::r_camera_transition& t) { camera_transition(camera_id, t); }
+    };
+    std::vector<std::weak_ptr<r_recording_context>> _events_to_attach;   // under _streams_mutex
+    std::vector<std::string> _events_to_drop;                            // under _streams_mutex
+    // Ended subscriptions being destroyed (each waits for its thread, perhaps a request), off the keeper's thread.
+    std::list<std::future<void>> _events_reaping;
+    void _reap_events(std::vector<r_camera_events_keeper::events_ptr> events);
+    void _settle_camera_events();
 
     // Each recording camera's substream recorder, when it has one (r_substream_recorder.h), and what to do about
     // them; keeper thread only.
