@@ -79,6 +79,8 @@ add_executable(
     source/test_r_substream_setting.cpp
     include/test_r_camera_kind.h
     source/test_r_camera_kind.cpp
+    include/test_r_record_from.h
+    source/test_r_record_from.cpp
     include/test_r_ws_auth.h
     source/test_r_ws_auth.cpp
     include/test_r_appliance.h

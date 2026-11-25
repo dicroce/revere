@@ -473,13 +473,15 @@ void r_vss::query_remove_camera(const string& top_dir, r_devices& devices, const
     }
 }
 
-void r_vss::query_update_camera_properties(const string& top_dir, r_devices& devices, const string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours, const r_nullable<string>& motion_tier, const r_nullable<string>& kind)
+void r_vss::query_update_camera_properties(const string& top_dir, r_devices& devices, const string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours, const r_nullable<string>& motion_tier, const r_nullable<string>& kind, const r_nullable<string>& record_from)
 {
     if(!motion_tier.is_null() && motion_tier.value() != "auto" && motion_tier.value() != "1" &&
        motion_tier.value() != "2" && motion_tier.value() != "3")
         R_STHROW(r_http::r_http_400_exception, ("motion_tier must be auto, 1, 2 or 3."));
     if(!kind.is_null() && !r_disco::valid_camera_kind(kind.value()))
         R_STHROW(r_http::r_http_400_exception, ("kind must be camera or doorbell."));
+    if(!record_from.is_null() && !r_disco::valid_record_from(record_from.value()))
+        R_STHROW(r_http::r_http_400_exception, ("record_from must be main or sub."));
 
     auto maybe_camera = devices.get_camera_by_id(camera_id);
     if(maybe_camera.is_null())
@@ -516,6 +518,15 @@ void r_vss::query_update_camera_properties(const string& top_dir, r_devices& dev
         camera.motion_tier.set_value(motion_tier.value());
     if(!kind.is_null())
         camera.kind.set_value(kind.value());
+    if(!record_from.is_null())
+    {
+        // Choosing the substream needs one that works (found and chosen); keeping it, as a client that saves the
+        // other settings again does, does not: it stays as chosen while the substream is away.
+        const bool usable = r_disco::substream_on(camera) && !camera.sub_status.is_null() && camera.sub_status.value() == "ok";
+        if(record_from.value() == "sub" && !r_disco::record_from_sub(camera) && !usable)
+            R_STHROW(r_http::r_http_400_exception, ("The camera's smaller stream isn't available, so it can't record from it."));
+        camera.record_from.set_value(record_from.value());
+    }
 
     devices.save_camera(camera);
 }
