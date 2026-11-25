@@ -22,7 +22,9 @@ namespace r_vss
 //
 // Who may set it (audio_policy_set_allowed): once the cloud plugin has set it (with the local token), the computer is
 // cloud-managed (managed_by "cloud") and a person signed in can't change it, since an organization may turn audio off
-// for legal reasons. On a computer with no cloud, a person signed in sets it.
+// for legal reasons. On a computer with no cloud, a person signed in sets it. The cloud lets go, keeping the values
+// as they are, when the plugin signs out or unpairs (POST /audio_policy_release), and at a start with no cloud plugin
+// running (audio_policy_at_startup), so a computer that has left the cloud isn't stuck.
 struct r_audio_policy
 {
     bool default_audio {true};
@@ -45,6 +47,12 @@ R_API bool audio_policy_set_allowed(const r_audio_policy& current, bool from_loc
 // The policy as kept: managed by the cloud when the plugin set it, by this computer when a person did, whatever the
 // request said.
 R_API r_audio_policy audio_policy_as_set(r_audio_policy requested, bool from_local_token);
+// The same values, managed by this computer again.
+R_API r_audio_policy audio_policy_released(r_audio_policy policy);
+// The policy as a start uses it: released when no cloud plugin is running.
+R_API r_audio_policy audio_policy_at_startup(const r_audio_policy& saved, bool cloud_plugin_running);
+// Whether a loaded system plugin is Revere Cloud's: "revere_cloud_system_plugin", or with a suffix of its own.
+R_API bool is_cloud_plugin_name(const std::string& name);
 R_API r_utils::r_nullable<r_audio_policy> parse_audio_policy(const std::string& json_text);
 R_API std::string audio_policy_json(const r_audio_policy& policy);
 

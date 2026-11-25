@@ -165,3 +165,39 @@ void test_r_audio_policy::test_who_may_set_it()
     RTF_ASSERT(save_audio_policy(dir, by_person));
     RTF_ASSERT(audio_policy_set_allowed(load_audio_policy(dir), false));
 }
+
+// The cloud lets go: when the plugin signs out or unpairs, and at a start with no cloud plugin running. The values stay
+// as they were; a person signed in may change them again.
+void test_r_audio_policy::test_released()
+{
+    r_audio_policy off;
+    off.default_audio = false;
+    off.cameras = {{"porch", false}, {"yard", true}};
+    auto by_cloud = audio_policy_as_set(off, true);
+    RTF_ASSERT(!audio_policy_set_allowed(by_cloud, false));
+
+    // The plugin signs out or unpairs.
+    auto released = audio_policy_released(by_cloud);
+    RTF_ASSERT(!released.cloud_managed);
+    RTF_ASSERT(!released.default_audio && released.cameras == off.cameras);
+    RTF_ASSERT(!released.records_audio("porch") && released.records_audio("yard") && !released.records_audio("new"));
+    RTF_ASSERT(audio_policy_set_allowed(released, false));
+    // Nothing for a running session to restart for: the same audio.
+    RTF_ASSERT(audio_policy_restarts({{"porch", false}, {"yard", true}}, released).empty());
+
+    // A start: still managed while the cloud plugin runs; released, same values, without it.
+    RTF_ASSERT(audio_policy_at_startup(by_cloud, true) == by_cloud);
+    auto started = audio_policy_at_startup(by_cloud, false);
+    RTF_ASSERT(!started.cloud_managed && started.cameras == off.cameras && !started.default_audio);
+    RTF_ASSERT(audio_policy_set_allowed(started, false));
+    // A local policy stays as it is either way.
+    auto local = audio_policy_as_set(off, false);
+    RTF_ASSERT(audio_policy_at_startup(local, true) == local && audio_policy_at_startup(local, false) == local);
+
+    // Which plugin is the cloud's.
+    RTF_ASSERT(is_cloud_plugin_name("revere_cloud_system_plugin"));
+    RTF_ASSERT(is_cloud_plugin_name("revere_cloud"));
+    RTF_ASSERT(!is_cloud_plugin_name("ollama_system_plugin"));
+    RTF_ASSERT(!is_cloud_plugin_name("my_revere_cloud"));
+    RTF_ASSERT(!is_cloud_plugin_name(""));
+}

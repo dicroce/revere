@@ -10,6 +10,7 @@ public:
       TEST(test_r_audio_policy::test_restarts);
       TEST(test_r_audio_policy::test_sdp_without_audio);
       TEST(test_r_audio_policy::test_who_may_set_it);
+      TEST(test_r_audio_policy::test_released);
     RTF_FIXTURE_END();
 
     virtual ~test_r_audio_policy() throw() {}
@@ -23,4 +24,5 @@ public:
     void test_restarts();
     void test_sdp_without_audio();
     void test_who_may_set_it();
+    void test_released();
 };

@@ -158,6 +158,21 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
     });
     _system_plugin_host.start_all();
 
+    // No Revere Cloud running: a computer that has left the cloud manages its own audio policy again, with the same
+    // values (r_audio_policy.h).
+    {
+        bool cloud = false;
+        for(auto& name : _system_plugin_host.get_loaded_plugins())
+            if(is_cloud_plugin_name(name) && _system_plugin_host.is_plugin_enabled(name))
+                cloud = true;
+        auto was = audio_policy();
+        if(was.cloud_managed && !cloud)
+        {
+            R_LOG_INFO("Audio: Revere Cloud isn't running, so this computer manages its audio policy again");
+            set_audio_policy(audio_policy_at_startup(was, cloud));
+        }
+    }
+
     // A Revere Cloud built for an older revere wasn't loaded: see whether this
     // release has its update, so the UIs can offer it.
     _cloud_install.check_for_update();
@@ -1280,6 +1295,11 @@ void r_stream_keeper::set_audio_policy(const r_audio_policy& policy)
         _audio_policy = policy;
     }
     save_audio_policy(_top_dir, policy);
+}
+
+void r_stream_keeper::release_audio_policy()
+{
+    set_audio_policy(audio_policy_released(audio_policy()));
 }
 
 r_audio_policy r_stream_keeper::audio_policy() const

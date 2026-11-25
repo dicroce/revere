@@ -104,6 +104,22 @@ r_audio_policy r_vss::audio_policy_as_set(r_audio_policy requested, bool from_lo
     return requested;
 }
 
+r_audio_policy r_vss::audio_policy_released(r_audio_policy policy)
+{
+    policy.cloud_managed = false;
+    return policy;
+}
+
+r_audio_policy r_vss::audio_policy_at_startup(const r_audio_policy& saved, bool cloud_plugin_running)
+{
+    return cloud_plugin_running ? saved : audio_policy_released(saved);
+}
+
+bool r_vss::is_cloud_plugin_name(const string& name)
+{
+    return name.rfind("revere_cloud", 0) == 0;
+}
+
 set<string> r_vss::audio_policy_restarts(const map<string, bool>& running, const r_audio_policy& policy)
 {
     set<string> restarts;

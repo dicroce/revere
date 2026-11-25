@@ -193,6 +193,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_POST, "/camera_move_policy", &r_ws::_post_camera_move_policy);
     route(METHOD_GET, "/audio_policy", &r_ws::_get_audio_policy);
     route(METHOD_POST, "/audio_policy", &r_ws::_post_audio_policy);
+    route(METHOD_POST, "/audio_policy_release", &r_ws::_post_audio_policy_release);
     route(METHOD_GET, "/discovery_status", &r_ws::_get_discovery_status);
     route(METHOD_POST, "/add_rtsp_camera", &r_ws::_post_add_rtsp_camera);
     route(METHOD_GET, "/storage_info", &r_ws::_get_storage_info);
@@ -4638,6 +4639,20 @@ r_http::r_server_response r_ws::_post_audio_policy(r_utils::r_socket_base&, cons
     auto kept = audio_policy_as_set(policy.value(), local);
     _stream_keeper.set_audio_policy(kept);
     return _json_reply(json::parse(audio_policy_json(kept)));
+}
+
+// The cloud plugin, signing out or unpaired, lets go of the audio policy: the same values, which a person signed in
+// may change again. Only the local token; anyone else gets 403.
+r_http::r_server_response r_ws::_post_audio_policy_release(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    auto token = _request_token(request);
+    if(token.is_null() || !_auth.is_local_token(token.value()))
+        return _json_error(response_forbidden, "Only Revere Cloud can release its audio policy.");
+    if(_stream_keeper.audio_policy().cloud_managed)
+        R_LOG_INFO("Audio: Revere Cloud released the audio policy; this computer manages it again");
+    _stream_keeper.release_audio_policy();
+    return _json_reply(json::parse(audio_policy_json(_stream_keeper.audio_policy())));
 }
 
 // {"replies_blocked": bool, "warning": "..."}: whether discovery's replies look blocked (r_discovery_health), and what

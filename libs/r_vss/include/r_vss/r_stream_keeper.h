@@ -308,6 +308,8 @@ public:
     // Whether each camera's audio is recorded (r_audio_policy.h), as the cloud last said. set_audio_policy keeps it
     // in config/audio.json; a camera whose session no longer matches starts again on the next pass.
     R_API void set_audio_policy(const r_audio_policy& policy);
+    // The same values, managed by this computer again (audio_policy_released).
+    R_API void release_audio_policy();
     R_API r_audio_policy audio_policy() const;
     R_API bool records_audio(const std::string& camera_id) const;
 
