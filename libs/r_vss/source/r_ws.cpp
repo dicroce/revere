@@ -905,7 +905,7 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     {"episodes", il.episodes},
                     {"lag_reconnects_1h", sit->second.lag_reconnects_1h},
                     {"falling_behind", sit->second.falling_behind},
-                    {"message", sit->second.falling_behind ? LAG_FLAG_MESSAGE : ""}
+                    {"message", sit->second.falling_behind ? lag_flag_message(sit->second.camera, _stream_keeper.substreams_enabled()) : string()}
                 };
                 const auto& mt = sit->second.motion_tier;
                 motion_tier = {
@@ -1008,7 +1008,12 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     // Which stream it records from, as it was set: "main" or "sub". "sub" only takes effect while
                     // record_from_available (the camera's smaller stream works and smaller streams are on here).
                     {"record_from", r_disco::record_from_sub(c) ? "sub" : "main"},
-                    {"record_from_available", substream_in_use(c, _stream_keeper.substreams_enabled())},
+                    {"record_from_available", substream_usable(c, _stream_keeper.substreams_enabled())},
+                    // "sub" while it records from the smaller stream, "main" otherwise: set to "sub" with the smaller
+                    // stream away, it records from main (and says so below) and goes back when the stream does.
+                    {"record_from_effective", recording_from_sub(c, _stream_keeper.substreams_enabled()) ? "sub" : "main"},
+                    {"record_from_note", (r_disco::record_from_sub(c) && !recording_from_sub(c, _stream_keeper.substreams_enabled())) ?
+                        "Set to record from the smaller stream, which isn't available now: recording from the main stream." : ""},
                     // What a person set it to; null until someone chooses.
                     {"kind_setting", c.kind.is_null() ? json(nullptr) : json(c.kind.value())},
                     // The tier in use now and why; null while not recording.
@@ -4008,7 +4013,7 @@ r_http::r_server_response r_ws::_post_update_camera_properties(r_utils::r_socket
             // Also needs smaller streams to be on for this computer (query_update_camera_properties checks the camera).
             auto maybe_camera = _devices.get_camera_by_id(camera_id);
             if(!maybe_camera.is_null() && record_from.value() == "sub" && !r_disco::record_from_sub(maybe_camera.value()) &&
-               !substream_in_use(maybe_camera.value(), _stream_keeper.substreams_enabled()))
+               !substream_usable(maybe_camera.value(), _stream_keeper.substreams_enabled()))
                 R_STHROW(r_http_400_exception, ("The camera's smaller stream isn't available, so it can't record from it."));
         }
 

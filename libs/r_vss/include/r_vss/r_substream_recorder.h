@@ -125,9 +125,30 @@ private:
     std::map<std::string, state> _cameras;
 };
 
-// Whether a camera's substream is in use: smaller streams are on for this computer (Settings; off until turned on)
-// and the camera has one chosen (sub_mode on) and found (sub_status "ok"). Everything that reads a substream asks this.
+// Whether a camera's substream works: smaller streams are on for this computer (Settings; off until turned on) and
+// the camera has one chosen (sub_mode on) and found (sub_status "ok").
+R_API bool substream_usable(const r_disco::r_camera& camera, bool computer_on);
+// Whether the camera records from its substream now (r_camera::record_from): set to it, and it works, with an address.
+// When it isn't (the substream is away), the camera records from main and the setting stays as it is.
+R_API bool recording_from_sub(const r_disco::r_camera& camera, bool computer_on);
+// The camera as its recording context should see it: when it records from its substream, the substream's address and
+// stream details stand in for main's (credentials, names and paths are the camera's own), so that the recording, live
+// view, motion, detection and snapshots all come from the one stream and main is never opened. Otherwise the camera
+// as it is. Never saved: the stored camera keeps main's.
+R_API r_disco::r_camera recording_camera(const r_disco::r_camera& camera, bool computer_on);
+// Whether a separate second stream is in use alongside the recording: the substream works and is not what records.
+// Everything that reads a second stream (its recorder, its live mount, motion on it) asks this.
 R_API bool substream_in_use(const r_disco::r_camera& camera, bool computer_on);
+// The ids of the running recording cameras that are not on the stream they should be on now: `running` says, for each
+// one, whether its recording context was built on the camera's smaller stream; `cameras` are the stored cameras, as
+// they are now. A camera set to the smaller stream that was started on main (the stream was away) and one started on
+// the smaller stream that has since gone away both change streams; so does turning smaller streams on or off for the
+// computer. A camera that is not running is left to the code that starts it.
+R_API std::vector<std::string> cameras_on_the_wrong_stream(const std::map<std::string, bool>& running,
+                                                           const std::vector<r_disco::r_camera>& cameras, bool computer_on);
+// What a camera that keeps falling behind is told (LAG_FLAG_MESSAGE): to use its substream when it has one that works
+// and isn't recording, in its properties here; the plain message otherwise.
+R_API std::string lag_flag_message(const r_disco::r_camera& camera, bool computer_on);
 // Whether a recorder should run for it: in use, with an address to read and a recording path to keep the ring by.
 R_API bool substream_wanted(const r_disco::r_camera& camera, bool computer_on);
 

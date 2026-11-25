@@ -1,4 +1,5 @@
 #include "test_r_substream_recorder.h"
+#include "r_vss/r_lag_watchdog.h"
 #include "r_vss/r_substream_recorder.h"
 #include "r_vss/r_frame_feeds.h"
 #include "r_vss/r_live_restream_host.h"
@@ -943,4 +944,150 @@ void test_r_substream_recorder::test_off_for_the_computer_means_not_in_use()
     RTF_ASSERT(substream_in_use(without([](r_camera& c){ c.sub_rtsp_url = r_nullable<string>(); }), true));
     RTF_ASSERT(!substream_wanted(without([](r_camera& c){ c.sub_rtsp_url = r_nullable<string>(); }), true));
     RTF_ASSERT(!substream_wanted(without([](r_camera& c){ c.record_file_path = r_nullable<string>(); }), true));
+}
+
+namespace
+{
+
+// A camera with a main stream and a working substream (a recording path, credentials), recording from main.
+r_camera camera_with_a_substream()
+{
+    r_camera cam;
+    cam.id = "cam-1";
+    cam.rtsp_url.set_value("rtsp://10.0.0.5/main");
+    cam.video_codec.set_value("h265");
+    cam.video_codec_parameters.set_value("MAIN-PARAMS");
+    cam.video_timebase.set_value(90000);
+    cam.audio_codec.set_value("aac");
+    cam.audio_codec_parameters.set_value("MAIN-AUDIO");
+    cam.audio_timebase.set_value(16000);
+    cam.onvif_profile_token.set_value("profile_1");
+    cam.rtsp_username.set_value("admin");
+    cam.rtsp_password.set_value("pw");
+    cam.record_file_path.set_value("cam.nts");
+    cam.sub_mode.set_value("on");
+    cam.sub_status.set_value("ok");
+    cam.sub_onvif_profile_token.set_value("profile_2");
+    cam.sub_rtsp_url.set_value("rtsp://10.0.0.5/sub");
+    cam.sub_video_codec.set_value("h264");
+    cam.sub_video_codec_parameters.set_value("SUB-PARAMS");
+    cam.sub_video_timebase.set_value(90000);
+    cam.sub_width.set_value(640);
+    cam.sub_height.set_value(480);
+    return cam;
+}
+
+}
+
+// Recording from the substream hands the recording context the substream's address and details in place of main's, so
+// the one connection is the smaller stream and main is never opened, and it is a second stream no longer. It only does
+// so while the substream works: otherwise main, and the setting is kept.
+void test_r_substream_recorder::test_recording_from_the_substream_swaps_in_its_stream_and_only_while_it_works()
+{
+    const auto main_cam = camera_with_a_substream();
+
+    // Recording from main (no setting, or "main"): the camera as it is, and the substream is a second stream.
+    for(const char* choice : {"", "main"})
+    {
+        auto cam = main_cam;
+        if(*choice)
+            cam.record_from.set_value(choice);
+        RTF_ASSERT(!recording_from_sub(cam, true));
+        auto seen = recording_camera(cam, true);
+        RTF_ASSERT(seen.rtsp_url.value() == "rtsp://10.0.0.5/main");
+        RTF_ASSERT(seen.video_codec.value() == "h265" && seen.audio_codec.value() == "aac");
+        RTF_ASSERT(substream_usable(cam, true) && substream_in_use(cam, true) && substream_wanted(cam, true));
+    }
+
+    // Set to the substream, and it works: its stream stands in for main's; everything else is the camera's own.
+    auto sub_cam = main_cam;
+    sub_cam.record_from.set_value("sub");
+    RTF_ASSERT(recording_from_sub(sub_cam, true));
+    auto seen = recording_camera(sub_cam, true);
+    RTF_ASSERT(seen.rtsp_url.value() == "rtsp://10.0.0.5/sub");
+    RTF_ASSERT(seen.video_codec.value() == "h264");
+    RTF_ASSERT(seen.video_codec_parameters.value() == "SUB-PARAMS");
+    RTF_ASSERT(seen.onvif_profile_token.value() == "profile_2");
+    RTF_ASSERT(seen.audio_codec.is_null() && seen.audio_codec_parameters.is_null() && seen.audio_timebase.is_null());   // main's audio is not its
+    RTF_ASSERT(seen.id == "cam-1" && seen.rtsp_username.value() == "admin" && seen.rtsp_password.value() == "pw");
+    RTF_ASSERT(seen.record_file_path.value() == "cam.nts");
+    RTF_ASSERT(seen.sub_rtsp_url.value() == "rtsp://10.0.0.5/sub" && seen.record_from.value() == "sub");   // kept
+    // The camera that was given is not changed (it is what is stored).
+    RTF_ASSERT(sub_cam.rtsp_url.value() == "rtsp://10.0.0.5/main" && sub_cam.video_codec.value() == "h265");
+    // No second stream: no recorder for it, and nothing reads a second stream.
+    RTF_ASSERT(substream_usable(sub_cam, true));
+    RTF_ASSERT(!substream_in_use(sub_cam, true));
+    RTF_ASSERT(!substream_wanted(sub_cam, true));
+
+    // The substream is away, for any reason: main, with the setting kept, and the substream not in use either.
+    auto away = [&](function<void(r_camera&)> f){ auto c = sub_cam; f(c); return c; };
+    for(auto c : {away([](r_camera& c){ c.sub_mode.set_value("off"); }),
+                  away([](r_camera& c){ c.sub_mode = r_nullable<string>(); }),
+                  away([](r_camera& c){ c.sub_status.set_value("none:camera allows one stream at a time"); }),
+                  away([](r_camera& c){ c.sub_status.set_value("pending"); }),
+                  away([](r_camera& c){ c.sub_status = r_nullable<string>(); }),
+                  away([](r_camera& c){ c.sub_rtsp_url = r_nullable<string>(); }),
+                  away([](r_camera& c){ c.sub_rtsp_url.set_value(""); })})
+    {
+        RTF_ASSERT(!recording_from_sub(c, true));
+        auto s = recording_camera(c, true);
+        RTF_ASSERT(s.rtsp_url.value() == "rtsp://10.0.0.5/main");
+        RTF_ASSERT(s.video_codec.value() == "h265");
+        RTF_ASSERT(s.record_from.value() == "sub");     // the choice stays, so it applies again when the substream does
+        RTF_ASSERT(!substream_wanted(c, true));         // and nothing records the substream as a second stream
+    }
+    // A substream that does not work is not in use. One that works but has no address is as it was before the setting
+    // existed: in use, and nothing to read, so not wanted.
+    RTF_ASSERT(!substream_in_use(away([](r_camera& c){ c.sub_status.set_value("pending"); }), true));
+    RTF_ASSERT(!substream_in_use(away([](r_camera& c){ c.sub_mode.set_value("off"); }), true));
+    RTF_ASSERT(substream_in_use(away([](r_camera& c){ c.sub_rtsp_url = r_nullable<string>(); }), true));
+    // Smaller streams off for this computer: the same.
+    RTF_ASSERT(!recording_from_sub(sub_cam, false));
+    RTF_ASSERT(recording_camera(sub_cam, false).rtsp_url.value() == "rtsp://10.0.0.5/main");
+}
+
+// What a camera that keeps falling behind is told: use the setting when there is a substream that works and isn't
+// recording, a wired link when it is already what records, the plain message otherwise.
+void test_r_substream_recorder::test_the_lag_message_points_at_the_setting()
+{
+    auto cam = camera_with_a_substream();
+    RTF_ASSERT(lag_flag_message(cam, true).find("record from the substream in the camera's properties") != string::npos);
+    RTF_ASSERT(lag_flag_message(cam, false) == LAG_FLAG_MESSAGE);                       // smaller streams off here
+    cam.sub_status.set_value("none:no smaller stream");
+    RTF_ASSERT(lag_flag_message(cam, true) == LAG_FLAG_MESSAGE);                        // no substream to point at
+    cam = camera_with_a_substream();
+    cam.record_from.set_value("sub");
+    RTF_ASSERT(lag_flag_message(cam, true) == "network can't keep up with this stream: use a wired link");
+    cam.sub_status.set_value("pending");                                                 // set to it, but away: not recording from it
+    RTF_ASSERT(lag_flag_message(cam, true) == LAG_FLAG_MESSAGE);
+}
+
+// The running cameras that change streams: set to the smaller stream but started on main (it was away), or started on
+// the smaller stream that has gone away, or the computer's setting for smaller streams changed. Not-running cameras
+// and cameras that are where they should be are left alone.
+void test_r_substream_recorder::test_a_camera_changes_streams_when_its_substream_goes_or_comes()
+{
+    auto sub_cam = camera_with_a_substream();
+    sub_cam.record_from.set_value("sub");
+    auto main_cam = camera_with_a_substream();
+    main_cam.id = "cam-2";
+    auto gone = [](r_camera c, const char* id){ c.id = id; c.sub_status.set_value("none:no smaller stream"); return c; };
+
+    // Running on the smaller stream, still works: stays. Running on main, set to main: stays.
+    RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-1", true}, {"cam-2", false}}, {sub_cam, main_cam}, true).empty());
+    // Started on the smaller stream, which has gone away: changes (to main).
+    RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-1", true}}, {gone(sub_cam, "cam-1")}, true) == vector<string>({"cam-1"}));
+    // Started on main while the smaller stream was away, which has come back: changes (to the smaller stream).
+    RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-1", false}}, {sub_cam}, true) == vector<string>({"cam-1"}));
+    // Set to the smaller stream and it stays away: stays on main, nothing to restart.
+    RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-1", false}}, {gone(sub_cam, "cam-1")}, true).empty());
+    // The choice itself changed: main to the smaller stream, and back.
+    RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-2", false}}, {[&]{ auto c = main_cam; c.record_from.set_value("sub"); return c; }()}, true) == vector<string>({"cam-2"}));
+    RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-1", true}}, {[&]{ auto c = sub_cam; c.record_from.set_value("main"); return c; }()}, true) == vector<string>({"cam-1"}));
+    // Smaller streams switched off (or on) for this computer.
+    RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-1", true}}, {sub_cam}, false) == vector<string>({"cam-1"}));
+    RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-1", false}}, {sub_cam}, false).empty());
+    // Not running, or not known: left alone.
+    RTF_ASSERT(cameras_on_the_wrong_stream({}, {sub_cam, main_cam}, true).empty());
+    RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-9", true}}, {sub_cam}, true).empty());
 }

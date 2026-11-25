@@ -1042,7 +1042,7 @@ bool r_stream_keeper::_lag_reconnect(const string& camera_id, const r_recording_
                   name.c_str(), (long long)lag.lag_ms, (long long)lag.behind_for_ms, lag.rate,
                   _lag_reconnects.recent(camera_id, now_ms), (long long)(_lag_reconnects.held_off_ms(camera_id, now_ms) / 1000),
                   _lag_reconnects.flagged(camera_id, now_ms) ? ": " : "",
-                  _lag_reconnects.flagged(camera_id, now_ms) ? LAG_FLAG_MESSAGE : "");
+                  _lag_reconnects.flagged(camera_id, now_ms) ? lag_flag_message(c, substreams_enabled()).c_str() : "");
     return true;
 }
 
@@ -1471,6 +1471,11 @@ void r_stream_keeper::_entry_point()
                             doomed.push_back(rc);
                         for(auto& rc : _remove_recording_contexts(_devices.get_assigned_cameras_removed(cameras)))
                             doomed.push_back(rc);
+                        // A camera set to record from its smaller stream whose stream went away (or came back) changes
+                        // streams: back to main, or to the smaller one again. The stored stream_config_hash does not
+                        // cover this, so it is looked at here.
+                        for(auto& rc : _remove_recording_contexts(_cameras_on_the_wrong_stream()))
+                            doomed.push_back(rc);
                     }
                 }
 
@@ -1680,6 +1685,34 @@ void r_stream_keeper::_rtsp_server_entry_point()
     g_main_context_unref(context);
 }
 
+// The recording cameras whose stream is not the one they should be on now: recording from main but set to the smaller
+// stream and it works, or the other way round. The stored camera, not the context's copy: the substream's state changes
+// in the database. Called with _streams_mutex held.
+vector<r_camera> r_stream_keeper::_cameras_on_the_wrong_stream()
+{
+    // What is running, by whether each context was built on the smaller stream.
+    map<string, bool> running;
+    for(const auto& s : _streams)
+    {
+        auto from = _recording_from_sub.find(s.first);
+        if(from != _recording_from_sub.end())
+            running[s.first] = from->second;
+    }
+    auto assigned = _devices.get_assigned_cameras();
+    vector<r_camera> wrong;
+    for(const auto& id : cameras_on_the_wrong_stream(running, assigned, substreams_enabled()))
+    {
+        for(const auto& c : assigned)
+        {
+            if(c.id != id)
+                continue;
+            R_LOG_INFO("Camera %s changes streams: %s", id.c_str(), running[id] ? "its smaller stream is away, so main" : "its smaller stream works, so it");
+            wrong.push_back(c);
+        }
+    }
+    return wrong;
+}
+
 vector<r_camera> r_stream_keeper::_get_current_cameras()
 {
     vector<r_camera> cameras;
@@ -1747,7 +1780,13 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         R_LOG_INFO("Starting camera stream: %s (%s) over RTSP/%s", name.c_str(), camera.id.c_str(), protocols.c_str());
         try
         {
-            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds, protocols);
+            // From the camera's smaller stream when it is set to record from it and that works: its address and details
+            // stand in for main's, and main is not opened.
+            const bool from_sub = recording_from_sub(camera, substreams_enabled());
+            _streams[camera.id] = make_shared<r_recording_context>(this, recording_camera(camera, substreams_enabled()), _top_dir, _ws, _sim_mttf_seconds, protocols);
+            _recording_from_sub[camera.id] = from_sub;
+            if(from_sub)
+                R_LOG_INFO("Camera %s records from its smaller stream", camera.id.c_str());
             // Construction succeeded — clear any prior failure state for this camera.
             _failed_cameras.erase(camera.id);
         }

@@ -2,6 +2,7 @@
 #include "r_vss/r_recording_context.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_live_restream_host.h"
+#include "r_vss/r_lag_watchdog.h"
 #include "r_vss/r_rtsp_auth.h"
 #include <gst/rtsp-server/rtsp-server.h>
 #include "r_pipeline/r_arg.h"
@@ -56,14 +57,65 @@ string r_vss::view_mount_path(const string& label, const string& main_mount, con
     return friendly_mount_path(label);
 }
 
-bool r_vss::substream_in_use(const r_camera& camera, bool computer_on)
+bool r_vss::substream_usable(const r_camera& camera, bool computer_on)
 {
     return computer_on && r_disco::substream_on(camera) && !camera.sub_status.is_null() && camera.sub_status.value() == "ok";
 }
 
+bool r_vss::recording_from_sub(const r_camera& camera, bool computer_on)
+{
+    return r_disco::record_from_sub(camera) && substream_usable(camera, computer_on) &&
+           !camera.sub_rtsp_url.is_null() && !camera.sub_rtsp_url.value().empty();
+}
+
+r_camera r_vss::recording_camera(const r_camera& camera, bool computer_on)
+{
+    auto c = camera;
+    if(!recording_from_sub(camera, computer_on))
+        return c;
+    c.rtsp_url = camera.sub_rtsp_url;
+    c.video_codec = camera.sub_video_codec;
+    c.video_codec_parameters = camera.sub_video_codec_parameters;
+    c.video_timebase = camera.sub_video_timebase;
+    c.onvif_profile_token = camera.sub_onvif_profile_token;
+    // Main's audio isn't this stream's, and the camera has not recorded the substream's: unknown until the stream
+    // says (the recording context takes its audio from the stream's own description, not from here).
+    c.audio_codec.clear();
+    c.audio_codec_parameters.clear();
+    c.audio_timebase.clear();
+    return c;
+}
+
+bool r_vss::substream_in_use(const r_camera& camera, bool computer_on)
+{
+    return substream_usable(camera, computer_on) && !recording_from_sub(camera, computer_on);
+}
+
+vector<string> r_vss::cameras_on_the_wrong_stream(const map<string, bool>& running, const vector<r_camera>& cameras, bool computer_on)
+{
+    vector<string> wrong;
+    for(const auto& c : cameras)
+    {
+        auto it = running.find(c.id);
+        if(it != running.end() && it->second != recording_from_sub(c, computer_on))
+            wrong.push_back(c.id);
+    }
+    return wrong;
+}
+
+string r_vss::lag_flag_message(const r_camera& camera, bool computer_on)
+{
+    // Already recording from the smaller stream: it is the stream that can't be carried, and only a better link helps.
+    if(recording_from_sub(camera, computer_on))
+        return "network can't keep up with this stream: use a wired link";
+    if(substream_usable(camera, computer_on))
+        return "network can't keep up with this stream: record from the substream in the camera's properties, or use a wired link";
+    return LAG_FLAG_MESSAGE;
+}
+
 bool r_vss::substream_wanted(const r_camera& camera, bool computer_on)
 {
-    return substream_in_use(camera, computer_on) && !camera.sub_rtsp_url.is_null() && !camera.record_file_path.is_null();
+    return substream_in_use(camera, computer_on) && !camera.sub_rtsp_url.is_null() && !camera.sub_rtsp_url.value().empty() && !camera.record_file_path.is_null();
 }
 
 string r_vss::substream_mount_path(const r_camera& camera)
