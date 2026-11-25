@@ -490,6 +490,8 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
             item.address_held = true;
             item.address_since_ms = hold_n.value().since_ms;
             item.address_notice = r_disco::address_check_message();
+            if(const auto device = r_disco::address_check_device_line(hold_n.value()); !device.empty())
+                item.address_notice += "\n" + device;
             item.sub_label += " \xC2\xB7 different device?";
         }
         auto move_n = devices.get_camera_move(c.first);

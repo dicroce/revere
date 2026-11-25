@@ -25,6 +25,11 @@ string r_disco::address_check_message()
            "Recording is stopped so the camera's login isn't sent to it. Confirm that it is your camera to carry on.";
 }
 
+string r_disco::address_check_device_line(const r_address_check& check)
+{
+    return check.seen_mac.empty() ? string() : "The device at the address has the hardware (MAC) address " + check.seen_mac + ".";
+}
+
 map<string, r_address_hold_record> r_disco::parse_address_holds(const string& json_text)
 {
     map<string, r_address_hold_record> out;
