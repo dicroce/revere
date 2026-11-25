@@ -71,6 +71,8 @@ add_executable(
     source/test_r_plugin_loader.cpp
     include/test_r_plugin_installer.h
     source/test_r_plugin_installer.cpp
+    include/test_r_plugin_catalog.h
+    source/test_r_plugin_catalog.cpp
     include/test_r_cloud_install.h
     source/test_r_cloud_install.cpp
     include/test_r_keep_awake.h

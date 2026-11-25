@@ -49,6 +49,13 @@ struct r_plugin_release_assets
     std::string signature_url;
 };
 
+// The platform part of a release's asset names, as the installers name it: windows,
+// macos, macos-intel, linux, linux-arm64.
+R_API std::string plugin_asset_platform(const std::string& platform, const std::string& arch);
+
+// The file name extension a platform's plugins have: ".dll", ".dylib" or ".so".
+R_API std::string plugin_file_extension(const std::string& platform);
+
 // The file a Revere Cloud plugin is installed as: revere_cloud_system_plugin.dll,
 // .dylib or .so. Its manifest names this file.
 R_API std::string revere_cloud_plugin_file();
