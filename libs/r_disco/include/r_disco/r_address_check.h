@@ -30,6 +30,13 @@ struct r_address_check
 // Whether the two MACs are both known and are not the same device's (the notations vary: case, separators).
 R_API bool mac_differs(const r_utils::r_nullable<std::string>& stored, const r_utils::r_nullable<std::string>& seen);
 
+// What the stream keeper does with a camera, given whether it is running and whether it is held: a held camera that is
+// running is stopped (its recording context removed), one that is not running is not started (its login is never sent
+// to the device at the address), and anything else is left alone. The keeper asks this at both places it decides, so
+// the rule is tested without a keeper (which binds ports).
+enum class address_hold_action { none, stop, do_not_start };
+R_API address_hold_action address_hold_action_for(bool running, bool held);
+
 // What the camera's card says while it is held.
 R_API std::string address_check_message();
 

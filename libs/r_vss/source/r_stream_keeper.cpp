@@ -1707,7 +1707,7 @@ vector<r_camera> r_stream_keeper::_cameras_held_for_address(const vector<r_camer
 {
     vector<r_camera> held;
     for(const auto& c : running)
-        if(!_devices.get_address_check(c.id).is_null())
+        if(r_disco::address_hold_action_for(true, !_devices.get_address_check(c.id).is_null()) == r_disco::address_hold_action::stop)
         {
             R_LOG_WARNING("Camera %s: a different device answers at its address; its recording is stopped", c.id.c_str());
             held.push_back(c);
@@ -1744,7 +1744,7 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
 
         // A different device answers at the camera's address (r_address_check.h): not started, until a person confirms
         // it is the camera. Shown on its card like an alert; unlike one, a re-interrogation does not clear it.
-        if(!_devices.get_address_check(camera.id).is_null())
+        if(r_disco::address_hold_action_for(false, !_devices.get_address_check(camera.id).is_null()) == r_disco::address_hold_action::do_not_start)
         {
             auto& fc = _failed_cameras[camera.id];
             fc.friendly_name = name;

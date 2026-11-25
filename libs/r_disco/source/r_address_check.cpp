@@ -19,6 +19,13 @@ bool r_disco::mac_differs(const r_nullable<string>& stored, const r_nullable<str
     return a.value() != b.value();
 }
 
+address_hold_action r_disco::address_hold_action_for(bool running, bool held)
+{
+    if(!held)
+        return address_hold_action::none;
+    return running ? address_hold_action::stop : address_hold_action::do_not_start;
+}
+
 string r_disco::address_check_message()
 {
     return "A different device answers at this camera's address (its hardware (MAC) address isn't the camera's). "

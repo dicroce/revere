@@ -1453,6 +1453,16 @@ void test_r_disco::test_mac_differs()
 
 // Each discovery pass reads the MAC at the stored address of the cameras it saw there: a different device holds the
 // camera, the same one (however its MAC is written) does not, and what can't be read or compared says nothing.
+// What the stream keeper does with a held camera (r_address_check.h): one that is running is stopped, one that is not
+// is never started (its login would be sent to the device), and a camera that is not held is left alone either way.
+void test_r_disco::test_the_keeper_stops_or_never_starts_a_held_camera()
+{
+    RTF_ASSERT(address_hold_action_for(true, true) == address_hold_action::stop);
+    RTF_ASSERT(address_hold_action_for(false, true) == address_hold_action::do_not_start);
+    RTF_ASSERT(address_hold_action_for(true, false) == address_hold_action::none);
+    RTF_ASSERT(address_hold_action_for(false, false) == address_hold_action::none);
+}
+
 void test_r_disco::test_a_different_device_at_a_cameras_address_holds_it()
 {
     // The same MAC, written another way: nothing.
