@@ -13,6 +13,7 @@ public:
       TEST(test_r_system_plugin_motion::test_a_plugin_loaded_after_start_gets_each_cameras_latest_state);
       TEST(test_r_system_plugin_motion::test_stop_all_waits_for_a_call_in_the_plugin);
       TEST(test_r_system_plugin_motion::test_stop_all_gives_up_on_a_call_that_does_not_return);
+      TEST(test_r_system_plugin_motion::test_destroying_the_host_leaves_a_plugin_in_a_call_loaded);
     RTF_FIXTURE_END();
 
     virtual ~test_r_system_plugin_motion() throw() {}
@@ -29,6 +30,7 @@ public:
     void test_a_plugin_loaded_after_start_gets_each_cameras_latest_state();
     void test_stop_all_waits_for_a_call_in_the_plugin();
     void test_stop_all_gives_up_on_a_call_that_does_not_return();
+    void test_destroying_the_host_leaves_a_plugin_in_a_call_loaded();
 
 private:
     std::string _top;
