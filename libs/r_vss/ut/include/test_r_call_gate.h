@@ -9,6 +9,7 @@ public:
       TEST(test_r_call_gate::test_closing_waits_for_a_call_inside);
       TEST(test_r_call_gate::test_closing_gives_up_on_a_call_that_does_not_return);
       TEST(test_r_call_gate::test_opening_lets_calls_in_again);
+      TEST(test_r_call_gate::test_is_open_follows_closing_and_opening);
     RTF_FIXTURE_END();
 
     virtual ~test_r_call_gate() throw() {}
@@ -21,4 +22,5 @@ public:
     void test_closing_waits_for_a_call_inside();
     void test_closing_gives_up_on_a_call_that_does_not_return();
     void test_opening_lets_calls_in_again();
+    void test_is_open_follows_closing_and_opening();
 };

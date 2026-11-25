@@ -1092,6 +1092,10 @@ void r_system_plugin_host::dispatch_detection(const r_detection& det, int64_t po
         targets.push_back({p->plugin_handle, p->post_detection_func, p->post_detection_v2_func, p->name, p->detections_inside});
     for (auto& t : targets)
     {
+        // A plugin that did not return in time (stop_all() went on without it) can return after the host has closed
+        // the libraries of the plugins behind it in the list: the stop closed the gate first, so it ends here.
+        if (!gate_ptr->is_open())
+            return;
         struct inside_scope
         {
             std::shared_ptr<std::atomic<int>> n;

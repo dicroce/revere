@@ -260,3 +260,30 @@ void test_r_system_plugin_motion::test_destroying_the_host_leaves_a_plugin_in_a_
     RTF_ASSERT_EQUAL(later, string("slow1 5 person\n"));
     RTF_ASSERT(!fs::exists(fs::path(_top) / "destroyed.txt"));
 }
+
+void test_r_system_plugin_motion::test_a_late_detection_does_not_go_on_to_the_next_plugin()
+{
+    // Two plugins, each of which takes half a second over a detection for a "slow" camera and writes a line when it has
+    // it. The host is destroyed while the first is still inside; the second has not been called and its library is
+    // closed by the time the first returns, so it must not be called then: one line, not two.
+    install(_top, TEST_MOTION_PLUGIN);
+    install(_top, TEST_NO_MOTION_PLUGIN);
+    auto host = make_unique<r_system_plugin_host>(_top);
+    host->set_stop_wait(milliseconds(100));
+    host->start_all();
+
+    r_detection det;
+    det.camera_id = "slow1";
+    det.ts = 6;
+    det.class_name = "person";
+    det.confidence = 0.9f;
+    det.x1 = det.y1 = det.x2 = det.y2 = 0.0f;
+    thread caller([&]() { host->dispatch_detection(det, 6); });
+    this_thread::sleep_for(milliseconds(150));
+    host.reset();
+    caller.join();
+    // Give a wrongly made second call time to write its line.
+    this_thread::sleep_for(milliseconds(700));
+    const string lines = read_file(_top + "/detection.txt");
+    RTF_ASSERT_EQUAL(lines, string("slow1 6 person\n"));
+}

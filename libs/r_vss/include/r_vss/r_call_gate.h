@@ -37,6 +37,14 @@ public:
         _cv.notify_all();
     }
 
+    // False once close_and_wait() has closed it (until open()): a call that is already inside can ask whether it should
+    // go on to the next plugin.
+    bool is_open() const
+    {
+        std::lock_guard<std::mutex> g(_m);
+        return _open;
+    }
+
     void open()
     {
         std::lock_guard<std::mutex> g(_m);
@@ -52,7 +60,7 @@ public:
     }
 
 private:
-    std::mutex _m;
+    mutable std::mutex _m;
     std::condition_variable _cv;
     int _inside {0};
     bool _open {true};

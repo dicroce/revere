@@ -79,3 +79,16 @@ void test_r_call_gate::test_opening_lets_calls_in_again()
     r_call_gate_scope s(g);
     RTF_ASSERT(s.entered());
 }
+
+void test_r_call_gate::test_is_open_follows_closing_and_opening()
+{
+    r_call_gate g;
+    const bool at_first = g.is_open();
+    g.close_and_wait(milliseconds(10));
+    const bool closed = !g.is_open();
+    g.open();
+    const bool again = g.is_open();
+    RTF_ASSERT(at_first);
+    RTF_ASSERT(closed);
+    RTF_ASSERT(again);
+}
