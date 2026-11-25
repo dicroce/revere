@@ -9,7 +9,7 @@
 #include <cstring>
 #include <chrono>
 #include <ctime>
-#include <regex>
+#include <vector>
 
 using namespace r_vss;
 using namespace r_utils;
@@ -21,7 +21,12 @@ namespace
 
 const size_t MAX_LINE = 1000;               // RFC 5321's line limit, with room
 const int MAX_BAD_LOGINS = 3;               // per connection
+const int64_t BAD_LOGIN_WINDOW_MS = 10 * 60 * 1000;   // an address's wrong logins are counted over this
 const int64_t STRANGER_LOG_EVERY_MS = 10 * 60 * 1000;
+// A mail is read by hand, never with std::regex over its body or headers: libstdc++'s regex recurses once per
+// character it repeats over, and a doorbell's picture, base64 in the mail, overflows the stack (GCC bug 86164).
+const size_t MAX_SUBJECT = 2000;            // of a Subject header, the part read
+const size_t MAX_PART_B64 = 256 * 1024;     // of a text part's base64, the part decoded
 const int64_t READ_BEFORE_MS = 60 * 1000;   // a subject time this long before the mail arrived is believed
 const int64_t READ_AFTER_MS = 5 * 1000;     // and this long after
 const int64_t USUAL_DELAY_MS = 15 * 1000;   // Reolink sends its mail about this long after the press
@@ -56,21 +61,37 @@ bool _same(const string& a, const string& b)
     return d == 0;
 }
 
-// RFC 2047 encoded words in a header: =?charset?B?...?= and =?charset?Q?...?=, the text taken as UTF-8.
+// RFC 2047 encoded words in a header: =?charset?B?...?= and =?charset?Q?...?=, the text taken as UTF-8. Found by
+// hand (see MAX_SUBJECT).
 string _decode_words(const string& v)
 {
-    static const regex word(R"(=\?[^?]+\?([bBqQ])\?([^?]*)\?=)");
     string out;
-    auto begin = sregex_iterator(v.begin(), v.end(), word);
     size_t at = 0;
-    for (auto it = begin; it != sregex_iterator(); ++it)
+    bool after_word = false;
+    for (;;)
     {
-        auto& m = *it;
-        string between = v.substr(at, (size_t)m.position() - at);
+        // =?charset?X?data?=
+        auto start = v.find("=?", at);
+        size_t q1 = string::npos, q2 = string::npos, end = string::npos;
+        while (start != string::npos)
+        {
+            q1 = v.find('?', start + 2);
+            if (q1 != string::npos && q1 > start + 2 && q1 + 2 < v.size() && v[q1 + 2] == '?' && strchr("bBqQ", v[q1 + 1]))
+            {
+                q2 = q1 + 2;
+                end = v.find("?=", q2 + 1);
+                if (end != string::npos)
+                    break;
+            }
+            start = v.find("=?", start + 2);
+        }
+        if (start == string::npos)
+            break;
+        string between = v.substr(at, start - at);
         // Space between two encoded words is not part of the text.
-        if (!(at > 0 && between.find_first_not_of(" \t") == string::npos))
+        if (!(after_word && between.find_first_not_of(" \t") == string::npos))
             out += between;
-        string enc = m[1].str(), data = m[2].str();
+        string enc(1, v[q1 + 1]), data = v.substr(q2 + 1, end - q2 - 1);
         if (enc == "b" || enc == "B")
             out += _b64_text(data);
         else
@@ -88,9 +109,70 @@ string _decode_words(const string& v)
                     out += data[i];
             }
         }
-        at = (size_t)(m.position() + m.length());
+        at = end + 2;
+        after_word = true;
     }
     return out + v.substr(at);
+}
+
+bool _starts_with_ci(const string& s, const char* prefix)
+{
+    size_t n = strlen(prefix);
+    if (s.size() < n)
+        return false;
+    for (size_t i = 0; i < n; ++i)
+        if (tolower((unsigned char)s[i]) != prefix[i])
+            return false;
+    return true;
+}
+
+// The decoded text of a mail body's base64 text parts, read line by line: a part's headers follow its boundary line
+// ("--..."), and its body runs to the next. Only a text part's (or one that doesn't say) base64 is decoded, at most
+// MAX_PART_B64 of it: a picture or other attachment is skipped.
+string _b64_text_parts(const string& body)
+{
+    string out, part;
+    bool in_head = false, b64 = false, text = true;
+    auto finish = [&]() {
+        if (b64 && text && !part.empty())
+            out += "\n" + _b64_text(part);
+        part.clear();
+    };
+    size_t at = 0;
+    while (at < body.size())
+    {
+        auto nl = body.find('\n', at);
+        size_t len = (nl == string::npos ? body.size() : nl) - at;
+        if (len > 0 && body[at + len - 1] == '\r')
+            --len;
+        if (len >= 2 && body[at] == '-' && body[at + 1] == '-')
+        {
+            finish();
+            in_head = true;
+            b64 = false;
+            text = true;
+        }
+        else if (in_head)
+        {
+            string line = body.substr(at, min(len, MAX_LINE));
+            if (line.empty())
+                in_head = false;
+            else if (_starts_with_ci(line, "content-transfer-encoding:"))
+                b64 = _lower(line).find("base64") != string::npos;
+            else if (_starts_with_ci(line, "content-type:"))
+            {
+                auto v = line.find_first_not_of(" \t", strlen("content-type:"));
+                text = v != string::npos && _starts_with_ci(line.substr(v), "text/");
+            }
+        }
+        else if (b64 && text && part.size() < MAX_PART_B64)
+            part.append(body, at, min(len, MAX_PART_B64 - part.size()));
+        if (nl == string::npos)
+            break;
+        at = nl + 1;
+    }
+    finish();
+    return out;
 }
 
 }
@@ -140,14 +222,13 @@ void r_vss::read_mail(const string& message, string& subject, string& text)
     flush();
 
     if (headers.count("subject"))
-        subject = _decode_words(headers["subject"]);
-    // The body as sent, and decoded when it's base64 (top level, or a part's); a ring's words are found in either.
+        subject = _decode_words(headers["subject"].substr(0, MAX_SUBJECT));
+    // The body as sent, and decoded when it's base64 (top level, or a text part's); a ring's words are found in either.
     text = body;
-    if (_lower(headers["content-transfer-encoding"]).find("base64") != string::npos)
-        text += "\n" + _b64_text(body);
-    static const regex part_b64(R"(Content-Transfer-Encoding:\s*base64\s*\r?\n\r?\n([A-Za-z0-9+/=\r\n]+))", regex::icase);
-    for (auto it = sregex_iterator(body.begin(), body.end(), part_b64); it != sregex_iterator(); ++it)
-        text += "\n" + _b64_text((*it)[1].str());
+    auto type = _lower(headers["content-type"]);
+    if (_lower(headers["content-transfer-encoding"]).find("base64") != string::npos && (type.empty() || _starts_with_ci(type, "text/")))
+        text += "\n" + _b64_text(body.substr(0, MAX_PART_B64));
+    text += _b64_text_parts(body);
 }
 
 bool r_vss::is_ring_mail(const string& subject, const string& text)
@@ -158,17 +239,39 @@ bool r_vss::is_ring_mail(const string& subject, const string& text)
 
 r_nullable<int64_t> r_vss::ring_subject_time_ms(const string& subject)
 {
-    static const regex at(R"((\d{4})/(\d{1,2})/(\d{1,2}) (\d{1,2}):(\d{2}):(\d{2}))");
-    smatch m;
-    if (!regex_search(subject, m, at))
+    // "YYYY/M/D H:MM:SS", the first in the subject, read by hand.
+    const string s = subject.substr(0, MAX_SUBJECT);
+    auto digits = [&](size_t& i, size_t lo, size_t hi, int& v) {
+        size_t n = 0;
+        v = 0;
+        while (i < s.size() && n < hi && isdigit((unsigned char)s[i]))
+        {
+            v = v * 10 + (s[i] - '0');
+            ++i;
+            ++n;
+        }
+        return n >= lo && !(i < s.size() && isdigit((unsigned char)s[i]));
+    };
+    auto sep = [&](size_t& i, char c) { return i < s.size() && s[i] == c ? (++i, true) : false; };
+    int f[6] = {0, 0, 0, 0, 0, 0};
+    bool found = false;
+    for (size_t start = 0; start < s.size() && !found; ++start)
+    {
+        if (!isdigit((unsigned char)s[start]) || (start > 0 && isdigit((unsigned char)s[start - 1])))
+            continue;
+        size_t i = start;
+        found = digits(i, 4, 4, f[0]) && sep(i, '/') && digits(i, 1, 2, f[1]) && sep(i, '/') && digits(i, 1, 2, f[2]) &&
+                sep(i, ' ') && digits(i, 1, 2, f[3]) && sep(i, ':') && digits(i, 2, 2, f[4]) && sep(i, ':') && digits(i, 2, 2, f[5]);
+    }
+    if (!found)
         return {};
     tm t {};
-    t.tm_year = stoi(m[1].str()) - 1900;
-    t.tm_mon = stoi(m[2].str()) - 1;
-    t.tm_mday = stoi(m[3].str());
-    t.tm_hour = stoi(m[4].str());
-    t.tm_min = stoi(m[5].str());
-    t.tm_sec = stoi(m[6].str());
+    t.tm_year = f[0] - 1900;
+    t.tm_mon = f[1] - 1;
+    t.tm_mday = f[2];
+    t.tm_hour = f[3];
+    t.tm_min = f[4];
+    t.tm_sec = f[5];
     t.tm_isdst = -1;   // the box's time zone, its daylight saving as it was then
     auto secs = mktime(&t);
     if (secs == (time_t)-1)
@@ -267,10 +370,13 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
             lock_guard<mutex> g(_lock);
             ++_counts.refused;
             auto now = _now();
-            auto& last = _stranger_logged[ip];
-            if (now - last >= STRANGER_LOG_EVERY_MS)
+            // Kept only as long as they matter: an older one would be logged again anyway.
+            for (auto it = _stranger_logged.begin(); it != _stranger_logged.end();)
+                it = now - it->second >= STRANGER_LOG_EVERY_MS ? _stranger_logged.erase(it) : next(it);
+            auto found = _stranger_logged.find(ip);
+            if (found == _stranger_logged.end())
             {
-                last = now;
+                _stranger_logged[ip] = now;
                 log = true;
             }
         }
@@ -282,6 +388,9 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
     }
 
     string buf;
+    // The whole connection has connection_timeout_ms, however steadily the client sends: one that trickles a line at a
+    // time, or a DATA without its end, can't hold a slot for ever.
+    const auto deadline = steady_clock::now() + milliseconds(_config.connection_timeout_ms);
     // One line, without its CRLF; false when the connection ended, a line ran too long, or the client was too slow.
     auto line_of = [&](string& line) {
         for (;;)
@@ -297,7 +406,10 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
             }
             if (buf.size() > MAX_LINE * 4)
                 return false;
-            uint64_t wait = (uint64_t)_config.command_timeout_ms;
+            auto left = duration_cast<milliseconds>(deadline - steady_clock::now()).count();
+            if (left <= 0)
+                return false;
+            uint64_t wait = (uint64_t)min<int64_t>(_config.command_timeout_ms, left);
             if (!conn.wait_till_recv_wont_block(wait))
                 return false;
             char chunk[4096];
@@ -417,6 +529,23 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
             }
             if (!ok)
                 break;
+            // Too many wrong logins from this address lately (over connections): refused unchecked, for a while.
+            bool barred = false;
+            {
+                lock_guard<mutex> g(_lock);
+                auto now = _now();
+                auto& tries = _bad_login_times[ip];
+                while (!tries.empty() && now - tries.front() >= BAD_LOGIN_WINDOW_MS)
+                    tries.pop_front();
+                barred = (int)tries.size() >= _config.bad_logins_per_address;
+                if (tries.empty())
+                    _bad_login_times.erase(ip);
+            }
+            if (barred)
+            {
+                say("454 4.7.0 Too many failed logins, try again later");
+                break;
+            }
             // Both compared, whichever is wrong.
             bool user_ok = _same(user, _config.user), pass_ok = _same(pass, _config.password);
             if (user_ok && pass_ok)
@@ -429,6 +558,7 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
                 {
                     lock_guard<mutex> g(_lock);
                     ++_counts.bad_logins;
+                    _bad_login_times[ip].push_back(_now());
                 }
                 say("535 5.7.8 Authentication credentials invalid");
                 if (++bad_logins >= MAX_BAD_LOGINS)
@@ -466,6 +596,7 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
             say("354 End data with <CR><LF>.<CR><LF>");
             string message;
             bool too_big = false, ended = false;
+            size_t seen = 0;
             string l;
             while (line_of(l))
             {
@@ -476,13 +607,21 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
                 }
                 if (!l.empty() && l[0] == '.')
                     l.erase(0, 1);
+                seen += l.size() + 2;
+                // Too big: read to its end, keeping none of it; but not without end.
+                if (seen > 2 * _config.max_mail_bytes)
+                    break;
                 if (message.size() + l.size() + 2 > _config.max_mail_bytes)
-                    too_big = true;   // read to its end, keep none of it
+                    too_big = true;
                 else if (!too_big)
                     message += l + "\r\n";
             }
             if (!ended)
+            {
+                if (seen > 2 * _config.max_mail_bytes)
+                    say("552 5.3.4 Message too big");
                 break;
+            }
             from = to = false;
             if (too_big)
             {
