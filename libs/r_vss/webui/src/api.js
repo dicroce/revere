@@ -230,6 +230,25 @@ export async function updateCameraProperties(cameraId, props) {
   return res.json()
 }
 
+// A doorbell's press source, each source's last press and its "Press the doorbell now" test (GET /doorbell_presses).
+export async function getDoorbellPresses(cameraId) {
+  const res = await apiFetch(`/doorbell_presses?camera_id=${encodeURIComponent(cameraId)}`)
+  return res.json()
+}
+
+// What to type in a Reolink doorbell's email settings, and how the listener is doing (GET /doorbell_mail_setup).
+export async function getDoorbellMailSetup(cameraId) {
+  const res = await apiFetch(`/doorbell_mail_setup?camera_id=${encodeURIComponent(cameraId)}`)
+  return res.json()
+}
+
+// "Press the doorbell now": a minute in which each of the doorbell's reports of a press is noted; that press doesn't
+// ring the phones.
+export async function startDoorbellPressTest(cameraId) {
+  const res = await apiFetch(`/doorbell_press_test?camera_id=${encodeURIComponent(cameraId)}`, { method: 'POST' })
+  return res.json()
+}
+
 // Drops a discovered camera. If it's still on the network it will be
 // re-discovered on the next poll (mirrors the desktop "Forget" button).
 export async function forgetCamera(cameraId) {
