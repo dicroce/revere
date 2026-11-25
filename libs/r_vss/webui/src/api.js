@@ -237,8 +237,9 @@ export async function getDoorbellPresses(cameraId) {
 }
 
 // What to type in a Reolink doorbell's email settings, and how the listener is doing (GET /doorbell_mail_setup).
-export async function getDoorbellMailSetup(cameraId) {
-  const res = await apiFetch(`/doorbell_mail_setup?camera_id=${encodeURIComponent(cameraId)}`)
+// login: false leaves the user and password out, for the status read every few seconds.
+export async function getDoorbellMailSetup(cameraId, { login = true } = {}) {
+  const res = await apiFetch(`/doorbell_mail_setup?camera_id=${encodeURIComponent(cameraId)}${login ? '' : '&login=0'}`)
   return res.json()
 }
 

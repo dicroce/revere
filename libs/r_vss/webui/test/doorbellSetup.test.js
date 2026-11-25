@@ -1,7 +1,7 @@
 // Run with: npm test (node's built-in test runner; no extra dependencies).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, clockText } from '../src/utils/doorbellSetup.js'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, clockText, inGroupsOf4, mailSetupError, MAIL_SENDER } from '../src/utils/doorbellSetup.js'
 
 test('the press source is sent for a doorbell once chosen, never for a camera or to an older revere', () => {
   assert.deepEqual(pressSourceChoice({ press_source: 'onvif' }, true, 'onvif'), {})
@@ -45,4 +45,20 @@ test("the listener's status, a line at a time", () => {
   assert.match(lines[1], /^1 email that wasn't a ring.*Ring only/)
   assert.match(lines[2], /refused 2 times/)
   assert.match(clockText(1764018345000), /^\d\d:\d\d:\d\d$/)
+})
+
+test('a password shown in groups of 4, and a real sender address', () => {
+  assert.equal(inGroupsOf4('Xw7tQ2mLp9RzV4nBc8Hd'), 'Xw7t Q2mL p9Rz V4nB c8Hd')
+  assert.equal(inGroupsOf4('abcde'), 'abcd e')
+  assert.equal(inGroupsOf4('abcd'), 'abcd')
+  assert.equal(inGroupsOf4(''), '')
+  assert.match(MAIL_SENDER, /^[^@ ]+@[^@ ]+$/)
+})
+
+test("the email setup's error says what went wrong", () => {
+  assert.match(mailSetupError(new Error('Request failed (404)')), /no network address/)
+  assert.match(mailSetupError(new Error('Not a doorbell.')), /no network address/)
+  assert.match(mailSetupError(new Error('Session expired — please log in again.')), /Sign in again/)
+  assert.match(mailSetupError(new TypeError('Failed to fetch')), /Couldn't reach Revere/)
+  assert.equal(mailSetupError(new Error('Request failed (500)')), "Couldn't read the email setup: Request failed (500)")
 })

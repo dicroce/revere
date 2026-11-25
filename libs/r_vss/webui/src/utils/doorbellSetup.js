@@ -9,6 +9,21 @@ export function pressSourceChoice(camera, isDoorbell, source) {
   return source !== camera.press_source || source !== 'onvif' ? { press_source: source } : {}
 }
 
+// The sender address to type in the Reolink app: the listener takes any, and this one says where the mail is from.
+export const MAIL_SENDER = 'doorbell@revere.local'
+
+// A password shown for typing, in groups of 4: "Xw7t Q2mL p9Rz". Copy copies it as it is.
+export const inGroupsOf4 = (s) => (s || '').replace(/(.{4})(?=.)/g, '$1 ')
+
+// Why the email setup couldn't be read, from the error api.js throws.
+export function mailSetupError(e) {
+  const msg = String(e?.message || e || '')
+  if (/\(404\)|not a doorbell/i.test(msg)) return 'This computer has no network address toward the doorbell yet, or it isn\'t a doorbell.'
+  if (/session expired|\(401\)/i.test(msg)) return 'Sign in again to see the email setup.'
+  if (/failed to fetch|network|load failed/i.test(msg)) return "Couldn't reach Revere to read the email setup."
+  return `Couldn't read the email setup: ${msg}`
+}
+
 export const pressSourceName = (source) => (source === 'reolink_email' ? 'Email' : 'ONVIF')
 
 // A time as this browser shows it, "13:16:35".

@@ -223,7 +223,7 @@
                 <template v-for="f in mailFields" :key="f.key">
                   <dt>{{ f.name }}</dt>
                   <dd>
-                    <code>{{ f.secret && !doorReveal ? '••••••••••••' : f.value }}</code>
+                    <code>{{ f.secret ? (doorReveal ? inGroupsOf4(f.value) : '••••••••••••') : f.value }}</code>
                     <span class="mail-buttons">
                       <button v-if="f.secret" class="ghost small" @click="doorReveal = !doorReveal">{{ doorReveal ? 'Hide' : 'Show' }}</button>
                       <button v-if="f.copy" class="ghost small" @click="copyField(f)">{{ copiedField === f.key ? 'Copied' : 'Copy' }}</button>
@@ -231,7 +231,8 @@
                   </dd>
                 </template>
               </dl>
-              <p class="blurb">Then set the email Alarm Schedule to Ring only, so motion doesn't send email.</p>
+              <p v-if="doorMail" class="blurb">Then set the email Alarm Schedule to Ring only, so motion doesn't send email.</p>
+              <p v-if="doorMail && doorMailError" class="warn">{{ doorMailError }}</p>
               <p class="blurb">A ring arrives about 15 seconds after the press: Reolink sends the email late.</p>
               <p class="blurb">Reolink sends at most one email about every 10 minutes, and the doorbell has no setting to change that. Another press within that time isn't reported.</p>
               <p v-for="line in mailLines" :key="line" class="blurb">{{ line }}</p>
@@ -306,7 +307,7 @@ import RecordWizard from './RecordWizard.vue'
 import StorageDialog from './StorageDialog.vue'
 import PluginsSection from './PluginsSection.vue'
 import { doorbellChoice } from '../utils/cameraKind.js'
-import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines } from '../utils/doorbellSetup.js'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, MAIL_SENDER, inGroupsOf4, mailSetupError } from '../utils/doorbellSetup.js'
 import { unsaved } from '../utils/unsaved.js'
 
 const cameras = ref([])
@@ -399,7 +400,7 @@ const mailFields = computed(() => {
     { key: 'tls', name: 'SSL or TLS', value: 'On' },
     { key: 'user', name: 'User name', value: m.user, copy: true },
     { key: 'password', name: 'Password', value: m.password, copy: true, secret: true },
-    { key: 'sender', name: 'Sender address', value: 'Anything' },
+    { key: 'sender', name: 'Sender address', value: MAIL_SENDER, copy: true },
     { key: 'recipient', name: 'Recipient address', value: m.recipient, copy: true },
   ]
 })
@@ -410,12 +411,15 @@ async function readDoor() {
   nowMs.value = Date.now()
   try { doorPresses.value = await getDoorbellPresses(cam.id) } catch { doorPresses.value = null }
   if (propsPressSource.value === 'reolink_email') {
+    // The login once; after that, the listener's status without it.
+    const haveLogin = !!doorMail.value?.password
     try {
-      doorMail.value = await getDoorbellMailSetup(cam.id)
+      const m = await getDoorbellMailSetup(cam.id, { login: !haveLogin })
+      doorMail.value = haveLogin ? { ...m, user: doorMail.value.user, password: doorMail.value.password } : m
       doorMailError.value = ''
-    } catch {
-      doorMail.value = null
-      doorMailError.value = 'This computer has no network address toward the doorbell yet.'
+    } catch (e) {
+      if (!haveLogin) doorMail.value = null
+      doorMailError.value = mailSetupError(e)
     }
   }
 }
