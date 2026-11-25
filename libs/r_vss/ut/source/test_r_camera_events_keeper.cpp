@@ -84,9 +84,10 @@ struct sink
 void test_r_camera_events_keeper::test_a_reconnect_keeps_the_subscription()
 {
     // The stream reconnects: the old context detaches, a new one attaches. The camera's subscription is the same one.
+    // Before the rig: its keeper, destroyed first, may still tell an attached sink its events ended.
+    sink first, second;
     rig r;
     RTF_ASSERT(r.keeper->ensure(camera()).empty());
-    sink first, second;
     r.keeper->attach("cam", &first, first.fn());
     r.keeper->detach("cam", &first);
     RTF_ASSERT(r.keeper->ensure(camera()).empty());
@@ -102,11 +103,13 @@ void test_r_camera_events_keeper::test_attach_is_told_what_is_open_and_detach_th
 {
     // Motion opened while no context was attached (between reconnects): the next one starts with it open, and the one
     // leaving is told it ended, so each context's motion window opens and closes as when it had its own subscription.
+    // Before the rig: its keeper, destroyed first, may still tell an attached sink its events ended.
+    sink a;
+    sink b;
     rig r;
     r.keeper->ensure(camera());
     r.emit("motion", true);
     r.emit("person", true, "1");
-    sink a;
     r.keeper->attach("cam", &a, a.fn());
     RTF_ASSERT_EQUAL(a.got.size(), (size_t)2);
     RTF_ASSERT(a.got[0] == "motion on" && a.got[1] == "person/1 on");
@@ -119,17 +122,17 @@ void test_r_camera_events_keeper::test_attach_is_told_what_is_open_and_detach_th
     r.emit("motion", false);
     RTF_ASSERT_EQUAL(a.got.size(), (size_t)4);
     // The next one finds nothing open.
-    sink b;
     r.keeper->attach("cam", &b, b.fn());
     RTF_ASSERT(b.got.empty());
 }
 
 void test_r_camera_events_keeper::test_transitions_reach_the_attached_and_always()
 {
+    // Before the rig: its keeper, destroyed first, may still tell an attached sink its events ended.
+    sink a;
     rig r;
     r.keeper->ensure(camera());
     r.emit("motion", true);   // no context: only always
-    sink a;
     r.keeper->attach("cam", &a, a.fn());
     r.emit("motion", false);
     RTF_ASSERT_EQUAL(r.always.size(), (size_t)2);
@@ -145,10 +148,11 @@ void test_r_camera_events_keeper::test_new_settings_make_a_new_subscription()
 {
     // A new password: the old subscription is stopped and handed back to be destroyed, its context told it all ended,
     // and a new one started.
+    // Before the rig: its keeper, destroyed first, may still tell an attached sink its events ended.
+    sink a;
     rig r;
     r.keeper->ensure(camera("old"));
     r.emit("motion", true);
-    sink a;
     r.keeper->attach("cam", &a, a.fn());
     auto replaced = r.keeper->ensure(camera("new"));
     RTF_ASSERT_EQUAL(replaced.size(), (size_t)1);
@@ -167,13 +171,14 @@ void test_r_camera_events_keeper::test_new_settings_make_a_new_subscription()
 
 void test_r_camera_events_keeper::test_a_camera_that_goes_ends_its_subscription()
 {
+    // Before the rig: its keeper, destroyed first, may still tell an attached sink its events ended.
+    sink a;
     rig r;
     r.keeper->ensure(camera());
     auto other = camera();
     other.id = "cam2";
     r.keeper->ensure(other);
     r.emit("motion", true);   // cam2's
-    sink a;
     r.keeper->attach("cam2", &a, a.fn());
     auto gone = r.keeper->drop_except({"cam"});
     RTF_ASSERT_EQUAL(gone.size(), (size_t)1);
@@ -191,9 +196,10 @@ void test_r_camera_events_keeper::test_a_camera_that_goes_ends_its_subscription(
 void test_r_camera_events_keeper::test_only_the_attached_owner_detaches()
 {
     // A context torn down after its replacement attached must not take the new one's events away.
+    // Before the rig: its keeper, destroyed first, may still tell an attached sink its events ended.
+    sink old_one, new_one;
     rig r;
     r.keeper->ensure(camera());
-    sink old_one, new_one;
     r.keeper->attach("cam", &old_one, old_one.fn());
     r.keeper->attach("cam", &new_one, new_one.fn());
     r.keeper->detach("cam", &old_one);
@@ -204,12 +210,13 @@ void test_r_camera_events_keeper::test_only_the_attached_owner_detaches()
 
 void test_r_camera_events_keeper::test_a_camera_without_events_has_none()
 {
+    // Before the rig: its keeper, destroyed first, may still tell an attached sink its events ended.
+    sink a;
     rig r;
     auto c = camera();
     c.ipv4.clear();
     RTF_ASSERT(r.keeper->ensure(c).empty());
     RTF_ASSERT(!r.keeper->has("cam"));
-    sink a;
     r.keeper->attach("cam", &a, a.fn());   // nothing to attach to: no harm
     r.keeper->detach("cam", &a);
     RTF_ASSERT(a.got.empty());
@@ -219,10 +226,11 @@ void test_r_camera_events_keeper::test_new_settings_with_no_events_still_end_the
 {
     // The camera's settings change to ones with nothing to watch (here, no address): no new subscription, but the old
     // one still ends, its attached context told, and it comes back stopped, to be destroyed by the caller.
-    rig r;
-    r.keeper->ensure(camera());
+    // Before the rig: its keeper, destroyed first, may still tell an attached sink its events ended.
     sink s;
     int owner = 0;
+    rig r;
+    r.keeper->ensure(camera());
     r.keeper->attach("cam", &owner, s.fn());
     r.emit("motion", true);
     auto old = r.made.back();
