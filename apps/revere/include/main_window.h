@@ -423,7 +423,7 @@ inline void section_header(const std::string& id, const std::string& title, size
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
     const float h = ImGui::GetFontSize() + 10.0f;
     const float width = ImGui::GetContentRegionAvail().x;
-    if(ImGui::InvisibleButton(id.c_str(), ImVec2(width, h)))
+    if(ImGui::InvisibleButton(id.c_str(), ImVec2(std::max(1.0f, width), h)))
         open = !open;
     const bool hovered = ImGui::IsItemHovered();
     auto min = ImGui::GetItemRectMin();
@@ -1533,7 +1533,7 @@ inline void main_window(
         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
 
     auto vertical_rule = [&](const char* id, float h, float& value, float sign) {
-        ImGui::InvisibleButton(id, ImVec2(splitter, h));
+        ImGui::InvisibleButton(id, ImVec2(splitter, std::max(1.0f, h)));
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
         if(hot)
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -1816,7 +1816,7 @@ inline void main_window(
     // ---- Log ----
     if(state.show_log)
     {
-        ImGui::InvisibleButton("##log_splitter", ImVec2(w, splitter));
+        ImGui::InvisibleButton("##log_splitter", ImVec2(std::max(1.0f, w), splitter));
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
         if(hot)
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
