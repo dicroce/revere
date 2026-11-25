@@ -85,6 +85,31 @@ R_API std::string recording_source_name_prefix(const r_disco::r_camera& camera);
 // The camera's SDP media as a session uses them: without its audio when the session doesn't record audio
 // (r_audio_policy.h), so nothing downstream (storage, the RTSP restream, the plugins' feeds) has an audio track.
 R_API std::map<std::string, r_pipeline::r_sdp_media> recording_sdp_medias(const std::map<std::string, r_pipeline::r_sdp_media>& medias, bool records_audio);
+
+// One audio sample from the camera, as the session's sinks take it.
+struct r_audio_sample
+{
+    const uint8_t* data {nullptr};
+    size_t size {0};
+    bool key {false};
+    int64_t ts {0};    // the stream's time, ms
+    int64_t pts {0};
+};
+
+// Where a kept audio sample goes: the recording's storage, the plugins' frame feeds and the live restream sessions,
+// after prepare (the first sample's write context, the session's counts; false drops the sample).
+struct r_audio_sinks
+{
+    std::function<bool()> prepare;
+    std::function<void(const r_audio_sample&)> store;
+    std::function<void(const r_audio_sample&)> feed;
+    std::function<void(const r_audio_sample&)> restream;
+};
+
+// The audio callback's gate: with the session's audio off (r_audio_policy.h) the sample goes nowhere and prepare
+// isn't called; on, it's prepared and goes to storage, the feeds and the restream, in that order. Whether it went.
+R_API bool route_audio_sample(bool records_audio, const r_audio_sample& sample, const r_audio_sinks& sinks);
+
 // The camera's audio encoding as the session's RTSP restream gets it: none when the session doesn't record audio, so
 // the restream has video only, even though the camera still sends audio.
 R_API r_utils::r_nullable<r_pipeline::r_encoding> recording_audio_encoding(const r_utils::r_nullable<r_pipeline::r_encoding>& encoding, bool records_audio);
