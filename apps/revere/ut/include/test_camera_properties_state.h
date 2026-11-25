@@ -13,6 +13,7 @@ public:
       TEST(test_camera_properties_state::test_the_press_test_lines);
       TEST(test_camera_properties_state::test_the_press_test_verdict);
       TEST(test_camera_properties_state::test_the_mail_status_lines);
+      TEST(test_camera_properties_state::test_a_password_in_groups_of_4);
     RTF_FIXTURE_END();
 
     virtual ~test_camera_properties_state() throw() {}
@@ -29,4 +30,5 @@ public:
     void test_the_press_test_lines();
     void test_the_press_test_verdict();
     void test_the_mail_status_lines();
+    void test_a_password_in_groups_of_4();
 };

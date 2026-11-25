@@ -235,7 +235,7 @@ camera_properties_result camera_properties_pane(
                         ImGui::TextColored(text_secondary, "%s", name);
                         ImGui::SameLine();
                         ImGui::SetCursorScreenPos(ImVec2(x0 + name_w, ImGui::GetCursorScreenPos().y));
-                        const std::string shown = secret && !door.reveal ? std::string(12, '*') : value;
+                        const std::string shown = secret ? (door.reveal ? in_groups_of_4(value) : std::string(12, '*')) : value;
                         ImGui::TextColored(text_primary, "%s", shown.c_str());
                         float buttons = copy ? copy_w : 0.0f;
                         if(secret)
@@ -264,7 +264,7 @@ camera_properties_result camera_properties_pane(
                     field("tls", "SSL or TLS", "On", false, false);
                     field("user", "User name", door.user, true, false);
                     field("password", "Password", door.password, true, true);
-                    field("sender", "Sender address", "Anything", false, false);
+                    field("sender", "Sender address", mail_sender(), true, false);
                     field("recipient", "Recipient address", door.recipient, true, false);
                     ImGui::PopStyleVar();
                     d.gap(4.0f);

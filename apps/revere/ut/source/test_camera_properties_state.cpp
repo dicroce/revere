@@ -148,3 +148,12 @@ void test_camera_properties_state::test_the_mail_status_lines()
     RTF_ASSERT(lines[2].find("refused 2 times") != string::npos);
     RTF_ASSERT(clock_text(1764018345000).size() == 8);
 }
+
+void test_camera_properties_state::test_a_password_in_groups_of_4()
+{
+    RTF_ASSERT(in_groups_of_4("Xw7tQ2mLp9RzV4nBc8Hd") == "Xw7t Q2mL p9Rz V4nB c8Hd");
+    RTF_ASSERT(in_groups_of_4("abcde") == "abcd e");
+    RTF_ASSERT(in_groups_of_4("abcd") == "abcd");
+    RTF_ASSERT(in_groups_of_4("").empty());
+    RTF_ASSERT(std::string(mail_sender()).find('@') != std::string::npos);
+}

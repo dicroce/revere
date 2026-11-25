@@ -3296,12 +3296,12 @@ int main(int argc, char** argv)
             close_properties();
             return;
         }
-        // The Doorbell section's view of its presses and email setup, read about once a second while it shows.
+        // The Doorbell section's view of its presses and email setup, read every 2 s while it shows; its login once.
         auto read_door_view = [&](bool now){
             if(!ui_state.is_doorbell)
                 return;
             auto t = std::chrono::steady_clock::now();
-            if(!now && ui_state.door_view.loaded && t - ui_state.door_view_read < std::chrono::seconds(1))
+            if(!now && ui_state.door_view.loaded && t - ui_state.door_view_read < std::chrono::seconds(2))
                 return;
             ui_state.door_view_read = t;
             auto& v = ui_state.door_view;
@@ -3320,15 +3320,19 @@ int main(int argc, char** argv)
                 for(auto& src : p.test.sources)
                     v.test_sources.push_back({src.source, src.seen, src.seen ? src.arrived_ms - src.press_ms : 0});
             }
-            auto mail = streamKeeper.doorbell_mail_setup(camera_id.value());
+            auto mail = streamKeeper.doorbell_mail_setup(camera_id.value(), !v.has_login);
             v.has_mail = !mail.is_null();
             if(v.has_mail)
             {
                 const auto& m = mail.value();
                 v.server = m.setup.server;
                 v.port = m.setup.port;
-                v.user = m.setup.user;
-                v.password = m.setup.password;
+                if(!v.has_login)
+                {
+                    v.user = m.setup.user;
+                    v.password = m.setup.password;
+                    v.has_login = true;
+                }
                 v.recipient = m.setup.recipient;
                 v.listening = m.listening;
                 v.other_mail = m.counts.other_mail;

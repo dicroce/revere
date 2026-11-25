@@ -88,8 +88,10 @@ struct doorbell_view
     int64_t test_ends_ms {0};
     std::vector<source_result> test_sources;
 
-    // What to type in the Reolink app; has_mail false while the box has no address toward the doorbell.
+    // What to type in the Reolink app; has_mail false while the box has no address toward the doorbell. The user and
+    // password are read once (has_login); the rest is read with the status.
     bool has_mail {false};
+    bool has_login {false};
     std::string server;
     int port {0};
     std::string user;
@@ -105,6 +107,22 @@ struct doorbell_view
 };
 
 inline std::string press_source_name(const std::string& source) { return source == "reolink_email" ? "Email" : "ONVIF"; }
+
+// The sender address to type in the Reolink app: the listener takes any, and this one says where the mail is from.
+inline const char* mail_sender() { return "doorbell@revere.local"; }
+
+// A password shown for typing, in groups of 4: "Xw7t Q2mL p9Rz". Copy copies it as it is.
+inline std::string in_groups_of_4(const std::string& s)
+{
+    std::string out;
+    for(size_t i = 0; i < s.size(); ++i)
+    {
+        if(i && i % 4 == 0)
+            out += ' ';
+        out += s[i];
+    }
+    return out;
+}
 
 // A time today as the box shows it, "13:16:35".
 inline std::string clock_text(int64_t ms)
