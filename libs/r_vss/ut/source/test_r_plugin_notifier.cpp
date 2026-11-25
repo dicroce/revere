@@ -163,8 +163,9 @@ void test_r_plugin_notifier::test_stopping_accepting_waits_for_the_running_call(
     RTF_ASSERT(eventually([&]() { return g->entered.load(); }));
     thread opener([g]() { this_thread::sleep_for(milliseconds(50)); g->release(); });
     n.accept(false);
-    RTF_ASSERT(done->load());   // it had finished when accept(false) returned
+    const bool finished = done->load();
     opener.join();
+    RTF_ASSERT(finished);   // it had finished when accept(false) returned
 }
 
 void test_r_plugin_notifier::test_stopping_accepting_from_inside_a_call_does_not_wait_for_itself()
@@ -211,9 +212,12 @@ void test_r_plugin_notifier::test_stopping_accepting_gives_up_on_a_call_that_doe
     RTF_ASSERT(eventually([&]() { return g->entered.load(); }));
 
     auto start = steady_clock::now();
-    RTF_ASSERT(!n.accept(false, milliseconds(100)));   // still running: says so
+    const bool stopped = n.accept(false, milliseconds(100));
     auto took = steady_clock::now() - start;
+    // Let the call go before judging: a failed assert leaves here by an exception, and the notifier's destructor
+    // waits for the running call, so a call still held would hang the whole run.
+    g->release();
+    RTF_ASSERT(!stopped);   // still running: says so
     RTF_ASSERT(took >= milliseconds(90));
     RTF_ASSERT(took < seconds(2));
-    g->release();
 }
