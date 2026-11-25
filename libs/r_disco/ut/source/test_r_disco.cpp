@@ -155,10 +155,10 @@ struct fake_host
     // Every move change the host was told, in order.
     vector<pair<string, r_nullable<r_camera_move>>> told;
 
-    // The hold tests below are with pausing on (camera_move_policy); a new agent has it off.
-    void wire(r_agent& agent, bool pause_on_address_change = true)
+    // A new agent holds every move it can't verify (camera_move_policy); pass true for the opt-in that follows the unverifiable ones.
+    void wire(r_agent& agent, bool follow_unverified_moves = false)
     {
-        agent.set_pause_on_address_change(pause_on_address_change);
+        agent.set_follow_unverified_moves(follow_unverified_moves);
         agent.set_camera_lookup_cb([this](const string& id){
             r_nullable<r_camera> c;
             auto it = cameras.find(id);
@@ -397,88 +397,129 @@ void test_r_disco::test_agent_confirm_stores_the_mac_seen()
     }
 }
 
-void test_r_disco::test_agent_keeps_recording_when_not_pausing()
+void test_r_disco::test_agent_holds_unverified_moves_unless_set_to_follow()
 {
-    // A new agent doesn't pause: as on a computer the cloud never told.
+    // A new agent holds what it can't verify: as on a computer the cloud never told.
     {
         r_agent agent("top_dir");
-        RTF_ASSERT(!agent.pause_on_address_change());
+        RTF_ASSERT(!agent.follow_unverified_moves());
     }
 
-    // Off: a move the MAC doesn't vouch for is followed by the poll that finds it, and says how the MAC compared.
-    struct one_case { r_nullable<string> stored; r_nullable<string> seen; string check; };
-    for(const auto& c : vector<one_case>{
-            {_s("aa:bb:cc:00:00:01"), _s("0C-CD-D0-03-7B-D9"), "changed"},
-            {_s("aa:bb:cc:00:00:01"), r_nullable<string>(), "unknown"},
-            {r_nullable<string>(), _s("0c:cd:d0:03:7b:d9"), "none"},
-            {_s("0c:cd:d0:03:7b:d9"), _s("0C-CD-D0-03-7B-D9"), "match"}})
+    // A different MAC is held whatever the setting: no write, nothing saved, so the camera's login goes nowhere.
+    for(bool follow : {false, true})
     {
         r_agent agent("top_dir");
         fake_host host;
-        host.cameras["garage"] = _assigned("garage", "10.0.0.93", c.stored);
-        host.wire(agent, false);
-        host.new_mac = c.seen;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.93", _s("aa:bb:cc:00:00:01"));
+        host.wire(agent, follow);
+        host.new_mac = _s("0C-CD-D0-03-7B-D9");
         agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
         agent.recheck_held_moves();
-        RTF_ASSERT(host.moves["garage"].value().status == "followed");
-        RTF_ASSERT(host.moves["garage"].value().mac_check == c.check);
-        RTF_ASSERT(host.written.size() == 1 && host.written[0].ipv4.value() == "10.0.0.78");
-        // The local notice says it kept recording, and when the MAC didn't vouch.
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].value().status == "held");
+        RTF_ASSERT(host.moves["garage"].value().hold_reason == "mac_mismatch");
+        RTF_ASSERT(host.written.empty() && host.saved.empty());
+        // The notice says another device answers there, and that confirming sends the login to it.
         auto msg = camera_move_message(host.moves["garage"].value());
-        RTF_ASSERT(msg.find("Recording continues at the new address.") != string::npos);
-        RTF_ASSERT((msg.find("MAC") != string::npos) == (c.check != "match"));
-        // The stored MAC stays as it was: only a person's confirm teaches a new one.
-        RTF_ASSERT(host.saved.empty());
+        RTF_ASSERT(msg.find("different device") != string::npos);
+        RTF_ASSERT(msg.find("camera's login") != string::npos);
+        // Still held when the old address has long been silent: only a person's confirm follows it.
+        host.now_ms += 24LL * 3600 * 1000;
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].value().status == "held" && host.written.empty());
     }
 
-    // Off, something else answers at a new address with the camera's discovery id: followed, and its MAC isn't
-    // learned. When the org then turns pausing on, the real camera coming back is followed, and the other device
-    // turning up again is held.
+    // Not verifiable (no MAC on file, none readable there): held by default, followed and said so when set to follow.
+    struct one_case { r_nullable<string> stored; r_nullable<string> seen; string reason; string check; };
+    for(const auto& c : vector<one_case>{
+            {_s("aa:bb:cc:00:00:01"), r_nullable<string>(), "mac_unknown", "unknown"},
+            {r_nullable<string>(), _s("0c:cd:d0:03:7b:d9"), "no_stored_mac", "none"}})
+    {
+        {
+            r_agent agent("top_dir");
+            fake_host host;
+            host.cameras["garage"] = _assigned("garage", "10.0.0.93", c.stored);
+            host.wire(agent, false);
+            host.new_mac = c.seen;
+            agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
+            agent.recheck_held_moves();
+            RTF_ASSERT(host.moves["garage"].value().status == "held");
+            RTF_ASSERT(host.moves["garage"].value().hold_reason == c.reason);
+            RTF_ASSERT(host.written.empty() && host.saved.empty());
+        }
+        {
+            r_agent agent("top_dir");
+            fake_host host;
+            host.cameras["garage"] = _assigned("garage", "10.0.0.93", c.stored);
+            host.wire(agent, true);
+            host.new_mac = c.seen;
+            agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
+            agent.recheck_held_moves();
+            RTF_ASSERT(host.moves["garage"].value().status == "followed");
+            RTF_ASSERT(host.moves["garage"].value().mac_check == c.check);
+            RTF_ASSERT(host.written.size() == 1 && host.written[0].ipv4.value() == "10.0.0.78");
+            auto msg = camera_move_message(host.moves["garage"].value());
+            RTF_ASSERT(msg.find("Recording continues at the new address.") != string::npos);
+            RTF_ASSERT(msg.find("MAC") != string::npos);
+            // The stored MAC stays as it was: only a person's confirm teaches a new one.
+            RTF_ASSERT(host.saved.empty());
+            agent.forget("garage");   // the unconfirmed address, so the next case starts clean
+        }
+    }
+
+    // A matching MAC is followed either way, with no pause and nothing to confirm.
+    for(bool follow : {false, true})
     {
         r_agent agent("top_dir");
         fake_host host;
         host.cameras["garage"] = _assigned("garage", "10.0.0.93", _s("0c:cd:d0:03:7b:d9"));
-        host.wire(agent, false);
-        host.new_mac = _s("aa:bb:cc:00:00:01");
+        host.wire(agent, follow);
+        host.new_mac = _s("0C-CD-D0-03-7B-D9");
         agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
         agent.recheck_held_moves();
         RTF_ASSERT(host.moves["garage"].value().status == "followed");
-        RTF_ASSERT(host.moves["garage"].value().mac_check == "changed");
-        RTF_ASSERT(host.saved.empty());
-        RTF_ASSERT(host.cameras["garage"].mac.value() == "0c:cd:d0:03:7b:d9");
-        host.cameras["garage"].ipv4 = _s("10.0.0.78");
-
-        agent.set_pause_on_address_change(true);
-
-        // The real camera, back at its old address with its MAC.
-        host.new_mac = _s("0C-CD-D0-03-7B-D9");
-        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.93"), "h2"}});
-        agent.recheck_held_moves();
-        RTF_ASSERT(host.moves["garage"].value().status == "followed");
-        RTF_ASSERT(host.moves["garage"].value().new_ipv4 == "10.0.0.93");
         RTF_ASSERT(host.moves["garage"].value().mac_check == "match");
-        RTF_ASSERT(host.written.size() == 2 && host.written[1].ipv4.value() == "10.0.0.93");
-        host.cameras["garage"].ipv4 = _s("10.0.0.93");
+    }
 
-        // The other device again, at another address: held.
+    // Set to follow, something else answers at a new address with the camera's discovery id: held, its MAC isn't
+    // learned, and a person's confirm is what follows it (and teaches the MAC).
+    {
+        r_agent agent("top_dir");
+        fake_host host;
+        host.cameras["garage"] = _assigned("garage", "10.0.0.93", _s("0c:cd:d0:03:7b:d9"));
+        host.wire(agent, true);
         host.new_mac = _s("aa:bb:cc:00:00:01");
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].value().status == "held");
+        RTF_ASSERT(host.written.empty() && host.saved.empty());
+        RTF_ASSERT(host.cameras["garage"].mac.value() == "0c:cd:d0:03:7b:d9");
+
+        // Dismissed: the same address isn't raised again.
+        RTF_ASSERT(agent.answer_camera_move("garage", "10.0.0.78", false) == move_answer::ok);
+        agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h2"}});
+        agent.recheck_held_moves();
+        RTF_ASSERT(host.moves["garage"].is_null());
+
+        // Another address is raised, and a person's confirm follows it and stores the MAC seen there.
         agent.apply_discovered_changes({{_discovered("garage", "10.0.0.50"), "h3"}});
         agent.recheck_held_moves();
         RTF_ASSERT(host.moves["garage"].value().status == "held");
-        RTF_ASSERT(host.moves["garage"].value().hold_reason == "mac_mismatch");
-        RTF_ASSERT(host.written.size() == 2 && host.saved.empty());
+        RTF_ASSERT(host.written.empty());
+        RTF_ASSERT(agent.answer_camera_move("garage", "10.0.0.50", true) == move_answer::ok);
+        RTF_ASSERT(host.cameras["garage"].mac.value() == "aa:bb:cc:00:00:01");
     }
 
-    // Off, with no MAC on file: followed, and what answers at the new address isn't noted as the camera's MAC, there
-    // or after a restart. A camera that never moved is noted as before. Once pausing is on, the next move is held, and
-    // a person's confirm teaches the MAC seen there.
+    // Set to follow, with no MAC on file: followed, and what answers at the new address isn't noted as the camera's
+    // MAC, there or after a restart. A camera that never moved is noted as before. Once following is off, the next
+    // move is held, and a person's confirm teaches the MAC seen there.
     {
         fake_host host;
         host.cameras["garage"] = _assigned("garage", "10.0.0.93", r_nullable<string>());
         host.cameras["porch"] = _assigned("porch", "10.0.0.20", r_nullable<string>());
         {
             r_agent agent("top_dir");
-            host.wire(agent, false);
+            host.wire(agent, true);
             host.new_mac = _s("aa:bb:cc:00:00:01");
             agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
             agent.recheck_held_moves();
@@ -495,12 +536,12 @@ void test_r_disco::test_agent_keeps_recording_when_not_pausing()
         {
             // After a restart, still not noted there.
             r_agent agent("top_dir");
-            host.wire(agent, false);
+            host.wire(agent, true);
             agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h3"}});
             RTF_ASSERT(host.saved.size() == 1 && host.cameras["garage"].mac.is_null());
 
             // Pausing on: the next move is held, and the confirm teaches the MAC seen at the new address.
-            agent.set_pause_on_address_change(true);
+            agent.set_follow_unverified_moves(false);
             host.new_mac = _s("0c:cd:d0:03:7b:d9");
             agent.apply_discovered_changes({{_discovered("garage", "10.0.0.50"), "h4"}});
             agent.recheck_held_moves();
@@ -513,12 +554,12 @@ void test_r_disco::test_agent_keeps_recording_when_not_pausing()
         RTF_ASSERT(load_unconfirmed_addresses("top_dir").empty());
     }
 
-    // On: the same move is held, as before.
+    // Not set to follow: a different MAC is held (the default).
     {
         r_agent agent("top_dir");
         fake_host host;
         host.cameras["garage"] = _assigned("garage", "10.0.0.93", _s("aa:bb:cc:00:00:01"));
-        host.wire(agent, true);
+        host.wire(agent, false);
         host.new_mac = _s("0c:cd:d0:03:7b:d9");
         agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
         agent.recheck_held_moves();
@@ -618,7 +659,7 @@ void test_r_disco::test_agent_notes_mac_of_an_unchanged_camera()
         fake_host host;
         host.cameras["garage"] = _assigned("garage", "10.0.0.93", r_nullable<string>());
         r_agent agent("top_dir");
-        host.wire(agent, true);
+        host.wire(agent, false);
         agent.set_assigned_cameras_cb(assigned_of(host));
         agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
         agent.recheck_held_moves();
@@ -633,7 +674,7 @@ void test_r_disco::test_agent_notes_mac_of_an_unchanged_camera()
         fake_host host;
         host.cameras["garage"] = _assigned("garage", "10.0.0.93", r_nullable<string>());
         r_agent agent("top_dir");
-        host.wire(agent, false);
+        host.wire(agent, true);
         agent.set_assigned_cameras_cb(assigned_of(host));
         host.new_mac = _s("aa:bb:cc:00:00:01");
         agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
@@ -653,7 +694,7 @@ void test_r_disco::test_agent_forget_drops_unconfirmed_address()
         fake_host host;
         host.cameras["garage"] = _assigned("garage", "10.0.0.93", r_nullable<string>());
         r_agent agent("top_dir");
-        host.wire(agent, false);
+        host.wire(agent, true);
         host.new_mac = _s("aa:bb:cc:00:00:01");
         agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
         agent.recheck_held_moves();
@@ -688,9 +729,12 @@ void test_r_disco::test_camera_move_policy_file()
     RTF_ASSERT(!parse_camera_move_policy(""));
     RTF_ASSERT(!parse_camera_move_policy("not json"));
     RTF_ASSERT(!parse_camera_move_policy("{}"));
-    RTF_ASSERT(!parse_camera_move_policy("{\"pause_on_address_change\": \"yes\"}"));
+    RTF_ASSERT(!parse_camera_move_policy("{\"follow_unverified_moves\": \"yes\"}"));
+    RTF_ASSERT(!parse_camera_move_policy("{\"follow_unverified_moves\": false}"));
+    RTF_ASSERT(parse_camera_move_policy("{\"follow_unverified_moves\": true}"));
+    // The older setting is not read: it was off by default, and off must not become "follow".
     RTF_ASSERT(!parse_camera_move_policy("{\"pause_on_address_change\": false}"));
-    RTF_ASSERT(parse_camera_move_policy("{\"pause_on_address_change\": true}"));
+    RTF_ASSERT(!parse_camera_move_policy("{\"pause_on_address_change\": true}"));
     RTF_ASSERT(parse_camera_move_policy(camera_move_policy_json(true)));
     RTF_ASSERT(!parse_camera_move_policy(camera_move_policy_json(false)));
     RTF_ASSERT(mac_check_for("") == "match" && mac_check_for("mac_mismatch") == "changed" &&

@@ -3070,9 +3070,10 @@ int main(int argc, char** argv)
     ImGui::CreateContext();
 
     r_disco::r_agent agent(r_fs::platform_path(top_dir));
-    // Whether a camera whose address changes pauses until its move is confirmed: the last value the cloud sent, or
-    // off (it keeps recording) when it never sent one (r_disco::load_camera_move_policy).
-    agent.set_pause_on_address_change(r_disco::load_camera_move_policy(r_fs::platform_path(top_dir)));
+    // Whether a camera that moves to an address that can't be checked (no MAC on file or readable there) is followed
+    // without waiting for a person: the last value the cloud sent, or off (held until confirmed) when it never sent
+    // one (r_disco::load_camera_move_policy). A different MAC is always held.
+    agent.set_follow_unverified_moves(r_disco::load_camera_move_policy(r_fs::platform_path(top_dir)));
     r_disco::r_devices devices(r_fs::platform_path(top_dir));
     r_vss::r_stream_keeper streamKeeper(devices, agent, r_fs::platform_path(top_dir));
     streamKeeper.set_system_plugin_api_result_cb([&cfg_state](const std::string& name, const std::string& json) {
