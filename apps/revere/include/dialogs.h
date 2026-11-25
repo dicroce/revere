@@ -160,7 +160,7 @@ public:
         ImGui::PopTextWrapPos();
         const float h = pad + ImGui::GetTextLineHeight() + (desc_h > 0.0f ? 4.0f + desc_h : 0.0f) + pad;
 
-        bool clicked = ImGui::InvisibleButton(id, ImVec2(_width, h));
+        bool clicked = main_window_detail::invisible_button(id, ImVec2(_width, h));
         const bool hovered = ImGui::IsItemHovered();
         auto* dl = ImGui::GetWindowDrawList();
         dl->AddRectFilled(p, ImVec2(p.x + _width, p.y + h), ImGui::GetColorU32(hovered ? surface_raised : surface_card));
