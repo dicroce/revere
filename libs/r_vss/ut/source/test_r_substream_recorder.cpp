@@ -1126,8 +1126,11 @@ void test_r_substream_recorder::test_a_smaller_stream_that_stops_delivering_is_l
 
     // While away it stays away until the retry time (even though main, which now records, "delivers").
     RTF_ASSERT(!g.pass("cam", false, false, failed_at + SUB_RECORD_RETRY_FIRST_MS - 1));
-    // Then the smaller stream is tried again.
+    // Then the smaller stream is tried again. What the keeper reads without a pass (a context being built, /cameras)
+    // says so from the retry time on.
     auto retry_at = failed_at + SUB_RECORD_RETRY_FIRST_MS;
+    RTF_ASSERT(g.away("cam", retry_at - 1) && g.away_cameras(retry_at - 1).count("cam") == 1 && g.retry_in_ms("cam", retry_at - 1) == 1);
+    RTF_ASSERT(!g.away("cam", retry_at) && g.away_cameras(retry_at).empty() && g.retry_in_ms("cam", retry_at) == 0 && g.retry_in_ms("cam", retry_at + 5) == 0);
     RTF_ASSERT(g.pass("cam", false, false, retry_at));
     RTF_ASSERT(!g.away("cam", retry_at));
     // It fails again: away for twice as long, then four times, up to the cap.
