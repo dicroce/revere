@@ -105,6 +105,19 @@ string r_vss::stored_video_codec_parameters(const string& video_codec_name, cons
     return video_codec_parameters;
 }
 
+r_nullable<r_encoding> r_vss::recording_audio_encoding(const r_nullable<r_encoding>& encoding, bool records_audio)
+{
+    return records_audio ? encoding : r_nullable<r_encoding>();
+}
+
+map<string, r_sdp_media> r_vss::recording_sdp_medias(const map<string, r_sdp_media>& medias, bool records_audio)
+{
+    auto kept = medias;
+    if(!records_audio)
+        kept.erase("audio");
+    return kept;
+}
+
 string r_vss::recording_source_name_prefix(const r_camera& camera)
 {
     // Not camera.friendly_name + "_": r_nullable converts to bool, so that
@@ -174,7 +187,16 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     
     _source.set_args(arguments);
 
+    // The audio policy as this session starts (r_audio_policy.h); a change starts the session again.
+    _records_audio = sk ? sk->records_audio(camera.id) : true;
+    if(!_records_audio)
+        R_LOG_INFO("Camera %s: audio is off, so its audio isn't recorded or restreamed", camera.id.c_str());
+
     _source.set_audio_sample_cb([this](const sample_context& sc, const r_gst_buffer& buffer, bool key, int64_t pts){
+
+        // Audio off: none of it is stored, restreamed or handed to plugins.
+        if(!this->_records_audio)
+            return;
 
         try
         {
@@ -377,7 +399,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 this->_video_caps = _source.get_video_caps();
                 if(!this->_has_audio)
                 {
-                    auto mount = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), sc.audio_encoding());
+                    auto mount = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), recording_audio_encoding(sc.audio_encoding(), this->_records_audio));
                     std::lock_guard<std::mutex> g(_restream_mount_lock);
                     this->_restream_mount_path = mount;
                 }
@@ -493,7 +515,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
     _source.set_sdp_media_cb([this](const map<string, r_sdp_media>& sdp_medias){
         this->_answered = true;
-        this->_sdp_medias = sdp_medias;
+        this->_sdp_medias = recording_sdp_medias(sdp_medias, this->_records_audio);
         if(this->_sdp_medias.find("audio") != this->_sdp_medias.end())
             this->_has_audio = true;
     });

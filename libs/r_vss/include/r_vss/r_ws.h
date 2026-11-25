@@ -242,6 +242,8 @@ private:
     r_http::r_server_response _post_camera_move_dismiss(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
     r_http::r_server_response _get_camera_move_policy(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
     r_http::r_server_response _post_camera_move_policy(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _get_audio_policy(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _post_audio_policy(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
     r_http::r_server_response _get_discovery_status(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
     r_http::r_server_response _answer_camera_move(const r_http::r_server_request& request, bool confirm);
 
