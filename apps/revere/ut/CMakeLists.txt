@@ -23,6 +23,8 @@ add_executable(
     ../source/cloud_download.cpp
     include/test_render_policy.h
     source/test_render_policy.cpp
+    include/test_main_window_address.h
+    source/test_main_window_address.cpp
 )
 
 target_include_directories(

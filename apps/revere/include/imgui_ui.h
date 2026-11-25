@@ -393,6 +393,11 @@ struct sidebar_list_ui_item
     // was followed. Empty when there's none.
     std::string move_notice;
     bool move_held {false};
+    // A different device answers at the camera's own address and it is stopped until a person says it is theirs
+    // (r_disco/r_address_check.h): the notice, and the time the hold was first seen, which the confirmation names.
+    bool address_held {false};
+    std::string address_notice;
+    int64_t address_since_ms {0};
 
     // Shown in the main window's detail pane when known.
     std::string codec;
