@@ -72,7 +72,8 @@ static pair<int, string> _http_interact(
     const string& soap_action = "",
     int timeout_ms = 30000,
     int net_attempts = 2,
-    bool log_request = true   // false for requests made every few seconds (event pulls); failures still log
+    bool log_request = true,  // false for requests made every few seconds (event pulls); failures still log
+    r_onvif::r_onvif_interrupt* interrupt = nullptr   // a stop can cut it short (r_onvif_interrupt)
 )
 {
     const int MAX_NET_ATTEMPTS = net_attempts;
@@ -90,6 +91,8 @@ retry_redirect:
             this_thread::sleep_for(chrono::milliseconds(300));
         }
 
+        if (interrupt && interrupt->interrupted())
+            throw std::runtime_error("interrupted: the subscriber is stopping");
         try
         {
             if (log_request)
@@ -100,6 +103,15 @@ retry_redirect:
                 sock = std::make_unique<r_utils::r_ssl_socket>();
             else
                 sock = std::make_unique<r_utils::r_socket>();
+
+            // While it's in flight, a stop closes this socket, which wakes a connect, a send or a long read.
+            if (interrupt && !interrupt->set_active(sock.get()))
+                throw std::runtime_error("interrupted: the subscriber is stopping");
+            struct inactive_on_exit
+            {
+                r_onvif::r_onvif_interrupt* interrupt;
+                ~inactive_on_exit() { if (interrupt) interrupt->set_active(nullptr); }
+            } inactive{interrupt};
 
             sock->connect(host, port);
 
@@ -173,7 +185,8 @@ retry_redirect:
         }
         catch (const std::exception& ex)
         {
-            if (net_attempt + 1 == MAX_NET_ATTEMPTS)
+            // A stop cut it short: no retry.
+            if (net_attempt + 1 == MAX_NET_ATTEMPTS || (interrupt && interrupt->interrupted()))
                 throw;
             R_LOG_INFO("HTTP attempt %d/%d failed (%s), retrying...", net_attempt + 1, MAX_NET_ATTEMPTS, ex.what());
         }
@@ -1150,7 +1163,7 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
             string body = _build_soap_envelope(ver, auth, build_body, username, password, _time_offset_seconds, build_header);
 
             // Pass SOAP version and action to set appropriate headers
-            result = _http_interact(host, port, "POST", uri, body, ver, soap_action, timeout_ms, net_attempts, log_request);
+            result = _http_interact(host, port, "POST", uri, body, ver, soap_action, timeout_ms, net_attempts, log_request, _interrupt.get());
 
             // Check if successful
             if (result.first == 200)
@@ -2920,6 +2933,29 @@ pair<int, string> r_onvif::r_onvif_cam::_pull_point_request(
         timeout_ms,
         net_attempts
     );
+}
+
+void r_onvif::r_onvif_interrupt::interrupt()
+{
+    lock_guard<mutex> g(_lock);
+    _interrupted = true;
+    if (_active)
+        _active->close();   // thread-safe: wakes the request blocked on it
+}
+
+bool r_onvif::r_onvif_interrupt::interrupted() const
+{
+    lock_guard<mutex> g(_lock);
+    return _interrupted;
+}
+
+bool r_onvif::r_onvif_interrupt::set_active(r_utils::r_socket_base* sock)
+{
+    lock_guard<mutex> g(_lock);
+    if (_interrupted && sock)
+        return false;
+    _active = sock;
+    return true;
 }
 
 vector<r_onvif::onvif_event> r_onvif::r_onvif_cam::pull_messages(const onvif_pull_point& pull_point, int timeout_seconds, int message_limit)

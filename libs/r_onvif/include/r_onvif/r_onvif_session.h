@@ -8,7 +8,11 @@
 #include <vector>
 #include <stdbool.h>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <pugixml.hpp>
+
+namespace r_utils { class r_socket_base; }
 
 namespace r_onvif
 {
@@ -422,6 +426,25 @@ enum class auth_mode
     unknown     // Not yet determined
 };
 
+// Cuts short a camera's request in flight, from another thread: an event subscriber's long pull, when it's told to
+// stop, so the stop doesn't wait out the pull. Once interrupted, the camera's later requests fail at once.
+class r_onvif_interrupt
+{
+public:
+    // Closes the socket of the request in flight (which wakes it) and refuses later ones.
+    R_API void interrupt();
+    R_API bool interrupted() const;
+
+    // For the request itself: this socket is the one in flight (nullptr: none). False, and nothing set, when already
+    // interrupted.
+    R_API bool set_active(r_utils::r_socket_base* sock);
+
+private:
+    mutable std::mutex _lock;
+    r_utils::r_socket_base* _active {nullptr};
+    bool _interrupted {false};
+};
+
 class r_onvif_cam
 {
 public:
@@ -545,6 +568,9 @@ public:
     soap_version get_soap_version() const { return _soap_ver; }
     auth_mode get_auth_mode() const { return _auth_mode; }
 
+    // Every request this camera makes from now on can be cut short by `interrupt` (an event subscriber's stop).
+    void set_interrupt(std::shared_ptr<r_onvif_interrupt> interrupt) { _interrupt = std::move(interrupt); }
+
 private:
     std::pair<int, std::string> _soap_request(
         const std::string& host,
@@ -583,6 +609,7 @@ private:
     int _time_offset_seconds;
     mutable soap_version _soap_ver;
     mutable auth_mode _auth_mode;
+    std::shared_ptr<r_onvif_interrupt> _interrupt;
 };
 
 }

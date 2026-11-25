@@ -6,22 +6,27 @@
 #include "r_cameras/onvif/r_onvif_event_tracker.h"
 #include "r_utils/r_macro.h"
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
-namespace r_onvif { class r_onvif_cam; }
+namespace r_onvif { class r_onvif_cam; class r_onvif_interrupt; }
 
 namespace r_cameras
 {
 
 // A camera's events over ONVIF: one pull point subscription (or, for a camera that has no pull point, a push
 // subscription: see _push_session). Finds the device
-// service (its stored port first), subscribes, pulls every 2 s, renews at half
-// the termination time, and resubscribes with backoff (10 s doubling to 10 min)
-// on failure. After its first subscription it gives a camera whose motion
-// region is empty the whole frame (see fill_empty_cell_motion_regions). A stop
-// waits at most about one pull or one connection attempt.
+// service (its stored port first), subscribes, and long-pulls: each pull waits
+// up to LONG_PULL_S for the camera to have something, so one subscription is
+// asked once every LONG_PULL_S when nothing happens, and an event comes back as
+// soon as the camera has it. It renews at half the termination time. A pull
+// that fails is asked again once on the same subscription; a second failure in a
+// row resubscribes, with backoff (10 s doubling to 10 min). After its first
+// subscription it gives a camera whose motion region is empty the whole frame
+// (see fill_empty_cell_motion_regions). A stop cuts the pull in flight short
+// (r_onvif_interrupt), so it waits at most about one connection attempt.
 class r_onvif_events final : public r_camera_events_base
 {
 public:
@@ -35,6 +40,7 @@ public:
 
 private:
     void _run() override;
+    void _stop_requested() override;
 
     // The camera's motion region is checked (once), and an empty one given the whole frame.
     void _check_region(r_onvif::r_onvif_cam& cam, const std::string& capabilities);
@@ -48,6 +54,7 @@ private:
     r_onvif_event_tracker _tracker;
     bool _region_checked {false};   // the camera's motion region has been checked (once)
     bool _push_preferred {false};   // the camera said it has no pull point: don't ask again
+    std::shared_ptr<r_onvif::r_onvif_interrupt> _interrupt;   // cuts the request in flight short on a stop
 
     // Notify bodies the listener has received, not yet parsed (parsed on this thread, not the listener's).
     std::mutex _notify_lock;
