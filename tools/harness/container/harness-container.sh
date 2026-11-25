@@ -8,6 +8,9 @@ harness="$(dirname "$here")"
 repo="$(cd "$harness/../.." && pwd)"
 image="${REVERE_HARNESS_IMAGE:-revere-harness:local}"
 name="revere-harness"
+# The image is built by a builder of its own, so pruning or cleaning here never touches the build cache of anything else
+# on the machine (the default builder's cache is shared by every project).
+builder="${REVERE_HARNESS_BUILDER:-revere-harness}"
 port="${HARNESS_PORT:-8090}"
 
 usage() {
@@ -20,8 +23,8 @@ usage: tools/harness/run.sh mac <command>
   test                          the harness's unit tests
   shell                         a shell in the container
   size                          how much disk the image and Docker use
-  prune                         drop the build cache but keep the image (frees most of the build's disk)
-  clean                         remove the container, the image and the build cache
+  prune                         drop this harness's build cache but keep the image (frees most of the build's disk)
+  clean                         remove the container, the image and this harness's builder with its cache
 TEXT
 }
 
@@ -36,6 +39,13 @@ fi
 
 case "${1:-help}" in help|-h|--help) usage; exit 0 ;; esac
 
+# On a Linux machine the container's /sys is the real one (the harness's sandbox needs it writable inside), so the
+# container is not an isolation boundary there. Linux runs the harness itself, without a container.
+if [ "$(uname -s)" = "Linux" ]; then
+    echo "error: container mode is for machines that are not Linux (it reaches the host's real /sys on Linux); run tools/harness/run.sh <suite> directly" >&2
+    exit 1
+fi
+
 if ! "$docker" info >/dev/null 2>&1; then
     echo "error: the Docker engine is not running" >&2
     exit 1
@@ -49,8 +59,13 @@ esac
 
 image_mb() { echo "$(( $("$docker" image inspect --format '{{.Size}}' "$image") / 1024 / 1024 )) MB"; }
 
+ensure_builder() {
+    "$docker" buildx inspect "$builder" >/dev/null 2>&1 || "$docker" buildx create --name "$builder" --driver docker-container >/dev/null
+}
+
 build_image() {
-    "$docker" build -f "$here/Dockerfile" -t "$image" --build-arg "BUILD_JOBS=${HARNESS_BUILD_JOBS:-0}" "$@" "$repo"
+    ensure_builder
+    "$docker" buildx build --builder "$builder" --load -f "$here/Dockerfile" -t "$image" --build-arg "BUILD_JOBS=${HARNESS_BUILD_JOBS:-0}" "$@" "$repo"
     echo "image $image: $(image_mb)"
 }
 
@@ -95,13 +110,14 @@ case "$1" in
         "$docker" system df
         ;;
     prune)
-        "$docker" builder prune -f >/dev/null 2>&1 || true
+        # Only this harness's own builder: other projects' build caches are left alone.
+        "$docker" buildx prune --builder "$builder" -a -f >/dev/null 2>&1 || true
         "$docker" system df
         ;;
     clean)
         "$docker" rm -f "$name" >/dev/null 2>&1 || true
         "$docker" image rm "$image" >/dev/null 2>&1 || true
-        "$docker" builder prune -f >/dev/null 2>&1 || true
+        "$docker" buildx rm --force "$builder" >/dev/null 2>&1 || true
         "$docker" system df
         echo "kept: $harness/out ($(du -sh "$harness/out" 2>/dev/null | cut -f1)); delete it yourself if you no longer want the reports"
         ;;

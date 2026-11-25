@@ -11,3 +11,7 @@ tools/harness
 *.db-shm
 *.db-wal
 *.nts
+.env
+.env.*
+*.pem
+*.key

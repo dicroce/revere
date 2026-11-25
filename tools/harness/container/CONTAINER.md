@@ -2,6 +2,8 @@
 
 ## What this is
 
+Container mode is refused on a Linux machine: there the container's /sys is the host's real one, which the harness's sandbox needs writable, so it would not be isolated. Run the harness there directly (`tools/harness/run.sh <suite>`).
+
 The harness needs Linux: it builds its own user, network, mount and PID namespaces for every run. This folder runs it on macOS, or on any machine with a Docker engine, inside an Ubuntu 24.04 container. The image holds the recorder built for Linux and what the harness and its fake cameras need. The harness itself is not in the image: it is mounted from the checkout, so editing it needs no rebuild.
 
 ## Requirements
@@ -24,8 +26,8 @@ Run these from the repository root.
 | `tools/harness/run.sh mac test` | The harness's unit tests. |
 | `tools/harness/run.sh mac shell` | A shell in the container. |
 | `tools/harness/run.sh mac size` | The image's size and what Docker is using. |
-| `tools/harness/run.sh mac prune` | Drops the build cache and keeps the image. |
-| `tools/harness/run.sh mac clean` | Removes the container, the image and the build cache. |
+| `tools/harness/run.sh mac prune` | Drops this harness's build cache and keeps the image. Other projects' build caches are not touched. |
+| `tools/harness/run.sh mac clean` | Removes the container, the image and this harness's builder with its cache. |
 
 `container` works in place of `mac`. One container runs at a time.
 
@@ -51,7 +53,7 @@ The image is built for the machine it is built on: arm64 on Apple silicon, amd64
 
 ## Disk space and cleaning up
 
-`mac size` shows what is in use. After a build, `mac prune` frees the build cache (about 4 GB) and keeps the 1.2 GB image. `mac clean` removes the image too; the next run rebuilds it. Neither touches `tools/harness/out`; delete that folder yourself when you no longer want the reports.
+`mac size` shows what is in use. After a build, `mac prune` frees the build cache (about 4 GB) and keeps the 1.2 GB image. The image is built by a Docker builder of its own (`revere-harness`, or `REVERE_HARNESS_BUILDER`), so `prune` and `clean` never touch the build cache of other projects. `mac clean` removes the image too; the next run rebuilds it. Neither touches `tools/harness/out`; delete that folder yourself when you no longer want the reports.
 
 ## Limits
 
