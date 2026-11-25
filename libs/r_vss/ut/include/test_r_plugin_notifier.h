@@ -12,6 +12,7 @@ public:
       TEST(test_r_plugin_notifier::test_stopping_accepting_drops_what_is_queued);
       TEST(test_r_plugin_notifier::test_stopping_accepting_waits_for_the_running_call);
       TEST(test_r_plugin_notifier::test_stopping_accepting_from_inside_a_call_does_not_wait_for_itself);
+      TEST(test_r_plugin_notifier::test_stopping_accepting_gives_up_on_a_call_that_does_not_return);
       TEST(test_r_plugin_notifier::test_destructor_waits_only_for_the_running_call);
     RTF_FIXTURE_END();
 
@@ -28,5 +29,6 @@ public:
     void test_stopping_accepting_drops_what_is_queued();
     void test_stopping_accepting_waits_for_the_running_call();
     void test_stopping_accepting_from_inside_a_call_does_not_wait_for_itself();
+    void test_stopping_accepting_gives_up_on_a_call_that_does_not_return();
     void test_destructor_waits_only_for_the_running_call();
 };

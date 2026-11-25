@@ -2,6 +2,7 @@
 #define __r_vss_r_plugin_notifier_h
 
 #include "r_utils/r_macro.h"
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
@@ -29,8 +30,10 @@ public:
     R_API ~r_plugin_notifier();
 
     // accept(false) also waits for the call that is running, if any, so that when it returns nothing is inside the
-    // plugin on this notifier's account.
-    R_API void accept(bool on);
+    // plugin on this notifier's account: for at most `limit`, since a plugin that never returns must not hang the
+    // stop. Returns false when the call was still running then. (accept(true), and a call from inside the running
+    // call, never wait.)
+    R_API bool accept(bool on, std::chrono::milliseconds limit = std::chrono::milliseconds(5000));
     R_API void post(std::function<void()> call);
 
     R_API size_t dropped() const;

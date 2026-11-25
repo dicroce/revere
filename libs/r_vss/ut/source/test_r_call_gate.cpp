@@ -1,0 +1,76 @@
+#include "test_r_call_gate.h"
+#include "r_vss/r_call_gate.h"
+#include <atomic>
+#include <chrono>
+#include <thread>
+
+using namespace r_vss;
+using namespace std;
+using namespace std::chrono;
+
+REGISTER_TEST_FIXTURE(test_r_call_gate);
+
+void test_r_call_gate::test_closing_with_nothing_inside_returns_at_once()
+{
+    r_call_gate g;
+    auto start = steady_clock::now();
+    RTF_ASSERT(g.close_and_wait(seconds(5)));
+    RTF_ASSERT(steady_clock::now() - start < seconds(1));
+}
+
+void test_r_call_gate::test_a_closed_gate_lets_no_one_in()
+{
+    r_call_gate g;
+    g.close_and_wait(milliseconds(10));
+    r_call_gate_scope s(g);
+    RTF_ASSERT(!s.entered());
+}
+
+void test_r_call_gate::test_closing_waits_for_a_call_inside()
+{
+    r_call_gate g;
+    atomic<bool> left(false);
+    atomic<bool> inside(false);
+    thread t([&]() {
+        r_call_gate_scope s(g);
+        inside = true;
+        this_thread::sleep_for(milliseconds(100));
+        left = true;
+    });
+    while(!inside)
+        this_thread::sleep_for(milliseconds(1));
+    RTF_ASSERT(g.close_and_wait(seconds(5)));
+    RTF_ASSERT(left.load());   // the call had returned
+    t.join();
+}
+
+void test_r_call_gate::test_closing_gives_up_on_a_call_that_does_not_return()
+{
+    r_call_gate g;
+    atomic<bool> inside(false);
+    atomic<bool> release(false);
+    thread t([&]() {
+        r_call_gate_scope s(g);
+        inside = true;
+        while(!release)
+            this_thread::sleep_for(milliseconds(1));
+    });
+    while(!inside)
+        this_thread::sleep_for(milliseconds(1));
+    auto start = steady_clock::now();
+    RTF_ASSERT(!g.close_and_wait(milliseconds(100)));
+    auto took = steady_clock::now() - start;
+    RTF_ASSERT(took >= milliseconds(90));
+    RTF_ASSERT(took < seconds(2));
+    release = true;
+    t.join();
+}
+
+void test_r_call_gate::test_opening_lets_calls_in_again()
+{
+    r_call_gate g;
+    g.close_and_wait(milliseconds(10));
+    g.open();
+    r_call_gate_scope s(g);
+    RTF_ASSERT(s.entered());
+}

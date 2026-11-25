@@ -100,6 +100,8 @@ add_executable(
     source/test_r_substream_recorder.cpp
     include/test_r_system_plugin_action.h
     source/test_r_system_plugin_action.cpp
+    include/test_r_call_gate.h
+    source/test_r_call_gate.cpp
     include/test_r_plugin_notifier.h
     source/test_r_plugin_notifier.cpp
     include/test_r_system_plugin_motion.h

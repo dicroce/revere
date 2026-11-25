@@ -4,17 +4,18 @@
 
 #include "r_vss/r_system_plugin.h"
 #include "r_vss/r_plugin_notifier.h"
+#include "r_vss/r_call_gate.h"
 #include "r_vss/r_plugin_manifest.h"
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_macro.h"
 
+#include <chrono>
 #include <functional>
 #include <list>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <set>
-#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -168,6 +169,10 @@ public:
     // that implement system_plugin_post_detection. Call after construction, before start_all().
     R_API void connect_detection_bus(r_motion_event_plugin_host& meph);
 
+    // How long stop_all() waits for a plugin's calls that are still running (notifications, detections) before it
+    // logs the plugin and goes on. Default 5 s.
+    void set_stop_wait(std::chrono::milliseconds wait) { _stop_wait = wait; }
+
     // Set the callback invoked when a plugin delivers a cloud API result.
     // result_type identifies the payload; json is the raw result.
     R_API void set_api_result_fn(std::function<void(const std::string&, const std::string&)> fn);
@@ -253,9 +258,9 @@ private:
     // guards what only they touch.
     std::mutex _ops_lock;
     bool _started {false};
-    // Held shared while a detection is inside a plugin; stop_all() takes it to wait for those, and closes the gate.
-    std::shared_mutex _dispatch_gate;
-    bool _dispatch_open {true};
+    // Detections inside a plugin are counted here; stop_all() closes it and waits (a while, not forever) for them.
+    r_call_gate _dispatch_gate;
+    std::chrono::milliseconds _stop_wait {5000};
     // The latest receiving_video and stream_failed of each camera, for a plugin that starts after they were
     // given. _state_lock also keeps a notification and a replay from passing each other.
     std::mutex _state_lock;
