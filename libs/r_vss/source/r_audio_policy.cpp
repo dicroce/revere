@@ -21,6 +21,12 @@ r_nullable<r_audio_policy> r_vss::parse_audio_policy(const string& json_text)
         return result;
     r_audio_policy policy;
     policy.default_audio = j["default_audio"].get<bool>();
+    if(j.contains("managed_by"))
+    {
+        if(!j["managed_by"].is_string() || (j["managed_by"] != "cloud" && j["managed_by"] != "local"))
+            return result;
+        policy.cloud_managed = j["managed_by"] == "cloud";
+    }
     if(j.contains("cameras"))
     {
         if(!j["cameras"].is_object())
@@ -41,7 +47,8 @@ string r_vss::audio_policy_json(const r_audio_policy& policy)
     nlohmann::json cameras = nlohmann::json::object();
     for(auto& [id, on] : policy.cameras)
         cameras[id] = on;
-    return nlohmann::json{{"default_audio", policy.default_audio}, {"cameras", cameras}}.dump();
+    return nlohmann::json{{"default_audio", policy.default_audio}, {"cameras", cameras},
+                          {"managed_by", policy.cloud_managed ? "cloud" : "local"}}.dump();
 }
 
 static string _policy_path(const string& top_dir)
@@ -84,6 +91,17 @@ bool r_vss::save_audio_policy(const string& top_dir, const r_audio_policy& polic
         R_LOG_ERROR("Audio: couldn't save %s: %s", path.c_str(), ex.what());
         return false;
     }
+}
+
+bool r_vss::audio_policy_set_allowed(const r_audio_policy& current, bool from_local_token)
+{
+    return from_local_token || !current.cloud_managed;
+}
+
+r_audio_policy r_vss::audio_policy_as_set(r_audio_policy requested, bool from_local_token)
+{
+    requested.cloud_managed = from_local_token;
+    return requested;
 }
 
 set<string> r_vss::audio_policy_restarts(const map<string, bool>& running, const r_audio_policy& policy)

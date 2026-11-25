@@ -4612,9 +4612,10 @@ r_http::r_server_response r_ws::_get_camera_move_policy(r_utils::r_socket_base&,
 // Whether each camera's audio is recorded (r_audio_policy.h): {"default_audio": bool, "cameras": {"<id>": bool}}. Set
 // by the cloud plugin from the organization's, the site's and each camera's settings, as a whole each time, and kept
 // in config/audio.json for when the cloud is out of reach. A camera whose audio turns off or on starts its stream
-// again, so its next segment follows. Anyone signed in may read it; only the local token (the plugin) may set it. An
-// organization may turn audio off for legal reasons, so a person signed in to this computer can't turn it back on.
-// The plugin also reads it back and sets it again if it ever differs from the cloud's.
+// again, so its next segment follows. Anyone signed in may read it. Once the cloud plugin (the local token) has set
+// it, the computer is cloud-managed and a person signed in can't change it (audio_policy_set_allowed): an
+// organization may turn audio off for legal reasons. The plugin also reads it back and sets it again if it ever
+// differs from the cloud's. With no cloud, a person signed in sets it.
 r_http::r_server_response r_ws::_get_audio_policy(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
@@ -4625,16 +4626,18 @@ r_http::r_server_response r_ws::_post_audio_policy(r_utils::r_socket_base&, cons
 {
     _require_auth(request);
     auto token = _request_token(request);
-    if(token.is_null() || !_auth.is_local_token(token.value()))
+    bool local = !token.is_null() && _auth.is_local_token(token.value());
+    if(!audio_policy_set_allowed(_stream_keeper.audio_policy(), local))
     {
-        R_LOG_WARNING("Audio: refused a change to the audio policy from a signed-in session; it's set by Revere Cloud");
+        R_LOG_WARNING("Audio: refused a change to the audio policy from a signed-in session; Revere Cloud manages it");
         return _json_error(response_forbidden, "Audio is set by Revere Cloud, in the organization's settings.");
     }
     auto policy = parse_audio_policy(request.get_body_as_string());
     if(policy.is_null())
         return _json_error(response_bad_request, "Expected {\"default_audio\": true|false, \"cameras\": {\"<camera id>\": true|false}}.");
-    _stream_keeper.set_audio_policy(policy.value());
-    return _json_reply(json::parse(audio_policy_json(policy.value())));
+    auto kept = audio_policy_as_set(policy.value(), local);
+    _stream_keeper.set_audio_policy(kept);
+    return _json_reply(json::parse(audio_policy_json(kept)));
 }
 
 // {"replies_blocked": bool, "warning": "..."}: whether discovery's replies look blocked (r_discovery_health), and what

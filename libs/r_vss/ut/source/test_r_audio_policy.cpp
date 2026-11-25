@@ -46,6 +46,15 @@ void test_r_audio_policy::test_parse()
     RTF_ASSERT(!none.is_null() && none.value().default_audio && none.value().cameras.empty());
     // Round trip.
     RTF_ASSERT(parse_audio_policy(audio_policy_json(p.value())).value() == p.value());
+
+    // Who manages it: absent is this computer; "cloud" survives a round trip; anything else is refused.
+    RTF_ASSERT(!p.value().cloud_managed);
+    auto cloud = parse_audio_policy("{\"default_audio\": true, \"managed_by\": \"cloud\"}");
+    RTF_ASSERT(!cloud.is_null() && cloud.value().cloud_managed);
+    RTF_ASSERT(parse_audio_policy(audio_policy_json(cloud.value())).value().cloud_managed);
+    RTF_ASSERT(!parse_audio_policy("{\"default_audio\": true, \"managed_by\": \"local\"}").value().cloud_managed);
+    RTF_ASSERT(parse_audio_policy("{\"default_audio\": true, \"managed_by\": \"someone\"}").is_null());
+    RTF_ASSERT(parse_audio_policy("{\"default_audio\": true, \"managed_by\": true}").is_null());
 }
 
 void test_r_audio_policy::test_records_audio()
@@ -120,4 +129,39 @@ void test_r_audio_policy::test_sdp_without_audio()
     RTF_ASSERT(recording_audio_encoding(aac, true).value() == r_pipeline::AAC_GENERIC_ENCODING);
     RTF_ASSERT(recording_audio_encoding(aac, false).is_null());
     RTF_ASSERT(recording_audio_encoding(r_nullable<r_pipeline::r_encoding>(), true).is_null());
+}
+
+// With no cloud, a person signed in sets the policy, as before; once the cloud plugin has, only it may.
+void test_r_audio_policy::test_who_may_set_it()
+{
+    // No cloud: never told, or set by a person here.
+    r_audio_policy none;
+    RTF_ASSERT(audio_policy_set_allowed(none, false));
+    RTF_ASSERT(audio_policy_set_allowed(none, true));
+    r_audio_policy off;
+    off.default_audio = false;
+    auto by_person = audio_policy_as_set(off, false);
+    RTF_ASSERT(!by_person.cloud_managed && !by_person.default_audio);
+    RTF_ASSERT(audio_policy_set_allowed(by_person, false));   // and changed again
+
+    // The plugin sets it: cloud-managed from then on, and a person can't change it, on or off.
+    auto by_cloud = audio_policy_as_set(off, true);
+    RTF_ASSERT(by_cloud.cloud_managed);
+    RTF_ASSERT(!audio_policy_set_allowed(by_cloud, false));
+    RTF_ASSERT(audio_policy_set_allowed(by_cloud, true));
+
+    // What a request says about who manages it doesn't count: a person can't post "managed_by: cloud" to lock it,
+    // nor the plugin "local" to free it.
+    r_audio_policy claims_cloud;
+    claims_cloud.cloud_managed = true;
+    RTF_ASSERT(!audio_policy_as_set(claims_cloud, false).cloud_managed);
+    RTF_ASSERT(audio_policy_as_set(none, true).cloud_managed);
+
+    // Kept across restarts.
+    auto dir = _dir();
+    r_fs::mkdir_p(dir);
+    RTF_ASSERT(save_audio_policy(dir, by_cloud));
+    RTF_ASSERT(!audio_policy_set_allowed(load_audio_policy(dir), false));
+    RTF_ASSERT(save_audio_policy(dir, by_person));
+    RTF_ASSERT(audio_policy_set_allowed(load_audio_policy(dir), false));
 }
