@@ -2,11 +2,11 @@
   <div class="manage">
     <div v-if="error" class="error">{{ error }}</div>
 
-    <div v-if="authed" class="toolbar">
+    <div v-if="authed && !propsTarget" class="toolbar">
       <button class="primary small" @click="openAddRtsp">+ Add RTSP Camera</button>
     </div>
 
-    <div class="lists">
+    <div v-if="!propsTarget" class="lists">
       <!-- discovered -->
       <section>
         <h2>Discovered <span class="count">{{ discovered.length }}</span></h2>
@@ -74,9 +74,9 @@
       </section>
     </div>
 
-    <PluginsSection :authed="authed" />
+    <PluginsSection v-if="!propsTarget" :authed="authed" />
 
-    <KeepAwakeSection :authed="authed" />
+    <KeepAwakeSection v-if="!propsTarget" :authed="authed" />
 
     <RecordWizard
       v-if="wizardCamera"
@@ -120,22 +120,36 @@
       </div>
     </div>
 
-    <!-- properties -->
-    <div v-if="propsTarget" class="overlay" @mousedown="onBackdropDown" @mouseup.self="backdropPress && cancelProps()">
-      <div class="dialog props">
-        <header>
-          <h3>Camera Properties</h3>
-          <p class="cam-title">{{ propsTarget.friendly_name || propsTarget.camera_name || propsTarget.id }}</p>
-        </header>
-        <div class="body">
-          <label class="check option">
-            <input type="checkbox" v-model="propsDoorbell" :disabled="propsBusy" />
-            <span>
-              <span class="title">Doorbell</span>
-              <span class="desc">This is a doorbell: a press of its button rings, as an event and a notification, whatever the detection settings.</span>
-            </span>
-          </label>
+    <!-- properties: edited in place of the lists, as in the desktop app's camera pane -->
+    <section v-if="propsTarget" class="props-pane">
+      <header class="props-head">
+        <h2>{{ propsTarget.friendly_name || propsTarget.camera_name || propsTarget.id }}</h2>
+        <p class="cam-title">Camera properties</p>
+      </header>
 
+      <div class="props-sections">
+        <div class="props-section">
+          <h4 class="section">Recording</h4>
+          <div class="loc">
+            <span class="title">Recording file</span>
+            <div class="path-row">
+              <code>{{ propsTarget.record_file_path || '—' }}</code>
+              <button
+                v-if="propsTarget.record_file_path"
+                class="ghost small"
+                @click="copyPath(propsTarget.record_file_path)"
+              >{{ copied ? 'Copied' : 'Copy path' }}</button>
+            </div>
+          </div>
+          <div class="storage-actions">
+            <button class="ghost small" :disabled="propsBusy" @click="openStorage('move')">Move storage…</button>
+            <button class="ghost small" :disabled="propsBusy" @click="openStorage('retention')">Change retention…</button>
+          </div>
+          <p class="blurb">Moving storage or changing retention opens its own confirmation; your other changes here are kept.</p>
+        </div>
+
+        <div class="props-section">
+          <h4 class="section">Detection</h4>
           <label class="check option">
             <input type="checkbox" v-model="propsMotion" :disabled="propsBusy" />
             <span>
@@ -146,13 +160,13 @@
 
           <fieldset class="tiers" :class="{ off: !propsMotion }" :disabled="propsBusy || !propsMotion">
             <legend>Motion and objects from</legend>
-            <label v-for="t in tierChoices" :key="t.value" class="check option">
-              <input type="radio" name="motion_tier" :value="t.value" v-model="propsTier" />
-              <span>
-                <span class="title">{{ t.title }}</span>
-                <span class="desc">{{ t.description }}</span>
-              </span>
-            </label>
+            <div class="pills">
+              <label v-for="t in tierChoices" :key="t.value" class="pill" :class="{ on: propsTier === t.value }">
+                <input type="radio" name="motion_tier" :value="t.value" v-model="propsTier" />
+                {{ t.title }}
+              </label>
+            </div>
+            <p class="blurb">{{ tierChoices.find((t) => t.value === propsTier)?.description }}</p>
             <p v-if="tierStatus" class="blurb">{{ tierStatus }}</p>
           </fieldset>
 
@@ -169,34 +183,37 @@
             <span>hours</span>
           </label>
           <p v-if="propsPrune && !hoursOk" class="err">Enter a whole number of hours, 1 or more.</p>
-
-          <h4 class="section">Storage</h4>
-          <div class="loc">
-            <span class="title">Recording file</span>
-            <div class="path-row">
-              <code>{{ propsTarget.record_file_path || '—' }}</code>
-              <button
-                v-if="propsTarget.record_file_path"
-                class="ghost small"
-                @click="copyPath(propsTarget.record_file_path)"
-              >{{ copied ? 'Copied' : 'Copy path' }}</button>
-            </div>
-          </div>
-          <div class="storage-actions">
-            <button class="ghost small" :disabled="propsBusy" @click="openStorage('move')">Move storage…</button>
-            <button class="ghost small" :disabled="propsBusy" @click="openStorage('retention')">Change retention…</button>
-          </div>
-
-          <p v-if="propsBusy" class="muted">Saving… (restarting camera)</p>
-          <p v-if="propsError" class="err">{{ propsError }}</p>
         </div>
-        <footer>
-          <button class="ghost" :disabled="propsBusy" @click="cancelProps">Cancel</button>
-          <span class="spacer"></span>
-          <button class="primary" :disabled="propsBusy || (propsPrune && !hoursOk)" @click="confirmProps">Ok</button>
-        </footer>
+
+        <div class="props-section">
+          <h4 class="section">Doorbell</h4>
+          <label class="check option">
+            <input type="checkbox" v-model="propsDoorbell" :disabled="propsBusy" />
+            <span>
+              <span class="title">Doorbell</span>
+              <span class="desc">This is a doorbell: a press of its button rings, as an event and a notification, whatever the detection settings.</span>
+            </span>
+          </label>
+        </div>
       </div>
-    </div>
+
+      <p v-if="propsBusy" class="muted">Saving… (restarting camera)</p>
+      <p v-if="propsError" class="err">{{ propsError }}</p>
+
+      <footer class="props-foot">
+        <template v-if="confirmingDiscard">
+          <span class="discard-ask">Discard changes?</span>
+          <span class="spacer"></span>
+          <button class="ghost" @click="confirmingDiscard = false">Keep editing</button>
+          <button class="danger-solid" @click="discardProps">Discard changes</button>
+        </template>
+        <template v-else>
+          <span class="spacer"></span>
+          <button class="ghost" :disabled="propsBusy" @click="cancelProps">Cancel</button>
+          <button class="primary" :disabled="propsBusy || !propsDirty || (propsPrune && !hoursOk)" @click="confirmProps">Save</button>
+        </template>
+      </footer>
+    </section>
 
     <!-- add RTSP source camera -->
     <div v-if="addOpen" class="overlay" @mousedown="onBackdropDown" @mouseup.self="backdropPress && cancelAdd()">
@@ -257,6 +274,9 @@ const propsMotion = ref(true)
 const propsPrune = ref(false)
 const propsHours = ref(24)
 const propsTier = ref('auto')
+// What the camera had when the pane opened, so Save waits for a change and leaving asks about one.
+const propsBase = ref(null)
+const confirmingDiscard = ref(false)
 const propsBusy = ref(false)
 const propsError = ref('')
 const copied = ref(false)
@@ -269,22 +289,31 @@ const storageMode = ref('move')
 function openStorage(mode) {
   storageMode.value = mode
   storageCamera.value = propsTarget.value
-  propsTarget.value = null
 }
 
-function onStorageDone() {
+async function onStorageDone() {
+  const id = storageCamera.value?.id
   storageCamera.value = null
-  refresh()
+  await refresh()
+  // The pane stays open, on the camera as it is now (its file may have moved).
+  const fresh = cameras.value.find((c) => c.id === id)
+  if (fresh && propsTarget.value) propsTarget.value = fresh
 }
 
 // Where motion and object classes come from (r_vss::r_tier_controller), worded
-// as in the desktop's Camera properties dialog.
+// as in the desktop's camera properties.
 const tierChoices = [
   { value: 'auto', title: 'Automatic', description: "The camera's own detection once Revere has checked it reports what Revere sees; Revere's otherwise." },
   { value: '1', title: 'Revere', description: 'Revere finds motion and objects in the video. Uses the most CPU.' },
   { value: '2', title: 'Camera', description: "The camera's motion and its person, vehicle and animal events. Uses the least CPU." },
   { value: '3', title: 'Camera motion, Revere objects', description: "The camera's motion events; Revere finds the objects in them." },
 ]
+const propsDirty = computed(() => {
+  const b = propsBase.value
+  if (!propsTarget.value || !b) return false
+  return propsDoorbell.value !== b.doorbell || propsMotion.value !== b.motion || propsPrune.value !== b.prune || propsTier.value !== b.tier ||
+    (propsPrune.value && propsHours.value !== b.hours)
+})
 const tierNames = ['', "Revere's detection", "the camera's detection", "the camera's motion and Revere's objects"]
 
 // What the camera uses now and why, from /cameras' motion_tier status (live,
@@ -413,6 +442,15 @@ function askProperties(camera) {
   propsPrune.value = !!camera.do_motion_pruning
   propsHours.value = camera.min_continuous_recording_hours ?? 24
   propsTier.value = camera.motion_tier_setting || 'auto'
+  // Pruning needs motion detection, as the watch below enforces.
+  propsBase.value = {
+    doorbell: propsDoorbell.value,
+    motion: propsMotion.value,
+    prune: propsMotion.value && propsPrune.value,
+    hours: propsHours.value,
+    tier: propsTier.value,
+  }
+  confirmingDiscard.value = false
   propsError.value = ''
   copied.value = false
 }
@@ -439,6 +477,15 @@ async function copyPath(text) {
 
 function cancelProps() {
   if (propsBusy.value) return
+  if (propsDirty.value) {
+    confirmingDiscard.value = true
+    return
+  }
+  propsTarget.value = null
+}
+
+function discardProps() {
+  confirmingDiscard.value = false
   propsTarget.value = null
 }
 
@@ -630,40 +677,66 @@ button:disabled { cursor: default; opacity: 0.6; }
 /* style.css zeroes padding and only .small sets it, so footer buttons were bare text */
 .dialog footer button:not(.small) { padding: 0.45rem 1rem; font-size: 0.9rem; }
 
-/* camera properties */
-.dialog.props { width: 480px; max-height: calc(100vh - 2rem); display: flex; flex-direction: column; }
-.dialog.props .body { overflow-y: auto; gap: 0.8rem; }
-.dialog .cam-title { font-size: 0.85rem; color: #aaa; margin-top: 0.2rem; }
-.dialog .option { align-items: flex-start; }
-.dialog .option input { margin-top: 0.2rem; flex: none; }
-.dialog .option .title { display: block; font-size: 0.9rem; }
-.dialog .option .desc { display: block; font-size: 0.8rem; color: #999; line-height: 1.4; margin-top: 0.1rem; }
-.dialog .tiers {
-  border: none;
-  margin: 0 0 0 1.5rem;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+/* camera properties: in place of the lists */
+.props-pane { display: flex; flex-direction: column; gap: 1rem; }
+.props-head h2 { font-size: 1.1rem; font-weight: 600; }
+.cam-title { font-size: 0.85rem; color: #aaa; margin-top: 0.2rem; }
+.props-sections {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: 1.5rem;
+  align-items: start;
 }
-.dialog .tiers legend { font-size: 0.8rem; color: #bbb; margin-bottom: 0.4rem; padding: 0; }
-.dialog .off { opacity: 0.5; }
-.dialog .off, .dialog .off .option { cursor: default; }
-.dialog .field.indent { margin-left: 1.5rem; font-size: 0.85rem; color: #bbb; flex-wrap: wrap; }
-.dialog .section {
+.props-section { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; }
+.props-pane .check { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.props-pane .field { display: flex; align-items: center; gap: 0.6rem; }
+.props-pane .field input {
+  width: 90px;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #eee;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.9rem;
+}
+.props-pane .loc { font-size: 0.8rem; word-break: break-all; }
+.props-pane .err { color: #e05555; font-size: 0.85rem; }
+.props-pane .blurb { font-size: 0.85rem; color: #999; line-height: 1.45; }
+.props-pane .option { align-items: flex-start; }
+.props-pane .option input { margin-top: 0.2rem; flex: none; }
+.props-pane .option .title { display: block; font-size: 0.9rem; }
+.props-pane .option .desc { display: block; font-size: 0.8rem; color: #999; line-height: 1.4; margin-top: 0.1rem; }
+.props-pane .tiers { border: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.props-pane .tiers legend { font-size: 0.8rem; color: #bbb; margin-bottom: 0.4rem; padding: 0; }
+.pills { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.pill {
+  border: 1px solid #333;
+  background: #1e1e1e;
+  color: #bbb;
+  border-radius: 4px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.pill.on { border-color: #4a90e2; color: #fff; }
+.pill input { position: absolute; opacity: 0; pointer-events: none; }
+.pill:focus-within { outline: 2px solid #4a90e2; outline-offset: 1px; }
+.props-pane .off { opacity: 0.5; }
+.props-pane .off, .props-pane .off .option, .props-pane .off .pill { cursor: default; }
+.props-pane .field.indent { margin-left: 1.5rem; font-size: 0.85rem; color: #bbb; flex-wrap: wrap; }
+.props-pane .section {
   font-size: 0.8rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #888;
-  border-top: 1px solid #363636;
-  padding-top: 0.8rem;
-  margin-top: 0.2rem;
+  border-bottom: 1px solid #363636;
+  padding-bottom: 0.4rem;
 }
-.dialog .loc .title { display: block; font-size: 0.85rem; color: #bbb; margin-bottom: 0.3rem; }
-.dialog .storage-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
-.dialog .path-row { display: flex; align-items: center; gap: 0.6rem; }
-.dialog .path-row code {
+.props-pane .loc .title { display: block; font-size: 0.85rem; color: #bbb; margin-bottom: 0.3rem; }
+.props-pane .storage-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.props-pane .path-row { display: flex; align-items: center; gap: 0.6rem; }
+.props-pane .path-row code {
   flex: 1;
   min-width: 0;
   font-size: 0.8rem;
@@ -674,4 +747,18 @@ button:disabled { cursor: default; opacity: 0.6; }
   border-radius: 4px;
   padding: 0.35rem 0.5rem;
 }
+/* Cancel and Save stay at the bottom while the sections scroll */
+.props-foot {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.85rem 0;
+  background: #0a0a0a;
+  border-top: 1px solid #363636;
+}
+.props-foot .spacer { flex: 1; }
+.props-foot .discard-ask { font-size: 0.9rem; }
+.props-foot button:not(.small) { padding: 0.45rem 1rem; font-size: 0.9rem; }
 </style>
