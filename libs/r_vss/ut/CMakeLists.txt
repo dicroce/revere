@@ -77,6 +77,8 @@ add_executable(
     source/test_r_keep_awake.cpp
     include/test_r_substream_setting.h
     source/test_r_substream_setting.cpp
+    include/test_r_camera_kind.h
+    source/test_r_camera_kind.cpp
     include/test_r_ws_auth.h
     source/test_r_ws_auth.cpp
     include/test_r_appliance.h

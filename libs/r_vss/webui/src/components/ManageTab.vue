@@ -129,6 +129,14 @@
         </header>
         <div class="body">
           <label class="check option">
+            <input type="checkbox" v-model="propsDoorbell" :disabled="propsBusy" />
+            <span>
+              <span class="title">Doorbell</span>
+              <span class="desc">This is a doorbell: a press of its button rings, as an event and a notification, whatever the detection settings.</span>
+            </span>
+          </label>
+
+          <label class="check option">
             <input type="checkbox" v-model="propsMotion" :disabled="propsBusy" />
             <span>
               <span class="title">Motion detection</span>
@@ -224,6 +232,7 @@ import KeepAwakeSection from './KeepAwakeSection.vue'
 import RecordWizard from './RecordWizard.vue'
 import StorageDialog from './StorageDialog.vue'
 import PluginsSection from './PluginsSection.vue'
+import { doorbellChoice } from '../utils/cameraKind.js'
 
 const cameras = ref([])
 const error = ref(null)
@@ -243,6 +252,7 @@ const removeBusy = ref(false)
 const removeError = ref('')
 
 const propsTarget = ref(null)
+const propsDoorbell = ref(false)
 const propsMotion = ref(true)
 const propsPrune = ref(false)
 const propsHours = ref(24)
@@ -398,6 +408,7 @@ async function confirmRemove() {
 function askProperties(camera) {
   if (!authed.value) return
   propsTarget.value = camera
+  propsDoorbell.value = camera.kind === 'doorbell'
   propsMotion.value = !!camera.do_motion_detection
   propsPrune.value = !!camera.do_motion_pruning
   propsHours.value = camera.min_continuous_recording_hours ?? 24
@@ -440,6 +451,8 @@ async function confirmProps() {
       do_motion_pruning: propsPrune.value,
       min_continuous_recording_hours: hoursOk.value ? propsHours.value : (propsTarget.value.min_continuous_recording_hours ?? 24),
       motion_tier: propsTier.value,
+      // Kept as a choice only once it differs from what the camera's model suggests, or was chosen before.
+      ...doorbellChoice(propsTarget.value, propsDoorbell.value),
     })
     propsTarget.value = null
     await refresh()

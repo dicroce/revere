@@ -574,10 +574,12 @@ const camera_column CAMERA_COLUMNS[] = {
     {10, "sub_height", "INTEGER"},
     {10, "sub_key_interval_ms", "INTEGER"},
     // Motion detection on the substream (r_camera::sub_analysis); existing cameras read as off.
-    {11, "sub_analysis", "INTEGER DEFAULT 0"}
+    {11, "sub_analysis", "INTEGER DEFAULT 0"},
+    // Camera or doorbell (r_camera::kind); null on existing rows until someone chooses.
+    {12, "kind", "TEXT"}
 };
 
-const int CAMERA_DB_VERSION = 11;
+const int CAMERA_DB_VERSION = 12;
 }
 
 void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
@@ -874,6 +876,7 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
     number("sub_height", camera.sub_height);
     number("sub_key_interval_ms", camera.sub_key_interval_ms);
     number("sub_analysis", camera.sub_analysis);
+    text("kind", camera.kind);
 
     camera.stream_config_hash = row.at("stream_config_hash").value();
     return camera;
@@ -1012,6 +1015,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
     cols.add("motion_tier_verified", camera.motion_tier_verified);
     cols.add("rtsp_transport", rtsp_transport);
     cols.add("mac", mac);
+    cols.add("kind", camera.kind);
     cols.add("stream_config_hash", hash);
 
     r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){

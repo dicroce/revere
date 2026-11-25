@@ -1003,6 +1003,10 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     {"camera_move", camera_move},
                     // "auto", "1", "2" or "3": where motion and object classes come from.
                     {"motion_tier_setting", (c.motion_tier.is_null())?"auto":c.motion_tier.value()},
+                    // "camera" or "doorbell" (r_disco::camera_kind): what it was set to, or what its model says.
+                    {"kind", r_disco::camera_kind(c)},
+                    // What a person set it to; null until someone chooses.
+                    {"kind_setting", c.kind.is_null() ? json(nullptr) : json(c.kind.value())},
                     // The tier in use now and why; null while not recording.
                     {"motion_tier", motion_tier},
                     // How far its frames reach us behind live; null while not recording.
@@ -3981,8 +3985,16 @@ r_http::r_server_response r_ws::_post_update_camera_properties(r_utils::r_socket
         r_nullable<string> motion_tier;
         if(req.contains("motion_tier"))
             motion_tier.set_value(req["motion_tier"].get<string>());
+        // "camera" or "doorbell"; left as it is when absent.
+        r_nullable<string> kind;
+        if(req.contains("kind"))
+        {
+            if(!req["kind"].is_string())
+                R_STHROW(r_http_400_exception, ("kind must be camera or doorbell."));
+            kind.set_value(req["kind"].get<string>());
+        }
 
-        query_update_camera_properties(_top_dir, _devices, camera_id, do_motion, do_prune, min_hours, motion_tier);
+        query_update_camera_properties(_top_dir, _devices, camera_id, do_motion, do_prune, min_hours, motion_tier, kind);
 
         // Restart the recording context so the new settings take effect live —
         // the poll loop only re-applies stream-config changes, not these.

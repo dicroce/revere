@@ -620,10 +620,12 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
 // op "off" (use the recording stream), "use" (the smaller stream with that profile token), "find" (look again) or
 // "analysis" (token "1" or "0": find motion in the smaller stream).
 // can_sync_time: the camera was found by ONVIF discovery, so sync_time_cb can set its clock.
+// is_doorbell: the device is a doorbell (r_disco::camera_kind), so its button presses ring.
 template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB, typename STREAMS_CB, typename SYNC_TIME_CB>
 void camera_properties_modal(
     const char* popup_name,
     const std::string& camera_name,
+    bool& is_doorbell,
     bool& do_motion_detection,
     bool& do_motion_pruning,
     std::string& min_continuous_retention_hours,
@@ -657,6 +659,11 @@ void camera_properties_modal(
 
     if(!camera_name.empty())
         d.heading(camera_name);
+
+    d.toggle("##doorbell", "Doorbell",
+        "This is a doorbell: a press of its button rings, as an event and a notification, whatever the detection settings.",
+        &is_doorbell);
+    d.gap(4.0f);
 
     d.toggle("##motion", "Motion detection",
         "Finds movement in this camera's video and marks it as motion events you can search and review.",
