@@ -1165,3 +1165,37 @@ void test_r_substream_recorder::test_a_smaller_stream_that_stops_delivering_is_l
     RTF_ASSERT(!h.away("cam", 5 * MIN + SUB_RECORD_FAIL_MS));
     RTF_ASSERT(h.pass("cam", false, false, 6 * MIN));
 }
+
+// The Wi-Fi doorbell's case: the smaller stream connects, gives a frame or two, and stalls, over and over, so the
+// recording is seconds a minute. A frame lately must not keep clearing the "no video" clock.
+void test_r_substream_recorder::test_a_smaller_stream_that_gives_a_frame_per_connect_is_left_for_main()
+{
+    const int64_t SEC = 1000;
+    r_sub_record_governor g;
+    int64_t t = 5000 * SEC;
+    bool away = false;
+    // A pass every 2 s; each 30 s cycle the stream is up for the first 4 s (a recent frame), then silent until the
+    // next connect.
+    for(int64_t s = 0; s < 10 * 60 && !away; s += 2, t += 2 * SEC)
+    {
+        const bool recent_frame = (s % 30) < 4;
+        if(!g.pass("cam", true, recent_frame, t))
+            away = true;
+    }
+    RTF_ASSERT(away);
+    // About two minutes after the stream last gave a steady picture (never, here), not at once and not never.
+    RTF_ASSERT(g.away("cam", t - 2 * SEC));
+    RTF_ASSERT(t - 5000 * SEC <= 3 * 60 * SEC);
+
+    // The same stream is fine when it does deliver without a gap: one stretch of frames, as a good camera gives.
+    r_sub_record_governor ok;
+    int64_t u = 9000 * SEC;
+    for(int i = 0; i < 600; ++i, u += 2 * SEC)
+        RTF_ASSERT(ok.pass("cam", true, true, u));
+    RTF_ASSERT(!ok.away("cam", u));
+
+    // And one that gaps for a moment (a hiccup) while it has been steady stays.
+    for(int i = 0; i < 30; ++i, u += 2 * SEC)
+        RTF_ASSERT(ok.pass("cam", true, i % 15 != 0, u));
+    RTF_ASSERT(!ok.away("cam", u));
+}

@@ -250,6 +250,11 @@ private:
 // setting is never changed. Thread-safe (the keeper's pass writes it and /cameras reads it); no I/O.
 constexpr int64_t SUB_RECORD_FAIL_MS = 2 * 60 * 1000;
 constexpr int64_t SUB_RECORD_OK_MS = 60 * 1000;
+// A smaller stream counts as delivering only with a frame no older than SUB_RECORD_FRESH_MS (a context that once got a
+// frame and has stalled since still "has video"), and it clears the "no video" clock only after delivering without a
+// gap for SUB_RECORD_STABLE_MS: one that gives a frame or two after each connect and then stalls never does.
+constexpr int64_t SUB_RECORD_FRESH_MS = 5 * 1000;
+constexpr int64_t SUB_RECORD_STABLE_MS = 15 * 1000;
 constexpr int64_t SUB_RECORD_RETRY_FIRST_MS = 5 * 60 * 1000;
 constexpr int64_t SUB_RECORD_RETRY_MAX_MS = 60 * 60 * 1000;
 
@@ -258,7 +263,8 @@ class r_sub_record_governor final
 public:
     // One pass for a camera that is set to record from its smaller stream and whose smaller stream works as stored.
     // recording_on_sub: it has a recording context built on the smaller stream; receiving_video: that context is
-    // getting video now. Returns whether it should record from the smaller stream (false: away, on main for now).
+    // getting a recent frame now (SUB_RECORD_FRESH_MS). Returns whether it should record from the smaller stream (false:
+    // away, on main for now).
     R_API bool pass(const std::string& camera_id, bool recording_on_sub, bool receiving_video, int64_t now_ms);
     // Whether the camera is away at now_ms.
     R_API bool away(const std::string& camera_id, int64_t now_ms) const;

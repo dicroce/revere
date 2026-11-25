@@ -121,15 +121,17 @@ bool r_sub_record_governor::pass(const string& camera_id, bool recording_on_sub,
         s.trying_since_ms = now_ms;
     if(recording_on_sub && receiving_video)
     {
-        // Delivering: the clock for "no video" starts over, and a stretch of it forgets the failures.
-        s.trying_since_ms = now_ms;
         if(s.healthy_since_ms < 0)
             s.healthy_since_ms = now_ms;
+        // Delivering without a gap for a while: the clock for "no video" starts over. A few frames after a connect
+        // and then nothing is not that: it does not, so the camera still goes to main.
+        if(now_ms - s.healthy_since_ms >= SUB_RECORD_STABLE_MS)
+            s.trying_since_ms = now_ms;
         if(now_ms - s.healthy_since_ms >= SUB_RECORD_OK_MS)
             s.failures = 0;
-        return true;
     }
-    s.healthy_since_ms = -1;
+    else
+        s.healthy_since_ms = -1;
     if(now_ms - s.trying_since_ms < SUB_RECORD_FAIL_MS)
         return true;
     // No video from the smaller stream for long enough: main for a while, longer each time.

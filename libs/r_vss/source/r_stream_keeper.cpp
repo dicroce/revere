@@ -1706,7 +1706,8 @@ vector<r_camera> r_stream_keeper::_cameras_on_the_wrong_stream()
         auto s = _streams.find(c.id);
         auto from = _recording_from_sub.find(c.id);
         const bool on_sub = s != _streams.end() && from != _recording_from_sub.end() && from->second;
-        const bool receiving = on_sub && s->second->receiving_video();
+        // A frame lately, not "got a first frame once": a stream that gave a frame and stalled is not delivering.
+        const bool receiving = on_sub && s->second->receiving_video() && s->second->video_age_ms() < SUB_RECORD_FRESH_MS;
         const bool was_away = _sub_record_governor.away(c.id, now_ms);
         if(!_sub_record_governor.pass(c.id, on_sub, receiving, now_ms) && !was_away)
             R_LOG_WARNING("Camera %s: its smaller stream is not delivering video; recording from main, and trying it again in %lld s",
