@@ -3174,6 +3174,8 @@ int main(int argc, char** argv)
 
         r_shutdown_signal::arm("RevereHeadlessStop");   // arm before starting worker threads
 
+        // Cameras held for a different device at their address stay held across a restart: before the keeper connects.
+        agent.restore_address_holds();
         streamKeeper.start();
         devices.start();
         agent.start();
@@ -3401,6 +3403,8 @@ int main(int argc, char** argv)
     uint64_t disk_bytes_per_second = r_vss::benchmark_disk_write_speed(video_path);
 
     // Start background services
+    // Cameras held for a different device at their address stay held across a restart: before the keeper connects.
+    agent.restore_address_holds();
     streamKeeper.start();
     devices.start();
     agent.start();

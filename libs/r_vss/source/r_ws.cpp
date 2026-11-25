@@ -3426,6 +3426,9 @@ r_http::r_server_response r_ws::_post_imaging(r_utils::r_socket_base&, const r_h
     if(maybe_camera.is_null())
         return failure(response_not_found, "unknown_camera", "No camera with that id.");
     auto camera = maybe_camera.value();
+    // Held for a different device at its address: its login is not sent there (r_disco/r_address_check.h).
+    if(!_devices.get_address_check(camera_id).is_null())
+        return failure(response_conflict, "address_held", "A different device answers at this camera's address, so its login is not sent there until you confirm it is your camera.");
     if(camera.ipv4.is_null() || camera.xaddrs.is_null())
         return failure(response_not_implemented, "no_onvif", "This camera wasn't found by ONVIF discovery, so its picture can't be set.");
 
@@ -3515,6 +3518,9 @@ r_http::r_server_response r_ws::_post_ptz(r_utils::r_socket_base&, const r_http:
     if(maybe_camera.is_null())
         return failure(response_not_found, "unknown_camera", "No camera with that id.");
     auto camera = maybe_camera.value();
+    // Held for a different device at its address: its login is not sent there (r_disco/r_address_check.h).
+    if(!_devices.get_address_check(camera_id).is_null())
+        return failure(response_conflict, "address_held", "A different device answers at this camera's address, so its login is not sent there until you confirm it is your camera.");
 
     // A camera added by its RTSP URL has no ONVIF address to send PTZ to.
     if(camera.ipv4.is_null() || camera.xaddrs.is_null())
@@ -3641,6 +3647,9 @@ r_http::r_server_response r_ws::_get_ptz_view_frame(r_utils::r_socket_base&, con
 
     if(_devices.get_camera_by_id(camera_id).is_null())
         R_STHROW(r_http_404_exception, ("No camera with that id."));
+    // Held for a different device at its address: no picture from it (and nothing is asked of it).
+    if(!_devices.get_address_check(camera_id).is_null())
+        R_STHROW(r_http_404_exception, ("That camera isn't recording."));
 
     auto result = _stream_keeper.ptz_view_frame(camera_id, long_edge, after);
     if(result.is_null())
@@ -3674,6 +3683,9 @@ r_http::r_server_response r_ws::_get_measure_camera(r_utils::r_socket_base&, con
         if(args.find("camera_id") == args.end())
             R_STHROW(r_http_400_exception, ("Missing camera_id."));
         _camera_or_404(_devices, args["camera_id"]);
+        // Held for a different device at its address: nothing is measured there (its login would be sent).
+        if(!_devices.get_address_check(args["camera_id"]).is_null())
+            R_STHROW(r_http_400_exception, ("A different device answers at this camera's address; confirm it is your camera first."));
 
         measure_job job;
         job.camera_id = args["camera_id"];

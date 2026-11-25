@@ -114,12 +114,21 @@ public:
     R_API void note_missing_macs(const std::map<std::string, std::string>& seen_at);
     static constexpr int64_t MAC_NOTE_RETRY_MS = 10 * 60 * 1000;
 
-    // Reads the MAC at the stored address of each assigned camera this pass saw there (`seen_at`: id -> ipv4) that has
-    // one on file, and holds the camera when it is another device's (r_address_check.h); a held camera whose own MAC
-    // is seen again is released. Each camera is read every ADDRESS_CHECK_INTERVAL_MS (every ADDRESS_CHECK_HELD_INTERVAL_MS
-    // while held). Not a camera with a held move, which is guarded already. A MAC
-    // that cannot be read changes nothing. Each discovery pass calls it, after note_missing_macs.
-    R_API void check_stored_addresses(const std::map<std::string, std::string>& seen_at);
+    // Reads the MAC at the stored address of every assigned camera that has one on file, whether or not discovery saw
+    // it there (a device that simply took the address of a camera that went away answers no discovery as the camera),
+    // and holds the camera when it is another device's (r_address_check.h); a held camera whose own MAC is seen again
+    // is released. Each camera is read every ADDRESS_CHECK_INTERVAL_MS (every ADDRESS_CHECK_HELD_INTERVAL_MS while
+    // held). Not a camera with a held move, which is guarded already. A MAC that cannot be read changes nothing: with
+    // nothing at the address there is no neighbour entry, so a camera that is off is not held. A hold for a camera
+    // that is no longer assigned is dropped. Each discovery pass calls it, after note_missing_macs.
+    R_API void check_stored_addresses();
+    // Whether the camera is held for a different device at its address: nothing may send it the camera's login
+    // (the stream keeper, PTZ and imaging, re-interrogation, a measurement).
+    R_API bool is_address_held(const std::string& camera_id) const;
+    // Brings back the holds saved before a restart (and tells the host of each), so that nothing connects to a held
+    // camera's address before the first check can find the device again. Call after set_address_check_cb and before
+    // the stream keeper starts.
+    R_API void restore_address_holds();
     // A person's answer to a held camera: that it is their camera. Learns the MAC seen as the camera's (saved) and
     // releases it. `since_ms` is the one the hold was shown with (r_address_check::since_ms); no_hold when the camera
     // is not held, changed when it is held for a different device now.
@@ -325,6 +334,9 @@ private:
     };
     std::map<std::string, _address_hold> _address_holds;
     std::map<std::string, int64_t> _address_check_tries;
+    // The holds are kept in config/address_holds.json: written after each change, in the order they were made.
+    std::mutex _address_hold_save_mutex;
+    void _save_address_holds();
     mac_lookup _mac_lookup;
     clock_ms _clock_ms;
     int64_t _now() const;

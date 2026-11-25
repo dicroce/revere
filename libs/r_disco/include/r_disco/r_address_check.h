@@ -4,6 +4,7 @@
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_macro.h"
 #include <cstdint>
+#include <map>
 #include <string>
 
 namespace r_disco
@@ -31,6 +32,20 @@ R_API bool mac_differs(const r_utils::r_nullable<std::string>& stored, const r_u
 
 // What the camera's card says while it is held.
 R_API std::string address_check_message();
+
+// What is kept of a hold across a restart (config/address_holds.json): the stream keeper would otherwise connect to
+// the camera's address, with its login, before the first check after startup could find the device again.
+struct r_address_hold_record
+{
+    std::string ipv4;
+    int64_t since_ms {0};
+    std::string seen_mac;
+};
+R_API std::map<std::string, r_address_hold_record> parse_address_holds(const std::string& json_text);
+R_API std::string address_holds_json(const std::map<std::string, r_address_hold_record>& holds);
+// An absent or unreadable file is no holds.
+R_API std::map<std::string, r_address_hold_record> load_address_holds(const std::string& top_dir);
+R_API bool save_address_holds(const std::string& top_dir, const std::map<std::string, r_address_hold_record>& holds);
 
 // How often a camera's MAC at its stored address is read: not held, and held (so a camera's own MAC coming back is
 // noticed soon).

@@ -8,6 +8,7 @@ public:
       TEST(test_r_disco::test_r_disco_r_agent_basics);
       TEST(test_r_disco::test_camera_move_from);
       TEST(test_r_disco::test_mac_differs);
+      TEST(test_r_disco::test_a_hold_is_kept_across_a_restart);
       TEST(test_r_disco::test_a_different_device_at_a_cameras_address_holds_it);
       TEST(test_r_disco::test_confirming_a_held_address_learns_the_mac_and_releases_it);
       TEST(test_r_disco::test_decide_camera_move);
@@ -51,6 +52,7 @@ public:
     void test_r_disco_r_agent_basics();
     void test_camera_move_from();
     void test_mac_differs();
+    void test_a_hold_is_kept_across_a_restart();
     void test_a_different_device_at_a_cameras_address_holds_it();
     void test_confirming_a_held_address_learns_the_mac_and_releases_it();
     void test_decide_camera_move();
