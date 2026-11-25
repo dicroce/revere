@@ -154,6 +154,8 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_GET, "/contents", &r_ws::_get_contents);
     route(METHOD_GET, "/motion_events", &r_ws::_get_motion_events);
     route(METHOD_GET, "/camera_events", &r_ws::_get_camera_events);
+    route(METHOD_GET, "/doorbell_presses", &r_ws::_get_doorbell_presses);
+    route(METHOD_POST, "/doorbell_press_test", &r_ws::_post_doorbell_press_test);
     route(METHOD_GET, "/analytics", &r_ws::_get_analytics);
 
     route(METHOD_GET, "/key_frame", &r_ws::_get_key_frame);
@@ -1498,6 +1500,86 @@ r_http::r_server_response r_ws::_get_analytics(r_utils::r_socket_base&, const r_
     R_STHROW(r_http_500_exception, ("Failed to query analytics."));
 }
 
+
+static json _press_test_json(const r_press_test& t)
+{
+    json sources = json::array();
+    for(auto& s : t.sources)
+    {
+        json j = {{"source", s.source}, {"seen", s.seen}};
+        if(s.seen)
+        {
+            j["press_ms"] = s.press_ms;
+            j["arrived_ms"] = s.arrived_ms;
+            j["after_ms"] = s.arrived_ms - s.press_ms;   // how late the report was
+        }
+        sources.push_back(j);
+    }
+    return {{"open", t.open}, {"started_ms", t.started_ms}, {"ends_ms", t.ends_ms}, {"ring_phones", t.ring_phones}, {"sources", sources}};
+}
+
+// GET /doorbell_presses?camera_id=<id>: a doorbell's press source, when each source last reported a press (null:
+// never, since revere started), whether to suggest ONVIF again, and its press test (null: none yet). 404 for a camera
+// that isn't a doorbell.
+r_http::r_server_response r_ws::_get_doorbell_presses(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("camera_id") == args.end())
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
+        _camera_or_404(_devices, args["camera_id"]);
+        auto s = _stream_keeper.doorbell_presses(args["camera_id"]);
+        if(s.is_null())
+            R_STHROW(r_http_404_exception, ("Not a doorbell."));
+        auto& v = s.value();
+        auto ms = [](const r_nullable<int64_t>& m) { return m.is_null() ? json(nullptr) : json(m.value()); };
+        json j = {
+            {"press_source", v.press_source},
+            {"last_press_ms", {{"onvif", ms(v.last_onvif_ms)}, {"reolink_email", ms(v.last_email_ms)}}},
+            {"suggest_onvif", v.suggest_onvif},
+            {"test", v.test.any ? _press_test_json(v.test) : json(nullptr)},
+        };
+        r_server_response response;
+        response.set_content_type("application/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to read the doorbell's presses."));
+}
+
+// POST /doorbell_press_test?camera_id=<id>[&ring_phones=1]: "Press the doorbell now". Opens a 60 s window in which
+// each source's report of a press is noted (GET /doorbell_presses shows it); its press rings the phones only with
+// ring_phones=1. 404 for a camera that isn't a doorbell.
+r_http::r_server_response r_ws::_post_doorbell_press_test(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("camera_id") == args.end())
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
+        _camera_or_404(_devices, args["camera_id"]);
+        bool ring_phones = args.find("ring_phones") != args.end() && args["ring_phones"] == "1";
+        auto t = _stream_keeper.start_doorbell_press_test(args["camera_id"], ring_phones);
+        if(t.is_null())
+            R_STHROW(r_http_404_exception, ("Not a doorbell."));
+        r_server_response response;
+        response.set_content_type("application/json");
+        response.set_body(_press_test_json(t.value()).dump());
+        return response;
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to start the doorbell's press test."));
+}
 
 // GET /camera_events?camera_id=<id>[&since_ms=<epoch ms>]: the camera's own
 // event spans (motion, person, vehicle, ...) on Revere's clock, as its ONVIF

@@ -29,6 +29,7 @@
 #include "r_disco/r_devices.h"
 #include "r_vss/r_doorbell_rings.h"
 #include "r_vss/r_mail_rings.h"
+#include "r_vss/r_press_check.h"
 #include "r_disco/r_camera.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_work_q.h"
@@ -252,6 +253,22 @@ public:
 
     // A camera's event subscription reporting a start or end (any thread).
     R_API void camera_transition(const std::string& camera_id, const r_cameras::r_camera_transition& t);
+
+    // A doorbell's presses as revere sees them, for its setup: its press source, when each source last reported a
+    // press (since revere started), whether to suggest ONVIF again, and its press test.
+    struct doorbell_press_status
+    {
+        std::string press_source;
+        r_utils::r_nullable<int64_t> last_onvif_ms;
+        r_utils::r_nullable<int64_t> last_email_ms;
+        bool suggest_onvif {false};
+        r_press_test test;
+    };
+    // Null when the camera isn't a doorbell (or is gone).
+    R_API r_utils::r_nullable<doorbell_press_status> doorbell_presses(const std::string& camera_id);
+    // "Press the doorbell now": a TEST_MS window in which each source's report of a press is noted; its press rings the
+    // phones only if ring_phones. Null when the camera isn't a doorbell (or is gone).
+    R_API r_utils::r_nullable<r_press_test> start_doorbell_press_test(const std::string& camera_id, bool ring_phones);
 
     // The detection pass's finished sessions for a camera.
     R_API std::vector<r_detection_session> detection_sessions(const std::string& camera_id, int64_t since_ms);
@@ -506,6 +523,7 @@ private:
     r_motion_tuning_fn _motion_tuning_fn;
     r_motion_event_plugin_host _meph;
     r_doorbell_rings _doorbell_rings;
+    r_press_check _press_check;
 
     // The mail listener for doorbells that send rings by email (r_mail_rings), running only while one is set to:
     // keeper thread only, but for _mail_doorbells, which its connections read.

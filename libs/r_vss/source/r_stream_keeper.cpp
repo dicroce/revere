@@ -789,14 +789,45 @@ void r_stream_keeper::_doorbell_press(const string& camera_id, int64_t press_ms,
     auto press = doorbell_press(_doorbell_rings, _devices.get_camera_by_id(camera_id), "visitor", true, press_ms, source);
     if(press == r_doorbell_press::none)
         return;
+    // A press test notes every source's report, a ring or the same press told again; a test's ring isn't for phones.
+    bool held = _press_check.press(camera_id, source, press_ms, _epoch_ms());
     if(press == r_doorbell_press::repeat)
     {
         R_LOG_INFO("doorbell [%s]: the same press again (%s)", _camera_name(camera_id).c_str(), source.c_str());
         return;
     }
+    if(held)
+    {
+        R_LOG_INFO("doorbell [%s]: a test press (%s), not sent to phones", _camera_name(camera_id).c_str(), source.c_str());
+        return;
+    }
     R_LOG_INFO("doorbell [%s]: ring (%s)", _camera_name(camera_id).c_str(), source.c_str());
     _system_plugin_host.notify_doorbell_ring(camera_id, press_ms);
     write_metadata(camera_id, "doorbell_rings", doorbell_ring_json(press_ms), press_ms);
+}
+
+r_utils::r_nullable<r_stream_keeper::doorbell_press_status> r_stream_keeper::doorbell_presses(const string& camera_id)
+{
+    auto camera = _devices.get_camera_by_id(camera_id);
+    if(camera.is_null() || r_disco::camera_kind(camera.value()) != "doorbell")
+        return {};
+    doorbell_press_status s;
+    s.press_source = r_disco::camera_press_source(camera.value());
+    s.last_onvif_ms = _doorbell_rings.last_press(camera_id, "onvif");
+    s.last_email_ms = _doorbell_rings.last_press(camera_id, "reolink_email");
+    s.suggest_onvif = suggest_onvif(camera.value(), s.last_onvif_ms);
+    s.test = _press_check.test(camera_id, _epoch_ms());
+    return s;
+}
+
+r_utils::r_nullable<r_press_test> r_stream_keeper::start_doorbell_press_test(const string& camera_id, bool ring_phones)
+{
+    auto camera = _devices.get_camera_by_id(camera_id);
+    if(camera.is_null() || r_disco::camera_kind(camera.value()) != "doorbell")
+        return {};
+    R_LOG_INFO("doorbell [%s]: press test for %d s%s", _camera_name(camera_id).c_str(), r_press_check::TEST_MS / 1000,
+               ring_phones ? ", ringing phones" : "");
+    return _press_check.start(camera_id, _epoch_ms(), ring_phones, press_test_sources(camera.value()));
 }
 
 void r_stream_keeper::_tend_mail_rings(const vector<r_disco::r_camera>& assigned)

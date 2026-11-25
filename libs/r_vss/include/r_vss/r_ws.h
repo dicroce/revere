@@ -194,6 +194,8 @@ private:
     r_http::r_server_response _get_motion_events(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _get_camera_events(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _get_doorbell_presses(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _post_doorbell_press_test(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _get_analytics(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
