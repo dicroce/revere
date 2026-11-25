@@ -123,6 +123,7 @@
     <!-- properties: edited in place of the lists, as in the desktop app's camera pane -->
     <section v-if="propsTarget" class="props-pane">
       <header class="props-head">
+        <button class="ghost small back" :disabled="propsBusy" @click="cancelProps">← Cameras</button>
         <h2>{{ propsTarget.friendly_name || propsTarget.camera_name || propsTarget.id }}</h2>
         <p class="cam-title">Camera properties</p>
       </header>
@@ -141,11 +142,14 @@
               >{{ copied ? 'Copied' : 'Copy path' }}</button>
             </div>
           </div>
-          <div class="storage-actions">
+          <div class="storage-row">
             <button class="ghost small" :disabled="propsBusy" @click="openStorage('move')">Move storage…</button>
-            <button class="ghost small" :disabled="propsBusy" @click="openStorage('retention')">Change retention…</button>
+            <p class="blurb">Move this camera's recording files to another folder or disk.</p>
           </div>
-          <p class="blurb">Moving storage or changing retention opens its own confirmation; your other changes here are kept.</p>
+          <div class="storage-row">
+            <button class="ghost small" :disabled="propsBusy" @click="openStorage('retention')">Change retention…</button>
+            <p class="blurb">Resize the recording file to hold more or fewer days of video. Clears this camera's existing recordings.</p>
+          </div>
         </div>
 
         <div class="props-section">
@@ -190,8 +194,8 @@
           <label class="check option">
             <input type="checkbox" v-model="propsDoorbell" :disabled="propsBusy" />
             <span>
-              <span class="title">Doorbell</span>
-              <span class="desc">This is a doorbell: a press of its button rings, as an event and a notification, whatever the detection settings.</span>
+              <span class="title">This is a doorbell</span>
+              <span class="desc">A press of its button rings, as an event and a notification, whatever the detection settings.</span>
             </span>
           </label>
         </div>
@@ -250,6 +254,7 @@ import RecordWizard from './RecordWizard.vue'
 import StorageDialog from './StorageDialog.vue'
 import PluginsSection from './PluginsSection.vue'
 import { doorbellChoice } from '../utils/cameraKind.js'
+import { unsaved } from '../utils/unsaved.js'
 
 const cameras = ref([])
 const error = ref(null)
@@ -510,14 +515,28 @@ async function confirmProps() {
   }
 }
 
+// What the tabs and Sign out ask about before leaving (App.vue).
+watch(propsDirty, (d) => { unsaved.value = d })
+// Escape goes back, asking first when there are unsaved changes; not while a dialog is over the properties.
+function onKey(e) {
+  if (e.key !== 'Escape' || !propsTarget.value || storageCamera.value || removeTarget.value) return
+  if (confirmingDiscard.value) { confirmingDiscard.value = false; return }
+  cancelProps()
+}
+
 onMounted(() => {
+  window.addEventListener('keydown', onKey)
   refresh()
   // New cameras appear via discovery; assigned cameras leave the discovered
   // list once recording starts — poll so the lists stay live.
   pollId = setInterval(refresh, 5000)
 })
 
-onUnmounted(() => clearInterval(pollId))
+onUnmounted(() => {
+  clearInterval(pollId)
+  window.removeEventListener('keydown', onKey)
+  unsaved.value = false
+})
 </script>
 
 <style scoped>
@@ -680,6 +699,9 @@ button:disabled { cursor: default; opacity: 0.6; }
 /* camera properties: in place of the lists */
 .props-pane { display: flex; flex-direction: column; gap: 1rem; }
 .props-head h2 { font-size: 1.1rem; font-weight: 600; }
+.props-head .back { margin-bottom: 0.6rem; }
+.storage-row { display: flex; flex-direction: column; align-items: flex-start; gap: 0.3rem; }
+.storage-row .blurb { margin: 0; }
 .cam-title { font-size: 0.85rem; color: #aaa; margin-top: 0.2rem; }
 .props-sections {
   display: grid;
@@ -718,7 +740,7 @@ button:disabled { cursor: default; opacity: 0.6; }
   font-size: 0.85rem;
   cursor: pointer;
 }
-.pill.on { border-color: #4a90e2; color: #fff; }
+.pill.on { background: #e8e8e8; border-color: #e8e8e8; color: #111; }
 .pill input { position: absolute; opacity: 0; pointer-events: none; }
 .pill:focus-within { outline: 2px solid #4a90e2; outline-offset: 1px; }
 .props-pane .off { opacity: 0.5; }
