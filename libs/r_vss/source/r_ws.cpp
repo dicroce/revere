@@ -1005,6 +1005,10 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     {"motion_tier_setting", (c.motion_tier.is_null())?"auto":c.motion_tier.value()},
                     // "camera" or "doorbell" (r_disco::camera_kind): what it was set to, or what its model says.
                     {"kind", r_disco::camera_kind(c)},
+                    // Which stream it records from, as it was set: "main" or "sub". "sub" only takes effect while
+                    // record_from_available (the camera's smaller stream works and smaller streams are on here).
+                    {"record_from", r_disco::record_from_sub(c) ? "sub" : "main"},
+                    {"record_from_available", substream_in_use(c, _stream_keeper.substreams_enabled())},
                     // What a person set it to; null until someone chooses.
                     {"kind_setting", c.kind.is_null() ? json(nullptr) : json(c.kind.value())},
                     // The tier in use now and why; null while not recording.
@@ -3994,7 +3998,21 @@ r_http::r_server_response r_ws::_post_update_camera_properties(r_utils::r_socket
             kind.set_value(req["kind"].get<string>());
         }
 
-        query_update_camera_properties(_top_dir, _devices, camera_id, do_motion, do_prune, min_hours, motion_tier, kind);
+        // "main" or "sub": which stream it records from; left as it is when absent.
+        r_nullable<string> record_from;
+        if(req.contains("record_from"))
+        {
+            if(!req["record_from"].is_string())
+                R_STHROW(r_http_400_exception, ("record_from must be main or sub."));
+            record_from.set_value(req["record_from"].get<string>());
+            // Also needs smaller streams to be on for this computer (query_update_camera_properties checks the camera).
+            auto maybe_camera = _devices.get_camera_by_id(camera_id);
+            if(!maybe_camera.is_null() && record_from.value() == "sub" && !r_disco::record_from_sub(maybe_camera.value()) &&
+               !substream_in_use(maybe_camera.value(), _stream_keeper.substreams_enabled()))
+                R_STHROW(r_http_400_exception, ("The camera's smaller stream isn't available, so it can't record from it."));
+        }
+
+        query_update_camera_properties(_top_dir, _devices, camera_id, do_motion, do_prune, min_hours, motion_tier, kind, record_from);
 
         // Restart the recording context so the new settings take effect live —
         // the poll loop only re-applies stream-config changes, not these.

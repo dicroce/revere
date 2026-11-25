@@ -576,7 +576,10 @@ const camera_column CAMERA_COLUMNS[] = {
     // Motion detection on the substream (r_camera::sub_analysis); existing cameras read as off.
     {11, "sub_analysis", "INTEGER DEFAULT 0"},
     // Camera or doorbell (r_camera::kind); null on existing rows until someone chooses.
-    {12, "kind", "TEXT"}
+    {12, "kind", "TEXT"},
+    // Which stream the camera records from (r_camera::record_from); null on existing rows, which record from main.
+    // Version 13 is the doorbell press source (a separate change): this one has to be merged after it.
+    {14, "record_from", "TEXT"}
 };
 
 const int CAMERA_DB_VERSION = 12;
@@ -877,6 +880,7 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
     number("sub_key_interval_ms", camera.sub_key_interval_ms);
     number("sub_analysis", camera.sub_analysis);
     text("kind", camera.kind);
+    text("record_from", camera.record_from);
 
     camera.stream_config_hash = row.at("stream_config_hash").value();
     return camera;
@@ -1016,6 +1020,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
     cols.add("rtsp_transport", rtsp_transport);
     cols.add("mac", mac);
     cols.add("kind", camera.kind);
+    cols.add("record_from", camera.record_from);
     cols.add("stream_config_hash", hash);
 
     r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){
