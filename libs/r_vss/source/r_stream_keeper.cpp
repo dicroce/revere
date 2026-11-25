@@ -602,15 +602,21 @@ void r_stream_keeper::_reap_events(vector<r_camera_events_keeper::events_ptr> ev
 void r_stream_keeper::_settle_camera_events()
 {
     vector<string> drops;
+    vector<r_camera> ensures;
     vector<std::weak_ptr<r_recording_context>> attaches;
     {
         std::lock_guard<std::mutex> lock(_streams_mutex);
         drops.swap(_events_to_drop);
+        ensures.swap(_events_to_ensure);
         attaches.swap(_events_to_attach);
     }
     vector<r_camera_events_keeper::events_ptr> ended;
     for(auto& id : drops)
         if(auto e = _camera_events.drop(id))
+            ended.push_back(std::move(e));
+    // Out of _streams_mutex: replacing a subscription calls the context it was attached to.
+    for(auto& camera : ensures)
+        for(auto& e : _camera_events.ensure(camera))
             ended.push_back(std::move(e));
     _reap_events(std::move(ended));
     for(auto& w : attaches)
@@ -1800,10 +1806,11 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         {
             _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds, protocols);
             // Its events: the camera's subscription, kept from before when it's the same camera with the same
-            // settings (a reconnect); attached once the lock is let go (_settle_camera_events).
+            // settings (a reconnect); made and attached once the lock is let go (_settle_camera_events), since a
+            // subscription replaced tells the context it was attached to, which may be one going away.
             if(r_cameras::camera_events_wanted(camera))
             {
-                _reap_events(_camera_events.ensure(camera));
+                _events_to_ensure.push_back(camera);
                 _events_to_attach.push_back(_streams[camera.id]);
             }
             // Construction succeeded — clear any prior failure state for this camera.

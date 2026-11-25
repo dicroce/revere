@@ -214,3 +214,30 @@ void test_r_camera_events_keeper::test_a_camera_without_events_has_none()
     r.keeper->detach("cam", &a);
     RTF_ASSERT(a.got.empty());
 }
+
+void test_r_camera_events_keeper::test_new_settings_with_no_events_still_end_the_old_one()
+{
+    // The camera's settings change to ones with nothing to watch (here, no address): no new subscription, but the old
+    // one still ends, its attached context told, and it comes back stopped, to be destroyed by the caller.
+    rig r;
+    r.keeper->ensure(camera());
+    sink s;
+    int owner = 0;
+    r.keeper->attach("cam", &owner, s.fn());
+    r.emit("motion", true);
+    auto old = r.made.back();
+    auto none = camera();
+    none.ipv4 = r_utils::r_nullable<string>();
+    auto replaced = r.keeper->ensure(none);
+    RTF_ASSERT_EQUAL(replaced.size(), (size_t)1);
+    RTF_ASSERT(replaced[0].get() == old);
+    RTF_ASSERT(old->stop_asked);
+    RTF_ASSERT(s.got == vector<string>({"motion on", "motion off"}));
+    RTF_ASSERT(!r.keeper->has("cam"));
+    RTF_ASSERT_EQUAL(r.made.size(), (size_t)1);
+    replaced.clear();
+    RTF_ASSERT(*r.destroyed[0]);
+    // Nothing reaches the old sink after.
+    r.keeper->detach("cam", &owner);
+    RTF_ASSERT_EQUAL(s.got.size(), (size_t)2);
+}

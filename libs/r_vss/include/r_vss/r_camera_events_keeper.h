@@ -43,8 +43,9 @@ public:
     r_camera_events_keeper(const r_camera_events_keeper&) = delete;
     r_camera_events_keeper& operator=(const r_camera_events_keeper&) = delete;
 
-    // The camera has a subscription, started now if it had none or its settings changed. The one replaced, if any,
-    // comes back (already told to stop) after telling its attached context it's all over.
+    // The camera has a subscription, started now if it had none or its settings changed (none when the factory makes
+    // none for them). The one replaced, if any, comes back (already told to stop) after telling its attached context
+    // it's all over: that context's sink is called here, so call this outside any lock the sink might take.
     R_API std::vector<events_ptr> ensure(const r_disco::r_camera& camera);
 
     // From now on `owner`'s sink gets the camera's transitions, first a start for each event open now. Nothing when the

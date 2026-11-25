@@ -101,10 +101,12 @@ vector<r_camera_events_keeper::events_ptr> r_camera_events_keeper::ensure(const 
             if (always)
                 always(id, t);
         });
-        if (!s->events)
-            return replaced;   // the camera has no events to watch
-        s->events->start();
-        _slots[camera.id] = s;
+        // None for these settings (the camera has no events to watch now): no slot, but the one replaced still ends.
+        if (s->events)
+        {
+            s->events->start();
+            _slots[camera.id] = s;
+        }
     }
     if (old)
     {
@@ -117,8 +119,11 @@ vector<r_camera_events_keeper::events_ptr> r_camera_events_keeper::ensure(const 
             lock_guard<mutex> g(old->lock);
             e = std::move(old->events);
         }
-        e->request_stop();
-        replaced.push_back(std::move(e));
+        if (e)
+        {
+            e->request_stop();
+            replaced.push_back(std::move(e));
+        }
     }
     return replaced;
 }

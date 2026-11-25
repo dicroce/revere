@@ -434,6 +434,7 @@ private:
         [this](const std::string& camera_id, const r_cameras::r_camera_transition& t) { camera_transition(camera_id, t); }
     };
     std::vector<std::weak_ptr<r_recording_context>> _events_to_attach;   // under _streams_mutex
+    std::vector<r_disco::r_camera> _events_to_ensure;                      // under _streams_mutex
     std::vector<std::string> _events_to_drop;                            // under _streams_mutex
     // Ended subscriptions being destroyed (each waits for its thread, perhaps a request), off the keeper's thread.
     std::list<std::future<void>> _events_reaping;
