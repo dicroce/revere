@@ -174,6 +174,10 @@ public:
     // logs the plugin and goes on. Default 5 s.
     void set_stop_wait(std::chrono::milliseconds wait) { _stop_wait = wait; }
 
+    // Hands a detection to every plugin on the calling thread (what the detection bus calls, so public for a test that
+    // has no bus): returns when each plugin has returned from it.
+    R_API void dispatch_detection(const r_detection& det, int64_t posted_at_ms);
+
     // Set the callback invoked when a plugin delivers a cloud API result.
     // result_type identifies the payload; json is the raw result.
     R_API void set_api_result_fn(std::function<void(const std::string&, const std::string&)> fn);
@@ -212,7 +216,6 @@ private:
     const plugin_info* _find(const std::string& plugin_name) const;
     plugin_info* _find(const std::string& plugin_name);
 
-    void _dispatch_detection(const r_detection& det, int64_t posted_at_ms);
     void _on_api_result(const char* name, const char* json);
     static void _api_result_bridge(const char* result_type, const char* json, void* user_data);
     struct frame_api;
@@ -262,7 +265,8 @@ private:
     std::mutex _ops_lock;
     bool _started {false};
     // Detections inside a plugin are counted here; stop_all() closes it and waits (a while, not forever) for them.
-    r_call_gate _dispatch_gate;
+    // Shared with the calls inside it: one that returns after the host is gone leaves a gate that is still there.
+    std::shared_ptr<r_call_gate> _dispatch_gate = std::make_shared<r_call_gate>();
     std::chrono::milliseconds _stop_wait {5000};
     // The latest receiving_video and stream_failed of each camera, for a plugin that starts after they were
     // given. _state_lock also keeps a notification and a replay from passing each other.

@@ -728,7 +728,7 @@ void r_system_plugin_host::start_all()
 {
     std::lock_guard<std::mutex> g(_ops_lock);
     _started = true;
-    _dispatch_gate.open();
+    _dispatch_gate->open();
     for(auto p : _snapshot())
     {
         if (p->plugin_handle && p->start_func)
@@ -752,7 +752,7 @@ void r_system_plugin_host::stop_all()
     std::lock_guard<std::mutex> g(_ops_lock);
     _started = false;
     // Detections stop here, and the ones inside a plugin are waited for (a while), before a plugin is told to stop.
-    const bool detections_done = _dispatch_gate.close_and_wait(_stop_wait);
+    const bool detections_done = _dispatch_gate->close_and_wait(_stop_wait);
     if(!detections_done)
         R_LOG_ERROR("A system plugin did not return from a detection within %lld ms; stopping anyway.", (long long)_stop_wait.count());
     for(auto p : _snapshot())
@@ -956,7 +956,7 @@ void r_system_plugin_host::connect_detection_bus(r_motion_event_plugin_host& mep
 {
     meph.register_detection_consumer(
         [](void* userdata, const r_detection& det, int64_t posted_at_ms) {
-            reinterpret_cast<r_system_plugin_host*>(userdata)->_dispatch_detection(det, posted_at_ms);
+            reinterpret_cast<r_system_plugin_host*>(userdata)->dispatch_detection(det, posted_at_ms);
         },
         this
     );
@@ -1071,27 +1071,40 @@ void r_system_plugin_host::notify_cameras_changed()
     }
 }
 
-void r_system_plugin_host::_dispatch_detection(const r_detection& det, int64_t posted_at_ms)
+void r_system_plugin_host::dispatch_detection(const r_detection& det, int64_t posted_at_ms)
 {
-    r_call_gate_scope gate(_dispatch_gate);
+    // A plugin that never returns from this call can return after the host is gone (the host leaves it loaded). So
+    // once in, this touches nothing of the host's: the gate and the counters are shared, and what is called is copied.
+    auto gate_ptr = _dispatch_gate;
+    r_call_gate_scope gate(*gate_ptr);
     if (!gate.entered())
         return;
-    for (auto p : _snapshot())
+    struct target
     {
-        // Counted per plugin, so that a plugin that never returns can be told from the rest at shutdown.
+        r_system_plugin_handle handle;
+        system_plugin_post_detection_func v1;
+        system_plugin_post_detection_v2_func v2;
+        std::string name;
+        std::shared_ptr<std::atomic<int>> inside;   // counted, so that a plugin that never returns is known at shutdown
+    };
+    std::vector<target> targets;
+    for (auto p : _snapshot())
+        targets.push_back({p->plugin_handle, p->post_detection_func, p->post_detection_v2_func, p->name, p->detections_inside});
+    for (auto& t : targets)
+    {
         struct inside_scope
         {
-            std::atomic<int>& n;
-            explicit inside_scope(std::atomic<int>& c) : n(c) { ++n; }
-            ~inside_scope() { --n; }
-        } inside(*p->detections_inside);
+            std::shared_ptr<std::atomic<int>> n;
+            explicit inside_scope(std::shared_ptr<std::atomic<int>> c) : n(std::move(c)) { ++*n; }
+            ~inside_scope() { --*n; }
+        } inside(t.inside);
         try
         {
-            post_detection_to_plugin(p->plugin_handle, p->post_detection_func, p->post_detection_v2_func, det, posted_at_ms);
+            post_detection_to_plugin(t.handle, t.v1, t.v2, det, posted_at_ms);
         }
         catch (const std::exception& e)
         {
-            R_LOG_ERROR("Error dispatching detection to system plugin %s: %s", p->name.c_str(), e.what());
+            R_LOG_ERROR("Error dispatching detection to system plugin %s: %s", t.name.c_str(), e.what());
         }
     }
 }

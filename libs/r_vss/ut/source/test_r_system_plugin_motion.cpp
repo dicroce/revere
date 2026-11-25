@@ -1,5 +1,6 @@
 #include "test_r_system_plugin_motion.h"
 #include "r_vss/r_system_plugin_host.h"
+#include "r_vss/r_motion_event_plugin_host.h"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -225,4 +226,37 @@ void test_r_system_plugin_motion::test_destroying_the_host_leaves_a_plugin_in_a_
     RTF_ASSERT(at_once.empty());   // still in the call when the host was gone
     RTF_ASSERT(took < seconds(2));   // and destroying the host did not wait for it
     RTF_ASSERT_EQUAL(later, string("slow1 1 1\n"));
+}
+
+void test_r_system_plugin_motion::test_destroying_the_host_leaves_a_plugin_in_a_detection_loaded()
+{
+    install(_top, TEST_MOTION_PLUGIN);
+    auto host = make_unique<r_system_plugin_host>(_top);
+    host->set_stop_wait(milliseconds(100));
+    host->start_all();
+
+    // A detection for a "slow" camera blocks in the plugin for half a second, on a thread of its own as the bus's would.
+    r_detection det;
+    det.camera_id = "slow1";
+    det.ts = 5;
+    det.class_name = "person";
+    det.confidence = 0.9f;
+    det.x1 = det.y1 = det.x2 = det.y2 = 0.0f;
+    thread caller([&]() { host->dispatch_detection(det, 5); });
+    this_thread::sleep_for(milliseconds(150));
+
+    auto start = steady_clock::now();
+    host.reset();
+    auto took = steady_clock::now() - start;
+    // The plugin is still inside the call: it was not destroyed (destroyed.txt is its destroy running) and its code is
+    // still there to return into. Look now, and let the call finish before judging.
+    const bool destroyed = fs::exists(fs::path(_top) / "destroyed.txt");
+    const string at_once = read_file(_top + "/detection.txt");
+    caller.join();
+    const string later = read_file(_top + "/detection.txt");
+    RTF_ASSERT(!destroyed);
+    RTF_ASSERT(at_once.empty());
+    RTF_ASSERT(took < seconds(2));
+    RTF_ASSERT_EQUAL(later, string("slow1 5 person\n"));
+    RTF_ASSERT(!fs::exists(fs::path(_top) / "destroyed.txt"));
 }
