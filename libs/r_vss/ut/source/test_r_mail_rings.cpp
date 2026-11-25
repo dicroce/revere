@@ -583,3 +583,36 @@ void test_r_mail_rings::test_the_login_is_made_once_and_kept_private()
     RTF_ASSERT(again != pems);
     r_ssl_server_config ok(again.first, again.second);
 }
+
+void test_r_mail_rings::test_the_setup_to_type_in()
+{
+    // What setup shows for the Reolink app: the box's address and port, its login, and a recipient.
+    auto s = mail_setup_for("192.168.1.20", 2525, r_mail_login{"revere-ab12cd", "pw"});
+    RTF_ASSERT_EQUAL(s.server, string("192.168.1.20"));
+    RTF_ASSERT_EQUAL(s.port, 2525);
+    RTF_ASSERT_EQUAL(s.user, string("revere-ab12cd"));
+    RTF_ASSERT_EQUAL(s.password, string("pw"));
+    RTF_ASSERT_EQUAL(s.recipient, string("rings@revere.local"));
+    // The port: 2525, a bench's override, never a bad one.
+#ifdef IS_WINDOWS
+    _putenv_s("REVERE_MAIL_RINGS_PORT", "");
+#else
+    unsetenv("REVERE_MAIL_RINGS_PORT");
+#endif
+    RTF_ASSERT_EQUAL(mail_rings_port(), 2525);
+    for(auto p : {"12525", "0", "70000", "x"})
+    {
+#ifdef IS_WINDOWS
+        _putenv_s("REVERE_MAIL_RINGS_PORT", p);
+#else
+        setenv("REVERE_MAIL_RINGS_PORT", p, 1);
+#endif
+        const int expected = string(p) == "12525" ? 12525 : 2525;
+        RTF_ASSERT_EQUAL(mail_rings_port(), expected);
+    }
+#ifdef IS_WINDOWS
+    _putenv_s("REVERE_MAIL_RINGS_PORT", "");
+#else
+    unsetenv("REVERE_MAIL_RINGS_PORT");
+#endif
+}

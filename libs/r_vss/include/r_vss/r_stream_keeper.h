@@ -266,6 +266,18 @@ public:
     };
     // Null when the camera isn't a doorbell (or is gone).
     R_API r_utils::r_nullable<doorbell_press_status> doorbell_presses(const std::string& camera_id);
+
+    // A Reolink doorbell's email setup (r_mail_setup: what to type in its app) and the listener's counts. The login is
+    // made here if it isn't yet, so setup can show it before the press source is saved. listening: the listener is up
+    // and takes this doorbell's mail (its press source is saved as reolink_email). Null for a camera that isn't a
+    // doorbell, or has no address.
+    struct doorbell_mail_status
+    {
+        r_mail_setup setup;
+        bool listening {false};
+        r_mail_rings::counts counts;
+    };
+    R_API r_utils::r_nullable<doorbell_mail_status> doorbell_mail_setup(const std::string& camera_id);
     // "Press the doorbell now": a TEST_MS window in which each source's report of a press is noted; its press rings the
     // phones only if ring_phones. Null when the camera isn't a doorbell (or is gone).
     R_API r_utils::r_nullable<r_press_test> start_doorbell_press_test(const std::string& camera_id, bool ring_phones);
@@ -529,6 +541,10 @@ private:
     // keeper thread only, but for _mail_doorbells, which its connections read.
     std::unique_ptr<r_mail_rings> _mail_rings;
     std::string _mail_rings_bind;
+    // Guards _mail_rings and _mail_rings_bind for readers on other threads (doorbell_mail_setup); the keeper thread
+    // replaces them through _set_mail_rings.
+    mutable std::mutex _mail_rings_lock;
+    void _set_mail_rings(std::unique_ptr<r_mail_rings> rings, const std::string& bind);
     mutable std::mutex _mail_doorbells_lock;
     std::map<std::string, std::string> _mail_doorbells;   // by address, to the camera's id
     void _tend_mail_rings(const std::vector<r_disco::r_camera>& assigned);

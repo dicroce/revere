@@ -5,6 +5,7 @@
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_file.h"
+#include "r_utils/r_std_utils.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
 #include <algorithm>
@@ -232,6 +233,33 @@ void r_vss::read_mail(const string& message, string& subject, string& text)
     if (_lower(headers["content-transfer-encoding"]).find("base64") != string::npos && (type.empty() || _starts_with_ci(type, "text/")))
         text += "\n" + _b64_text(body.substr(0, MAX_PART_B64));
     text += _b64_text_parts(body);
+}
+
+int r_vss::mail_rings_port()
+{
+    auto port = r_std_utils::get_env("REVERE_MAIL_RINGS_PORT");
+    if(!port.empty())
+    {
+        try
+        {
+            auto p = r_string_utils::s_to_int(port);
+            if(p > 0 && p < 65536)
+                return p;
+        }
+        catch(...) {}
+    }
+    return r_mail_rings_config().port;
+}
+
+r_mail_setup r_vss::mail_setup_for(const string& server, int port, const r_mail_login& login)
+{
+    r_mail_setup s;
+    s.server = server;
+    s.port = port;
+    s.user = login.user;
+    s.password = login.password;
+    s.recipient = "rings@revere.local";
+    return s;
 }
 
 bool r_vss::is_ring_mail(const string& subject, const string& text)
