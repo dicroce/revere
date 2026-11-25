@@ -1,6 +1,6 @@
 // A system plugin for test_r_system_plugin_motion: it appends each system_plugin_post_motion call to
 // <top_dir>/motion.txt ("camera started ts") and each system_plugin_camera_state call to <top_dir>/state.txt
-// ("camera receiving failed"). A call for a camera named "slow..." takes half a second. Built twice, the second time with
+// ("camera receiving failed"). A call for a camera named "slow..." takes half a second (a detection too). destroy_system_plugin appends to destroyed.txt. Built twice, the second time with
 // NO_MOTION_EXPORTS: a plugin with neither export (and the detection export a plugin of this kind has).
 #include "r_vss/r_system_plugin.h"
 #include <chrono>
@@ -51,6 +51,7 @@ R_API void stop_system_plugin(r_system_plugin_handle) {}
 
 R_API void destroy_system_plugin(r_system_plugin_handle h)
 {
+    append(h, "destroyed.txt", "destroyed");
     delete static_cast<test_plugin*>(h);
 }
 
@@ -67,6 +68,7 @@ R_API void system_plugin_set_enabled(r_system_plugin_handle h, bool enabled)
 R_API void system_plugin_post_detection(r_system_plugin_handle h, const char* camera_id, int64_t ts, const char* class_name,
                                         float, float, float, float, float)
 {
+    maybe_slow(camera_id);
     append(h, "detection.txt", std::string(camera_id) + " " + std::to_string(ts) + " " + class_name);
 }
 
