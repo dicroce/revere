@@ -284,6 +284,10 @@ void test_r_system_plugin_motion::test_a_late_detection_does_not_go_on_to_the_ne
     caller.join();
     // Give a wrongly made second call time to write its line.
     this_thread::sleep_for(milliseconds(700));
+    // detection_calls.txt has a line for each call as it started (it needs no handle, so a call into the second plugin
+    // after its destroy shows too, unless the process is gone with its library).
+    const string calls = read_file(_top + "/detection_calls.txt");
     const string lines = read_file(_top + "/detection.txt");
+    RTF_ASSERT_EQUAL(calls, string("slow1\n"));
     RTF_ASSERT_EQUAL(lines, string("slow1 6 person\n"));
 }

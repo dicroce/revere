@@ -10,6 +10,10 @@
 
 namespace
 {
+// Where this library was loaded from, kept outside the handle: a call into a plugin whose handle was destroyed can
+// still say that it happened (detection_calls.txt, one line per call, written as the call starts).
+std::string g_top_dir;
+
 struct test_plugin
 {
     std::string top_dir;
@@ -43,6 +47,7 @@ R_API const char* get_system_plugin_guid()
 
 R_API r_system_plugin_handle load_system_plugin(const char* top_dir, void*)
 {
+    g_top_dir = top_dir ? top_dir : ".";
     return new test_plugin {top_dir ? top_dir : "."};
 }
 
@@ -68,6 +73,11 @@ R_API void system_plugin_set_enabled(r_system_plugin_handle h, bool enabled)
 R_API void system_plugin_post_detection(r_system_plugin_handle h, const char* camera_id, int64_t ts, const char* class_name,
                                         float, float, float, float, float)
 {
+    if(auto f = fopen((g_top_dir + "/detection_calls.txt").c_str(), "a"))
+    {
+        fprintf(f, "%s\n", camera_id);
+        fclose(f);
+    }
     maybe_slow(camera_id);
     append(h, "detection.txt", std::string(camera_id) + " " + std::to_string(ts) + " " + class_name);
 }
