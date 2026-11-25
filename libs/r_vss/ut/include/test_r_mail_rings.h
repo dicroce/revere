@@ -18,6 +18,11 @@ public:
       TEST(test_r_mail_rings::test_it_never_binds_every_address);
       TEST(test_r_mail_rings::test_nothing_may_follow_starttls_in_the_clear);
       TEST(test_r_mail_rings::test_too_many_connections_at_once);
+      TEST(test_r_mail_rings::test_a_big_picture_attached);
+      TEST(test_r_mail_rings::test_the_subject_time_read_by_hand);
+      TEST(test_r_mail_rings::test_a_connection_has_a_deadline);
+      TEST(test_r_mail_rings::test_a_data_without_end);
+      TEST(test_r_mail_rings::test_wrong_logins_counted_per_address);
     RTF_FIXTURE_END();
 
     virtual ~test_r_mail_rings() throw() {}
@@ -38,4 +43,9 @@ public:
     void test_it_never_binds_every_address();
     void test_nothing_may_follow_starttls_in_the_clear();
     void test_too_many_connections_at_once();
+    void test_a_big_picture_attached();
+    void test_the_subject_time_read_by_hand();
+    void test_a_connection_has_a_deadline();
+    void test_a_data_without_end();
+    void test_wrong_logins_counted_per_address();
 };

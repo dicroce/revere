@@ -37,8 +37,10 @@ struct r_mail_rings_config
     std::string key_pem;
     size_t max_connections {4};
     int command_timeout_ms {30000};    // a command, a DATA line, or the TLS handshake
+    int connection_timeout_ms {300000};// a whole connection, however steadily it talks
     size_t max_mail_bytes {2 * 1024 * 1024};
     int mails_per_minute {6};          // per doorbell; more are ignored
+    int bad_logins_per_address {6};    // wrong logins from one address in 10 minutes before its AUTH is refused
 };
 
 // A small SMTP server for doorbells that report presses by email (Reolink's "Email Alerts"). It takes mail only:
@@ -94,7 +96,8 @@ private:
     mutable std::mutex _lock;
     counts _counts;
     std::map<std::string, std::deque<int64_t>> _recent;   // per camera, its mails in the last minute
-    std::map<std::string, int64_t> _stranger_logged;     // per address, when a refusal was last logged
+    std::map<std::string, int64_t> _stranger_logged;     // per address, when a refusal was last logged (recent only)
+    std::map<std::string, std::deque<int64_t>> _bad_login_times;   // per address, its wrong logins in the last 10 minutes
 };
 
 // Whether a mail is a doorbell's ring: Reolink's subject "Someone Rang the Doorbell at ..." or body "Alarm Event: Visitor".
