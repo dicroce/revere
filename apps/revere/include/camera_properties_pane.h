@@ -9,8 +9,8 @@
 //
 // Sections: Recording (where the recording lives and the two storage operations), Detection (motion, what finds it,
 // pruning), Streams and connection (the smaller stream, TCP or UDP, the camera's clock) and Doorbell (whether the
-// device is one). Another section is one more entry in `sections` below; room is left in Recording for "Record from"
-// and in Doorbell for the press source and press test.
+// device is one, how it reports a press, what to type in a Reolink doorbell's app, and "Press the doorbell now").
+// Another section is one more entry in `sections` below; room is left in Recording for "Record from".
 
 namespace revere
 {
@@ -43,10 +43,14 @@ inline const tier_choice* tier_choices(size_t& n)
 // with that profile token), "find" (look again) or "analysis" (token "1" or "0"). can_sync_time: the camera was found
 // by ONVIF discovery, so its clock can be set. sync_time_cb, move_storage_cb and change_retention_cb open the small
 // dialogs for those. On Save with a valid form, min_continuous_retention_hours holds the hours field.
-template<typename STREAMS_CB, typename SYNC_TIME_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB>
+// press_source is the doorbell's ("onvif" or "reolink_email"); door is what the app last read about its presses and its
+// email setup (doorbell_view), and press_test_cb() starts "Press the doorbell now".
+template<typename STREAMS_CB, typename SYNC_TIME_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB, typename PRESS_TEST_CB>
 camera_properties_result camera_properties_pane(
     camera_properties_session& session,
     bool& is_doorbell,
+    std::string& press_source,
+    doorbell_view& door,
     bool& do_motion_detection,
     bool& do_motion_pruning,
     std::string& min_continuous_retention_hours,
@@ -60,7 +64,8 @@ camera_properties_result camera_properties_pane(
     STREAMS_CB streams_cb,
     SYNC_TIME_CB sync_time_cb,
     MOVE_STORAGE_CB move_storage_cb,
-    CHANGE_RETENTION_CB change_retention_cb
+    CHANGE_RETENTION_CB change_retention_cb,
+    PRESS_TEST_CB press_test_cb
 )
 {
     using namespace r_ui_utils::theme;
@@ -74,7 +79,7 @@ camera_properties_result camera_properties_pane(
     // Pruning needs motion detection.
     if(!do_motion_detection)
         do_motion_pruning = false;
-    const bool dirty = session.dirty(is_doorbell, do_motion_detection, do_motion_pruning, motion_tier, rtsp_transport, streams_changed);
+    const bool dirty = session.dirty(is_doorbell, do_motion_detection, do_motion_pruning, motion_tier, rtsp_transport, streams_changed, press_source);
 
     const float footer_h = 62.0f;
     const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -185,7 +190,115 @@ camera_properties_result camera_properties_pane(
             d.toggle("##doorbell", "Doorbell",
                 "This is a doorbell: a press of its button rings, as an event and a notification, whatever the detection settings.",
                 &is_doorbell);
-            // The press source and the press test go here.
+            if(!is_doorbell)
+                return;
+
+            d.gap(6.0f);
+            d.label("How it tells Revere it was pressed");
+            d.gap(2.0f);
+            if(d.pill("##press_onvif", "ONVIF", press_source != "reolink_email", true))
+                press_source = "onvif";
+            if(d.pill("##press_email", "Reolink email", press_source == "reolink_email", false))
+                press_source = "reolink_email";
+            d.gap(2.0f);
+            if(press_source != "reolink_email")
+                d.body("At once, over ONVIF. Most doorbells report a press this way.");
+            else
+                d.body("For a Reolink doorbell that doesn't report presses over ONVIF: it emails this computer instead, and Revere reads the email. Only this computer, never the internet.");
+            if(door.suggest_onvif && press_source == "reolink_email")
+            {
+                d.gap(2.0f);
+                d.body("This doorbell now reports presses over ONVIF too. Switch to ONVIF for rings at once.", status_warning_text);
+            }
+
+            if(press_source == "reolink_email")
+            {
+                d.gap(6.0f);
+                d.label("In the Reolink app");
+                d.body("Settings > Email Alerts > Email Settings, then enter:");
+                if(!door.has_mail)
+                    d.body(door.loaded ? "This computer has no network address toward the doorbell yet." : "Reading the doorbell's settings...");
+                else
+                {
+                    // A field to type in, on one line: its name, its value, and small Copy (and for the password Show or
+                    // Hide) buttons at the right.
+                    const auto& style = ImGui::GetStyle();
+                    const float name_w = ImGui::CalcTextSize("Recipient address").x + 12.0f;
+                    const float copy_w = ImGui::CalcTextSize("Copy").x + style.FramePadding.x * 2.0f;
+                    const float show_w = std::max(ImGui::CalcTextSize("Show").x, ImGui::CalcTextSize("Hide").x) + style.FramePadding.x * 2.0f;
+                    auto field = [&](const char* id, const char* name, const std::string& value, bool copy, bool secret) {
+                        ImGui::PushID(id);
+                        d.gap(3.0f);
+                        // Screen positions: SameLine's offsets are from the column's start, which a table moves.
+                        const float x0 = ImGui::GetCursorScreenPos().x;
+                        const float right = x0 + d.width();
+                        ImGui::TextColored(text_secondary, "%s", name);
+                        ImGui::SameLine();
+                        ImGui::SetCursorScreenPos(ImVec2(x0 + name_w, ImGui::GetCursorScreenPos().y));
+                        const std::string shown = secret && !door.reveal ? std::string(12, '*') : value;
+                        ImGui::TextColored(text_primary, "%s", shown.c_str());
+                        float buttons = copy ? copy_w : 0.0f;
+                        if(secret)
+                            buttons += show_w + 4.0f;
+                        if(buttons > 0.0f)
+                        {
+                            // Beside the value when they fit, else on the next line at the right.
+                            const bool fits = x0 + name_w + ImGui::CalcTextSize(shown.c_str()).x + 8.0f + buttons <= right;
+                            if(fits)
+                                ImGui::SameLine();
+                            ImGui::SetCursorScreenPos(ImVec2(right - buttons, ImGui::GetCursorScreenPos().y));
+                            if(secret)
+                            {
+                                if(ImGui::Button(door.reveal ? "Hide" : "Show", ImVec2(show_w, 0.0f)))
+                                    door.reveal = !door.reveal;
+                                ImGui::SameLine(0.0f, 4.0f);
+                            }
+                            if(copy && ImGui::Button("Copy", ImVec2(copy_w, 0.0f)))
+                                ImGui::SetClipboardText(value.c_str());
+                        }
+                        ImGui::PopID();
+                    };
+                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 1.0f));
+                    field("server", "SMTP server", door.server, true, false);
+                    field("port", "SMTP port", std::to_string(door.port), true, false);
+                    field("tls", "SSL or TLS", "On", false, false);
+                    field("user", "User name", door.user, true, false);
+                    field("password", "Password", door.password, true, true);
+                    field("sender", "Sender address", "Anything", false, false);
+                    field("recipient", "Recipient address", door.recipient, true, false);
+                    ImGui::PopStyleVar();
+                    d.gap(4.0f);
+                    d.body("Then set the email Alarm Schedule to Ring only, so motion doesn't send email.");
+                }
+                d.gap(4.0f);
+                d.body("A ring arrives about 15 seconds after the press: Reolink sends the email late.");
+                d.body("Reolink sends at most one email about every 10 minutes, and the doorbell has no setting to change that. Another press within that time isn't reported.");
+                for(auto& line : mail_status_lines(door, press_source))
+                {
+                    d.gap(2.0f);
+                    d.body(line);
+                }
+            }
+
+            d.gap(6.0f);
+            d.label("Check it");
+            if(door.test_open)
+            {
+                const int64_t left = std::max<int64_t>(0, (door.test_ends_ms - (int64_t)std::time(nullptr) * 1000 + 999) / 1000);
+                d.body("Press the doorbell's button now. Waiting " + std::to_string(left) + " s for its reports; this press doesn't ring the phones.");
+            }
+            else if(row_action(d, "Press the doorbell now", "For a minute, Revere notes which of the doorbell's reports arrive, and how late. That press doesn't ring the phones."))
+                press_test_cb();
+            for(auto& line : press_test_lines(door))
+                d.body(line, text_primary);
+            const auto verdict = press_test_verdict(door, press_source);
+            if(!verdict.empty())
+            {
+                d.gap(2.0f);
+                d.body(verdict);
+            }
+            if(door.test_any && !door.test_open && door.saved_source != press_source)
+                d.body("The test uses the saved choice's sources: save first to test the other one.");
         };
 
         std::vector<std::function<void(dialog_frame&)>> sections {recording, detection, connection, doorbell};

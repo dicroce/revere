@@ -218,6 +218,10 @@ struct revere_ui_state
 
     // camera properties dialog
     bool is_doorbell {false};
+    // A doorbell's press source ("onvif" or "reolink_email"), and what the Doorbell section shows about its presses.
+    std::string press_source {"onvif"};
+    revere::doorbell_view door_view;
+    std::chrono::steady_clock::time_point door_view_read;
     bool do_motion_detection {false};
     bool do_motion_pruning {false};
     std::string min_continuous_recording_hours {"24"};
@@ -3292,6 +3296,52 @@ int main(int argc, char** argv)
             close_properties();
             return;
         }
+        // The Doorbell section's view of its presses and email setup, read about once a second while it shows.
+        auto read_door_view = [&](bool now){
+            if(!ui_state.is_doorbell)
+                return;
+            auto t = std::chrono::steady_clock::now();
+            if(!now && ui_state.door_view.loaded && t - ui_state.door_view_read < std::chrono::seconds(1))
+                return;
+            ui_state.door_view_read = t;
+            auto& v = ui_state.door_view;
+            v.loaded = true;
+            auto presses = streamKeeper.doorbell_presses(camera_id.value());
+            if(!presses.is_null())
+            {
+                const auto& p = presses.value();
+                v.saved_source = p.press_source;
+                v.suggest_onvif = p.suggest_onvif;
+                v.last_email_ms = p.last_email_ms.is_null() ? 0 : p.last_email_ms.value();
+                v.test_any = p.test.any;
+                v.test_open = p.test.open;
+                v.test_ends_ms = p.test.ends_ms;
+                v.test_sources.clear();
+                for(auto& src : p.test.sources)
+                    v.test_sources.push_back({src.source, src.seen, src.seen ? src.arrived_ms - src.press_ms : 0});
+            }
+            auto mail = streamKeeper.doorbell_mail_setup(camera_id.value());
+            v.has_mail = !mail.is_null();
+            if(v.has_mail)
+            {
+                const auto& m = mail.value();
+                v.server = m.setup.server;
+                v.port = m.setup.port;
+                v.user = m.setup.user;
+                v.password = m.setup.password;
+                v.recipient = m.setup.recipient;
+                v.listening = m.listening;
+                v.other_mail = m.counts.other_mail;
+                v.bad_logins = m.counts.bad_logins;
+                v.last_error = m.counts.last_error;
+            }
+        };
+        read_door_view(false);
+        auto press_test = [&](){
+            streamKeeper.start_doorbell_press_test(camera_id.value(), false);
+            read_door_view(true);
+        };
+
         string record_path;
         bool can_sync_time = false;
         {
@@ -3487,6 +3537,8 @@ int main(int argc, char** argv)
         auto result = revere::camera_properties_pane(
             properties_session,
             ui_state.is_doorbell,
+            ui_state.press_source,
+            ui_state.door_view,
             ui_state.do_motion_detection,
             ui_state.do_motion_pruning,
             ui_state.min_continuous_recording_hours,
@@ -3500,7 +3552,8 @@ int main(int argc, char** argv)
             streams_click,
             sync_time,
             move_storage,
-            change_retention
+            change_retention,
+            press_test
         );
         if(result == revere::camera_properties_result::cancel)
             close_properties();
@@ -3540,6 +3593,9 @@ int main(int argc, char** argv)
                 if(!camera.kind.is_null() || kind != r_disco::camera_kind(camera))
                     camera.kind.set_value(kind);
             }
+            // A doorbell's press source, kept once it's chosen (onvif is what an unset one means).
+            if(ui_state.is_doorbell && (!camera.press_source.is_null() || ui_state.press_source != "onvif"))
+                camera.press_source.set_value(ui_state.press_source);
             {
                 // The Streams section's choice, when it was changed.
                 std::lock_guard<std::mutex> g(streams.m);
@@ -3565,6 +3621,8 @@ int main(int argc, char** argv)
         // Go to camera properties modal
         auto camera = devices.get_camera_by_id(ui_state.selected_camera_id().value()).value();
         ui_state.is_doorbell = r_disco::camera_kind(camera) == "doorbell";
+        ui_state.press_source = r_disco::camera_press_source(camera);
+        ui_state.door_view = revere::doorbell_view();
         ui_state.do_motion_detection = camera.do_motion_detection.value();
         ui_state.do_motion_pruning = camera.do_motion_pruning.value();
         ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());
@@ -3638,7 +3696,7 @@ int main(int argc, char** argv)
             }
         }
         properties_session.begin(camera.id, ui_state.is_doorbell, ui_state.do_motion_detection, ui_state.do_motion_pruning && ui_state.do_motion_detection,
-                                 ui_state.min_continuous_recording_hours, ui_state.motion_tier, ui_state.rtsp_transport);
+                                 ui_state.min_continuous_recording_hours, ui_state.motion_tier, ui_state.rtsp_transport, ui_state.press_source);
         main_window_state.properties_open = true;
     };
     // Selecting something else while the properties have unsaved changes asks first.
@@ -3655,7 +3713,7 @@ int main(int argc, char** argv)
             streams_changed = as.streams.changed;
         }
         if(!properties_session.dirty(ui_state.is_doorbell, ui_state.do_motion_detection, ui_state.do_motion_pruning && ui_state.do_motion_detection,
-                                     ui_state.motion_tier, ui_state.rtsp_transport, streams_changed))
+                                     ui_state.motion_tier, ui_state.rtsp_transport, streams_changed, ui_state.press_source))
         {
             close_properties();
             go();

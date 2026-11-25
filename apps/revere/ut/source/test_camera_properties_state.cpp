@@ -1,6 +1,8 @@
 #include "test_camera_properties_state.h"
 #include "camera_properties_state.h"
 #include <cstring>
+#include <string>
+#include <vector>
 
 using namespace revere;
 using namespace std;
@@ -69,4 +71,80 @@ void test_camera_properties_state::test_begin_starts_over()
     RTF_ASSERT(string(s.hours_text) == "12");
     RTF_ASSERT(!s.tried);
     RTF_ASSERT(!s.dirty(false, false, false, "1", "UDP", false));
+}
+
+void test_camera_properties_state::test_the_press_source_counts_only_on_a_doorbell()
+{
+    camera_properties_session s;
+    s.begin("cam", true, true, true, "24", "auto", "TCP", "onvif");
+    RTF_ASSERT(!s.dirty(true, true, true, "auto", "TCP", false, "onvif"));
+    RTF_ASSERT(s.dirty(true, true, true, "auto", "TCP", false, "reolink_email"));
+    // Not a doorbell: the press source isn't saved, so changing it is no change.
+    camera_properties_session cam;
+    cam.begin("cam", false, true, true, "24", "auto", "TCP", "onvif");
+    RTF_ASSERT(!cam.dirty(false, true, true, "auto", "TCP", false, "reolink_email"));
+    // Saved as email, back to email: no change.
+    camera_properties_session e;
+    e.begin("cam", true, true, true, "24", "auto", "TCP", "reolink_email");
+    RTF_ASSERT(!e.dirty(true, true, true, "auto", "TCP", false, "reolink_email"));
+    RTF_ASSERT(e.dirty(true, true, true, "auto", "TCP", false, "onvif"));
+}
+
+void test_camera_properties_state::test_the_press_test_lines()
+{
+    doorbell_view v;
+    v.test_any = true;
+    v.test_open = true;
+    v.test_sources = {{"onvif", true, 300}, {"reolink_email", false, 0}};
+    auto open = press_test_lines(v);
+    RTF_ASSERT(open == vector<string>({"ONVIF: yes, at once", "Email: not yet"}));
+    v.test_open = false;
+    v.test_sources = {{"onvif", false, 0}, {"reolink_email", true, 14400}};
+    auto done = press_test_lines(v);
+    RTF_ASSERT(done == vector<string>({"ONVIF: no", "Email: yes, 14 s after"}));
+    RTF_ASSERT(press_test_lines(doorbell_view()).empty());
+}
+
+void test_camera_properties_state::test_the_press_test_verdict()
+{
+    doorbell_view v;
+    RTF_ASSERT(press_test_verdict(v, "onvif").empty());             // no test yet
+    v.test_any = true;
+    v.test_open = true;
+    v.test_sources = {{"onvif", true, 0}};
+    RTF_ASSERT(press_test_verdict(v, "onvif").empty());             // still running
+    v.test_open = false;
+    RTF_ASSERT(press_test_verdict(v, "onvif").find("at once") != string::npos);
+    RTF_ASSERT(press_test_verdict(v, "reolink_email").find("choose ONVIF") != string::npos);
+    v.test_sources = {{"onvif", false, 0}, {"reolink_email", true, 15000}};
+    RTF_ASSERT(press_test_verdict(v, "reolink_email").find("keep Reolink email") != string::npos);
+    v.test_sources = {{"onvif", false, 0}};
+    RTF_ASSERT(press_test_verdict(v, "onvif").find("choose Reolink email") != string::npos);
+    v.test_sources = {{"onvif", false, 0}, {"reolink_email", false, 0}};
+    RTF_ASSERT(press_test_verdict(v, "reolink_email").find("Check the email settings") != string::npos);
+}
+
+void test_camera_properties_state::test_the_mail_status_lines()
+{
+    doorbell_view v;
+    RTF_ASSERT(mail_status_lines(v, "onvif").empty());
+    // Chosen but not saved yet.
+    auto unsaved = mail_status_lines(v, "reolink_email");
+    RTF_ASSERT(unsaved.size() == 1 && unsaved[0].find("Save") == 0);
+    v.saved_source = "reolink_email";
+    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0].find("within a few seconds") != string::npos);
+    v.last_error = "the port is in use";
+    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0].find("the port is in use") != string::npos);
+    v.listening = true;
+    v.last_error.clear();
+    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0].find("No ring by email yet") != string::npos);
+    v.last_email_ms = 1764018345000;
+    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0] == "Last ring by email: " + clock_text(v.last_email_ms) + ".");
+    v.other_mail = 1;
+    v.bad_logins = 2;
+    auto lines = mail_status_lines(v, "reolink_email");
+    RTF_ASSERT(lines.size() == 3);
+    RTF_ASSERT(lines[1].find("1 email that wasn't a ring") == 0 && lines[1].find("Ring only") != string::npos);
+    RTF_ASSERT(lines[2].find("refused 2 times") != string::npos);
+    RTF_ASSERT(clock_text(1764018345000).size() == 8);
 }
