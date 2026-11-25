@@ -104,7 +104,8 @@ retry_redirect:
             else
                 sock = std::make_unique<r_utils::r_socket>();
 
-            // While it's in flight, a stop closes this socket, which wakes a connect, a send or a long read.
+            // While it's in flight, a stop shuts this socket's connection down, which wakes a connect, a send or a long
+            // read; it's closed here, on this thread.
             if (interrupt && !interrupt->set_active(sock.get()))
                 throw std::runtime_error("interrupted: the subscriber is stopping");
             struct inactive_on_exit
@@ -2939,8 +2940,10 @@ void r_onvif::r_onvif_interrupt::interrupt()
 {
     lock_guard<mutex> g(_lock);
     _interrupted = true;
+    // Shut down, not closed: the request's thread may be inside the socket (mbedtls_ssl_read on 443) and closes it
+    // itself. set_active(nullptr) comes before the socket goes, under this lock, so _active is never a freed one.
     if (_active)
-        _active->close();   // thread-safe: wakes the request blocked on it
+        _active->shutdown();
 }
 
 bool r_onvif::r_onvif_interrupt::interrupted() const

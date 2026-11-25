@@ -2930,6 +2930,64 @@ void test_r_utils::test_ssl_server_socket_roundtrip()
     RTF_ASSERT(server_error.empty());
 }
 
+void test_r_utils::test_ssl_socket_shutdown_wakes_a_read()
+{
+    // Another thread wakes a TLS read in flight with shutdown(), never touching mbedtls; the reading thread closes the
+    // socket itself. (close() from another thread raced mbedtls_ssl_read.)
+    auto pems = r_ssl_server_config::generate_self_signed();
+    auto cfg = make_shared<r_ssl_server_config>(pems.first, pems.second);
+    r_ssl_server_socket listener(cfg);
+    // The next free test port (macOS's AirPlay receiver holds 5000).
+    int port = 0;
+    for (int i = 0; i < 10 && port == 0; ++i)
+    {
+        int p = RTF_NEXT_PORT();
+        try { listener.bind(p, "127.0.0.1"); port = p; } catch (...) {}
+    }
+    RTF_ASSERT(port != 0);
+    listener.listen();
+
+    atomic<bool> done{false};
+    thread server([&]() {
+        try
+        {
+            auto conn = listener.accept();
+            uint64_t ms = 5000;
+            conn.wait_till_recv_wont_block(ms);   // the handshake; then it says nothing
+            while (!done)
+                this_thread::sleep_for(chrono::milliseconds(20));
+            conn.close();
+        }
+        catch (...) {}
+    });
+
+    r_ssl_socket client(false);
+    client.connect("127.0.0.1", port);
+    RTF_ASSERT(client.valid());
+    atomic<int> got{1};
+    atomic<bool> returned{false};
+    thread reader([&]() {
+        char buf[64];
+        got = client.recv(buf, sizeof(buf));   // blocks: the server sends nothing
+        returned = true;
+        client.close();                       // its own thread closes it
+    });
+    this_thread::sleep_for(chrono::milliseconds(300));
+    RTF_ASSERT(!returned);
+    auto t0 = chrono::steady_clock::now();
+    client.shutdown();
+    for (int i = 0; i < 200 && !returned; ++i)
+        this_thread::sleep_for(chrono::milliseconds(10));
+    RTF_ASSERT(returned);
+    RTF_ASSERT(got <= 0);
+    RTF_ASSERT(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - t0).count() < 2000);
+    reader.join();
+    RTF_ASSERT(!client.valid());
+    client.shutdown();   // after close: nothing to do
+    done = true;
+    server.join();
+}
+
 void test_r_utils::test_ssl_server_socket_rejects_plaintext_client()
 {
     auto pems = r_ssl_server_config::generate_self_signed();

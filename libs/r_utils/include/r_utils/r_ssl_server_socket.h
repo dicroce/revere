@@ -123,6 +123,7 @@ public:
     R_API bool handshake_done() const;
 
     R_API virtual void close() override;
+    R_API virtual void shutdown() override;
     R_API virtual bool valid() const override;
 
     // Return bytes moved, or < 0 on error (mbedTLS/-1 codes, as r_ssl_socket).

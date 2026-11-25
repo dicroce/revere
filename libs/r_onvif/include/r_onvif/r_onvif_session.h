@@ -431,7 +431,9 @@ enum class auth_mode
 class r_onvif_interrupt
 {
 public:
-    // Closes the socket of the request in flight (which wakes it) and refuses later ones.
+    // Shuts down the connection of the request in flight (r_socket_base::shutdown), which wakes it, and refuses later
+    // ones. It never closes the socket: the request's own thread does, as it unwinds, so a TLS read in flight (port
+    // 443) is never raced.
     R_API void interrupt();
     R_API bool interrupted() const;
 
