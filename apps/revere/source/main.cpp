@@ -16,6 +16,7 @@
 
 #include "macos_activation.h"
 #include "render_policy.h"
+#include "x11_errors.h"
 #include "vision_launch.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -2976,6 +2977,9 @@ int main(int argc, char** argv)
         SDL_Quit();
         return 1;
     }
+
+    // A monitor going away makes RandR requests fail; without this Xlib ends the app on the first one.
+    revere::install_x11_error_handler(window);
 
 #ifdef IS_WINDOWS
     // Make the native title bar dark so it matches the app's theme instead of
