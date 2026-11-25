@@ -28,6 +28,10 @@ public:
     R_API ~r_ssl_socket();
 
     R_API virtual void connect(const std::string& host, int port);
+    // STARTTLS (SMTP, RFC 3207): connect speaking plain text, and start TLS when the server says to. connect() is the
+    // two at once.
+    R_API void connect_plain(const std::string& host, int port);
+    R_API void start_tls();
     R_API virtual void close();
 
     R_API virtual int send(const void* buf, size_t len);
@@ -63,6 +67,7 @@ private:
 
     std::string _host;
     mutable bool _valid;
+    bool _plain {false};   // connected, TLS not started yet
     uint64_t _ioTimeOut;
 };
 
