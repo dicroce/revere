@@ -1490,6 +1490,9 @@ void r_stream_keeper::_entry_point()
                             doomed.push_back(rc);
                         for(auto& rc : _remove_recording_contexts(_devices.get_assigned_cameras_removed(cameras)))
                             doomed.push_back(rc);
+                        // A camera held for a different device at its address stops recording (r_address_check.h).
+                        for(auto& rc : _remove_recording_contexts(_cameras_held_for_address(cameras)))
+                            doomed.push_back(rc);
                     }
                 }
 
@@ -1699,6 +1702,19 @@ void r_stream_keeper::_rtsp_server_entry_point()
     g_main_context_unref(context);
 }
 
+// The running cameras that are held for a different device at their address. Called with _streams_mutex held.
+vector<r_camera> r_stream_keeper::_cameras_held_for_address(const vector<r_camera>& running)
+{
+    vector<r_camera> held;
+    for(const auto& c : running)
+        if(!_devices.get_address_check(c.id).is_null())
+        {
+            R_LOG_WARNING("Camera %s: a different device answers at its address; its recording is stopped", c.id.c_str());
+            held.push_back(c);
+        }
+    return held;
+}
+
 vector<r_camera> r_stream_keeper::_get_current_cameras()
 {
     vector<r_camera> cameras;
@@ -1725,6 +1741,17 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         auto name = camera.friendly_name.is_null() ?
             (camera.camera_name.is_null() ? camera.id : camera.camera_name.value()) :
             camera.friendly_name.value();
+
+        // A different device answers at the camera's address (r_address_check.h): not started, until a person confirms
+        // it is the camera. Shown on its card like an alert; unlike one, a re-interrogation does not clear it.
+        if(!_devices.get_address_check(camera.id).is_null())
+        {
+            auto& fc = _failed_cameras[camera.id];
+            fc.friendly_name = name;
+            fc.last_error = r_disco::address_check_message();
+            fc.next_retry_time = now;
+            continue;
+        }
 
         // r_agent may have raised an alert for this camera (e.g. background
         // re-interrogation discovered a codec/profile change it can't safely

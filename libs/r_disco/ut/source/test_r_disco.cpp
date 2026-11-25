@@ -151,6 +151,9 @@ struct fake_host
     map<string, r_nullable<r_camera_move>> moves;
     vector<r_camera> saved;
     r_nullable<string> new_mac;
+    int lookups {0};
+    // Every address-check change the host was told (null: released), in order.
+    vector<pair<string, r_nullable<r_address_check>>> checks;
     int64_t now_ms {1'800'000'000'000LL};
     // Every move change the host was told, in order.
     vector<pair<string, r_nullable<r_camera_move>>> told;
@@ -170,7 +173,8 @@ struct fake_host
         });
         agent.set_camera_move_cb([this](const string& id, const r_nullable<r_camera_move>& m){ moves[id] = m; told.push_back({id, m}); });
         agent.set_save_camera_cb([this](const r_camera& c){ saved.push_back(c); cameras[c.id] = c; });
-        agent.set_mac_lookup([this](const string&, int){ return new_mac; });
+        agent.set_mac_lookup([this](const string&, int){ ++lookups; return new_mac; });
+        agent.set_address_check_cb([this](const string& id, const r_nullable<r_address_check>& c){ checks.push_back({id, c}); });
         agent.set_clock_ms([this](){ return now_ms; });
     }
     void minutes(int m) { now_ms += (int64_t)m * 60 * 1000; }
@@ -1399,4 +1403,150 @@ void test_r_disco::test_db_upgrade_existing_camera_has_no_kind()
     devices.stop();
     RTF_ASSERT_EQUAL(db_version(), 12);
     RTF_ASSERT(db_columns().count("kind") == 1);
+}
+
+namespace
+{
+// An agent with one assigned camera "garage" at 10.0.0.93 whose MAC on file is aa:bb:cc:00:00:01.
+struct address_fixture
+{
+    fake_host host;
+    r_agent agent {"top_dir"};
+    const map<string, string> here {{"garage", "10.0.0.93"}};
+
+    address_fixture(const r_nullable<string>& mac = _s("aa:bb:cc:00:00:01"))
+    {
+        host.cameras["garage"] = _assigned("garage", "10.0.0.93", mac);
+        host.wire(agent);
+        agent.set_assigned_cameras_cb([this](){ vector<r_camera> out; for(auto& [id, c] : host.cameras) if(c.state == "assigned") out.push_back(c); return out; });
+    }
+    size_t holds() { return agent.address_checks().size(); }
+};
+}
+
+// Two MACs differ only when both are known and are not the same device's, whatever the notation.
+void test_r_disco::test_mac_differs()
+{
+    RTF_ASSERT(!mac_differs(_s("aa:bb:cc:00:00:01"), _s("AA-BB-CC-00-00-01")));
+    RTF_ASSERT(!mac_differs(_s("aa:bb:cc:00:00:01"), _s("aabb.cc00.0001")));
+    RTF_ASSERT(mac_differs(_s("aa:bb:cc:00:00:01"), _s("aa:bb:cc:00:00:02")));
+    // Unknown on either side says nothing, and so does text that is not a MAC.
+    RTF_ASSERT(!mac_differs(r_nullable<string>(), _s("aa:bb:cc:00:00:02")));
+    RTF_ASSERT(!mac_differs(_s("aa:bb:cc:00:00:01"), r_nullable<string>()));
+    RTF_ASSERT(!mac_differs(r_nullable<string>(), r_nullable<string>()));
+    RTF_ASSERT(!mac_differs(_s("aa:bb:cc:00:00:01"), _s("not a mac")));
+    RTF_ASSERT(!mac_differs(_s("not a mac"), _s("aa:bb:cc:00:00:01")));
+}
+
+// Each discovery pass reads the MAC at the stored address of the cameras it saw there: a different device holds the
+// camera, the same one (however its MAC is written) does not, and what can't be read or compared says nothing.
+void test_r_disco::test_a_different_device_at_a_cameras_address_holds_it()
+{
+    // The same MAC, written another way: nothing.
+    {
+        address_fixture f;
+        f.host.new_mac = _s("AA-BB-CC-00-00-01");
+        f.agent.check_stored_addresses(f.here);
+        RTF_ASSERT(f.host.lookups == 1 && f.holds() == 0 && f.host.checks.empty());
+    }
+    // A different MAC: held, and the host told with the address and when.
+    {
+        address_fixture f;
+        f.host.new_mac = _s("0c:cd:d0:03:7b:d9");
+        f.agent.check_stored_addresses(f.here);
+        RTF_ASSERT(f.holds() == 1);
+        RTF_ASSERT(f.host.checks.size() == 1 && f.host.checks[0].first == "garage" && !f.host.checks[0].second.is_null());
+        RTF_ASSERT(f.host.checks[0].second.value().ipv4 == "10.0.0.93" && f.host.checks[0].second.value().since_ms == f.host.now_ms);
+        RTF_ASSERT(f.host.saved.empty());      // nothing is written: the camera's record is as it was
+    }
+    // A MAC that can't be read says nothing: no hold.
+    {
+        address_fixture f;
+        f.agent.check_stored_addresses(f.here);
+        RTF_ASSERT(f.host.lookups == 1 && f.holds() == 0);
+    }
+    // No MAC on file to compare with, not seen at its stored address, seen at another one, or not assigned: not read.
+    {
+        address_fixture none{r_nullable<string>()};
+        none.host.new_mac = _s("0c:cd:d0:03:7b:d9");
+        none.agent.check_stored_addresses(none.here);
+        RTF_ASSERT(none.host.lookups == 0 && none.holds() == 0);
+
+        address_fixture f;
+        f.host.new_mac = _s("0c:cd:d0:03:7b:d9");
+        f.agent.check_stored_addresses({});
+        f.agent.check_stored_addresses({{"garage", "10.0.0.99"}});
+        f.agent.check_stored_addresses({{"other", "10.0.0.93"}});
+        RTF_ASSERT(f.host.lookups == 0 && f.holds() == 0);
+        f.host.cameras["garage"].state = "discovered";
+        f.agent.check_stored_addresses(f.here);
+        RTF_ASSERT(f.host.lookups == 0 && f.holds() == 0);
+    }
+    // A camera whose move is held is not read: what answers at its stored address is in question already.
+    {
+        address_fixture f;
+        f.host.new_mac = _s("0c:cd:d0:03:7b:d9");
+        f.agent.apply_discovered_changes({{_discovered("garage", "10.0.0.78"), "h1"}});
+        f.agent.recheck_held_moves();
+        RTF_ASSERT(f.host.moves["garage"].value().status == "held");
+        const int before = f.host.lookups;
+        f.agent.check_stored_addresses(f.here);
+        RTF_ASSERT(f.host.lookups == before && f.holds() == 0);
+    }
+    // How often: every five minutes while not held, every minute while held; a held camera whose own MAC is seen
+    // again is released at once, and a different device than the first one is held again, as new.
+    {
+        address_fixture f;
+        f.host.new_mac = _s("aa:bb:cc:00:00:01");
+        f.agent.check_stored_addresses(f.here);
+        f.agent.check_stored_addresses(f.here);
+        f.host.minutes(4);
+        f.agent.check_stored_addresses(f.here);
+        RTF_ASSERT(f.host.lookups == 1);
+        f.host.minutes(1);
+        f.host.new_mac = _s("0c:cd:d0:03:7b:d9");
+        f.agent.check_stored_addresses(f.here);
+        RTF_ASSERT(f.host.lookups == 2 && f.holds() == 1);
+        const auto first_since = f.host.checks.back().second.value().since_ms;
+        f.host.now_ms += 30 * 1000;
+        f.agent.check_stored_addresses(f.here);
+        RTF_ASSERT(f.host.lookups == 2);                 // held: not again within a minute
+        f.host.now_ms += 40 * 1000;
+        f.agent.check_stored_addresses(f.here);
+        RTF_ASSERT(f.host.lookups == 3 && f.holds() == 1 && f.host.checks.size() == 1);    // the same device: still held, not told again
+        f.host.minutes(1);
+        f.host.new_mac = _s("0c:cd:d0:03:7b:ee");
+        f.agent.check_stored_addresses(f.here);
+        RTF_ASSERT(f.holds() == 1 && f.host.checks.size() == 2 && f.host.checks[1].second.value().since_ms > first_since);
+        f.host.minutes(1);
+        f.host.new_mac = _s("aa:bb:cc:00:00:01");        // the camera's own again
+        f.agent.check_stored_addresses(f.here);
+        RTF_ASSERT(f.holds() == 0 && f.host.checks.size() == 3 && f.host.checks[2].second.is_null());
+    }
+}
+
+// A person's answer that it is their camera: the MAC seen is learned (saved) and the camera released; an answer
+// for another device than the one held, or for a camera not held, is refused and changes nothing.
+void test_r_disco::test_confirming_a_held_address_learns_the_mac_and_releases_it()
+{
+    address_fixture f;
+    f.host.new_mac = _s("0c:cd:d0:03:7b:d9");
+    RTF_ASSERT(f.agent.confirm_address_check("garage", 1) == address_answer::no_hold);
+    f.agent.check_stored_addresses(f.here);
+    const auto since = f.host.checks.back().second.value().since_ms;
+
+    RTF_ASSERT(f.agent.confirm_address_check("garage", since + 1) == address_answer::changed);
+    RTF_ASSERT(f.holds() == 1 && f.host.saved.empty());
+    RTF_ASSERT(f.agent.confirm_address_check("nobody", since) == address_answer::no_hold);
+
+    RTF_ASSERT(f.agent.confirm_address_check("garage", since) == address_answer::ok);
+    RTF_ASSERT(f.holds() == 0);
+    RTF_ASSERT(f.host.saved.size() == 1 && f.host.saved[0].mac.value() == "0c:cd:d0:03:7b:d9");
+    RTF_ASSERT(f.host.saved[0].ipv4.value() == "10.0.0.93");
+    RTF_ASSERT(f.host.checks.back().second.is_null());
+    // Once more is refused, and the device it is now is the camera's: not held again.
+    RTF_ASSERT(f.agent.confirm_address_check("garage", since) == address_answer::no_hold);
+    f.host.minutes(10);
+    f.agent.check_stored_addresses(f.here);
+    RTF_ASSERT(f.holds() == 0);
 }

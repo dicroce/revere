@@ -3139,6 +3139,14 @@ int main(int argc, char** argv)
         else
             devices.set_camera_alert(id, msg);
     });
+    // A different device answers at an assigned camera's address (see r_disco/r_address_check.h): the camera is held,
+    // and the stream keeper stops its recording. Kept on r_devices for the stream keeper, the UI and /cameras.
+    agent.set_address_check_cb([&devices](const std::string& id, const r_utils::r_nullable<r_disco::r_address_check>& check){
+        if(check.is_null())
+            devices.clear_address_check(id);
+        else
+            devices.set_address_check(id, check.value());
+    });
     // An assigned camera found at a new address (see r_disco/r_camera_move.h):
     // held until it can be followed, or followed. Kept on r_devices for the
     // UI and for /cameras (the cloud plugin reads it there).

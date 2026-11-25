@@ -360,6 +360,7 @@ void r_agent::_process_new_or_changed_streams_configs()
         if(!sc.ipv4.is_null())
             seen_at[sc.id] = sc.ipv4.value();
     note_missing_macs(seen_at);
+    check_stored_addresses(seen_at);
 }
 
 namespace
@@ -561,6 +562,111 @@ void r_agent::note_missing_macs(const std::map<std::string, std::string>& seen_a
         else
             _mac_note_tries[cam.id] = now;
     }
+}
+
+void r_agent::check_stored_addresses(const std::map<std::string, std::string>& seen_at)
+{
+    auto now = _now();
+    auto lookup = _mac_lookup ? _mac_lookup : mac_lookup(_default_mac_lookup);
+    for(const auto& cam : _get_assigned_cameras())
+    {
+        auto seen = seen_at.find(cam.id);
+        // Only a camera discovery saw at its stored address, with a MAC on file to compare with.
+        if(seen == seen_at.end() || cam.ipv4.is_null() || seen->second != cam.ipv4.value() || cam.mac.is_null())
+            continue;
+        bool held = false;
+        {
+            lock_guard<mutex> g(_moves_mutex);
+            // A held move: guarded already, and what answers at the stored address is in question.
+            if(_held_moves.count(cam.id))
+                continue;
+            held = _address_holds.count(cam.id) > 0;
+            auto tried = _address_check_tries.find(cam.id);
+            if(tried != _address_check_tries.end() && now - tried->second < (held ? ADDRESS_CHECK_HELD_INTERVAL_MS : ADDRESS_CHECK_INTERVAL_MS))
+                continue;
+            _address_check_tries[cam.id] = now;
+        }
+        // Reads the network: not under the lock.
+        auto mac = lookup(cam.ipv4.value(), cam.onvif_port.is_null() ? 80 : cam.onvif_port.value());
+        if(mac.is_null())
+            continue;
+        const bool differs = mac_differs(cam.mac, mac);
+        auto seen_norm = r_utils::r_networking::r_normalize_mac(mac.value());
+        const string seen_mac = seen_norm.is_null() ? mac.value() : seen_norm.value();
+
+        r_nullable<r_address_check> told;
+        {
+            lock_guard<mutex> g(_moves_mutex);
+            auto hold = _address_holds.find(cam.id);
+            if(differs)
+            {
+                // A device is there that isn't the camera: held (again, for a different device than the last).
+                if(hold != _address_holds.end() && hold->second.seen_mac == seen_mac)
+                    continue;
+                _address_hold h;
+                h.check.ipv4 = cam.ipv4.value();
+                h.check.since_ms = now;
+                h.seen_mac = seen_mac;
+                _address_holds[cam.id] = h;
+                told.set_value(h.check);
+                R_LOG_WARNING("Camera %s: a different device answers at its address %s (MAC %s, on file %s); recording is stopped "
+                              "until it is confirmed to be the camera", cam.id.c_str(), cam.ipv4.value().c_str(), seen_mac.c_str(),
+                              cam.mac.value().c_str());
+            }
+            else if(hold != _address_holds.end())
+            {
+                // The camera's own MAC answers at its address again.
+                _address_holds.erase(hold);
+                R_LOG_INFO("Camera %s: its own MAC address answers at %s again; recording carries on", cam.id.c_str(), cam.ipv4.value().c_str());
+                // told stays null: the host is told it is released, below, outside the lock.
+            }
+            else
+                continue;
+        }
+        if(_address_check_cb)
+            _address_check_cb(cam.id, told);
+    }
+}
+
+address_answer r_agent::confirm_address_check(const std::string& camera_id, int64_t since_ms)
+{
+    string seen_mac;
+    {
+        lock_guard<mutex> g(_moves_mutex);
+        auto hold = _address_holds.find(camera_id);
+        if(hold == _address_holds.end())
+            return address_answer::no_hold;
+        if(hold->second.check.since_ms != since_ms)
+            return address_answer::changed;
+        seen_mac = hold->second.seen_mac;
+        _address_holds.erase(hold);
+        _address_check_tries.erase(camera_id);
+    }
+    // The person vouched that what answers is the camera, so its MAC is the camera's from now on.
+    if(_camera_lookup_cb && _save_camera_cb)
+    {
+        auto cam_n = _camera_lookup_cb(camera_id);
+        if(!cam_n.is_null())
+        {
+            auto cam = cam_n.value();
+            cam.mac.set_value(seen_mac);
+            _save_camera_cb(cam);
+            R_LOG_INFO("Camera %s: confirmed at %s, so its MAC is %s now", camera_id.c_str(),
+                       cam.ipv4.is_null() ? "its address" : cam.ipv4.value().c_str(), seen_mac.c_str());
+        }
+    }
+    if(_address_check_cb)
+        _address_check_cb(camera_id, r_nullable<r_address_check>());
+    return address_answer::ok;
+}
+
+map<string, r_address_check> r_agent::address_checks() const
+{
+    map<string, r_address_check> out;
+    lock_guard<mutex> g(_moves_mutex);
+    for(const auto& h : _address_holds)
+        out[h.first] = h.second.check;
+    return out;
 }
 
 void r_agent::_follow(const std::string& id, _held_move held, const std::string& why)
