@@ -677,8 +677,28 @@ r_system_plugin_host::~r_system_plugin_host()
 
     for(auto& p : _plugins)
     {
+        // A call that never returned (stop_all() gave up on it) is still inside the plugin: its code must stay loaded
+        // and its handle alive, or the call runs on into freed memory when it does return. Both are left as they are
+        // (the library is never closed), and the notification thread is let go instead of joined.
+        const bool stuck = p.detections_inside->load() > 0 || (p.notifier && p.notifier->running());
         // Its notification thread goes first: it calls into the plugin.
+        if(p.notifier)
+            p.notifier->shutdown(stuck ? std::chrono::milliseconds(0) : _stop_wait);
         p.notifier.reset();
+        if(stuck)
+        {
+            R_LOG_ERROR("System plugin %s did not return from a call; it is left loaded.", p.name.c_str());
+            p.library.release();
+            if(p.frames)
+            {
+                std::lock_guard<std::mutex> g(p.frames->lock);
+                for(auto& sub : p.frames->subs)
+                    if(_feeds)
+                        _feeds->unsubscribe(sub.second->id);
+                p.frames->subs.clear();
+            }
+            continue;
+        }
         if (p.plugin_handle && p.destroy_func)
         {
             try
@@ -1058,6 +1078,13 @@ void r_system_plugin_host::_dispatch_detection(const r_detection& det, int64_t p
         return;
     for (auto p : _snapshot())
     {
+        // Counted per plugin, so that a plugin that never returns can be told from the rest at shutdown.
+        struct inside_scope
+        {
+            std::atomic<int>& n;
+            explicit inside_scope(std::atomic<int>& c) : n(c) { ++n; }
+            ~inside_scope() { --n; }
+        } inside(*p->detections_inside);
         try
         {
             post_detection_to_plugin(p->plugin_handle, p->post_detection_func, p->post_detection_v2_func, det, posted_at_ms);

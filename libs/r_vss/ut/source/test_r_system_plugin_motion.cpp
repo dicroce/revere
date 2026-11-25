@@ -203,3 +203,26 @@ void test_r_system_plugin_motion::test_stop_all_gives_up_on_a_call_that_does_not
     RTF_ASSERT(took < milliseconds(400));
     RTF_ASSERT(read_file(_top + "/motion.txt").empty());   // the call was still running
 }
+
+void test_r_system_plugin_motion::test_destroying_the_host_leaves_a_plugin_in_a_call_loaded()
+{
+    install(_top, TEST_MOTION_PLUGIN);
+    auto host = make_unique<r_system_plugin_host>(_top);
+    host->set_stop_wait(milliseconds(100));
+    host->start_all();
+
+    // A "slow" call takes the plugin half a second, so it is still inside the plugin when the host is destroyed.
+    host->notify_motion("slow1", true, 1);
+    this_thread::sleep_for(milliseconds(150));
+    auto start = steady_clock::now();
+    host.reset();
+    auto took = steady_clock::now() - start;
+    const string at_once = read_file(_top + "/motion.txt");
+
+    // The call returns into the plugin's code after the host is gone: had the library been closed it would run on
+    // unmapped code, and this process would not be here to read the line it writes at the end.
+    const string later = eventually_reads(_top + "/motion.txt", "slow1 1 1\n");
+    RTF_ASSERT(at_once.empty());   // still in the call when the host was gone
+    RTF_ASSERT(took < seconds(2));   // and destroying the host did not wait for it
+    RTF_ASSERT_EQUAL(later, string("slow1 1 1\n"));
+}

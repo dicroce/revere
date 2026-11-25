@@ -11,6 +11,7 @@
 
 #include <chrono>
 #include <functional>
+#include <atomic>
 #include <list>
 #include <map>
 #include <memory>
@@ -239,6 +240,8 @@ private:
         system_plugin_camera_state_func camera_state_func = nullptr;      // Optional
         // Calls the two above on a thread of its own; only for a plugin that has either.
         std::shared_ptr<r_plugin_notifier> notifier {};
+        // Detections inside this plugin right now (a stuck one is still counted after stop_all() gave up on it).
+        std::shared_ptr<std::atomic<int>> detections_inside = std::make_shared<std::atomic<int>>(0);
         std::shared_ptr<frame_api> frames;   // its live-frame functions, once set_frame_source() gave them
         std::string path;   // the file it was loaded from
     };
