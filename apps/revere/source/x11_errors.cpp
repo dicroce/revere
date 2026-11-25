@@ -6,6 +6,7 @@
 #include <SDL.h>
 #include <SDL_syswm.h>
 #include <X11/Xlib.h>
+#include <cstdlib>
 
 namespace
 {
@@ -16,7 +17,7 @@ XErrorHandler g_previous_handler = nullptr;
 
 int on_x_error(Display* display, XErrorEvent* e)
 {
-    if(e && revere::x_error_is_randr(e->request_code, e->error_code, g_randr_major_opcode, g_randr_error_base))
+    if(e && revere::x_error_is_randr(e->error_code, g_randr_major_opcode, g_randr_error_base))
     {
         char text[128] = "";
         XGetErrorText(display, e->error_code, text, sizeof(text));
@@ -27,7 +28,17 @@ int on_x_error(Display* display, XErrorEvent* e)
 
     if(g_previous_handler)
         return g_previous_handler(display, e);
-    return 0;
+
+    // No earlier handler to pass it to. Any other X error ends the app, as it would have without this handler:
+    // hand it to Xlib's own (setting the handler to null puts Xlib's back, and the second call returns it), which
+    // prints the error and exits.
+    XSetErrorHandler(nullptr);
+    XErrorHandler xlib_default = XSetErrorHandler(nullptr);
+    if(xlib_default && xlib_default != on_x_error)
+        xlib_default(display, e);
+    R_LOG_ERROR("X11: an X error (code %d, request %d.%d) with no handler to pass it to; exiting",
+                e ? (int)e->error_code : 0, e ? (int)e->request_code : 0, e ? (int)e->minor_code : 0);
+    std::exit(1);
 }
 
 }

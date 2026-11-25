@@ -4,7 +4,7 @@ class test_x11_errors : public test_fixture
 {
 public:
     RTF_FIXTURE(test_x11_errors);
-      TEST(test_x11_errors::test_randr_request_errors_are_randr);
+      TEST(test_x11_errors::test_core_errors_on_randr_requests_are_not);
       TEST(test_x11_errors::test_randr_error_codes_are_randr);
       TEST(test_x11_errors::test_other_errors_are_not);
       TEST(test_x11_errors::test_no_randr_on_the_server);
@@ -15,7 +15,7 @@ public:
     virtual void setup() {}
     virtual void teardown() {}
 
-    void test_randr_request_errors_are_randr();
+    void test_core_errors_on_randr_requests_are_not();
     void test_randr_error_codes_are_randr();
     void test_other_errors_are_not();
     void test_no_randr_on_the_server();
