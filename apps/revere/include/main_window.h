@@ -127,6 +127,9 @@ struct main_window_state
     r_ui_utils::text_selection log_selection;
     bool log_dragging {false};
     std::string selected_plugin;    // empty unless a plugin row is selected
+    // The selected camera's detail pane shows its properties for editing (actions.draw_properties) instead of its
+    // summary.
+    bool properties_open {false};
     // False until r_devices' first cache fill; the camera sections say
     // "Loading cameras..." rather than that they're empty.
     bool cameras_loaded {true};
@@ -153,7 +156,11 @@ struct main_window_actions
     std::function<void(int)> select_discovered;
     std::function<void()> select_plugin;    // clears the camera selection
     std::function<void(int)> view;
-    std::function<void(int)> properties;
+    std::function<void(int)> properties;    // opens the properties in the camera's pane
+    std::function<void()> draw_properties;  // draws them, in the detail pane's remaining space
+    // Called with what a click on a list row would do. While properties are being edited the owner asks about
+    // unsaved changes first and may run it later, or never; unset, it runs at once.
+    std::function<void(std::function<void()>)> leave_properties;
     std::function<void(int)> remove;
     std::function<void(int)> repair;        // the card's action_label button
     std::function<void(int)> move_use;      // a held move: use the new address
@@ -1480,6 +1487,17 @@ inline void main_window(
         sel_index = 0;
     }
 
+    if(sel != kind::recording)
+        state.properties_open = false;
+
+    // Selecting something else while a camera's properties are open asks first about unsaved changes.
+    auto leave_then = [&](std::function<void()> go) {
+        if(actions.leave_properties)
+            actions.leave_properties(std::move(go));
+        else
+            go();
+    };
+
     auto select_plugin = [&](const std::string& name) {
         state.selected_plugin = name;
         actions.select_plugin();
@@ -1540,8 +1558,14 @@ inline void main_window(
             const auto& item = recording[i];
             if(list_row("##rec" + std::to_string(i), sel == kind::recording && sel_index == i, camera_dot(item.health), item.label, item.sub_label, fonts))
             {
-                state.selected_plugin.clear();
-                actions.select_recording(i);
+                auto go = [&state, &actions, i]() {
+                    state.selected_plugin.clear();
+                    actions.select_recording(i);
+                };
+                if(sel == kind::recording && sel_index == i)
+                    go();
+                else
+                    leave_then(go);
             }
         }
 
@@ -1562,8 +1586,11 @@ inline void main_window(
             const auto& item = discovered[i];
             if(list_row("##disc" + std::to_string(i), sel == kind::discovered && sel_index == i, status_neutral_dot, item.label, item.sub_label, fonts))
             {
-                state.selected_plugin.clear();
-                actions.select_discovered(i);
+                auto go = [&state, &actions, i]() {
+                    state.selected_plugin.clear();
+                    actions.select_discovered(i);
+                };
+                leave_then(go);
             }
         }
 
@@ -1577,7 +1604,10 @@ inline void main_window(
             ImVec4 dot = p.has_status ? p.status_color : status_neutral_dot;
             std::string right = p.has_status ? p.status_label : (p.enabled ? "Enabled" : "Disabled");
             if(list_row("##plugin" + std::to_string(i), sel == kind::plugin && sel_index == i, dot, plugin_display_name(p), right, fonts))
-                select_plugin(p.name);
+                leave_then([&state, &actions, name = p.name]() {
+                    state.selected_plugin = name;
+                    actions.select_plugin();
+                });
         }
     }
     ImGui::EndChild();
@@ -1594,7 +1624,12 @@ inline void main_window(
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 10.0f));
     ImGui::BeginChild("##detail", ImVec2(0.0f, top_h), false, ImGuiWindowFlags_AlwaysUseWindowPadding);
     {
-        if(sel == kind::recording)
+        if(sel == kind::recording && state.properties_open && actions.draw_properties)
+        {
+            detail_title(recording[sel_index].label, "Camera properties", fonts);
+            actions.draw_properties();
+        }
+        else if(sel == kind::recording)
         {
             const auto& item = recording[sel_index];
             std::string sub = item.sub_label.empty() ? std::string(camera_state(item.health)) : item.sub_label + " \xC2\xB7 " + camera_state(item.health);
