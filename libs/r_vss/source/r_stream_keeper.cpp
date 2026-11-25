@@ -842,7 +842,7 @@ void r_stream_keeper::_set_mail_rings(std::unique_ptr<r_mail_rings> rings, const
     // The old one stops here, outside the lock: it waits for its connections.
 }
 
-r_utils::r_nullable<r_stream_keeper::doorbell_mail_status> r_stream_keeper::doorbell_mail_setup(const string& camera_id)
+r_utils::r_nullable<r_stream_keeper::doorbell_mail_status> r_stream_keeper::doorbell_mail_setup(const string& camera_id, bool with_login)
 {
     auto camera = _devices.get_camera_by_id(camera_id);
     if(camera.is_null() || r_disco::camera_kind(camera.value()) != "doorbell" || camera.value().ipv4.is_null())
@@ -851,7 +851,8 @@ r_utils::r_nullable<r_stream_keeper::doorbell_mail_status> r_stream_keeper::door
     if(server.empty())
         return {};
     doorbell_mail_status s;
-    s.setup = mail_setup_for(server, mail_rings_port(), load_or_make_mail_login(_top_dir + PATH_SLASH + "mail_rings" + PATH_SLASH + "login"));
+    s.setup = mail_setup_for(server, mail_rings_port(),
+                             with_login ? load_or_make_mail_login(_top_dir + PATH_SLASH + "mail_rings" + PATH_SLASH + "login") : r_mail_login());
     bool takes_it = false;
     {
         std::lock_guard<std::mutex> g(_mail_doorbells_lock);

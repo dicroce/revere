@@ -1521,9 +1521,10 @@ static json _press_test_json(const r_press_test& t)
     return {{"open", t.open}, {"started_ms", t.started_ms}, {"ends_ms", t.ends_ms}, {"ring_phones", t.ring_phones}, {"sources", sources}};
 }
 
-// GET /doorbell_mail_setup?camera_id=<id>: what to type in a Reolink doorbell's email settings for its presses to
-// reach this box (r_stream_keeper::doorbell_mail_setup), and how the listener is doing. The password is in it: the
-// route needs a login, as every route does. 404 for a camera that isn't a doorbell.
+// GET /doorbell_mail_setup?camera_id=<id>[&login=0]: what to type in a Reolink doorbell's email settings for its
+// presses to reach this box (r_stream_keeper::doorbell_mail_setup), and how the listener is doing. The password is in
+// it: the route needs a login, as every route does. login=0 leaves the user and password out, for a status read made
+// every few seconds. 404 for a camera that isn't a doorbell.
 r_http::r_server_response r_ws::_get_doorbell_mail_setup(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
@@ -1533,7 +1534,8 @@ r_http::r_server_response r_ws::_get_doorbell_mail_setup(r_utils::r_socket_base&
         if(args.find("camera_id") == args.end())
             R_STHROW(r_http_400_exception, ("Missing camera_id."));
         _camera_or_404(_devices, args["camera_id"]);
-        auto s = _stream_keeper.doorbell_mail_setup(args["camera_id"]);
+        const bool with_login = args.find("login") == args.end() || args["login"] != "0";
+        auto s = _stream_keeper.doorbell_mail_setup(args["camera_id"], with_login);
         if(s.is_null())
             R_STHROW(r_http_404_exception, ("Not a doorbell."));
         auto& v = s.value();
@@ -1541,8 +1543,6 @@ r_http::r_server_response r_ws::_get_doorbell_mail_setup(r_utils::r_socket_base&
             {"server", v.setup.server},
             {"port", v.setup.port},
             {"tls", true},
-            {"user", v.setup.user},
-            {"password", v.setup.password},
             {"recipient", v.setup.recipient},
             {"listening", v.listening},
             {"rings", v.counts.rings},
@@ -1551,6 +1551,11 @@ r_http::r_server_response r_ws::_get_doorbell_mail_setup(r_utils::r_socket_base&
             {"last_ring_ms", v.counts.last_ring_ms ? json(v.counts.last_ring_ms) : json(nullptr)},
             {"last_error", v.counts.last_error},
         };
+        if(with_login)
+        {
+            j["user"] = v.setup.user;
+            j["password"] = v.setup.password;
+        }
         r_server_response response;
         response.set_content_type("application/json");
         response.set_body(j.dump());

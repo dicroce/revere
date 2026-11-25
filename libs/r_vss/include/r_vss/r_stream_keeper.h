@@ -270,14 +270,15 @@ public:
     // A Reolink doorbell's email setup (r_mail_setup: what to type in its app) and the listener's counts. The login is
     // made here if it isn't yet, so setup can show it before the press source is saved. listening: the listener is up
     // and takes this doorbell's mail (its press source is saved as reolink_email). Null for a camera that isn't a
-    // doorbell, or has no address.
+    // doorbell, or has no address. with_login false leaves the user and password out (and the login file unread), for
+    // a status read made every few seconds.
     struct doorbell_mail_status
     {
         r_mail_setup setup;
         bool listening {false};
         r_mail_rings::counts counts;
     };
-    R_API r_utils::r_nullable<doorbell_mail_status> doorbell_mail_setup(const std::string& camera_id);
+    R_API r_utils::r_nullable<doorbell_mail_status> doorbell_mail_setup(const std::string& camera_id, bool with_login = true);
     // "Press the doorbell now": a TEST_MS window in which each source's report of a press is noted; its press rings the
     // phones only if ring_phones. Null when the camera isn't a doorbell (or is gone).
     R_API r_utils::r_nullable<r_press_test> start_doorbell_press_test(const std::string& camera_id, bool ring_phones);
