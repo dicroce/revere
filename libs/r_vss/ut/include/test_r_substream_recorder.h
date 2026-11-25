@@ -10,6 +10,7 @@ public:
       TEST(test_r_substream_recorder::test_recording_from_the_substream_swaps_in_its_stream_and_only_while_it_works);
       TEST(test_r_substream_recorder::test_the_lag_message_points_at_the_setting);
       TEST(test_r_substream_recorder::test_a_camera_changes_streams_when_its_substream_goes_or_comes);
+      TEST(test_r_substream_recorder::test_a_smaller_stream_that_stops_delivering_is_left_for_main_and_tried_again);
       TEST(test_r_substream_recorder::test_records_into_its_ring);
       TEST(test_r_substream_recorder::test_no_camera);
       TEST(test_r_substream_recorder::test_frames_go_on_at_the_time_the_ring_stored_them);
@@ -41,6 +42,7 @@ public:
     void test_recording_from_the_substream_swaps_in_its_stream_and_only_while_it_works();
     void test_the_lag_message_points_at_the_setting();
     void test_a_camera_changes_streams_when_its_substream_goes_or_comes();
+    void test_a_smaller_stream_that_stops_delivering_is_left_for_main_and_tried_again();
     void test_records_into_its_ring();
     void test_no_camera();
     void test_frames_go_on_at_the_time_the_ring_stored_them();

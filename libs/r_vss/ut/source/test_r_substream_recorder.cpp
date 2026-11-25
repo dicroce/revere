@@ -1091,3 +1091,74 @@ void test_r_substream_recorder::test_a_camera_changes_streams_when_its_substream
     RTF_ASSERT(cameras_on_the_wrong_stream({}, {sub_cam, main_cam}, true).empty());
     RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-9", true}}, {sub_cam}, true).empty());
 }
+
+// A camera set to the smaller stream that stops getting video from it while main would work: after a couple of minutes
+// with none it is away (on main), the smaller stream is tried again later, and each failed try waits twice as long.
+// Delivering video clears all that.
+void test_r_substream_recorder::test_a_smaller_stream_that_stops_delivering_is_left_for_main_and_tried_again()
+{
+    const int64_t SEC = 1000, MIN = 60 * SEC;
+    r_sub_record_governor g;
+    int64_t t = 1000 * MIN;
+
+    // Delivering: stays, for as long as it does.
+    for(int i = 0; i < 10; ++i, t += 30 * SEC)
+        RTF_ASSERT(g.pass("cam", true, true, t));
+    RTF_ASSERT(!g.away("cam", t));
+    t -= 30 * SEC;     // the last pass that had video
+
+    // It stops. Not yet away until SUB_RECORD_FAIL_MS has passed with no video.
+    RTF_ASSERT(g.pass("cam", true, false, t));
+    RTF_ASSERT(g.pass("cam", true, false, t + SUB_RECORD_FAIL_MS - 1));
+    RTF_ASSERT(!g.away("cam", t + SUB_RECORD_FAIL_MS - 1));
+    auto failed_at = t + SUB_RECORD_FAIL_MS;
+    RTF_ASSERT(!g.pass("cam", true, false, failed_at));         // away now: main
+    RTF_ASSERT(g.away("cam", failed_at));
+    RTF_ASSERT(g.away_cameras(failed_at).count("cam") == 1);
+    RTF_ASSERT_EQUAL(g.retry_in_ms("cam", failed_at), SUB_RECORD_RETRY_FIRST_MS);
+    // The wrong-stream decision follows it: a camera running on the smaller stream goes to main.
+    auto cam = camera_with_a_substream();
+    cam.record_from.set_value("sub");
+    RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-1", true}}, {cam}, true, {"cam-1"}) == vector<string>({"cam-1"}));
+    RTF_ASSERT(cameras_on_the_wrong_stream({{"cam-1", false}}, {cam}, true, {"cam-1"}).empty());       // on main already
+    RTF_ASSERT(!recording_from_sub(cam, true, true) && recording_camera(cam, true, true).rtsp_url.value() == "rtsp://10.0.0.5/main");
+    RTF_ASSERT(recording_from_sub(cam, true, false));
+
+    // While away it stays away until the retry time (even though main, which now records, "delivers").
+    RTF_ASSERT(!g.pass("cam", false, false, failed_at + SUB_RECORD_RETRY_FIRST_MS - 1));
+    // Then the smaller stream is tried again.
+    auto retry_at = failed_at + SUB_RECORD_RETRY_FIRST_MS;
+    RTF_ASSERT(g.pass("cam", false, false, retry_at));
+    RTF_ASSERT(!g.away("cam", retry_at));
+    // It fails again: away for twice as long, then four times, up to the cap.
+    int64_t wait = SUB_RECORD_RETRY_FIRST_MS;
+    auto now = retry_at;
+    for(int i = 0; i < 8; ++i)
+    {
+        RTF_ASSERT(g.pass("cam", true, false, now + SUB_RECORD_FAIL_MS - 1));
+        now += SUB_RECORD_FAIL_MS;
+        RTF_ASSERT(!g.pass("cam", true, false, now));
+        wait = std::min<int64_t>(wait * 2, SUB_RECORD_RETRY_MAX_MS);
+        RTF_ASSERT_EQUAL(g.retry_in_ms("cam", now), wait);
+        now += wait;
+        RTF_ASSERT(g.pass("cam", false, false, now));        // tried again
+    }
+    RTF_ASSERT_EQUAL(wait, SUB_RECORD_RETRY_MAX_MS);
+
+    // Delivering for SUB_RECORD_OK_MS forgets the failures: the next failure waits the first time again.
+    for(int64_t d = 0; d <= SUB_RECORD_OK_MS; d += 10 * SEC)
+        RTF_ASSERT(g.pass("cam", true, true, now + d));
+    now += SUB_RECORD_OK_MS + 10 * SEC;
+    RTF_ASSERT(g.pass("cam", true, false, now));
+    RTF_ASSERT(!g.pass("cam", true, false, now + SUB_RECORD_FAIL_MS));
+    RTF_ASSERT_EQUAL(g.retry_in_ms("cam", now + SUB_RECORD_FAIL_MS), SUB_RECORD_RETRY_FIRST_MS);
+
+    // A context that is not there at all (starting, or waiting out its restart backoff) counts as no video too.
+    r_sub_record_governor h;
+    RTF_ASSERT(h.pass("cam", false, false, 5 * MIN));
+    RTF_ASSERT(!h.pass("cam", false, false, 5 * MIN + SUB_RECORD_FAIL_MS));
+    // A camera taken off the smaller stream is forgotten.
+    h.forget("cam");
+    RTF_ASSERT(!h.away("cam", 5 * MIN + SUB_RECORD_FAIL_MS));
+    RTF_ASSERT(h.pass("cam", false, false, 6 * MIN));
+}

@@ -155,6 +155,9 @@ struct r_stream_status
     r_lag_snapshot ingest_lag;
     int lag_reconnects_1h {0};
     bool falling_behind {false};
+    // Set to record from the smaller stream, which is not delivering: on main for now, and tried again later.
+    bool sub_away {false};
+    int64_t sub_retry_in_ms {0};
 };
 
 // Passes MOG2's events on to the motion plugins, and tells the stream keeper
@@ -540,6 +543,8 @@ private:
     void _remove_motion_work_context(const std::string& camera_id);
     // Whether each running recording context was built on the camera's smaller stream (r_camera::record_from).
     std::map<std::string, bool> _recording_from_sub;
+    // Cameras set to the smaller stream that it is not delivering for: on main for a while (r_sub_record_governor).
+    r_sub_record_governor _sub_record_governor;
     std::vector<r_disco::r_camera> _cameras_on_the_wrong_stream();
     void _camera_class_output(const std::string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms);
     void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections);

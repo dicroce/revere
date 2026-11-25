@@ -1690,6 +1690,29 @@ void r_stream_keeper::_rtsp_server_entry_point()
 // in the database. Called with _streams_mutex held.
 vector<r_camera> r_stream_keeper::_cameras_on_the_wrong_stream()
 {
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const bool on = substreams_enabled();
+    auto assigned = _devices.get_assigned_cameras();
+
+    // A camera set to the smaller stream, which works as stored: is that stream delivering? A camera whose context is
+    // on it and gets no video for a couple of minutes, or has none to get it on, goes to main for a while.
+    for(const auto& c : assigned)
+    {
+        if(!recording_from_sub(c, on))
+        {
+            _sub_record_governor.forget(c.id);
+            continue;
+        }
+        auto s = _streams.find(c.id);
+        auto from = _recording_from_sub.find(c.id);
+        const bool on_sub = s != _streams.end() && from != _recording_from_sub.end() && from->second;
+        const bool receiving = on_sub && s->second->receiving_video();
+        const bool was_away = _sub_record_governor.away(c.id, now_ms);
+        if(!_sub_record_governor.pass(c.id, on_sub, receiving, now_ms) && !was_away)
+            R_LOG_WARNING("Camera %s: its smaller stream is not delivering video; recording from main, and trying it again in %lld s",
+                          c.id.c_str(), (long long)(_sub_record_governor.retry_in_ms(c.id, now_ms) / 1000));
+    }
+
     // What is running, by whether each context was built on the smaller stream.
     map<string, bool> running;
     for(const auto& s : _streams)
@@ -1698,15 +1721,14 @@ vector<r_camera> r_stream_keeper::_cameras_on_the_wrong_stream()
         if(from != _recording_from_sub.end())
             running[s.first] = from->second;
     }
-    auto assigned = _devices.get_assigned_cameras();
     vector<r_camera> wrong;
-    for(const auto& id : cameras_on_the_wrong_stream(running, assigned, substreams_enabled()))
+    for(const auto& id : cameras_on_the_wrong_stream(running, assigned, on, _sub_record_governor.away_cameras(now_ms)))
     {
         for(const auto& c : assigned)
         {
             if(c.id != id)
                 continue;
-            R_LOG_INFO("Camera %s changes streams: %s", id.c_str(), running[id] ? "its smaller stream is away, so main" : "its smaller stream works, so it");
+            R_LOG_INFO("Camera %s changes streams: %s", id.c_str(), running[id] ? "its smaller stream is away, so main" : "its smaller stream is back, so it");
             wrong.push_back(c);
         }
     }
@@ -1782,8 +1804,9 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         {
             // From the camera's smaller stream when it is set to record from it and that works: its address and details
             // stand in for main's, and main is not opened.
-            const bool from_sub = recording_from_sub(camera, substreams_enabled());
-            _streams[camera.id] = make_shared<r_recording_context>(this, recording_camera(camera, substreams_enabled()), _top_dir, _ws, _sim_mttf_seconds, protocols);
+            const bool sub_away = _sub_record_governor.away(camera.id, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+            const bool from_sub = recording_from_sub(camera, substreams_enabled(), sub_away);
+            _streams[camera.id] = make_shared<r_recording_context>(this, recording_camera(camera, substreams_enabled(), sub_away), _top_dir, _ws, _sim_mttf_seconds, protocols);
             _recording_from_sub[camera.id] = from_sub;
             if(from_sub)
                 R_LOG_INFO("Camera %s records from its smaller stream", camera.id.c_str());
@@ -2064,6 +2087,11 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.ingest_lag = c.second->ingest_lag();
             s.lag_reconnects_1h = _lag_reconnects.recent(c.first, now_ms);
             s.falling_behind = s.ingest_lag.lagging || _lag_reconnects.flagged(c.first, now_ms);
+            {
+                const auto steady_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                s.sub_away = _sub_record_governor.away(c.first, steady_ms);
+                s.sub_retry_in_ms = _sub_record_governor.retry_in_ms(c.first, steady_ms);
+            }
             return s;
         }
     );

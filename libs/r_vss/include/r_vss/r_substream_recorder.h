@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -130,12 +131,14 @@ private:
 R_API bool substream_usable(const r_disco::r_camera& camera, bool computer_on);
 // Whether the camera records from its substream now (r_camera::record_from): set to it, and it works, with an address.
 // When it isn't (the substream is away), the camera records from main and the setting stays as it is.
-R_API bool recording_from_sub(const r_disco::r_camera& camera, bool computer_on);
+// `away`: the keeper has found the smaller stream not delivering (r_sub_record_governor) and has the camera on main for
+// a while, with the setting kept.
+R_API bool recording_from_sub(const r_disco::r_camera& camera, bool computer_on, bool away = false);
 // The camera as its recording context should see it: when it records from its substream, the substream's address and
 // stream details stand in for main's (credentials, names and paths are the camera's own), so that the recording, live
 // view, motion, detection and snapshots all come from the one stream and main is never opened. Otherwise the camera
 // as it is. Never saved: the stored camera keeps main's.
-R_API r_disco::r_camera recording_camera(const r_disco::r_camera& camera, bool computer_on);
+R_API r_disco::r_camera recording_camera(const r_disco::r_camera& camera, bool computer_on, bool away = false);
 // Whether a separate second stream is in use alongside the recording: the substream works and is not what records.
 // Everything that reads a second stream (its recorder, its live mount, motion on it) asks this.
 R_API bool substream_in_use(const r_disco::r_camera& camera, bool computer_on);
@@ -144,8 +147,10 @@ R_API bool substream_in_use(const r_disco::r_camera& camera, bool computer_on);
 // they are now. A camera set to the smaller stream that was started on main (the stream was away) and one started on
 // the smaller stream that has since gone away both change streams; so does turning smaller streams on or off for the
 // computer. A camera that is not running is left to the code that starts it.
+// `away` are the cameras the keeper has found the smaller stream not delivering for: they are on main for now.
 R_API std::vector<std::string> cameras_on_the_wrong_stream(const std::map<std::string, bool>& running,
-                                                           const std::vector<r_disco::r_camera>& cameras, bool computer_on);
+                                                           const std::vector<r_disco::r_camera>& cameras, bool computer_on,
+                                                           const std::set<std::string>& away = std::set<std::string>());
 // What a camera that keeps falling behind is told (LAG_FLAG_MESSAGE): to use its substream when it has one that works
 // and isn't recording, in its properties here; the plain message otherwise.
 R_API std::string lag_flag_message(const r_disco::r_camera& camera, bool computer_on);
@@ -234,6 +239,45 @@ private:
         std::weak_ptr<const void> given_up_context;
         bool given_up {false};
     };
+    std::map<std::string, state> _cameras;
+};
+
+// A camera set to record from its smaller stream whose stream stops delivering (it is still described, so nothing
+// about the stored camera changes) would reconnect for ever and record nothing. This notices: a camera set to the
+// smaller stream that gets no video from it for SUB_RECORD_FAIL_MS is "away" and the keeper puts it on main; the
+// smaller stream is tried again after SUB_RECORD_RETRY_FIRST_MS, then twice as long each time it fails again, up to
+// SUB_RECORD_RETRY_MAX_MS. A smaller stream that delivers for SUB_RECORD_OK_MS has its failures forgotten. The stored
+// setting is never changed. Thread-safe (the keeper's pass writes it and /cameras reads it); no I/O.
+constexpr int64_t SUB_RECORD_FAIL_MS = 2 * 60 * 1000;
+constexpr int64_t SUB_RECORD_OK_MS = 60 * 1000;
+constexpr int64_t SUB_RECORD_RETRY_FIRST_MS = 5 * 60 * 1000;
+constexpr int64_t SUB_RECORD_RETRY_MAX_MS = 60 * 60 * 1000;
+
+class r_sub_record_governor final
+{
+public:
+    // One pass for a camera that is set to record from its smaller stream and whose smaller stream works as stored.
+    // recording_on_sub: it has a recording context built on the smaller stream; receiving_video: that context is
+    // getting video now. Returns whether it should record from the smaller stream (false: away, on main for now).
+    R_API bool pass(const std::string& camera_id, bool recording_on_sub, bool receiving_video, int64_t now_ms);
+    // Whether the camera is away at now_ms.
+    R_API bool away(const std::string& camera_id, int64_t now_ms) const;
+    // The cameras that are away at now_ms.
+    R_API std::set<std::string> away_cameras(int64_t now_ms) const;
+    // Milliseconds until the smaller stream is tried again; 0 when it isn't away.
+    R_API int64_t retry_in_ms(const std::string& camera_id, int64_t now_ms) const;
+    // The camera is not set to the smaller stream (or is gone): nothing is remembered about it.
+    R_API void forget(const std::string& camera_id);
+
+private:
+    struct state
+    {
+        int64_t trying_since_ms {-1};   // no video from the smaller stream since this time; -1 when it has some
+        int64_t healthy_since_ms {-1};
+        int64_t away_until_ms {-1};
+        int failures {0};
+    };
+    mutable std::mutex _m;
     std::map<std::string, state> _cameras;
 };
 
