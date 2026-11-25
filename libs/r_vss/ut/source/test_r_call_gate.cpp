@@ -39,9 +39,11 @@ void test_r_call_gate::test_closing_waits_for_a_call_inside()
     });
     while(!inside)
         this_thread::sleep_for(milliseconds(1));
-    RTF_ASSERT(g.close_and_wait(seconds(5)));
-    RTF_ASSERT(left.load());   // the call had returned
+    const bool closed = g.close_and_wait(seconds(5));
+    const bool had_left = left.load();
     t.join();
+    RTF_ASSERT(closed);
+    RTF_ASSERT(had_left);   // the call had returned
 }
 
 void test_r_call_gate::test_closing_gives_up_on_a_call_that_does_not_return()
@@ -58,12 +60,15 @@ void test_r_call_gate::test_closing_gives_up_on_a_call_that_does_not_return()
     while(!inside)
         this_thread::sleep_for(milliseconds(1));
     auto start = steady_clock::now();
-    RTF_ASSERT(!g.close_and_wait(milliseconds(100)));
+    const bool closed = g.close_and_wait(milliseconds(100));
     auto took = steady_clock::now() - start;
-    RTF_ASSERT(took >= milliseconds(90));
-    RTF_ASSERT(took < seconds(2));
+    // Let the thread go and join it before judging: a failed assert leaves by an exception, and a joinable thread
+    // destroyed on the way out would end the whole run in std::terminate.
     release = true;
     t.join();
+    RTF_ASSERT(!closed);
+    RTF_ASSERT(took >= milliseconds(90));
+    RTF_ASSERT(took < seconds(2));
 }
 
 void test_r_call_gate::test_opening_lets_calls_in_again()
