@@ -22,11 +22,11 @@ struct plugin_action_host
 {
     std::function<std::vector<std::string>()> loaded;                        // the loaded plugins' names
     std::function<std::string(const std::string&)> status_message;           // a plugin's current status message
-    std::function<bool(const std::string&, const std::string&)> run;         // system_plugin_action; false if it has none
+    std::function<bool(const std::string&, const std::string&)> run;         // asks for system_plugin_action (r_ws queues it for the UI thread); false if it has none
 };
 
-// POST /system_plugin_action {"name": "<plugin>", "action": "<action>"}: runs a plugin's action as its
-// panel's button or radio row does on the desktop. Like Revere's other writes it needs a valid token
+// POST /system_plugin_action {"name": "<plugin>", "action": "<action>"}: asks for a plugin's action to run as its
+// panel's button or radio row does on the desktop (the plugin hears it on the UI thread, a moment after the answer). Like Revere's other writes it needs a valid token
 // (401 without); a body that isn't {"name", "action"} strings is 400; a plugin that isn't loaded is 404;
 // and an action the plugin isn't offering in its status message is 400, so the web can only press what a
 // panel shows. Answers {"name", "action"} when it was run.

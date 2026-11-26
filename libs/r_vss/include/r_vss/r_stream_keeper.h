@@ -351,6 +351,9 @@ public:
     R_API void set_system_plugin_enabled(const std::string& plugin_name, bool enabled);
     // Runs an action from a plugin's status message; false if it has none.
     R_API bool run_system_plugin_action(const std::string& plugin_name, const std::string& action);
+    // From a thread other than the UI's: queued for the UI thread, which calls run_queued_system_plugin_actions.
+    R_API bool queue_system_plugin_action(const std::string& plugin_name, const std::string& action);
+    R_API size_t run_queued_system_plugin_actions();
     // Uninstalling a plugin the user installed in revere (r_system_plugin_host::can_uninstall):
     // marked now, deleted at the next start, so the caller restarts revere.
     R_API bool can_uninstall_system_plugin(const std::string& plugin_name) const;

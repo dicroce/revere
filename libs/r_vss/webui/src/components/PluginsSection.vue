@@ -80,7 +80,7 @@
           <!-- a choice: the summary, then a radio list of its options (the desktop draws the same) -->
           <div v-else-if="group.kind === 'choice'" class="choice-block">
             <p class="text" :class="{ warn: lineWarn(group.line) }">{{ group.line.text }}</p>
-            <div class="choice" role="radiogroup" :aria-label="group.line.text">
+            <div class="choice" role="radiogroup" :aria-label="group.line.text" :key="radioKey">
               <label v-for="o in choiceOptions(group.line)" :key="o.value" class="choice-row" :class="{ selected: choiceSelected(group.line, o) }">
                 <input type="radio" :name="p.name + '-' + gi" :value="o.value" :checked="choiceSelected(group.line, o)"
                        :disabled="actionBusy" @change="pick(p, group.line, o)" />
@@ -103,7 +103,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { getSystemPlugins, setSystemPluginEnabled, runSystemPluginAction, getRevereCloudInstall, startRevereCloudInstall } from '../api.js'
-import { choiceOptions, choiceSelected, choiceAction, lineWarn } from '../utils/pluginChoice.js'
+import { choiceOptions, choiceSelected, pickChoice, lineWarn } from '../utils/pluginChoice.js'
 
 const props = defineProps({ authed: { type: Boolean, default: false } })
 
@@ -254,20 +254,25 @@ async function refreshPlugins() {
   }
 }
 
-// A radio row picked: the plugin's action for it, then the plugin's lines again (it moves its selected row itself).
+// A radio row picked: the plugin's action for it, then the plugin's lines again (the plugin moves its selected row
+// itself, a moment after it is asked), and the rows drawn from them whatever the pick came to.
 const actionBusy = ref(false)
+const radioKey = ref(0)   // new key, new rows: the dots follow the plugin's value, not the last click
 async function pick(p, line, option) {
-  const action = choiceAction(line, option)
-  if (!action || actionBusy.value) return
+  if (actionBusy.value) return
   actionBusy.value = true
   toggleError.value = null
   try {
-    await runSystemPluginAction(p.name, action)
-  } catch (e) {
-    toggleError.value = { name: p.name, message: e.message }
+    const r = await pickChoice(line, option, {
+      run: (action) => runSystemPluginAction(p.name, action),
+      refresh: refreshPlugins,
+      settle: () => { radioKey.value++ },
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    })
+    if (r.error) toggleError.value = { name: p.name, message: r.error.message }
+  } finally {
+    actionBusy.value = false
   }
-  actionBusy.value = false
-  await refreshPlugins()
 }
 
 async function toggle(p, enabled) {

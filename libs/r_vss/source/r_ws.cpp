@@ -4538,7 +4538,8 @@ r_http::r_server_response r_ws::_post_system_plugin_action(r_utils::r_socket_bas
         plugin_action_host host;
         host.loaded = [&] { return _stream_keeper.get_loaded_system_plugins(); };
         host.status_message = [&](const string& name) { return _stream_keeper.get_system_plugin_status_message(name); };
-        host.run = [&](const string& name, const string& action) { return _stream_keeper.run_system_plugin_action(name, action); };
+        // Not run here: system_plugin_action is called on the UI thread only, which picks this up.
+        host.run = [&](const string& name, const string& action) { return _stream_keeper.queue_system_plugin_action(name, action); };
         return post_system_plugin_action(request, _auth, host);
     }
     R_WS_PASS_CLIENT_ERRORS

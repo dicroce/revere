@@ -1,7 +1,7 @@
 // Run with: npm test (node's built-in test runner; no extra dependencies).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { choiceOptions, choiceAction, choiceSelected, lineWarn } from '../src/utils/pluginChoice.js'
+import { choiceOptions, choiceAction, choiceSelected, lineWarn, pickChoice, PICK_RECHECK_MS } from '../src/utils/pluginChoice.js'
 
 const line = {
   text: 'Porch: Live',
@@ -54,4 +54,51 @@ test('a line is in the warning tone only when it says warn: true', () => {
   assert.equal(lineWarn({ text: 't', warn: 'true' }), false)
   assert.equal(lineWarn({ text: 't' }), false)
   assert.equal(lineWarn(undefined), false)
+})
+
+// What pickChoice did, in order.
+function harness({ runError = null, refreshError = null } = {}) {
+  const calls = []
+  return {
+    calls,
+    hooks: {
+      run: async (action) => { calls.push(`run ${action}`); if (runError) throw runError },
+      refresh: async () => { calls.push('refresh'); if (refreshError) throw refreshError },
+      settle: () => { calls.push('settle') },
+      wait: async (ms) => { calls.push(`wait ${ms}`) },
+    },
+  }
+}
+
+test('a pick that goes through: the action, the plugin read again with the rows drawn from it, and once more after a moment', async () => {
+  const h = harness()
+  const [off] = choiceOptions(line)
+  const r = await pickChoice(line, off, h.hooks)
+  assert.deepEqual(r, { ran: true, error: null })
+  assert.deepEqual(h.calls, ['run mode:porch:off', 'refresh', 'settle', `wait ${PICK_RECHECK_MS}`, 'refresh', 'settle'])
+})
+
+test('a pick the plugin refuses puts the dot back: the rows are drawn from its lines again, and the error is handed back', async () => {
+  const refused = new Error('That plugin isn\'t offering that action.')
+  const h = harness({ runError: refused })
+  const [off] = choiceOptions(line)
+  const r = await pickChoice(line, off, h.hooks)
+  assert.equal(r.ran, true)
+  assert.equal(r.error, refused)
+  // The browser had moved the dot to the clicked row: the rows are redrawn from the plugin's value after it is read.
+  assert.deepEqual(h.calls, ['run mode:porch:off', 'refresh', 'settle'])
+})
+
+test('rows are redrawn even when reading the plugin fails', async () => {
+  const h = harness({ refreshError: new Error('offline') })
+  const [off] = choiceOptions(line)
+  await assert.rejects(pickChoice(line, off, h.hooks), /offline/)
+  assert.deepEqual(h.calls, ['run mode:porch:off', 'refresh', 'settle'])
+})
+
+test('the selected row asks for nothing', async () => {
+  const h = harness()
+  const [, live] = choiceOptions(line)
+  assert.deepEqual(await pickChoice(line, live, h.hooks), { ran: false, error: null })
+  assert.deepEqual(h.calls, [])
 })

@@ -1224,6 +1224,16 @@ bool r_stream_keeper::run_system_plugin_action(const std::string& plugin_name, c
     return _system_plugin_host.run_plugin_action(plugin_name, action);
 }
 
+bool r_stream_keeper::queue_system_plugin_action(const std::string& plugin_name, const std::string& action)
+{
+    return _system_plugin_host.queue_plugin_action(plugin_name, action);
+}
+
+size_t r_stream_keeper::run_queued_system_plugin_actions()
+{
+    return _system_plugin_host.run_queued_plugin_actions();
+}
+
 bool r_stream_keeper::can_uninstall_system_plugin(const std::string& plugin_name) const
 {
     return _system_plugin_host.can_uninstall(plugin_name);
