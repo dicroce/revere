@@ -280,26 +280,18 @@ public:
 
     R_API void stop();
 
-    // Asks its camera event subscription to stop (and unsubscribe) without
-    // waiting: first thing at shutdown, before anything that can block.
-    R_API void stop_camera_events();
-
-    // The camera's ONVIF event subscription (shadow mode). Null status/empty
-    // spans for a camera without one (added by RTSP URL).
-    R_API bool has_camera_events() const;
-    R_API r_cameras::r_camera_events_status camera_events_status() const;
+    // One of its camera's event transitions, from the stream keeper's subscription (r_camera_events_keeper), while
+    // attached. Tiers 2 and 3: the camera's motion goes to the motion ring (.mdb) in place of MOG2's: a run of 1s when
+    // an event ends, 0 each second between.
+    R_API void on_camera_transition(const r_cameras::r_camera_transition& t);
 
     // The newest key frame received (null before the first).
     R_API r_utils::r_nullable<r_live_key_frame> latest_key_frame() const;
 
 private:
-    // Tiers 2 and 3: the camera's motion goes to the motion ring (.mdb) in
-    // place of MOG2's: a run of 1s when an event ends, 0 each second between.
-    void _on_camera_transition(const r_cameras::r_camera_transition& t);
     void _camera_motion_tick(int64_t ts);
     void _close_camera_motion_ring();
 public:
-    R_API std::vector<r_cameras::r_camera_span> camera_spans(int64_t since_ms) const;
 
 private:
     static void _live_restream_cleanup_cbs(live_restreaming_state* lrs);
@@ -352,7 +344,6 @@ private:
     // no mutex needed. Drained into a new live RTSP viewer's queue when
     // their LRS appears with needs_gop_replay set.
     r_live_video_fanout _video_fanout;
-    std::unique_ptr<r_cameras::r_camera_events> _camera_events;
 
     std::mutex _camera_motion_lock;
     std::unique_ptr<r_ring_storage_sink> _camera_motion_ring;

@@ -50,6 +50,9 @@ struct fake_camera
     string pull_fault;            // if set, CreatePullPointSubscription answers with a fault whose text is this
     bool pull_fails {false};      // PullMessages answers with a fault (the pull point is gone)
     bool renew_fails {false};     // Renew answers with a fault (the subscription is gone)
+    int fail_pulls {0};           // the next this many PullMessages answer with a fault, then they work again
+    int hold_pull_s {0};          // each PullMessages is answered only after this long, as a long pull with nothing
+    vector<int> pull_waits;       // the wait each PullMessages asked for (its Timeout), in seconds
     mutex lock;
     map<string, int> calls;
     int grant_s {0};              // Subscribe says it granted this many seconds (on a clock that is wrong), 0: says nothing
@@ -95,6 +98,26 @@ struct fake_camera
         string op = "other";
         for(auto o : {"GetSystemDateAndTime", "GetCapabilities", "CreatePullPointSubscription", "PullMessages", "Unsubscribe", "Subscribe", "Renew"})
             if(body.find(o) != string::npos) { op = o; break; }
+        if(op == "PullMessages")
+        {
+            int hold;
+            {
+                lock_guard<mutex> g(lock);
+                ++calls[op];
+                auto at = body.find("<tev:Timeout>PT");
+                pull_waits.push_back(at == string::npos ? -1 : atoi(body.c_str() + at + 15));
+                if(pull_fails || fail_pulls > 0)
+                {
+                    if(fail_pulls > 0)
+                        --fail_pulls;
+                    return _soap("<s:Fault><s:Code><s:Value>s:Sender</s:Value></s:Code><s:Reason><s:Text xml:lang=\"en\">gone</s:Text></s:Reason></s:Fault>", response_bad_request);
+                }
+                hold = hold_pull_s;
+            }
+            // Held outside the lock, so the test and the camera's other requests go on meanwhile.
+            this_thread::sleep_for(chrono::seconds(hold));
+            return _soap("<tev:PullMessagesResponse/>");
+        }
         lock_guard<mutex> g(lock);
         ++calls[op];
         if(op == "GetSystemDateAndTime")
@@ -112,12 +135,6 @@ struct fake_camera
                 return _soap(UNSUPPORTED, response_bad_request);
             return _soap("<tev:CreatePullPointSubscriptionResponse><tev:SubscriptionReference><wsa:Address>http://127.0.0.1:" + to_string(port) +
                          "/onvif/sub1</wsa:Address></tev:SubscriptionReference></tev:CreatePullPointSubscriptionResponse>");
-        }
-        if(op == "PullMessages")
-        {
-            if(pull_fails)
-                return _soap("<s:Fault><s:Code><s:Value>s:Sender</s:Value></s:Code><s:Reason><s:Text xml:lang=\"en\">gone</s:Text></s:Reason></s:Fault>", response_bad_request);
-            return _soap("<tev:PullMessagesResponse/>");
         }
         if(op == "Subscribe")
         {
@@ -503,4 +520,65 @@ void test_r_onvif_push_events::test_only_a_not_supported_answer_switches_to_push
         RTF_ASSERT(_until([&]() { return rig.events->status().state == "subscribed"; }));
         RTF_ASSERT_EQUAL(cam.count("Subscribe"), 1);
     }
+}
+
+void test_r_onvif_push_events::test_a_long_pull_is_cut_short_by_a_stop()
+{
+    // Each pull asks the camera to wait LONG_PULL_S for something: one request every 20 s when nothing happens. A stop
+    // doesn't wait it out: the pull in flight is cut short, and the subscription is still dropped at the camera.
+    fake_camera cam(11131);
+    cam.pull_works = true;
+    cam.hold_pull_s = 20;
+    auto rig = make_unique<events_rig>(cam.port);
+    RTF_ASSERT(_until([&]() { return cam.count("PullMessages") >= 1; }));
+    this_thread::sleep_for(chrono::milliseconds(300));
+    {
+        lock_guard<mutex> g(cam.lock);
+        RTF_ASSERT_EQUAL(cam.pull_waits.size(), (size_t)1);   // the one pull, still held
+        RTF_ASSERT_EQUAL(cam.pull_waits[0], 20);
+    }
+    auto t0 = chrono::steady_clock::now();
+    rig.reset();
+    auto ms = chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - t0).count();
+    RTF_ASSERT(ms < 3000);
+    RTF_ASSERT_EQUAL(cam.count("Unsubscribe"), 1);
+    RTF_ASSERT_EQUAL(cam.count("CreatePullPointSubscription"), 1);
+}
+
+void test_r_onvif_push_events::test_a_camera_that_answers_pulls_at_once_is_not_asked_in_a_loop()
+{
+    // A camera that answers each pull at once with nothing, whatever wait it was asked for: about one pull a second,
+    // not as fast as it answers.
+    fake_camera cam(11134);
+    cam.pull_works = true;
+    events_rig rig(cam.port);
+    RTF_ASSERT(_until([&]() { return cam.count("PullMessages") >= 1; }));
+    this_thread::sleep_for(chrono::milliseconds(3000));
+    RTF_ASSERT(cam.count("PullMessages") <= 5);
+}
+
+void test_r_onvif_push_events::test_one_failed_pull_keeps_the_subscription()
+{
+    // A pull that fails once (a dropped connection) is asked again on the same subscription: the camera keeps only a
+    // few, and making another for every hiccup used them up.
+    fake_camera cam(11132);
+    cam.pull_works = true;
+    cam.fail_pulls = 1;
+    events_rig rig(cam.port);
+    RTF_ASSERT(_until([&]() { return cam.count("PullMessages") >= 3; }, 8000));
+    RTF_ASSERT_EQUAL(cam.count("CreatePullPointSubscription"), 1);
+    RTF_ASSERT_EQUAL(cam.count("Unsubscribe"), 0);
+    RTF_ASSERT(rig.events->status().up);
+}
+
+void test_r_onvif_push_events::test_two_failed_pulls_make_a_new_subscription()
+{
+    // Two in a row: the pull point is gone. It's dropped at the camera, and a new one is made after the backoff.
+    fake_camera cam(11133);
+    cam.pull_works = true;
+    cam.fail_pulls = 2;
+    events_rig rig(cam.port);
+    RTF_ASSERT(_until([&]() { return cam.count("CreatePullPointSubscription") >= 2; }, 20000));
+    RTF_ASSERT(cam.count("Unsubscribe") >= 1);
+    RTF_ASSERT(_until([&]() { return rig.events->status().up; }, 5000));
 }

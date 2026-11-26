@@ -15,6 +15,8 @@ add_executable(
     source/test_r_frame_tap.cpp
     include/test_r_frame_feeds.h
     source/test_r_frame_feeds.cpp
+    include/test_r_camera_events_keeper.h
+    source/test_r_camera_events_keeper.cpp
     include/test_r_live_fanout.h
     source/test_r_live_fanout.cpp
     include/test_r_restream_track.h

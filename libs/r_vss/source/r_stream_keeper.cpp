@@ -174,6 +174,11 @@ r_stream_keeper::~r_stream_keeper() noexcept
         std::lock_guard<std::mutex> lock(_streams_mutex);
         _streams.clear();
     }
+    // Every subscription ends, and is waited for, while what its transitions reach is still here.
+    _camera_events.clear();
+    for(auto& f : _events_reaping)
+        f.wait();
+    _events_reaping.clear();
 
     for(auto f : _factories)
         g_object_unref(f);
@@ -315,6 +320,8 @@ bool r_stream_keeper::stop()
         for(auto& t : stopping)
             t.join();
     }
+    // Their event subscriptions too: asked, not waited for (the destructor does).
+    _camera_events.request_stop_all();
 
     R_LOG_INFO("Stopping prune...");
     _prune.stop();
@@ -567,19 +574,60 @@ void r_stream_keeper::notify_motion(const string& camera_id, bool started, int64
 
 vector<r_cameras::r_camera_span> r_stream_keeper::camera_spans(const string& camera_id, int64_t since_ms)
 {
-    std::shared_ptr<r_recording_context> rc;
-    {
-        std::lock_guard<std::mutex> lock(_streams_mutex);
-        auto it = _streams.find(camera_id);
-        if(it != _streams.end())
-            rc = it->second;
-    }
-    return rc ? rc->camera_spans(since_ms) : vector<r_cameras::r_camera_span>();
+    // The camera's subscription's, kept across reconnects: spans from before the stream last restarted are still there.
+    return _camera_events.spans(camera_id, since_ms);
 }
 
 static int64_t _epoch_ms()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+void r_stream_keeper::camera_events_detach(const string& camera_id, const r_recording_context* rc)
+{
+    _camera_events.detach(camera_id, rc);
+}
+
+void r_stream_keeper::_reap_events(vector<r_camera_events_keeper::events_ptr> events)
+{
+    // The ones done since the last call are let go.
+    for(auto it = _events_reaping.begin(); it != _events_reaping.end();)
+        it = it->wait_for(std::chrono::seconds(0)) == std::future_status::ready ? _events_reaping.erase(it) : std::next(it);
+    if(events.empty())
+        return;
+    auto shared = std::make_shared<vector<r_camera_events_keeper::events_ptr>>(std::move(events));
+    _events_reaping.push_back(std::async(std::launch::async, [shared]() { shared->clear(); }));
+}
+
+void r_stream_keeper::_settle_camera_events()
+{
+    vector<string> drops;
+    vector<r_camera> ensures;
+    vector<std::weak_ptr<r_recording_context>> attaches;
+    {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        drops.swap(_events_to_drop);
+        ensures.swap(_events_to_ensure);
+        attaches.swap(_events_to_attach);
+    }
+    vector<r_camera_events_keeper::events_ptr> ended;
+    for(auto& id : drops)
+        if(auto e = _camera_events.drop(id))
+            ended.push_back(std::move(e));
+    // Out of _streams_mutex: replacing a subscription calls the context it was attached to.
+    for(auto& camera : ensures)
+        for(auto& e : _camera_events.ensure(camera))
+            ended.push_back(std::move(e));
+    _reap_events(std::move(ended));
+    for(auto& w : attaches)
+    {
+        // Held while it attaches: it can't go away under us. Once attached, its destructor detaches it first.
+        auto rc = w.lock();
+        if(!rc)
+            continue;
+        auto* p = rc.get();
+        _camera_events.attach(p->camera().id, p, [p](const r_cameras::r_camera_transition& t) { p->on_camera_transition(t); });
+    }
 }
 
 void r_stream_keeper::camera_transition(const string& camera_id, const r_cameras::r_camera_transition& t)
@@ -724,9 +772,9 @@ void r_stream_keeper::_tier_tick()
             f.setting = c.value().motion_tier.value();
         if(!c.is_null() && !c.value().motion_tier_verified.is_null())
             f.saved_verified = c.value().motion_tier_verified.value();
-        if(s.second->has_camera_events())
+        if(_camera_events.has(s.first))
         {
-            auto events = s.second->camera_events_status();
+            auto events = _camera_events.status(s.first);
             f.subscription = tier_subscription_state(true, events.up, events.unavailable());
         }
         facts.push_back(f);
@@ -1493,6 +1541,9 @@ void r_stream_keeper::_entry_point()
                     }
                 }
 
+                // The subscriptions of cameras changed or removed end first: their contexts, still here, are told
+                // what was open has ended.
+                _settle_camera_events();
                 for(auto& rc : doomed)
                     _teardowns.push(rc->camera().id, _display_name(rc->camera()), rc);
                 doomed.clear();
@@ -1503,11 +1554,15 @@ void r_stream_keeper::_entry_point()
                     _give_up_substream(id);
                 }
 
-                std::lock_guard<std::mutex> lock(_streams_mutex);
-                if(_streams.empty())
-                    _add_recording_contexts(_devices.get_assigned_cameras());
-                else
-                    _add_recording_contexts(_devices.get_assigned_cameras_added(_get_current_cameras()));
+                {
+                    std::lock_guard<std::mutex> lock(_streams_mutex);
+                    if(_streams.empty())
+                        _add_recording_contexts(_devices.get_assigned_cameras());
+                    else
+                        _add_recording_contexts(_devices.get_assigned_cameras_added(_get_current_cameras()));
+                }
+                // The new contexts attach to their cameras' events, outside the lock.
+                _settle_camera_events();
             }
 
             _tend_substreams();
@@ -1521,6 +1576,8 @@ void r_stream_keeper::_entry_point()
                 std::set<std::string> assigned_ids;
                 for(const auto& c : _devices.get_assigned_cameras())
                     assigned_ids.insert(c.id);
+                // A camera no longer assigned has no subscription, whether or not its stream was up.
+                _reap_events(_camera_events.drop_except(assigned_ids));
                 if(assigned_ids != _last_assigned_camera_ids)
                 {
                     _last_assigned_camera_ids = std::move(assigned_ids);
@@ -1767,6 +1824,14 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         try
         {
             _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds, protocols);
+            // Its events: the camera's subscription, kept from before when it's the same camera with the same
+            // settings (a reconnect); made and attached once the lock is let go (_settle_camera_events), since a
+            // subscription replaced tells the context it was attached to, which may be one going away.
+            if(r_cameras::camera_events_wanted(camera))
+            {
+                _events_to_ensure.push_back(camera);
+                _events_to_attach.push_back(_streams[camera.id]);
+            }
             // Construction succeeded — clear any prior failure state for this camera.
             _failed_cameras.erase(camera.id);
         }
@@ -1989,6 +2054,8 @@ vector<shared_ptr<r_recording_context>> r_stream_keeper::_remove_recording_conte
     {
         // Always clear backoff entry so a remove+re-add resets the retry counter.
         _failed_cameras.erase(camera.id);
+        // Changed or gone: its subscription ends too (a changed one starts again with the new settings).
+        _events_to_drop.push_back(camera.id);
 
         if(_streams.count(camera.id) > 0)
         {
@@ -2033,9 +2100,9 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
                 s.sub_id_mount = substream_id_mount_path(c.first);
             s.storage_write_lag_ms = c.second->storage_write_lag_ms();
             s.storage_timeline_lag_ms = c.second->storage_timeline_lag_ms();
-            s.has_camera_events = c.second->has_camera_events();
+            s.has_camera_events = _camera_events.has(c.first);
             if(s.has_camera_events)
-                s.camera_events = c.second->camera_events_status();
+                s.camera_events = _camera_events.status(c.first);
             s.motion_tier = motion_tier_status(c.first);
             s.rtsp_transport = c.second->rtsp_protocols();
             const bool set_udp = !s.camera.rtsp_transport.is_null() && s.camera.rtsp_transport.value() == "UDP";

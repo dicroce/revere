@@ -554,6 +554,12 @@ void r_ssl_server_socket::close()
         _st->sok.close();
 }
 
+void r_ssl_server_socket::shutdown()
+{
+    if(_st)
+        _st->sok.shutdown();
+}
+
 bool r_ssl_server_socket::valid() const
 {
     return _st && !_st->failed && _st->sok.valid();
