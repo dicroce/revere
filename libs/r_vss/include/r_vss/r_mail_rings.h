@@ -122,6 +122,22 @@ R_API std::map<std::string, std::string> mail_ring_doorbells(const std::vector<r
 struct r_mail_login { std::string user; std::string password; };
 R_API r_mail_login load_or_make_mail_login(const std::string& path);
 
+// The listener's port: 2525, or REVERE_MAIL_RINGS_PORT (a bench).
+R_API int mail_rings_port();
+
+// What to type in a Reolink doorbell's email settings (Settings > Email Alerts > Email Settings) for its presses to
+// reach this box: the SMTP server is the box's address toward the doorbell, with SSL/TLS on, the box's login, any
+// sender, and a recipient the listener takes (it reads every mail from the doorbell, whoever it's to).
+struct r_mail_setup
+{
+    std::string server;
+    int port {0};
+    std::string user;
+    std::string password;
+    std::string recipient;
+};
+R_API r_mail_setup mail_setup_for(const std::string& server, int port, const r_mail_login& login);
+
 // The listener's certificate and key (PEM), made once and kept beside the login: the certificate in cert_path, the key
 // in key_path, readable by its owner only.
 R_API std::pair<std::string, std::string> load_or_make_mail_cert(const std::string& cert_path, const std::string& key_path);

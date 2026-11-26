@@ -29,6 +29,7 @@
 #include "r_disco/r_devices.h"
 #include "r_vss/r_doorbell_rings.h"
 #include "r_vss/r_mail_rings.h"
+#include "r_vss/r_press_check.h"
 #include "r_disco/r_camera.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_work_q.h"
@@ -252,6 +253,35 @@ public:
 
     // A camera's event subscription reporting a start or end (any thread).
     R_API void camera_transition(const std::string& camera_id, const r_cameras::r_camera_transition& t);
+
+    // A doorbell's presses as revere sees them, for its setup: its press source, when each source last reported a
+    // press (since revere started), whether to suggest ONVIF again, and its press test.
+    struct doorbell_press_status
+    {
+        std::string press_source;
+        r_utils::r_nullable<int64_t> last_onvif_ms;
+        r_utils::r_nullable<int64_t> last_email_ms;
+        bool suggest_onvif {false};
+        r_press_test test;
+    };
+    // Null when the camera isn't a doorbell (or is gone).
+    R_API r_utils::r_nullable<doorbell_press_status> doorbell_presses(const std::string& camera_id);
+
+    // A Reolink doorbell's email setup (r_mail_setup: what to type in its app) and the listener's counts. The login is
+    // made here if it isn't yet, so setup can show it before the press source is saved. listening: the listener is up
+    // and takes this doorbell's mail (its press source is saved as reolink_email). Null for a camera that isn't a
+    // doorbell, or has no address. with_login false leaves the user and password out (and the login file unread), for
+    // a status read made every few seconds.
+    struct doorbell_mail_status
+    {
+        r_mail_setup setup;
+        bool listening {false};
+        r_mail_rings::counts counts;
+    };
+    R_API r_utils::r_nullable<doorbell_mail_status> doorbell_mail_setup(const std::string& camera_id, bool with_login = true);
+    // "Press the doorbell now": a TEST_MS window in which each source's report of a press is noted; its press rings the
+    // phones only if ring_phones. Null when the camera isn't a doorbell (or is gone).
+    R_API r_utils::r_nullable<r_press_test> start_doorbell_press_test(const std::string& camera_id, bool ring_phones);
 
     // The detection pass's finished sessions for a camera.
     R_API std::vector<r_detection_session> detection_sessions(const std::string& camera_id, int64_t since_ms);
@@ -506,11 +536,16 @@ private:
     r_motion_tuning_fn _motion_tuning_fn;
     r_motion_event_plugin_host _meph;
     r_doorbell_rings _doorbell_rings;
+    r_press_check _press_check;
 
     // The mail listener for doorbells that send rings by email (r_mail_rings), running only while one is set to:
     // keeper thread only, but for _mail_doorbells, which its connections read.
     std::unique_ptr<r_mail_rings> _mail_rings;
     std::string _mail_rings_bind;
+    // Guards _mail_rings and _mail_rings_bind for readers on other threads (doorbell_mail_setup); the keeper thread
+    // replaces them through _set_mail_rings.
+    mutable std::mutex _mail_rings_lock;
+    void _set_mail_rings(std::unique_ptr<r_mail_rings> rings, const std::string& bind);
     mutable std::mutex _mail_doorbells_lock;
     std::map<std::string, std::string> _mail_doorbells;   // by address, to the camera's id
     void _tend_mail_rings(const std::vector<r_disco::r_camera>& assigned);
