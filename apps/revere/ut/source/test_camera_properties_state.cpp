@@ -147,7 +147,7 @@ void test_camera_properties_state::test_the_mail_status_lines()
     auto lines = mail_status_lines(v, "reolink_email");
     RTF_ASSERT(lines.size() == 3);
     RTF_ASSERT(lines[1] == "The doorbell sent 1 email that wasn't a press. In the Reolink app, set the email Alarm Schedule to Ring only.");
-    RTF_ASSERT(lines[2] == "The doorbell's email login failed 2 times. Check the user name and password in the Reolink app.");
+    RTF_ASSERT(lines[2] == "The doorbell's email login failed 2 times. Check the password in the Reolink app.");
     v.other_mail = 3;
     v.bad_logins = 1;
     lines = mail_status_lines(v, "reolink_email");
@@ -162,5 +162,30 @@ void test_camera_properties_state::test_a_password_in_groups_of_4()
     RTF_ASSERT(in_groups_of_4("abcde") == "abcd e");
     RTF_ASSERT(in_groups_of_4("abcd") == "abcd");
     RTF_ASSERT(in_groups_of_4("").empty());
-    RTF_ASSERT(std::string(mail_sender()).find('@') != std::string::npos);
+    RTF_ASSERT(in_groups_of_4("k7mq2xpa") == "k7mq 2xpa");   // the 8-character password
+}
+
+void test_camera_properties_state::test_the_mail_setup_rows()
+{
+    // What the Reolink app asks for, in its order and with its names: no user name.
+    doorbell_view v;
+    v.server = "192.168.1.20";
+    v.port = 2525;
+    v.sender = "doorbell@revere.video";
+    v.password = "k7mq2xpa";
+    v.recipient = "rings@revere.video";
+    auto rows = mail_setup_rows(v);
+    vector<string> names;
+    for(auto& r : rows)
+        names.push_back(r.name);
+    RTF_ASSERT(names == vector<string>({"SMTP server", "SMTP port", "SSL or TLS", "Sender's email", "Password", "Recipient"}));
+    RTF_ASSERT(rows[0].value == "192.168.1.20" && rows[1].value == "2525" && rows[2].value == "On");
+    RTF_ASSERT(rows[3].value == "doorbell@revere.video" && rows[5].value == "rings@revere.video");
+    // Only the password is secret, and every row but SSL or TLS can be copied.
+    for(size_t i = 0; i < rows.size(); ++i)
+    {
+        RTF_ASSERT(rows[i].secret == (i == 4));
+        RTF_ASSERT(rows[i].copy == (i != 2));
+    }
+    RTF_ASSERT(rows[4].value == "k7mq2xpa");
 }

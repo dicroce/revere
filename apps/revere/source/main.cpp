@@ -3327,9 +3327,9 @@ int main(int argc, char** argv)
                 const auto& m = mail.value();
                 v.server = m.setup.server;
                 v.port = m.setup.port;
+                v.sender = m.setup.sender;
                 if(!v.has_login)
                 {
-                    v.user = m.setup.user;
                     v.password = m.setup.password;
                     v.has_login = true;
                 }
@@ -3343,6 +3343,18 @@ int main(int argc, char** argv)
         read_door_view(false);
         auto press_test = [&](){
             streamKeeper.start_doorbell_press_test(camera_id.value(), false);
+            read_door_view(true);
+        };
+        // "New password", confirmed: a new email password, shown at once.
+        auto new_password = [&](){
+            auto made = streamKeeper.new_doorbell_mail_login(camera_id.value());
+            if(made.is_null())
+                return;
+            auto& v = ui_state.door_view;
+            v.password = made.value().setup.password;
+            v.sender = made.value().setup.sender;
+            v.has_login = true;
+            v.reveal = true;
             read_door_view(true);
         };
 
@@ -3557,7 +3569,8 @@ int main(int argc, char** argv)
             sync_time,
             move_storage,
             change_retention,
-            press_test
+            press_test,
+            new_password
         );
         if(result == revere::camera_properties_result::cancel)
             close_properties();

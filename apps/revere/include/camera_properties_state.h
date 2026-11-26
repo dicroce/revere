@@ -88,13 +88,13 @@ struct doorbell_view
     int64_t test_ends_ms {0};
     std::vector<source_result> test_sources;
 
-    // What to type in the Reolink app; has_mail false while the box has no address toward the doorbell. The user and
-    // password are read once (has_login); the rest is read with the status.
+    // What to type in the Reolink app; has_mail false while the box has no address toward the doorbell. The password is
+    // read once (has_login), and again when a new one is made; the rest is read with the status.
     bool has_mail {false};
     bool has_login {false};
     std::string server;
     int port {0};
-    std::string user;
+    std::string sender;
     std::string password;
     std::string recipient;
     bool listening {false};
@@ -102,14 +102,34 @@ struct doorbell_view
     uint64_t bad_logins {0};
     std::string last_error;
 
-    // The pane's own: the password shown in plain text.
+    // The pane's own: the password shown in plain text, and "New password" asking before it makes one.
     bool reveal {false};
+    bool confirm_new_password {false};
 };
 
 inline std::string press_source_name(const std::string& source) { return source == "reolink_email" ? "Email" : "ONVIF"; }
 
-// The sender address to type in the Reolink app: the listener takes any, and this one says where the mail is from.
-inline const char* mail_sender() { return "doorbell@revere.local"; }
+// The rows to type into the Reolink app (Settings > Email Alerts > Email Settings), named and ordered as the app has
+// them: it has no user field (it logs in with the sender's email, and the listener takes any user with the password).
+struct mail_setup_row
+{
+    const char* key;
+    const char* name;
+    std::string value;
+    bool copy;      // a Copy button
+    bool secret;    // the password: hidden until shown, in groups of 4
+};
+inline std::vector<mail_setup_row> mail_setup_rows(const doorbell_view& v)
+{
+    return {
+        {"server", "SMTP server", v.server, true, false},
+        {"port", "SMTP port", std::to_string(v.port), true, false},
+        {"tls", "SSL or TLS", "On", false, false},
+        {"sender", "Sender's email", v.sender, true, false},
+        {"password", "Password", v.password, true, true},
+        {"recipient", "Recipient", v.recipient, true, false},
+    };
+}
 
 // A password shown for typing, in groups of 4: "Xw7t Q2mL p9Rz". Copy copies it as it is.
 inline std::string in_groups_of_4(const std::string& s)
@@ -203,7 +223,7 @@ inline std::vector<std::string> mail_status_lines(const doorbell_view& v, const 
                       " In the Reolink app, set the email Alarm Schedule to Ring only.");
     if(v.bad_logins)
         out.push_back("The doorbell's email login failed " + std::to_string(v.bad_logins) + (v.bad_logins == 1 ? " time." : " times.") +
-                      " Check the user name and password in the Reolink app.");
+                      " Check the password in the Reolink app.");
     return out;
 }
 

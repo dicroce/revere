@@ -44,8 +44,10 @@ inline const tier_choice* tier_choices(size_t& n)
 // by ONVIF discovery, so its clock can be set. sync_time_cb, move_storage_cb and change_retention_cb open the small
 // dialogs for those. On Save with a valid form, min_continuous_retention_hours holds the hours field.
 // press_source is the doorbell's ("onvif" or "reolink_email"); door is what the app last read about its presses and its
-// email setup (doorbell_view), and press_test_cb() starts the press test ("Start test").
-template<typename STREAMS_CB, typename SYNC_TIME_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB, typename PRESS_TEST_CB>
+// email setup (doorbell_view), press_test_cb() starts the press test ("Start test"), and new_password_cb() makes a new
+// email password once "New password" is confirmed.
+template<typename STREAMS_CB, typename SYNC_TIME_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB, typename PRESS_TEST_CB,
+         typename NEW_PASSWORD_CB>
 camera_properties_result camera_properties_pane(
     camera_properties_session& session,
     bool& is_doorbell,
@@ -65,7 +67,8 @@ camera_properties_result camera_properties_pane(
     SYNC_TIME_CB sync_time_cb,
     MOVE_STORAGE_CB move_storage_cb,
     CHANGE_RETENTION_CB change_retention_cb,
-    PRESS_TEST_CB press_test_cb
+    PRESS_TEST_CB press_test_cb,
+    NEW_PASSWORD_CB new_password_cb
 )
 {
     using namespace r_ui_utils::theme;
@@ -220,12 +223,13 @@ camera_properties_result camera_properties_pane(
                     d.body(door.loaded ? "This computer doesn't have an address the doorbell can reach yet." : "Loading the email settings...");
                 else
                 {
-                    // A field to type in, on one line: its name, its value, and small Copy (and for the password Show or
-                    // Hide) buttons at the right.
+                    // A field to type in, on one line: its name as the Reolink app names it, its value, and small Copy
+                    // (and for the password Show or Hide, and New password) buttons at the right.
                     const auto& style = ImGui::GetStyle();
-                    const float name_w = ImGui::CalcTextSize("Recipient address").x + 12.0f;
+                    const float name_w = ImGui::CalcTextSize("Sender's email").x + 12.0f;
                     const float copy_w = ImGui::CalcTextSize("Copy").x + style.FramePadding.x * 2.0f;
                     const float show_w = std::max(ImGui::CalcTextSize("Show").x, ImGui::CalcTextSize("Hide").x) + style.FramePadding.x * 2.0f;
+                    const float new_w = ImGui::CalcTextSize("New password").x + style.FramePadding.x * 2.0f;
                     auto field = [&](const char* id, const char* name, const std::string& value, bool copy, bool secret) {
                         ImGui::PushID(id);
                         d.gap(3.0f);
@@ -239,7 +243,7 @@ camera_properties_result camera_properties_pane(
                         ImGui::TextColored(text_primary, "%s", shown.c_str());
                         float buttons = copy ? copy_w : 0.0f;
                         if(secret)
-                            buttons += show_w + 4.0f;
+                            buttons += show_w + 4.0f + new_w + 4.0f;
                         if(buttons > 0.0f)
                         {
                             // Beside the value when they fit, else on the next line at the right.
@@ -252,6 +256,9 @@ camera_properties_result camera_properties_pane(
                                 if(ImGui::Button(door.reveal ? "Hide" : "Show", ImVec2(show_w, 0.0f)))
                                     door.reveal = !door.reveal;
                                 ImGui::SameLine(0.0f, 4.0f);
+                                if(ImGui::Button("New password", ImVec2(new_w, 0.0f)))
+                                    door.confirm_new_password = true;
+                                ImGui::SameLine(0.0f, 4.0f);
                             }
                             if(copy && ImGui::Button("Copy", ImVec2(copy_w, 0.0f)))
                                 ImGui::SetClipboardText(value.c_str());
@@ -259,14 +266,26 @@ camera_properties_result camera_properties_pane(
                         ImGui::PopID();
                     };
                     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 1.0f));
-                    field("server", "SMTP server", door.server, true, false);
-                    field("port", "SMTP port", std::to_string(door.port), true, false);
-                    field("tls", "SSL or TLS", "On", false, false);
-                    field("user", "User name", door.user, true, false);
-                    field("password", "Password", door.password, true, true);
-                    field("sender", "Sender address", mail_sender(), true, false);
-                    field("recipient", "Recipient address", door.recipient, true, false);
+                    for(auto& row : mail_setup_rows(door))
+                        field(row.key, row.name, row.value, row.copy, row.secret);
                     ImGui::PopStyleVar();
+                    if(door.confirm_new_password)
+                    {
+                        // Asked here first: the doorbell's presses stop until the new password is in its app.
+                        d.gap(4.0f);
+                        d.body("The doorbell will stop sending presses until you enter the new password in the Reolink app.", status_warning_text);
+                        d.gap(2.0f);
+                        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
+                        if(ImGui::Button("Make a new password"))
+                        {
+                            door.confirm_new_password = false;
+                            new_password_cb();
+                        }
+                        ImGui::SameLine(0.0f, 8.0f);
+                        if(ImGui::Button("Cancel##new_password"))
+                            door.confirm_new_password = false;
+                        ImGui::PopStyleVar();
+                    }
                     d.gap(4.0f);
                     d.body("Then set the email Alarm Schedule to Ring only. Otherwise the doorbell also emails when it sees motion.");
                 }
