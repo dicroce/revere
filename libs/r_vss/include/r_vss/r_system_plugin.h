@@ -157,6 +157,15 @@ R_API void system_plugin_cameras_changed(r_system_plugin_handle plugin);
 // a "confirm" question) calls this with the line's "action" id. Called on the
 // UI thread, so return promptly and do any slow work on the plugin's own thread.
 // Only a plugin that exports this should put "action" in its lines.
+//
+// A line can also carry a choice, drawn under its text as a radio list (in the desktop's plugin panel and the web's):
+//   {"text": "<summary>", "choice": {"value": "<selected option's value>", "action": "<prefix>",
+//     "options": [{"value", "name", "subtitle", "cost", "warn"}]}}
+// Picking an option calls this with the choice's "action" followed by the option's "value" ("mode:cam1:" and "live"
+// call "mode:cam1:live"); picking the selected option calls nothing. Names, subtitles and cost lines wrap; an option
+// with "warn": true shows its cost line in the warning tone, and a line with "warn": true shows its text in it. A host
+// from before choice lines draws only the text, so a plugin that needs a way to choose there also sends a button for
+// each option. The plugin gets only actions its own lines offered.
 R_API void system_plugin_action(r_system_plugin_handle plugin, const char* action);
 
 // ---- Live frames ----
@@ -248,16 +257,20 @@ typedef struct r_system_plugin_host_api
     int (*set_plugin_state)(void* host, const char* state_json);
 
     // get_plugin_states: every plugin's state, as {"version": 41, "plugins": {"<plugin GUID>": <state>}}, copied
-    // snprintf-style as get_pressure's JSON is (the full length is returned; capacity or more means it was cut;
-    // negative means revere has none to give). The version rises by one with every change of any plugin's state, so
-    // a reader that wants to know whether anything changed reads the version.
+    // snprintf-style as get_pressure's JSON is (the full length is returned; capacity or more means it was cut; no buffer
+    // asks the length). The version rises by one with every change of any plugin's state, so a reader that wants to know
+    // whether anything changed reads the version. Only the cloud plugin (GUID com.revere.cloud) may call it; any other
+    // plugin gets -1. A plugin's state is dropped, and the version rises, when the plugin is disabled, stopped or
+    // unloaded; and set_plugin_state from a disabled plugin returns -1.
     int (*get_plugin_states)(void* host, char* buf, size_t capacity);
 
-    // plugin_action: runs an action on the plugin with this GUID, exactly as a button in its panel does
-    // (system_plugin_action, with the action JSON, a JSON object, as the string), and copies the result into result,
-    // snprintf-style: {"ok": true} or {"ok": false, "error": "..."} (no such plugin, it takes no actions, the action
-    // isn't a JSON object, or it threw). Returns the result's full length, or negative when it can't say. Called on
-    // the caller's thread, which the plugin's system_plugin_action sees instead of the UI thread.
+    // plugin_action: asks for an action on the plugin with this GUID, as a button in its panel does. The action is a
+    // JSON object, handed to the plugin's system_plugin_action as its string, which is only ever called on the UI's
+    // thread: the action is queued for it, and the result, copied snprintf-style, says only that it was queued:
+    // {"ok": true}, or {"ok": false, "error": "..."} (no such plugin, it takes no actions, the action isn't a JSON object,
+    // it could not be queued, or "not allowed"). It never waits for the action, and never calls the plugin on the
+    // caller's thread. Returns the result's full length, or negative when it can't say. Only the cloud plugin
+    // (com.revere.cloud) may call it; any other gets {"ok": false, "error": "not allowed"}.
     int (*plugin_action)(void* host, const char* plugin_guid, const char* action_json, char* result, size_t capacity);
 } r_system_plugin_host_api;
 

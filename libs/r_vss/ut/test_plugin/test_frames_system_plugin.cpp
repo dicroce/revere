@@ -38,7 +38,11 @@ struct test_plugin
 
 void note(test_plugin* p, const std::string& line)
 {
+#ifdef TEST_NOTE_FILE
+    auto path = p->top_dir + "/" + TEST_NOTE_FILE;
+#else
     auto path = p->top_dir + "/frames.txt";
+#endif
     if(auto f = fopen(path.c_str(), "a"))
     {
         fprintf(f, "%s\n", line.c_str());
@@ -66,7 +70,11 @@ extern "C"
 
 R_API const char* get_system_plugin_guid()
 {
+#ifdef TEST_PLUGIN_GUID
+    return TEST_PLUGIN_GUID;
+#else
     return "com.revere.test.frames";
+#endif
 }
 
 R_API r_system_plugin_handle load_system_plugin(const char* top_dir, void*)

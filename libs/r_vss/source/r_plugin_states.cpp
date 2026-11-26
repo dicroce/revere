@@ -32,6 +32,13 @@ int r_plugin_states::set(const string& guid, const string& state_json)
     return 0;
 }
 
+void r_plugin_states::remove(const string& guid)
+{
+    lock_guard<mutex> g(_lock);
+    if(_states.erase(guid) > 0)
+        ++_version;
+}
+
 string r_plugin_states::json() const
 {
     lock_guard<mutex> g(_lock);

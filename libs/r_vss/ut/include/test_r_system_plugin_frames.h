@@ -9,7 +9,9 @@ public:
       TEST(test_r_system_plugin_frames::test_a_plugin_reads_revere_pressure);
       TEST(test_r_system_plugin_frames::test_pressure_without_a_frame_source);
       TEST(test_r_system_plugin_frames::test_a_plugin_publishes_its_state);
-      TEST(test_r_system_plugin_frames::test_a_plugin_runs_an_action_on_another);
+      TEST(test_r_system_plugin_frames::test_only_the_cloud_plugin_reads_the_states);
+      TEST(test_r_system_plugin_frames::test_a_plugin_action_is_queued_for_the_ui_thread);
+      TEST(test_r_system_plugin_frames::test_a_disabled_or_stopped_plugin_has_no_state);
       TEST(test_r_system_plugin_frames::test_a_plugin_reads_a_cameras_frames);
       TEST(test_r_system_plugin_frames::test_an_older_r_frame_is_not_overrun);
       TEST(test_r_system_plugin_frames::test_unknown_cameras_streams_and_media);
@@ -33,7 +35,9 @@ public:
     void test_a_plugin_reads_revere_pressure();
     void test_pressure_without_a_frame_source();
     void test_a_plugin_publishes_its_state();
-    void test_a_plugin_runs_an_action_on_another();
+    void test_only_the_cloud_plugin_reads_the_states();
+    void test_a_plugin_action_is_queued_for_the_ui_thread();
+    void test_a_disabled_or_stopped_plugin_has_no_state();
     void test_a_plugin_reads_a_cameras_frames();
     void test_an_older_r_frame_is_not_overrun();
     void test_unknown_cameras_streams_and_media();

@@ -77,7 +77,22 @@
             <p class="muted">Or scan with your phone:</p>
             <img :src="'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(group.line.qr_svg)" alt="QR code" />
           </div>
-          <p v-else class="text">{{ group.line.text }}</p>
+          <!-- a choice: the summary, then a radio list of its options (the desktop draws the same) -->
+          <div v-else-if="group.kind === 'choice'" class="choice-block">
+            <p class="text" :class="{ warn: lineWarn(group.line) }">{{ group.line.text }}</p>
+            <div class="choice" role="radiogroup" :aria-label="group.line.text" :key="radioKey">
+              <label v-for="o in choiceOptions(group.line)" :key="o.value" class="choice-row" :class="{ selected: choiceSelected(group.line, o) }">
+                <input type="radio" :name="p.name + '-' + gi" :value="o.value" :checked="choiceSelected(group.line, o)"
+                       :disabled="actionBusy" @change="pick(p, group.line, o)" />
+                <span class="choice-text">
+                  <span class="choice-name">{{ o.name }}</span>
+                  <span v-if="o.subtitle" class="choice-subtitle">{{ o.subtitle }}</span>
+                  <span v-if="o.cost" class="choice-cost" :class="{ warn: o.warn }">{{ o.cost }}</span>
+                </span>
+              </label>
+            </div>
+          </div>
+          <p v-else class="text" :class="{ warn: lineWarn(group.line) }">{{ group.line.text }}</p>
         </template>
       </div>
       <p v-if="toggleError && toggleError.name === p.name" class="error">{{ toggleError.message }}</p>
@@ -87,7 +102,8 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { getSystemPlugins, setSystemPluginEnabled, getRevereCloudInstall, startRevereCloudInstall } from '../api.js'
+import { getSystemPlugins, setSystemPluginEnabled, runSystemPluginAction, getRevereCloudInstall, startRevereCloudInstall } from '../api.js'
+import { choiceOptions, choiceSelected, pickChoice, lineWarn } from '../utils/pluginChoice.js'
 
 const props = defineProps({ authed: { type: Boolean, default: false } })
 
@@ -208,6 +224,8 @@ function groups(lines) {
       else out.push({ kind: 'links', lines: [l] })
     } else if (l.copy) {
       out.push({ kind: 'copy', line: l })
+    } else if (choiceOptions(l).length) {
+      out.push({ kind: 'choice', line: l })
     } else {
       out.push({ kind: 'text', line: l })
     }
@@ -233,6 +251,27 @@ async function refreshPlugins() {
     error.value = e.message
   } finally {
     loaded.value = true
+  }
+}
+
+// A radio row picked: the plugin's action for it, then the plugin's lines again (the plugin moves its selected row
+// itself, a moment after it is asked), and the rows drawn from them whatever the pick came to.
+const actionBusy = ref(false)
+const radioKey = ref(0)   // new key, new rows: the dots follow the plugin's value, not the last click
+async function pick(p, line, option) {
+  if (actionBusy.value) return
+  actionBusy.value = true
+  toggleError.value = null
+  try {
+    const r = await pickChoice(line, option, {
+      run: (action) => runSystemPluginAction(p.name, action),
+      refresh: refreshPlugins,
+      settle: () => { radioKey.value++ },
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    })
+    if (r.error) toggleError.value = { name: p.name, message: r.error.message }
+  } finally {
+    actionBusy.value = false
   }
 }
 
@@ -358,6 +397,16 @@ onUnmounted(() => {
   padding: 0.25rem 0.5rem;
   word-break: break-all;
 }
+.text.warn, .choice-cost.warn { color: #e0a83a; }
+/* The names, subtitles and cost lines wrap to the room there is and are never cut off. */
+.choice { display: flex; flex-direction: column; gap: 0.1rem; margin-top: 0.15rem; }
+.choice-row { display: flex; align-items: flex-start; gap: 0.55rem; padding: 0.35rem 0.4rem; border-radius: 4px; cursor: pointer; }
+.choice-row:hover { background: #1a1a1a; }
+.choice-row input { margin: 0.2rem 0 0; flex: none; }
+.choice-text { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.choice-name { color: #eee; }
+.choice-subtitle { color: #aaa; font-size: 0.8rem; }
+.choice-cost { color: #888; font-size: 0.8rem; }
 .tiles-title { font-weight: 600; color: #aaa; font-size: 0.8rem; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0.5rem; }
 .tile { background: #161616; border: 1px solid #2c2c2c; border-radius: 6px; padding: 0.5rem 0.6rem; display: flex; flex-direction: column; }

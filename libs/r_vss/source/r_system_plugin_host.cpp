@@ -189,6 +189,9 @@ struct r_system_plugin_host::frame_api
         auto api = static_cast<frame_api*>(host);
         if(!api || !api->owner || !state_json || api->guid.empty())
             return -1;
+        // A plugin that is disabled, or stopping, has no state to tell: what it says is not true of it now.
+        if(!api->owner->_may_publish_state(api->guid))
+            return -1;
         const int r = api->owner->_states.set(api->guid, state_json);
         if(r != 0)
             R_LOG_WARNING("System plugin %s: its state was refused (not a JSON object, or over %zu bytes); the last one stays", api->guid.c_str(), r_plugin_states::MAX_STATE_BYTES);
@@ -198,7 +201,7 @@ struct r_system_plugin_host::frame_api
     static int get_plugin_states(void* host, char* buf, size_t capacity)
     {
         auto api = static_cast<frame_api*>(host);
-        if(!api || !api->owner)
+        if(!api || !api->owner || api->guid != PLUGIN_STATES_READER_GUID)
             return -1;
         return copy_out(api->owner->_states.json(), buf, capacity);
     }
@@ -208,6 +211,8 @@ struct r_system_plugin_host::frame_api
         auto api = static_cast<frame_api*>(host);
         if(!api || !api->owner)
             return -1;
+        if(api->guid != PLUGIN_STATES_READER_GUID)
+            return copy_out("{\"error\":\"not allowed\",\"ok\":false}", result, capacity);
         return copy_out(api->owner->plugin_action(plugin_guid ? plugin_guid : "", action_json ? action_json : ""), result, capacity);
     }
 
@@ -859,6 +864,8 @@ void r_system_plugin_host::stop_all()
                 R_LOG_ERROR("Error stopping system plugin %s: %s", p->name.c_str(), e.what());
             }
         }
+        // Stopped (and about to be unloaded, when the host is going): its state is no longer true.
+        _states.remove(p->guid);
     }
     // A plugin stopping unsubscribes its feeds; any left are closed, so a next_frame
     // on them returns -1 at once. They're freed when the plugin is destroyed.
@@ -970,12 +977,38 @@ void r_system_plugin_host::set_plugin_enabled(const std::string& plugin_name, bo
         {
             p->set_enabled_func(p->plugin_handle, enabled);
             R_LOG_INFO("Set plugin %s enabled=%s", plugin_name.c_str(), enabled ? "true" : "false");
+            // Disabled, it has nothing to say: what it said before is gone from the states (and the version moves).
+            if(!enabled)
+                _states.remove(p->guid);
         }
         catch (const std::exception& e)
         {
             R_LOG_ERROR("Error setting enabled state for plugin %s: %s", plugin_name.c_str(), e.what());
         }
     }
+}
+
+// Whether the plugin with this GUID may have a state: it is loaded and enabled, and the host isn't stopping.
+bool r_system_plugin_host::_may_publish_state(const std::string& guid)
+{
+    {
+        std::shared_lock<std::shared_mutex> r(_dispatch_gate);
+        if(!_dispatch_open)
+            return false;
+    }
+    for(auto p : _snapshot())
+        if(p->guid == guid)
+        {
+            try
+            {
+                return p->plugin_handle && (!p->enabled_func || p->enabled_func(p->plugin_handle));
+            }
+            catch(const std::exception&)
+            {
+                return false;
+            }
+        }
+    return false;
 }
 
 bool r_system_plugin_host::run_plugin_action(const std::string& plugin_name, const std::string& action)
@@ -996,6 +1029,31 @@ bool r_system_plugin_host::run_plugin_action(const std::string& plugin_name, con
     }
 }
 
+bool r_system_plugin_host::queue_plugin_action(const std::string& plugin_name, const std::string& action)
+{
+    auto p = _find(plugin_name);
+    if(!p || !p->plugin_handle || !p->action_func)
+        return false;
+    std::lock_guard<std::mutex> g(_action_lock);
+    _queued_actions.emplace_back(plugin_name, action);
+    return true;
+}
+
+size_t r_system_plugin_host::run_queued_plugin_actions()
+{
+    std::vector<std::pair<std::string, std::string>> queued;
+    {
+        std::lock_guard<std::mutex> g(_action_lock);
+        queued.swap(_queued_actions);
+    }
+    // Run without the lock: an action may take a while, and a request meanwhile only joins the next batch.
+    for(const auto& a : queued)
+        run_plugin_action(a.first, a.second);
+    return queued.size();
+}
+
+// The caller's thread is not the UI's, and system_plugin_action is only ever called from it (r_system_plugin.h), so the
+// action is queued for it (queue_plugin_action) and the answer says it was queued, not that it ran.
 std::string r_system_plugin_host::plugin_action(const std::string& plugin_guid, const std::string& action_json)
 {
     auto fail = [](const std::string& why) {
@@ -1013,28 +1071,22 @@ std::string r_system_plugin_host::plugin_action(const std::string& plugin_guid, 
         return fail("the action isn't a JSON object");
     }
 
-    plugin_info* found = nullptr;
+    std::string name;
+    bool has_action = false;
     for(auto p : _snapshot())
-        if(p->guid == plugin_guid)
+        if(p->guid == plugin_guid && p->plugin_handle)
         {
-            found = p;
+            name = p->name;
+            has_action = p->action_func != nullptr;
             break;
         }
-    if(!found || !found->plugin_handle)
+    if(name.empty())
         return fail("no such plugin");
-    if(!found->action_func)
+    if(!has_action)
         return fail("the plugin takes no actions");
-    try
-    {
-        found->action_func(found->plugin_handle, action_json.c_str());
-        R_LOG_INFO("Ran plugin %s action %s", plugin_guid.c_str(), action_json.c_str());
-        return "{\"ok\":true}";
-    }
-    catch(const std::exception& e)
-    {
-        R_LOG_ERROR("Error running plugin %s action %s: %s", plugin_guid.c_str(), action_json.c_str(), e.what());
-        return fail(std::string("the plugin failed: ") + e.what());
-    }
+    if(!queue_plugin_action(name, action_json))
+        return fail("the action could not be queued");
+    return "{\"ok\":true}";
 }
 
 std::string r_system_plugin_host::get_plugin_status(const std::string& plugin_name) const

@@ -127,8 +127,18 @@ void test_r_system_plugin_frames::test_pressure_without_a_frame_source()
     RTF_ASSERT(l[2] == "sub null");
 }
 
-// set_plugin_state / get_plugin_states (host API version 3): a plugin's whole state, replaced on each change, with a
-// version that moves only when something did.
+static string _cloud_name()
+{
+    return fs::path(TEST_FRAMES_CLOUD_PLUGIN).stem().string();
+}
+
+static void _add_plugin(const string& top, const char* path)
+{
+    fs::copy_file(path, fs::path(top) / "system_plugins" / fs::path(path).filename());
+}
+
+// set_plugin_state (host API version 3): a plugin's whole state, replaced on each change, with a version that moves only
+// when something did.
 void test_r_system_plugin_frames::test_a_plugin_publishes_its_state()
 {
     r_frame_feeds feeds;
@@ -154,59 +164,121 @@ void test_r_system_plugin_frames::test_a_plugin_publishes_its_state()
     // Over 256 KB: refused too.
     {
         const string big = "{\"x\":\"" + string(r_plugin_states::MAX_STATE_BYTES, 'a') + "\"}";
-        r_plugin_states s;
-        RTF_ASSERT_EQUAL(s.set("g", big), -1);
-        RTF_ASSERT_EQUAL(s.version(), (int64_t)0);
+        r_plugin_states st;
+        RTF_ASSERT_EQUAL(st.set("g", big), -1);
+        RTF_ASSERT_EQUAL(st.version(), (int64_t)0);
     }
-    const string expected = "{\"plugins\":{\"" + guid + "\":{\"mode\":\"off\",\"v\":1}},\"version\":2}";
-    RTF_ASSERT(host.get_plugin_states_json() == expected);
-
-    // Through the C function: the length, a cut, and no buffer.
-    RTF_ASSERT(host.run_plugin_action(_name(), "states:0"));
-    RTF_ASSERT(host.run_plugin_action(_name(), "states:10"));
-    RTF_ASSERT(host.run_plugin_action(_name(), "states:" + to_string(expected.size() + 1)));
+    RTF_ASSERT(host.get_plugin_states_json() == "{\"plugins\":{\"" + guid + "\":{\"mode\":\"off\",\"v\":1}},\"version\":2}");
 
     auto l = _lines(_top + "/frames.txt");
-    RTF_ASSERT_EQUAL(l.size(), (size_t)10);
+    RTF_ASSERT_EQUAL(l.size(), (size_t)7);
     RTF_ASSERT(l[1] == "state r=0" && l[2] == "state r=0" && l[3] == "state r=0");
     RTF_ASSERT(l[4] == "state r=-1" && l[5] == "state r=-1" && l[6] == "state r=-1");
-    RTF_ASSERT(l[7] == "states n=" + to_string(expected.size()) + " guard=ok text=");
-    RTF_ASSERT(l[8] == "states n=" + to_string(expected.size()) + " guard=ok text=" + expected.substr(0, 9));
-    RTF_ASSERT(l[9] == "states n=" + to_string(expected.size()) + " guard=ok text=" + expected);
 }
 
-// plugin_action: runs an action on a plugin by its GUID, as its panel's button does, and says how it went.
-void test_r_system_plugin_frames::test_a_plugin_runs_an_action_on_another()
+// get_plugin_states through the C table: only the cloud plugin may read; the length, a cut, and no buffer.
+void test_r_system_plugin_frames::test_only_the_cloud_plugin_reads_the_states()
 {
-    fs::copy_file(TEST_ACTION_PLUGIN, fs::path(_top) / "system_plugins" / fs::path(TEST_ACTION_PLUGIN).filename());
-    fs::copy_file(TEST_NO_ACTION_PLUGIN, fs::path(_top) / "system_plugins" / fs::path(TEST_NO_ACTION_PLUGIN).filename());
+    _add_plugin(_top, TEST_FRAMES_CLOUD_PLUGIN);
+    r_frame_feeds feeds;
+    r_system_plugin_host host(_top);
+    host.set_frame_source(&feeds, _recording("cam1"));
+    RTF_ASSERT(host.run_plugin_action(_name(), "state:{\"v\":1}"));
+    const string expected = "{\"plugins\":{\"com.revere.test.frames\":{\"v\":1}},\"version\":1}";
+
+    RTF_ASSERT(host.run_plugin_action(_cloud_name(), "states:0"));
+    RTF_ASSERT(host.run_plugin_action(_cloud_name(), "states:10"));
+    RTF_ASSERT(host.run_plugin_action(_cloud_name(), "states:" + to_string(expected.size() + 1)));
+    // Another plugin gets nothing: -1, and its buffer is untouched.
+    RTF_ASSERT(host.run_plugin_action(_name(), "states:100"));
+
+    auto c = _lines(_top + "/cloud.txt");
+    RTF_ASSERT_EQUAL(c.size(), (size_t)4);
+    RTF_ASSERT(c[1] == "states n=" + to_string(expected.size()) + " guard=ok text=");
+    RTF_ASSERT(c[2] == "states n=" + to_string(expected.size()) + " guard=ok text=" + expected.substr(0, 9));
+    RTF_ASSERT(c[3] == "states n=" + to_string(expected.size()) + " guard=ok text=" + expected);
+    auto l = _lines(_top + "/frames.txt");
+    RTF_ASSERT(l.back() == "states n=-1 guard=ok text=");
+}
+
+// plugin_action: queued for the UI's thread, by GUID; only the cloud plugin may ask; the answer says it was queued.
+void test_r_system_plugin_frames::test_a_plugin_action_is_queued_for_the_ui_thread()
+{
+    _add_plugin(_top, TEST_ACTION_PLUGIN);
+    _add_plugin(_top, TEST_NO_ACTION_PLUGIN);
+    _add_plugin(_top, TEST_FRAMES_CLOUD_PLUGIN);
     r_frame_feeds feeds;
     r_system_plugin_host host(_top);
     host.set_frame_source(&feeds, _recording("cam1"));
 
     const string act = "{\"action\":\"set_mode\",\"camera\":\"c1\"}";
     RTF_ASSERT(host.plugin_action("com.revere.test.action", act) == "{\"ok\":true}");
+    // Queued, not run: the plugin has not been called on this thread.
+    RTF_ASSERT(!fs::exists(_top + "/actions.txt"));
+    RTF_ASSERT_EQUAL(host.run_queued_plugin_actions(), (size_t)1);
     // The plugin was given the action JSON as its string, once.
     auto actions = _lines(_top + "/actions.txt");
     RTF_ASSERT_EQUAL(actions.size(), (size_t)1);
     RTF_ASSERT(actions[0] == act);
-    // No such plugin; one with no action function; an action that isn't a JSON object.
+    // No such plugin; one with no action function; an action that isn't a JSON object: nothing queued.
     RTF_ASSERT(host.plugin_action("com.revere.test.nobody", act) == "{\"error\":\"no such plugin\",\"ok\":false}");
     RTF_ASSERT(host.plugin_action("com.revere.test.no_action", act) == "{\"error\":\"the plugin takes no actions\",\"ok\":false}");
     RTF_ASSERT(host.plugin_action("com.revere.test.action", "try_again") == "{\"error\":\"the action isn't a JSON object\",\"ok\":false}");
     RTF_ASSERT(host.plugin_action("com.revere.test.action", "[1]") == "{\"error\":\"the action isn't a JSON object\",\"ok\":false}");
-    RTF_ASSERT_EQUAL(_lines(_top + "/actions.txt").size(), (size_t)1);      // none of those reached it
+    RTF_ASSERT_EQUAL(host.run_queued_plugin_actions(), (size_t)0);
 
-    // From a plugin, through the C table: the result in its buffer, and a plugin acting on itself.
-    RTF_ASSERT(host.run_plugin_action(_name(), "act:com.revere.test.action:" + act));
-    RTF_ASSERT(host.run_plugin_action(_name(), "act:com.revere.test.nobody:" + act));
-    RTF_ASSERT(host.run_plugin_action(_name(), "act:com.revere.test.frames:" + act));
+    // From the cloud plugin, through the C table: the result in its buffer, queued, run later on the UI's thread.
+    RTF_ASSERT(host.run_plugin_action(_cloud_name(), "act:com.revere.test.action:" + act));
+    RTF_ASSERT(host.run_plugin_action(_cloud_name(), "act:com.revere.test.nobody:" + act));
+    RTF_ASSERT(host.run_plugin_action(_cloud_name(), "act:com.revere.test.frames:" + act));
+    RTF_ASSERT_EQUAL(_lines(_top + "/actions.txt").size(), (size_t)1);          // not yet
+    RTF_ASSERT_EQUAL(host.run_queued_plugin_actions(), (size_t)2);
     RTF_ASSERT_EQUAL(_lines(_top + "/actions.txt").size(), (size_t)2);
+    auto c = _lines(_top + "/cloud.txt");
+    RTF_ASSERT(c[1] == "act n=11 text={\"ok\":true}");
+    RTF_ASSERT(c[2] == "act n=37 text={\"error\":\"no such plugin\",\"ok\":false}");
+    RTF_ASSERT(c[3] == "act n=11 text={\"ok\":true}");
+    // The frames plugin was handed its action (it notes a JSON action).
     auto l = _lines(_top + "/frames.txt");
-    RTF_ASSERT(l[1] == "act n=11 text={\"ok\":true}");
-    RTF_ASSERT(l[2] == "act n=37 text={\"error\":\"no such plugin\",\"ok\":false}");
-    RTF_ASSERT(l[3] == "json action " + act);
-    RTF_ASSERT(l[4] == "act n=11 text={\"ok\":true}");
+    RTF_ASSERT(l.back() == "json action " + act);
+
+    // Any other plugin: not allowed, and nothing is queued.
+    RTF_ASSERT(host.run_plugin_action(_name(), "act:com.revere.test.action:" + act));
+    RTF_ASSERT_EQUAL(host.run_queued_plugin_actions(), (size_t)0);
+    l = _lines(_top + "/frames.txt");
+    RTF_ASSERT(l.back() == "act n=34 text={\"error\":\"not allowed\",\"ok\":false}");
+    RTF_ASSERT_EQUAL(_lines(_top + "/actions.txt").size(), (size_t)2);
+}
+
+// A plugin that is disabled or stopped has no state: it is dropped (the version rises), a disabled plugin can't set one,
+// and enabling it lets it again.
+void test_r_system_plugin_frames::test_a_disabled_or_stopped_plugin_has_no_state()
+{
+    r_frame_feeds feeds;
+    r_system_plugin_host host(_top);
+    host.set_frame_source(&feeds, _recording("cam1"));
+    RTF_ASSERT(host.run_plugin_action(_name(), "state:{\"v\":1}"));
+    RTF_ASSERT_EQUAL(host.plugin_states_version(), (int64_t)1);
+
+    host.set_plugin_enabled(_name(), false);
+    RTF_ASSERT(host.get_plugin_states_json() == "{\"plugins\":{},\"version\":2}");
+    // Disabled: its state is refused.
+    RTF_ASSERT(host.run_plugin_action(_name(), "state:{\"v\":2}"));
+    RTF_ASSERT_EQUAL(host.plugin_states_version(), (int64_t)2);
+    // Enabled again: it may.
+    host.set_plugin_enabled(_name(), true);
+    RTF_ASSERT(host.run_plugin_action(_name(), "state:{\"v\":2}"));
+    RTF_ASSERT_EQUAL(host.plugin_states_version(), (int64_t)3);
+    RTF_ASSERT(host.get_plugin_states_json() == "{\"plugins\":{\"com.revere.test.frames\":{\"v\":2}},\"version\":3}");
+
+    // Stopped (as when the host is going): dropped again, and it can't set one meanwhile.
+    host.stop_all();
+    RTF_ASSERT(host.get_plugin_states_json() == "{\"plugins\":{},\"version\":4}");
+    RTF_ASSERT(host.run_plugin_action(_name(), "state:{\"v\":3}"));
+    RTF_ASSERT_EQUAL(host.plugin_states_version(), (int64_t)4);
+
+    auto l = _lines(_top + "/frames.txt");
+    RTF_ASSERT(l[1] == "state r=0" && l[2] == "state r=-1" && l[3] == "state r=0" && l[4] == "state r=-1");
 }
 
 void test_r_system_plugin_frames::test_a_plugin_reads_a_cameras_frames()
