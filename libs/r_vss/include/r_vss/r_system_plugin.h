@@ -157,6 +157,15 @@ R_API void system_plugin_cameras_changed(r_system_plugin_handle plugin);
 // a "confirm" question) calls this with the line's "action" id. Called on the
 // UI thread, so return promptly and do any slow work on the plugin's own thread.
 // Only a plugin that exports this should put "action" in its lines.
+//
+// A line can also carry a choice, drawn under its text as a radio list (in the desktop's plugin panel and the web's):
+//   {"text": "<summary>", "choice": {"value": "<selected option's value>", "action": "<prefix>",
+//     "options": [{"value", "name", "subtitle", "cost", "warn"}]}}
+// Picking an option calls this with the choice's "action" followed by the option's "value" ("mode:cam1:" and "live"
+// call "mode:cam1:live"); picking the selected option calls nothing. Names, subtitles and cost lines wrap; an option
+// with "warn": true shows its cost line in the warning tone, and a line with "warn": true shows its text in it. A host
+// from before choice lines draws only the text, so a plugin that needs a way to choose there also sends a button for
+// each option. The plugin gets only actions its own lines offered.
 R_API void system_plugin_action(r_system_plugin_handle plugin, const char* action);
 
 // ---- Live frames ----
