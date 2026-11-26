@@ -194,7 +194,7 @@
           <label class="check option">
             <input type="checkbox" v-model="propsDoorbell" :disabled="propsBusy" />
             <span>
-              <span class="title">This is a doorbell</span>
+              <span class="title">Doorbell</span>
               <span class="desc">Pressing the button saves an event and notifies your phone, even if motion detection is off.</span>
             </span>
           </label>
@@ -226,11 +226,17 @@
                     <code>{{ f.secret ? (doorReveal ? inGroupsOf4(f.value) : '••••••••••••') : f.value }}</code>
                     <span class="mail-buttons">
                       <button v-if="f.secret" class="ghost small" @click="doorReveal = !doorReveal">{{ doorReveal ? 'Hide' : 'Show' }}</button>
+                      <button v-if="f.secret" class="ghost small" :disabled="propsBusy || doorNewPassword" @click="doorConfirmNew = true">New password</button>
                       <button v-if="f.copy" class="ghost small" @click="copyField(f)">{{ copiedField === f.key ? 'Copied' : 'Copy' }}</button>
                     </span>
                   </dd>
                 </template>
               </dl>
+              <div v-if="doorMail && doorConfirmNew" class="new-password">
+                <p class="warn">The doorbell will stop sending presses until you enter the new password in the Reolink app.</p>
+                <button class="small" :disabled="doorNewPassword" @click="newPassword">Make a new password</button>
+                <button class="ghost small" :disabled="doorNewPassword" @click="doorConfirmNew = false">Cancel</button>
+              </div>
               <p v-if="doorMail" class="blurb">Then set the email Alarm Schedule to Ring only. Otherwise the doorbell also emails when it sees motion.</p>
               <p v-if="doorMail && doorMailError" class="warn">{{ doorMailError }}</p>
               <p class="blurb">The doorbell sends its email about 15 seconds after the press, so the ring arrives late.</p>
@@ -300,14 +306,14 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   isAuthed, getCameras, getDiscoveryStatus,
   removeCamera, updateCameraProperties, forgetCamera, addRtspCamera,
-  getDoorbellPresses, getDoorbellMailSetup, startDoorbellPressTest,
+  getDoorbellPresses, getDoorbellMailSetup, startDoorbellPressTest, newDoorbellMailLogin,
 } from '../api.js'
 import KeepAwakeSection from './KeepAwakeSection.vue'
 import RecordWizard from './RecordWizard.vue'
 import StorageDialog from './StorageDialog.vue'
 import PluginsSection from './PluginsSection.vue'
 import { doorbellChoice } from '../utils/cameraKind.js'
-import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, MAIL_SENDER, inGroupsOf4, mailSetupError } from '../utils/doorbellSetup.js'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, mailSetupRows, inGroupsOf4, mailSetupError } from '../utils/doorbellSetup.js'
 import { unsaved } from '../utils/unsaved.js'
 
 const cameras = ref([])
@@ -336,6 +342,8 @@ const doorPresses = ref(null)
 const doorMail = ref(null)
 const doorMailError = ref('')
 const doorReveal = ref(false)
+const doorConfirmNew = ref(false)
+const doorNewPassword = ref(false)
 const doorTesting = ref(false)
 const copiedField = ref('')
 const nowMs = ref(Date.now())
@@ -391,19 +399,7 @@ const testVerdict = computed(() => pressTestVerdict(doorTest.value, propsPressSo
 const testSecondsLeft = computed(() => Math.max(0, Math.ceil(((doorTest.value?.ends_ms || 0) - nowMs.value) / 1000)))
 const mailLines = computed(() => mailStatusLines(doorMail.value, doorPresses.value, propsPressSource.value))
 // What to type in the Reolink app, a field at a time.
-const mailFields = computed(() => {
-  const m = doorMail.value
-  if (!m) return []
-  return [
-    { key: 'server', name: 'SMTP server', value: m.server, copy: true },
-    { key: 'port', name: 'SMTP port', value: String(m.port), copy: true },
-    { key: 'tls', name: 'SSL or TLS', value: 'On' },
-    { key: 'user', name: 'User name', value: m.user, copy: true },
-    { key: 'password', name: 'Password', value: m.password, copy: true, secret: true },
-    { key: 'sender', name: 'Sender address', value: MAIL_SENDER, copy: true },
-    { key: 'recipient', name: 'Recipient address', value: m.recipient, copy: true },
-  ]
-})
+const mailFields = computed(() => mailSetupRows(doorMail.value))
 
 async function readDoor() {
   const cam = propsTarget.value
@@ -415,7 +411,7 @@ async function readDoor() {
     const haveLogin = !!doorMail.value?.password
     try {
       const m = await getDoorbellMailSetup(cam.id, { login: !haveLogin })
-      doorMail.value = haveLogin ? { ...m, user: doorMail.value.user, password: doorMail.value.password } : m
+      doorMail.value = haveLogin ? { ...m, password: doorMail.value.password } : m
       doorMailError.value = ''
     } catch (e) {
       if (!haveLogin) doorMail.value = null
@@ -436,6 +432,22 @@ watch([propsTarget, propsDoorbell, propsPressSource], () => {
   }
 })
 onUnmounted(stopDoorReads)
+
+// "New password", confirmed: a new email password, shown at once.
+async function newPassword() {
+  if (!propsTarget.value) return
+  doorNewPassword.value = true
+  try {
+    doorMail.value = await newDoorbellMailLogin(propsTarget.value.id)
+    doorMailError.value = ''
+    doorReveal.value = true
+    doorConfirmNew.value = false
+  } catch (e) {
+    doorMailError.value = mailSetupError(e)
+  } finally {
+    doorNewPassword.value = false
+  }
+}
 
 async function pressTest() {
   if (!propsTarget.value) return
@@ -584,6 +596,7 @@ function askProperties(camera) {
   doorMail.value = null
   doorMailError.value = ''
   doorReveal.value = false
+  doorConfirmNew.value = false
   propsMotion.value = !!camera.do_motion_detection
   propsPrune.value = !!camera.do_motion_pruning
   propsHours.value = camera.min_continuous_recording_hours ?? 24
@@ -932,6 +945,8 @@ button:disabled { cursor: default; opacity: 0.6; }
 .props-pane .mail-fields dd { margin: 0; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; min-width: 0; }
 .props-pane .mail-fields code { font-size: 0.85rem; color: #ddd; word-break: break-all; min-width: 0; }
 .props-pane .mail-buttons { display: inline-flex; gap: 0.3rem; margin-left: auto; }
+.props-pane .new-password { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin: 0.4rem 0; }
+.props-pane .new-password .warn { flex-basis: 100%; margin: 0; }
 .props-pane .test-line { margin: 0; font-size: 0.9rem; }
 .props-pane .warn { margin: 0; font-size: 0.85rem; color: #e0a040; line-height: 1.45; }
 /* Cancel and Save stay at the bottom while the sections scroll */

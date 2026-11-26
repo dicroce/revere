@@ -9,8 +9,23 @@ export function pressSourceChoice(camera, isDoorbell, source) {
   return source !== camera.press_source || source !== 'onvif' ? { press_source: source } : {}
 }
 
-// The sender address to type in the Reolink app: the listener takes any, and this one says where the mail is from.
-export const MAIL_SENDER = 'doorbell@revere.local'
+// The sender's email to type in the Reolink app, when revere doesn't say (GET /doorbell_mail_setup's sender): an address
+// on a domain of ours, which the app takes (it may refuse .local). The listener takes any.
+export const MAIL_SENDER = 'doorbell@revere.video'
+
+// The rows to type into the Reolink app (Settings › Email Alerts › Email Settings), named and ordered as the app has
+// them: it has no user field (it logs in with the sender's email, and the listener takes any user with the password).
+export function mailSetupRows(mail) {
+  if (!mail) return []
+  return [
+    { key: 'server', name: 'SMTP server', value: mail.server, copy: true },
+    { key: 'port', name: 'SMTP port', value: String(mail.port), copy: true },
+    { key: 'tls', name: 'SSL or TLS', value: 'On' },
+    { key: 'sender', name: "Sender's email", value: mail.sender || MAIL_SENDER, copy: true },
+    { key: 'password', name: 'Password', value: mail.password, copy: true, secret: true },
+    { key: 'recipient', name: 'Recipient', value: mail.recipient, copy: true },
+  ]
+}
 
 // A password shown for typing, in groups of 4: "Xw7t Q2mL p9Rz". Copy copies it as it is.
 export const inGroupsOf4 = (s) => (s || '').replace(/(.{4})(?=.)/g, '$1 ')
@@ -79,6 +94,6 @@ export function mailStatusLines(mail, presses, chosen) {
     out.push(`The doorbell sent ${other} ${other === 1 ? "email that wasn't a press" : "emails that weren't presses"}. In the Reolink app, set the email Alarm Schedule to Ring only.`)
   }
   const bad = mail?.bad_logins || 0
-  if (bad) out.push(`The doorbell's email login failed ${bad} ${bad === 1 ? 'time' : 'times'}. Check the user name and password in the Reolink app.`)
+  if (bad) out.push(`The doorbell's email login failed ${bad} ${bad === 1 ? 'time' : 'times'}. Check the password in the Reolink app.`)
   return out
 }

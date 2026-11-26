@@ -1,7 +1,7 @@
 // Run with: npm test (node's built-in test runner; no extra dependencies).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, clockText, inGroupsOf4, mailSetupError, MAIL_SENDER } from '../src/utils/doorbellSetup.js'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, clockText, inGroupsOf4, mailSetupError, mailSetupRows, MAIL_SENDER } from '../src/utils/doorbellSetup.js'
 
 test('the press source is sent for a doorbell once chosen, never for a camera or to an older revere', () => {
   assert.deepEqual(pressSourceChoice({ press_source: 'onvif' }, true, 'onvif'), {})
@@ -44,7 +44,7 @@ test("the doorbell's email status, a line at a time", () => {
   const lines = mailStatusLines({ listening: true, other_mail: 1, bad_logins: 2 }, rung, 'reolink_email')
   assert.equal(lines[0], `The doorbell last emailed a press at ${clockText(1764018345000)}.`)
   assert.equal(lines[1], "The doorbell sent 1 email that wasn't a press. In the Reolink app, set the email Alarm Schedule to Ring only.")
-  assert.equal(lines[2], "The doorbell's email login failed 2 times. Check the user name and password in the Reolink app.")
+  assert.equal(lines[2], "The doorbell's email login failed 2 times. Check the password in the Reolink app.")
   const more = mailStatusLines({ listening: true, other_mail: 3, bad_logins: 1 }, rung, 'reolink_email')
   assert.match(more[1], /sent 3 emails that weren't presses\./)
   assert.match(more[2], /failed 1 time\./)
@@ -56,7 +56,20 @@ test('a password shown in groups of 4, and a real sender address', () => {
   assert.equal(inGroupsOf4('abcde'), 'abcd e')
   assert.equal(inGroupsOf4('abcd'), 'abcd')
   assert.equal(inGroupsOf4(''), '')
-  assert.match(MAIL_SENDER, /^[^@ ]+@[^@ ]+$/)
+  assert.equal(inGroupsOf4('k7mq2xpa'), 'k7mq 2xpa')
+  assert.equal(MAIL_SENDER, 'doorbell@revere.video')
+})
+
+test('the mail setup rows are what the Reolink app asks for, with no user name', () => {
+  const mail = { server: '192.168.1.20', port: 2525, sender: 'doorbell@revere.video', password: 'k7mq2xpa', recipient: 'rings@revere.video', user: 'ignored' }
+  const rows = mailSetupRows(mail)
+  assert.deepEqual(rows.map((r) => r.name), ['SMTP server', 'SMTP port', 'SSL or TLS', "Sender's email", 'Password', 'Recipient'])
+  assert.deepEqual(rows.map((r) => r.value), ['192.168.1.20', '2525', 'On', 'doorbell@revere.video', 'k7mq2xpa', 'rings@revere.video'])
+  assert.deepEqual(rows.map((r) => !!r.secret), [false, false, false, false, true, false])
+  assert.deepEqual(rows.map((r) => !!r.copy), [true, true, false, true, true, true])
+  // An older revere gives no sender: ours is shown.
+  assert.equal(mailSetupRows({ ...mail, sender: undefined })[3].value, 'doorbell@revere.video')
+  assert.deepEqual(mailSetupRows(null), [])
 })
 
 test("the email setup's error says what went wrong", () => {
