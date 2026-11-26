@@ -194,10 +194,68 @@
           <label class="check option">
             <input type="checkbox" v-model="propsDoorbell" :disabled="propsBusy" />
             <span>
-              <span class="title">This is a doorbell</span>
-              <span class="desc">A press of its button rings, as an event and a notification, whatever the detection settings.</span>
+              <span class="title">Doorbell</span>
+              <span class="desc">Pressing the button saves an event and notifies your phone, even if motion detection is off.</span>
             </span>
           </label>
+
+          <template v-if="propsDoorbell">
+            <fieldset class="tiers" :disabled="propsBusy">
+              <legend>How the doorbell tells Revere about a press</legend>
+              <div class="pills">
+                <label class="pill" :class="{ on: propsPressSource === 'onvif' }">
+                  <input type="radio" name="press_source" value="onvif" v-model="propsPressSource" />ONVIF
+                </label>
+                <label class="pill" :class="{ on: propsPressSource === 'reolink_email' }">
+                  <input type="radio" name="press_source" value="reolink_email" v-model="propsPressSource" />Reolink email
+                </label>
+              </div>
+              <p v-if="propsPressSource === 'onvif'" class="blurb">The doorbell sends each press to Revere over ONVIF, right away. Most doorbells support this.</p>
+              <p v-else class="blurb">For Reolink doorbells that don't send presses over ONVIF. The doorbell emails each press to this computer instead. The email stays on your network.</p>
+              <p v-if="doorPresses?.suggest_onvif && propsPressSource === 'reolink_email'" class="warn">This doorbell now sends presses over ONVIF too. Switch to ONVIF so rings arrive right away.</p>
+            </fieldset>
+
+            <div v-if="propsPressSource === 'reolink_email'" class="mail-setup">
+              <span class="title">In the Reolink app</span>
+              <p class="blurb">Open Settings › Email Alerts › Email Settings and enter:</p>
+              <p v-if="!doorMail" class="blurb">{{ doorMailError || 'Loading the email settings…' }}</p>
+              <dl v-else class="mail-fields">
+                <template v-for="f in mailFields" :key="f.key">
+                  <dt>{{ f.name }}</dt>
+                  <dd>
+                    <code>{{ f.secret ? (doorReveal ? inGroupsOf4(f.value) : '••••••••••••') : f.value }}</code>
+                    <span class="mail-buttons">
+                      <button v-if="f.secret" class="ghost small" @click="doorReveal = !doorReveal">{{ doorReveal ? 'Hide' : 'Show' }}</button>
+                      <button v-if="f.secret" class="ghost small" :disabled="propsBusy || doorNewPassword" @click="doorConfirmNew = true">New password</button>
+                      <button v-if="f.copy" class="ghost small" @click="copyField(f)">{{ copiedField === f.key ? 'Copied' : 'Copy' }}</button>
+                    </span>
+                  </dd>
+                </template>
+              </dl>
+              <div v-if="doorMail && doorConfirmNew" class="new-password">
+                <p class="warn">The doorbell will stop sending presses until you enter the new password in the Reolink app.</p>
+                <button class="small" :disabled="doorNewPassword" @click="newPassword">Make a new password</button>
+                <button class="ghost small" :disabled="doorNewPassword" @click="doorConfirmNew = false">Cancel</button>
+              </div>
+              <p v-if="doorMail" class="blurb">Then set the email Alarm Schedule to Ring only. Otherwise the doorbell also emails when it sees motion.</p>
+              <p v-if="doorMail && doorMailError" class="warn">{{ doorMailError }}</p>
+              <p class="blurb">The doorbell sends its email about 15 seconds after the press, so the ring arrives late.</p>
+              <p class="blurb">The doorbell sends at most one email about every 10 minutes, and has no setting to change that. A second press in that time doesn't reach Revere.</p>
+              <p v-for="line in mailLines" :key="line" class="blurb">{{ line }}</p>
+            </div>
+
+            <div class="press-check">
+              <span class="title">Test it</span>
+              <p v-if="doorTest?.open" class="blurb">Press the doorbell now. {{ testSecondsLeft }} {{ testSecondsLeft === 1 ? 'second' : 'seconds' }} left.</p>
+              <template v-else>
+                <button class="ghost small" :disabled="propsBusy || doorTesting" @click="pressTest">Start test</button>
+                <p class="blurb">Click Start test, then press the doorbell within a minute. Revere shows how the press arrived and how long it took. Your phone won't ring during the test.</p>
+              </template>
+              <p v-for="line in testLines" :key="line" class="test-line">{{ line }}</p>
+              <p v-if="testVerdict" class="blurb">{{ testVerdict }}</p>
+              <p v-if="doorTest && !doorTest.open && doorPresses && doorPresses.press_source !== propsPressSource" class="blurb">The test checks the saved choice. Save first to test the other one.</p>
+            </div>
+          </template>
         </div>
       </div>
 
@@ -248,12 +306,14 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   isAuthed, getCameras, getDiscoveryStatus,
   removeCamera, updateCameraProperties, forgetCamera, addRtspCamera,
+  getDoorbellPresses, getDoorbellMailSetup, startDoorbellPressTest, newDoorbellMailLogin,
 } from '../api.js'
 import KeepAwakeSection from './KeepAwakeSection.vue'
 import RecordWizard from './RecordWizard.vue'
 import StorageDialog from './StorageDialog.vue'
 import PluginsSection from './PluginsSection.vue'
 import { doorbellChoice } from '../utils/cameraKind.js'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, mailSetupRows, inGroupsOf4, mailSetupError } from '../utils/doorbellSetup.js'
 import { unsaved } from '../utils/unsaved.js'
 
 const cameras = ref([])
@@ -275,6 +335,19 @@ const removeError = ref('')
 
 const propsTarget = ref(null)
 const propsDoorbell = ref(false)
+// A doorbell's press source ("onvif" or "reolink_email"), and what the Doorbell section shows about its presses
+// (read every 2 s while it shows; reading changes nothing on the camera, so it's never an unsaved change).
+const propsPressSource = ref('onvif')
+const doorPresses = ref(null)
+const doorMail = ref(null)
+const doorMailError = ref('')
+const doorReveal = ref(false)
+const doorConfirmNew = ref(false)
+const doorNewPassword = ref(false)
+const doorTesting = ref(false)
+const copiedField = ref('')
+const nowMs = ref(Date.now())
+let doorTimer = null
 const propsMotion = ref(true)
 const propsPrune = ref(false)
 const propsHours = ref(24)
@@ -317,8 +390,83 @@ const propsDirty = computed(() => {
   const b = propsBase.value
   if (!propsTarget.value || !b) return false
   return propsDoorbell.value !== b.doorbell || propsMotion.value !== b.motion || propsPrune.value !== b.prune || propsTier.value !== b.tier ||
-    (propsPrune.value && propsHours.value !== b.hours)
+    (propsPrune.value && propsHours.value !== b.hours) || (propsDoorbell.value && propsPressSource.value !== b.pressSource)
 })
+
+const doorTest = computed(() => doorPresses.value?.test || null)
+const testLines = computed(() => pressTestLines(doorTest.value))
+const testVerdict = computed(() => pressTestVerdict(doorTest.value, propsPressSource.value))
+const testSecondsLeft = computed(() => Math.max(0, Math.ceil(((doorTest.value?.ends_ms || 0) - nowMs.value) / 1000)))
+const mailLines = computed(() => mailStatusLines(doorMail.value, doorPresses.value, propsPressSource.value))
+// What to type in the Reolink app, a field at a time.
+const mailFields = computed(() => mailSetupRows(doorMail.value))
+
+async function readDoor() {
+  const cam = propsTarget.value
+  if (!cam || !propsDoorbell.value) return
+  nowMs.value = Date.now()
+  try { doorPresses.value = await getDoorbellPresses(cam.id) } catch { doorPresses.value = null }
+  if (propsPressSource.value === 'reolink_email') {
+    // The login once; after that, the listener's status without it.
+    const haveLogin = !!doorMail.value?.password
+    try {
+      const m = await getDoorbellMailSetup(cam.id, { login: !haveLogin })
+      doorMail.value = haveLogin ? { ...m, password: doorMail.value.password } : m
+      doorMailError.value = ''
+    } catch (e) {
+      if (!haveLogin) doorMail.value = null
+      doorMailError.value = mailSetupError(e)
+    }
+  }
+}
+function stopDoorReads() {
+  if (doorTimer) clearInterval(doorTimer)
+  doorTimer = null
+}
+// Read while the Doorbell section shows: the pane open on a doorbell.
+watch([propsTarget, propsDoorbell, propsPressSource], () => {
+  stopDoorReads()
+  if (propsTarget.value && propsDoorbell.value) {
+    readDoor()
+    doorTimer = setInterval(readDoor, 2000)
+  }
+})
+onUnmounted(stopDoorReads)
+
+// "New password", confirmed: a new email password, shown at once.
+async function newPassword() {
+  if (!propsTarget.value) return
+  doorNewPassword.value = true
+  try {
+    doorMail.value = await newDoorbellMailLogin(propsTarget.value.id)
+    doorMailError.value = ''
+    doorReveal.value = true
+    doorConfirmNew.value = false
+  } catch (e) {
+    doorMailError.value = mailSetupError(e)
+  } finally {
+    doorNewPassword.value = false
+  }
+}
+
+async function pressTest() {
+  if (!propsTarget.value) return
+  doorTesting.value = true
+  try {
+    await startDoorbellPressTest(propsTarget.value.id)
+    await readDoor()
+  } catch (e) {
+    propsError.value = e.message
+  } finally {
+    doorTesting.value = false
+  }
+}
+
+async function copyField(f) {
+  await copyText(f.value)
+  copiedField.value = f.key
+  setTimeout(() => { if (copiedField.value === f.key) copiedField.value = '' }, 1500)
+}
 const tierNames = ['', "Revere's detection", "the camera's detection", "the camera's motion and Revere's objects"]
 
 // What the camera uses now and why, from /cameras' motion_tier status (live,
@@ -443,6 +591,12 @@ function askProperties(camera) {
   if (!authed.value) return
   propsTarget.value = camera
   propsDoorbell.value = camera.kind === 'doorbell'
+  propsPressSource.value = camera.press_source || 'onvif'
+  doorPresses.value = null
+  doorMail.value = null
+  doorMailError.value = ''
+  doorReveal.value = false
+  doorConfirmNew.value = false
   propsMotion.value = !!camera.do_motion_detection
   propsPrune.value = !!camera.do_motion_pruning
   propsHours.value = camera.min_continuous_recording_hours ?? 24
@@ -454,6 +608,7 @@ function askProperties(camera) {
     prune: propsMotion.value && propsPrune.value,
     hours: propsHours.value,
     tier: propsTier.value,
+    pressSource: propsPressSource.value,
   }
   confirmingDiscard.value = false
   propsError.value = ''
@@ -464,6 +619,12 @@ function askProperties(camera) {
 // is served over plain http on 127.0.0.1, which counts as secure, but keep the
 // execCommand fallback for browsers/contexts where it is still unavailable.
 async function copyPath(text) {
+  await copyText(text)
+  copied.value = true
+  setTimeout(() => { copied.value = false }, 1500)
+}
+
+async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text)
   } catch {
@@ -476,8 +637,6 @@ async function copyPath(text) {
     document.execCommand('copy')
     document.body.removeChild(ta)
   }
-  copied.value = true
-  setTimeout(() => { copied.value = false }, 1500)
 }
 
 function cancelProps() {
@@ -505,6 +664,7 @@ async function confirmProps() {
       motion_tier: propsTier.value,
       // Kept as a choice only once it differs from what the camera's model suggests, or was chosen before.
       ...doorbellChoice(propsTarget.value, propsDoorbell.value),
+      ...pressSourceChoice(propsTarget.value, propsDoorbell.value, propsPressSource.value),
     })
     propsTarget.value = null
     await refresh()
@@ -769,6 +929,26 @@ button:disabled { cursor: default; opacity: 0.6; }
   border-radius: 4px;
   padding: 0.35rem 0.5rem;
 }
+/* A doorbell's press setup (the Doorbell section) */
+.props-pane .mail-setup, .props-pane .press-check { display: flex; flex-direction: column; align-items: flex-start; gap: 0.35rem; }
+.props-pane .mail-setup .title, .props-pane .press-check .title { font-size: 0.9rem; }
+.props-pane .mail-setup .blurb, .props-pane .press-check .blurb { margin: 0; }
+.props-pane .mail-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.35rem 0.7rem;
+  align-items: center;
+  margin: 0.2rem 0;
+  width: 100%;
+}
+.props-pane .mail-fields dt { font-size: 0.85rem; color: #999; }
+.props-pane .mail-fields dd { margin: 0; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; min-width: 0; }
+.props-pane .mail-fields code { font-size: 0.85rem; color: #ddd; word-break: break-all; min-width: 0; }
+.props-pane .mail-buttons { display: inline-flex; gap: 0.3rem; margin-left: auto; }
+.props-pane .new-password { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin: 0.4rem 0; }
+.props-pane .new-password .warn { flex-basis: 100%; margin: 0; }
+.props-pane .test-line { margin: 0; font-size: 0.9rem; }
+.props-pane .warn { margin: 0; font-size: 0.85rem; color: #e0a040; line-height: 1.45; }
 /* Cancel and Save stay at the bottom while the sections scroll */
 .props-foot {
   position: sticky;
