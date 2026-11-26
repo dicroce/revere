@@ -1,5 +1,5 @@
 // A doorbell's press setup in the camera properties (the Doorbell section): how it reports a press, what to type in a
-// Reolink doorbell's app, and "Press the doorbell now". Worded as the desktop's (camera_properties_state.h).
+// Reolink doorbell's app, and its press test ("Start test"). Worded as the desktop's (camera_properties_state.h).
 
 // What a save sends for the press source (/update_camera_properties' "press_source"): kept once it's chosen, onvif
 // being what an unset one means; nothing for a camera that isn't a doorbell, or from an older revere (no press_source
@@ -18,7 +18,7 @@ export const inGroupsOf4 = (s) => (s || '').replace(/(.{4})(?=.)/g, '$1 ')
 // Why the email setup couldn't be read, from the error api.js throws.
 export function mailSetupError(e) {
   const msg = String(e?.message || e || '')
-  if (/\(404\)|not a doorbell/i.test(msg)) return 'This computer has no network address toward the doorbell yet, or it isn\'t a doorbell.'
+  if (/\(404\)|not a doorbell/i.test(msg)) return "This computer doesn't have an address the doorbell can reach yet, or this camera isn't a doorbell."
   if (/session expired|\(401\)/i.test(msg)) return 'Sign in again to see the email setup.'
   if (/failed to fetch|network|load failed/i.test(msg)) return "Couldn't reach Revere to read the email setup."
   return `Couldn't read the email setup: ${msg}`
@@ -33,14 +33,18 @@ export function clockText(ms) {
   return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`
 }
 
-// The press test's lines, one per source (GET /doorbell_presses' test): "ONVIF: yes, at once", "Email: yes, 14 s
-// after", "ONVIF: no", or while it runs "Email: not yet".
+// The press test's lines, one per source (GET /doorbell_presses' test): "ONVIF: arrived right away", "Email: arrived
+// after 14 seconds", "ONVIF: didn't arrive", or while it runs "Email: not yet".
 export function pressTestLines(test) {
   if (!test) return []
   return (test.sources || []).map((s) => {
     const name = pressSourceName(s.source)
-    if (s.seen) return `${name}: ${s.after_ms < 1000 ? 'yes, at once' : `yes, ${Math.round(s.after_ms / 1000)} s after`}`
-    return `${name}: ${test.open ? 'not yet' : 'no'}`
+    if (s.seen && s.after_ms < 1000) return `${name}: arrived right away`
+    if (s.seen) {
+      const secs = Math.round(s.after_ms / 1000)
+      return `${name}: arrived after ${secs} ${secs === 1 ? 'second' : 'seconds'}`
+    }
+    return `${name}: ${test.open ? 'not yet' : "didn't arrive"}`
   })
 }
 
@@ -50,31 +54,31 @@ export function pressTestVerdict(test, chosen) {
   const seen = (test.sources || []).filter((s) => s.seen)
   if (seen.some((s) => s.source === 'onvif')) {
     return chosen === 'onvif'
-      ? 'This doorbell reports its presses over ONVIF: rings come at once.'
-      : 'This doorbell reported the press over ONVIF: choose ONVIF for rings at once.'
+      ? 'The doorbell sent the press over ONVIF. Rings will arrive right away.'
+      : 'The doorbell sent the press over ONVIF. Choose ONVIF so rings arrive right away.'
   }
-  if (seen.length) return 'Only the email reported the press: keep Reolink email.'
+  if (seen.length) return 'The doorbell only emailed the press. Keep Reolink email.'
   return chosen === 'onvif'
-    ? 'Nothing reported the press. If this is a Reolink doorbell, choose Reolink email and set it up.'
-    : 'Nothing reported the press. Check the email settings in the Reolink app, then try again.'
+    ? 'No press arrived. If this is a Reolink doorbell, choose Reolink email and set it up.'
+    : 'No press arrived. Check the email settings in the Reolink app, then test again.'
 }
 
-// How the email listener is doing for this doorbell (GET /doorbell_mail_setup and /doorbell_presses), a line at a time.
+// How the doorbell's email is getting through (GET /doorbell_mail_setup and /doorbell_presses), a line at a time.
 export function mailStatusLines(mail, presses, chosen) {
   if (chosen !== 'reolink_email') return []
   const out = []
   const saved = presses?.press_source
   const lastEmail = presses?.last_press_ms?.reolink_email
-  if (saved !== 'reolink_email') out.push("Save, and Revere starts listening for this doorbell's email.")
+  if (saved !== 'reolink_email') out.push("Save to start receiving this doorbell's email.")
   else if (!mail?.listening) {
-    out.push(mail?.last_error ? `Revere can't listen for its email: ${mail.last_error}` : 'Revere starts listening for its email within a few seconds.')
-  } else if (lastEmail) out.push(`Last ring by email: ${clockText(lastEmail)}.`)
-  else out.push('Listening. No ring by email yet: press the doorbell once.')
+    out.push(mail?.last_error ? `Revere can't receive the doorbell's email: ${mail.last_error}` : "Revere is getting ready to receive the doorbell's email. This takes a few seconds.")
+  } else if (lastEmail) out.push(`The doorbell last emailed a press at ${clockText(lastEmail)}.`)
+  else out.push("Ready. The doorbell hasn't emailed a press yet. Press it once to check.")
   const other = mail?.other_mail || 0
   if (other) {
-    out.push(`${other} ${other === 1 ? "email that wasn't a ring" : "emails that weren't rings"} arrived: in the Reolink app, set the email Alarm Schedule to Ring only.`)
+    out.push(`The doorbell sent ${other} ${other === 1 ? "email that wasn't a press" : "emails that weren't presses"}. In the Reolink app, set the email Alarm Schedule to Ring only.`)
   }
   const bad = mail?.bad_logins || 0
-  if (bad) out.push(`Its login was refused ${bad} ${bad === 1 ? 'time' : 'times'}: check the user and password in the Reolink app.`)
+  if (bad) out.push(`The doorbell's email login failed ${bad} ${bad === 1 ? 'time' : 'times'}. Check the user name and password in the Reolink app.`)
   return out
 }

@@ -195,13 +195,13 @@
             <input type="checkbox" v-model="propsDoorbell" :disabled="propsBusy" />
             <span>
               <span class="title">This is a doorbell</span>
-              <span class="desc">A press of its button rings, as an event and a notification, whatever the detection settings.</span>
+              <span class="desc">Pressing the button saves an event and notifies your phone, even if motion detection is off.</span>
             </span>
           </label>
 
           <template v-if="propsDoorbell">
             <fieldset class="tiers" :disabled="propsBusy">
-              <legend>How it tells Revere it was pressed</legend>
+              <legend>How the doorbell tells Revere about a press</legend>
               <div class="pills">
                 <label class="pill" :class="{ on: propsPressSource === 'onvif' }">
                   <input type="radio" name="press_source" value="onvif" v-model="propsPressSource" />ONVIF
@@ -210,15 +210,15 @@
                   <input type="radio" name="press_source" value="reolink_email" v-model="propsPressSource" />Reolink email
                 </label>
               </div>
-              <p v-if="propsPressSource === 'onvif'" class="blurb">At once, over ONVIF. Most doorbells report a press this way.</p>
-              <p v-else class="blurb">For a Reolink doorbell that doesn't report presses over ONVIF: it emails this computer instead, and Revere reads the email. Only this computer, never the internet.</p>
-              <p v-if="doorPresses?.suggest_onvif && propsPressSource === 'reolink_email'" class="warn">This doorbell now reports presses over ONVIF too. Switch to ONVIF for rings at once.</p>
+              <p v-if="propsPressSource === 'onvif'" class="blurb">The doorbell sends each press to Revere over ONVIF, right away. Most doorbells support this.</p>
+              <p v-else class="blurb">For Reolink doorbells that don't send presses over ONVIF. The doorbell emails each press to this computer instead. The email stays on your network.</p>
+              <p v-if="doorPresses?.suggest_onvif && propsPressSource === 'reolink_email'" class="warn">This doorbell now sends presses over ONVIF too. Switch to ONVIF so rings arrive right away.</p>
             </fieldset>
 
             <div v-if="propsPressSource === 'reolink_email'" class="mail-setup">
               <span class="title">In the Reolink app</span>
-              <p class="blurb">Settings › Email Alerts › Email Settings, then enter:</p>
-              <p v-if="!doorMail" class="blurb">{{ doorMailError || "Reading the doorbell's settings…" }}</p>
+              <p class="blurb">Open Settings › Email Alerts › Email Settings and enter:</p>
+              <p v-if="!doorMail" class="blurb">{{ doorMailError || 'Loading the email settings…' }}</p>
               <dl v-else class="mail-fields">
                 <template v-for="f in mailFields" :key="f.key">
                   <dt>{{ f.name }}</dt>
@@ -231,23 +231,23 @@
                   </dd>
                 </template>
               </dl>
-              <p v-if="doorMail" class="blurb">Then set the email Alarm Schedule to Ring only, so motion doesn't send email.</p>
+              <p v-if="doorMail" class="blurb">Then set the email Alarm Schedule to Ring only. Otherwise the doorbell also emails when it sees motion.</p>
               <p v-if="doorMail && doorMailError" class="warn">{{ doorMailError }}</p>
-              <p class="blurb">A ring arrives about 15 seconds after the press: Reolink sends the email late.</p>
-              <p class="blurb">Reolink sends at most one email about every 10 minutes, and the doorbell has no setting to change that. Another press within that time isn't reported.</p>
+              <p class="blurb">The doorbell sends its email about 15 seconds after the press, so the ring arrives late.</p>
+              <p class="blurb">The doorbell sends at most one email about every 10 minutes, and has no setting to change that. A second press in that time doesn't reach Revere.</p>
               <p v-for="line in mailLines" :key="line" class="blurb">{{ line }}</p>
             </div>
 
             <div class="press-check">
-              <span class="title">Check it</span>
-              <p v-if="doorTest?.open" class="blurb">Press the doorbell's button now. Waiting {{ testSecondsLeft }} s for its reports; this press doesn't ring the phones.</p>
+              <span class="title">Test it</span>
+              <p v-if="doorTest?.open" class="blurb">Press the doorbell now. {{ testSecondsLeft }} {{ testSecondsLeft === 1 ? 'second' : 'seconds' }} left.</p>
               <template v-else>
-                <button class="ghost small" :disabled="propsBusy || doorTesting" @click="pressTest">Press the doorbell now</button>
-                <p class="blurb">For a minute, Revere notes which of the doorbell's reports arrive, and how late. That press doesn't ring the phones.</p>
+                <button class="ghost small" :disabled="propsBusy || doorTesting" @click="pressTest">Start test</button>
+                <p class="blurb">Click Start test, then press the doorbell within a minute. Revere shows how the press arrived and how long it took. Your phone won't ring during the test.</p>
               </template>
               <p v-for="line in testLines" :key="line" class="test-line">{{ line }}</p>
               <p v-if="testVerdict" class="blurb">{{ testVerdict }}</p>
-              <p v-if="doorTest && !doorTest.open && doorPresses && doorPresses.press_source !== propsPressSource" class="blurb">The test uses the saved choice's sources: save first to test the other one.</p>
+              <p v-if="doorTest && !doorTest.open && doorPresses && doorPresses.press_source !== propsPressSource" class="blurb">The test checks the saved choice. Save first to test the other one.</p>
             </div>
           </template>
         </div>
