@@ -10,6 +10,9 @@
 //   stale                           unsubscribe, then next_frame on the old handle
 //   race:<camera>:<threads>:<each>  threads subscribe at once, each <each> times; how many got feeds
 //   pressure:<capacity>             get_pressure into a buffer of that many bytes (0: no buffer); its result and text
+//   state:<json>                    set_plugin_state with the rest of the line; its result
+//   states:<capacity>               get_plugin_states into a buffer of that many bytes (0: no buffer); its result and text
+//   act:<guid>:<json>               plugin_action on that plugin, into a 200 byte buffer; its result and text
 //   churn:<camera>:<rounds>         each round a thread reads frames, touching every byte, until
 //                                   this one unsubscribes it mid-stream; frames read and rounds ended
 #include "r_vss/r_system_plugin.h"
@@ -104,6 +107,12 @@ R_API void system_plugin_action(r_system_plugin_handle h, const char* action)
     if(!p->api)
     {
         note(p, "no api");
+        return;
+    }
+    // An action that is a JSON object came through plugin_action (from another plugin or itself).
+    if(!a.empty() && a[0] == '{')
+    {
+        note(p, "json action " + a);
         return;
     }
     auto cmd = field(a, 0);
@@ -262,6 +271,36 @@ R_API void system_plugin_action(r_system_plugin_handle h, const char* action)
             ended += last == -1 ? 1 : 0;
         }
         note(p, "churn frames=" + std::string(frames > 0 ? "some" : "none") + " ended=" + std::to_string(ended));
+    }
+    else if(cmd == "state")
+    {
+        if(p->api->version < 3 || !p->api->set_plugin_state)
+        {
+            note(p, "state unsupported");
+            return;
+        }
+        note(p, "state r=" + std::to_string(p->api->set_plugin_state(p->api->host, a.substr(6).c_str())));
+    }
+    else if(cmd == "states")
+    {
+        size_t capacity = (size_t)strtoull(field(a, 1).c_str(), nullptr, 10);
+        std::vector<char> buf(capacity + 8, '#');
+        int n = p->api->get_plugin_states(p->api->host, capacity ? buf.data() : nullptr, capacity);
+        bool guard_ok = true;
+        for(size_t i = capacity; i < buf.size(); ++i)
+            guard_ok = guard_ok && buf[i] == '#';
+        note(p, "states n=" + std::to_string(n) + " guard=" + (guard_ok ? "ok" : "overwritten") + " text=" +
+                (capacity && n >= 0 ? std::string(buf.data()) : std::string()));
+    }
+    else if(cmd == "act")
+    {
+        auto guid = field(a, 1);
+        auto json = a.substr(5 + guid.size());
+        char result[200];
+        memset(result, '#', sizeof(result));
+        int n = p->api->plugin_action(p->api->host, guid.c_str(), json.c_str(), result, sizeof(result));
+        result[sizeof(result) - 1] = '\0';
+        note(p, "act n=" + std::to_string(n) + " text=" + std::string(result));
     }
     else if(cmd == "pressure")
     {

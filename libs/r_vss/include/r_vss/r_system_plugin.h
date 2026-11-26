@@ -238,6 +238,27 @@ typedef struct r_system_plugin_host_api
     // cpu and cpu_p95_24h are null until known; hw_sessions is null when revere has no count of them (a signal that is
     // unknown never raises the level and never has a reason). A plugin checks version >= 3 before calling it.
     int (*get_pressure)(void* host, char* buf, size_t capacity);
+
+    // Version 3: what plugins say about themselves, for screens beyond revere's own panel (the cloud's app and portal).
+    //
+    // set_plugin_state: the plugin hands revere its whole state, a JSON object, on every change; it replaces the last
+    // one. Returns 0, or -1 when the text isn't a JSON object or is over 256 KB (the last state then stays). The same
+    // state again (the same JSON, however written) changes nothing, so a plugin may call it on every change. It
+    // never holds anything secret: a state is shown on other screens and sent to the cloud.
+    int (*set_plugin_state)(void* host, const char* state_json);
+
+    // get_plugin_states: every plugin's state, as {"version": 41, "plugins": {"<plugin GUID>": <state>}}, copied
+    // snprintf-style as get_pressure's JSON is (the full length is returned; capacity or more means it was cut;
+    // negative means revere has none to give). The version rises by one with every change of any plugin's state, so
+    // a reader that wants to know whether anything changed reads the version.
+    int (*get_plugin_states)(void* host, char* buf, size_t capacity);
+
+    // plugin_action: runs an action on the plugin with this GUID, exactly as a button in its panel does
+    // (system_plugin_action, with the action JSON, a JSON object, as the string), and copies the result into result,
+    // snprintf-style: {"ok": true} or {"ok": false, "error": "..."} (no such plugin, it takes no actions, the action
+    // isn't a JSON object, or it threw). Returns the result's full length, or negative when it can't say. Called on
+    // the caller's thread, which the plugin's system_plugin_action sees instead of the UI thread.
+    int (*plugin_action)(void* host, const char* plugin_guid, const char* action_json, char* result, size_t capacity);
 } r_system_plugin_host_api;
 
 // Optional: the host calls this once after load_system_plugin, before start, with the

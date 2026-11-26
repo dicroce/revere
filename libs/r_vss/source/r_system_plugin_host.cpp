@@ -2,6 +2,7 @@
 #include "r_vss/r_system_plugin_host.h"
 #include "r_vss/r_frame_feeds.h"
 #include <algorithm>
+#include "r_utils/3rdparty/json/json.h"
 #include <cstddef>
 #include <cstring>
 #include <mutex>
@@ -61,6 +62,8 @@ struct r_system_plugin_host::frame_api
     // Revere's pressure JSON, and the lock it is set under (set_pressure_source may come after the plugin has its table).
     std::mutex pressure_lock;
     std::function<std::string()> pressure;
+    // The host, for the plugin-state calls; it outlives its plugins' tables.
+    r_system_plugin_host* owner {nullptr};
     // The plugin's feeds by handle. next() holds its own reference while it reads, so an
     // unsubscribe from another thread meanwhile only drops the map's: the last one frees it.
     std::mutex lock;
@@ -169,6 +172,45 @@ struct r_system_plugin_host::frame_api
         return (int)json.size();
     }
 
+    // Copies json into buf as snprintf does and returns its full length.
+    static int copy_out(const std::string& json, char* buf, size_t capacity)
+    {
+        if(buf && capacity > 0)
+        {
+            const size_t n = std::min(json.size(), capacity - 1);
+            memcpy(buf, json.data(), n);
+            buf[n] = '\0';
+        }
+        return (int)json.size();
+    }
+
+    static int set_plugin_state(void* host, const char* state_json)
+    {
+        auto api = static_cast<frame_api*>(host);
+        if(!api || !api->owner || !state_json || api->guid.empty())
+            return -1;
+        const int r = api->owner->_states.set(api->guid, state_json);
+        if(r != 0)
+            R_LOG_WARNING("System plugin %s: its state was refused (not a JSON object, or over %zu bytes); the last one stays", api->guid.c_str(), r_plugin_states::MAX_STATE_BYTES);
+        return r;
+    }
+
+    static int get_plugin_states(void* host, char* buf, size_t capacity)
+    {
+        auto api = static_cast<frame_api*>(host);
+        if(!api || !api->owner)
+            return -1;
+        return copy_out(api->owner->_states.json(), buf, capacity);
+    }
+
+    static int plugin_action(void* host, const char* plugin_guid, const char* action_json, char* result, size_t capacity)
+    {
+        auto api = static_cast<frame_api*>(host);
+        if(!api || !api->owner)
+            return -1;
+        return copy_out(api->owner->plugin_action(plugin_guid ? plugin_guid : "", action_json ? action_json : ""), result, capacity);
+    }
+
     static void unsubscribe(void* host, r_frame_subscription_handle sub)
     {
         auto api = static_cast<frame_api*>(host);
@@ -207,6 +249,10 @@ void r_system_plugin_host::_give_frames(plugin_info& p)
     api->table.unsubscribe = &frame_api::unsubscribe;
     api->table.subscribe_frames_from = &frame_api::subscribe_from;
     api->table.get_pressure = &frame_api::get_pressure;
+    api->table.set_plugin_state = &frame_api::set_plugin_state;
+    api->table.get_plugin_states = &frame_api::get_plugin_states;
+    api->table.plugin_action = &frame_api::plugin_action;
+    api->owner = this;
     api->pressure = _pressure;
     p.frames = api;
     try
@@ -947,6 +993,47 @@ bool r_system_plugin_host::run_plugin_action(const std::string& plugin_name, con
     {
         R_LOG_ERROR("Error running plugin %s action %s: %s", plugin_name.c_str(), action.c_str(), e.what());
         return false;
+    }
+}
+
+std::string r_system_plugin_host::plugin_action(const std::string& plugin_guid, const std::string& action_json)
+{
+    auto fail = [](const std::string& why) {
+        nlohmann::json j = {{"ok", false}, {"error", why}};
+        return j.dump();
+    };
+    // The action is a JSON object ({"action": "set_mode", ...}), as the contract has it.
+    try
+    {
+        if(!nlohmann::json::parse(action_json).is_object())
+            return fail("the action isn't a JSON object");
+    }
+    catch(const std::exception&)
+    {
+        return fail("the action isn't a JSON object");
+    }
+
+    plugin_info* found = nullptr;
+    for(auto p : _snapshot())
+        if(p->guid == plugin_guid)
+        {
+            found = p;
+            break;
+        }
+    if(!found || !found->plugin_handle)
+        return fail("no such plugin");
+    if(!found->action_func)
+        return fail("the plugin takes no actions");
+    try
+    {
+        found->action_func(found->plugin_handle, action_json.c_str());
+        R_LOG_INFO("Ran plugin %s action %s", plugin_guid.c_str(), action_json.c_str());
+        return "{\"ok\":true}";
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("Error running plugin %s action %s: %s", plugin_guid.c_str(), action_json.c_str(), e.what());
+        return fail(std::string("the plugin failed: ") + e.what());
     }
 }
 

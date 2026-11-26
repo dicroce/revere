@@ -5,6 +5,7 @@
 #include "r_vss/r_system_plugin.h"
 #include "r_vss/r_plugin_notifier.h"
 #include "r_vss/r_plugin_manifest.h"
+#include "r_vss/r_plugin_states.h"
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_macro.h"
 
@@ -203,6 +204,15 @@ public:
     // after set_frame_source(): a plugin's table is made once, by whichever of the two comes first.
     R_API void set_pressure_source(std::function<std::string()> pressure);
 
+    // What plugins have said about themselves (set_plugin_state, host API version 3), as get_plugin_states() gives it:
+    // {"version", "plugins": {"<GUID>": <state>}}. The version rises with every change.
+    R_API std::string get_plugin_states_json() const { return _states.json(); }
+    R_API int64_t plugin_states_version() const { return _states.version(); }
+
+    // Runs an action on the loaded plugin with this GUID, as its panel's button does; the result is
+    // {"ok": true} or {"ok": false, "error": "..."} (the host API's plugin_action).
+    R_API std::string plugin_action(const std::string& plugin_guid, const std::string& action_json);
+
 private:
     struct plugin_info;
     std::string _uninstallable_path(const std::string& plugin_name) const;
@@ -276,6 +286,7 @@ private:
     r_frame_feeds* _feeds {nullptr};
     std::function<bool(const std::string&)> _camera_recording;
     std::function<std::string()> _pressure;
+    r_plugin_states _states;
 };
 
 }
