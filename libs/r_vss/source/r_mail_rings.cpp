@@ -43,6 +43,17 @@ string _lower(string s)
     return s;
 }
 
+// Text from the wire, for a log line: printable ASCII only (others as '?'), at most max characters.
+string _printable(const string& s, size_t max)
+{
+    string out;
+    for (size_t i = 0; i < s.size() && out.size() < max; ++i)
+        out += (s[i] >= 0x20 && s[i] < 0x7f && s[i] != '"') ? s[i] : '?';
+    if (s.size() > max)
+        out += "...";
+    return out;
+}
+
 string _b64_text(const string& s)
 {
     try
@@ -256,9 +267,9 @@ r_mail_setup r_vss::mail_setup_for(const string& server, int port, const r_mail_
     r_mail_setup s;
     s.server = server;
     s.port = port;
-    s.user = login.user;
+    s.sender = "doorbell@revere.video";
     s.password = login.password;
-    s.recipient = "rings@revere.local";
+    s.recipient = "rings@revere.video";
     return s;
 }
 
@@ -347,8 +358,8 @@ void r_mail_rings::start()
         return;
     if (_config.bind_ip.empty() || _config.bind_ip == "0.0.0.0" || _config.bind_ip == "::")
         R_THROW(("The mail ring listener binds to the box's own LAN address, never to every address."));
-    if (_config.user.empty() || _config.password.empty() || _config.cert_pem.empty() || _config.key_pem.empty())
-        R_THROW(("The mail ring listener needs its user, password and certificate."));
+    if (_config.password.empty() || _config.cert_pem.empty() || _config.key_pem.empty())
+        R_THROW(("The mail ring listener needs its password and certificate."));
     _tls = make_shared<r_ssl_server_config>(_config.cert_pem, _config.key_pem);
     // Every worker busy and the queue full: refused with 421 (each of the max_connections may be slow).
     _server = make_unique<r_server_threaded<r_ssl_server_socket>>(
@@ -577,9 +588,10 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
                 say("454 4.7.0 Too many failed logins, try again later");
                 break;
             }
-            // Both compared, whichever is wrong.
-            bool user_ok = _same(user, _config.user), pass_ok = _same(pass, _config.password);
-            if (user_ok && pass_ok)
+            // The password only: any user (Reolink's app logs in with its sender address).
+            const bool pass_ok = _same(pass, _config.password);
+            R_LOG_INFO("mail rings: %s logged in as \"%s\": %s", ip.c_str(), _printable(user, 64).c_str(), pass_ok ? "accepted" : "wrong password");
+            if (pass_ok)
             {
                 authed = true;
                 say("235 2.7.0 Authentication successful");
@@ -756,32 +768,59 @@ namespace
 // Making the login or certificate, and reading it back, one caller at a time: setup (an HTTP thread) and the listener
 // (the keeper's thread) may both ask first, and must both get the same one.
 std::mutex _made_once;
+
+// The password's length: short enough to type into a doorbell's app from a screen. Each character is one of 31, so
+// about 40 bits, for a listener on the box's LAN address that counts wrong logins per address.
+const size_t MAIL_PASSWORD_CHARS = 8;
+
+// The stored login: one line, the password. Empty when there's none, or it's kept another way (before, a user line and
+// a 20-character password), or unreadable: then a new one is made. Called holding _made_once.
+r_mail_login _read_mail_login(const string& path)
+{
+    if (!r_fs::file_exists(path))
+        return r_mail_login();
+    auto bytes = r_fs::read_file(path);
+    string text(bytes.begin(), bytes.end());
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r'))
+        text.pop_back();
+    if (text.size() == MAIL_PASSWORD_CHARS && text.find_first_of("\r\n") == string::npos)
+        return r_mail_login{text};
+    R_LOG_WARNING("mail rings: the stored login in %s is an old or unreadable one; making a new password", path.c_str());
+    return r_mail_login();
+}
+
+// Called holding _made_once.
+void _write_mail_login(const string& path, const r_mail_login& login)
+{
+    string dir, name;
+    r_fs::break_path(path, dir, name);
+    r_fs::mkdir_p(dir);
+    string text = login.password + "\n";
+    r_fs::atomic_write_private_file((const uint8_t*)text.data(), text.size(), path);
+}
 }
 
 r_mail_login r_vss::load_or_make_mail_login(const string& path)
 {
     std::lock_guard<std::mutex> g(_made_once);
-    if (r_fs::file_exists(path))
-    {
-        auto bytes = r_fs::read_file(path);
-        string text(bytes.begin(), bytes.end());
-        auto nl = text.find('\n');
-        if (nl != string::npos)
-        {
-            r_mail_login login{text.substr(0, nl), text.substr(nl + 1)};
-            while (!login.password.empty() && (login.password.back() == '\n' || login.password.back() == '\r'))
-                login.password.pop_back();
-            if (!login.user.empty() && !login.password.empty())
-                return login;
-        }
-        R_LOG_WARNING("mail rings: the stored login in %s is unreadable; making a new one", path.c_str());
-    }
-    r_mail_login login{"revere-" + _random_text(6), _random_text(20)};
-    string dir, name;
-    r_fs::break_path(path, dir, name);
-    r_fs::mkdir_p(dir);
-    string text = login.user + "\n" + login.password + "\n";
-    r_fs::atomic_write_private_file((const uint8_t*)text.data(), text.size(), path);
+    auto login = _read_mail_login(path);
+    if (!login.password.empty())
+        return login;
+    login = r_mail_login{_random_text(MAIL_PASSWORD_CHARS)};
+    _write_mail_login(path, login);
+    return login;
+}
+
+r_mail_login r_vss::make_new_mail_login(const string& path)
+{
+    std::lock_guard<std::mutex> g(_made_once);
+    auto login = _read_mail_login(path);
+    const auto old = login.password;
+    do
+        login.password = _random_text(MAIL_PASSWORD_CHARS);
+    while (login.password == old);
+    _write_mail_login(path, login);
+    R_LOG_INFO("mail rings: a new password for the doorbells' mail login");
     return login;
 }
 
