@@ -477,6 +477,23 @@ void r_ssl_server_socket::connect(const string& host, int port)
     _st->tls = false;
 }
 
+void r_ssl_server_socket::start_plain()
+{
+    if(!_st || !_st->ssl_setup)
+        R_THROW(("r_ssl_server_socket::start_plain(): not an accepted connection."));
+    if(_st->handshaken)
+        R_THROW(("r_ssl_server_socket::start_plain(): TLS has already started."));
+    _st->tls = false;
+}
+
+void r_ssl_server_socket::start_tls()
+{
+    if(!_st || !_st->ssl_setup)
+        R_THROW(("r_ssl_server_socket::start_tls(): not an accepted connection."));
+    _st->tls = true;
+    handshake();
+}
+
 bool r_ssl_server_socket::handshake_done() const
 {
     return _st && _st->tls && _st->handshaken;
