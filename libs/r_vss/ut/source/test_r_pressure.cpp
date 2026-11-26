@@ -382,6 +382,11 @@ void test_r_pressure::test_monitor_write_delay_growing()
     delay -= 300;
     m.tick(now);
     RTF_ASSERT(state_of(m.evaluate(now), "write_delay") == EL);
+    // A tick with nothing written (the source says none) is no delay, not the last one kept.
+    now += 2000;
+    delay = -1;
+    m.tick(now);
+    RTF_ASSERT(state_of(m.evaluate(now), "write_delay") == OK);
     // Without the source it is unknown.
     r_pressure_monitor none{r_pressure_sources()};
     none.tick(1000);
@@ -421,6 +426,29 @@ void test_r_pressure::test_monitor_detection_against_its_baseline()
             m.tick(now);
     }
     RTF_ASSERT(state_of(m.evaluate(now), "detection_slow") == EL);
+}
+
+// With under five minutes of history there is no baseline, so a slow minute is judged only against 2 s.
+void test_r_pressure::test_monitor_detection_needs_a_baseline_first()
+{
+    r_pressure_monitor m{r_pressure_sources()};
+    int64_t now = 0;
+    for(int minute = 0; minute < 3; ++minute)
+        for(int i = 0; i < 60; ++i)
+        {
+            now += 1000;
+            m.note_detection_latency(100, now);
+            if(i % 2 == 0)
+                m.tick(now);
+        }
+    for(int i = 0; i < 60; ++i)
+    {
+        now += 1000;
+        m.note_detection_latency(400, now);
+        if(i % 2 == 0)
+            m.tick(now);
+    }
+    RTF_ASSERT(state_of(m.evaluate(now), "detection_slow") == OK);
 }
 
 void test_r_pressure::test_monitor_json()

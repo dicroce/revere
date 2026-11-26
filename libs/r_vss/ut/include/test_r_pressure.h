@@ -19,6 +19,7 @@ public:
       TEST(test_r_pressure::test_monitor_motion_notes_and_queue);
       TEST(test_r_pressure::test_monitor_write_delay_growing);
       TEST(test_r_pressure::test_monitor_detection_against_its_baseline);
+      TEST(test_r_pressure::test_monitor_detection_needs_a_baseline_first);
       TEST(test_r_pressure::test_monitor_json);
       TEST(test_r_pressure::test_write_delay_recorder);
       TEST(test_r_pressure::test_real_cpu_reading);
@@ -44,6 +45,7 @@ public:
     void test_monitor_motion_notes_and_queue();
     void test_monitor_write_delay_growing();
     void test_monitor_detection_against_its_baseline();
+    void test_monitor_detection_needs_a_baseline_first();
     void test_monitor_json();
     void test_write_delay_recorder();
     void test_real_cpu_reading();
