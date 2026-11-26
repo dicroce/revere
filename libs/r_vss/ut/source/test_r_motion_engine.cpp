@@ -3,6 +3,7 @@
 #include "bad_guy.h"
 #include "true_north.h"
 #include "r_vss/r_motion_engine.h"
+#include "r_vss/r_pressure.h"
 #include "r_vss/r_motion_event_sink.h"
 #include "r_vss/r_motion_storage_sink.h"
 #include "r_av/r_demuxer.h"
@@ -250,6 +251,9 @@ void test_r_motion_engine::test_real_frames_trigger_motion()
     };
 
     r_motion_engine engine(factory, event_sink);
+    // The engine tells its pressure monitor how long each key frame took from queued to analysed.
+    r_pressure_monitor pressure{r_pressure_sources()};
+    engine.set_pressure(&pressure);
     engine.start();
 
     // Feed every key frame from the clip into the engine, one at a time as a
@@ -300,6 +304,11 @@ void test_r_motion_engine::test_real_frames_trigger_motion()
     }
     RTF_ASSERT(has_start);
     RTF_ASSERT_EQUAL(engine.skipped_count(), (size_t)0);
+    {
+        const auto now = (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        auto in = pressure.inputs(now);
+        RTF_ASSERT(in.detection_known && in.detection_p90_ms >= 0.0);
+    }
 }
 
 namespace
@@ -514,6 +523,14 @@ void test_r_motion_engine::test_skips_to_newest_key_frame()
     };
 
     r_motion_engine engine(factory, event_sink);
+    // Its pressure monitor hears of each skip (r_pressure.h).
+    r_pressure_sources pressure_sources;
+    pressure_sources.motion_queue_size = []() { return (size_t)0; };
+    r_pressure_monitor pressure(pressure_sources);
+    pressure.tick(0);
+    auto steady_now_ms = []() { return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
+    RTF_ASSERT(pressure.evaluate(steady_now_ms()).level == pressure_level::ok);
+    engine.set_pressure(&pressure);
     engine.start();
 
     engine.post_frame(r_pipeline::r_gst_buffer{}, 1000, "h264", "", "a", true);
@@ -531,6 +548,8 @@ void test_r_motion_engine::test_skips_to_newest_key_frame()
     // "a"'s three stale frames were skipped for its newest; "b"'s only one wasn't.
     std::lock_guard<std::mutex> g(mtx);
     RTF_ASSERT_EQUAL(engine.skipped_count(), (size_t)3);
+    // ... and the monitor was told: a skip in the last 30 s is elevated.
+    RTF_ASSERT(pressure.evaluate(steady_now_ms()).level == pressure_level::elevated);
     RTF_ASSERT_EQUAL(seen.size(), (size_t)3);
     RTF_ASSERT_EQUAL(seen[0], (int64_t)1000);
     RTF_ASSERT_EQUAL(seen[1], (int64_t)5000);

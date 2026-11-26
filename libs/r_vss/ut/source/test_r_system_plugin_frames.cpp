@@ -72,10 +72,58 @@ void test_r_system_plugin_frames::test_a_plugin_gets_the_host_functions()
     host.set_frame_source(&feeds, _recording("cam1"));
     auto l = _lines(_top + "/frames.txt");
     RTF_ASSERT_EQUAL(l.size(), (size_t)1);
-    RTF_ASSERT(l[0] == "api version=2 size_ok=1");
+    RTF_ASSERT(l[0] == "api version=3 size_ok=1");
     // Once: a second call doesn't give them again.
     host.set_frame_source(&feeds, _recording("cam1"));
     RTF_ASSERT_EQUAL(_lines(_top + "/frames.txt").size(), (size_t)1);
+}
+
+// get_pressure (host API version 3): revere's pressure JSON, copied snprintf-style into the plugin's buffer.
+void test_r_system_plugin_frames::test_a_plugin_reads_revere_pressure()
+{
+    r_frame_feeds feeds;
+    r_system_plugin_host host(_top);
+    host.set_frame_source(&feeds, _recording("cam1"));
+    const string json = "{\"level\":\"elevated\"}";
+
+    // No source set: negative (a plugin then carries on as if ok).
+    RTF_ASSERT(host.run_plugin_action(_name(), "pressure:100"));
+    // A source set after the plugin has its table reaches it.
+    host.set_pressure_source([&]() { return json; });
+    RTF_ASSERT(host.run_plugin_action(_name(), "pressure:100"));
+    // The length asked for with no buffer; and a buffer too small: cut, NUL-terminated, the full length returned.
+    RTF_ASSERT(host.run_plugin_action(_name(), "pressure:0"));
+    RTF_ASSERT(host.run_plugin_action(_name(), "pressure:8"));
+    // Exactly the length: cut by one (it needs the NUL); one more fits.
+    RTF_ASSERT(host.run_plugin_action(_name(), "pressure:" + to_string(json.size())));
+    RTF_ASSERT(host.run_plugin_action(_name(), "pressure:" + to_string(json.size() + 1)));
+    // A source that throws is no pressure.
+    host.set_pressure_source([]() -> string { throw runtime_error("no"); });
+    RTF_ASSERT(host.run_plugin_action(_name(), "pressure:100"));
+
+    auto l = _lines(_top + "/frames.txt");
+    RTF_ASSERT_EQUAL(l.size(), (size_t)8);
+    RTF_ASSERT(l[1] == "pressure n=-1 guard=ok text=");
+    RTF_ASSERT(l[2] == "pressure n=" + to_string(json.size()) + " guard=ok text=" + json);
+    RTF_ASSERT(l[3] == "pressure n=" + to_string(json.size()) + " guard=ok text=");
+    RTF_ASSERT(l[4] == "pressure n=" + to_string(json.size()) + " guard=ok text=" + json.substr(0, 7));
+    RTF_ASSERT(l[5] == "pressure n=" + to_string(json.size()) + " guard=ok text=" + json.substr(0, json.size() - 1));
+    RTF_ASSERT(l[6] == "pressure n=" + to_string(json.size()) + " guard=ok text=" + json);
+    RTF_ASSERT(l[7] == "pressure n=-1 guard=ok text=");
+}
+
+// Pressure with no frame source at all: the plugin still has its table, and its frame functions find nothing.
+void test_r_system_plugin_frames::test_pressure_without_a_frame_source()
+{
+    r_system_plugin_host host(_top);
+    host.set_pressure_source([]() { return string("{}"); });
+    RTF_ASSERT(host.run_plugin_action(_name(), "pressure:10"));
+    RTF_ASSERT(host.run_plugin_action(_name(), "sub:cam1:-:" + to_string(R_FRAME_VIDEO)));
+    auto l = _lines(_top + "/frames.txt");
+    RTF_ASSERT_EQUAL(l.size(), (size_t)3);
+    RTF_ASSERT(l[0] == "api version=3 size_ok=1");
+    RTF_ASSERT(l[1] == "pressure n=2 guard=ok text={}");
+    RTF_ASSERT(l[2] == "sub null");
 }
 
 void test_r_system_plugin_frames::test_a_plugin_reads_a_cameras_frames()

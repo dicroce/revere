@@ -163,7 +163,7 @@ R_API void system_plugin_action(r_system_plugin_handle plugin, const char* actio
 // A plugin can read cameras' encoded frames as they're recorded. It pulls them on
 // its own thread: the host never calls into the plugin with frames.
 
-#define R_SYSTEM_PLUGIN_HOST_API_VERSION 2
+#define R_SYSTEM_PLUGIN_HOST_API_VERSION 3
 
 typedef struct r_frame_subscription* r_frame_subscription_handle;
 
@@ -224,6 +224,20 @@ typedef struct r_system_plugin_host_api
     // Version 2. As subscribe_frames, with flags (R_SUBSCRIBE_*): null for a flag the host
     // doesn't know. A plugin checks version >= 2 before calling it.
     r_frame_subscription_handle (*subscribe_frames_from)(void* host, const char* camera_id, const char* stream, uint32_t media, size_t max_queued_bytes, uint32_t flags);
+
+    // Version 3. Revere's own pressure: whether its features are slipping, so a plugin that can wait (a conversion, say)
+    // gives way before revere's recording and detection do. Writes JSON, NUL-terminated, into buf (capacity bytes) and
+    // returns its length, as snprintf does: a return of capacity or more means the text was cut, and the plugin calls
+    // again with a bigger buffer. A negative return means revere has no pressure to report (a plugin then carries on as
+    // if the level were ok). buf may be null with capacity 0, to ask the length. Cheap to call; the level changes at most
+    // every 2 s, so a plugin reads it about that often.
+    //   {"level": "ok|elevated|high",
+    //    "reasons": [{"signal": "motion_drop", "text": "motion detection is dropping frames"}],
+    //    "signals": [{"id": "motion_drop", "state": "unknown|ok|elevated|high"}, ...],
+    //    "cpu": 0.62, "cpu_p95_24h": 0.71, "cores": 8, "hw_sessions": {"used": 1, "limit": 3}}
+    // cpu and cpu_p95_24h are null until known; hw_sessions is null when revere has no count of them (a signal that is
+    // unknown never raises the level and never has a reason). A plugin checks version >= 3 before calling it.
+    int (*get_pressure)(void* host, char* buf, size_t capacity);
 } r_system_plugin_host_api;
 
 // Optional: the host calls this once after load_system_plugin, before start, with the

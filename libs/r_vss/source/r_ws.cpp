@@ -150,6 +150,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     auto open_route = [&add](int method, const char* path, handler fn) { add(method, path, fn, false); };
 
     open_route(METHOD_GET, "/version", &r_ws::_get_version);
+    route(METHOD_GET, "/system_load", &r_ws::_get_system_load);
     route(METHOD_GET, "/cameras", &r_ws::_get_cameras);
     route(METHOD_GET, "/contents", &r_ws::_get_contents);
     route(METHOD_GET, "/motion_events", &r_ws::_get_motion_events);
@@ -834,6 +835,27 @@ r_http::r_server_response r_ws::_get_version(r_utils::r_socket_base&, const r_ht
     }
 
     R_STHROW(r_http_500_exception, ("Failed to get version."));
+}
+
+// Revere's own pressure (r_pressure.h): the level, why, each signal's state (unknown where nothing reports it), the
+// machine's CPU busy fraction now and its 95th percentile over the last day, and the cores. What a plugin gets from
+// get_pressure(); the desktop and the web read it for their own displays.
+r_http::r_server_response r_ws::_get_system_load(r_utils::r_socket_base&, const r_http::r_server_request&)
+{
+    try
+    {
+        r_server_response response;
+        response.set_content_type("text/json");
+        response.set_body(_stream_keeper.pressure_json());
+        return response;
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+
+    R_STHROW(r_http_500_exception, ("Failed to get the system load."));
 }
 
 r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_http::r_server_request& request)

@@ -176,6 +176,8 @@ using r_motion_work_context_factory = std::function<std::shared_ptr<r_motion_wor
 using r_motion_probe_fn = std::function<bool(const std::string& camera_id, int64_t ts, const std::vector<uint8_t>& frame, uint16_t width, uint16_t height,
                                              const motion_region& motion_bbox, const std::vector<motion_region>& motion_regions)>;
 
+class r_pressure_monitor;
+
 class r_motion_engine final
 {
 public:
@@ -200,6 +202,10 @@ public:
 
     // Returns current queue size
     R_API size_t get_queue_size() const;
+
+    // Tells the pressure monitor (r_pressure.h) when a stale key frame is skipped and how long each analysed key frame
+    // took from queued to analysed. Null (the default) tells no one. Set before frames are posted.
+    R_API void set_pressure(r_pressure_monitor* pressure) { _pressure = pressure; }
 
     // Work items finished (frames, skipped frames and removals), for tests.
     size_t processed_count() const { return _processed.load(); }
@@ -243,6 +249,7 @@ private:
     r_motion_probe_fn _probe;
     std::atomic<size_t> _processed {0};
     r_newest_frame_gate _newest;
+    std::atomic<r_pressure_monitor*> _pressure {nullptr};
     std::atomic<size_t> _skipped {0};
     std::map<std::string, std::pair<int64_t, size_t>> _skip_log; // camera: (last logged, skipped since)
 };

@@ -186,6 +186,7 @@ private:
     r_http::r_server_response _get_contents(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _get_version(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _get_system_load(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _get_cameras(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
