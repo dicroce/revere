@@ -915,6 +915,16 @@ r_utils::r_nullable<r_stream_keeper::doorbell_mail_status> r_stream_keeper::door
     return s;
 }
 
+r_utils::r_nullable<r_stream_keeper::doorbell_mail_status> r_stream_keeper::new_doorbell_mail_login(const string& camera_id)
+{
+    if(doorbell_mail_setup(camera_id, false).is_null())
+        return {};
+    make_new_mail_login(_top_dir + PATH_SLASH + "mail_rings" + PATH_SLASH + "login");
+    // Only the keeper's thread replaces the listener (_tend_mail_rings, on its next turn).
+    _mail_login_changed = true;
+    return doorbell_mail_setup(camera_id, true);
+}
+
 void r_stream_keeper::_tend_mail_rings(const vector<r_disco::r_camera>& assigned)
 {
     auto doorbells = mail_ring_doorbells(assigned);
@@ -935,8 +945,12 @@ void r_stream_keeper::_tend_mail_rings(const vector<r_disco::r_camera>& assigned
     auto bind = r_utils::r_networking::r_local_ip_for(doorbells.begin()->first);
     if(bind.empty())
         return;
-    if(_mail_rings && bind == _mail_rings_bind)
+    // A new login restarts it, so the new password is the one it takes.
+    const bool new_login = _mail_login_changed.exchange(false);
+    if(_mail_rings && bind == _mail_rings_bind && !new_login)
         return;
+    if(new_login && _mail_rings)
+        R_LOG_INFO("mail rings: the listener restarts with the new login");
     _set_mail_rings(nullptr, string());
     try
     {
@@ -946,7 +960,6 @@ void r_stream_keeper::_tend_mail_rings(const vector<r_disco::r_camera>& assigned
         r_mail_rings_config c;
         c.bind_ip = bind;
         c.port = mail_rings_port();
-        c.user = login.user;
         c.password = login.password;
         c.cert_pem = pems.first;
         c.key_pem = pems.second;
