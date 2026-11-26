@@ -6,6 +6,7 @@
 #include "r_vss/r_live_key_frame.h"
 #include "r_vss/r_key_interval.h"
 #include "r_vss/r_lag_watchdog.h"
+#include "r_vss/r_ts_discipline.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_live_restream_host.h"
 #include "r_vss/r_ws.h"
@@ -332,6 +333,9 @@ private:
     // Fed from the video sample callback, read by the stream keeper.
     mutable std::mutex _lag_lok;
     r_lag_watchdog _lag;
+    // Keeps the recorded timeline on the wall clock. Fed from the video sample
+    // callback; the audio callback reads its correction.
+    r_ts_discipline _ts_discipline;
     mutable std::deque<std::pair<std::chrono::system_clock::time_point, uint64_t>> _byte_rate_samples;
 
     void _record_byte_sample();
