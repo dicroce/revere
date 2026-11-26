@@ -19,12 +19,12 @@
     <header class="header">
       <img src="/logos/revere-lockup-white.svg" alt="Revere" class="logo" />
       <nav class="tabs">
-        <button :class="{ active: tab === 'manage' }" @click="tab = 'manage'">Config</button>
-        <button :class="{ active: tab === 'live' }" @click="tab = 'live'">Live</button>
-        <button :class="{ active: tab === 'timeline' }" @click="tab = 'timeline'">Timeline</button>
+        <button :class="{ active: tab === 'manage' }" @click="goTab('manage')">Config</button>
+        <button :class="{ active: tab === 'live' }" @click="goTab('live')">Live</button>
+        <button :class="{ active: tab === 'timeline' }" @click="goTab('timeline')">Timeline</button>
       </nav>
       <span class="spacer"></span>
-      <button class="signout" @click="signOut">Sign out</button>
+      <button class="signout" @click="leaveOrAsk(signOut, pendingLeave)">Sign out</button>
     </header>
 
     <main class="content">
@@ -52,6 +52,18 @@
     <footer v-if="versionLabel" class="footer" :title="versionDetails">{{ versionLabel }}</footer>
   </div>
 
+  <!-- Leaving the camera properties with edits that aren't saved. -->
+  <div v-if="pendingLeave" class="leave-overlay">
+    <div class="leave-dialog" role="alertdialog" aria-label="Discard changes?">
+      <h3>Discard changes?</h3>
+      <p>This camera's properties have changes that aren't saved. Leave without saving them?</p>
+      <div class="leave-actions">
+        <button class="ghost" @click="pendingLeave = null">Keep editing</button>
+        <button class="danger-solid" @click="discardAndLeave">Discard changes</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Asks to update a Revere Cloud built for an older Revere, over any view. -->
   <CloudUpdatePrompt v-if="authChecked && authed" />
 </template>
@@ -65,6 +77,7 @@ import ManageTab from './components/ManageTab.vue'
 import TimelineView from './components/TimelineView.vue'
 import LoginView from './components/LoginView.vue'
 import CloudUpdatePrompt from './components/CloudUpdatePrompt.vue'
+import { unsaved, leaveOrAsk } from './utils/unsaved.js'
 
 const authChecked = ref(false)
 const passwordSet = ref(true)
@@ -72,6 +85,18 @@ const appliance = ref(false)
 const authed = computed(() => isAuthed())
 
 const tab = ref('manage')
+// What to do once the person has said to discard their unsaved camera properties (see utils/unsaved.js).
+const pendingLeave = ref(null)
+function goTab(t) {
+  if (t === tab.value) return
+  leaveOrAsk(() => { tab.value = t }, pendingLeave)
+}
+function discardAndLeave() {
+  const go = pendingLeave.value
+  pendingLeave.value = null
+  unsaved.value = false
+  if (go) go()
+}
 const liveCameras = ref([])
 const error = ref(null)
 const selectedCamera = ref(null)
@@ -178,6 +203,14 @@ onUnmounted(() => clearInterval(pollId))
 </script>
 
 <style scoped>
+.leave-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; justify-content: center; z-index: 200; }
+.leave-dialog { width: 380px; max-width: calc(100vw - 2rem); background: #1e1e1e; border: 1px solid #363636; border-radius: 8px; padding: 1.1rem; }
+.leave-dialog h3 { font-size: 1rem; font-weight: 600; margin: 0 0 0.5rem; }
+.leave-dialog p { font-size: 0.9rem; color: #bbb; margin: 0 0 1rem; }
+.leave-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
+.leave-actions button { padding: 0.45rem 1rem; font-size: 0.9rem; }
+.leave-actions .danger-solid { background: #b83232; border-color: #b83232; color: #fff; }
+.leave-actions .danger-solid:hover { background: #c83c3c; }
 .app {
   display: flex;
   flex-direction: column;
