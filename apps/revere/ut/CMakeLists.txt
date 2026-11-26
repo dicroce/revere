@@ -23,6 +23,8 @@ add_executable(
     ../source/cloud_download.cpp
     include/test_render_policy.h
     source/test_render_policy.cpp
+    include/test_camera_properties_state.h
+    source/test_camera_properties_state.cpp
 )
 
 target_include_directories(
