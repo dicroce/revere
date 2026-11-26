@@ -65,7 +65,6 @@ struct rig
         r_mail_rings_config c;
         c.bind_ip = "127.0.0.1";
         c.port = port;
-        c.user = USER;
         c.password = PASS;
         c.cert_pem = pems.first;
         c.key_pem = pems.second;
@@ -263,13 +262,35 @@ void test_r_mail_rings::test_a_wrong_login()
     rig r(12534);
     client c(r.port);
     c.secure();
+    // A wrong password is refused, whatever the user.
     RTF_ASSERT(client::code(c.auth_plain(USER, "wrong"), "535"));
-    RTF_ASSERT(client::code(c.auth_plain("someone", PASS), "535"));
+    RTF_ASSERT(client::code(c.auth_plain("doorbell@revere.video", "wrong"), "535"));
     RTF_ASSERT(client::code(c.say("MAIL FROM:<doorbell@example.com>"), "530"));
     // A third wrong one ends the connection.
-    RTF_ASSERT(client::code(c.auth_plain(USER, "again"), "535"));
+    RTF_ASSERT(client::code(c.auth_plain("someone", "again"), "535"));
     RTF_ASSERT_EQUAL(c.line(), string("(closed)"));
     RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)3);
+}
+
+void test_r_mail_rings::test_any_user_with_the_password()
+{
+    // Reolink's app has no user field: it logs in with its sender address, or anything. The password is what's checked.
+    rig r(12546);
+    {
+        client c(r.port);
+        c.secure();
+        RTF_ASSERT(client::code(c.auth_plain("doorbell@revere.video", PASS), "235"));
+        RTF_ASSERT(client::code(c.say("MAIL FROM:<doorbell@revere.video>"), "250"));
+    }
+    {
+        client c(r.port);
+        c.secure();
+        const char* who = "someone@example.com";
+        RTF_ASSERT(client::code(c.say("AUTH LOGIN"), "334"));
+        RTF_ASSERT(client::code(c.say(r_string_utils::to_base64(who, strlen(who))), "334"));
+        RTF_ASSERT(client::code(c.say(r_string_utils::to_base64(PASS, strlen(PASS))), "235"));
+    }
+    RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)0);
 }
 
 void test_r_mail_rings::test_a_stranger_is_refused()
@@ -330,7 +351,6 @@ void test_r_mail_rings::test_it_never_binds_every_address()
     {
         r_mail_rings_config c;
         c.bind_ip = ip;
-        c.user = USER;
         c.password = PASS;
         c.cert_pem = "x";
         c.key_pem = "y";
@@ -556,10 +576,14 @@ void test_r_mail_rings::test_the_login_is_made_once_and_kept_private()
     if (r_fs::file_exists(path))
         r_fs::remove_file(path);
     auto a = load_or_make_mail_login(path);
-    RTF_ASSERT(a.user.compare(0, 7, "revere-") == 0);
-    RTF_ASSERT(a.password.size() == 20);
+    // Short enough to type into a doorbell's app, from letters and digits that can't be misread.
+    RTF_ASSERT(a.password.size() == 8);
+    RTF_ASSERT(a.password.find_first_not_of("abcdefghjkmnpqrstuvwxyz23456789") == string::npos);
     auto b = load_or_make_mail_login(path);
-    RTF_ASSERT(a.user == b.user && a.password == b.password);
+    RTF_ASSERT(a.password == b.password);
+    // Kept as one line: the password.
+    auto kept = r_fs::read_file(path);
+    RTF_ASSERT_EQUAL(string(kept.begin(), kept.end()), a.password + "\n");
 #ifndef IS_WINDOWS
     struct stat st {};
     RTF_ASSERT(stat(path.c_str(), &st) == 0);
@@ -588,13 +612,14 @@ void test_r_mail_rings::test_the_login_is_made_once_and_kept_private()
 
 void test_r_mail_rings::test_the_setup_to_type_in()
 {
-    // What setup shows for the Reolink app: the box's address and port, its login, and a recipient.
-    auto s = mail_setup_for("192.168.1.20", 2525, r_mail_login{"revere-ab12cd", "pw"});
+    // What setup shows for the Reolink app: the box's address and port, a sender address the app takes (on a domain of
+    // ours, not .local), the password, and a recipient.
+    auto s = mail_setup_for("192.168.1.20", 2525, r_mail_login{"pw"});
     RTF_ASSERT_EQUAL(s.server, string("192.168.1.20"));
     RTF_ASSERT_EQUAL(s.port, 2525);
-    RTF_ASSERT_EQUAL(s.user, string("revere-ab12cd"));
+    RTF_ASSERT_EQUAL(s.sender, string("doorbell@revere.video"));
     RTF_ASSERT_EQUAL(s.password, string("pw"));
-    RTF_ASSERT_EQUAL(s.recipient, string("rings@revere.local"));
+    RTF_ASSERT_EQUAL(s.recipient, string("rings@revere.video"));
     // The port: 2525, a bench's override, never a bad one.
 #ifdef IS_WINDOWS
     _putenv_s("REVERE_MAIL_RINGS_PORT", "");
@@ -619,6 +644,53 @@ void test_r_mail_rings::test_the_setup_to_type_in()
 #endif
 }
 
+void test_r_mail_rings::test_a_new_password()
+{
+    string dir = "mail_rings_new_login_dir";
+    string path = dir + PATH_SLASH + "login";
+    if (r_fs::file_exists(path))
+        r_fs::remove_file(path);
+    // With no login yet, it makes one.
+    auto first = make_new_mail_login(path);
+    RTF_ASSERT(first.password.size() == 8);
+    // Then a new password each time, and that's the one kept from then on.
+    auto a = load_or_make_mail_login(path);
+    RTF_ASSERT(a.password == first.password);
+    auto b = make_new_mail_login(path);
+    RTF_ASSERT(b.password != a.password);
+    RTF_ASSERT(b.password.size() == 8);
+    RTF_ASSERT(b.password.find_first_not_of("abcdefghjkmnpqrstuvwxyz23456789") == string::npos);
+    RTF_ASSERT(load_or_make_mail_login(path).password == b.password);
+#ifndef IS_WINDOWS
+    struct stat st {};
+    RTF_ASSERT(stat(path.c_str(), &st) == 0);
+    RTF_ASSERT((st.st_mode & 0777) == 0600);
+#endif
+    r_fs::remove_file(path);
+}
+
+void test_r_mail_rings::test_an_old_login_is_made_again()
+{
+    // A login kept the old way (a user line, then a 20-character password, which Reolink's app couldn't log in with) is
+    // made again as an 8-character password, and kept the new way.
+    string dir = "mail_rings_old_login_dir";
+    string path = dir + PATH_SLASH + "login";
+    r_fs::mkdir_p(dir);
+    string old = "revere-ab12cd\nabcdefghjkmnpqrstuvw\n";
+    r_fs::atomic_write_private_file((const uint8_t*)old.data(), old.size(), path);
+    auto now = load_or_make_mail_login(path);
+    RTF_ASSERT(now.password.size() == 8);
+    RTF_ASSERT(now.password.find_first_not_of("abcdefghjkmnpqrstuvwxyz23456789") == string::npos);
+    auto kept = r_fs::read_file(path);
+    RTF_ASSERT_EQUAL(string(kept.begin(), kept.end()), now.password + "\n");
+    RTF_ASSERT(load_or_make_mail_login(path).password == now.password);
+    // A 20-character password alone, too.
+    string twenty = "abcdefghjkmnpqrstuvw\n";
+    r_fs::atomic_write_private_file((const uint8_t*)twenty.data(), twenty.size(), path);
+    RTF_ASSERT(load_or_make_mail_login(path).password.size() == 8);
+    r_fs::remove_file(path);
+}
+
 void test_r_mail_rings::test_the_login_is_made_once_when_asked_at_once()
 {
     // Setup and the listener asking for the login at the same moment, on a fresh box: one login, the same for all.
@@ -637,10 +709,7 @@ void test_r_mail_rings::test_the_login_is_made_once_when_asked_at_once()
             t.join();
         auto stored = load_or_make_mail_login(path);
         for (auto& l : got)
-        {
-            RTF_ASSERT_EQUAL(l.user, stored.user);
             RTF_ASSERT_EQUAL(l.password, stored.password);
-        }
     }
     filesystem::remove_all(dir);
 }
