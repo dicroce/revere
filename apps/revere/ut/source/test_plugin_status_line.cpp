@@ -164,3 +164,108 @@ void test_plugin_status_line::test_question_dropped_with_its_line()
     ui.click(m);
     RTF_ASSERT(ui.ran == vector<string>{"reset:1"});
 }
+
+namespace
+{
+
+// A camera's choice line: the summary text and a radio list of three modes, `value` selected.
+json _choice_line(const string& value, const string& live_name = "Live", bool with_cost = true)
+{
+    return {{"text", "Porch"},
+            {"choice", {{"value", value}, {"action", "mode:porch:"},
+                        {"options", json::array({
+                            {{"value", "off"}, {"name", "Off"}, {"subtitle", "Not in Apple Home"}, {"cost", ""}, {"warn", false}},
+                            {{"value", "live"}, {"name", live_name}, {"subtitle", "Live view and snapshots"}, {"cost", ""}, {"warn", false}},
+                            {{"value", "apple_recording"}, {"name", "Live + Apple alerts + Apple recording"},
+                             {"subtitle", "Clips in Apple Home"}, {"cost", with_cost ? "May be paused at busy times" : ""}, {"warn", with_cost}}})}}}};
+}
+
+}
+
+void test_plugin_status_line::test_choice_line()
+{
+    plugin_status_line_view v;
+    RTF_ASSERT(parse_plugin_status_line(_choice_line("live"), v));
+    RTF_ASSERT(v.text == "Porch");
+    RTF_ASSERT(v.choice_value == "live" && v.choice_action == "mode:porch:");
+    RTF_ASSERT(v.options.size() == 3);
+    RTF_ASSERT(v.options[0].value == "off" && v.options[0].name == "Off" && v.options[0].subtitle == "Not in Apple Home" && v.options[0].cost.empty() && !v.options[0].warn);
+    RTF_ASSERT(v.options[2].value == "apple_recording" && v.options[2].name == "Live + Apple alerts + Apple recording");
+    RTF_ASSERT(v.options[2].subtitle == "Clips in Apple Home" && v.options[2].cost == "May be paused at busy times" && v.options[2].warn);
+    RTF_ASSERT(!v.warn);
+
+    // A plain line in the warning tone.
+    plugin_status_line_view w;
+    RTF_ASSERT(parse_plugin_status_line(json{{"text", "Recording paused"}, {"warn", true}}, w));
+    RTF_ASSERT(w.warn && w.options.empty());
+    plugin_status_line_view x;
+    RTF_ASSERT(parse_plugin_status_line(json{{"text", "t"}, {"warn", "yes"}}, x));
+    RTF_ASSERT(!x.warn);
+}
+
+void test_plugin_status_line::test_choice_that_cannot_be_drawn()
+{
+    // No action, or no usable option: the text still shows and nothing is drawn as a choice, as on a host from before.
+    auto bare = [](json choice) {
+        plugin_status_line_view v;
+        RTF_ASSERT(parse_plugin_status_line(json{{"text", "Porch: Live"}, {"choice", choice}}, v));
+        RTF_ASSERT(v.text == "Porch: Live" && v.options.empty() && v.choice_action.empty());
+    };
+    bare(json{{"value", "a"}, {"options", json::array({json{{"value", "a"}, {"name", "A"}}})}});          // no action
+    bare(json{{"value", "a"}, {"action", ""}, {"options", json::array({json{{"value", "a"}, {"name", "A"}}})}});
+    bare(json{{"value", "a"}, {"action", "m:"}, {"options", json::array()}});
+    bare(json{{"value", "a"}, {"action", "m:"}});
+    bare(json{{"value", "a"}, {"action", "m:"}, {"options", "A"}});
+    bare(json{{"value", "a"}, {"action", 3}, {"options", json::array({json{{"value", "a"}, {"name", "A"}}})}});
+    bare(json::array());
+    bare(json{{"action", "m:"}, {"options", json::array({json{{"name", "no value"}}, json{{"value", "v"}}, 3})}});
+
+    // An option that can't be used is skipped without dropping the rest.
+    plugin_status_line_view v;
+    RTF_ASSERT(parse_plugin_status_line(json{{"text", "t"}, {"choice", {{"value", "b"}, {"action", "m:"},
+        {"options", json::array({json{{"name", "no value"}}, json{{"value", "v"}}, 3, json{{"value", "b"}, {"name", "B"}}})}}}}, v));
+    RTF_ASSERT(v.options.size() == 1 && v.options[0].value == "b");
+}
+
+void test_plugin_status_line::test_choice_pick_runs_action()
+{
+    headless_ui ui;
+    auto m = _message(_choice_line("live"));
+    ui.frame(m);
+    RTF_ASSERT(ui.ran.empty());
+
+    // The last row (not selected): the choice's action and its value.
+    ui.click(m);
+    RTF_ASSERT((ui.ran == vector<string>{"mode:porch:apple_recording"}));
+
+    // With no cost line the rows are one height, so the ones above the last are a step each from it.
+    ui.ran.clear();
+    auto even = _message(_choice_line("live", "Live", false));
+    ui.frame(even);
+    const ImVec2 last = ui.last_item;
+    const float step = 2.0f * (last.y - ui.last_min.y) + ImGui::GetStyle().ItemSpacing.y;
+
+    // The row above is the selected one: picking what is already chosen runs nothing.
+    ui.click_at(even, ImVec2(last.x, last.y - step));
+    RTF_ASSERT(ui.ran.empty());
+
+    // Two above is the first, "Off".
+    ui.click_at(even, ImVec2(last.x, last.y - 2.0f * step));
+    RTF_ASSERT((ui.ran == vector<string>{"mode:porch:off"}));
+}
+
+void test_plugin_status_line::test_choice_names_wrap()
+{
+    // A long name takes more lines, not more width: its row is taller than a short name's, so none of it is cut off.
+    headless_ui short_ui;
+    short_ui.frame(_message(_choice_line("off", "Live")));
+    const float short_height = short_ui.last_item.y - short_ui.last_min.y;
+
+    string long_name;
+    for(int i = 0; i < 80; ++i)
+        long_name += "Live + Apple alerts + Apple recording ";
+    headless_ui long_ui;
+    long_ui.frame(_message(_choice_line("off", long_name)));
+    // The last row is the third option (unchanged), so compare the whole block instead: the long name pushes it down.
+    RTF_ASSERT(long_ui.last_min.y > short_ui.last_min.y + short_height * 3.0f);
+}
