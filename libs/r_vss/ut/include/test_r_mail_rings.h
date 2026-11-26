@@ -11,6 +11,7 @@ public:
       TEST(test_r_mail_rings::test_auth_login_and_a_motion_mail);
       TEST(test_r_mail_rings::test_nothing_before_starttls);
       TEST(test_r_mail_rings::test_a_wrong_login);
+      TEST(test_r_mail_rings::test_any_user_with_the_password);
       TEST(test_r_mail_rings::test_a_stranger_is_refused);
       TEST(test_r_mail_rings::test_a_mail_too_big);
       TEST(test_r_mail_rings::test_too_many_mails_a_minute);
@@ -27,6 +28,8 @@ public:
       TEST(test_r_mail_rings::test_the_login_is_made_once_when_asked_at_once);
       TEST(test_r_mail_rings::test_which_doorbells_send_by_email);
       TEST(test_r_mail_rings::test_the_login_is_made_once_and_kept_private);
+      TEST(test_r_mail_rings::test_a_new_password);
+      TEST(test_r_mail_rings::test_an_old_login_is_made_again);
     RTF_FIXTURE_END();
 
     virtual ~test_r_mail_rings() throw() {}
@@ -40,6 +43,7 @@ public:
     void test_auth_login_and_a_motion_mail();
     void test_nothing_before_starttls();
     void test_a_wrong_login();
+    void test_any_user_with_the_password();
     void test_a_stranger_is_refused();
     void test_a_mail_too_big();
     void test_too_many_mails_a_minute();
@@ -56,4 +60,6 @@ public:
     void test_the_login_is_made_once_when_asked_at_once();
     void test_which_doorbells_send_by_email();
     void test_the_login_is_made_once_and_kept_private();
+    void test_a_new_password();
+    void test_an_old_login_is_made_again();
 };

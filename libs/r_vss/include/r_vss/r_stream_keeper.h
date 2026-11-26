@@ -276,7 +276,7 @@ public:
     // A Reolink doorbell's email setup (r_mail_setup: what to type in its app) and the listener's counts. The login is
     // made here if it isn't yet, so setup can show it before the press source is saved. listening: the listener is up
     // and takes this doorbell's mail (its press source is saved as reolink_email). Null for a camera that isn't a
-    // doorbell, or has no address. with_login false leaves the user and password out (and the login file unread), for
+    // doorbell, or has no address. with_login false leaves the password out (and the login file unread), for
     // a status read made every few seconds.
     struct doorbell_mail_status
     {
@@ -285,6 +285,10 @@ public:
         r_mail_rings::counts counts;
     };
     R_API r_utils::r_nullable<doorbell_mail_status> doorbell_mail_setup(const std::string& camera_id, bool with_login = true);
+    // A new password for the doorbells' mail login (make_new_mail_login), and the setup to show with it; null as
+    // doorbell_mail_setup's, with nothing changed. The listener takes the new password within a few seconds (the keeper's
+    // thread restarts it); a doorbell's mail is refused until the new password is typed in its app.
+    R_API r_utils::r_nullable<doorbell_mail_status> new_doorbell_mail_login(const std::string& camera_id);
     // "Press the doorbell now": a TEST_MS window in which each source's report of a press is noted; its press rings the
     // phones only if ring_phones. Null when the camera isn't a doorbell (or is gone).
     R_API r_utils::r_nullable<r_press_test> start_doorbell_press_test(const std::string& camera_id, bool ring_phones);
@@ -569,6 +573,8 @@ private:
     void _set_mail_rings(std::unique_ptr<r_mail_rings> rings, const std::string& bind);
     mutable std::mutex _mail_doorbells_lock;
     std::map<std::string, std::string> _mail_doorbells;   // by address, to the camera's id
+    // A new login was made (new_doorbell_mail_login, any thread): _tend_mail_rings restarts the listener with it.
+    std::atomic<bool> _mail_login_changed {false};
     void _tend_mail_rings(const std::vector<r_disco::r_camera>& assigned);
     r_motion_event_tee _motion_tee;
     r_motion_engine _motionEngine;

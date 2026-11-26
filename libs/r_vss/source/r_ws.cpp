@@ -156,6 +156,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_GET, "/camera_events", &r_ws::_get_camera_events);
     route(METHOD_GET, "/doorbell_presses", &r_ws::_get_doorbell_presses);
     route(METHOD_GET, "/doorbell_mail_setup", &r_ws::_get_doorbell_mail_setup);
+    route(METHOD_POST, "/doorbell_mail_login", &r_ws::_post_doorbell_mail_login);
     route(METHOD_POST, "/doorbell_press_test", &r_ws::_post_doorbell_press_test);
     route(METHOD_GET, "/analytics", &r_ws::_get_analytics);
 
@@ -1521,10 +1522,31 @@ static json _press_test_json(const r_press_test& t)
     return {{"open", t.open}, {"started_ms", t.started_ms}, {"ends_ms", t.ends_ms}, {"ring_phones", t.ring_phones}, {"sources", sources}};
 }
 
+// A doorbell's mail setup as GET /doorbell_mail_setup and POST /doorbell_mail_login give it.
+static json _doorbell_mail_json(const r_stream_keeper::doorbell_mail_status& v, bool with_login)
+{
+    json j = {
+        {"server", v.setup.server},
+        {"port", v.setup.port},
+        {"tls", true},
+        {"sender", v.setup.sender},
+        {"recipient", v.setup.recipient},
+        {"listening", v.listening},
+        {"rings", v.counts.rings},
+        {"other_mail", v.counts.other_mail},
+        {"bad_logins", v.counts.bad_logins},
+        {"last_ring_ms", v.counts.last_ring_ms ? json(v.counts.last_ring_ms) : json(nullptr)},
+        {"last_error", v.counts.last_error},
+    };
+    if(with_login)
+        j["password"] = v.setup.password;
+    return j;
+}
+
 // GET /doorbell_mail_setup?camera_id=<id>[&login=0]: what to type in a Reolink doorbell's email settings for its
 // presses to reach this box (r_stream_keeper::doorbell_mail_setup), and how the listener is doing. The password is in
-// it: the route needs a login, as every route does. login=0 leaves the user and password out, for a status read made
-// every few seconds. 404 for a camera that isn't a doorbell.
+// it: the route needs a login, as every route does. login=0 leaves the password out, for a status read made every few
+// seconds. 404 for a camera that isn't a doorbell.
 r_http::r_server_response r_ws::_get_doorbell_mail_setup(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
@@ -1538,27 +1560,9 @@ r_http::r_server_response r_ws::_get_doorbell_mail_setup(r_utils::r_socket_base&
         auto s = _stream_keeper.doorbell_mail_setup(args["camera_id"], with_login);
         if(s.is_null())
             R_STHROW(r_http_404_exception, ("Not a doorbell."));
-        auto& v = s.value();
-        json j = {
-            {"server", v.setup.server},
-            {"port", v.setup.port},
-            {"tls", true},
-            {"recipient", v.setup.recipient},
-            {"listening", v.listening},
-            {"rings", v.counts.rings},
-            {"other_mail", v.counts.other_mail},
-            {"bad_logins", v.counts.bad_logins},
-            {"last_ring_ms", v.counts.last_ring_ms ? json(v.counts.last_ring_ms) : json(nullptr)},
-            {"last_error", v.counts.last_error},
-        };
-        if(with_login)
-        {
-            j["user"] = v.setup.user;
-            j["password"] = v.setup.password;
-        }
         r_server_response response;
         response.set_content_type("application/json");
-        response.set_body(j.dump());
+        response.set_body(_doorbell_mail_json(s.value(), with_login).dump());
         return response;
     }
     R_WS_PASS_CLIENT_ERRORS
@@ -1567,6 +1571,35 @@ r_http::r_server_response r_ws::_get_doorbell_mail_setup(r_utils::r_socket_base&
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to read the doorbell's mail setup."));
+}
+
+// POST /doorbell_mail_login?camera_id=<id>: a new password for the doorbells' mail login
+// (r_stream_keeper::new_doorbell_mail_login), and the setup with it, as GET /doorbell_mail_setup gives it. Every
+// doorbell sending presses by email needs the new password typed in its app. 404 for a camera that isn't a doorbell,
+// with nothing changed.
+r_http::r_server_response r_ws::_post_doorbell_mail_login(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("camera_id") == args.end())
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
+        _camera_or_404(_devices, args["camera_id"]);
+        auto s = _stream_keeper.new_doorbell_mail_login(args["camera_id"]);
+        if(s.is_null())
+            R_STHROW(r_http_404_exception, ("Not a doorbell."));
+        r_server_response response;
+        response.set_content_type("application/json");
+        response.set_body(_doorbell_mail_json(s.value(), true).dump());
+        return response;
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to make a new mail login."));
 }
 
 // GET /doorbell_presses?camera_id=<id>: a doorbell's press source, when each source last reported a press (null:

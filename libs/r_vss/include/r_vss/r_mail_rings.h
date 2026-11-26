@@ -34,8 +34,7 @@ struct r_mail_rings_config
 {
     std::string bind_ip;               // the box's LAN address: never every address
     int port {2525};
-    std::string user;                  // AUTH: the box's own, shown in setup
-    std::string password;
+    std::string password;              // AUTH: the box's own, shown in setup; any user goes with it
     std::string cert_pem;              // STARTTLS: the box's self-signed certificate
     std::string key_pem;
     size_t max_connections {4};
@@ -48,7 +47,8 @@ struct r_mail_rings_config
 
 // A small SMTP server for doorbells that report presses by email (Reolink's "Email Alerts"). It takes mail only:
 // - over STARTTLS, which it requires before AUTH and before any mail;
-// - after AUTH (PLAIN or LOGIN) with the box's user and password;
+// - after AUTH (PLAIN or LOGIN) with the box's password, whatever the user: Reolink's app has no user field and logs in
+//   with its sender address. The random password, the LAN address only and the wrong-login limit per address guard it;
 // - from the address of a camera that sends rings this way (camera_for_ip); anyone else gets 554 at once.
 // It keeps nothing: each mail's headers and text are read for a ring and let go. A ring mail calls on_ring; any other
 // mail (a motion alert) is counted, so setup can say to choose "Ring" only.
@@ -117,22 +117,28 @@ R_API void read_mail(const std::string& message, std::string& subject, std::stri
 // By address, to the camera's id: who the listener lets in.
 R_API std::map<std::string, std::string> mail_ring_doorbells(const std::vector<r_disco::r_camera>& cameras);
 
-// The box's login for its doorbells' mail, shown in setup: made once (a random user and password) and kept in path,
-// readable by its owner only.
-struct r_mail_login { std::string user; std::string password; };
+// The box's login for its doorbells' mail, shown in setup: a random 8-character password, short enough to type into a
+// doorbell's app, made once and kept in path (one line), readable by its owner only. A login kept another way (before,
+// a user and a 20-character password) is made again.
+struct r_mail_login { std::string password; };
 R_API r_mail_login load_or_make_mail_login(const std::string& path);
+// A new password, kept as load_or_make_mail_login keeps it. A doorbell set up with the old one has its mail refused until
+// the new one is typed in its app.
+R_API r_mail_login make_new_mail_login(const std::string& path);
 
 // The listener's port: 2525, or REVERE_MAIL_RINGS_PORT (a bench).
 R_API int mail_rings_port();
 
 // What to type in a Reolink doorbell's email settings (Settings > Email Alerts > Email Settings) for its presses to
 // reach this box: the SMTP server is the box's address toward the doorbell, with SSL/TLS on, the box's login, any
-// sender, and a recipient the listener takes (it reads every mail from the doorbell, whoever it's to).
+// sender, and a recipient the listener takes (it reads every mail from the doorbell, whoever it's to). The sender and
+// recipient are real-looking addresses on a domain of ours, which the app accepts (it may refuse .local); no mail goes
+// to them.
 struct r_mail_setup
 {
     std::string server;
     int port {0};
-    std::string user;
+    std::string sender;
     std::string password;
     std::string recipient;
 };
