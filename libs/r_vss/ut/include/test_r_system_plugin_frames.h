@@ -6,6 +6,8 @@ class test_r_system_plugin_frames : public test_fixture
 public:
     RTF_FIXTURE(test_r_system_plugin_frames);
       TEST(test_r_system_plugin_frames::test_a_plugin_gets_the_host_functions);
+      TEST(test_r_system_plugin_frames::test_a_plugin_reads_revere_pressure);
+      TEST(test_r_system_plugin_frames::test_pressure_without_a_frame_source);
       TEST(test_r_system_plugin_frames::test_a_plugin_reads_a_cameras_frames);
       TEST(test_r_system_plugin_frames::test_an_older_r_frame_is_not_overrun);
       TEST(test_r_system_plugin_frames::test_unknown_cameras_streams_and_media);
@@ -26,6 +28,8 @@ public:
     virtual void teardown();
 
     void test_a_plugin_gets_the_host_functions();
+    void test_a_plugin_reads_revere_pressure();
+    void test_pressure_without_a_frame_source();
     void test_a_plugin_reads_a_cameras_frames();
     void test_an_older_r_frame_is_not_overrun();
     void test_unknown_cameras_streams_and_media();

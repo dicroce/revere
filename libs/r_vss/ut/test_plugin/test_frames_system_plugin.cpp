@@ -9,6 +9,7 @@
 //   wake                            a thread waits in next_frame; unsubscribe from here; its result
 //   stale                           unsubscribe, then next_frame on the old handle
 //   race:<camera>:<threads>:<each>  threads subscribe at once, each <each> times; how many got feeds
+//   pressure:<capacity>             get_pressure into a buffer of that many bytes (0: no buffer); its result and text
 //   churn:<camera>:<rounds>         each round a thread reads frames, touching every byte, until
 //                                   this one unsubscribes it mid-stream; frames read and rounds ended
 #include "r_vss/r_system_plugin.h"
@@ -261,6 +262,23 @@ R_API void system_plugin_action(r_system_plugin_handle h, const char* action)
             ended += last == -1 ? 1 : 0;
         }
         note(p, "churn frames=" + std::string(frames > 0 ? "some" : "none") + " ended=" + std::to_string(ended));
+    }
+    else if(cmd == "pressure")
+    {
+        if(p->api->version < 3 || !p->api->get_pressure)
+        {
+            note(p, "pressure unsupported");
+            return;
+        }
+        // A buffer past the capacity filled with a marker: nothing past the capacity may be written.
+        size_t capacity = (size_t)strtoull(field(a, 1).c_str(), nullptr, 10);
+        std::vector<char> buf(capacity + 8, '#');
+        int n = p->api->get_pressure(p->api->host, capacity ? buf.data() : nullptr, capacity);
+        bool guard_ok = true;
+        for(size_t i = capacity; i < buf.size(); ++i)
+            guard_ok = guard_ok && buf[i] == '#';
+        note(p, "pressure n=" + std::to_string(n) + " guard=" + (guard_ok ? "ok" : "overwritten") + " text=" +
+                (capacity && n >= 0 ? std::string(buf.data()) : std::string()));
     }
     else if(cmd == "unsub")
     {

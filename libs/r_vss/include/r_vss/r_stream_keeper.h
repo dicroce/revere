@@ -18,6 +18,7 @@
 #include "r_vss/r_rtsp_transport.h"
 #include "r_vss/r_restart_backoff.h"
 #include "r_vss/r_lag_watchdog.h"
+#include "r_vss/r_pressure.h"
 #include "r_vss/r_keep_awake.h"
 #include "r_vss/r_substream_setting.h"
 #include "r_vss/r_teardown_queue.h"
@@ -233,6 +234,9 @@ public:
     R_API ~r_stream_keeper() noexcept;
 
     R_API void start();
+
+    // Revere's own pressure as JSON (r_pressure_monitor::json): what plugins get from get_pressure() and /system_load serves.
+    R_API std::string pressure_json() const;
     // False when a camera's teardown was still stuck at the bound and was left
     // running (r_teardown_queue::finish): the caller should exit without
     // freeing anything more.
@@ -507,6 +511,9 @@ private:
     r_doorbell_rings _doorbell_rings;
     r_motion_event_tee _motion_tee;
     r_motion_engine _motionEngine;
+    // Revere's own pressure (r_pressure.h), made in the constructor with its sources. Stopped before the engine and the
+    // plugin host go (a plugin reads it).
+    std::unique_ptr<r_pressure_monitor> _pressure;
     r_system_plugin_host _system_plugin_host;
     r_cloud_install _cloud_install;   // after _system_plugin_host, which it loads into: destroyed first
     r_keep_awake _keep_awake;

@@ -199,6 +199,10 @@ public:
     // Call after construction, before start_all(). stop_all() closes their feeds.
     R_API void set_frame_source(r_frame_feeds* feeds, std::function<bool(const std::string&)> camera_recording);
 
+    // Where get_pressure() (host API version 3) reads revere's pressure JSON from. Without one it returns -1. Call it
+    // after set_frame_source(): a plugin's table is made once, by whichever of the two comes first.
+    R_API void set_pressure_source(std::function<std::string()> pressure);
+
 private:
     struct plugin_info;
     std::string _uninstallable_path(const std::string& plugin_name) const;
@@ -271,6 +275,7 @@ private:
     std::function<void(const std::string&, const std::string&)> _api_result_fn;
     r_frame_feeds* _feeds {nullptr};
     std::function<bool(const std::string&)> _camera_recording;
+    std::function<std::string()> _pressure;
 };
 
 }

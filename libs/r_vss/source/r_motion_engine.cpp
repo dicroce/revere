@@ -1,5 +1,6 @@
 
 #include "r_vss/r_motion_engine.h"
+#include "r_vss/r_pressure.h"
 #include "r_vss/r_motion_event.h"
 #include "r_motion/utils.h"
 #include "r_av/r_codec_state.h"
@@ -221,6 +222,8 @@ void r_motion_engine::_entry_point()
             if(_newest.skip(work.id, work.seq, started_ms - work.posted_ms))
             {
                 ++_skipped;
+                if(auto* pressure = _pressure.load())
+                    pressure->note_motion_skip(started_ms);
                 auto& sl = _skip_log[work.id];
                 ++sl.second;
                 if(started_ms - sl.first >= 10000)
@@ -316,6 +319,8 @@ void r_motion_engine::_entry_point()
                                 kf_entry.ingest_lag_ms = work.ingest_lag_ms;
                                 kf_entry.posted_ms = work.posted_ms;
                                 kf_entry.detected_ms = steady_ms();
+                                if(auto* pressure = _pressure.load())
+                                    pressure->note_detection_latency(kf_entry.detected_ms - work.posted_ms, kf_entry.detected_ms);
                                 wc->keyframe_motion_buffer().push(kf_entry);
 
                                 // Event state machine (keyframe-only mode)

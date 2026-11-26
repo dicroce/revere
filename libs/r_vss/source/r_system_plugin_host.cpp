@@ -3,6 +3,7 @@
 #include "r_vss/r_frame_feeds.h"
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <mutex>
 #include <map>
 #include "r_vss/r_motion_event_plugin_host.h"
@@ -57,6 +58,9 @@ struct r_system_plugin_host::frame_api
     std::function<bool(const std::string&)> camera_recording;
     std::string guid;
     r_system_plugin_host_api table {};
+    // Revere's pressure JSON, and the lock it is set under (set_pressure_source may come after the plugin has its table).
+    std::mutex pressure_lock;
+    std::function<std::string()> pressure;
     // The plugin's feeds by handle. next() holds its own reference while it reads, so an
     // unsubscribe from another thread meanwhile only drops the map's: the last one frees it.
     std::mutex lock;
@@ -134,6 +138,37 @@ struct r_system_plugin_host::frame_api
         return 1;
     }
 
+    static int get_pressure(void* host, char* buf, size_t capacity)
+    {
+        auto api = static_cast<frame_api*>(host);
+        if(!api)
+            return -1;
+        std::function<std::string()> fn;
+        {
+            std::lock_guard<std::mutex> g(api->pressure_lock);
+            fn = api->pressure;
+        }
+        if(!fn)
+            return -1;
+        std::string json;
+        try
+        {
+            json = fn();
+        }
+        catch(const std::exception& e)
+        {
+            R_LOG_ERROR("System plugin %s: get_pressure failed: %s", api->guid.c_str(), e.what());
+            return -1;
+        }
+        if(buf && capacity > 0)
+        {
+            const size_t n = std::min(json.size(), capacity - 1);
+            memcpy(buf, json.data(), n);
+            buf[n] = '\0';
+        }
+        return (int)json.size();
+    }
+
     static void unsubscribe(void* host, r_frame_subscription_handle sub)
     {
         auto api = static_cast<frame_api*>(host);
@@ -157,7 +192,8 @@ struct r_system_plugin_host::frame_api
 
 void r_system_plugin_host::_give_frames(plugin_info& p)
 {
-    if(!_feeds || !p.plugin_handle || !p.set_host_api_func || p.frames)
+    // Without a frame source the table still carries get_pressure; its frame functions then find nothing.
+    if((!_feeds && !_pressure) || !p.plugin_handle || !p.set_host_api_func || p.frames)
         return;
     auto api = std::make_shared<frame_api>();
     api->feeds = _feeds;
@@ -170,6 +206,8 @@ void r_system_plugin_host::_give_frames(plugin_info& p)
     api->table.next_frame = &frame_api::next;
     api->table.unsubscribe = &frame_api::unsubscribe;
     api->table.subscribe_frames_from = &frame_api::subscribe_from;
+    api->table.get_pressure = &frame_api::get_pressure;
+    api->pressure = _pressure;
     p.frames = api;
     try
     {
@@ -188,6 +226,23 @@ void r_system_plugin_host::set_frame_source(r_frame_feeds* feeds, std::function<
     _camera_recording = std::move(camera_recording);
     for(auto p : _snapshot())
         _give_frames(*p);
+}
+
+void r_system_plugin_host::set_pressure_source(std::function<std::string()> pressure)
+{
+    std::lock_guard<std::mutex> g(_ops_lock);
+    _pressure = std::move(pressure);
+    for(auto p : _snapshot())
+    {
+        if(p->frames)
+        {
+            // Already has its table: give it the source.
+            std::lock_guard<std::mutex> pg(p->frames->pressure_lock);
+            p->frames->pressure = _pressure;
+        }
+        else
+            _give_frames(*p);
+    }
 }
 
 r_system_plugin_dirs r_vss::system_plugin_dirs(const std::string& exe_dir,

@@ -1,4 +1,5 @@
 #include "r_storage/r_storage_file.h"
+#include "r_storage/r_write_delay.h"
 #include "r_utils/r_exception.h"
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_logger.h"
@@ -222,6 +223,8 @@ void r_storage_file::_write(write_context& wc, r_storage_media_type media_type, 
     {
         _written_video_ts.store(ts, std::memory_order_release);
         _written_video_arrival_ms.store(arrival_ms, std::memory_order_release);
+        // How long this frame waited to be written (the pressure signal for writes falling behind).
+        r_storage::note_write_delay(_now_epoch_ms() - arrival_ms);
     }
 }
 

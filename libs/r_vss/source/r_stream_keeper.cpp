@@ -1,4 +1,5 @@
 
+#include "r_storage/r_write_delay.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_rtsp_auth.h"
 #include "r_vss/r_early_alerts.h"
@@ -146,6 +147,23 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
         return true;
     });
 
+    // Revere's own pressure (r_pressure.h): what it pulls each 2 s, and what the motion engine tells it. Plugins read it
+    // with get_pressure(). The hardware encoder sessions have no source yet (that signal stays unknown).
+    {
+        r_pressure_sources sources;
+        sources.cpu_ticks = [](r_cpu_ticks& t) { return read_cpu_ticks(t); };
+        sources.take_write_delay_max = []() { return r_storage::take_write_delay_max(); };
+        sources.motion_queue_size = [this]() { return _motionEngine.get_queue_size(); };
+        sources.camera_flagged_lagging = [this]() {
+            std::lock_guard<std::mutex> g(_status_cache_mutex);
+            for(const auto& s : _status_cache)
+                if(s.falling_behind)
+                    return true;
+            return false;
+        };
+        _pressure = std::make_unique<r_pressure_monitor>(std::move(sources));
+        _motionEngine.set_pressure(_pressure.get());
+    }
     _motionEngine.start();
     _system_plugin_host.connect_detection_bus(_meph);
     // Plugins may read cameras' frames (r_system_plugin.h): from the cameras recording here.
@@ -153,6 +171,8 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
         std::lock_guard<std::mutex> lock(_streams_mutex);
         return _streams.find(camera_id) != _streams.end();
     });
+    // After the frame source: a plugin's table is made once, by whichever comes first, and the frame source goes in it then.
+    _system_plugin_host.set_pressure_source([this]() { return pressure_json(); });
     _system_plugin_host.start_all();
 
     // A Revere Cloud built for an older revere wasn't loaded: see whether this
@@ -166,6 +186,9 @@ r_stream_keeper::~r_stream_keeper() noexcept
         stop();
 
     _system_plugin_host.stop_all();
+    // After the plugins (they read it) and before the engine it reads.
+    if(_pressure)
+        _pressure->stop();
     _motionEngine.stop();
 
     // Clear the streams map BEFORE destroying server objects
@@ -213,6 +236,13 @@ void r_stream_keeper::set_system_plugin_api_result_cb(std::function<void(const s
     _system_plugin_host.set_api_result_fn(std::move(fn));
 }
 
+string r_stream_keeper::pressure_json() const
+{
+    if(!_pressure)
+        return "{}";
+    return _pressure->json(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 void r_stream_keeper::start()
 {
     if(_running)
@@ -220,6 +250,9 @@ void r_stream_keeper::start()
 
     _running = true;
     _stopping = false;
+
+    if(_pressure)
+        _pressure->start();
 
     g_signal_connect(
         _server,
@@ -443,6 +476,8 @@ void r_stream_keeper::_update_status_cache()
     {
         _total_motion_dropped += motion_dropped;
         _current_overflow_flags |= r_overflow_type::motion_detection;
+        if(_pressure)
+            _pressure->note_motion_dropped(motion_dropped, chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now().time_since_epoch()).count());
     }
 
     // Check for live restreaming overflow
