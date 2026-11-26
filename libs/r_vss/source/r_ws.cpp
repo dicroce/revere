@@ -2,6 +2,7 @@
 #include "r_vss/r_substream_recorder.h"
 #include "r_disco/r_substream.h"
 #include "r_vss/r_ws.h"
+#include "r_vss/r_plugin_action_request.h"
 #include "r_vss/r_appliance.h"
 #include "r_vss/r_ws_client_errors.h"
 #include "r_vss/r_export_output.h"
@@ -200,6 +201,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_POST, "/storage_op_cancel", &r_ws::_post_storage_op_cancel);
     route(METHOD_GET, "/system_plugins", &r_ws::_get_system_plugins);
     route(METHOD_POST, "/system_plugin_enabled", &r_ws::_post_system_plugin_enabled);
+    route(METHOD_POST, "/system_plugin_action", &r_ws::_post_system_plugin_action);
     route(METHOD_GET, "/revere_cloud_install", &r_ws::_get_revere_cloud_install);
     route(METHOD_POST, "/revere_cloud_install", &r_ws::_post_revere_cloud_install);
     route(METHOD_GET, "/keep_awake", &r_ws::_get_keep_awake);
@@ -4526,6 +4528,25 @@ r_http::r_server_response r_ws::_post_system_plugin_enabled(r_utils::r_socket_ba
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to set the plugin's enabled state."));
+}
+
+// A plugin's action, as pressing its button or radio row in the desktop's panel does (r_plugin_action_request.h).
+r_http::r_server_response r_ws::_post_system_plugin_action(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    try
+    {
+        plugin_action_host host;
+        host.loaded = [&] { return _stream_keeper.get_loaded_system_plugins(); };
+        host.status_message = [&](const string& name) { return _stream_keeper.get_system_plugin_status_message(name); };
+        host.run = [&](const string& name, const string& action) { return _stream_keeper.run_system_plugin_action(name, action); };
+        return post_system_plugin_action(request, _auth, host);
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to run the plugin's action."));
 }
 
 // {"state": "not_installed"|"installing"|"installed"|"needs_update"|"failed_check",
