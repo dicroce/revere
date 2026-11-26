@@ -9,7 +9,7 @@
 //
 // Sections: Recording (where the recording lives and the two storage operations), Detection (motion, what finds it,
 // pruning), Streams and connection (the smaller stream, TCP or UDP, the camera's clock) and Doorbell (whether the
-// device is one, how it reports a press, what to type in a Reolink doorbell's app, and "Press the doorbell now").
+// device is one, how it reports a press, what to type in a Reolink doorbell's app, and its press test).
 // Another section is one more entry in `sections` below; room is left in Recording for "Record from".
 
 namespace revere
@@ -44,7 +44,7 @@ inline const tier_choice* tier_choices(size_t& n)
 // by ONVIF discovery, so its clock can be set. sync_time_cb, move_storage_cb and change_retention_cb open the small
 // dialogs for those. On Save with a valid form, min_continuous_retention_hours holds the hours field.
 // press_source is the doorbell's ("onvif" or "reolink_email"); door is what the app last read about its presses and its
-// email setup (doorbell_view), and press_test_cb() starts "Press the doorbell now".
+// email setup (doorbell_view), and press_test_cb() starts the press test ("Start test").
 template<typename STREAMS_CB, typename SYNC_TIME_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB, typename PRESS_TEST_CB>
 camera_properties_result camera_properties_pane(
     camera_properties_session& session,
@@ -188,13 +188,13 @@ camera_properties_result camera_properties_pane(
         auto doorbell = [&](dialog_frame& d) {
             d.section("Doorbell");
             d.toggle("##doorbell", "Doorbell",
-                "This is a doorbell: a press of its button rings, as an event and a notification, whatever the detection settings.",
+                "Pressing the button saves an event and notifies your phone, even if motion detection is off.",
                 &is_doorbell);
             if(!is_doorbell)
                 return;
 
             d.gap(6.0f);
-            d.label("How it tells Revere it was pressed");
+            d.label("How the doorbell tells Revere about a press");
             d.gap(2.0f);
             if(d.pill("##press_onvif", "ONVIF", press_source != "reolink_email", true))
                 press_source = "onvif";
@@ -202,22 +202,22 @@ camera_properties_result camera_properties_pane(
                 press_source = "reolink_email";
             d.gap(2.0f);
             if(press_source != "reolink_email")
-                d.body("At once, over ONVIF. Most doorbells report a press this way.");
+                d.body("The doorbell sends each press to Revere over ONVIF, right away. Most doorbells support this.");
             else
-                d.body("For a Reolink doorbell that doesn't report presses over ONVIF: it emails this computer instead, and Revere reads the email. Only this computer, never the internet.");
+                d.body("For Reolink doorbells that don't send presses over ONVIF. The doorbell emails each press to this computer instead. The email stays on your network.");
             if(door.suggest_onvif && press_source == "reolink_email")
             {
                 d.gap(2.0f);
-                d.body("This doorbell now reports presses over ONVIF too. Switch to ONVIF for rings at once.", status_warning_text);
+                d.body("This doorbell now sends presses over ONVIF too. Switch to ONVIF so rings arrive right away.", status_warning_text);
             }
 
             if(press_source == "reolink_email")
             {
                 d.gap(6.0f);
                 d.label("In the Reolink app");
-                d.body("Settings > Email Alerts > Email Settings, then enter:");
+                d.body("Open Settings > Email Alerts > Email Settings and enter:");
                 if(!door.has_mail)
-                    d.body(door.loaded ? "This computer has no network address toward the doorbell yet." : "Reading the doorbell's settings...");
+                    d.body(door.loaded ? "This computer doesn't have an address the doorbell can reach yet." : "Loading the email settings...");
                 else
                 {
                     // A field to type in, on one line: its name, its value, and small Copy (and for the password Show or
@@ -268,11 +268,11 @@ camera_properties_result camera_properties_pane(
                     field("recipient", "Recipient address", door.recipient, true, false);
                     ImGui::PopStyleVar();
                     d.gap(4.0f);
-                    d.body("Then set the email Alarm Schedule to Ring only, so motion doesn't send email.");
+                    d.body("Then set the email Alarm Schedule to Ring only. Otherwise the doorbell also emails when it sees motion.");
                 }
                 d.gap(4.0f);
-                d.body("A ring arrives about 15 seconds after the press: Reolink sends the email late.");
-                d.body("Reolink sends at most one email about every 10 minutes, and the doorbell has no setting to change that. Another press within that time isn't reported.");
+                d.body("The doorbell sends its email about 15 seconds after the press, so the ring arrives late.");
+                d.body("The doorbell sends at most one email about every 10 minutes, and has no setting to change that. A second press in that time doesn't reach Revere.");
                 for(auto& line : mail_status_lines(door, press_source))
                 {
                     d.gap(2.0f);
@@ -281,13 +281,13 @@ camera_properties_result camera_properties_pane(
             }
 
             d.gap(6.0f);
-            d.label("Check it");
+            d.label("Test it");
             if(door.test_open)
             {
                 const int64_t left = std::max<int64_t>(0, (door.test_ends_ms - (int64_t)std::time(nullptr) * 1000 + 999) / 1000);
-                d.body("Press the doorbell's button now. Waiting " + std::to_string(left) + " s for its reports; this press doesn't ring the phones.");
+                d.body("Press the doorbell now. " + std::to_string(left) + (left == 1 ? " second left." : " seconds left."));
             }
-            else if(row_action(d, "Press the doorbell now", "For a minute, Revere notes which of the doorbell's reports arrive, and how late. That press doesn't ring the phones."))
+            else if(row_action(d, "Start test", "Click Start test, then press the doorbell within a minute. Revere shows how the press arrived and how long it took. Your phone won't ring during the test."))
                 press_test_cb();
             for(auto& line : press_test_lines(door))
                 d.body(line, text_primary);
@@ -298,7 +298,7 @@ camera_properties_result camera_properties_pane(
                 d.body(verdict);
             }
             if(door.test_any && !door.test_open && door.saved_source != press_source)
-                d.body("The test uses the saved choice's sources: save first to test the other one.");
+                d.body("The test checks the saved choice. Save first to test the other one.");
         };
 
         std::vector<std::function<void(dialog_frame&)>> sections {recording, detection, connection, doorbell};

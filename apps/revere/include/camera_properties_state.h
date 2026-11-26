@@ -139,18 +139,23 @@ inline std::string clock_text(int64_t ms)
     return buf;
 }
 
-// The press test's lines, one per source: "ONVIF: yes, at once", "Email: yes, 14 s after", "ONVIF: no", or while the
-// test is open "Email: not yet".
+// The press test's lines, one per source: "ONVIF: arrived right away", "Email: arrived after 14 seconds", "ONVIF: didn't
+// arrive", or while the test is open "Email: not yet".
 inline std::vector<std::string> press_test_lines(const doorbell_view& v)
 {
     std::vector<std::string> out;
     for(auto& s : v.test_sources)
     {
         std::string line = press_source_name(s.source) + ": ";
-        if(s.seen)
-            line += s.after_ms < 1000 ? std::string("yes, at once") : "yes, " + std::to_string((s.after_ms + 500) / 1000) + " s after";
+        if(s.seen && s.after_ms < 1000)
+            line += "arrived right away";
+        else if(s.seen)
+        {
+            const int64_t secs = (s.after_ms + 500) / 1000;
+            line += "arrived after " + std::to_string(secs) + (secs == 1 ? " second" : " seconds");
+        }
         else
-            line += v.test_open ? "not yet" : "no";
+            line += v.test_open ? "not yet" : "didn't arrive";
         out.push_back(line);
     }
     return out;
@@ -170,35 +175,35 @@ inline std::string press_test_verdict(const doorbell_view& v, const std::string&
             email = true;
     }
     if(onvif)
-        return chosen == "onvif" ? "This doorbell reports its presses over ONVIF: rings come at once."
-                                 : "This doorbell reported the press over ONVIF: choose ONVIF for rings at once.";
+        return chosen == "onvif" ? "The doorbell sent the press over ONVIF. Rings will arrive right away."
+                                 : "The doorbell sent the press over ONVIF. Choose ONVIF so rings arrive right away.";
     if(email)
-        return "Only the email reported the press: keep Reolink email.";
-    return chosen == "onvif" ? "Nothing reported the press. If this is a Reolink doorbell, choose Reolink email and set it up."
-                             : "Nothing reported the press. Check the email settings in the Reolink app, then try again.";
+        return "The doorbell only emailed the press. Keep Reolink email.";
+    return chosen == "onvif" ? "No press arrived. If this is a Reolink doorbell, choose Reolink email and set it up."
+                             : "No press arrived. Check the email settings in the Reolink app, then test again.";
 }
 
-// How the email listener is doing for this doorbell, a line at a time.
+// How the doorbell's email is getting through, a line at a time.
 inline std::vector<std::string> mail_status_lines(const doorbell_view& v, const std::string& chosen)
 {
     std::vector<std::string> out;
     if(chosen != "reolink_email")
         return out;
     if(v.saved_source != "reolink_email")
-        out.push_back("Save, and Revere starts listening for this doorbell's email.");
+        out.push_back("Save to start receiving this doorbell's email.");
     else if(!v.listening)
-        out.push_back(v.last_error.empty() ? std::string("Revere starts listening for its email within a few seconds.")
-                                           : "Revere can't listen for its email: " + v.last_error);
+        out.push_back(v.last_error.empty() ? std::string("Revere is getting ready to receive the doorbell's email. This takes a few seconds.")
+                                           : "Revere can't receive the doorbell's email: " + v.last_error);
     else if(v.last_email_ms)
-        out.push_back("Last ring by email: " + clock_text(v.last_email_ms) + ".");
+        out.push_back("The doorbell last emailed a press at " + clock_text(v.last_email_ms) + ".");
     else
-        out.push_back("Listening. No ring by email yet: press the doorbell once.");
+        out.push_back("Ready. The doorbell hasn't emailed a press yet. Press it once to check.");
     if(v.other_mail)
-        out.push_back(std::to_string(v.other_mail) + (v.other_mail == 1 ? " email that wasn't a ring" : " emails that weren't rings") +
-                      " arrived: in the Reolink app, set the email Alarm Schedule to Ring only.");
+        out.push_back("The doorbell sent " + std::to_string(v.other_mail) + (v.other_mail == 1 ? " email that wasn't a press." : " emails that weren't presses.") +
+                      " In the Reolink app, set the email Alarm Schedule to Ring only.");
     if(v.bad_logins)
-        out.push_back("Its login was refused " + std::to_string(v.bad_logins) + (v.bad_logins == 1 ? " time" : " times") +
-                      ": check the user and password in the Reolink app.");
+        out.push_back("The doorbell's email login failed " + std::to_string(v.bad_logins) + (v.bad_logins == 1 ? " time." : " times.") +
+                      " Check the user name and password in the Reolink app.");
     return out;
 }
 

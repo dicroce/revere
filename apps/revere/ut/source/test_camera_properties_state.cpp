@@ -97,11 +97,13 @@ void test_camera_properties_state::test_the_press_test_lines()
     v.test_open = true;
     v.test_sources = {{"onvif", true, 300}, {"reolink_email", false, 0}};
     auto open = press_test_lines(v);
-    RTF_ASSERT(open == vector<string>({"ONVIF: yes, at once", "Email: not yet"}));
+    RTF_ASSERT(open == vector<string>({"ONVIF: arrived right away", "Email: not yet"}));
     v.test_open = false;
     v.test_sources = {{"onvif", false, 0}, {"reolink_email", true, 14400}};
     auto done = press_test_lines(v);
-    RTF_ASSERT(done == vector<string>({"ONVIF: no", "Email: yes, 14 s after"}));
+    RTF_ASSERT(done == vector<string>({"ONVIF: didn't arrive", "Email: arrived after 14 seconds"}));
+    v.test_sources = {{"reolink_email", true, 1200}};
+    RTF_ASSERT(press_test_lines(v) == vector<string>({"Email: arrived after 1 second"}));
     RTF_ASSERT(press_test_lines(doorbell_view()).empty());
 }
 
@@ -114,14 +116,14 @@ void test_camera_properties_state::test_the_press_test_verdict()
     v.test_sources = {{"onvif", true, 0}};
     RTF_ASSERT(press_test_verdict(v, "onvif").empty());             // still running
     v.test_open = false;
-    RTF_ASSERT(press_test_verdict(v, "onvif").find("at once") != string::npos);
-    RTF_ASSERT(press_test_verdict(v, "reolink_email").find("choose ONVIF") != string::npos);
+    RTF_ASSERT(press_test_verdict(v, "onvif") == "The doorbell sent the press over ONVIF. Rings will arrive right away.");
+    RTF_ASSERT(press_test_verdict(v, "reolink_email") == "The doorbell sent the press over ONVIF. Choose ONVIF so rings arrive right away.");
     v.test_sources = {{"onvif", false, 0}, {"reolink_email", true, 15000}};
-    RTF_ASSERT(press_test_verdict(v, "reolink_email").find("keep Reolink email") != string::npos);
+    RTF_ASSERT(press_test_verdict(v, "reolink_email") == "The doorbell only emailed the press. Keep Reolink email.");
     v.test_sources = {{"onvif", false, 0}};
-    RTF_ASSERT(press_test_verdict(v, "onvif").find("choose Reolink email") != string::npos);
+    RTF_ASSERT(press_test_verdict(v, "onvif") == "No press arrived. If this is a Reolink doorbell, choose Reolink email and set it up.");
     v.test_sources = {{"onvif", false, 0}, {"reolink_email", false, 0}};
-    RTF_ASSERT(press_test_verdict(v, "reolink_email").find("Check the email settings") != string::npos);
+    RTF_ASSERT(press_test_verdict(v, "reolink_email") == "No press arrived. Check the email settings in the Reolink app, then test again.");
 }
 
 void test_camera_properties_state::test_the_mail_status_lines()
@@ -130,22 +132,27 @@ void test_camera_properties_state::test_the_mail_status_lines()
     RTF_ASSERT(mail_status_lines(v, "onvif").empty());
     // Chosen but not saved yet.
     auto unsaved = mail_status_lines(v, "reolink_email");
-    RTF_ASSERT(unsaved.size() == 1 && unsaved[0].find("Save") == 0);
+    RTF_ASSERT(unsaved.size() == 1 && unsaved[0] == "Save to start receiving this doorbell's email.");
     v.saved_source = "reolink_email";
-    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0].find("within a few seconds") != string::npos);
+    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0] == "Revere is getting ready to receive the doorbell's email. This takes a few seconds.");
     v.last_error = "the port is in use";
-    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0].find("the port is in use") != string::npos);
+    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0] == "Revere can't receive the doorbell's email: the port is in use");
     v.listening = true;
     v.last_error.clear();
-    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0].find("No ring by email yet") != string::npos);
+    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0] == "Ready. The doorbell hasn't emailed a press yet. Press it once to check.");
     v.last_email_ms = 1764018345000;
-    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0] == "Last ring by email: " + clock_text(v.last_email_ms) + ".");
+    RTF_ASSERT(mail_status_lines(v, "reolink_email")[0] == "The doorbell last emailed a press at " + clock_text(v.last_email_ms) + ".");
     v.other_mail = 1;
     v.bad_logins = 2;
     auto lines = mail_status_lines(v, "reolink_email");
     RTF_ASSERT(lines.size() == 3);
-    RTF_ASSERT(lines[1].find("1 email that wasn't a ring") == 0 && lines[1].find("Ring only") != string::npos);
-    RTF_ASSERT(lines[2].find("refused 2 times") != string::npos);
+    RTF_ASSERT(lines[1] == "The doorbell sent 1 email that wasn't a press. In the Reolink app, set the email Alarm Schedule to Ring only.");
+    RTF_ASSERT(lines[2] == "The doorbell's email login failed 2 times. Check the user name and password in the Reolink app.");
+    v.other_mail = 3;
+    v.bad_logins = 1;
+    lines = mail_status_lines(v, "reolink_email");
+    RTF_ASSERT(lines[1].find("sent 3 emails that weren't presses.") != string::npos);
+    RTF_ASSERT(lines[2].find("failed 1 time.") != string::npos);
     RTF_ASSERT(clock_text(1764018345000).size() == 8);
 }
 
