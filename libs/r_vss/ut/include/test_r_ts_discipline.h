@@ -13,6 +13,10 @@ public:
       TEST(test_r_ts_discipline::test_clock_jumps_back);
       TEST(test_r_ts_discipline::test_clock_jumps_forward);
       TEST(test_r_ts_discipline::test_audio_correction);
+      TEST(test_r_ts_discipline::test_late_frames_capped);
+      TEST(test_r_ts_discipline::test_late_frames_while_backed_up);
+      TEST(test_r_ts_discipline::test_earlier_while_backed_up);
+      TEST(test_r_ts_discipline::test_backed_up_window);
     RTF_FIXTURE_END();
 
     virtual ~test_r_ts_discipline() throw() {}
@@ -29,4 +33,8 @@ public:
     void test_clock_jumps_back();
     void test_clock_jumps_forward();
     void test_audio_correction();
+    void test_late_frames_capped();
+    void test_late_frames_while_backed_up();
+    void test_earlier_while_backed_up();
+    void test_backed_up_window();
 };

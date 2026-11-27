@@ -5,7 +5,7 @@
 using namespace r_vss;
 using namespace std;
 
-int64_t r_ts_discipline::video_frame(int64_t raw_ts_ms, int64_t now_ms)
+int64_t r_ts_discipline::video_frame(int64_t raw_ts_ms, int64_t now_ms, bool backed_up)
 {
     _jumped = false;
 
@@ -26,6 +26,7 @@ int64_t r_ts_discipline::video_frame(int64_t raw_ts_ms, int64_t now_ms)
             _correction = (double)(at - raw_ts_ms);
             _window_start_ms = now_ms;
             _window_has_error = false;
+            _window_backed_up = false;
             ++_jumps;
             _jumped = true;
         }
@@ -38,17 +39,26 @@ int64_t r_ts_discipline::video_frame(int64_t raw_ts_ms, int64_t now_ms)
         _window_has_error = true;
     }
 
+    if(backed_up)
+        _window_backed_up = true;
+
     int64_t window = now_ms - _window_start_ms;
     if(window >= WINDOW_MS)
     {
         double step = _window_max_error * (double)window / (double)TAU_MS;
         // A long window is a stall: no frames, so nothing more was learned
         // than in a short one, and it earns no more slew.
-        double limit = (double)(std::min)(window, (int64_t)(2 * WINDOW_MS)) * (double)MAX_SLEW_PPM / 1000000.0;
-        step = (std::max)(-limit, (std::min)(limit, step));
+        double counted = (double)(std::min)(window, (int64_t)(2 * WINDOW_MS));
+        // step > 0 moves the timeline earlier (the camera's clock is fast,
+        // certain); step < 0 moves it later (a slow clock, or frames that
+        // came late), so it's slower, and not at all while backed up.
+        double earlier = counted * (double)MAX_SLEW_PPM / 1000000.0;
+        double later = _window_backed_up ? 0.0 : counted * (double)MAX_LATE_SLEW_PPM / 1000000.0;
+        step = (std::max)(-later, (std::min)(earlier, step));
         _correction -= step;
         _window_start_ms = now_ms;
         _window_has_error = false;
+        _window_backed_up = false;
     }
 
     int64_t correction = (int64_t)std::llround(_correction);

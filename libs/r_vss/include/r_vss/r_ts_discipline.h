@@ -28,11 +28,25 @@ namespace r_vss
 // it was captured, only later (network jitter, a stall), so the highest error
 // in each WINDOW_MS is the one from the frame that was delayed least, and that
 // is what the correction follows. Each window it takes out error * window /
-// TAU_MS, and never more than MAX_SLEW_PPM of the window: 0.5%, one frame in
-// two hundred, which no viewer sees and which is ten times any crystal. A
-// window stretched by a stall counts as two at most, so a backlog that
-// arrives late and then drains moves it by a few tens of milliseconds, which
-// it then takes back out.
+// TAU_MS, up to a limit. A window only closes when a frame arrives, so after a
+// stall it can be any length; it counts as two at most, since nothing more was
+// learned in it than in a short one.
+//
+// The two directions aren't equally sure:
+//  - Stored time ahead of arrival can only be the camera's clock running
+//    fast, because a frame can't arrive before it was captured. That is taken
+//    out at up to MAX_SLEW_PPM of the window: 0.5%, one frame in two hundred,
+//    which no viewer sees.
+//  - Stored time behind arrival is either a slow camera clock or frames that
+//    reached us late: revere behind on this camera, a Wi-Fi stall, a TCP
+//    backlog. So the timeline is moved later by at most MAX_LATE_SLEW_PPM of
+//    the window, 60 ms a minute. That is three times the worst camera clock
+//    measured (1.2 s an hour, about 330 ppm), but a backlog seconds deep
+//    moves the timeline only that much for as long as it lasts, and it is
+//    taken back out at the faster rate once frames arrive on time.
+//  - While the caller says frames are backed up (its lag watchdog sees them
+//    arriving behind live), a window doesn't move the timeline later at all.
+//    Moving it earlier is still allowed.
 //
 // A camera clock that jumps isn't steered out, it is re-anchored at once, at
 // that frame: pts stepping back more than JUMP_MS (a stream restart, a clock
@@ -48,12 +62,15 @@ public:
         WINDOW_MS = 2000,
         TAU_MS = 30000,
         MAX_SLEW_PPM = 5000,
+        MAX_LATE_SLEW_PPM = 1000,
         JUMP_MS = 5000
     };
 
     // One video frame: raw_ts_ms = stream start + pts, now_ms = the wall clock
-    // at arrival. Returns the correction to add to raw_ts_ms. One thread.
-    R_API int64_t video_frame(int64_t raw_ts_ms, int64_t now_ms);
+    // at arrival, backed_up = frames are reaching us behind live, so this one's
+    // lateness says nothing about the camera's clock. Returns the correction
+    // to add to raw_ts_ms. One thread.
+    R_API int64_t video_frame(int64_t raw_ts_ms, int64_t now_ms, bool backed_up = false);
 
     // The correction as of the last video frame. Any thread.
     R_API int64_t correction_ms() const { return _published.load(std::memory_order_relaxed); }
@@ -74,6 +91,7 @@ private:
     int64_t _window_start_ms {0};
     double _window_max_error {0.0};
     bool _window_has_error {false};
+    bool _window_backed_up {false};
     int _jumps {0};
     bool _jumped {false};
 };

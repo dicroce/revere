@@ -388,8 +388,11 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
             // Stream start + pts follows the camera's clock, which drifts from
             // ours; the correction keeps the recorded timeline on the wall clock.
             const auto raw_ts = (sc.stream_start_ts() + pts);
+            // While frames reach us behind live, their lateness is ours, not
+            // the camera's clock, so it mustn't pull the timeline later.
             const auto ts = raw_ts + _ts_discipline.video_frame(
-                raw_ts, duration_cast<milliseconds>(_last_v_time.time_since_epoch()).count());
+                raw_ts, duration_cast<milliseconds>(_last_v_time.time_since_epoch()).count(),
+                ingest_lag_ms > r_lag_watchdog::LAG_MS);
             if(_ts_discipline.jumped())
             {
                 auto name = _camera.friendly_name.is_null() ? _camera.id : _camera.friendly_name.value();
