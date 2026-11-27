@@ -10,6 +10,7 @@ public:
       TEST(test_r_press_check::test_a_test_closes_after_a_minute_and_keeps_its_result);
       TEST(test_r_press_check::test_a_press_from_before_the_test_isnt_its);
       TEST(test_r_press_check::test_the_sources_a_test_watches);
+      TEST(test_r_press_check::test_an_email_that_isnt_a_press);
       TEST(test_r_press_check::test_suggest_onvif);
     RTF_FIXTURE_END();
 
@@ -23,5 +24,6 @@ public:
     void test_a_test_closes_after_a_minute_and_keeps_its_result();
     void test_a_press_from_before_the_test_isnt_its();
     void test_the_sources_a_test_watches();
+    void test_an_email_that_isnt_a_press();
     void test_suggest_onvif();
 };

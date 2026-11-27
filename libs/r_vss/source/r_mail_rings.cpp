@@ -24,9 +24,15 @@ namespace
 {
 
 const size_t MAX_LINE = 1000;               // RFC 5321's line limit, with room
-const int MAX_BAD_LOGINS = 3;               // per connection
+// Per connection. A Reolink doorbell tries AUTH PLAIN, then AUTH LOGIN on the same connection, so each Test in its app
+// is two tries; the connection's wrong tries count as one wrong login for the address (bad_logins_per_address).
+const int MAX_BAD_LOGINS = 2;
 const int64_t BAD_LOGIN_WINDOW_MS = 10 * 60 * 1000;   // an address's wrong logins are counted over this
 const int64_t STRANGER_LOG_EVERY_MS = 10 * 60 * 1000;
+// The sender and recipient setup shows for the doorbell's app. The listener reads every mail from the doorbell, whoever
+// it's from or to, so changing either changes only what setup shows.
+const char* const MAIL_SENDER = "doorbell@revere.video";
+const char* const MAIL_RECIPIENT = "pressed@revere.video";
 // A mail is read by hand, never with std::regex over its body or headers: libstdc++'s regex recurses once per
 // character it repeats over, and a doorbell's picture, base64 in the mail, overflows the stack (GCC bug 86164).
 const size_t MAX_SUBJECT = 2000;            // of a Subject header, the part read
@@ -65,6 +71,17 @@ string _b64_text(const string& s)
     {
         return string();
     }
+}
+
+// A password less any spaces and dashes, so the one a doorbell sends matches with or without them. The box's password
+// has neither (see _random_text), but someone typing it from a screen may add one ("abcd efgh", "abcd-efgh").
+string _without_separators(const string& s)
+{
+    string out;
+    for (char c : s)
+        if (c != ' ' && c != '-')
+            out += c;
+    return out;
 }
 
 bool _same(const string& a, const string& b)
@@ -267,9 +284,9 @@ r_mail_setup r_vss::mail_setup_for(const string& server, int port, const r_mail_
     r_mail_setup s;
     s.server = server;
     s.port = port;
-    s.sender = "doorbell@revere.video";
+    s.sender = MAIL_SENDER;
     s.password = login.password;
-    s.recipient = "rings@revere.video";
+    s.recipient = MAIL_RECIPIENT;
     return s;
 }
 
@@ -338,12 +355,13 @@ int64_t r_vss::ring_press_ms(const r_nullable<int64_t>& subject_ms, int64_t cloc
 }
 
 r_mail_rings::r_mail_rings(r_mail_rings_config config, camera_for_ip_fn camera_for_ip, ring_fn on_ring,
-                           clock_offset_fn clock_offset, now_fn now) :
+                           clock_offset_fn clock_offset, now_fn now, other_mail_fn on_other_mail) :
     _config(std::move(config)),
     _camera_for_ip(std::move(camera_for_ip)),
     _on_ring(std::move(on_ring)),
     _clock_offset(std::move(clock_offset)),
-    _now(now ? std::move(now) : now_fn(_wall_ms))
+    _now(now ? std::move(now) : now_fn(_wall_ms)),
+    _on_other_mail(std::move(on_other_mail))
 {
 }
 
@@ -387,6 +405,25 @@ r_mail_rings::counts r_mail_rings::status() const
 {
     lock_guard<mutex> g(_lock);
     return _counts;
+}
+
+int64_t r_mail_rings::locked_for_ms(const string& ip) const
+{
+    lock_guard<mutex> g(_lock);
+    auto found = _bad_login_times.find(ip);
+    const int limit = _config.bad_logins_per_address;
+    if (found == _bad_login_times.end() || limit <= 0)
+        return 0;
+    const auto now = _now();
+    const auto& tries = found->second;   // oldest first
+    size_t first = 0;
+    while (first < tries.size() && now - tries[first] >= BAD_LOGIN_WINDOW_MS)
+        ++first;
+    const size_t recent = tries.size() - first;
+    if (recent < (size_t)limit)
+        return 0;
+    // Let in again once fewer than limit are left in the window: when the one limit from the newest is 10 minutes old.
+    return tries[tries.size() - limit] + BAD_LOGIN_WINDOW_MS - now;
 }
 
 void r_mail_rings::_serve(r_ssl_server_socket& conn)
@@ -463,7 +500,7 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
     };
 
     bool tls = false, authed = false, from = false, to = false;
-    int bad_logins = 0;
+    int bad_logins = 0;   // this connection's wrong tries
     if (!say("220 revere ESMTP"))
         return;
     string line;
@@ -589,7 +626,7 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
                 break;
             }
             // The password only: any user (Reolink's app logs in with its sender address).
-            const bool pass_ok = _same(pass, _config.password);
+            const bool pass_ok = _same(_without_separators(pass), _without_separators(_config.password));
             R_LOG_INFO("mail rings: %s logged in as \"%s\": %s", ip.c_str(), _printable(user, 64).c_str(), pass_ok ? "accepted" : "wrong password");
             if (pass_ok)
             {
@@ -598,6 +635,8 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
             }
             else
             {
+                // Counted once per connection: a doorbell's second try on it is the same Test.
+                if (bad_logins == 0)
                 {
                     lock_guard<mutex> g(_lock);
                     ++_counts.bad_logins;
@@ -711,8 +750,23 @@ void r_mail_rings::_mail(const string& camera_id, const string& message)
     read_mail(message, subject, text);
     if (!is_ring_mail(subject, text))
     {
-        lock_guard<mutex> g(_lock);
-        ++_counts.other_mail;
+        bool log = false;
+        {
+            lock_guard<mutex> g(_lock);
+            ++_counts.other_mail;
+            // Logged once in a while per camera, as a stranger's refusal is: a motion alert may come every minute.
+            for (auto it = _other_mail_logged.begin(); it != _other_mail_logged.end();)
+                it = arrival - it->second >= STRANGER_LOG_EVERY_MS ? _other_mail_logged.erase(it) : next(it);
+            if (_other_mail_logged.find(camera_id) == _other_mail_logged.end())
+            {
+                _other_mail_logged[camera_id] = arrival;
+                log = true;
+            }
+        }
+        if (log)
+            R_LOG_INFO("mail rings: an email from %s that isn't a ring, subject \"%s\"", camera_id.c_str(), _printable(subject, 120).c_str());
+        if (_on_other_mail)
+            _on_other_mail(camera_id, arrival);
         return;
     }
     r_mail_ring ring;

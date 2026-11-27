@@ -242,7 +242,7 @@
                 <template v-for="f in mailFields" :key="f.key">
                   <dt>{{ f.name }}</dt>
                   <dd>
-                    <code>{{ f.secret ? (doorReveal ? inGroupsOf4(f.value) : '••••••••••••') : f.value }}</code>
+                    <code>{{ f.secret ? passwordShown(f.value, doorReveal) : f.value }}</code>
                     <span class="mail-buttons">
                       <button v-if="f.secret" class="ghost small" @click="doorReveal = !doorReveal">{{ doorReveal ? 'Hide' : 'Show' }}</button>
                       <button v-if="f.secret" class="ghost small" :disabled="propsBusy || doorNewPassword" @click="doorConfirmNew = true">New password</button>
@@ -332,7 +332,7 @@ import RecordWizard from './RecordWizard.vue'
 import StorageDialog from './StorageDialog.vue'
 import PluginsSection from './PluginsSection.vue'
 import { doorbellChoice } from '../utils/cameraKind.js'
-import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, mailSetupRows, mailSetupAfterRead, inGroupsOf4, mailSetupError } from '../utils/doorbellSetup.js'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, mailSetupRows, mailSetupAfterRead, passwordShown, mailSetupError } from '../utils/doorbellSetup.js'
 import { unsaved } from '../utils/unsaved.js'
 import { activeSection, sameTabs, isScrollKey } from '../utils/propsSections.js'
 

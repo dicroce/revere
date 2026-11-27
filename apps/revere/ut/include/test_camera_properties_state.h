@@ -13,7 +13,7 @@ public:
       TEST(test_camera_properties_state::test_the_press_test_lines);
       TEST(test_camera_properties_state::test_the_press_test_verdict);
       TEST(test_camera_properties_state::test_the_mail_status_lines);
-      TEST(test_camera_properties_state::test_a_password_in_groups_of_4);
+      TEST(test_camera_properties_state::test_the_password_is_shown_as_it_is);
       TEST(test_camera_properties_state::test_the_mail_setup_rows);
       TEST(test_camera_properties_state::test_the_column_width);
       TEST(test_camera_properties_state::test_a_button_beside_its_text);
@@ -38,7 +38,7 @@ public:
     void test_the_press_test_lines();
     void test_the_press_test_verdict();
     void test_the_mail_status_lines();
-    void test_a_password_in_groups_of_4();
+    void test_the_password_is_shown_as_it_is();
     void test_the_mail_setup_rows();
     void test_the_column_width();
     void test_a_button_beside_its_text();

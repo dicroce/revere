@@ -1,7 +1,7 @@
 // Run with: npm test (node's built-in test runner; no extra dependencies).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, clockText, inGroupsOf4, mailSetupError, mailSetupRows, mailSetupAfterRead, MAIL_SENDER } from '../src/utils/doorbellSetup.js'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, clockText, passwordShown, mailSetupError, mailSetupRows, mailSetupAfterRead, MAIL_SENDER } from '../src/utils/doorbellSetup.js'
 
 test('the press source is sent for a doorbell once chosen, never for a camera or to an older revere', () => {
   assert.deepEqual(pressSourceChoice({ press_source: 'onvif' }, true, 'onvif'), {})
@@ -20,6 +20,9 @@ test("the press test's lines: right away, how late, not yet while it runs, didn'
     ["ONVIF: didn't arrive", 'Email: arrived after 14 seconds'])
   assert.deepEqual(pressTestLines({ open: false, sources: [{ source: 'reolink_email', seen: true, after_ms: 1200 }] }), ['Email: arrived after 1 second'])
   assert.deepEqual(pressTestLines(null), [])
+  // An email that wasn't a press came during the test.
+  assert.deepEqual(pressTestLines({ open: false, other_mail: true, sources: [{ source: 'onvif', seen: false }, { source: 'reolink_email', seen: false }] }),
+    ['ONVIF: didn\'t arrive', 'Email: didn\'t arrive', "Got an email from the doorbell, but it wasn't a press."])
 })
 
 test("the test's verdict, once it's over", () => {
@@ -48,23 +51,28 @@ test("the doorbell's email status, a line at a time", () => {
   const more = mailStatusLines({ listening: true, other_mail: 3, bad_logins: 1 }, rung, 'reolink_email')
   assert.match(more[1], /sent 3 emails that weren't presses\./)
   assert.match(more[2], /failed 1 time\./)
+  assert.equal(more.length, 3)
+  // Locked for its wrong passwords: whole minutes left, rounded up.
+  const locked = (ms) => mailStatusLines({ listening: true, other_mail: 3, bad_logins: 1, locked_for_ms: ms }, rung, 'reolink_email')[3]
+  assert.equal(locked(7 * 60000 - 1000), 'Too many wrong passwords from the doorbell. Locked for 7 more minutes.')
+  assert.equal(locked(1), 'Too many wrong passwords from the doorbell. Locked for 1 more minute.')
+  assert.equal(locked(60001), 'Too many wrong passwords from the doorbell. Locked for 2 more minutes.')
   assert.match(clockText(1764018345000), /^\d\d:\d\d:\d\d$/)
 })
 
-test('a password shown in groups of 4, and a real sender address', () => {
-  assert.equal(inGroupsOf4('Xw7tQ2mLp9RzV4nBc8Hd'), 'Xw7t Q2mL p9Rz V4nB c8Hd')
-  assert.equal(inGroupsOf4('abcde'), 'abcd e')
-  assert.equal(inGroupsOf4('abcd'), 'abcd')
-  assert.equal(inGroupsOf4(''), '')
-  assert.equal(inGroupsOf4('k7mq2xpa'), 'k7mq 2xpa')
+test('the password is shown as it is, and a real sender address', () => {
+  // All 8 characters together, no space or dash, as Copy copies it; hidden until shown.
+  assert.equal(passwordShown('k7mq2xpa', true), 'k7mq2xpa')
+  assert.equal(passwordShown('k7mq2xpa', false), '••••••••••••')
+  assert.equal(passwordShown(undefined, true), '')
   assert.equal(MAIL_SENDER, 'doorbell@revere.video')
 })
 
 test('the mail setup rows are what the Reolink app asks for, with no user name', () => {
-  const mail = { server: '192.168.1.20', port: 2525, sender: 'doorbell@revere.video', password: 'k7mq2xpa', recipient: 'rings@revere.video', user: 'ignored' }
+  const mail = { server: '192.168.1.20', port: 2525, sender: 'doorbell@revere.video', password: 'k7mq2xpa', recipient: 'pressed@revere.video', user: 'ignored' }
   const rows = mailSetupRows(mail)
   assert.deepEqual(rows.map((r) => r.name), ['SMTP server', 'SMTP port', 'SSL or TLS', "Sender's email", 'Password', 'Recipient'])
-  assert.deepEqual(rows.map((r) => r.value), ['192.168.1.20', '2525', 'On', 'doorbell@revere.video', 'k7mq2xpa', 'rings@revere.video'])
+  assert.deepEqual(rows.map((r) => r.value), ['192.168.1.20', '2525', 'On', 'doorbell@revere.video', 'k7mq2xpa', 'pressed@revere.video'])
   assert.deepEqual(rows.map((r) => !!r.secret), [false, false, false, false, true, false])
   assert.deepEqual(rows.map((r) => !!r.copy), [true, true, false, true, true, true])
   // An older revere gives no sender: ours is shown.

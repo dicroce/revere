@@ -31,6 +31,9 @@ struct r_press_test
     int64_t ends_ms {0};
     bool ring_phones {false};   // its press rings the phones anyway
     std::vector<r_press_test_source> sources;
+    // The doorbell emailed something that isn't a press while the test was open: its email works, but it isn't set to
+    // send presses (its Visitor alert), or this was the Reolink app's Test email.
+    bool other_mail {false};
 };
 
 // Which of a doorbell's sources report its presses, so setup can say which to use:
@@ -84,6 +87,18 @@ public:
             }
         }
         return !t.ring_phones;
+    }
+
+    // The doorbell emailed something that isn't a press, at now_ms: noted when its test is open.
+    void other_mail(const std::string& camera_id, int64_t now_ms)
+    {
+        std::lock_guard<std::mutex> g(_lock);
+        auto it = _tests.find(camera_id);
+        if(it == _tests.end())
+            return;
+        _close_if_over(it->second, now_ms);
+        if(it->second.open)
+            it->second.other_mail = true;
     }
 
     // The doorbell's test as it is at now_ms: closed once TEST_MS have passed. any is false when it never had one.

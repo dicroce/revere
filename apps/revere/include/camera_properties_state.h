@@ -195,6 +195,7 @@ struct doorbell_view
     bool test_open {false};
     int64_t test_ends_ms {0};
     std::vector<source_result> test_sources;
+    bool test_other_mail {false};   // an email from the doorbell that wasn't a press came during the test
 
     // What to type in the Reolink app; has_mail false while the box has no address toward the doorbell. The password is
     // read once (has_login), and again when a new one is made; the rest is read with the status.
@@ -208,6 +209,7 @@ struct doorbell_view
     bool listening {false};
     uint64_t other_mail {0};
     uint64_t bad_logins {0};
+    int64_t locked_for_ms {0};   // the doorbell's email login is refused this much longer, for its wrong passwords
     std::string last_error;
 
     // The pane's own: the password shown in plain text, and "New password" asking before it makes one.
@@ -250,7 +252,7 @@ struct mail_setup_row
     const char* name;
     std::string value;
     bool copy;      // a Copy button
-    bool secret;    // the password: hidden until shown, in groups of 4
+    bool secret;    // the password: hidden until shown
 };
 inline std::vector<mail_setup_row> mail_setup_rows(const doorbell_view& v)
 {
@@ -264,17 +266,11 @@ inline std::vector<mail_setup_row> mail_setup_rows(const doorbell_view& v)
     };
 }
 
-// A password shown for typing, in groups of 4: "Xw7t Q2mL p9Rz". Copy copies it as it is.
-inline std::string in_groups_of_4(const std::string& s)
+// The password as the row shows it: exactly as it is, all its characters together, as Copy copies it (a space or dash
+// added for reading would be typed into the doorbell's app too); hidden until shown.
+inline std::string password_shown(const std::string& password, bool reveal)
 {
-    std::string out;
-    for(size_t i = 0; i < s.size(); ++i)
-    {
-        if(i && i % 4 == 0)
-            out += ' ';
-        out += s[i];
-    }
-    return out;
+    return reveal ? password : std::string(12, '*');
 }
 
 // A time today as the box shows it, "13:16:35".
@@ -311,6 +307,8 @@ inline std::vector<std::string> press_test_lines(const doorbell_view& v)
             line += v.test_open ? "not yet" : "didn't arrive";
         out.push_back(line);
     }
+    if(v.test_other_mail)
+        out.push_back("Got an email from the doorbell, but it wasn't a press.");
     return out;
 }
 
@@ -357,6 +355,11 @@ inline std::vector<std::string> mail_status_lines(const doorbell_view& v, const 
     if(v.bad_logins)
         out.push_back("The doorbell's email login failed " + std::to_string(v.bad_logins) + (v.bad_logins == 1 ? " time." : " times.") +
                       " Check the password in the Reolink app.");
+    if(v.locked_for_ms > 0)
+    {
+        const int64_t mins = (v.locked_for_ms + 59999) / 60000;
+        out.push_back("Too many wrong passwords from the doorbell. Locked for " + std::to_string(mins) + (mins == 1 ? " more minute." : " more minutes."));
+    }
     return out;
 }
 

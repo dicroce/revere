@@ -46,7 +46,7 @@ string subject_at(int64_t ms)
 
 string ring_mail(const string& subject)
 {
-    return "From: doorbell@example.com\r\nTo: rings@revere.local\r\nSubject: " + subject +
+    return "From: doorbell@example.com\r\nTo: pressed@revere.local\r\nSubject: " + subject +
            "\r\nContent-Type: text/plain\r\n\r\nAlarm Event: Visitor\r\nAlarm Camera Name: Front Door\r\n";
 }
 
@@ -54,6 +54,7 @@ struct rig
 {
     mutex lock;
     vector<r_mail_ring> rings;
+    vector<pair<string, int64_t>> other_mails;   // camera, arrival
     int64_t now_ms {1764018345000};   // 2026-11-24, a fixed arrival time for the press-time checks
     string doorbell_ip {"127.0.0.1"};
     unique_ptr<r_mail_rings> server;
@@ -74,7 +75,8 @@ struct rig
             [this](const string& ip) { return ip == doorbell_ip ? r_nullable<string>(string("door-1")) : r_nullable<string>(); },
             [this](const r_mail_ring& r) { lock_guard<mutex> g(lock); rings.push_back(r); },
             [](const string&) { return (int64_t)0; },
-            [this]() { return now_ms; });
+            [this]() { return now_ms; },
+            [this](const string& camera_id, int64_t at) { lock_guard<mutex> g(lock); other_mails.push_back({camera_id, at}); });
         server->start();
         // Until it answers.
         for (int i = 0; i < 200; ++i)
@@ -147,7 +149,7 @@ struct client
     string mail(const string& message)
     {
         if (!code(say("MAIL FROM:<doorbell@example.com>"), "250")) return "MAIL refused";
-        if (!code(say("RCPT TO:<rings@revere.local>"), "250")) return "RCPT refused";
+        if (!code(say("RCPT TO:<pressed@revere.local>"), "250")) return "RCPT refused";
         if (!code(say("DATA"), "354")) return "DATA refused";
         sok.send(message.data(), message.size());
         return say(".");
@@ -237,6 +239,11 @@ void test_r_mail_rings::test_auth_login_and_a_motion_mail()
     RTF_ASSERT(client::code(c.mail(ring_mail(subject_at(r.now_ms - 12000))), "250"));
     RTF_ASSERT_EQUAL(r.ring_count(), (size_t)1);
     RTF_ASSERT_EQUAL(r.server->status().other_mail, (uint64_t)1);
+    // The motion alert went to the press test as an email that isn't a press; the ring didn't.
+    lock_guard<mutex> g(r.lock);
+    RTF_ASSERT_EQUAL(r.other_mails.size(), (size_t)1);
+    RTF_ASSERT_EQUAL(r.other_mails[0].first, string("door-1"));
+    RTF_ASSERT_EQUAL(r.other_mails[0].second, r.now_ms);
 }
 
 void test_r_mail_rings::test_nothing_before_starttls()
@@ -264,12 +271,21 @@ void test_r_mail_rings::test_a_wrong_login()
     c.secure();
     // A wrong password is refused, whatever the user.
     RTF_ASSERT(client::code(c.auth_plain(USER, "wrong"), "535"));
-    RTF_ASSERT(client::code(c.auth_plain("doorbell@revere.video", "wrong"), "535"));
     RTF_ASSERT(client::code(c.say("MAIL FROM:<doorbell@example.com>"), "530"));
-    // A third wrong one ends the connection.
-    RTF_ASSERT(client::code(c.auth_plain("someone", "again"), "535"));
+    // A second wrong one (a Reolink doorbell's AUTH LOGIN after its AUTH PLAIN) ends the connection, and the two are
+    // one wrong login: one Test in the doorbell's app.
+    RTF_ASSERT(client::code(c.say("AUTH LOGIN"), "334"));
+    RTF_ASSERT(client::code(c.say(r_string_utils::to_base64(USER, strlen(USER))), "334"));
+    RTF_ASSERT(client::code(c.say(r_string_utils::to_base64("again", 5)), "535"));
     RTF_ASSERT_EQUAL(c.line(), string("(closed)"));
-    RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)3);
+    RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)1);
+    RTF_ASSERT_EQUAL(r.server->locked_for_ms("127.0.0.1"), (int64_t)0);
+    // Wrong, then right, on one connection: in.
+    client d(r.port);
+    d.secure();
+    RTF_ASSERT(client::code(d.auth_plain(USER, "wrong"), "535"));
+    RTF_ASSERT(client::code(d.auth_plain(USER, PASS), "235"));
+    RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)2);
 }
 
 void test_r_mail_rings::test_any_user_with_the_password()
@@ -507,7 +523,7 @@ void test_r_mail_rings::test_a_data_without_end()
     c.secure();
     RTF_ASSERT(client::code(c.auth_plain(USER, PASS), "235"));
     RTF_ASSERT(client::code(c.say("MAIL FROM:<doorbell@example.com>"), "250"));
-    RTF_ASSERT(client::code(c.say("RCPT TO:<rings@revere.local>"), "250"));
+    RTF_ASSERT(client::code(c.say("RCPT TO:<pressed@revere.local>"), "250"));
     RTF_ASSERT(client::code(c.say("DATA"), "354"));
     string lines;
     for (int i = 0; i < 100; ++i)
@@ -520,30 +536,68 @@ void test_r_mail_rings::test_a_data_without_end()
 
 void test_r_mail_rings::test_wrong_logins_counted_per_address()
 {
-    // Three wrong logins end a connection; reconnecting doesn't start the count over: past the address's limit its
-    // logins are refused, the right one too, until the 10 minutes are up.
-    rig r(12543, [](r_mail_rings_config& c) { c.bad_logins_per_address = 4; });
-    {
-        client c(r.port);
-        c.secure();
-        for (int i = 0; i < 3; ++i)
-            RTF_ASSERT(client::code(c.auth_plain(USER, "wrong"), "535"));
-        RTF_ASSERT_EQUAL(c.line(), string("(closed)"));
-    }
-    {
+    // Each connection's wrong logins count once (a doorbell's Test tries twice on one); reconnecting doesn't start the
+    // count over: at the address's limit its logins are refused, the right one too, until the oldest is 10 minutes old.
+    rig r(12543, [](r_mail_rings_config& c) { c.bad_logins_per_address = 3; });
+    const int64_t t0 = r.now_ms;
+    // The second try's reply: 535, or 454 once the first has reached the limit.
+    auto a_failed_test = [&](const char* second) {
         client c(r.port);
         c.secure();
         RTF_ASSERT(client::code(c.auth_plain(USER, "wrong"), "535"));
+        RTF_ASSERT(client::code(c.auth_plain(USER, "wrong"), second));
+        RTF_ASSERT_EQUAL(c.line(), string("(closed)"));
+    };
+    a_failed_test("535");
+    r.now_ms = t0 + 60000;
+    a_failed_test("535");
+    RTF_ASSERT_EQUAL(r.server->locked_for_ms("127.0.0.1"), (int64_t)0);
+    {
+        client c(r.port);     // 2 of 3: still let in
+        c.secure();
+        RTF_ASSERT(client::code(c.auth_plain(USER, PASS), "235"));
+    }
+    r.now_ms = t0 + 2 * 60000;
+    a_failed_test("454");
+    RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)3);
+    // Locked until the first is 10 minutes old.
+    RTF_ASSERT_EQUAL(r.server->locked_for_ms("127.0.0.1"), (int64_t)(8 * 60000));
+    RTF_ASSERT_EQUAL(r.server->locked_for_ms("10.9.9.9"), (int64_t)0);
+    {
+        client c(r.port);
+        c.secure();
         RTF_ASSERT(client::code(c.auth_plain(USER, PASS), "454"));
         RTF_ASSERT_EQUAL(c.line(), string("(closed)"));
     }
-    RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)4);
-    r.now_ms += 10 * 60 * 1000;
+    RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)3);   // a refused one isn't another
+    r.now_ms = t0 + 10 * 60000 - 1;
+    RTF_ASSERT_EQUAL(r.server->locked_for_ms("127.0.0.1"), (int64_t)1);
+    r.now_ms = t0 + 10 * 60000;
+    RTF_ASSERT_EQUAL(r.server->locked_for_ms("127.0.0.1"), (int64_t)0);
     {
         client c(r.port);
         c.secure();
         RTF_ASSERT(client::code(c.auth_plain(USER, PASS), "235"));
     }
+}
+
+void test_r_mail_rings::test_the_password_with_spaces_or_dashes()
+{
+    // Typed from a screen as "abcd efgh" or "abcd-efgh": the same password. Other characters still count.
+    rig r(12547, [](r_mail_rings_config& c) { c.password = "k7mq2xpa"; });
+    for (const char* typed : {"k7mq2xpa", "k7mq 2xpa", "k7mq-2xpa", " k7mq - 2xpa "})
+    {
+        client c(r.port);
+        c.secure();
+        RTF_ASSERT(client::code(c.auth_plain(USER, typed), "235"));
+    }
+    for (const char* typed : {"k7mq_2xpa", "k7mq2xp", "k7mq2xpa-x", "K7MQ2XPA"})
+    {
+        client c(r.port);
+        c.secure();
+        RTF_ASSERT(client::code(c.auth_plain(USER, typed), "535"));
+    }
+    RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)4);
 }
 
 void test_r_mail_rings::test_which_doorbells_send_by_email()
@@ -619,7 +673,7 @@ void test_r_mail_rings::test_the_setup_to_type_in()
     RTF_ASSERT_EQUAL(s.port, 2525);
     RTF_ASSERT_EQUAL(s.sender, string("doorbell@revere.video"));
     RTF_ASSERT_EQUAL(s.password, string("pw"));
-    RTF_ASSERT_EQUAL(s.recipient, string("rings@revere.video"));
+    RTF_ASSERT_EQUAL(s.recipient, string("pressed@revere.video"));
     // The port: 2525, a bench's override, never a bad one.
 #ifdef IS_WINDOWS
     _putenv_s("REVERE_MAIL_RINGS_PORT", "");

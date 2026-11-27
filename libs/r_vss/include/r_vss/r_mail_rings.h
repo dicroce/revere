@@ -61,6 +61,8 @@ public:
     // The camera's clock less this box's, in ms (0 when not known): the subject's time is the camera's.
     using clock_offset_fn = std::function<int64_t(const std::string& camera_id)>;
     using now_fn = std::function<int64_t()>;
+    // A mail from the doorbell that isn't a ring (a motion alert, or the Reolink app's Test email), at arrival_ms.
+    using other_mail_fn = std::function<void(const std::string& camera_id, int64_t arrival_ms)>;
 
     struct counts
     {
@@ -74,7 +76,7 @@ public:
     };
 
     R_API r_mail_rings(r_mail_rings_config config, camera_for_ip_fn camera_for_ip, ring_fn on_ring,
-                       clock_offset_fn clock_offset = {}, now_fn now = {});
+                       clock_offset_fn clock_offset = {}, now_fn now = {}, other_mail_fn on_other_mail = {});
     R_API ~r_mail_rings() noexcept;
 
     r_mail_rings(const r_mail_rings&) = delete;
@@ -83,6 +85,9 @@ public:
     R_API void start();
     R_API void stop();
     R_API counts status() const;
+    // How long this address's AUTH stays refused for its wrong logins (bad_logins_per_address in 10 minutes), in ms; 0
+    // when it isn't.
+    R_API int64_t locked_for_ms(const std::string& ip) const;
 
 private:
     void _serve(r_utils::r_ssl_server_socket& conn);
@@ -93,6 +98,7 @@ private:
     ring_fn _on_ring;
     clock_offset_fn _clock_offset;
     now_fn _now;
+    other_mail_fn _on_other_mail;
     std::shared_ptr<r_utils::r_ssl_server_config> _tls;
     std::unique_ptr<r_utils::r_server_threaded<r_utils::r_ssl_server_socket>> _server;
     std::thread _accept_thread;
@@ -100,6 +106,7 @@ private:
     counts _counts;
     std::map<std::string, std::deque<int64_t>> _recent;   // per camera, its mails in the last minute
     std::map<std::string, int64_t> _stranger_logged;     // per address, when a refusal was last logged (recent only)
+    std::map<std::string, int64_t> _other_mail_logged;   // per camera, when a mail that isn't a ring was last logged
     std::map<std::string, std::deque<int64_t>> _bad_login_times;   // per address, its wrong logins in the last 10 minutes
 };
 

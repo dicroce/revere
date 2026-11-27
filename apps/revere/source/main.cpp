@@ -3359,6 +3359,7 @@ int main(int argc, char** argv)
                 v.test_sources.clear();
                 for(auto& src : p.test.sources)
                     v.test_sources.push_back({src.source, src.seen, src.seen ? src.arrived_ms - src.press_ms : 0});
+                v.test_other_mail = p.test.other_mail;
             }
             auto mail = streamKeeper.doorbell_mail_setup(camera_id.value(), !v.has_login);
             v.has_mail = !mail.is_null();
@@ -3377,6 +3378,7 @@ int main(int argc, char** argv)
                 v.listening = m.listening;
                 v.other_mail = m.counts.other_mail;
                 v.bad_logins = m.counts.bad_logins;
+                v.locked_for_ms = m.locked_for_ms;
                 v.last_error = m.counts.last_error;
             }
         };

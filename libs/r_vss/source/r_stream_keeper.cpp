@@ -913,6 +913,7 @@ r_utils::r_nullable<r_stream_keeper::doorbell_mail_status> r_stream_keeper::door
     {
         s.listening = true;
         s.counts = _mail_rings->status();
+        s.locked_for_ms = _mail_rings->locked_for_ms(camera.value().ipv4.value());
     }
     return s;
 }
@@ -973,7 +974,8 @@ void r_stream_keeper::_tend_mail_rings(const vector<r_disco::r_camera>& assigned
             },
             [this](const r_mail_ring& r) { _doorbell_press(r.camera_id, r.press_ms, "reolink_email"); },
             // The camera's clock offset isn't kept yet: 0, and r_mail_rings checks the subject's time is near the mail's.
-            [](const string&) { return (int64_t)0; });
+            [](const string&) { return (int64_t)0; }, r_mail_rings::now_fn(),
+            [this](const string& camera_id, int64_t) { _press_check.other_mail(camera_id, _epoch_ms()); });
         rings->start();
         _set_mail_rings(std::move(rings), bind);
         R_LOG_INFO("mail rings: listening on %s:%d for %d doorbell(s)", bind.c_str(), c.port, (int)doorbells.size());
