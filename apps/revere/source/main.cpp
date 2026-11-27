@@ -3360,6 +3360,8 @@ int main(int argc, char** argv)
                 for(auto& src : p.test.sources)
                     v.test_sources.push_back({src.source, src.seen, src.seen ? src.arrived_ms - src.press_ms : 0});
                 v.test_other_mail = p.test.other_mail;
+                v.clock_known = !p.clock_offset_ms.is_null();
+                v.clock_offset_ms = v.clock_known ? p.clock_offset_ms.value() : 0;
             }
             auto mail = streamKeeper.doorbell_mail_setup(camera_id.value(), !v.has_login);
             v.has_mail = !mail.is_null();

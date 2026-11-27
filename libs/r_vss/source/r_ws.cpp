@@ -1626,6 +1626,7 @@ r_http::r_server_response r_ws::_get_doorbell_presses(r_utils::r_socket_base&, c
             {"press_source", v.press_source},
             {"last_press_ms", {{"onvif", ms(v.last_onvif_ms)}, {"reolink_email", ms(v.last_email_ms)}}},
             {"suggest_onvif", v.suggest_onvif},
+            {"clock_offset_ms", ms(v.clock_offset_ms)},
             {"test", v.test.any ? _press_test_json(v.test) : json(nullptr)},
         };
         r_server_response response;

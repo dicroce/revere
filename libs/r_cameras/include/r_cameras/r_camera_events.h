@@ -4,6 +4,7 @@
 
 #include "r_disco/r_camera.h"
 #include "r_utils/r_macro.h"
+#include "r_utils/r_nullable.h"
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -49,6 +50,10 @@ struct r_camera_events_status
     int64_t last_event_ms {0};          // when the camera last reported a change
     int64_t failures {0};
     std::string last_error;
+    // The camera's clock less Revere's, in ms, as the camera last gave it (ONVIF: GetSystemDateAndTime as the
+    // subscription connected, to the second); null until it has. The times a camera writes itself (a doorbell's ring
+    // email) are on its clock.
+    r_utils::r_nullable<int64_t> clock_offset_ms;
 
     // The camera has no events to give, as far as anyone can tell (no service, or it said it can't): not "down", which
     // is a camera that is expected back.

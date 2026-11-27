@@ -90,6 +90,11 @@ void r_onvif_events::_run()
             r_onvif::r_onvif_cam cam(ep.value().host, ep.value().port, ep.value().protocol, ep.value().uri,
                                      _camera.rtsp_username, _camera.rtsp_password);
             cam.set_interrupt(_interrupt);
+            if (auto offset = cam.clock_offset_seconds(); !offset.is_null())
+            {
+                const int64_t ms = (int64_t)offset.value() * 1000;
+                _update([ms](r_camera_events_status& s) { s.clock_offset_ms = ms; });
+            }
             stage = "GetCapabilities";
             auto caps = cam.get_camera_capabilities();
             auto events = cam.get_events_service(caps);

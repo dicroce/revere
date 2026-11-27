@@ -59,9 +59,20 @@ export function clockText(ms) {
   return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`
 }
 
+// How far off a doorbell's clock may be before setup says so: its email's times would be off by that much.
+export const CLOCK_OFF_MS = 3000
+
+// "The doorbell's clock is 9 seconds slow. Turn on time sync (NTP) in the Reolink app.", or empty while the clock isn't
+// known (GET /doorbell_presses' clock_offset_ms null) or is near enough.
+export function clockOffLine(offsetMs) {
+  if (offsetMs === null || offsetMs === undefined || Math.abs(offsetMs) < CLOCK_OFF_MS) return ''
+  const secs = Math.round(Math.abs(offsetMs) / 1000)
+  return `The doorbell's clock is ${secs} seconds ${offsetMs < 0 ? 'slow' : 'fast'}. Turn on time sync (NTP) in the Reolink app.`
+}
+
 // The press test's lines, one per source (GET /doorbell_presses' test): "ONVIF: arrived right away", "Email: arrived
 // after 14 seconds", "ONVIF: didn't arrive", or while it runs "Email: not yet".
-export function pressTestLines(test) {
+export function pressTestLines(test, clockOffsetMs = null) {
   if (!test) return []
   const lines = (test.sources || []).map((s) => {
     const name = pressSourceName(s.source)
@@ -74,6 +85,8 @@ export function pressTestLines(test) {
   })
   // An email that wasn't a press came during the test: the doorbell's Visitor alert is off, or it was the app's Test email.
   if (test.other_mail) lines.push("Got an email from the doorbell, but it wasn't a press.")
+  const clock = clockOffLine(clockOffsetMs)
+  if (clock) lines.push(clock)
   return lines
 }
 

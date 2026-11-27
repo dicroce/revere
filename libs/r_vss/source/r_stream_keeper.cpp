@@ -867,6 +867,7 @@ r_utils::r_nullable<r_stream_keeper::doorbell_press_status> r_stream_keeper::doo
     s.last_email_ms = _doorbell_rings.last_press(camera_id, "reolink_email");
     s.suggest_onvif = suggest_onvif(camera.value(), s.last_onvif_ms);
     s.test = _press_check.test(camera_id, _epoch_ms());
+    s.clock_offset_ms = _camera_events.status(camera_id).clock_offset_ms;
     return s;
 }
 
@@ -973,8 +974,8 @@ void r_stream_keeper::_tend_mail_rings(const vector<r_disco::r_camera>& assigned
                 return it == _mail_doorbells.end() ? r_utils::r_nullable<string>() : r_utils::r_nullable<string>(it->second);
             },
             [this](const r_mail_ring& r) { _doorbell_press(r.camera_id, r.press_ms, "reolink_email"); },
-            // The camera's clock offset isn't kept yet: 0, and r_mail_rings checks the subject's time is near the mail's.
-            [](const string&) { return (int64_t)0; }, r_mail_rings::now_fn(),
+            // The camera's clock as its event subscription last read it (null until then): the subject's time is on it.
+            [this](const string& camera_id) { return _camera_events.status(camera_id).clock_offset_ms; }, r_mail_rings::now_fn(),
             [this](const string& camera_id, int64_t) { _press_check.other_mail(camera_id, _epoch_ms()); });
         rings->start();
         _set_mail_rings(std::move(rings), bind);

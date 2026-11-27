@@ -23,6 +23,16 @@ test("the press test's lines: right away, how late, not yet while it runs, didn'
   // An email that wasn't a press came during the test.
   assert.deepEqual(pressTestLines({ open: false, other_mail: true, sources: [{ source: 'onvif', seen: false }, { source: 'reolink_email', seen: false }] }),
     ['ONVIF: didn\'t arrive', 'Email: didn\'t arrive', "Got an email from the doorbell, but it wasn't a press."])
+  // The doorbell's clock 3 s or more off (GET /doorbell_presses' clock_offset_ms): said, with what to do.
+  const done = { open: false, sources: [{ source: 'reolink_email', seen: true, after_ms: 1000 }] }
+  assert.equal(pressTestLines(done, -9000).at(-1), "The doorbell's clock is 9 seconds slow. Turn on time sync (NTP) in the Reolink app.")
+  assert.equal(pressTestLines(done, 3000).at(-1), "The doorbell's clock is 3 seconds fast. Turn on time sync (NTP) in the Reolink app.")
+  assert.equal(pressTestLines(done, -3000).length, 2)
+  assert.equal(pressTestLines(done, -2999).length, 1)
+  assert.equal(pressTestLines(done, 2999).length, 1)
+  assert.equal(pressTestLines(done, null).length, 1)
+  assert.equal(pressTestLines(done).length, 1)
+  assert.deepEqual(pressTestLines(null, -9000), [])
 })
 
 test("the test's verdict, once it's over", () => {

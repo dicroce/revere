@@ -196,6 +196,9 @@ struct doorbell_view
     int64_t test_ends_ms {0};
     std::vector<source_result> test_sources;
     bool test_other_mail {false};   // an email from the doorbell that wasn't a press came during the test
+    // The doorbell's clock less this box's, once its event subscription has read it: its email's times are on it.
+    bool clock_known {false};
+    int64_t clock_offset_ms {0};
 
     // What to type in the Reolink app; has_mail false while the box has no address toward the doorbell. The password is
     // read once (has_login), and again when a new one is made; the rest is read with the status.
@@ -288,6 +291,20 @@ inline std::string clock_text(int64_t ms)
     return buf;
 }
 
+// How far off a doorbell's clock may be before setup says so: its email's times would be off by that much.
+const int64_t CLOCK_OFF_MS = 3000;
+
+// "The doorbell's clock is 9 seconds slow. Turn on time sync (NTP) in the Reolink app.", or empty while the clock isn't
+// known or is near enough.
+inline std::string clock_off_line(const doorbell_view& v)
+{
+    if(!v.clock_known || (v.clock_offset_ms < CLOCK_OFF_MS && v.clock_offset_ms > -CLOCK_OFF_MS))
+        return std::string();
+    const int64_t secs = ((v.clock_offset_ms < 0 ? -v.clock_offset_ms : v.clock_offset_ms) + 500) / 1000;
+    return "The doorbell's clock is " + std::to_string(secs) + " seconds " + (v.clock_offset_ms < 0 ? "slow" : "fast") +
+           ". Turn on time sync (NTP) in the Reolink app.";
+}
+
 // The press test's lines, one per source: "ONVIF: arrived right away", "Email: arrived after 14 seconds", "ONVIF: didn't
 // arrive", or while the test is open "Email: not yet".
 inline std::vector<std::string> press_test_lines(const doorbell_view& v)
@@ -309,6 +326,9 @@ inline std::vector<std::string> press_test_lines(const doorbell_view& v)
     }
     if(v.test_other_mail)
         out.push_back("Got an email from the doorbell, but it wasn't a press.");
+    auto clock = clock_off_line(v);
+    if(v.test_any && !clock.empty())
+        out.push_back(clock);
     return out;
 }
 

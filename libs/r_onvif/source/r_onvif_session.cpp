@@ -996,6 +996,7 @@ r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::
             try
             {
                 camera_time = get_camera_system_date_and_time(_username, _password);
+                time_synced = true;
                 break;
             }
             catch (const std::exception& ex)
@@ -1016,6 +1017,12 @@ r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::
     }
 
     _time_offset_seconds = (int)((int64_t)camera_time - (int64_t)now);
+    _time_known = time_synced;
+}
+
+r_utils::r_nullable<int> r_onvif::r_onvif_cam::clock_offset_seconds() const
+{
+    return _time_known ? r_utils::r_nullable<int>(_time_offset_seconds) : r_utils::r_nullable<int>();
 }
 
 // Helper to check if response indicates SOAP version mismatch
@@ -1290,6 +1297,7 @@ r_onvif::onvif_time_sync r_onvif::r_onvif_cam::sync_system_date_and_time()
     }
     out.offset_after = (int64_t)after.time - (int64_t)now();
     _time_offset_seconds = (int)out.offset_after;
+    _time_known = true;
 
     if (llabs(out.offset_after) > ONVIF_TIME_SYNC_TOLERANCE_SECONDS)
         throw std::runtime_error("The camera accepted the new time but its clock is still " +

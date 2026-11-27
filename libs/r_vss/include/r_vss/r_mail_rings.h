@@ -27,7 +27,7 @@ struct r_mail_ring
     std::string camera_id;
     int64_t press_ms {0};    // when it was pressed, on this box's clock
     int64_t arrival_ms {0};  // when the mail finished arriving
-    bool clock_read {false}; // press_ms is the time the mail's subject gives; else the arrival time less 15 s
+    bool clock_read {false}; // press_ms is the time the mail's subject gives (on our clock); else the arrival less 1 s
 };
 
 struct r_mail_rings_config
@@ -58,8 +58,8 @@ public:
     // The camera whose address this is and that sends rings by email, or null.
     using camera_for_ip_fn = std::function<r_utils::r_nullable<std::string>(const std::string& ip)>;
     using ring_fn = std::function<void(const r_mail_ring&)>;
-    // The camera's clock less this box's, in ms (0 when not known): the subject's time is the camera's.
-    using clock_offset_fn = std::function<int64_t(const std::string& camera_id)>;
+    // The camera's clock less this box's, in ms, or null when not known yet: the subject's time is the camera's.
+    using clock_offset_fn = std::function<r_utils::r_nullable<int64_t>(const std::string& camera_id)>;
     using now_fn = std::function<int64_t()>;
     // A mail from the doorbell that isn't a ring (a motion alert, or the Reolink app's Test email), at arrival_ms.
     using other_mail_fn = std::function<void(const std::string& camera_id, int64_t arrival_ms)>;
@@ -114,9 +114,14 @@ private:
 R_API bool is_ring_mail(const std::string& subject, const std::string& text);
 // The time in a ring mail's subject ("... at 2026/11/24 13:05:45"), read in this box's time zone, as ms since the epoch.
 R_API r_utils::r_nullable<int64_t> ring_subject_time_ms(const std::string& subject);
-// When the press was, on this box's clock: the subject's time corrected by the camera's clock offset, when it falls from
-// 60 s before the mail's arrival to 5 s after; else the arrival less 15 s (Reolink's usual delay), with clock_read false.
-R_API int64_t ring_press_ms(const r_utils::r_nullable<int64_t>& subject_ms, int64_t clock_offset_ms, int64_t arrival_ms, bool& clock_read);
+// When the press was, on this box's clock, from the subject's time (the camera's clock):
+// - the camera's clock offset known: the subject's time less it, when that falls from 60 s before the mail's arrival
+//   to 5 s after (a mail can be held back; it can't come before the press);
+// - not known yet: the subject's time as it is, when it falls from 3 s before arrival to 5 s after. Reolink sends its
+//   mail about a second after the press, so more than that is the camera's clock being off, not the mail being late;
+// - else (or no time in the subject) the arrival less 1 s, Reolink's usual delay, with clock_read false.
+R_API int64_t ring_press_ms(const r_utils::r_nullable<int64_t>& subject_ms, const r_utils::r_nullable<int64_t>& clock_offset_ms, int64_t arrival_ms,
+                            bool& clock_read);
 // A mail's Subject (encoded words decoded) and its text (a base64 body decoded), from the whole message.
 R_API void read_mail(const std::string& message, std::string& subject, std::string& text);
 

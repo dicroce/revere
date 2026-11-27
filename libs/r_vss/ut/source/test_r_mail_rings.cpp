@@ -57,6 +57,7 @@ struct rig
     vector<pair<string, int64_t>> other_mails;   // camera, arrival
     int64_t now_ms {1764018345000};   // 2026-11-24, a fixed arrival time for the press-time checks
     string doorbell_ip {"127.0.0.1"};
+    r_nullable<int64_t> clock_offset {(int64_t)0};   // the camera's clock as the keeper gives it: right, unless a test says
     unique_ptr<r_mail_rings> server;
     int port;
 
@@ -74,7 +75,7 @@ struct rig
         server = make_unique<r_mail_rings>(c,
             [this](const string& ip) { return ip == doorbell_ip ? r_nullable<string>(string("door-1")) : r_nullable<string>(); },
             [this](const r_mail_ring& r) { lock_guard<mutex> g(lock); rings.push_back(r); },
-            [](const string&) { return (int64_t)0; },
+            [this](const string&) { lock_guard<mutex> g(lock); return clock_offset; },
             [this]() { return now_ms; },
             [this](const string& camera_id, int64_t at) { lock_guard<mutex> g(lock); other_mails.push_back({camera_id, at}); });
         server->start();
@@ -184,24 +185,72 @@ void test_r_mail_rings::test_reading_a_ring_mail()
 void test_r_mail_rings::test_the_press_time()
 {
     const int64_t arrival = 1764018345000;
+    const r_nullable<int64_t> right((int64_t)0), none;
     bool read = false;
-    // 14 s before it arrived, as the real ones are: believed.
-    auto at = ring_subject_time_ms(subject_at(arrival - 14000));
-    RTF_ASSERT(!at.is_null());
-    RTF_ASSERT_EQUAL(ring_press_ms(at, 0, arrival, read), arrival - 14000);
+    auto subject = [](int64_t ms) { return ring_subject_time_ms(subject_at(ms)); };
+    RTF_ASSERT(!subject(arrival).is_null());
+    // The camera's clock known: its time less the offset, up to 60 s before the mail arrived (a mail can be held back).
+    RTF_ASSERT_EQUAL(ring_press_ms(subject(arrival - 14000), right, arrival, read), arrival - 14000);
     RTF_ASSERT(read);
-    // The camera's clock 3 s fast: corrected.
-    RTF_ASSERT_EQUAL(ring_press_ms(ring_subject_time_ms(subject_at(arrival - 11000)), 3000, arrival, read), arrival - 14000);
+    // 9 s slow, as a doorbell's was: its subject read 10 s before a mail that came 1 s after the press.
+    RTF_ASSERT_EQUAL(ring_press_ms(subject(arrival - 10000), r_nullable<int64_t>((int64_t)-9000), arrival, read), arrival - 1000);
     RTF_ASSERT(read);
-    // An hour off (a wrong clock or zone): the arrival less 15 s, and said so.
-    RTF_ASSERT_EQUAL(ring_press_ms(ring_subject_time_ms(subject_at(arrival - 3600000)), 0, arrival, read), arrival - 15000);
+    // 3 s fast: corrected.
+    RTF_ASSERT_EQUAL(ring_press_ms(subject(arrival - 11000), r_nullable<int64_t>((int64_t)3000), arrival, read), arrival - 14000);
+    RTF_ASSERT(read);
+    // Still an hour off after it (a wrong zone): the arrival less 1 s, and said so.
+    RTF_ASSERT_EQUAL(ring_press_ms(subject(arrival - 3600000), right, arrival, read), arrival - 1000);
     RTF_ASSERT(!read);
     // In the future by more than 5 s: the same.
-    RTF_ASSERT_EQUAL(ring_press_ms(ring_subject_time_ms(subject_at(arrival + 10000)), 0, arrival, read), arrival - 15000);
+    RTF_ASSERT_EQUAL(ring_press_ms(subject(arrival + 10000), right, arrival, read), arrival - 1000);
+    RTF_ASSERT(!read);
+    RTF_ASSERT_EQUAL(ring_press_ms(subject(arrival + 5000), right, arrival, read), arrival + 5000);
+    RTF_ASSERT(read);
+    // The camera's clock not known yet: its time as it is only up to 3 s before arrival; more is its clock, not the
+    // mail (Reolink sends about 1 s after the press), and the arrival less 1 s is nearer.
+    RTF_ASSERT_EQUAL(ring_press_ms(subject(arrival - 3000), none, arrival, read), arrival - 3000);
+    RTF_ASSERT(read);
+    RTF_ASSERT_EQUAL(ring_press_ms(subject(arrival - 4000), none, arrival, read), arrival - 1000);
+    RTF_ASSERT(!read);
+    RTF_ASSERT_EQUAL(ring_press_ms(subject(arrival - 10000), none, arrival, read), arrival - 1000);
+    RTF_ASSERT(!read);
+    RTF_ASSERT_EQUAL(ring_press_ms(subject(arrival + 4000), none, arrival, read), arrival + 4000);
+    RTF_ASSERT(read);
+    RTF_ASSERT_EQUAL(ring_press_ms(subject(arrival + 6000), none, arrival, read), arrival - 1000);
     RTF_ASSERT(!read);
     // No time in the subject.
     RTF_ASSERT(ring_subject_time_ms("Someone Rang the Doorbell").is_null());
-    RTF_ASSERT_EQUAL(ring_press_ms(r_nullable<int64_t>(), 0, arrival, read), arrival - 15000);
+    RTF_ASSERT_EQUAL(ring_press_ms(r_nullable<int64_t>(), right, arrival, read), arrival - 1000);
+    RTF_ASSERT(!read);
+}
+
+void test_r_mail_rings::test_a_doorbell_clock_that_is_off()
+{
+    // Through the listener, with the camera's clock as the keeper gives it: a doorbell 9 s slow whose mail came 1 s
+    // after the press. Its ring (the time rings and their markers go by) is at the press.
+    rig r(12548);
+    r.clock_offset = r_nullable<int64_t>((int64_t)-9000);
+    {
+        client c(r.port);
+        c.secure();
+        RTF_ASSERT(client::code(c.auth_plain(USER, PASS), "235"));
+        RTF_ASSERT(client::code(c.mail(ring_mail(subject_at(r.now_ms - 10000))), "250"));
+    }
+    // Before its clock is known: the arrival less 1 s, not 10 s early.
+    r.clock_offset = r_nullable<int64_t>();
+    r.now_ms += 120000;
+    {
+        client c(r.port);
+        c.secure();
+        RTF_ASSERT(client::code(c.auth_plain(USER, PASS), "235"));
+        RTF_ASSERT(client::code(c.mail(ring_mail(subject_at(r.now_ms - 10000))), "250"));
+    }
+    lock_guard<mutex> g(r.lock);
+    RTF_ASSERT_EQUAL(r.rings.size(), (size_t)2);
+    RTF_ASSERT_EQUAL(r.rings[0].press_ms, r.rings[0].arrival_ms - 1000);
+    RTF_ASSERT(r.rings[0].clock_read);
+    RTF_ASSERT_EQUAL(r.rings[1].press_ms, r.rings[1].arrival_ms - 1000);
+    RTF_ASSERT(!r.rings[1].clock_read);
 }
 
 void test_r_mail_rings::test_a_ring_over_starttls_with_auth_plain()

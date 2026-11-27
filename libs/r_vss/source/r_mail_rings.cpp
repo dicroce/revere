@@ -37,9 +37,10 @@ const char* const MAIL_RECIPIENT = "pressed@revere.video";
 // character it repeats over, and a doorbell's picture, base64 in the mail, overflows the stack (GCC bug 86164).
 const size_t MAX_SUBJECT = 2000;            // of a Subject header, the part read
 const size_t MAX_PART_B64 = 256 * 1024;     // of a text part's base64, the part decoded
-const int64_t READ_BEFORE_MS = 60 * 1000;   // a subject time this long before the mail arrived is believed
+const int64_t READ_BEFORE_MS = 60 * 1000;   // a subject time, corrected by the camera's clock, this long before the mail arrived is believed
 const int64_t READ_AFTER_MS = 5 * 1000;     // and this long after
-const int64_t USUAL_DELAY_MS = 15 * 1000;   // Reolink sends its mail about this long after the press
+const int64_t UNCORRECTED_BEFORE_MS = 3 * 1000;   // with the camera's clock not known yet, only this long before
+const int64_t USUAL_DELAY_MS = 1000;        // Reolink sends its mail about this long after the press
 
 int64_t _wall_ms() { return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count(); }
 
@@ -338,13 +339,14 @@ r_nullable<int64_t> r_vss::ring_subject_time_ms(const string& subject)
     return (int64_t)secs * 1000;
 }
 
-int64_t r_vss::ring_press_ms(const r_nullable<int64_t>& subject_ms, int64_t clock_offset_ms, int64_t arrival_ms, bool& clock_read)
+int64_t r_vss::ring_press_ms(const r_nullable<int64_t>& subject_ms, const r_nullable<int64_t>& clock_offset_ms, int64_t arrival_ms, bool& clock_read)
 {
     if (!subject_ms.is_null())
     {
         // The subject is the camera's clock: less its offset, it's ours.
-        auto ours = subject_ms.value() - clock_offset_ms;
-        if (ours >= arrival_ms - READ_BEFORE_MS && ours <= arrival_ms + READ_AFTER_MS)
+        const bool known = !clock_offset_ms.is_null();
+        auto ours = subject_ms.value() - (known ? clock_offset_ms.value() : 0);
+        if (ours >= arrival_ms - (known ? READ_BEFORE_MS : UNCORRECTED_BEFORE_MS) && ours <= arrival_ms + READ_AFTER_MS)
         {
             clock_read = true;
             return ours;
@@ -772,14 +774,16 @@ void r_mail_rings::_mail(const string& camera_id, const string& message)
     r_mail_ring ring;
     ring.camera_id = camera_id;
     ring.arrival_ms = arrival;
-    ring.press_ms = ring_press_ms(ring_subject_time_ms(subject), _clock_offset ? _clock_offset(camera_id) : 0, arrival, ring.clock_read);
+    const auto offset = _clock_offset ? _clock_offset(camera_id) : r_nullable<int64_t>();
+    ring.press_ms = ring_press_ms(ring_subject_time_ms(subject), offset, arrival, ring.clock_read);
     {
         lock_guard<mutex> g(_lock);
         ++_counts.rings;
         _counts.last_ring_ms = ring.press_ms;
     }
-    R_LOG_INFO("mail rings: ring by email from %s (%d s to arrive%s)", camera_id.c_str(), (int)((arrival - ring.press_ms) / 1000),
-               ring.clock_read ? "" : ", its time not read");
+    const string clock = offset.is_null() ? string("not known yet") : to_string(offset.value() / 1000) + " s off";
+    R_LOG_INFO("mail rings: ring by email from %s (%d s to arrive%s; the camera's clock %s)", camera_id.c_str(),
+               (int)((arrival - ring.press_ms) / 1000), ring.clock_read ? "" : ", its time not used", clock.c_str());
     if (_on_ring)
         _on_ring(ring);
 }
