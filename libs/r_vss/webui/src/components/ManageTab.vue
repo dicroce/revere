@@ -332,7 +332,7 @@ import RecordWizard from './RecordWizard.vue'
 import StorageDialog from './StorageDialog.vue'
 import PluginsSection from './PluginsSection.vue'
 import { doorbellChoice } from '../utils/cameraKind.js'
-import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, mailSetupRows, inGroupsOf4, mailSetupError } from '../utils/doorbellSetup.js'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, mailSetupRows, mailSetupAfterRead, inGroupsOf4, mailSetupError } from '../utils/doorbellSetup.js'
 import { unsaved } from '../utils/unsaved.js'
 import { activeSection, sameTabs, isScrollKey } from '../utils/propsSections.js'
 
@@ -429,6 +429,8 @@ const doorTesting = ref(false)
 const copiedField = ref('')
 const nowMs = ref(Date.now())
 let doorTimer = null
+// Moved on by New password and by opening a camera: a read of the email setup that began before either is stale.
+let doorMailEpoch = 0
 const propsMotion = ref(true)
 const propsPrune = ref(false)
 const propsHours = ref(24)
@@ -490,13 +492,16 @@ async function readDoor() {
   if (propsPressSource.value === 'reolink_email') {
     // The login once; after that, the listener's status without it.
     const haveLogin = !!doorMail.value?.password
+    const epoch = doorMailEpoch
     try {
       const m = await getDoorbellMailSetup(cam.id, { login: !haveLogin })
-      doorMail.value = haveLogin ? { ...m, password: doorMail.value.password } : m
-      doorMailError.value = ''
+      const stale = epoch !== doorMailEpoch
+      doorMail.value = mailSetupAfterRead(doorMail.value, m, { haveLogin, stale })
+      if (!stale) doorMailError.value = ''
     } catch (e) {
-      if (!haveLogin) doorMail.value = null
-      doorMailError.value = mailSetupError(e)
+      const stale = epoch !== doorMailEpoch
+      doorMail.value = mailSetupAfterRead(doorMail.value, null, { haveLogin, stale, failed: true })
+      if (!stale) doorMailError.value = mailSetupError(e)
     }
   }
 }
@@ -518,6 +523,7 @@ onUnmounted(stopDoorReads)
 async function newPassword() {
   if (!propsTarget.value) return
   doorNewPassword.value = true
+  doorMailEpoch++
   try {
     doorMail.value = await newDoorbellMailLogin(propsTarget.value.id)
     doorMailError.value = ''
@@ -674,6 +680,7 @@ function askProperties(camera) {
   propsDoorbell.value = camera.kind === 'doorbell'
   propsPressSource.value = camera.press_source || 'onvif'
   doorPresses.value = null
+  doorMailEpoch++
   doorMail.value = null
   doorMailError.value = ''
   doorReveal.value = false

@@ -1,7 +1,7 @@
 // Run with: npm test (node's built-in test runner; no extra dependencies).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, clockText, inGroupsOf4, mailSetupError, mailSetupRows, MAIL_SENDER } from '../src/utils/doorbellSetup.js'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, clockText, inGroupsOf4, mailSetupError, mailSetupRows, mailSetupAfterRead, MAIL_SENDER } from '../src/utils/doorbellSetup.js'
 
 test('the press source is sent for a doorbell once chosen, never for a camera or to an older revere', () => {
   assert.deepEqual(pressSourceChoice({ press_source: 'onvif' }, true, 'onvif'), {})
@@ -78,4 +78,20 @@ test("the email setup's error says what went wrong", () => {
   assert.match(mailSetupError(new Error('Session expired — please log in again.')), /Sign in again/)
   assert.match(mailSetupError(new TypeError('Failed to fetch')), /Couldn't reach Revere/)
   assert.equal(mailSetupError(new Error('Request failed (500)')), "Couldn't read the email setup: Request failed (500)")
+})
+
+test("a read of the email setup that began before New password changes nothing", () => {
+  const before = { server: '192.168.1.20', password: 'k7mq2xpa', listening: true }
+  const made = { server: '192.168.1.20', password: 'p3nw8hrd', listening: true }
+  // The first read (with the login) answers after the new password: the old one doesn't come back.
+  assert.equal(mailSetupAfterRead(made, before, { haveLogin: false, stale: true }), made)
+  // Nor does its failure clear the setup.
+  assert.equal(mailSetupAfterRead(made, null, { haveLogin: false, stale: true, failed: true }), made)
+  // A read that counts: the login when it was asked for, else the status with the password already shown.
+  assert.deepEqual(mailSetupAfterRead(null, before, { haveLogin: false, stale: false }), before)
+  assert.deepEqual(mailSetupAfterRead(made, { server: '192.168.1.21', listening: false }, { haveLogin: true, stale: false }),
+    { server: '192.168.1.21', listening: false, password: 'p3nw8hrd' })
+  // A failed read forgets the setup only when it was the one bringing the login.
+  assert.equal(mailSetupAfterRead(null, null, { haveLogin: false, stale: false, failed: true }), null)
+  assert.equal(mailSetupAfterRead(made, null, { haveLogin: true, stale: false, failed: true }), made)
 })
