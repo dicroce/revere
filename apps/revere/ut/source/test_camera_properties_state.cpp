@@ -189,3 +189,31 @@ void test_camera_properties_state::test_the_mail_setup_rows()
     }
     RTF_ASSERT(rows[4].value == "k7mq2xpa");
 }
+
+void test_camera_properties_state::test_the_column_width()
+{
+    // About 36 characters of the pane's text: 792 px at Windows' 22 px, 576 at macOS's 16.
+    RTF_ASSERT(properties_content_width(1400.0f, 22.0f) == 792.0f);
+    RTF_ASSERT(properties_content_width(1400.0f, 16.0f) == 576.0f);
+    // Never under 420 px while there's room for it, and never more than the room there is.
+    RTF_ASSERT(properties_content_width(1400.0f, 10.0f) == 420.0f);
+    RTF_ASSERT(properties_content_width(600.0f, 22.0f) == 600.0f);
+    RTF_ASSERT(properties_content_width(300.0f, 10.0f) == 300.0f);
+}
+
+void test_camera_properties_state::test_a_button_beside_its_text()
+{
+    // Beside it while the text keeps its least width after the button and a 16 px gap; under it otherwise.
+    RTF_ASSERT(fits_beside(600.0f, 150.0f, 200.0f));
+    RTF_ASSERT(fits_beside(366.0f, 150.0f, 200.0f));
+    RTF_ASSERT(!fits_beside(365.0f, 150.0f, 200.0f));
+}
+
+void test_camera_properties_state::test_the_label_column()
+{
+    // The widest label and a 20 px gap, while the values keep their least width.
+    RTF_ASSERT(label_column_width(120.0f, 600.0f, 200.0f) == 140.0f);
+    RTF_ASSERT(label_column_width(120.0f, 340.0f, 200.0f) == 140.0f);
+    // Else each label goes above its value.
+    RTF_ASSERT(label_column_width(120.0f, 339.0f, 200.0f) == 0.0f);
+}

@@ -109,6 +109,31 @@ struct doorbell_view
 
 inline std::string press_source_name(const std::string& source) { return source == "reolink_email" ? "Email" : "ONVIF"; }
 
+// ---- The pane's layout ----
+
+// The width of the pane's one column of sections: the room there is, up to about 36 of its characters wide (792 px
+// at the 22 px text Windows uses, 576 at macOS's 16), so lines stay readable in a wide pane. Never less than 420 px
+// unless there's less room than that.
+inline float properties_content_width(float avail, float font_size)
+{
+    return std::min(avail, std::max(420.0f, font_size * 36.0f));
+}
+
+// A row's text with something at its right (a button): side by side when the text keeps at least min_text beside it,
+// else the text above and the thing under it.
+inline bool fits_beside(float width, float right_w, float min_text)
+{
+    return width - right_w - 16.0f >= min_text;
+}
+
+// The label column of label and value rows: the widest label and a gap, unless that leaves the values less than
+// min_value, when each label goes above its value (0).
+inline float label_column_width(float widest_label, float width, float min_value)
+{
+    const float column = widest_label + 20.0f;
+    return width - column >= min_value ? column : 0.0f;
+}
+
 // The rows to type into the Reolink app (Settings > Email Alerts > Email Settings), named and ordered as the app has
 // them: it has no user field (it logs in with the sender's email, and the listener takes any user with the password).
 struct mail_setup_row
