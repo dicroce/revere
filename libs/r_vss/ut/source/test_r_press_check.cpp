@@ -80,6 +80,27 @@ void test_r_press_check::test_a_press_from_before_the_test_isnt_its()
     RTF_ASSERT(!of(pc.test("door", 110000), "reolink_email").seen);
 }
 
+void test_r_press_check::test_an_email_that_isnt_a_press()
+{
+    // Noted while the test is open (the doorbell's email works, but it didn't send the press), never otherwise.
+    r_press_check pc;
+    pc.other_mail("door", 5000);                     // no test: nothing
+    RTF_ASSERT(!pc.test("door", 5001).any);
+    pc.start("door", 10000, false, {"onvif", "reolink_email"});
+    RTF_ASSERT(!pc.test("door", 10001).other_mail);
+    pc.other_mail("door", 30000);
+    auto t = pc.test("door", 30001);
+    RTF_ASSERT(t.other_mail);
+    RTF_ASSERT(!of(t, "reolink_email").seen);       // it isn't the press
+    // Started again: fresh; and one after the test closed isn't noted.
+    pc.start("door", 100000, false, {"onvif", "reolink_email"});
+    RTF_ASSERT(!pc.test("door", 100001).other_mail);
+    pc.other_mail("door", 100000 + r_press_check::TEST_MS);
+    RTF_ASSERT(!pc.test("door", 100000 + r_press_check::TEST_MS + 1).other_mail);
+    pc.other_mail("other-door", 100500);             // another doorbell's: not this one's
+    RTF_ASSERT(!pc.test("door", 100501).other_mail);
+}
+
 void test_r_press_check::test_the_sources_a_test_watches()
 {
     r_camera door;

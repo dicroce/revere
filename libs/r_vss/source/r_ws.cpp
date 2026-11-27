@@ -1521,7 +1521,8 @@ static json _press_test_json(const r_press_test& t)
         }
         sources.push_back(j);
     }
-    return {{"open", t.open}, {"started_ms", t.started_ms}, {"ends_ms", t.ends_ms}, {"ring_phones", t.ring_phones}, {"sources", sources}};
+    return {{"open", t.open}, {"started_ms", t.started_ms}, {"ends_ms", t.ends_ms}, {"ring_phones", t.ring_phones}, {"sources", sources},
+            {"other_mail", t.other_mail}};
 }
 
 // A doorbell's mail setup as GET /doorbell_mail_setup and POST /doorbell_mail_login give it.
@@ -1537,6 +1538,7 @@ static json _doorbell_mail_json(const r_stream_keeper::doorbell_mail_status& v, 
         {"rings", v.counts.rings},
         {"other_mail", v.counts.other_mail},
         {"bad_logins", v.counts.bad_logins},
+        {"locked_for_ms", v.locked_for_ms},
         {"last_ring_ms", v.counts.last_ring_ms ? json(v.counts.last_ring_ms) : json(nullptr)},
         {"last_error", v.counts.last_error},
     };

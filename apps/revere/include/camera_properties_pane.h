@@ -371,7 +371,7 @@ camera_properties_result camera_properties_pane(
                         ImGui::PushID(row.key);
                         const float x0 = ImGui::GetCursorScreenPos().x;
                         const float right = x0 + d.width();
-                        const std::string shown = row.secret ? (door.reveal ? in_groups_of_4(row.value) : std::string(12, '*')) : row.value;
+                        const std::string shown = row.secret ? password_shown(row.value, door.reveal) : row.value;
                         float buttons = row.copy ? copy_w : 0.0f;
                         if(row.secret)
                             buttons += show_w + spacing + new_w + spacing;

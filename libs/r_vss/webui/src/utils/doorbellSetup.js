@@ -37,8 +37,9 @@ export function mailSetupAfterRead(current, answer, { haveLogin, stale, failed =
   return haveLogin ? { ...answer, password: current?.password } : answer
 }
 
-// A password shown for typing, in groups of 4: "Xw7t Q2mL p9Rz". Copy copies it as it is.
-export const inGroupsOf4 = (s) => (s || '').replace(/(.{4})(?=.)/g, '$1 ')
+// The password as the row shows it: exactly as it is, all its characters together, as Copy copies it (a space or dash
+// added for reading would be typed into the doorbell's app too); hidden until shown.
+export const passwordShown = (password, reveal) => (reveal ? password || '' : '••••••••••••')
 
 // Why the email setup couldn't be read, from the error api.js throws.
 export function mailSetupError(e) {
@@ -62,7 +63,7 @@ export function clockText(ms) {
 // after 14 seconds", "ONVIF: didn't arrive", or while it runs "Email: not yet".
 export function pressTestLines(test) {
   if (!test) return []
-  return (test.sources || []).map((s) => {
+  const lines = (test.sources || []).map((s) => {
     const name = pressSourceName(s.source)
     if (s.seen && s.after_ms < 1000) return `${name}: arrived right away`
     if (s.seen) {
@@ -71,6 +72,9 @@ export function pressTestLines(test) {
     }
     return `${name}: ${test.open ? 'not yet' : "didn't arrive"}`
   })
+  // An email that wasn't a press came during the test: the doorbell's Visitor alert is off, or it was the app's Test email.
+  if (test.other_mail) lines.push("Got an email from the doorbell, but it wasn't a press.")
+  return lines
 }
 
 // What a finished test means for the choice; empty while it runs or before one.
@@ -105,5 +109,10 @@ export function mailStatusLines(mail, presses, chosen) {
   }
   const bad = mail?.bad_logins || 0
   if (bad) out.push(`The doorbell's email login failed ${bad} ${bad === 1 ? 'time' : 'times'}. Check the password in the Reolink app.`)
+  const lockedMs = mail?.locked_for_ms || 0
+  if (lockedMs > 0) {
+    const mins = Math.ceil(lockedMs / 60000)
+    out.push(`Too many wrong passwords from the doorbell. Locked for ${mins} more ${mins === 1 ? 'minute' : 'minutes'}.`)
+  }
   return out
 }

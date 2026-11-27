@@ -283,6 +283,9 @@ public:
         r_mail_setup setup;
         bool listening {false};
         r_mail_rings::counts counts;
+        // How long the doorbell's email login stays refused for its wrong passwords (r_mail_rings::locked_for_ms); 0
+        // when it isn't.
+        int64_t locked_for_ms {0};
     };
     R_API r_utils::r_nullable<doorbell_mail_status> doorbell_mail_setup(const std::string& camera_id, bool with_login = true);
     // A new password for the doorbells' mail login (make_new_mail_login), and the setup to show with it; null as

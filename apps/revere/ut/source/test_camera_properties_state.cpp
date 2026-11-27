@@ -105,6 +105,10 @@ void test_camera_properties_state::test_the_press_test_lines()
     v.test_sources = {{"reolink_email", true, 1200}};
     RTF_ASSERT(press_test_lines(v) == vector<string>({"Email: arrived after 1 second"}));
     RTF_ASSERT(press_test_lines(doorbell_view()).empty());
+    // An email that wasn't a press came during the test (the doorbell's Visitor alert is off, or the app's Test email).
+    v.test_sources = {{"onvif", false, 0}, {"reolink_email", false, 0}};
+    v.test_other_mail = true;
+    RTF_ASSERT(press_test_lines(v) == vector<string>({"ONVIF: didn't arrive", "Email: didn't arrive", "Got an email from the doorbell, but it wasn't a press."}));
 }
 
 void test_camera_properties_state::test_the_press_test_verdict()
@@ -153,16 +157,24 @@ void test_camera_properties_state::test_the_mail_status_lines()
     lines = mail_status_lines(v, "reolink_email");
     RTF_ASSERT(lines[1].find("sent 3 emails that weren't presses.") != string::npos);
     RTF_ASSERT(lines[2].find("failed 1 time.") != string::npos);
+    // Locked for its wrong passwords: whole minutes left, rounded up.
+    RTF_ASSERT(lines.size() == 3);
+    v.locked_for_ms = 7 * 60000 - 1000;
+    lines = mail_status_lines(v, "reolink_email");
+    RTF_ASSERT(lines.size() == 4 && lines[3] == "Too many wrong passwords from the doorbell. Locked for 7 more minutes.");
+    v.locked_for_ms = 1;
+    RTF_ASSERT(mail_status_lines(v, "reolink_email")[3] == "Too many wrong passwords from the doorbell. Locked for 1 more minute.");
+    v.locked_for_ms = 60001;
+    RTF_ASSERT(mail_status_lines(v, "reolink_email")[3] == "Too many wrong passwords from the doorbell. Locked for 2 more minutes.");
     RTF_ASSERT(clock_text(1764018345000).size() == 8);
 }
 
-void test_camera_properties_state::test_a_password_in_groups_of_4()
+void test_camera_properties_state::test_the_password_is_shown_as_it_is()
 {
-    RTF_ASSERT(in_groups_of_4("Xw7tQ2mLp9RzV4nBc8Hd") == "Xw7t Q2mL p9Rz V4nB c8Hd");
-    RTF_ASSERT(in_groups_of_4("abcde") == "abcd e");
-    RTF_ASSERT(in_groups_of_4("abcd") == "abcd");
-    RTF_ASSERT(in_groups_of_4("").empty());
-    RTF_ASSERT(in_groups_of_4("k7mq2xpa") == "k7mq 2xpa");   // the 8-character password
+    // All 8 characters together, no space or dash, as Copy copies it; hidden until shown.
+    RTF_ASSERT(password_shown("k7mq2xpa", true) == "k7mq2xpa");
+    RTF_ASSERT(password_shown("k7mq2xpa", false) == std::string(12, '*'));
+    RTF_ASSERT(password_shown("", true).empty());
 }
 
 void test_camera_properties_state::test_the_mail_setup_rows()
@@ -173,14 +185,14 @@ void test_camera_properties_state::test_the_mail_setup_rows()
     v.port = 2525;
     v.sender = "doorbell@revere.video";
     v.password = "k7mq2xpa";
-    v.recipient = "rings@revere.video";
+    v.recipient = "pressed@revere.video";
     auto rows = mail_setup_rows(v);
     vector<string> names;
     for(auto& r : rows)
         names.push_back(r.name);
     RTF_ASSERT(names == vector<string>({"SMTP server", "SMTP port", "SSL or TLS", "Sender's email", "Password", "Recipient"}));
     RTF_ASSERT(rows[0].value == "192.168.1.20" && rows[1].value == "2525" && rows[2].value == "On");
-    RTF_ASSERT(rows[3].value == "doorbell@revere.video" && rows[5].value == "rings@revere.video");
+    RTF_ASSERT(rows[3].value == "doorbell@revere.video" && rows[5].value == "pressed@revere.video");
     // Only the password is secret, and every row but SSL or TLS can be copied.
     for(size_t i = 0; i < rows.size(); ++i)
     {
