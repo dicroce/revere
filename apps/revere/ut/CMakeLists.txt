@@ -25,6 +25,8 @@ add_executable(
     source/test_render_policy.cpp
     include/test_camera_properties_state.h
     source/test_camera_properties_state.cpp
+    include/test_main_window_size.h
+    source/test_main_window_size.cpp
 )
 
 target_include_directories(
