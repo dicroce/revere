@@ -43,6 +43,8 @@ add_executable(
     source/test_r_client_errors.cpp
     include/test_r_event_timing.h
     source/test_r_event_timing.cpp
+    include/test_r_storage_summary.h
+    source/test_r_storage_summary.cpp
     include/test_r_detection_cap.h
     source/test_r_detection_cap.cpp
     include/test_r_recording_context.h
