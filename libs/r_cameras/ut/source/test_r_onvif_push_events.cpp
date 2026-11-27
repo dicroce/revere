@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -53,6 +54,8 @@ struct fake_camera
     int fail_pulls {0};           // the next this many PullMessages answer with a fault, then they work again
     int hold_pull_s {0};          // each PullMessages is answered only after this long, as a long pull with nothing
     vector<int> pull_waits;       // the wait each PullMessages asked for (its Timeout), in seconds
+    bool has_clock {false};       // GetSystemDateAndTime gives a time (else an empty answer, as it always did)
+    int clock_ahead_s {0};        // ... this far ahead of this computer's clock
     mutex lock;
     map<string, int> calls;
     int grant_s {0};              // Subscribe says it granted this many seconds (on a clock that is wrong), 0: says nothing
@@ -121,7 +124,22 @@ struct fake_camera
         lock_guard<mutex> g(lock);
         ++calls[op];
         if(op == "GetSystemDateAndTime")
-            return _soap("<tds:GetSystemDateAndTimeResponse/>");
+        {
+            if(!has_clock)
+                return _soap("<tds:GetSystemDateAndTimeResponse/>");
+            const time_t t = time(nullptr) + clock_ahead_s;
+            struct tm u;
+            gmtime_r(&t, &u);
+            char buf[512];
+            snprintf(buf, sizeof(buf),
+                     "<tds:GetSystemDateAndTimeResponse><tds:SystemDateAndTime><tt:DateTimeType>Manual</tt:DateTimeType>"
+                     "<tt:DaylightSavings>false</tt:DaylightSavings><tt:UTCDateTime><tt:Time><tt:Hour>%d</tt:Hour>"
+                     "<tt:Minute>%d</tt:Minute><tt:Second>%d</tt:Second></tt:Time><tt:Date><tt:Year>%d</tt:Year>"
+                     "<tt:Month>%d</tt:Month><tt:Day>%d</tt:Day></tt:Date></tt:UTCDateTime></tds:SystemDateAndTime>"
+                     "</tds:GetSystemDateAndTimeResponse>",
+                     u.tm_hour, u.tm_min, u.tm_sec, u.tm_year + 1900, u.tm_mon + 1, u.tm_mday);
+            return _soap(buf);
+        }
         if(op == "GetCapabilities")
             return _soap("<tds:GetCapabilitiesResponse><tds:Capabilities><tt:Events><tt:XAddr>http://127.0.0.1:" + to_string(port) + "/onvif/events</tt:XAddr>" +
                          (pull_support.empty() ? "" : "<tt:WSPullPointSupport>" + pull_support + "</tt:WSPullPointSupport>") +
@@ -581,4 +599,43 @@ void test_r_onvif_push_events::test_two_failed_pulls_make_a_new_subscription()
     RTF_ASSERT(_until([&]() { return cam.count("CreatePullPointSubscription") >= 2; }, 20000));
     RTF_ASSERT(cam.count("Unsubscribe") >= 1);
     RTF_ASSERT(_until([&]() { return rig.events->status().up; }, 5000));
+}
+
+void test_r_onvif_push_events::test_the_clock_is_read_again_when_asked()
+{
+    // The clock is read as the subscription connects. Asked again (after Revere set the camera's time), the next pull's
+    // end reads it again, so a doorbell's ring times are corrected by the new offset; not asked, it isn't read on each
+    // pull.
+    fake_camera cam(11135);
+    cam.pull_works = true;
+    cam.has_clock = true;
+    cam.clock_ahead_s = 30;
+    events_rig rig(cam.port);
+    RTF_ASSERT(_until([&]() { return rig.events->status().up; }));
+    auto offset = rig.events->status().clock_offset_ms;
+    RTF_ASSERT(!offset.is_null());
+    RTF_ASSERT(offset.value() >= 29000 && offset.value() <= 31000);
+    const int reads = cam.count("GetSystemDateAndTime");
+    RTF_ASSERT(_until([&]() { return cam.count("PullMessages") >= 3; }));
+    RTF_ASSERT_EQUAL(cam.count("GetSystemDateAndTime"), reads);
+
+    {
+        lock_guard<mutex> g(cam.lock);
+        cam.clock_ahead_s = 0;
+    }
+    rig.events->read_clock();
+    RTF_ASSERT(_until([&]() {
+        auto o = rig.events->status().clock_offset_ms;
+        return !o.is_null() && o.value() >= -1000 && o.value() <= 1000;
+    }));
+    RTF_ASSERT(cam.count("GetSystemDateAndTime") > reads);
+}
+
+void test_r_onvif_push_events::test_the_clock_is_read_hourly()
+{
+    RTF_ASSERT(!r_onvif_events::clock_read_due(false, 0));
+    RTF_ASSERT(!r_onvif_events::clock_read_due(false, r_onvif_events::CLOCK_READ_EVERY_S - 1));
+    RTF_ASSERT(r_onvif_events::clock_read_due(false, r_onvif_events::CLOCK_READ_EVERY_S));
+    RTF_ASSERT(r_onvif_events::clock_read_due(true, 0));
+    RTF_ASSERT_EQUAL((int)r_onvif_events::CLOCK_READ_EVERY_S, 3600);
 }

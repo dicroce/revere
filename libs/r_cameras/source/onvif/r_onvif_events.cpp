@@ -57,6 +57,27 @@ r_onvif_events::r_onvif_events(const r_disco::r_camera& camera, transition_fn on
 {
 }
 
+void r_onvif_events::read_clock()
+{
+    _clock_asked = true;
+    _notify_cv.notify_all();   // a push session's wait ends; a pull's ends on its own
+}
+
+void r_onvif_events::_read_clock(r_onvif::r_onvif_cam& cam, bool connecting)
+{
+    const auto now = steady_clock::now();
+    if (connecting)
+        _clock_asked = false;   // the session's own read, just made, is the one asked for
+    else if (!clock_read_due(_clock_asked.exchange(false), duration_cast<seconds>(now - _clock_read).count()))
+        return;
+    _clock_read = now;
+    auto offset = connecting ? cam.clock_offset_seconds() : cam.read_clock_offset();
+    if (offset.is_null())
+        return;
+    const int64_t ms = (int64_t)offset.value() * 1000;
+    _update([ms](r_camera_events_status& s) { s.clock_offset_ms = ms; });
+}
+
 void r_onvif_events::_stop_requested()
 {
     _interrupt->interrupt();
@@ -90,11 +111,7 @@ void r_onvif_events::_run()
             r_onvif::r_onvif_cam cam(ep.value().host, ep.value().port, ep.value().protocol, ep.value().uri,
                                      _camera.rtsp_username, _camera.rtsp_password);
             cam.set_interrupt(_interrupt);
-            if (auto offset = cam.clock_offset_seconds(); !offset.is_null())
-            {
-                const int64_t ms = (int64_t)offset.value() * 1000;
-                _update([ms](r_camera_events_status& s) { s.clock_offset_ms = ms; });
-            }
+            _read_clock(cam, true);
             stage = "GetCapabilities";
             auto caps = cam.get_camera_capabilities();
             auto events = cam.get_events_service(caps);
@@ -190,6 +207,8 @@ void r_onvif_events::_run()
                 // An event open far longer than anything real means its end was missed.
                 if (_stale())
                     _apply(_tracker.close_all());
+
+                _read_clock(cam, false);
 
                 if (steady_clock::now() - renewed > seconds(g_termination_s.load() / 2))
                 {
@@ -319,7 +338,7 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
         vector<string> bodies;
         {
             unique_lock<mutex> lk(_notify_lock);
-            _notify_cv.wait_for(lk, seconds(PUSH_WAIT_S), [this]() { return !_notifies.empty() || !_running(); });
+            _notify_cv.wait_for(lk, seconds(PUSH_WAIT_S), [this]() { return !_notifies.empty() || !_running() || _clock_asked.load(); });
             bodies.swap(_notifies);
         }
         stage = "Notify";
@@ -375,6 +394,8 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
         }
         if (_stale())
             _apply(_tracker.close_all());
+
+        _read_clock(cam, false);
 
         if (!received && !hinted && steady_clock::now() - subscribed > seconds(HINT_AFTER_S))
         {

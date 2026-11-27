@@ -425,7 +425,7 @@ camera_properties_result camera_properties_pane(
                     d.body("Then set the email Alarm Schedule to Ring only. Otherwise the doorbell also emails when it sees motion.");
                 }
                 d.gap(4.0f);
-                d.body("The doorbell sends its email about 15 seconds after the press, so the ring arrives late.");
+                d.body("The doorbell sends its email about a second after the press, so the ring comes a second or so after it.");
                 d.body("The doorbell sends at most one email about every 10 minutes, and has no setting to change that. A second press in that time doesn't reach Revere.");
                 for(auto& line : mail_status_lines(door, press_source))
                     d.body(line);

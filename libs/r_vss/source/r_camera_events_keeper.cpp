@@ -245,6 +245,16 @@ r_camera_events_status r_camera_events_keeper::status(const string& camera_id) c
     return s->events ? s->events->status() : r_camera_events_status();
 }
 
+void r_camera_events_keeper::read_clock(const string& camera_id)
+{
+    auto s = _find(camera_id);
+    if (!s)
+        return;
+    lock_guard<mutex> g(s->lock);
+    if (s->events)
+        s->events->read_clock();
+}
+
 vector<r_camera_span> r_camera_events_keeper::spans(const string& camera_id, int64_t since_ms) const
 {
     auto s = _find(camera_id);

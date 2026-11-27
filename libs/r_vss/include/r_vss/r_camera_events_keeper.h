@@ -67,6 +67,8 @@ public:
 
     R_API bool has(const std::string& camera_id) const;
     R_API r_cameras::r_camera_events_status status(const std::string& camera_id) const;
+    // The camera's subscription reads its clock again soon (r_camera_events::read_clock). Nothing without one.
+    R_API void read_clock(const std::string& camera_id);
     // The camera's spans that started at or after since_ms (r_camera_events::spans); none without a subscription.
     R_API std::vector<r_cameras::r_camera_span> spans(const std::string& camera_id, int64_t since_ms) const;
 

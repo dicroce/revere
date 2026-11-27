@@ -24,6 +24,8 @@ public:
       TEST(test_r_onvif_push_events::test_a_camera_that_answers_pulls_at_once_is_not_asked_in_a_loop);
       TEST(test_r_onvif_push_events::test_one_failed_pull_keeps_the_subscription);
       TEST(test_r_onvif_push_events::test_two_failed_pulls_make_a_new_subscription);
+      TEST(test_r_onvif_push_events::test_the_clock_is_read_again_when_asked);
+      TEST(test_r_onvif_push_events::test_the_clock_is_read_hourly);
     RTF_FIXTURE_END();
 
     virtual ~test_r_onvif_push_events() throw() {}
@@ -49,4 +51,6 @@ public:
     void test_a_camera_that_answers_pulls_at_once_is_not_asked_in_a_loop();
     void test_one_failed_pull_keeps_the_subscription();
     void test_two_failed_pulls_make_a_new_subscription();
+    void test_the_clock_is_read_again_when_asked();
+    void test_the_clock_is_read_hourly();
 };

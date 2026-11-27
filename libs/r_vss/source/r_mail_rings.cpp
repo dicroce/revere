@@ -74,14 +74,16 @@ string _b64_text(const string& s)
     }
 }
 
-// A password less any spaces and dashes, so the one a doorbell sends matches with or without them. The box's password
-// has neither (see _random_text), but someone typing it from a screen may add one ("abcd efgh", "abcd-efgh").
-string _without_separators(const string& s)
+// A password as it's compared: less any spaces and dashes, and in lower case, so the one a doorbell sends matches
+// however it was typed. The box's password has no space, dash or capital (see _random_text: lower-case letters and
+// digits), but someone typing it from a screen may add a space or dash ("abcd efgh", "abcd-efgh"), or a phone may
+// capitalize its first letter. Folding case costs it nothing, as it has no capitals to lose.
+string _comparable(const string& s)
 {
     string out;
     for (char c : s)
         if (c != ' ' && c != '-')
-            out += c;
+            out += (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
     return out;
 }
 
@@ -610,8 +612,11 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
             }
             if (!ok)
                 break;
-            // Too many wrong logins from this address lately (over connections): refused unchecked, for a while.
+            // Too many wrong logins from this address lately (over connections): refused unchecked, for a while. The
+            // check, the password and the count of a wrong one are one step under the lock, so connections at once from
+            // one address can't each pass the check before any of them is counted.
             bool barred = false;
+            bool pass_ok = false;
             {
                 lock_guard<mutex> g(_lock);
                 auto now = _now();
@@ -619,6 +624,17 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
                 while (!tries.empty() && now - tries.front() >= BAD_LOGIN_WINDOW_MS)
                     tries.pop_front();
                 barred = (int)tries.size() >= _config.bad_logins_per_address;
+                if (!barred)
+                {
+                    // The password only: any user (Reolink's app logs in with its sender address).
+                    pass_ok = _same(_comparable(pass), _comparable(_config.password));
+                    // Counted once per connection: a doorbell's second try on it is the same Test.
+                    if (!pass_ok && bad_logins == 0)
+                    {
+                        ++_counts.bad_logins;
+                        tries.push_back(now);
+                    }
+                }
                 if (tries.empty())
                     _bad_login_times.erase(ip);
             }
@@ -627,8 +643,6 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
                 say("454 4.7.0 Too many failed logins, try again later");
                 break;
             }
-            // The password only: any user (Reolink's app logs in with its sender address).
-            const bool pass_ok = _same(_without_separators(pass), _without_separators(_config.password));
             R_LOG_INFO("mail rings: %s logged in as \"%s\": %s", ip.c_str(), _printable(user, 64).c_str(), pass_ok ? "accepted" : "wrong password");
             if (pass_ok)
             {
@@ -637,13 +651,6 @@ void r_mail_rings::_serve(r_ssl_server_socket& conn)
             }
             else
             {
-                // Counted once per connection: a doorbell's second try on it is the same Test.
-                if (bad_logins == 0)
-                {
-                    lock_guard<mutex> g(_lock);
-                    ++_counts.bad_logins;
-                    _bad_login_times[ip].push_back(_now());
-                }
                 say("535 5.7.8 Authentication credentials invalid");
                 if (++bad_logins >= MAX_BAD_LOGINS)
                     break;
