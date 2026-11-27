@@ -993,3 +993,140 @@ void test_r_codec::test_hw_decoder_that_wont_open_decodes_in_software()
     RTF_ASSERT(warnings == 1);
     RTF_ASSERT(grey >= 25);
 }
+
+namespace
+{
+
+// Whether an encoded H.264 picture holds an IDR slice (NAL type 5): Annex B, or 4-byte lengths before each unit.
+bool holds_idr(const vector<uint8_t>& p)
+{
+    if(p.size() >= 4 && (p[0] == 0 && p[1] == 0 && (p[2] == 1 || (p[2] == 0 && p[3] == 1))))
+    {
+        for(size_t i = 0; i + 3 < p.size(); ++i)
+            if(p[i] == 0 && p[i + 1] == 0 && p[i + 2] == 1 && (p[i + 3] & 0x1F) == 5)
+                return true;
+        return false;
+    }
+    for(size_t i = 0; i + 4 < p.size();)
+    {
+        const size_t n = ((size_t)p[i] << 24) | ((size_t)p[i + 1] << 16) | ((size_t)p[i + 2] << 8) | p[i + 3];
+        if((p[i + 4] & 0x1F) == 5)
+            return true;
+        i += 4 + n;
+    }
+    return false;
+}
+
+// Encodes 40 moving 320x240 pictures with a GOP far longer than that, forcing key frames at pictures 17 and 31, and
+// gives each output picture's pts (in frames) and whether it holds an IDR.
+vector<pair<int64_t, bool>> encode_with_forced_keys(r_hw_accel accel)
+{
+    const uint16_t w = 320, h = 240;
+    r_video_encoder enc(AV_CODEC_ID_H264, 500000, w, h, AVRational{15, 1}, AV_PIX_FMT_YUV420P, 0, 250,
+                        AV_PROFILE_H264_MAIN, 31, "veryfast", "zerolatency", accel);
+    vector<pair<int64_t, bool>> out;
+    auto take = [&](r_codec_state st) {
+        if(st != R_CODEC_STATE_HAS_OUTPUT)
+            return false;
+        auto pi = enc.get();
+        vector<uint8_t> data(pi.data, pi.data + pi.size);
+        // pts back in frames at 15 fps.
+        const int64_t frame = pi.time_base.num && pi.time_base.den ? pi.pts * pi.time_base.num * 15 / pi.time_base.den : pi.pts;
+        out.emplace_back(frame, holds_idr(data));
+        return true;
+    };
+    vector<uint8_t> picture(w * h * 3 / 2);
+    for(int i = 0; i < 40; ++i)
+    {
+        for(size_t j = 0; j < (size_t)w * h; ++j)
+            picture[j] = (uint8_t)((j % w + i * 7 + (j / w) * 3) & 0xFF);
+        std::fill(picture.begin() + w * h, picture.end(), (uint8_t)128);
+        // The rest through the three-argument form, which forces nothing.
+        if(i == 17 || i == 31)
+            enc.attach_buffer(picture.data(), picture.size(), i, true);
+        else
+            enc.attach_buffer(picture.data(), picture.size(), i);
+        while(take(enc.encode()))
+            ;
+    }
+    while(take(enc.flush()))
+        ;
+    return out;
+}
+
+void check_forced_keys(const vector<pair<int64_t, bool>>& out)
+{
+    RTF_ASSERT(out.size() >= 38);
+    for(auto& o : out)
+    {
+        const bool asked = o.first == 0 || o.first == 17 || o.first == 31;
+        RTF_ASSERT(o.second == asked);
+    }
+    auto has = [&](int64_t f) { return std::any_of(out.begin(), out.end(), [&](auto& o) { return o.first == f && o.second; }); };
+    RTF_ASSERT(has(17) && has(31));
+}
+
+}
+
+// A caller keying on its own clock (HomeKit Secure Video's fragments) forces a key frame with attach_buffer: that
+// picture is an IDR, whatever the GOP's count, and pictures not forced aren't.
+void test_r_codec::test_a_forced_key_frame_is_an_idr()
+{
+    check_forced_keys(encode_with_forced_keys(r_hw_accel::none));
+}
+
+// The same through this machine's hardware encoder, where there is one (VideoToolbox here, NVENC or Quick Sync on
+// the Lorax); without one there's nothing to check.
+void test_r_codec::test_a_forced_key_frame_is_an_idr_in_hardware()
+{
+    const auto accel = r_find_best_hw_accel_encoder(AV_CODEC_ID_H264);
+    if(accel == r_hw_accel::none)
+        return;
+    check_forced_keys(encode_with_forced_keys(accel));
+}
+
+// A key frame forced and then moved before it's encoded is still forced: by move construction (picture 6), and by move
+// assignment (picture 9).
+void test_r_codec::test_a_moved_encoder_keeps_a_forced_key_frame()
+{
+    const uint16_t w = 320, h = 240;
+    r_video_encoder first(AV_CODEC_ID_H264, 500000, w, h, AVRational{15, 1}, AV_PIX_FMT_YUV420P, 0, 250,
+                          AV_PROFILE_H264_MAIN, 31, "veryfast", "zerolatency");
+    r_video_encoder second;
+    r_video_encoder* enc = &first;
+    vector<pair<int64_t, bool>> out;
+    auto take = [&](r_codec_state st) {
+        if(st != R_CODEC_STATE_HAS_OUTPUT)
+            return false;
+        auto pi = enc->get();
+        out.emplace_back(pi.pts, holds_idr(vector<uint8_t>(pi.data, pi.data + pi.size)));
+        return true;
+    };
+    vector<uint8_t> picture(w * h * 3 / 2, 128);
+    for(int i = 0; i < 12; ++i)
+    {
+        for(size_t j = 0; j < (size_t)w * h; ++j)
+            picture[j] = (uint8_t)((j % w + i * 7) & 0xFF);
+        if(i == 6)
+        {
+            first.attach_buffer(picture.data(), picture.size(), i, true);
+            second = r_video_encoder(std::move(first));   // constructed from it, then assigned in
+            enc = &second;
+        }
+        else if(i == 9)
+        {
+            second.attach_buffer(picture.data(), picture.size(), i, true);
+            first = std::move(second);
+            enc = &first;
+        }
+        else
+            enc->attach_buffer(picture.data(), picture.size(), i);
+        while(take(enc->encode()))
+            ;
+    }
+    while(take(enc->flush()))
+        ;
+    RTF_ASSERT(out.size() >= 10);
+    for(auto& o : out)
+        RTF_ASSERT(o.second == (o.first == 0 || o.first == 6 || o.first == 9));
+}

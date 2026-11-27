@@ -22,6 +22,9 @@ public:
       TEST(test_r_codec::test_hw_invalid_data_does_not_fall_back);
       TEST(test_r_codec::test_hw_failures_not_in_a_row_keep_the_hardware);
       TEST(test_r_codec::test_hw_decoder_that_wont_open_decodes_in_software);
+      TEST(test_r_codec::test_a_forced_key_frame_is_an_idr);
+      TEST(test_r_codec::test_a_forced_key_frame_is_an_idr_in_hardware);
+      TEST(test_r_codec::test_a_moved_encoder_keeps_a_forced_key_frame);
     RTF_FIXTURE_END();
 
     virtual ~test_r_codec() throw() {}
@@ -46,4 +49,7 @@ public:
     void test_hw_invalid_data_does_not_fall_back();
     void test_hw_failures_not_in_a_row_keep_the_hardware();
     void test_hw_decoder_that_wont_open_decodes_in_software();
+    void test_a_forced_key_frame_is_an_idr();
+    void test_a_forced_key_frame_is_an_idr_in_hardware();
+    void test_a_moved_encoder_keeps_a_forced_key_frame();
 };
