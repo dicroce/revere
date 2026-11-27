@@ -37,17 +37,16 @@ export function lineWarn(line) {
 // first read right after can still show the old selection.
 export const PICK_RECHECK_MS = 700
 
-// Picks an option and leaves the radio list showing what the plugin says, not what was clicked.
+// Runs a plugin action and leaves the plugin's lines showing what the plugin says, not what was clicked. A pick of a
+// radio row is one (see pickChoice); so is a button on a line.
 //   run(action)  asks revere to run the plugin's action (throws when it is refused)
 //   refresh()    reads the plugin's lines again
 //   settle()     draws the rows from those lines again. The browser has already moved the dot to the clicked row, and
 //                Vue only rewrites a radio's `checked` when its bound value changes, so a pick that is refused, or not
 //                applied yet, would leave the dot on the wrong row; settle() re-creates the rows from the state.
 //   wait(ms)     resolves after ms
-// Returns { ran: false } for the row already selected, else { ran: true, error } where error is what run threw, if it did.
-export async function pickChoice(line, option, { run, refresh, settle, wait }) {
-  const action = choiceAction(line, option)
-  if (!action) return { ran: false, error: null }
+// Returns { ran: true, error } where error is what run threw, if it did.
+export async function runAndSettle(action, { run, refresh, settle, wait }) {
   let error = null
   try {
     await run(action)
@@ -67,4 +66,12 @@ export async function pickChoice(line, option, { run, refresh, settle, wait }) {
     await reread()
   }
   return { ran: true, error }
+}
+
+// Picks an option and leaves the radio list showing what the plugin says, not what was clicked.
+// Returns { ran: false } for the row already selected, else { ran: true, error } (see runAndSettle).
+export async function pickChoice(line, option, deps) {
+  const action = choiceAction(line, option)
+  if (!action) return { ran: false, error: null }
+  return runAndSettle(action, deps)
 }

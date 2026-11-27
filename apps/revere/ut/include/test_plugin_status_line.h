@@ -14,6 +14,11 @@ public:
       TEST(test_plugin_status_line::test_choice_that_cannot_be_drawn);
       TEST(test_plugin_status_line::test_choice_pick_runs_action);
       TEST(test_plugin_status_line::test_choice_names_wrap);
+      TEST(test_plugin_status_line::test_choice_ring_is_for_the_selected_row);
+      TEST(test_plugin_status_line::test_list_line);
+      TEST(test_plugin_status_line::test_list_row_opens_its_detail);
+      TEST(test_plugin_status_line::test_list_back_and_vanished_row);
+      TEST(test_plugin_status_line::test_a_row_that_went_away_does_not_come_back_open);
     RTF_FIXTURE_END();
 
     virtual ~test_plugin_status_line() throw() {}
@@ -31,4 +36,9 @@ public:
     void test_choice_that_cannot_be_drawn();
     void test_choice_pick_runs_action();
     void test_choice_names_wrap();
+    void test_choice_ring_is_for_the_selected_row();
+    void test_list_line();
+    void test_list_row_opens_its_detail();
+    void test_list_back_and_vanished_row();
+    void test_a_row_that_went_away_does_not_come_back_open();
 };

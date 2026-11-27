@@ -166,13 +166,25 @@ R_API void system_plugin_cameras_changed(r_system_plugin_handle plugin);
 // with "warn": true shows its cost line in the warning tone, and a line with "warn": true shows its text in it. A host
 // from before choice lines draws only the text, so a plugin that needs a way to choose there also sends a button for
 // each option. The plugin gets only actions its own lines offered.
+//
+// From host API version 4 (the version in the table below), a line can be a list instead, a row for each item, as a
+// plugin with several things to show (a camera each) draws them:
+//   {"list": {"back": "<label>", "rows": [{"id", "name", "value", "state", "tone", "detail": [<lines>]}]}}
+// A row shows its name over its value (what it's set to), its state on the right in its tone ("ok", "warn", "bad",
+// anything else neutral), and a chevron. Opening a row shows its name and state under a Back button (labelled by
+// "back"), then its detail: lines of any of the kinds above, a list again too. A row with no id or name, or one whose id
+// came before, is left out; a list with no row is not drawn. A host before 4 drops a list line (and with it all its
+// rows), so a plugin sends one only to a host whose version is 4 or more, and plain lines before that.
 R_API void system_plugin_action(r_system_plugin_handle plugin, const char* action);
 
 // ---- Live frames ----
 // A plugin can read cameras' encoded frames as they're recorded. It pulls them on
 // its own thread: the host never calls into the plugin with frames.
 
-#define R_SYSTEM_PLUGIN_HOST_API_VERSION 2
+// The table's version is also what a plugin reads of the host's status lines: 4 and up draws a list line (see
+// system_plugin_action's lines above). The table itself gained nothing in 4; its version 3 fields come with the
+// plugin state, in their own change, so check struct_size for them, not only the version.
+#define R_SYSTEM_PLUGIN_HOST_API_VERSION 4
 
 typedef struct r_frame_subscription* r_frame_subscription_handle;
 
