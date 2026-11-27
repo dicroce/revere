@@ -93,5 +93,6 @@ test("a read of the email setup that began before New password changes nothing",
     { server: '192.168.1.21', listening: false, password: 'p3nw8hrd' })
   // A failed read forgets the setup only when it was the one bringing the login.
   assert.equal(mailSetupAfterRead(null, null, { haveLogin: false, stale: false, failed: true }), null)
+  assert.equal(mailSetupAfterRead(made, null, { haveLogin: false, stale: false, failed: true }), null)
   assert.equal(mailSetupAfterRead(made, null, { haveLogin: true, stale: false, failed: true }), made)
 })
