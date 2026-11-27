@@ -1,16 +1,26 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from queue import Queue, Empty
 from typing import Any
 
 from revere_harness import net
+
+
+def in_container() -> bool:
+    return os.environ.get("REVERE_HARNESS_CONTAINER") == "1"
+
+
+def _picture(container: int, native: int):
+    """A default that depends on where the harness runs: a container is a few CPUs, so its fake cameras are lighter."""
+    return field(default_factory=lambda: container if in_container() else native)
 
 
 @dataclass
@@ -22,10 +32,12 @@ class CameraSpec:
     substream: bool = False
     username: str = "admin"
     password: str = "harness-pw"
-    width: int = 1280
-    height: int = 720
-    fps: int = 15
-    bitrate_kbps: int = 1500
+    # Run natively: 1280x720 at 15 fps, 1500 kbps. In the container (REVERE_HARNESS_CONTAINER=1): 640x360 at 10 fps, 500 kbps,
+    # which four fake cameras and the recorder can keep up with on the container's few CPUs.
+    width: int = _picture(640, 1280)
+    height: int = _picture(360, 720)
+    fps: int = _picture(10, 15)
+    bitrate_kbps: int = _picture(500, 1500)
     scene: str = "moving"
 
     @property

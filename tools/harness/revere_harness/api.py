@@ -85,6 +85,20 @@ class Api:
             raise ApiError(status, resp_body.decode("utf-8", errors="replace"))
         return json.loads(resp_body)
 
+    def picture(self, camera_id: str, width: int = 640, behind_s: float = 3.0) -> bytes | None:
+        """A JPEG of what the recorder has recorded of the camera a moment ago, or None.
+
+        A snapshot is taken from the recorder, never from the fake camera: a second RTSP client on the fake camera
+        makes its media seek, which resets its timeline under the recorder that is recording it.
+        """
+        at = utcnow() - datetime.timedelta(seconds=behind_s)
+        try:
+            status, body = self.request("GET", "/jpg", query={"camera_id": camera_id, "start_time": iso(at),
+                                                              "width": width, "height": width * 9 // 16}, timeout=20.0)
+        except ApiError:
+            return None
+        return body if status == 200 and body[:2] == b"\xff\xd8" else None
+
     def cameras(self) -> list[dict]:
         """GET /cameras -> the 'cameras' list."""
         data = self.get_json("/cameras")
