@@ -182,8 +182,10 @@ R_API void system_plugin_action(r_system_plugin_handle plugin, const char* actio
 // its own thread: the host never calls into the plugin with frames.
 
 // The table's version is also what a plugin reads of the host's status lines: 4 and up draws a list line (see
-// system_plugin_action's lines above). The table itself gained nothing in 4; its version 3 fields come with the
-// plugin state, in their own change, so check struct_size for them, not only the version.
+// system_plugin_action's lines above). The table itself gained nothing in 4, so a version is a floor and not a promise
+// of the fields: a plugin reads a field only after checking that struct_size covers it (the version 3 fields, which come
+// with the plugin state in their own change, are the case). That keeps this change and that one independent of the
+// order they land in.
 #define R_SYSTEM_PLUGIN_HOST_API_VERSION 4
 
 typedef struct r_frame_subscription* r_frame_subscription_handle;

@@ -62,12 +62,13 @@ struct box
     r_ws_auth auth;
     vector<pair<string, string>> ran;
     plugin_action_host host;
+    string front_message {FRONT_MESSAGE};   // what "front" and "mute" show
 
     box()
     {
         auth.set_local_token(TOKEN);
         host.loaded = [] { return vector<string>{"front", "quiet", "mute"}; };
-        host.status_message = [](const string& name) { return name == "front" || name == "mute" ? string(FRONT_MESSAGE) : string(R"({"lines": [{"text": "hi"}]})"); };
+        host.status_message = [this](const string& name) { return name == "front" || name == "mute" ? front_message : string(R"({"lines": [{"text": "hi"}]})"); };
         host.run = [this](const string& name, const string& action) { if(name == "mute") return false; ran.push_back({name, action}); return true; };
     }
 };
@@ -115,6 +116,32 @@ void test_r_plugin_action_request::test_offered_actions()
     RTF_ASSERT((plugin_offered_actions(R"({"lines": [{"text": "t", "choice": {"action": "m:", "options": [{"name": "A"}, {"value": "b", "name": "B"}]}}]})") == vector<string>{"m:b"}));
 }
 
+void test_r_plugin_action_request::test_actions_in_a_lists_rows_are_offered()
+{
+    // The buttons and choices inside a list row's detail are offered as the top-level ones are, in order, and a list inside a
+    // row's detail is walked too.
+    const string message = R"({"lines": [
+        {"text": "top", "action": "top:1", "action_label": "Go"},
+        {"list": {"rows": [
+            {"id": "a", "name": "A", "detail": [
+                {"text": "In Apple Home.", "action": "reset:a", "action_label": "Remove"},
+                {"text": "Modes", "choice": {"action": "mode:a:", "options": [{"value": "off", "name": "Off"}, {"value": "live", "name": "Live"}]}},
+                {"list": {"rows": [{"id": "deep", "name": "Deep", "detail": [{"text": "d", "action": "deep:1", "action_label": "Go"}]}]}}]},
+            {"id": "b", "name": "B", "detail": "not a list"},
+            {"id": "c", "name": "C"},
+            3,
+            {"id": "d", "name": "D", "detail": [{"text": "x", "action": "reset:d", "action_label": "Remove"}]}]}},
+        {"text": "after", "action": "after:1", "action_label": "Go"}]})";
+    RTF_ASSERT((plugin_offered_actions(message) == vector<string>{"top:1", "reset:a", "mode:a:off", "mode:a:live", "deep:1", "reset:d", "after:1"}));
+    // A list that isn't one, or with no rows, offers nothing and doesn't stop the lines after it.
+    RTF_ASSERT((plugin_offered_actions(R"({"lines": [{"list": "x"}, {"list": {"rows": 3}}, {"list": {}}, {"text": "t", "action": "a:1", "action_label": "G"}]})") == vector<string>{"a:1"}));
+    // A message nested past what a person could open is not followed all the way down, and doesn't crash.
+    string deep = R"({"text": "t", "action": "bottom:1", "action_label": "G"})";
+    for(int i = 0; i < 40; ++i)
+        deep = R"({"list": {"rows": [{"id": "r", "name": "R", "detail": [)" + deep + "]}]}}";
+    RTF_ASSERT(plugin_offered_actions(R"({"lines": [)" + deep + "]}").empty());
+}
+
 void test_r_plugin_action_request::test_needs_a_token()
 {
     box b;
@@ -145,6 +172,22 @@ void test_r_plugin_action_request::test_runs_a_choice_pick()
     // The choice's action and the picked option's value, as the desktop's panel runs them.
     RTF_ASSERT(_post(b, _body("front", "mode:porch:apple_alerts")).first == 200);
     RTF_ASSERT((b.ran == vector<pair<string, string>>{{"front", "mode:porch:apple_alerts"}}));
+}
+
+void test_r_plugin_action_request::test_runs_an_action_inside_a_list_row()
+{
+    // A plugin that shows its cameras as a list: the buttons and choices in a row's detail run, and nothing else in it does.
+    box b;
+    b.front_message = R"({"lines": [{"list": {"rows": [
+        {"id": "a", "name": "A", "detail": [
+            {"text": "In Apple Home.", "action": "reset:a", "action_label": "Remove"},
+            {"text": "Modes", "choice": {"action": "mode:a:", "options": [{"value": "off", "name": "Off"}, {"value": "live", "name": "Live"}]}}]}]}}]})";
+    RTF_ASSERT(_post(b, _body("front", "reset:a")).first == 200);
+    RTF_ASSERT(_post(b, _body("front", "mode:a:live")).first == 200);
+    RTF_ASSERT((b.ran == vector<pair<string, string>>{{"front", "reset:a"}, {"front", "mode:a:live"}}));
+    for(auto action : {"reset:b", "mode:a:", "mode:a:recording", "mode:b:live"})
+        RTF_ASSERT(_post(b, _body("front", action)).first == 400);
+    RTF_ASSERT(b.ran.size() == 2);
 }
 
 void test_r_plugin_action_request::test_refuses_what_is_not_offered()
