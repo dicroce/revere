@@ -12,6 +12,74 @@
 namespace revere
 {
 
+// The row of tab-like links at the top of the pane, one per section the pane draws, and what it needs to scroll to a
+// section and to say which one is in view. The sections report where they start as they are drawn (so a section added
+// to the pane, or one that only shows for some cameras, gets its tab with no other change); the tabs and the scroll use
+// the last complete frame's answer.
+struct properties_nav
+{
+    std::vector<std::string> titles;
+    std::vector<float> tops;
+    // A tab was clicked: the section to scroll to on the next draw, or -1.
+    int jump {-1};
+    // The sections' scroll, as of the last draw.
+    float scroll_y {0.0f};
+    float scroll_max {0.0f};
+
+    void begin_frame()
+    {
+        drawing_titles.clear();
+        drawing_tops.clear();
+    }
+    // A section starts at `top` (its distance from the top of the scrolled content, whatever the scroll).
+    void add(const std::string& title, float top)
+    {
+        drawing_titles.push_back(title);
+        drawing_tops.push_back(top);
+    }
+    void end_frame()
+    {
+        titles = drawing_titles;
+        tops = drawing_tops;
+        if(jump >= (int)tops.size())
+            jump = -1;
+    }
+    void reset()
+    {
+        titles.clear();
+        tops.clear();
+        drawing_titles.clear();
+        drawing_tops.clear();
+        jump = -1;
+        scroll_y = scroll_max = 0.0f;
+    }
+    // The section in view: the last one that has reached the top (within `lead` of it), the last when scrolled to the
+    // bottom (a short last section never gets to the top), -1 with no sections.
+    int active() const
+    {
+        if(tops.empty())
+            return -1;
+        if(scroll_max > 1.0f && scroll_y >= scroll_max - 1.0f)
+            return (int)tops.size() - 1;
+        constexpr float lead = 24.0f;
+        int a = 0;
+        for(size_t i = 0; i < tops.size(); ++i)
+            if(tops[i] - lead <= scroll_y)
+                a = (int)i;
+        return a;
+    }
+    // Where to scroll to to show section `i` at the top, clamped to what the content can scroll.
+    float scroll_target(int i) const
+    {
+        if(i < 0 || i >= (int)tops.size())
+            return scroll_y;
+        return std::max(0.0f, scroll_max > 0.0f ? std::min(tops[i], scroll_max) : tops[i]);
+    }
+private:
+    std::vector<std::string> drawing_titles;
+    std::vector<float> drawing_tops;
+};
+
 // What a camera's properties looked like when the pane opened, so the pane knows whether anything changed (Save is
 // off until it has) and whether leaving would lose something.
 struct camera_properties_session
@@ -29,6 +97,8 @@ struct camera_properties_session
     char hours_text[16] {0};
     // Save was tried: show what's wrong with the hours.
     bool tried {false};
+    // The section tabs and the scroll.
+    properties_nav nav;
 
     void begin(const std::string& id, bool doorbell_on, bool motion_on, bool prune_on, const std::string& hours_now, const std::string& tier_now,
                const std::string& transport_now, const std::string& press_source_now = "onvif")
@@ -43,6 +113,7 @@ struct camera_properties_session
         transport = transport_now;
         std::snprintf(hours_text, sizeof(hours_text), "%s", hours_now.c_str());
         tried = false;
+        nav.reset();
     }
 
     // The hours field holds a whole number of hours, 1 or more.

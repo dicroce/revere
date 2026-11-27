@@ -217,3 +217,88 @@ void test_camera_properties_state::test_the_label_column()
     // Else each label goes above its value.
     RTF_ASSERT(label_column_width(120.0f, 339.0f, 200.0f) == 0.0f);
 }
+
+namespace
+{
+properties_nav drawn(const std::vector<std::pair<std::string, float>>& sections)
+{
+    properties_nav n;
+    n.begin_frame();
+    for(auto& s : sections)
+        n.add(s.first, s.second);
+    n.end_frame();
+    return n;
+}
+}
+
+void test_camera_properties_state::test_the_section_tabs_are_the_sections_drawn()
+{
+    properties_nav n;
+    RTF_ASSERT(n.titles.empty());
+    RTF_ASSERT(n.active() == -1);
+    n = drawn({{"Recording", 4.0f}, {"Detection", 300.0f}, {"Doorbell", 700.0f}});
+    RTF_ASSERT((n.titles == std::vector<std::string>{"Recording", "Detection", "Doorbell"}));
+    RTF_ASSERT((n.tops == std::vector<float>{4.0f, 300.0f, 700.0f}));
+    // A frame still being drawn changes nothing yet; a camera with fewer sections has fewer tabs.
+    n.begin_frame();
+    n.add("Recording", 4.0f);
+    RTF_ASSERT(n.titles.size() == 3);
+    n.end_frame();
+    RTF_ASSERT((n.titles == std::vector<std::string>{"Recording"}));
+    // Opening another camera starts over.
+    n.jump = 0;
+    n.scroll_y = 50.0f;
+    camera_properties_session s;
+    s.nav = n;
+    s.begin("cam", false, true, true, "24", "auto", "TCP");
+    RTF_ASSERT(s.nav.titles.empty() && s.nav.jump == -1 && s.nav.scroll_y == 0.0f);
+}
+
+void test_camera_properties_state::test_the_section_in_view()
+{
+    auto n = drawn({{"Recording", 4.0f}, {"Detection", 300.0f}, {"Streams", 700.0f}, {"Doorbell", 900.0f}});
+    n.scroll_max = 2000.0f;
+    n.scroll_y = 0.0f;
+    RTF_ASSERT(n.active() == 0);
+    // A section is in view once it is within a line or so of the top.
+    n.scroll_y = 270.0f;
+    RTF_ASSERT(n.active() == 0);
+    n.scroll_y = 280.0f;
+    RTF_ASSERT(n.active() == 1);
+    n.scroll_y = 880.0f;
+    RTF_ASSERT(n.active() == 3);
+    // Scrolled to the bottom, the last section is the one in view though it never reached the top.
+    n.scroll_max = 600.0f;
+    n.scroll_y = 600.0f;
+    RTF_ASSERT(n.active() == 3);
+    n.scroll_y = 500.0f;
+    RTF_ASSERT(n.active() == 1);
+    // Content that doesn't scroll is at its top.
+    n.scroll_max = 0.0f;
+    n.scroll_y = 0.0f;
+    RTF_ASSERT(n.active() == 0);
+}
+
+void test_camera_properties_state::test_a_tab_scrolls_to_its_section()
+{
+    auto n = drawn({{"Recording", 4.0f}, {"Detection", 300.0f}, {"Doorbell", 900.0f}});
+    n.scroll_max = 500.0f;
+    RTF_ASSERT(n.scroll_target(0) == 4.0f);
+    RTF_ASSERT(n.scroll_target(1) == 300.0f);
+    // Not past what the content scrolls.
+    RTF_ASSERT(n.scroll_target(2) == 500.0f);
+    // Before the content has been measured, the section's own top.
+    n.scroll_max = 0.0f;
+    RTF_ASSERT(n.scroll_target(2) == 900.0f);
+    // No such section: stay where it is.
+    n.scroll_y = 120.0f;
+    RTF_ASSERT(n.scroll_target(7) == 120.0f);
+    RTF_ASSERT(n.scroll_target(-1) == 120.0f);
+    // A jump to a tab the next frame no longer draws is dropped.
+    n.jump = 2;
+    n.begin_frame();
+    n.add("Recording", 4.0f);
+    n.end_frame();
+    RTF_ASSERT(n.jump == -1);
+}
+
