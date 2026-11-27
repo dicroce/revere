@@ -59,6 +59,8 @@ add_executable(
     source/test_r_network_watch.cpp
     include/test_r_lag_watchdog.h
     source/test_r_lag_watchdog.cpp
+    include/test_r_ts_discipline.h
+    source/test_r_ts_discipline.cpp
     include/test_r_key_frame_reply.h
     source/test_r_key_frame_reply.cpp
     include/test_r_failure_reason.h

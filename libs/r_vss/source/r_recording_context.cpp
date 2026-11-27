@@ -248,7 +248,9 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 this->_restream_mount_path = mount;
             }
 
-            auto ts = (sc.stream_start_ts() + pts);
+            // With the video's wall-clock correction (r_ts_discipline), so sound
+            // and picture stay as far apart as the camera sent them.
+            auto ts = (sc.stream_start_ts() + pts) + _ts_discipline.correction_ms();
             this->_storage_file.write_frame(
                 this->_maybe_audio_storage_write_context.value(),
                 R_STORAGE_MEDIA_TYPE_AUDIO,
@@ -383,7 +385,17 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 }
             }
 
-            auto ts = (sc.stream_start_ts() + pts);
+            // Stream start + pts follows the camera's clock, which drifts from
+            // ours; the correction keeps the recorded timeline on the wall clock.
+            const auto raw_ts = (sc.stream_start_ts() + pts);
+            const auto ts = raw_ts + _ts_discipline.video_frame(
+                raw_ts, duration_cast<milliseconds>(_last_v_time.time_since_epoch()).count());
+            if(_ts_discipline.jumped())
+            {
+                auto name = _camera.friendly_name.is_null() ? _camera.id : _camera.friendly_name.value();
+                R_LOG_WARNING("recording time[%s]: camera time jumped; the recorded timeline is re-anchored at the wall clock (correction now %lld ms)",
+                              name.c_str(), (long long)_ts_discipline.correction_ms());
+            }
 
             // NOTE: live restream forwarding (GOP cache + queue posts) happens
             // BEFORE the storage write and motion post. write_frame is
