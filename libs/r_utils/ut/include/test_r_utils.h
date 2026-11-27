@@ -117,6 +117,7 @@ public:
       TEST(test_r_utils::test_instance_lock_one_holder);
       TEST(test_r_utils::test_instance_lock_stale_file);
       TEST(test_r_utils::test_instance_lock_notify);
+      TEST(test_r_utils::test_next_port_skips_a_port_in_use);
       TEST(test_r_utils::test_nullable_bool_is_explicit);
       TEST(test_r_utils::test_restart_windows_command_line);
       TEST(test_r_utils::test_restart_not_restarted);
@@ -230,6 +231,7 @@ public:
     void test_instance_lock_one_holder();
     void test_instance_lock_stale_file();
     void test_instance_lock_notify();
+    void test_next_port_skips_a_port_in_use();
     void test_nullable_bool_is_explicit();
     void test_restart_windows_command_line();
     void test_restart_not_restarted();

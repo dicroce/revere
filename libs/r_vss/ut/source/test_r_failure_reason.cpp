@@ -89,12 +89,28 @@ void test_r_failure_reason::test_text_from_a_caller_is_bounded_and_clean()
     r = r_failure_reason(string("rtsp://a:b@h/x \x01") + "0\x02 \x01" + "9\x02");
     RTF_ASSERT(r.find('\x01') == string::npos && r.find("a:b") == string::npos);
 
-    // Bounded, and not quadratic on a long run.
-    auto t0 = std::chrono::steady_clock::now();
-    RTF_ASSERT(r_failure_reason(string(20000, 'x')).size() <= 512);
-    RTF_ASSERT(r_failure_reason(string(20000, 'x') + "://" + string(20000, 'y')).size() <= 512);
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
-    RTF_ASSERT(ms < 1000);
+    // Bounded, and not quadratic on a long run. Not a wall-clock limit (a loaded machine breaks it): eight times the
+    // input must cost far less than the sixty-four times that quadratic work would, whatever the machine's speed.
+    auto cost = [](size_t n) {
+        using namespace std::chrono;
+        long long best = -1;
+        for(int i = 0; i < 3; ++i)
+        {
+            auto t0 = steady_clock::now();
+            auto a = r_failure_reason(string(n, 'x'));
+            auto b = r_failure_reason(string(n, 'x') + "://" + string(n, 'y'));
+            auto us = duration_cast<microseconds>(steady_clock::now() - t0).count();
+            if(a.size() > 512 || b.size() > 512)
+                return -2LL;
+            if(best < 0 || us < best)
+                best = us;
+        }
+        return best;
+    };
+    const auto small = cost(20000);
+    const auto large = cost(160000);
+    RTF_ASSERT(small >= 0 && large >= 0);     // both were bounded
+    RTF_ASSERT(large < 24 * (small < 100 ? 100 : small));     // 8x the input: linear is about 8x, quadratic 64x
 
     // Control characters are dropped from the message.
     RTF_ASSERT(r_failure_reason(string("bad\tvalue\x1b[31m here\r")) == "badvalue[31m here");
