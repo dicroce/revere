@@ -147,7 +147,8 @@ void test_r_teardown_queue::test_stuck_teardown_doesnt_hold_the_others()
     q.push("next", "Next Cam", make("next", rec));
     RTF_ASSERT(steady_clock::now() - t0 < milliseconds(200));
     RTF_ASSERT(wait_until([&]() { return destroyed(rec, "next"); }));
-    RTF_ASSERT(!q.pending("next"));
+    // The context is destroyed before the queue forgets the camera, so "no longer pending" follows a moment after.
+    RTF_ASSERT(wait_until([&]() { return !q.pending("next"); }));
     RTF_ASSERT(q.pending("stuck"));
 
     // The stuck one is reported with its name, how long, and that it is running.
