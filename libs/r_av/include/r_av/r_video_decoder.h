@@ -12,6 +12,7 @@ extern "C"
 }
 
 #include "r_av/r_codec_state.h"
+#include "r_av/r_failure_run.h"
 #include "r_av/r_hw_accel.h"
 #include "r_utils/r_macro.h"
 #include <vector>
@@ -106,6 +107,8 @@ private:
     bool _codec_opened;
     // Hardware sends that failed with AVERROR_EXTERNAL in a row (see _fall_back_to_software).
     int _hw_send_failures {0};
+    // Sends that failed in a burst of any kind (successes in it don't end it): logged once, then every few seconds with a count.
+    r_failure_run _send_failure_run;
 
     void _open_codec();
     static AVPixelFormat _get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);
@@ -125,6 +128,9 @@ constexpr int R_HW_DECODE_FAILURES_TO_FALL_BACK = 5;
 
 // Tests only: decode() sends packets through `send` instead of avcodec_send_packet (nullptr restores it).
 R_API void r_video_decoder_send_override(int (*send)(AVCodecContext*, const AVPacket*));
+
+// Tests only: the quiet time that ends a burst of send failures, in milliseconds (0 or less restores 10 seconds).
+R_API void r_video_decoder_failure_window_override(int ms);
 
 // Tests only: the decoder opens through `open` instead of avcodec_open2 (nullptr restores it).
 R_API void r_video_decoder_open_override(int (*open)(AVCodecContext*, const AVCodec*, AVDictionary**));

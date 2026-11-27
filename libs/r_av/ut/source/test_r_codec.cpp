@@ -2,10 +2,13 @@
 #include "test_r_codec.h"
 #include "bad_guy.h"
 #include "r_av/r_video_decoder.h"
+#include "r_av/r_failure_run.h"
 #include "r_av/r_video_encoder.h"
 #include "r_av/r_hw_accel.h"
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <thread>
 #include <vector>
 #include "r_av/r_demuxer.h"
 #include "r_av/r_muxer.h"
@@ -844,6 +847,34 @@ int hw_invalid_data_send(AVCodecContext* ctx, const AVPacket* pkt)
     return avcodec_send_packet(ctx, pkt);
 }
 
+// The first g_fail_sends sends fail as bad data, then they work: a decoder waiting for a key frame.
+int g_fail_sends = 0;
+bool g_pause_before_first_success = false;
+int fail_first_sends(AVCodecContext* ctx, const AVPacket* pkt)
+{
+    if(g_fail_sends > 0)
+    {
+        --g_fail_sends;
+        return AVERROR_INVALIDDATA;
+    }
+    if(g_pause_before_first_success)
+    {
+        // The quiet that ends a burst.
+        g_pause_before_first_success = false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    }
+    return avcodec_send_packet(ctx, pkt);
+}
+
+int g_send_calls = 0;
+// Every other send is refused as bad data, the rest are accepted.
+int every_other_send_fails(AVCodecContext* ctx, const AVPacket* pkt)
+{
+    if(++g_send_calls % 2 == 1)
+        return AVERROR_INVALIDDATA;
+    return avcodec_send_packet(ctx, pkt);
+}
+
 int g_sends = 0;
 // Every other hardware send fails: never R_HW_DECODE_FAILURES_TO_FALL_BACK in a row.
 int flaky_gpu_send(AVCodecContext* ctx, const AVPacket* pkt)
@@ -891,7 +922,8 @@ void test_r_codec::test_dead_hw_context_falls_back_to_software()
         r_video_decoder_send_override(nullptr);
     }
     RTF_ASSERT(logs.fallbacks == 1);
-    RTF_ASSERT(logs.send_failures == R_HW_DECODE_FAILURES_TO_FALL_BACK);
+    // The failures in a row are one run: one line, not one per packet.
+    RTF_ASSERT(logs.send_failures == 1);
     // The two key frames after the fallback, and the frames after each.
     RTF_ASSERT(grey >= 10);
 }
@@ -909,7 +941,175 @@ void test_r_codec::test_software_decoder_does_not_fall_back()
         r_video_decoder_send_override(nullptr);
     }
     RTF_ASSERT(logs.fallbacks == 0);
-    RTF_ASSERT(logs.send_failures == (int)packets.size());
+    RTF_ASSERT(logs.send_failures == 1);   // every packet failed: one run, one line
+}
+
+void test_r_codec::test_failure_run_logs_the_first_then_one_per_interval()
+{
+    using namespace std::chrono;
+    r_failure_run run(seconds(10));
+    auto t = steady_clock::time_point(seconds(1000));
+    RTF_ASSERT(run.failed(t));                              // the first of a run
+    RTF_ASSERT_EQUAL(run.count(), (uint64_t)1);
+    for(int i = 0; i < 500; ++i)
+        RTF_ASSERT(!run.failed(t + milliseconds(i)));       // a burst: nothing more
+    RTF_ASSERT(!run.failed(t + milliseconds(9999)));
+    RTF_ASSERT(run.failed(t + seconds(10)));                // an interval later: a line, with the count so far
+    RTF_ASSERT_EQUAL(run.count(), (uint64_t)503);
+    RTF_ASSERT(!run.failed(t + seconds(15)));
+    RTF_ASSERT(!run.failed(t + milliseconds(19999)));
+    RTF_ASSERT(run.failed(t + seconds(20)));
+}
+
+void test_r_codec::test_failure_run_counts_what_was_left_out()
+{
+    using namespace std::chrono;
+    r_failure_run run(seconds(10));
+    auto t = steady_clock::time_point(seconds(1000));
+    uint64_t total = 99;
+    RTF_ASSERT_EQUAL(run.recovered(t, &total), (uint64_t)0);   // no burst at all
+    RTF_ASSERT_EQUAL(total, (uint64_t)0);
+    RTF_ASSERT(run.failed(t));
+    RTF_ASSERT_EQUAL(run.recovered(t + seconds(11), &total), (uint64_t)0);   // a burst of one, logged: nothing left out
+    RTF_ASSERT_EQUAL(total, (uint64_t)1);
+    // The next burst starts again with a line.
+    RTF_ASSERT(run.failed(t + seconds(12)));
+    for(int i = 0; i < 9; ++i)
+        RTF_ASSERT(!run.failed(t + seconds(12) + milliseconds(1 + i)));
+    // A success while failures are still coming ends nothing.
+    RTF_ASSERT_EQUAL(run.recovered(t + seconds(12) + milliseconds(50), &total), (uint64_t)0);
+    RTF_ASSERT_EQUAL(run.count(), (uint64_t)10);
+    // Ten seconds after the last failure it is over: ten failed, the first one logged.
+    RTF_ASSERT_EQUAL(run.recovered(t + seconds(23), &total), (uint64_t)9);
+    RTF_ASSERT_EQUAL(total, (uint64_t)10);
+    RTF_ASSERT_EQUAL(run.count(), (uint64_t)0);
+    // One logged at the interval covers everything up to it.
+    RTF_ASSERT(run.failed(t + seconds(100)));
+    RTF_ASSERT(!run.failed(t + seconds(101)));
+    RTF_ASSERT(run.failed(t + seconds(110)));
+    RTF_ASSERT(!run.failed(t + seconds(111)));
+    RTF_ASSERT_EQUAL(run.recovered(t + seconds(125), &total), (uint64_t)1);
+    RTF_ASSERT_EQUAL(total, (uint64_t)4);
+}
+
+void test_r_codec::test_failures_with_successes_between_are_still_one_burst()
+{
+    // Fail, accept, fail, accept...: a success between failures must not end the burst (every failure was a line).
+    using namespace std::chrono;
+    r_failure_run run(seconds(10));
+    auto t = steady_clock::time_point(seconds(1000));
+    int logged = 0;
+    uint64_t total = 0;
+    for(int i = 0; i < 1000; ++i)
+    {
+        auto now = t + milliseconds(100 * i);   // 100 seconds of one failure then one success every 100 ms
+        if(run.failed(now))
+            ++logged;
+        RTF_ASSERT_EQUAL(run.recovered(now + milliseconds(50), &total), (uint64_t)0);
+    }
+    RTF_ASSERT_EQUAL(logged, 10);   // the first, then one every ten seconds
+    RTF_ASSERT_EQUAL(run.count(), (uint64_t)1000);
+    // It ends ten seconds after the last failure, and says what it left out.
+    RTF_ASSERT_EQUAL(run.recovered(t + milliseconds(99900) + seconds(10), &total), (uint64_t)99);   // line 10 covered 901
+    RTF_ASSERT_EQUAL(total, (uint64_t)1000);
+}
+
+void test_r_codec::test_a_burst_nobody_ended_is_over_after_the_quiet()
+{
+    using namespace std::chrono;
+    r_failure_run run(seconds(10));
+    auto t = steady_clock::time_point(seconds(1000));
+    RTF_ASSERT(run.failed(t));
+    RTF_ASSERT(!run.failed(t + seconds(1)));
+    // Nothing for a minute, no success either: the next failure is a new burst and gets its line.
+    RTF_ASSERT(run.failed(t + seconds(61)));
+    RTF_ASSERT_EQUAL(run.count(), (uint64_t)1);
+}
+
+namespace
+{
+struct log_lines
+{
+    int failures {0};
+    int recoveries {0};
+    string last_failure, last_recovery;
+    log_lines()
+    {
+        r_logger::set_log_callback([this](r_logger::LOG_LEVEL, const string& m) {
+            if(m.find("Failed to send packet") != string::npos)
+            {
+                ++failures;
+                last_failure = m;
+            }
+            if(m.find("packets are accepted again") != string::npos)
+            {
+                ++recoveries;
+                last_recovery = m;
+            }
+        });
+    }
+    ~log_lines() { r_logger::clear_log_callback(); }
+};
+}
+
+void test_r_codec::test_a_run_of_send_failures_is_one_log_line()
+{
+    // A decoder that refuses every packet (a stream it can't decode) logged one line per packet: 12,324 in two hours.
+    vector<uint8_t> extradata;
+    auto packets = grey_gop10_stream(extradata);
+    RTF_ASSERT(packets.size() > 20);
+    log_lines logs;
+    {
+        r_video_decoder dec(AV_CODEC_ID_H264, r_hw_accel::none);
+        r_video_decoder_send_override(every_send_fails);
+        try { grey_pictures(dec, packets, extradata); } catch(...) {}
+        r_video_decoder_send_override(nullptr);
+    }
+    RTF_ASSERT_EQUAL(logs.failures, 1);
+    RTF_ASSERT(logs.last_failure.find("(1 failed in a row)") != string::npos);
+    RTF_ASSERT_EQUAL(logs.recoveries, 0);   // it never recovered
+}
+
+void test_r_codec::test_send_failure_run_ends_when_sends_work_again()
+{
+    // The first packets fail (no key frame yet), then they are accepted after a quiet gap: the failures are one line,
+    // and the end of the burst is said once, with how many were left out. The pictures after it are unchanged.
+    vector<uint8_t> extradata;
+    auto packets = grey_gop10_stream(extradata);
+    int grey = 0;
+    log_lines logs;
+    r_video_decoder_failure_window_override(20);
+    {
+        r_video_decoder dec(AV_CODEC_ID_H264, r_hw_accel::none);
+        g_fail_sends = 6;
+        g_pause_before_first_success = true;
+        r_video_decoder_send_override(fail_first_sends);
+        try { grey = grey_pictures(dec, packets, extradata); } catch(...) {}
+        r_video_decoder_send_override(nullptr);
+    }
+    r_video_decoder_failure_window_override(0);
+    RTF_ASSERT_EQUAL(logs.failures, 1);
+    RTF_ASSERT_EQUAL(logs.recoveries, 1);
+    RTF_ASSERT(logs.last_recovery.find("after 6 failed in a row (5 not logged above)") != string::npos);
+    RTF_ASSERT(grey > 0);
+}
+
+void test_r_codec::test_alternating_send_failures_are_not_a_line_each()
+{
+    // A decoder that refuses every other packet: each success used to end the run, so each failure was a line.
+    vector<uint8_t> extradata;
+    auto packets = grey_gop10_stream(extradata);
+    log_lines logs;
+    {
+        r_video_decoder dec(AV_CODEC_ID_H264, r_hw_accel::none);
+        g_send_calls = 0;
+        r_video_decoder_send_override(every_other_send_fails);
+        try { grey_pictures(dec, packets, extradata); } catch(...) {}
+        r_video_decoder_send_override(nullptr);
+    }
+    RTF_ASSERT(g_send_calls > 10);
+    RTF_ASSERT_EQUAL(logs.failures, 1);
+    RTF_ASSERT_EQUAL(logs.recoveries, 0);   // the burst is still open: no ten quiet seconds yet
 }
 
 void test_r_codec::test_hw_invalid_data_does_not_fall_back()
@@ -929,8 +1129,8 @@ void test_r_codec::test_hw_invalid_data_does_not_fall_back()
         r_video_decoder_send_override(nullptr);
     }
     RTF_ASSERT(logs.fallbacks == 0);
-    // Still the hardware at the end: every send went to it and failed.
-    RTF_ASSERT(logs.send_failures == (int)packets.size());
+    // Still the hardware at the end: every send went to it and failed, as one run.
+    RTF_ASSERT(logs.send_failures == 1);
 }
 
 void test_r_codec::test_hw_failures_not_in_a_row_keep_the_hardware()
@@ -953,7 +1153,7 @@ void test_r_codec::test_hw_failures_not_in_a_row_keep_the_hardware()
         r_video_decoder_send_override(nullptr);
     }
     RTF_ASSERT(logs.fallbacks == 0);
-    RTF_ASSERT(logs.send_failures >= R_HW_DECODE_FAILURES_TO_FALL_BACK);
+    RTF_ASSERT_EQUAL(logs.send_failures, 1);   // many failures with good sends between them: one burst, one line
     RTF_ASSERT(grey >= 10);
 }
 
