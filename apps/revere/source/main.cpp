@@ -3106,8 +3106,9 @@ int main(int argc, char** argv)
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer_Init(renderer);
 
-    // Platform-specific font sizes (macOS renders fonts larger, so we use smaller sizes)
-#ifdef IS_MACOS
+    // Font sizes in points. macOS and Windows (DPI aware, so its points are the display's, as a Mac's are) share
+    // them; Linux, which isn't DPI aware, keeps the larger ones.
+#if defined(IS_MACOS) || defined(IS_WINDOWS)
     const float FONT_SIZE_24 = 18.0f;
     const float FONT_SIZE_22 = 16.0f;
     const float FONT_SIZE_20 = 15.0f;
