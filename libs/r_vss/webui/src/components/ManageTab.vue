@@ -129,8 +129,8 @@
       </header>
 
       <div class="props-sections">
+        <h4 class="section">Recording</h4>
         <div class="props-section">
-          <h4 class="section">Recording</h4>
           <div class="loc">
             <span class="title">Recording file</span>
             <div class="path-row">
@@ -142,18 +142,18 @@
               >{{ copied ? 'Copied' : 'Copy path' }}</button>
             </div>
           </div>
-          <div class="storage-row">
-            <button class="ghost small" :disabled="propsBusy" @click="openStorage('move')">Move storage…</button>
+          <div class="action-row">
             <p class="blurb">Move this camera's recording files to another folder or disk.</p>
+            <button class="ghost small" :disabled="propsBusy" @click="openStorage('move')">Move storage…</button>
           </div>
-          <div class="storage-row">
-            <button class="ghost small" :disabled="propsBusy" @click="openStorage('retention')">Change retention…</button>
+          <div class="action-row">
             <p class="blurb">Resize the recording file to hold more or fewer days of video. Clears this camera's existing recordings.</p>
+            <button class="ghost small" :disabled="propsBusy" @click="openStorage('retention')">Change retention…</button>
           </div>
         </div>
 
+        <h4 class="section">Detection</h4>
         <div class="props-section">
-          <h4 class="section">Detection</h4>
           <label class="check option">
             <input type="checkbox" v-model="propsMotion" :disabled="propsBusy" />
             <span>
@@ -162,35 +162,39 @@
             </span>
           </label>
 
-          <fieldset class="tiers" :class="{ off: !propsMotion }" :disabled="propsBusy || !propsMotion">
-            <legend>Motion and objects from</legend>
-            <div class="pills">
-              <label v-for="t in tierChoices" :key="t.value" class="pill" :class="{ on: propsTier === t.value }">
-                <input type="radio" name="motion_tier" :value="t.value" v-model="propsTier" />
-                {{ t.title }}
-              </label>
-            </div>
-            <p class="blurb">{{ tierChoices.find((t) => t.value === propsTier)?.description }}</p>
-            <p v-if="tierStatus" class="blurb">{{ tierStatus }}</p>
-          </fieldset>
+          <div>
+            <fieldset class="tiers" :class="{ off: !propsMotion }" :disabled="propsBusy || !propsMotion">
+              <legend>Motion and objects from</legend>
+              <div class="pills">
+                <label v-for="t in tierChoices" :key="t.value" class="pill" :class="{ on: propsTier === t.value }">
+                  <input type="radio" name="motion_tier" :value="t.value" v-model="propsTier" />
+                  {{ t.title }}
+                </label>
+              </div>
+              <p class="blurb">{{ tierChoices.find((t) => t.value === propsTier)?.description }}</p>
+              <p v-if="tierStatus" class="blurb">{{ tierStatus }}</p>
+            </fieldset>
+          </div>
 
-          <label class="check option" :class="{ off: !propsMotion }">
-            <input type="checkbox" v-model="propsPrune" :disabled="propsBusy || !propsMotion" />
-            <span>
-              <span class="title">Keep only motion in older video</span>
-              <span class="desc">Video older than the time below is deleted unless it has motion in it, so motion is kept for longer in the same space.</span>
-            </span>
-          </label>
-          <label class="field indent" :class="{ off: !propsPrune }">
-            <span>Keep continuous video for at least</span>
-            <input type="number" min="1" max="999999" step="1" v-model.number="propsHours" :disabled="propsBusy || !propsPrune" />
-            <span>hours</span>
-          </label>
-          <p v-if="propsPrune && !hoursOk" class="err">Enter a whole number of hours, 1 or more.</p>
+          <div class="prune">
+            <label class="check option" :class="{ off: !propsMotion }">
+              <input type="checkbox" v-model="propsPrune" :disabled="propsBusy || !propsMotion" />
+              <span>
+                <span class="title">Keep only motion in older video</span>
+                <span class="desc">Video older than the time below is deleted unless it has motion in it, so motion is kept for longer in the same space.</span>
+              </span>
+            </label>
+            <label class="field indent" :class="{ off: !propsPrune }">
+              <span>Keep continuous video for at least</span>
+              <input type="number" min="1" max="999999" step="1" v-model.number="propsHours" :disabled="propsBusy || !propsPrune" />
+              <span>hours</span>
+            </label>
+            <p v-if="propsPrune && !hoursOk" class="err">Enter a whole number of hours, 1 or more.</p>
+          </div>
         </div>
 
+        <h4 class="section">Doorbell</h4>
         <div class="props-section">
-          <h4 class="section">Doorbell</h4>
           <label class="check option">
             <input type="checkbox" v-model="propsDoorbell" :disabled="propsBusy" />
             <span>
@@ -200,20 +204,22 @@
           </label>
 
           <template v-if="propsDoorbell">
-            <fieldset class="tiers" :disabled="propsBusy">
-              <legend>How the doorbell tells Revere about a press</legend>
-              <div class="pills">
-                <label class="pill" :class="{ on: propsPressSource === 'onvif' }">
-                  <input type="radio" name="press_source" value="onvif" v-model="propsPressSource" />ONVIF
-                </label>
-                <label class="pill" :class="{ on: propsPressSource === 'reolink_email' }">
-                  <input type="radio" name="press_source" value="reolink_email" v-model="propsPressSource" />Reolink email
-                </label>
-              </div>
-              <p v-if="propsPressSource === 'onvif'" class="blurb">The doorbell sends each press to Revere over ONVIF, right away. Most doorbells support this.</p>
-              <p v-else class="blurb">For Reolink doorbells that don't send presses over ONVIF. The doorbell emails each press to this computer instead. The email stays on your network.</p>
-              <p v-if="doorPresses?.suggest_onvif && propsPressSource === 'reolink_email'" class="warn">This doorbell now sends presses over ONVIF too. Switch to ONVIF so rings arrive right away.</p>
-            </fieldset>
+            <div>
+              <fieldset class="tiers" :disabled="propsBusy">
+                <legend>How the doorbell tells Revere about a press</legend>
+                <div class="pills">
+                  <label class="pill" :class="{ on: propsPressSource === 'onvif' }">
+                    <input type="radio" name="press_source" value="onvif" v-model="propsPressSource" />ONVIF
+                  </label>
+                  <label class="pill" :class="{ on: propsPressSource === 'reolink_email' }">
+                    <input type="radio" name="press_source" value="reolink_email" v-model="propsPressSource" />Reolink email
+                  </label>
+                </div>
+                <p v-if="propsPressSource === 'onvif'" class="blurb">The doorbell sends each press to Revere over ONVIF, right away. Most doorbells support this.</p>
+                <p v-else class="blurb">For Reolink doorbells that don't send presses over ONVIF. The doorbell emails each press to this computer instead. The email stays on your network.</p>
+                <p v-if="doorPresses?.suggest_onvif && propsPressSource === 'reolink_email'" class="warn">This doorbell now sends presses over ONVIF too. Switch to ONVIF so rings arrive right away.</p>
+              </fieldset>
+            </div>
 
             <div v-if="propsPressSource === 'reolink_email'" class="mail-setup">
               <span class="title">In the Reolink app</span>
@@ -247,10 +253,10 @@
             <div class="press-check">
               <span class="title">Test it</span>
               <p v-if="doorTest?.open" class="blurb">Press the doorbell now. {{ testSecondsLeft }} {{ testSecondsLeft === 1 ? 'second' : 'seconds' }} left.</p>
-              <template v-else>
-                <button class="ghost small" :disabled="propsBusy || doorTesting" @click="pressTest">Start test</button>
+              <div v-else class="action-row">
                 <p class="blurb">Click Start test, then press the doorbell within a minute. Revere shows how the press arrived and how long it took. Your phone won't ring during the test.</p>
-              </template>
+                <button class="ghost small" :disabled="propsBusy || doorTesting" @click="pressTest">Start test</button>
+              </div>
               <p v-for="line in testLines" :key="line" class="test-line">{{ line }}</p>
               <p v-if="testVerdict" class="blurb">{{ testVerdict }}</p>
               <p v-if="doorTest && !doorTest.open && doorPresses && doorPresses.press_source !== propsPressSource" class="blurb">The test checks the saved choice. Save first to test the other one.</p>
@@ -860,16 +866,25 @@ button:disabled { cursor: default; opacity: 0.6; }
 .props-pane { display: flex; flex-direction: column; gap: 1rem; }
 .props-head h2 { font-size: 1.1rem; font-weight: 600; }
 .props-head .back { margin-bottom: 0.6rem; }
-.storage-row { display: flex; flex-direction: column; align-items: flex-start; gap: 0.3rem; }
-.storage-row .blurb { margin: 0; }
 .cam-title { font-size: 0.85rem; color: #aaa; margin-top: 0.2rem; }
-.props-sections {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
-  gap: 1.5rem;
-  align-items: start;
+/* One column of sections, as wide as reads well: each a title over a card of rows with a line between them */
+.props-sections { display: flex; flex-direction: column; max-width: 46rem; min-width: 0; }
+.props-section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-bottom: 1.5rem;
+  background: #141414;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
 }
-.props-section { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; }
+.props-section > * { padding: 0.85rem 1rem; }
+.props-section > * + * { border-top: 1px solid #262626; }
+.props-section > .prune { display: flex; flex-direction: column; gap: 0.6rem; }
+/* Text at the left and its button at the right, or under the text when it's narrow */
+.action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 1rem; }
+.action-row .blurb { flex: 1 1 16rem; margin: 0; }
+.action-row button { flex: none; }
 .props-pane .check { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
 .props-pane .field { display: flex; align-items: center; gap: 0.6rem; }
 .props-pane .field input {
@@ -881,7 +896,7 @@ button:disabled { cursor: default; opacity: 0.6; }
   padding: 0.4rem 0.5rem;
   font-size: 0.9rem;
 }
-.props-pane .loc { font-size: 0.8rem; word-break: break-all; }
+.props-pane .loc { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem 1rem; font-size: 0.8rem; word-break: break-all; }
 .props-pane .err { color: #e05555; font-size: 0.85rem; }
 .props-pane .blurb { font-size: 0.85rem; color: #999; line-height: 1.45; }
 .props-pane .option { align-items: flex-start; }
@@ -912,12 +927,11 @@ button:disabled { cursor: default; opacity: 0.6; }
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #888;
-  border-bottom: 1px solid #363636;
-  padding-bottom: 0.4rem;
+  margin-bottom: 0.5rem;
 }
-.props-pane .loc .title { display: block; font-size: 0.85rem; color: #bbb; margin-bottom: 0.3rem; }
+.props-pane .loc .title { flex: none; font-size: 0.9rem; color: #ddd; }
 .props-pane .storage-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
-.props-pane .path-row { display: flex; align-items: center; gap: 0.6rem; }
+.props-pane .path-row { flex: 1 1 18rem; display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
 .props-pane .path-row code {
   flex: 1;
   min-width: 0;
@@ -930,7 +944,7 @@ button:disabled { cursor: default; opacity: 0.6; }
   padding: 0.35rem 0.5rem;
 }
 /* A doorbell's press setup (the Doorbell section) */
-.props-pane .mail-setup, .props-pane .press-check { display: flex; flex-direction: column; align-items: flex-start; gap: 0.35rem; }
+.props-pane .mail-setup, .props-pane .press-check { display: flex; flex-direction: column; align-items: stretch; gap: 0.35rem; }
 .props-pane .mail-setup .title, .props-pane .press-check .title { font-size: 0.9rem; }
 .props-pane .mail-setup .blurb, .props-pane .press-check .blurb { margin: 0; }
 .props-pane .mail-fields {
@@ -951,6 +965,7 @@ button:disabled { cursor: default; opacity: 0.6; }
 .props-pane .warn { margin: 0; font-size: 0.85rem; color: #e0a040; line-height: 1.45; }
 /* Cancel and Save stay at the bottom while the sections scroll */
 .props-foot {
+  max-width: 46rem;
   position: sticky;
   bottom: 0;
   display: flex;
