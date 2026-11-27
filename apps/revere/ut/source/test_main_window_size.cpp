@@ -15,7 +15,9 @@ namespace
 {
 
 // Draws the real main window headless, with ImGui's default font for all three font keys. ImGui asserts on a
-// zero-size InvisibleButton, so a frame that gets through is the check.
+// zero-size InvisibleButton, so in a build with asserts a frame that gets through is the check; a Release build has no
+// asserts, so every invisible button is also counted when it is given a zero size (main_window_detail::invisible_button),
+// and the tests read that count.
 struct window_frames
 {
     ImGuiContext* ctx;
@@ -26,6 +28,7 @@ struct window_frames
 
     window_frames() : ctx(ImGui::CreateContext())
     {
+        main_window_detail::zero_size_buttons = 0;
         auto& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.DisplaySize = ImVec2(900.0f, 600.0f);
@@ -38,6 +41,8 @@ struct window_frames
             log.add("a log line");
     }
     ~window_frames() { ImGui::DestroyContext(ctx); }
+
+    int zero_size_buttons() const { return main_window_detail::zero_size_buttons; }
 
     void frame(uint16_t top, uint16_t w, uint16_t h)
     {
@@ -67,6 +72,7 @@ void test_main_window_size::test_no_room_draws_without_asserting()
             ui.frame(30, (uint16_t)size.first, (uint16_t)size.second);
         }
     }
+    RTF_ASSERT_EQUAL(ui.zero_size_buttons(), 0);
 }
 
 void test_main_window_size::test_log_pane_taller_than_the_window()
@@ -77,4 +83,5 @@ void test_main_window_size::test_log_pane_taller_than_the_window()
     // Short windows, so the log's share leaves the rest nothing, then a normal size again.
     for(uint16_t h : {(uint16_t)120, (uint16_t)200, (uint16_t)90, (uint16_t)600})
         ui.frame(30, 640, h);
+    RTF_ASSERT_EQUAL(ui.zero_size_buttons(), 0);
 }
