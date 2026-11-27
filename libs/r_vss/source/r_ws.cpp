@@ -4265,7 +4265,7 @@ r_http::r_server_response r_ws::_get_storage_summary(r_utils::r_socket_base&, co
             int64_t nb = camera.n_record_file_blocks.is_null() ? 0 : camera.n_record_file_blocks.value();
             int64_t bs = camera.record_file_block_size.is_null() ? 0 : camera.record_file_block_size.value();
             auto path = storage_path(_top_dir, camera.record_file_path.value());
-            cams.push_back({std::filesystem::path(path).parent_path().string(), nb * bs, _camera_byte_rate(_stream_keeper, camera.id)});
+            cams.push_back({std::filesystem::u8path(path).parent_path().u8string(), nb * bs, _camera_byte_rate(_stream_keeper, camera.id)});
         }
         auto summary = summarize_storage(cams);
 
