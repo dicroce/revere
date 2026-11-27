@@ -460,6 +460,10 @@ public:
         r_utils::r_nullable<std::string> password
     );
 
+    // The camera's clock less this computer's, in seconds: read with GetSystemDateAndTime as the session started (the
+    // offset its digests use), or after sync_camera_time. Null when the camera never said.
+    R_API r_utils::r_nullable<int> clock_offset_seconds() const;
+
     // GetSystemDateAndTime with the session's credentials, parsed (parse_system_date_and_time).
     R_API onvif_system_date_time get_system_date_and_time();
 
@@ -609,6 +613,7 @@ private:
     r_utils::r_nullable<std::string> _password;
 
     int _time_offset_seconds;
+    bool _time_known {false};   // _time_offset_seconds is the camera's word, not the 0 assumed when it didn't answer
     mutable soap_version _soap_ver;
     mutable auth_mode _auth_mode;
     std::shared_ptr<r_onvif_interrupt> _interrupt;

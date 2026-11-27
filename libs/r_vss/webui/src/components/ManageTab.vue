@@ -477,7 +477,7 @@ const propsDirty = computed(() => {
 })
 
 const doorTest = computed(() => doorPresses.value?.test || null)
-const testLines = computed(() => pressTestLines(doorTest.value))
+const testLines = computed(() => pressTestLines(doorTest.value, doorPresses.value?.clock_offset_ms ?? null))
 const testVerdict = computed(() => pressTestVerdict(doorTest.value, propsPressSource.value))
 const testSecondsLeft = computed(() => Math.max(0, Math.ceil(((doorTest.value?.ends_ms || 0) - nowMs.value) / 1000)))
 const mailLines = computed(() => mailStatusLines(doorMail.value, doorPresses.value, propsPressSource.value))

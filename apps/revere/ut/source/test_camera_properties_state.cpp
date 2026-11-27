@@ -109,6 +109,25 @@ void test_camera_properties_state::test_the_press_test_lines()
     v.test_sources = {{"onvif", false, 0}, {"reolink_email", false, 0}};
     v.test_other_mail = true;
     RTF_ASSERT(press_test_lines(v) == vector<string>({"ONVIF: didn't arrive", "Email: didn't arrive", "Got an email from the doorbell, but it wasn't a press."}));
+    // The doorbell's clock 3 s or more off: said after a test, with what to do; never before one, nor while unknown.
+    v.test_other_mail = false;
+    v.clock_known = true;
+    v.clock_offset_ms = -9000;
+    RTF_ASSERT(press_test_lines(v).back() == "The doorbell's clock is 9 seconds slow. Turn on time sync (NTP) in the Reolink app.");
+    v.clock_offset_ms = 3000;
+    RTF_ASSERT(press_test_lines(v).back() == "The doorbell's clock is 3 seconds fast. Turn on time sync (NTP) in the Reolink app.");
+    v.clock_offset_ms = -2999;
+    RTF_ASSERT(press_test_lines(v).size() == 2);
+    v.clock_offset_ms = 2999;
+    RTF_ASSERT(press_test_lines(v).size() == 2);
+    v.clock_offset_ms = -3000;
+    RTF_ASSERT(press_test_lines(v).size() == 3);
+    v.clock_known = false;
+    RTF_ASSERT(press_test_lines(v).size() == 2);
+    doorbell_view untested;
+    untested.clock_known = true;
+    untested.clock_offset_ms = -9000;
+    RTF_ASSERT(press_test_lines(untested).empty());
 }
 
 void test_camera_properties_state::test_the_press_test_verdict()

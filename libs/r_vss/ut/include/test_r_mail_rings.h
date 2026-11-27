@@ -7,6 +7,7 @@ public:
     RTF_FIXTURE(test_r_mail_rings);
       TEST(test_r_mail_rings::test_reading_a_ring_mail);
       TEST(test_r_mail_rings::test_the_press_time);
+      TEST(test_r_mail_rings::test_a_doorbell_clock_that_is_off);
       TEST(test_r_mail_rings::test_a_ring_over_starttls_with_auth_plain);
       TEST(test_r_mail_rings::test_auth_login_and_a_motion_mail);
       TEST(test_r_mail_rings::test_nothing_before_starttls);
@@ -40,6 +41,7 @@ public:
 
     void test_reading_a_ring_mail();
     void test_the_press_time();
+    void test_a_doorbell_clock_that_is_off();
     void test_a_ring_over_starttls_with_auth_plain();
     void test_auth_login_and_a_motion_mail();
     void test_nothing_before_starttls();

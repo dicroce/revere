@@ -269,6 +269,9 @@ public:
         r_utils::r_nullable<int64_t> last_email_ms;
         bool suggest_onvif {false};
         r_press_test test;
+        // The doorbell's clock less this box's (r_camera_events_status::clock_offset_ms), null until its event
+        // subscription has read it: an email's times are on it.
+        r_utils::r_nullable<int64_t> clock_offset_ms;
     };
     // Null when the camera isn't a doorbell (or is gone).
     R_API r_utils::r_nullable<doorbell_press_status> doorbell_presses(const std::string& camera_id);
