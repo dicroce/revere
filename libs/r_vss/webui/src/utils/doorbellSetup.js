@@ -27,6 +27,16 @@ export function mailSetupRows(mail) {
   ]
 }
 
+// The email setup after one of its reads ends: the answer, or with have_login (the read left the login out) the answer
+// with the password already shown. A read that began before New password was pressed (or before another camera was
+// opened) is stale: its answer, or its failure, changes nothing, so an old password can't come back over a new one.
+// failed: the read threw, which forgets a setup only when it was the read that would have shown the login.
+export function mailSetupAfterRead(current, answer, { haveLogin, stale, failed = false }) {
+  if (stale) return current
+  if (failed) return haveLogin ? current : null
+  return haveLogin ? { ...answer, password: current?.password } : answer
+}
+
 // A password shown for typing, in groups of 4: "Xw7t Q2mL p9Rz". Copy copies it as it is.
 export const inGroupsOf4 = (s) => (s || '').replace(/(.{4})(?=.)/g, '$1 ')
 
