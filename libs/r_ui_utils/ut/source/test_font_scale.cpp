@@ -46,7 +46,8 @@ struct fonts_at
     }
 };
 
-bool near(float a, float b, float tolerance) { return std::fabs(a - b) <= tolerance; }
+// Not "near": windows.h defines it as a macro.
+bool near_enough(float a, float b, float tolerance) { return std::fabs(a - b) <= tolerance; }
 
 }
 
@@ -64,16 +65,16 @@ void test_font_scale::test_text_measures_the_same_at_any_scale()
         RTF_ASSERT(s.fonts["14.00"].inter_tight_bold->FontSize == 14.0f);
         const ImVec2 at_s = s.measure(line);
         RTF_ASSERT(at_s.y == 18.0f);
-        RTF_ASSERT(near(at_s.x, at_1.x, 1.0f));
+        RTF_ASSERT(near_enough(at_s.x, at_1.x, 1.0f));
         // The tab, made from the space by the lookup table, is in points too.
-        RTF_ASSERT(near(s.f18()->FindGlyph('\t')->AdvanceX, 4.0f * s.f18()->FindGlyph(' ')->AdvanceX, 0.01f));
-        RTF_ASSERT(near(s.f18()->FallbackAdvanceX, s.f18()->FallbackGlyph->AdvanceX, 0.01f));
+        RTF_ASSERT(near_enough(s.f18()->FindGlyph('\t')->AdvanceX, 4.0f * s.f18()->FindGlyph(' ')->AdvanceX, 0.01f));
+        RTF_ASSERT(near_enough(s.f18()->FallbackAdvanceX, s.f18()->FallbackGlyph->AdvanceX, 0.01f));
         // Its ascent and a glyph's box too.
-        RTF_ASSERT(near(s.f18()->Ascent, one.f18()->Ascent, 1.0f));
+        RTF_ASSERT(near_enough(s.f18()->Ascent, one.f18()->Ascent, 1.0f));
         const ImFontGlyph* h1 = one.f18()->FindGlyph('H');
         const ImFontGlyph* hs = s.f18()->FindGlyph('H');
-        RTF_ASSERT(near(hs->Y1 - hs->Y0, h1->Y1 - h1->Y0, 1.0f));
-        RTF_ASSERT(near(hs->AdvanceX, h1->AdvanceX, 0.5f));
+        RTF_ASSERT(near_enough(hs->Y1 - hs->Y0, h1->Y1 - h1->Y0, 1.0f));
+        RTF_ASSERT(near_enough(hs->AdvanceX, h1->AdvanceX, 0.5f));
     }
 }
 
@@ -85,7 +86,7 @@ void test_font_scale::test_glyphs_have_the_displays_pixels()
     const float h1 = one.texels_high('H');
     const float h2 = two.texels_high('H');
     RTF_ASSERT(h1 > 0.0f);
-    RTF_ASSERT(near(h2, 2.0f * h1, 2.0f));
+    RTF_ASSERT(near_enough(h2, 2.0f * h1, 2.0f));
 }
 
 void test_font_scale::test_scale_1_is_as_before()
