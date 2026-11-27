@@ -766,12 +766,13 @@ void r_stream_keeper::_tier_tick()
 
     // Each camera's setting, saved verification and subscription state,
     // gathered before the lock.
-    struct fact { string id; string setting; int subscription; int saved_verified; };  // subscription: -1 none, 0 down, 1 up
+    struct fact { string id; string setting; int subscription; int saved_verified; bool doorbell; };  // subscription: -1 none, 0 down, 1 up
     vector<fact> facts;
     for(auto& s : streams)
     {
-        fact f {s.first, string(), -1, 0};
+        fact f {s.first, string(), -1, 0, false};
         auto c = _devices.get_camera_by_id(s.first);
+        f.doorbell = !c.is_null() && r_disco::camera_kind(c.value()) == "doorbell";
         if(!c.is_null() && !c.value().motion_tier.is_null())
             f.setting = c.value().motion_tier.value();
         if(!c.is_null() && !c.value().motion_tier_verified.is_null())
@@ -794,6 +795,7 @@ void r_stream_keeper::_tier_tick()
             if(_tiers_restored.insert(f.id).second)
                 _tiers.restore(f.id, f.saved_verified, now);
             _tiers.set_setting(f.id, f.setting);
+            _tiers.set_doorbell(f.id, f.doorbell);
             if(f.subscription >= 0)
                 _tiers.subscription(f.id, f.subscription == 1, now);
         }
