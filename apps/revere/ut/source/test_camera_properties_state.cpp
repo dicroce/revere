@@ -302,3 +302,35 @@ void test_camera_properties_state::test_a_tab_scrolls_to_its_section()
     RTF_ASSERT(n.jump == -1);
 }
 
+
+void test_camera_properties_state::test_a_clicked_tab_stays_marked_until_the_user_scrolls()
+{
+    // The last section can't reach the top (the content scrolls to 500 only), so it would else lose the mark.
+    auto n = drawn({{"Recording", 4.0f}, {"Detection", 300.0f}, {"Streams", 450.0f}, {"Doorbell", 900.0f}});
+    n.observe(0.0f, 500.0f);
+    RTF_ASSERT(n.active() == 0);
+    // Streams is clicked: it is marked at once, though the scroll that follows (to 450) leaves Detection nearer the top
+    // for a content that stops at 400.
+    n.observe(0.0f, 400.0f);
+    n.pin(2);
+    RTF_ASSERT(n.jump == 2 && n.active() == 2);
+    // The scroll settles over a few frames, and the mark stays.
+    for(float y : {0.0f, 150.0f, 400.0f, 400.0f, 400.0f, 400.0f})
+    {
+        n.observe(y, 400.0f);
+        RTF_ASSERT(n.active() == 2);
+    }
+    // The user scrolls: back to what is in view.
+    n.observe(200.0f, 400.0f);
+    RTF_ASSERT(n.pinned == -1);
+    RTF_ASSERT(n.active() == 0);
+    // A new frame set without that tab drops the pin; opening another camera starts over.
+    n.pin(3);
+    n.begin_frame();
+    n.add("Recording", 4.0f);
+    n.end_frame();
+    RTF_ASSERT(n.pinned == -1);
+    n.pin(0);
+    n.reset();
+    RTF_ASSERT(n.pinned == -1 && n.jump == -1);
+}

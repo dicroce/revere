@@ -334,7 +334,7 @@ import PluginsSection from './PluginsSection.vue'
 import { doorbellChoice } from '../utils/cameraKind.js'
 import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, mailSetupRows, inGroupsOf4, mailSetupError } from '../utils/doorbellSetup.js'
 import { unsaved } from '../utils/unsaved.js'
-import { activeSection, sameTabs } from '../utils/propsSections.js'
+import { activeSection, sameTabs, isScrollKey } from '../utils/propsSections.js'
 
 const cameras = ref([])
 const error = ref(null)
@@ -358,6 +358,9 @@ const propsTarget = ref(null)
 // the one in view (the sticky row is as tall as PROPS_TABS_LEAD says, with a little room).
 const propsTabs = ref([])
 const propsActiveTab = ref(null)
+// The clicked link, kept marked until the user scrolls: a section too near the end of the page to reach the top would
+// else lose the mark to its neighbour.
+let propsPinned = null
 const PROPS_TABS_LEAD = 72
 function readPropsTabs() {
   if (!propsTarget.value) {
@@ -376,6 +379,11 @@ function updateActiveTab() {
     .map(t => ({ id: t.id, el: document.getElementById(t.id) }))
     .filter(h => h.el)
     .map(h => ({ id: h.id, top: h.el.getBoundingClientRect().top }))
+  if (propsPinned && propsTabs.value.some(t => t.id === propsPinned)) {
+    propsActiveTab.value = propsPinned
+    return
+  }
+  propsPinned = null
   const atBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2
   propsActiveTab.value = activeSection(headings, PROPS_TABS_LEAD, atBottom && window.scrollY > 0)
 }
@@ -384,14 +392,29 @@ function goToSection(id) {
   if (!el) return
   const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
   el.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' })
+  propsPinned = id
   propsActiveTab.value = id
 }
+// The user scrolling (the wheel, a touch, a scroll key, the scroll bar) ends it; the smooth scroll to a link doesn't.
+function userScrolled(e) {
+  if (e.type === 'keydown' && !isScrollKey(e.key)) return
+  if (e.type === 'mousedown' && e.target !== document.documentElement) return
+  propsPinned = null
+  updateActiveTab()
+}
+const USER_SCROLL_EVENTS = ['wheel', 'touchmove', 'keydown', 'mousedown']
 // The sections are as the page has them once it has drawn: when the pane opens, and after each later update (a
 // section that shows only for some cameras, or while a switch is on).
-watch(propsTarget, async () => { await nextTick(); readPropsTabs() })
+watch(propsTarget, async () => { propsPinned = null; await nextTick(); readPropsTabs() })
 onUpdated(readPropsTabs)
-onMounted(() => window.addEventListener('scroll', updateActiveTab, { passive: true }))
-onUnmounted(() => window.removeEventListener('scroll', updateActiveTab))
+onMounted(() => {
+  window.addEventListener('scroll', updateActiveTab, { passive: true })
+  for (const t of USER_SCROLL_EVENTS) window.addEventListener(t, userScrolled, { passive: true })
+})
+onUnmounted(() => {
+  window.removeEventListener('scroll', updateActiveTab)
+  for (const t of USER_SCROLL_EVENTS) window.removeEventListener(t, userScrolled)
+})
 const propsDoorbell = ref(false)
 // A doorbell's press source ("onvif" or "reolink_email"), and what the Doorbell section shows about its presses
 // (read every 2 s while it shows; reading changes nothing on the camera, so it's never an unsaved change).

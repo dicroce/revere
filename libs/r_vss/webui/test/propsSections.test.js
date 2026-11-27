@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { activeSection, sameTabs } from '../src/utils/propsSections.js'
+import { activeSection, sameTabs, isScrollKey } from '../src/utils/propsSections.js'
 
 const page = (...tops) => tops.map((top, i) => ({ id: `s${i}`, top }))
 
@@ -29,4 +29,9 @@ test('the same tabs are the same ids and titles in the same order', () => {
   assert.equal(sameTabs(t, [t[1], t[0]]), false)
   assert.equal(sameTabs(t, [{ id: 'a', title: 'Recording' }, { id: 'b', title: 'Doorbell' }]), false)
   assert.equal(sameTabs([], []), true)
+})
+
+test('the keys that scroll the page', () => {
+  for (const k of ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']) assert.equal(isScrollKey(k), true, k)
+  for (const k of ['Tab', 'Enter', 'a', 'Shift', 'ArrowLeft', 'Escape']) assert.equal(isScrollKey(k), false, k)
 })

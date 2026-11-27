@@ -87,12 +87,14 @@ camera_properties_result camera_properties_pane(
     const bool dirty = session.dirty(is_doorbell, do_motion_detection, do_motion_pruning, motion_tier, rtsp_transport, streams_changed, press_source);
 
     // The row of tabs, one per section, above the sections and so fixed while they scroll: a click scrolls to that
-    // section, and the one in view is marked. The sections report where they start as they're drawn (properties_nav),
+    // section and marks it until the user scrolls, and the one in view is marked. The sections report where they start as they're drawn (properties_nav),
     // so the row is the last frame's; the row's room is kept before there is one.
     {
         const int active = session.nav.active();
         ImGui::PushFont(main_window_detail::font(g_dialog_fonts.key_18, true));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, 6.0f));
+        // Links, not buttons: no box around them.
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
         ImGui::PushStyleColor(ImGuiCol_Button, with_alpha(surface_raised, 0.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, with_alpha(surface_raised, 0.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, with_alpha(surface_raised, 0.0f));
@@ -107,7 +109,7 @@ camera_properties_result camera_properties_pane(
             ImGui::PushStyleColor(ImGuiCol_Text, here ? text_primary : text_tertiary);
             const std::string label = session.nav.titles[i] + "##section_tab_" + std::to_string(i);
             if(ImGui::Button(label.c_str()))
-                session.nav.jump = (int)i;
+                session.nav.pin((int)i);
             ImGui::PopStyleColor();
             const bool hovered = ImGui::IsItemHovered();
             if(hovered)
@@ -121,7 +123,7 @@ camera_properties_result camera_properties_pane(
             }
         }
         ImGui::PopStyleColor(3);
-        ImGui::PopStyleVar();
+        ImGui::PopStyleVar(2);
         ImGui::PopFont();
     }
 
@@ -458,8 +460,7 @@ camera_properties_result camera_properties_pane(
     }
     ImGui::PopFont();
     session.nav.end_frame();
-    session.nav.scroll_y = ImGui::GetScrollY();
-    session.nav.scroll_max = ImGui::GetScrollMaxY();
+    session.nav.observe(ImGui::GetScrollY(), ImGui::GetScrollMaxY());
     ImGui::EndChild();
 
     // Fixed at the bottom while the sections scroll, at the right of the sections' column. Save waits for a change,

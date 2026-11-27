@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
@@ -22,9 +23,39 @@ struct properties_nav
     std::vector<float> tops;
     // A tab was clicked: the section to scroll to on the next draw, or -1.
     int jump {-1};
+    // The clicked tab, kept marked until the user scrolls (a section too near the end to reach the top would else lose
+    // the mark to the one before it, or after), or -1. The scroll settles over the frames after the click (pin_y follows
+    // it, settle counts them); a scroll beyond that unpins.
+    int pinned {-1};
+    float pin_y {0.0f};
+    int settle {0};
     // The sections' scroll, as of the last draw.
     float scroll_y {0.0f};
     float scroll_max {0.0f};
+
+    // A tab was clicked: scroll to its section and mark it.
+    void pin(int i)
+    {
+        jump = i;
+        pinned = i;
+        settle = 4;
+        pin_y = scroll_y;
+    }
+    // The sections' scroll at the end of a draw.
+    void observe(float y, float max)
+    {
+        scroll_y = y;
+        scroll_max = max;
+        if(pinned < 0)
+            return;
+        if(settle > 0)
+        {
+            --settle;
+            pin_y = y;
+        }
+        else if(std::fabs(y - pin_y) > 1.5f)
+            pinned = -1;
+    }
 
     void begin_frame()
     {
@@ -43,6 +74,8 @@ struct properties_nav
         tops = drawing_tops;
         if(jump >= (int)tops.size())
             jump = -1;
+        if(pinned >= (int)tops.size())
+            pinned = -1;
     }
     void reset()
     {
@@ -51,14 +84,18 @@ struct properties_nav
         drawing_titles.clear();
         drawing_tops.clear();
         jump = -1;
-        scroll_y = scroll_max = 0.0f;
+        pinned = -1;
+        settle = 0;
+        pin_y = scroll_y = scroll_max = 0.0f;
     }
-    // The section in view: the last one that has reached the top (within `lead` of it), the last when scrolled to the
+    // The section in view (the clicked tab until the user scrolls): the last one that has reached the top (within `lead` of it), the last when scrolled to the
     // bottom (a short last section never gets to the top), -1 with no sections.
     int active() const
     {
         if(tops.empty())
             return -1;
+        if(pinned >= 0 && pinned < (int)tops.size())
+            return pinned;
         if(scroll_max > 1.0f && scroll_y >= scroll_max - 1.0f)
             return (int)tops.size() - 1;
         constexpr float lead = 24.0f;

@@ -16,3 +16,8 @@ export function activeSection(headings, lead, atBottom) {
 export function sameTabs(a, b) {
   return a.length === b.length && a.every((t, i) => t.id === b[i].id && t.title === b[i].title)
 }
+
+// Whether a key scrolls the page, so pressing it is the user scrolling (the clicked section link stops being kept marked).
+export function isScrollKey(key) {
+  return ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(key)
+}
