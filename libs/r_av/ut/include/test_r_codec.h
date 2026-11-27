@@ -32,6 +32,8 @@ public:
       TEST(test_r_codec::test_a_forced_key_frame_is_an_idr);
       TEST(test_r_codec::test_a_forced_key_frame_is_an_idr_in_hardware);
       TEST(test_r_codec::test_a_moved_encoder_keeps_a_forced_key_frame);
+      TEST(test_r_codec::test_a_picture_keeps_its_input_pts);
+      TEST(test_r_codec::test_a_picture_keeps_its_input_pts_in_hardware);
     RTF_FIXTURE_END();
 
     virtual ~test_r_codec() throw() {}
@@ -66,4 +68,6 @@ public:
     void test_a_forced_key_frame_is_an_idr();
     void test_a_forced_key_frame_is_an_idr_in_hardware();
     void test_a_moved_encoder_keeps_a_forced_key_frame();
+    void test_a_picture_keeps_its_input_pts();
+    void test_a_picture_keeps_its_input_pts_in_hardware();
 };

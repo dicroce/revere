@@ -1330,3 +1330,100 @@ void test_r_codec::test_a_moved_encoder_keeps_a_forced_key_frame()
     for(auto& o : out)
         RTF_ASSERT(o.second == (o.first == 0 || o.first == 6 || o.first == 9));
 }
+
+namespace
+{
+
+// 30 uniform 320x240 pictures, each a grey of its own (40 + 5 * i), a key frame every 10, decoded with pts 1000 + 33 * i
+// through `accel` (splitting its input with FFmpeg's parser when `parse`); packet 5 is replaced with one the decoder can't use. Each picture out is checked against the grey of
+// the input its pts names: a decoder that drops a picture mustn't shift the later ones onto earlier inputs' pts.
+void check_pictures_keep_their_pts(r_hw_accel accel, bool parse = false)
+{
+    const uint16_t w = 320, h = 240;
+    auto grey = [](int i) { return 40 + 5 * i; };
+    r_video_encoder enc(AV_CODEC_ID_H264, 500000, w, h, AVRational{15, 1}, AV_PIX_FMT_YUV420P, 0, 10,
+                        AV_PROFILE_H264_MAIN, 31, "veryfast", "zerolatency");
+    vector<vector<uint8_t>> packets;
+    auto take = [&](r_codec_state st) {
+        if(st != R_CODEC_STATE_HAS_OUTPUT)
+            return false;
+        auto pi = enc.get();
+        packets.emplace_back(pi.data, pi.data + pi.size);
+        return true;
+    };
+    vector<uint8_t> picture(w * h * 3 / 2);
+    for(int i = 0; i < 30; ++i)
+    {
+        std::fill(picture.begin(), picture.begin() + w * h, (uint8_t)grey(i));
+        std::fill(picture.begin() + w * h, picture.end(), (uint8_t)128);
+        enc.attach_buffer(picture.data(), picture.size(), i);
+        while(take(enc.encode()))
+            ;
+    }
+    while(take(enc.flush()))
+        ;
+    RTF_ASSERT(packets.size() == 30);
+    packets[5] = {0, 0, 0, 1, 0x41, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+    r_video_decoder dec(AV_CODEC_ID_H264, accel, parse);
+    dec.set_extradata(enc.get_extradata());
+    vector<pair<int64_t, int>> out;   // (pts, mean luma)
+    auto picture_out = [&] {
+        auto p = dec.get(AV_PIX_FMT_YUV420P, w, h, 1);
+        RTF_ASSERT(p && p->size() >= (size_t)w * h);
+        long sum = 0;
+        for(size_t j = 0; j < (size_t)w * h; ++j)
+            sum += (*p)[j];
+        out.emplace_back(dec.output_pts(), (int)(sum / ((long)w * h)));
+    };
+    for(int i = 0; i < 30; ++i)
+    {
+        dec.attach_buffer(packets[i].data(), packets[i].size(), 1000 + 33 * i);
+        for(int calls = 0; calls < 8; ++calls)
+        {
+            auto st = dec.decode();
+            if(st != R_CODEC_STATE_HAS_OUTPUT && st != R_CODEC_STATE_AGAIN_HAS_OUTPUT)
+                break;
+            picture_out();
+        }
+    }
+    while(dec.flush() == R_CODEC_STATE_HAS_OUTPUT)
+        picture_out();
+
+    // The pictures from each key frame on are there (10 and 20 at least); the bad packet gave none.
+    RTF_ASSERT(out.size() >= 20);
+    int64_t last = -1;
+    for(auto& o : out)
+    {
+        RTF_ASSERT(o.first >= 1000 && (o.first - 1000) % 33 == 0);
+        const int i = (int)((o.first - 1000) / 33);
+        RTF_ASSERT(i >= 0 && i < 30 && i != 5);
+        RTF_ASSERT(o.first > last);
+        last = o.first;
+        // Pictures after the bad packet refer to the one it replaced, so only the key frames' are sure to be exact.
+        if(i % 10 == 0 || i < 5)
+            RTF_ASSERT(abs(o.second - grey(i)) <= 3);
+    }
+    auto has = [&](int i) { return std::any_of(out.begin(), out.end(), [&](auto& o) { return o.first == 1000 + 33 * i; }); };
+    RTF_ASSERT(has(0) && has(10) && has(20));
+    // The parser holds the last picture's data until more comes (it waits for the next start code).
+    RTF_ASSERT(parse || has(29));
+}
+
+}
+
+void test_r_codec::test_a_picture_keeps_its_input_pts()
+{
+    check_pictures_keep_their_pts(r_hw_accel::none);
+    check_pictures_keep_their_pts(r_hw_accel::none, true);
+}
+
+// The same through this machine's hardware decoder, where there is one: VideoToolbox also holds pictures back after a
+// lost frame (r_video_decoder's gap guard).
+void test_r_codec::test_a_picture_keeps_its_input_pts_in_hardware()
+{
+    const auto accel = r_find_best_hw_accel(AV_CODEC_ID_H264);
+    if(accel == r_hw_accel::none)
+        return;
+    check_pictures_keep_their_pts(accel);
+}

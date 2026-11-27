@@ -264,6 +264,7 @@ r_video_decoder::r_video_decoder(r_video_decoder&& obj) :
     _buffer_size(std::move(obj._buffer_size)),
     _pos(std::move(obj._pos)),
     _remaining_size(std::move(obj._remaining_size)),
+    _pts(obj._pts),
     _frame(std::move(obj._frame)),
     _sw_frame(std::move(obj._sw_frame)),
     _hw_device_ctx(std::move(obj._hw_device_ctx)),
@@ -322,6 +323,7 @@ r_video_decoder& r_video_decoder::operator=(r_video_decoder&& obj)
         _pos = std::move(obj._pos);
         obj._pos = nullptr;
         _remaining_size = std::move(obj._remaining_size);
+        _pts = obj._pts;
         _frame = std::move(obj._frame);
         obj._frame = nullptr;
         _sw_frame = std::move(obj._sw_frame);
@@ -424,8 +426,9 @@ void r_video_decoder::_open_codec()
     _codec_opened = true;
 }
 
-void r_video_decoder::attach_buffer(const uint8_t* data, size_t size)
+void r_video_decoder::attach_buffer(const uint8_t* data, size_t size, int64_t pts)
 {
+    _pts = pts;
     // FFmpeg reads up to AV_INPUT_BUFFER_PADDING_SIZE bytes past the end of
     // its input (the bitstream reader and the parser read ahead in words). A
     // caller's buffer usually ends exactly at its data: a stored key frame in
@@ -481,7 +484,7 @@ r_codec_state r_video_decoder::decode()
             &out_size,
             _pos,
             _remaining_size,
-            AV_NOPTS_VALUE,
+            _pts,
             AV_NOPTS_VALUE,
             0
         );
@@ -505,12 +508,14 @@ r_codec_state r_video_decoder::decode()
 
         packet->data = out_data;
         packet->size = out_size;
+        packet->pts = _parser->pts;
     }
     else
     {
         // Direct mode - send buffer as-is
         packet->data = const_cast<uint8_t*>(_pos);
         packet->size = _remaining_size;
+        packet->pts = _pts;
     }
 
     // Send the packet to the decoder
@@ -687,6 +692,11 @@ r_codec_state r_video_decoder::_flush_receive()
     }
 }
 
+int64_t r_video_decoder::output_pts() const
+{
+    return _frame ? _frame->pts : AV_NOPTS_VALUE;
+}
+
 shared_ptr<vector<uint8_t>> r_video_decoder::get(AVPixelFormat output_format, uint16_t output_width, uint16_t output_height, int alignment)
 {
     // A hardware decoder's frame stays on the GPU until it is asked for: the
@@ -698,6 +708,8 @@ shared_ptr<vector<uint8_t>> r_video_decoder::get(AVPixelFormat output_format, ui
         int tr = av_hwframe_transfer_data(_sw_frame, _frame, 0);
         if(tr < 0)
             R_THROW(("Failed to transfer hw frame to cpu: %s", _ff_rc_to_msg(tr).c_str()));
+        // The transfer copies only the picture: its pts (output_pts()) and the rest come across too.
+        av_frame_copy_props(_sw_frame, _frame);
         av_frame_unref(_frame);
         av_frame_move_ref(_frame, _sw_frame);
     }

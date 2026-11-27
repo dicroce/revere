@@ -61,12 +61,19 @@ public:
 
     R_API void set_extradata(const std::vector<uint8_t>& ed);
 
-    R_API void attach_buffer(const uint8_t* data, size_t size);
+    // pts goes with the data to the picture decoded from it (output_pts()), in whatever units the caller likes. A
+    // picture is matched to its own input this way even when the decoder drops one (a packet it can't decode, or a
+    // picture held back after lost frames), where counting inputs would put every later picture one input early.
+    R_API void attach_buffer(const uint8_t* data, size_t size, int64_t pts = AV_NOPTS_VALUE);
 
     R_API r_codec_state decode();
     R_API r_codec_state flush();
 
     R_API std::shared_ptr<std::vector<uint8_t>> get(AVPixelFormat output_format, uint16_t output_width, uint16_t output_height, int alignment = 32);
+
+    // The pts attach_buffer was given with the input of the picture decode() or flush() last gave; AV_NOPTS_VALUE if
+    // it was given none.
+    R_API int64_t output_pts() const;
 
     R_API uint16_t input_width() const;
     R_API uint16_t input_height() const;
@@ -99,6 +106,7 @@ private:
     size_t _buffer_size;
     const uint8_t* _pos;
     int _remaining_size;
+    int64_t _pts {AV_NOPTS_VALUE};   // attach_buffer's, for the packet sent from it
     AVFrame* _frame;
     AVFrame* _sw_frame;        // staging frame for hw->cpu transfer
     AVBufferRef* _hw_device_ctx;
