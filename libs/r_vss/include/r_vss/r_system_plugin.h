@@ -250,6 +250,8 @@ typedef struct r_system_plugin_host_api
     int (*get_pressure)(void* host, char* buf, size_t capacity);
 
     // Version 3: what plugins say about themselves, for screens beyond revere's own panel (the cloud's app and portal).
+    // A plugin checks that api->struct_size covers each of these three before calling it (offsetof + sizeof), not the
+    // version number: a newer host's table only ever grows.
     //
     // set_plugin_state: the plugin hands revere its whole state, a JSON object, on every change; it replaces the last
     // one. Returns 0, or -1 when the text isn't a JSON object or is over 256 KB (the last state then stays). The same
