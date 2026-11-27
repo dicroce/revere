@@ -236,7 +236,8 @@ typedef struct r_system_plugin_host_api
     //    "signals": [{"id": "motion_drop", "state": "unknown|ok|elevated|high"}, ...],
     //    "cpu": 0.62, "cpu_p95_24h": 0.71, "cores": 8, "hw_sessions": {"used": 1, "limit": 3}}
     // cpu and cpu_p95_24h are null until known; hw_sessions is null when revere has no count of them (a signal that is
-    // unknown never raises the level and never has a reason). A plugin checks version >= 3 before calling it.
+    // unknown never raises the level and never has a reason). A plugin checks that api->struct_size covers
+    // this field (offsetof + sizeof) before calling it: a newer host's table only ever grows.
     int (*get_pressure)(void* host, char* buf, size_t capacity);
 } r_system_plugin_host_api;
 
