@@ -15,6 +15,9 @@ public:
       TEST(test_camera_properties_state::test_the_mail_status_lines);
       TEST(test_camera_properties_state::test_a_password_in_groups_of_4);
       TEST(test_camera_properties_state::test_the_mail_setup_rows);
+      TEST(test_camera_properties_state::test_the_column_width);
+      TEST(test_camera_properties_state::test_a_button_beside_its_text);
+      TEST(test_camera_properties_state::test_the_label_column);
     RTF_FIXTURE_END();
 
     virtual ~test_camera_properties_state() throw() {}
@@ -33,4 +36,7 @@ public:
     void test_the_mail_status_lines();
     void test_a_password_in_groups_of_4();
     void test_the_mail_setup_rows();
+    void test_the_column_width();
+    void test_a_button_beside_its_text();
+    void test_the_label_column();
 };
