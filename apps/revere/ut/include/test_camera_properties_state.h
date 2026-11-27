@@ -18,6 +18,10 @@ public:
       TEST(test_camera_properties_state::test_the_column_width);
       TEST(test_camera_properties_state::test_a_button_beside_its_text);
       TEST(test_camera_properties_state::test_the_label_column);
+      TEST(test_camera_properties_state::test_the_section_tabs_are_the_sections_drawn);
+      TEST(test_camera_properties_state::test_the_section_in_view);
+      TEST(test_camera_properties_state::test_a_tab_scrolls_to_its_section);
+      TEST(test_camera_properties_state::test_a_clicked_tab_stays_marked_until_the_user_scrolls);
     RTF_FIXTURE_END();
 
     virtual ~test_camera_properties_state() throw() {}
@@ -39,4 +43,8 @@ public:
     void test_the_column_width();
     void test_a_button_beside_its_text();
     void test_the_label_column();
+    void test_the_section_tabs_are_the_sections_drawn();
+    void test_the_section_in_view();
+    void test_a_tab_scrolls_to_its_section();
+    void test_a_clicked_tab_stays_marked_until_the_user_scrolls();
 };

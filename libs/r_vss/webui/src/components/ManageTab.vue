@@ -128,6 +128,19 @@
         <p class="cam-title">Camera properties</p>
       </header>
 
+      <!-- One link per section below, read from the page (so a section added there has its link): stays at the top while
+           the sections scroll, and marks the one in view -->
+      <nav v-if="propsTabs.length" class="props-tabs" aria-label="Sections">
+        <a
+          v-for="t in propsTabs"
+          :key="t.id"
+          :href="'#' + t.id"
+          :class="{ on: t.id === propsActiveTab }"
+          :aria-current="t.id === propsActiveTab ? 'location' : undefined"
+          @click.prevent="goToSection(t.id)"
+        >{{ t.title }}</a>
+      </nav>
+
       <div class="props-sections">
         <h4 class="section">Recording</h4>
         <div class="props-section">
@@ -308,7 +321,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUpdated, onUnmounted } from 'vue'
 import {
   isAuthed, getCameras, getDiscoveryStatus,
   removeCamera, updateCameraProperties, forgetCamera, addRtspCamera,
@@ -321,6 +334,7 @@ import PluginsSection from './PluginsSection.vue'
 import { doorbellChoice } from '../utils/cameraKind.js'
 import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, mailSetupRows, inGroupsOf4, mailSetupError } from '../utils/doorbellSetup.js'
 import { unsaved } from '../utils/unsaved.js'
+import { activeSection, sameTabs, isScrollKey } from '../utils/propsSections.js'
 
 const cameras = ref([])
 const error = ref(null)
@@ -340,6 +354,67 @@ const removeBusy = ref(false)
 const removeError = ref('')
 
 const propsTarget = ref(null)
+// The properties page's row of section links: one per section heading on the page, read from it (readPropsTabs), and
+// the one in view (the sticky row is as tall as PROPS_TABS_LEAD says, with a little room).
+const propsTabs = ref([])
+const propsActiveTab = ref(null)
+// The clicked link, kept marked until the user scrolls: a section too near the end of the page to reach the top would
+// else lose the mark to its neighbour.
+let propsPinned = null
+const PROPS_TABS_LEAD = 72
+function readPropsTabs() {
+  if (!propsTarget.value) {
+    if (propsTabs.value.length) propsTabs.value = []
+    return
+  }
+  const found = [...document.querySelectorAll('.props-sections > h4.section')].map((h, i) => {
+    h.id = `props-section-${i}`
+    return { id: h.id, title: h.textContent.trim() }
+  })
+  if (!sameTabs(found, propsTabs.value)) propsTabs.value = found
+  updateActiveTab()
+}
+function updateActiveTab() {
+  const headings = propsTabs.value
+    .map(t => ({ id: t.id, el: document.getElementById(t.id) }))
+    .filter(h => h.el)
+    .map(h => ({ id: h.id, top: h.el.getBoundingClientRect().top }))
+  if (propsPinned && propsTabs.value.some(t => t.id === propsPinned)) {
+    propsActiveTab.value = propsPinned
+    return
+  }
+  propsPinned = null
+  const atBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2
+  propsActiveTab.value = activeSection(headings, PROPS_TABS_LEAD, atBottom && window.scrollY > 0)
+}
+function goToSection(id) {
+  const el = document.getElementById(id)
+  if (!el) return
+  const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  el.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' })
+  propsPinned = id
+  propsActiveTab.value = id
+}
+// The user scrolling (the wheel, a touch, a scroll key, the scroll bar) ends it; the smooth scroll to a link doesn't.
+function userScrolled(e) {
+  if (e.type === 'keydown' && !isScrollKey(e.key)) return
+  if (e.type === 'mousedown' && e.target !== document.documentElement) return
+  propsPinned = null
+  updateActiveTab()
+}
+const USER_SCROLL_EVENTS = ['wheel', 'touchmove', 'keydown', 'mousedown']
+// The sections are as the page has them once it has drawn: when the pane opens, and after each later update (a
+// section that shows only for some cameras, or while a switch is on).
+watch(propsTarget, async () => { propsPinned = null; await nextTick(); readPropsTabs() })
+onUpdated(readPropsTabs)
+onMounted(() => {
+  window.addEventListener('scroll', updateActiveTab, { passive: true })
+  for (const t of USER_SCROLL_EVENTS) window.addEventListener(t, userScrolled, { passive: true })
+})
+onUnmounted(() => {
+  window.removeEventListener('scroll', updateActiveTab)
+  for (const t of USER_SCROLL_EVENTS) window.removeEventListener(t, userScrolled)
+})
 const propsDoorbell = ref(false)
 // A doorbell's press source ("onvif" or "reolink_email"), and what the Doorbell section shows about its presses
 // (read every 2 s while it shows; reading changes nothing on the camera, so it's never an unsaved change).
@@ -867,6 +942,31 @@ button:disabled { cursor: default; opacity: 0.6; }
 .props-head h2 { font-size: 1.1rem; font-weight: 600; }
 .props-head .back { margin-bottom: 0.6rem; }
 .cam-title { font-size: 0.85rem; color: #aaa; margin-top: 0.2rem; }
+/* The row of section links: fixed at the top while the sections scroll, the one in view marked */
+.props-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  max-width: 46rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1.4rem;
+  padding: 0.5rem 0 0;
+  background: #0a0a0a;
+  border-bottom: 1px solid #262626;
+}
+.props-tabs a {
+  padding: 0.25rem 0 0.45rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #888;
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.props-tabs a:hover { color: #ddd; border-bottom-color: #444; }
+.props-tabs a.on { color: #f5f5f5; border-bottom-color: #4a90e2; }
+.props-tabs a:focus-visible { outline: 2px solid #4a90e2; outline-offset: 2px; }
 /* One column of sections, as wide as reads well: each a title over a card of rows with a line between them */
 .props-sections { display: flex; flex-direction: column; max-width: 46rem; min-width: 0; }
 .props-section {
@@ -922,6 +1022,7 @@ button:disabled { cursor: default; opacity: 0.6; }
 .props-pane .off, .props-pane .off .option, .props-pane .off .pill { cursor: default; }
 .props-pane .field.indent { margin-left: 1.5rem; font-size: 0.85rem; color: #bbb; flex-wrap: wrap; }
 .props-pane .section {
+  scroll-margin-top: 3.2rem;
   font-size: 0.8rem;
   font-weight: 600;
   text-transform: uppercase;

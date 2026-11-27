@@ -11,7 +11,8 @@
 // Sections: Recording (where the recording lives and the two storage operations), Detection (motion, what finds it,
 // pruning), Streams and connection (the smaller stream, TCP or UDP, the camera's clock) and Doorbell (whether the
 // device is one, how it reports a press, what to type in a Reolink doorbell's app, and its press test).
-// Another section is one more entry in `sections` below; room is left in Recording for "Record from".
+// Another section is one more `section(...)` call below, and gets its tab (the row of links above the sections, which
+// scroll to a section and mark the one in view); room is left in Recording for "Record from".
 
 namespace revere
 {
@@ -85,6 +86,47 @@ camera_properties_result camera_properties_pane(
         do_motion_pruning = false;
     const bool dirty = session.dirty(is_doorbell, do_motion_detection, do_motion_pruning, motion_tier, rtsp_transport, streams_changed, press_source);
 
+    // The row of tabs, one per section, above the sections and so fixed while they scroll: a click scrolls to that
+    // section and marks it until the user scrolls, and the one in view is marked. The sections report where they start as they're drawn (properties_nav),
+    // so the row is the last frame's; the row's room is kept before there is one.
+    {
+        const int active = session.nav.active();
+        ImGui::PushFont(main_window_detail::font(g_dialog_fonts.key_18, true));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, 6.0f));
+        // Links, not buttons: no box around them.
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, with_alpha(surface_raised, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, with_alpha(surface_raised, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, with_alpha(surface_raised, 0.0f));
+        const float row_h = ImGui::GetFrameHeight();
+        if(session.nav.titles.empty())
+            ImGui::Dummy(ImVec2(0.0f, row_h));
+        for(size_t i = 0; i < session.nav.titles.size(); ++i)
+        {
+            if(i > 0)
+                ImGui::SameLine(0.0f, 22.0f);
+            const bool here = (int)i == active;
+            ImGui::PushStyleColor(ImGuiCol_Text, here ? text_primary : text_tertiary);
+            const std::string label = session.nav.titles[i] + "##section_tab_" + std::to_string(i);
+            if(ImGui::Button(label.c_str()))
+                session.nav.pin((int)i);
+            ImGui::PopStyleColor();
+            const bool hovered = ImGui::IsItemHovered();
+            if(hovered)
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if(here || hovered)
+            {
+                const ImVec2 lo = ImGui::GetItemRectMin();
+                const ImVec2 hi = ImGui::GetItemRectMax();
+                ImGui::GetWindowDrawList()->AddLine(ImVec2(lo.x, hi.y - 1.0f), ImVec2(hi.x, hi.y - 1.0f),
+                                                    ImGui::GetColorU32(here ? accent : border_subtle), 2.0f);
+            }
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar(2);
+        ImGui::PopFont();
+    }
+
     // The sections' column, measured inside their scrolling child so a scroll bar doesn't cover the cards' right edge.
     float content_w = 0.0f;
     const float footer_h = 62.0f;
@@ -95,6 +137,13 @@ camera_properties_result camera_properties_pane(
     ImGui::PopStyleVar();
     // The detail pane's text (key_22, as a plugin's pane) with explanations in its smaller text (key_18, as the camera
     // pane's notes), not the app's default (key_24, the dialogs' size), which is a size larger than the pane around it.
+    // A tab was clicked: scroll to its section.
+    if(session.nav.jump >= 0)
+    {
+        ImGui::SetScrollY(session.nav.scroll_target(session.nav.jump));
+        session.nav.jump = -1;
+    }
+    session.nav.begin_frame();
     ImGui::PushFont(main_window_detail::font(g_dialog_fonts.key_22));
     content_w = std::floor(properties_content_width(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize()));
     {
@@ -103,6 +152,7 @@ camera_properties_result camera_properties_pane(
         const float pad = 16.0f;
         const float inner_w = std::max(160.0f, content_w - pad * 2.0f);
         auto section = [&](const char* title, auto&& rows) {
+            session.nav.add(title, ImGui::GetCursorPosY());
             ImGui::PushFont(main_window_detail::font(g_dialog_fonts.key_18, true));
             ImGui::TextColored(text_tertiary, "%s", main_window_detail::upper(title).c_str());
             ImGui::PopFont();
@@ -409,6 +459,8 @@ camera_properties_result camera_properties_pane(
         section("Doorbell", doorbell);
     }
     ImGui::PopFont();
+    session.nav.end_frame();
+    session.nav.observe(ImGui::GetScrollY(), ImGui::GetScrollMaxY());
     ImGui::EndChild();
 
     // Fixed at the bottom while the sections scroll, at the right of the sections' column. Save waits for a change,
