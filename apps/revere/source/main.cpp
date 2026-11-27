@@ -2108,6 +2108,25 @@ void _set_working_dir()
     r_fs::change_working_directory(wd);
 }
 
+// The window's pixels to a point on Windows, where SDL keeps the window in points (SDL_HINT_WINDOWS_DPI_SCALING) and
+// the renderer's output is in pixels: 1.5 at a 150% display scale. `last` while there's no size to read (minimized).
+// 1 elsewhere: macOS keeps its own Retina handling, and Linux isn't DPI-aware.
+static float _display_scale(SDL_Window* window, SDL_Renderer* renderer, float last)
+{
+#ifdef IS_WINDOWS
+    int w = 0, h = 0, pw = 0, ph = 0;
+    SDL_GetWindowSize(window, &w, &h);
+    if(w <= 0 || SDL_GetRendererOutputSize(renderer, &pw, &ph) != 0 || pw <= 0)
+        return last;
+    return r_ui_utils::display_scale(pw, w);
+#else
+    (void)window;
+    (void)renderer;
+    (void)last;
+    return 1.0f;
+#endif
+}
+
 void _set_adaptive_window_size(SDL_Window* window)
 {
     // Get display bounds (which excludes taskbars/menubars on some platforms)
@@ -2915,6 +2934,15 @@ int main(int argc, char** argv)
         return 0;
     }
 
+#ifdef IS_WINDOWS
+    // Per-monitor DPI aware (v2) rather than stretched by Windows, with SDL's window, mouse and display coordinates in
+    // points: the ImGui renderer draws them at the monitor's pixels, and the fonts are made at its scale
+    // (_display_scale), so text is sharp at any display scale and stays so on a monitor with another one. Set before
+    // SDL_Init, which declares the process's awareness.
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1");
+#endif
+
     // Setup SDL2
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
     {
@@ -3093,12 +3121,19 @@ int main(int argc, char** argv)
     const float FONT_SIZE_14 = 16.0f;
 #endif
 
-    r_ui_utils::load_fonts(io, FONT_SIZE_24, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_22, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_20, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_18, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_14, r_ui_utils::fonts);
-    io.FontDefault = r_ui_utils::fonts[r_string_utils::float_to_s(FONT_SIZE_24, 2)].inter_tight_regular;
+    // The fonts, made for the display's scale (1 but on Windows): again when the window reaches a monitor with
+    // another scale (see the frame loop).
+    auto load_ui_fonts = [&](float scale) {
+        io.Fonts->Clear();
+        r_ui_utils::fonts.clear();
+        for(float size : {FONT_SIZE_24, FONT_SIZE_22, FONT_SIZE_20, FONT_SIZE_18, FONT_SIZE_14})
+            r_ui_utils::load_fonts(io, size, scale, r_ui_utils::fonts);
+        r_ui_utils::build_fonts(io, scale);
+        io.FontDefault = r_ui_utils::fonts[r_string_utils::float_to_s(FONT_SIZE_24, 2)].inter_tight_regular;
+    };
+    float font_scale = _display_scale(window, renderer, 1.0f);
+    R_LOG_INFO("Display scale %.2f", font_scale);
+    load_ui_fonts(font_scale);
 
     // Generate font key strings for the loaded sizes
     auto FONT_KEY_24 = r_string_utils::float_to_s(FONT_SIZE_24, 2);
@@ -4084,6 +4119,20 @@ int main(int argc, char** argv)
 
         need_render = false;  // Reset for next iteration
 
+        // The window is on a monitor with another scale (moved, or the display's scale was changed): the fonts again,
+        // sharp at it. The renderer makes their texture again in its NewFrame.
+        {
+            const float scale = _display_scale(window, renderer, font_scale);
+            if(scale != font_scale)
+            {
+                R_LOG_INFO("Display scale %.2f, was %.2f", scale, font_scale);
+                font_scale = scale;
+                ImGui_ImplSDLRenderer_DestroyFontsTexture();
+                load_ui_fonts(scale);
+                frame_skipper.invalidate();
+            }
+        }
+
         // Start the Dear ImGui frame
         ImGui_ImplSDLRenderer_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -4322,6 +4371,12 @@ int main(int argc, char** argv)
             (Uint8)(clear_color.z * 255),
             (Uint8)(clear_color.w * 255));
         SDL_RenderClear(renderer);
+
+#ifdef IS_WINDOWS
+        // Points to the window's pixels: this ImGui renderer doesn't scale its vertices itself, it leaves that to the
+        // SDL renderer's scale (macOS gets it from SDL_RenderSetLogicalSize).
+        SDL_RenderSetScale(renderer, ImGui::GetIO().DisplayFramebufferScale.x, ImGui::GetIO().DisplayFramebufferScale.y);
+#endif
 
         // Render ImGui
         ImGui_ImplSDLRenderer_RenderDrawData(ImGui::GetDrawData());
