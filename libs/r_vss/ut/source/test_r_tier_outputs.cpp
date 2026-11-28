@@ -500,6 +500,6 @@ void test_r_tier_outputs::test_pass_part_of_parked_vehicle()
     RTF_ASSERT(pass_learn(weak, _ps(T0, {}, {distant(0, T0)}, {distant(7, T0 + 80000)}, {})));
     RTF_ASSERT(pass_learn(weak, _ps(T0 + 1000, {}, {distant(-3, T0 + 1000)}, {distant(4, T0 + 81000)}, {})));
     RTF_ASSERT(weak.anchor_count("cats", T) == 1);
-    auto small = frame({_pd("car", 310, 205, 15, 12, T)});
-    RTF_ASSERT_EQUAL(pass_alert_now(weak, "cats", small, nullptr, &small).size(), (size_t)1);
+    auto small_car = frame({_pd("car", 310, 205, 15, 12, T)});
+    RTF_ASSERT_EQUAL(pass_alert_now(weak, "cats", small_car, nullptr, &small_car).size(), (size_t)1);
 }
