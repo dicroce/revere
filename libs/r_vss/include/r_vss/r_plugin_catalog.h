@@ -75,7 +75,7 @@ struct r_plugin_catalog
     std::vector<r_catalog_entry> plugins;
 
     // The entry with this id, or null.
-    const r_catalog_entry* find(const std::string& id) const;
+    R_API const r_catalog_entry* find(const std::string& id) const;
 };
 
 // The catalog in json. Throws r_invalid_argument_exception if it isn't one: not json,
