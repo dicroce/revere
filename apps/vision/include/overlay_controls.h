@@ -193,12 +193,16 @@ inline overlay_controls_result overlay_corner_controls(float win_w, float alpha,
     // hand so they fade with the strip like the buttons above.
     {
         ImVec2 p(r.x + pad + button + gap, r.y + pad + button);
+        const float box = 12.0f;
+        // The click target covers the box and its label only, so a click in the
+        // empty part of the row (under Keep on top and Close) doesn't toggle it.
+        const float hit_w = (std::min)(4.0f + box + 6.0f + ImGui::CalcTextSize("Denoise").x,
+                                       r.x + r.w - pad - p.x);
         ImGui::SetCursorScreenPos(p);
-        if(ImGui::InvisibleButton("##denoise", ImVec2(r.x + r.w - pad - p.x, denoise_row)))
+        if(ImGui::InvisibleButton("##denoise", ImVec2(hit_w, denoise_row)))
             denoise = !denoise;
         bool hovered = ImGui::IsItemHovered();
         auto* dl = ImGui::GetWindowDrawList();
-        const float box = 12.0f;
         const float cy = p.y + denoise_row * 0.5f;
         ImVec2 b0(p.x + 4.0f, cy - box * 0.5f), b1(b0.x + box, b0.y + box);
         if(denoise)
