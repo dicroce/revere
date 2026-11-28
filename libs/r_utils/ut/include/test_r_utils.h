@@ -43,6 +43,8 @@ public:
       TEST(test_r_utils::test_ssl_socket_connect_to_example_com);
       TEST(test_r_utils::test_ssl_socket_connect_to_google);
       TEST(test_r_utils::test_ssl_socket_certificate_validation);
+      TEST(test_r_utils::test_ssl_socket_accepts_verify_result);
+      TEST(test_r_utils::test_ssl_socket_still_refuses_bad_certificates);
       TEST(test_r_utils::test_ssl_socket_no_auth);
       TEST(test_r_utils::test_ssl_socket_destructor);
       TEST(test_r_utils::test_ssl_socket_send_recv);
@@ -170,6 +172,8 @@ public:
     void test_ssl_socket_connect_to_example_com();
     void test_ssl_socket_connect_to_google();
     void test_ssl_socket_certificate_validation();
+    void test_ssl_socket_accepts_verify_result();
+    void test_ssl_socket_still_refuses_bad_certificates();
     void test_ssl_socket_no_auth();
     void test_ssl_socket_destructor();
     void test_ssl_socket_send_recv();

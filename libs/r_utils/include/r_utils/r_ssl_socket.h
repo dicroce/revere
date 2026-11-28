@@ -18,6 +18,8 @@ extern "C" {
 #include "r_utils/r_socket.h"
 #include <string>
 #include <mutex>
+#include <functional>
+#include <cstdint>
 
 namespace r_utils {
 
@@ -59,6 +61,13 @@ public:
     // The underlying TCP socket, beneath TLS (as r_ssl_server_socket::get_sok_id()).
     inline sock_t get_sok_id() const { return _sok.get_sok_id(); }
 
+    // Whether a connection whose certificate was checked after the handshake (Windows, see start_tls) may go on:
+    // `flags` is mbedtls_ssl_get_verify_result(). Only a certificate that is good in every way but "its root is not
+    // one we hold" can be accepted, and only when the operating system, asked by os_trusts(), says it trusts the chain
+    // for the host. Anything else (expired, wrong name, self-signed with others, a weak algorithm, never verified) is
+    // refused. Public so it can be tested on every platform.
+    R_API static bool accepts_verify_result(uint32_t flags, const std::function<bool()>& os_trusts);
+
 private:
     // mbedtls' reads and writes of the connection (the context is the r_ssl_socket).
     static int _bio_send(void* ctx, const unsigned char* buf, size_t len);
@@ -75,6 +84,9 @@ private:
     std::string _host;
     mutable bool _valid;
     bool _plain {false};   // connected, TLS not started yet
+    // The certificate is checked after the handshake (mbedtls verifies in 'optional' mode and start_tls reads the result),
+    // because Windows fetches trusted roots on demand and the handshake can only see the ones already in its store.
+    bool _verify_after_handshake {false};
     uint64_t _ioTimeOut;
 };
 
