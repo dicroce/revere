@@ -30,6 +30,11 @@
 #include "r_utils/r_server_threaded.h"
 #include "r_utils/r_ssl_socket.h"
 #include "r_utils/r_ssl_server_socket.h"
+extern "C" {
+#include <mbedtls/ssl_ticket.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/entropy.h>
+}
 #include "r_utils/r_local_api_token.h"
 #include "r_utils/r_recorder_id.h"
 #include "r_utils/r_tls_fingerprint.h"
@@ -3087,12 +3092,60 @@ void test_r_utils::test_ssl_server_socket_roundtrip()
     RTF_ASSERT(server_error.empty());
 }
 
-void test_r_utils::test_ssl_socket_shutdown_wakes_a_read()
+namespace
 {
-    // Another thread wakes a TLS read in flight with shutdown(), never touching mbedtls; the reading thread closes the
-    // socket itself. (close() from another thread raced mbedtls_ssl_read.)
+
+// A TLS server's session tickets, for the test that has the server send them: how many it wrote is counted, so a
+// test can tell the server really sent one (with TLS 1.3 they follow the handshake).
+struct ticket_source
+{
+    mbedtls_ssl_ticket_context ctx;
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context drbg;
+    atomic<int> written {0};
+
+    ticket_source()
+    {
+        mbedtls_ssl_ticket_init(&ctx);
+        mbedtls_entropy_init(&entropy);
+        mbedtls_ctr_drbg_init(&drbg);
+        const char* pers = "ticket_source";
+        mbedtls_ctr_drbg_seed(&drbg, mbedtls_entropy_func, &entropy, (const unsigned char*)pers, strlen(pers));
+        mbedtls_ssl_ticket_setup(&ctx, mbedtls_ctr_drbg_random, &drbg, MBEDTLS_CIPHER_AES_256_GCM, 3600);
+    }
+    ~ticket_source()
+    {
+        mbedtls_ssl_ticket_free(&ctx);
+        mbedtls_ctr_drbg_free(&drbg);
+        mbedtls_entropy_free(&entropy);
+    }
+    static int write(void* p_ticket, const mbedtls_ssl_session* session, unsigned char* start, const unsigned char* end,
+                     size_t* tlen, uint32_t* lifetime)
+    {
+        auto* self = static_cast<ticket_source*>(p_ticket);
+        int ret = mbedtls_ssl_ticket_write(&self->ctx, session, start, end, tlen, lifetime);
+        if(ret == 0)
+            ++self->written;
+        return ret;
+    }
+    void install(mbedtls_ssl_config* conf)
+    {
+        mbedtls_ssl_conf_session_tickets_cb(conf, &ticket_source::write, mbedtls_ssl_ticket_parse, this);
+    }
+};
+
+// Another thread wakes a TLS read in flight with shutdown(), never touching mbedtls; the reading thread closes the
+// socket itself. (close() from another thread raced mbedtls_ssl_read.) With `tickets`, the server sends session tickets
+// after the handshake: the client's first read takes them in and then waits for more inside the same mbedtls_ssl_read,
+// the case that a wait done before the read does not cover.
+void _ssl_shutdown_wakes_a_read(bool tickets, int* tickets_written)
+{
     auto pems = r_ssl_server_config::generate_self_signed();
     auto cfg = make_shared<r_ssl_server_config>(pems.first, pems.second);
+    ticket_source source;
+    if(tickets)
+        source.install(cfg->conf());
+
     r_ssl_server_socket listener(cfg);
     // The next free test port (macOS's AirPlay receiver holds 5000).
     int port = 0;
@@ -3130,19 +3183,41 @@ void test_r_utils::test_ssl_socket_shutdown_wakes_a_read()
         client.close();                       // its own thread closes it
     });
     this_thread::sleep_for(chrono::milliseconds(300));
-    RTF_ASSERT(!returned);
+    const bool still_reading = !returned;
     auto t0 = chrono::steady_clock::now();
     client.shutdown();
     for (int i = 0; i < 200 && !returned; ++i)
         this_thread::sleep_for(chrono::milliseconds(10));
-    RTF_ASSERT(returned);
-    RTF_ASSERT(got <= 0);
-    RTF_ASSERT(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - t0).count() < 2000);
+    const bool woke = returned;
+    const auto woke_after_ms = chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - t0).count();
+    // Both threads are joined before anything is asserted: a read that isn't woken then fails the test (after the
+    // read's own timeout) instead of ending the program on a joinable thread.
     reader.join();
-    RTF_ASSERT(!client.valid());
-    client.shutdown();   // after close: nothing to do
     done = true;
     server.join();
+    RTF_ASSERT(still_reading);
+    RTF_ASSERT(woke);
+    RTF_ASSERT(got <= 0);
+    RTF_ASSERT(woke_after_ms < 2000);
+    RTF_ASSERT(!client.valid());
+    client.shutdown();   // after close: nothing to do
+    if(tickets_written)
+        *tickets_written = source.written;
+}
+
+}
+
+void test_r_utils::test_ssl_socket_shutdown_wakes_a_read()
+{
+    _ssl_shutdown_wakes_a_read(false, nullptr);
+}
+
+void test_r_utils::test_ssl_socket_shutdown_wakes_a_read_after_session_tickets()
+{
+    int written = 0;
+    _ssl_shutdown_wakes_a_read(true, &written);
+    // The server did send a ticket (the point of this run), so the read that was woken had taken one in.
+    RTF_ASSERT(written >= 1);
 }
 
 void test_r_utils::test_ssl_server_socket_rejects_plaintext_client()

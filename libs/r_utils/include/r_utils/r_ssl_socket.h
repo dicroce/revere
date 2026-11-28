@@ -60,6 +60,10 @@ public:
     inline sock_t get_sok_id() const { return _sok.get_sok_id(); }
 
 private:
+    // mbedtls' reads and writes of the connection (the context is the r_ssl_socket).
+    static int _bio_send(void* ctx, const unsigned char* buf, size_t len);
+    static int _bio_recv(void* ctx, unsigned char* buf, size_t len);
+
     r_raw_socket _sok;
 
     mutable mbedtls_ssl_context _ssl;

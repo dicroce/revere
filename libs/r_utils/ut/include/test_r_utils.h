@@ -65,6 +65,7 @@ public:
       TEST(test_r_utils::test_ssl_server_config_rejects_mismatched_key);
       TEST(test_r_utils::test_ssl_server_socket_roundtrip);
       TEST(test_r_utils::test_ssl_socket_shutdown_wakes_a_read);
+      TEST(test_r_utils::test_ssl_socket_shutdown_wakes_a_read_after_session_tickets);
       TEST(test_r_utils::test_ssl_server_socket_rejects_plaintext_client);
       TEST(test_r_utils::test_ssl_server_socket_threaded_server);
       TEST(test_r_utils::test_ssl_client_sees_server_fingerprint);
@@ -182,6 +183,7 @@ public:
     void test_ssl_server_config_rejects_mismatched_key();
     void test_ssl_server_socket_roundtrip();
     void test_ssl_socket_shutdown_wakes_a_read();
+    void test_ssl_socket_shutdown_wakes_a_read_after_session_tickets();
     void test_ssl_server_socket_rejects_plaintext_client();
     void test_ssl_server_socket_threaded_server();
     void test_ssl_client_sees_server_fingerprint();

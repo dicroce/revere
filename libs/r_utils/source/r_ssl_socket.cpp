@@ -22,9 +22,9 @@
 
 using namespace r_utils;
 
-static int _mbedtls_send(void* ctx, const unsigned char* buf, size_t len)
+int r_ssl_socket::_bio_send(void* ctx, const unsigned char* buf, size_t len)
 {
-    int ret = static_cast<r_raw_socket*>(ctx)->send(buf, len);
+    int ret = static_cast<r_ssl_socket*>(ctx)->_sok.send(buf, len);
     if (ret < 0)
     {
 #ifdef IS_WINDOWS
@@ -40,9 +40,20 @@ static int _mbedtls_send(void* ctx, const unsigned char* buf, size_t len)
     return ret;
 }
 
-static int _mbedtls_recv(void* ctx, unsigned char* buf, size_t len)
+int r_ssl_socket::_bio_recv(void* ctx, unsigned char* buf, size_t len)
 {
-    int ret = static_cast<r_raw_socket*>(ctx)->recv(buf, len);
+    auto* self = static_cast<r_ssl_socket*>(ctx);
+#ifdef IS_WINDOWS
+    // Every read of the connection waits first, with the socket's own wait, which a shutdown() from another thread
+    // ends (a blocking recv() isn't woken by it on Windows: it would wait out the whole timeout). It has to be here,
+    // under mbedtls_ssl_read(), and not before it: one read goes on to further records through this callback (the
+    // TLS 1.3 session tickets that follow the handshake, a HelloRequest, an empty record, a record still arriving).
+    // After a shutdown the wait answers at once and the recv() below sees the end.
+    uint64_t wait_ms = self->_ioTimeOut;
+    if (!self->_sok.wait_till_recv_wont_block(wait_ms))
+        return self->_sok.valid() ? MBEDTLS_ERR_SSL_WANT_READ : MBEDTLS_ERR_NET_RECV_FAILED;
+#endif
+    int ret = self->_sok.recv(buf, len);
     if (ret < 0)
     {
 #ifdef IS_WINDOWS
@@ -207,7 +218,7 @@ void r_ssl_socket::start_tls()
     _valid = false;
     _plain = false;
 
-    mbedtls_ssl_set_bio(&_ssl, &_sok, _mbedtls_send, _mbedtls_recv, nullptr);
+    mbedtls_ssl_set_bio(&_ssl, this, _bio_send, _bio_recv, nullptr);
 
     if (mbedtls_ssl_set_hostname(&_ssl, _host.c_str()) != 0)
         R_THROW(("mbedtls_ssl_set_hostname() failed"));
