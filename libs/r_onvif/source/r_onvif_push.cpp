@@ -275,7 +275,37 @@ size_t r_onvif_push_listener::rejected() const
     return _impl->rejected.load();
 }
 
-static void _reply(r_socket& conn, int status)
+// How long a reply waits for the rest of a request it didn't read, and how much of it it will take.
+static const int PUSH_DRAIN_MS = 500;
+static const size_t PUSH_DRAIN_MAX = 64 * 1024;
+
+// After a reply that leaves some of the client's request unread (a head cut short, a body refused): the connection is
+// closed for sending, and what the client is still sending is read and dropped, until it closes, the cap, or the time.
+// Closing a socket that has unread input makes the operating system send a reset, and on Windows the reset often
+// throws away the reply before the client reads it.
+static void _drain(r_socket& conn)
+{
+    ::shutdown(conn.get_sok_id(), SOCKET_SHUT_SEND_FLAGS);
+    const auto until = steady_clock::now() + milliseconds(PUSH_DRAIN_MS);
+    size_t total = 0;
+    char buf[4096];
+    while (total < PUSH_DRAIN_MAX)
+    {
+        auto left = duration_cast<milliseconds>(until - steady_clock::now()).count();
+        if (left <= 0)
+            break;
+        uint64_t wait_ms = (uint64_t)left;
+        if (!conn.wait_till_recv_wont_block(wait_ms))
+            break;
+        int n = 0;
+        try { n = conn.recv(buf, sizeof(buf)); } catch (...) { break; }
+        if (n <= 0)
+            break;
+        total += (size_t)n;
+    }
+}
+
+static void _reply(r_socket& conn, int status, bool drain = false)
 {
     const char* text = status == 200 ? "OK" : status == 400 ? "Bad Request" : status == 403 ? "Forbidden" : status == 404 ? "Not Found" :
                        status == 405 ? "Method Not Allowed" : status == 411 ? "Length Required" : status == 413 ? "Payload Too Large" :
@@ -283,15 +313,21 @@ static void _reply(r_socket& conn, int status)
     char buf[160];
     int n = snprintf(buf, sizeof(buf), "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status, text);
     try { conn.send(buf, (size_t)n); } catch (...) {}
+    if (drain)
+    {
+        try { _drain(conn); } catch (...) {}
+    }
 }
 
 void r_onvif_push_listener::_serve(void* c)
 {
     auto& conn = *static_cast<r_socket*>(c);
-    auto turn_away = [&](int status) {
+    // `unread`: the client may still be sending what this didn't read (see _drain); false when the request was read to
+    // its end, or the client has gone.
+    auto turn_away = [&](int status, bool unread) {
         ++_impl->rejected;
         if (status)
-            _reply(conn, status);
+            _reply(conn, status, unread);
     };
 
     try
@@ -306,12 +342,13 @@ void r_onvif_push_listener::_serve(void* c)
                     known = true;
             if (!known)
             {
-                turn_away(0);
+                turn_away(0, false);
                 return;
             }
         }
 
         const auto deadline = steady_clock::now() + milliseconds(PUSH_READ_DEADLINE_MS);
+        bool gone = false;   // the client closed (or the connection failed): nothing more is coming, so nothing to drain
         auto read_more = [&](string& into, size_t cap) -> bool {
             auto left = duration_cast<milliseconds>(deadline - steady_clock::now()).count();
             if (left <= 0)
@@ -322,7 +359,10 @@ void r_onvif_push_listener::_serve(void* c)
             char buf[4096];
             int n = conn.recv(buf, min(sizeof(buf), cap));
             if (n <= 0)
+            {
+                gone = true;
                 return false;
+            }
             into.append(buf, (size_t)n);
             return true;
         };
@@ -334,7 +374,7 @@ void r_onvif_push_listener::_serve(void* c)
         {
             if (in.size() >= PUSH_MAX_HEAD || !read_more(in, PUSH_MAX_HEAD - in.size()))
             {
-                turn_away(in.size() >= PUSH_MAX_HEAD ? 413 : 400);
+                turn_away(in.size() >= PUSH_MAX_HEAD ? 413 : 400, !gone);
                 return;
             }
         }
@@ -344,9 +384,12 @@ void r_onvif_push_listener::_serve(void* c)
         auto h = parse_push_head(head);
         if (h.status)
         {
-            turn_away(h.status);
+            // The head was refused, and its body (if it has one) was not read.
+            turn_away(h.status, true);
             return;
         }
+        // The client sent more than the body's length: it is sending more than this one request.
+        const bool more_than_the_body = body.size() > h.content_length;
 
         // An id belongs to one camera, and this is it. With no id (the path "/"), the caller's address picks the
         // subscription, and only when it has exactly one. Returns 0 and the handler, or the status to turn away with.
@@ -382,7 +425,7 @@ void r_onvif_push_listener::_serve(void* c)
             push_handler early;
             if (int status = resolve(early, false))
             {
-                turn_away(status);
+                turn_away(status, h.content_length > body.size());
                 return;
             }
         }
@@ -394,7 +437,7 @@ void r_onvif_push_listener::_serve(void* c)
         {
             if (!read_more(body, h.content_length - body.size()))
             {
-                turn_away(400);
+                turn_away(400, !gone);
                 return;
             }
         }
@@ -403,7 +446,7 @@ void r_onvif_push_listener::_serve(void* c)
         push_handler handler;
         if (int status = resolve(handler, true))
         {
-            turn_away(status);
+            turn_away(status, more_than_the_body);
             return;
         }
         struct done_call
@@ -416,7 +459,7 @@ void r_onvif_push_listener::_serve(void* c)
             }
         } done{*_impl};
         handler(body);
-        _reply(conn, 200);
+        _reply(conn, 200, more_than_the_body);
     }
     catch (const exception& e)
     {

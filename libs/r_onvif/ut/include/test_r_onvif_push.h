@@ -13,6 +13,9 @@ public:
       TEST(test_r_onvif_push::test_pull_point_support);
       TEST(test_r_onvif_push::test_listener_delivers);
       TEST(test_r_onvif_push::test_listener_turns_away);
+      TEST(test_r_onvif_push::test_listener_answer_survives_unread_input);
+      TEST(test_r_onvif_push::test_listener_lets_go_of_a_finished_request);
+      TEST(test_r_onvif_push::test_listener_drain_is_bounded);
       TEST(test_r_onvif_push::test_listener_bare_path);
       TEST(test_r_onvif_push::test_granted_seconds);
       TEST(test_r_onvif_push::test_remove_waits_for_a_running_handler);
@@ -32,6 +35,9 @@ public:
     void test_pull_point_support();
     void test_listener_delivers();
     void test_listener_turns_away();
+    void test_listener_answer_survives_unread_input();
+    void test_listener_lets_go_of_a_finished_request();
+    void test_listener_drain_is_bounded();
     void test_listener_bare_path();
     void test_granted_seconds();
     void test_remove_waits_for_a_running_handler();
