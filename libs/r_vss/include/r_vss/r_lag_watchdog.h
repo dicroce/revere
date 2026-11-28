@@ -171,7 +171,8 @@ private:
     std::map<std::string, state> _cameras;
 };
 
-R_API extern const char* const LAG_FLAG_MESSAGE;
+// In the header, not exported: R_API never imports, so another module (the tests) can't link to exported data on Windows.
+inline const char* const LAG_FLAG_MESSAGE = "network can't keep up with this stream: use the sub-stream or a wired link";
 
 // Which of a camera's queued key frames the motion engine should look at. A
 // person at the door must be seen as soon as their frame arrives, so when the
