@@ -53,32 +53,8 @@
       </div>
 
       <div v-if="p.lines.length" class="lines">
-        <template v-for="(group, gi) in groups(p.lines)" :key="gi">
-          <!-- links that follow each other share a row, as on the desktop -->
-          <p v-if="group.kind === 'links'" class="links">
-            <a v-for="(l, li) in group.lines" :key="li" :href="safeUrl(l.url)" target="_blank" rel="noopener noreferrer">{{ l.text }}</a>
-          </p>
-          <div v-else-if="group.kind === 'copy'" class="copy">
-            <span class="text">{{ group.line.text }}</span>
-            <code>{{ group.line.copy }}</code>
-            <button class="ghost small" @click="copy(group.line.copy)">{{ copied === group.line.copy ? 'Copied' : 'Copy' }}</button>
-          </div>
-          <div v-else-if="group.kind === 'tiles'" class="tiles-block">
-            <p v-if="group.line.title" class="tiles-title">{{ group.line.title }}</p>
-            <div class="tiles">
-              <div v-for="(t, ti) in validTiles(group.line.tiles)" :key="ti" class="tile" :title="t.hint || ''">
-                <span class="label">{{ t.label }}</span>
-                <span class="value">{{ t.value }}</span>
-                <span v-if="t.detail" class="detail">{{ t.detail }}</span>
-              </div>
-            </div>
-          </div>
-          <div v-else-if="group.kind === 'qr'" class="qr">
-            <p class="muted">Or scan with your phone:</p>
-            <img :src="'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(group.line.qr_svg)" alt="QR code" />
-          </div>
-          <p v-else class="text">{{ group.line.text }}</p>
-        </template>
+        <PluginLines :lines="p.lines" :plugin-name="p.name" :busy="actionBusy" :radio-key="radioKey"
+                     @pick="(line, option) => pick(p, line, option)" @run="(action) => runAction(p, action)" />
       </div>
       <p v-if="toggleError && toggleError.name === p.name" class="error">{{ toggleError.message }}</p>
     </div>
@@ -87,7 +63,9 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { getSystemPlugins, setSystemPluginEnabled, getRevereCloudInstall, startRevereCloudInstall } from '../api.js'
+import { getSystemPlugins, setSystemPluginEnabled, runSystemPluginAction, getRevereCloudInstall, startRevereCloudInstall } from '../api.js'
+import { pickChoice, runAndSettle } from '../utils/pluginChoice.js'
+import PluginLines from './PluginLines.vue'
 
 const props = defineProps({ authed: { type: Boolean, default: false } })
 
@@ -96,7 +74,6 @@ const loaded = ref(false)
 const error = ref('')
 const busy = ref(null)
 const toggleError = ref(null)
-const copied = ref('')
 
 // Revere Cloud's in-app install (GET /revere_cloud_install).
 const cloud = ref(null)
@@ -186,35 +163,6 @@ function safeUrl(url) {
   return /^https?:\/\//i.test(url || '') ? url : undefined
 }
 
-function validTiles(tiles) {
-  return (Array.isArray(tiles) ? tiles : []).filter((t) => t && t.label && t.value)
-}
-
-// The plugin's lines as the desktop draws them: consecutive links on one row,
-// and lines the desktop would skip (no text, an empty grid, a QR that didn't
-// encode) left out.
-function groups(lines) {
-  const out = []
-  for (const l of lines) {
-    if (l.qr !== undefined) {
-      if (l.qr_svg) out.push({ kind: 'qr', line: l })
-    } else if (l.tiles !== undefined) {
-      if (validTiles(l.tiles).length) out.push({ kind: 'tiles', line: l })
-    } else if (!l.text) {
-      continue
-    } else if (l.url) {
-      const last = out[out.length - 1]
-      if (last && last.kind === 'links') last.lines.push(l)
-      else out.push({ kind: 'links', lines: [l] })
-    } else if (l.copy) {
-      out.push({ kind: 'copy', line: l })
-    } else {
-      out.push({ kind: 'text', line: l })
-    }
-  }
-  return out
-}
-
 async function refresh() {
   await refreshPlugins()
   if (cloud.value?.state !== 'installing') pollCloud()
@@ -236,6 +184,36 @@ async function refreshPlugins() {
   }
 }
 
+// A radio row picked: the plugin's action for it, then the plugin's lines again (the plugin moves its selected row
+// itself, a moment after it is asked), and the rows drawn from them whatever the pick came to.
+const actionBusy = ref(false)
+const radioKey = ref(0)   // new key, new rows: the dots follow the plugin's value, not the last click
+async function pick(p, line, option) {
+  await doAction(p, (deps) => pickChoice(line, option, deps))
+}
+
+// A button on a line: the plugin's action, then its lines again.
+async function runAction(p, action) {
+  await doAction(p, (deps) => runAndSettle(action, deps))
+}
+
+async function doAction(p, go) {
+  if (actionBusy.value) return
+  actionBusy.value = true
+  toggleError.value = null
+  try {
+    const r = await go({
+      run: (action) => runSystemPluginAction(p.name, action),
+      refresh: refreshPlugins,
+      settle: () => { radioKey.value++ },
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    })
+    if (r.error) toggleError.value = { name: p.name, message: r.error.message }
+  } finally {
+    actionBusy.value = false
+  }
+}
+
 async function toggle(p, enabled) {
   busy.value = p.name
   toggleError.value = null
@@ -246,25 +224,6 @@ async function toggle(p, enabled) {
   }
   busy.value = null
   await refresh()
-}
-
-// navigator.clipboard needs a secure context (https or localhost); fall back
-// to execCommand over plain http.
-async function copy(text) {
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-  }
-  copied.value = text
-  setTimeout(() => { if (copied.value === text) copied.value = '' }, 1500)
 }
 
 let pollId = null
@@ -346,26 +305,6 @@ onUnmounted(() => {
 .switch input:disabled + .track { opacity: 0.5; }
 
 .lines { display: flex; flex-direction: column; gap: 0.45rem; font-size: 0.85rem; color: #bbb; line-height: 1.45; }
-.links { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; }
-.links a { color: #4a9eff; }
-.copy { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
-.copy code {
-  font-size: 0.8rem;
-  color: #ddd;
-  background: #111;
-  border: 1px solid #333;
-  border-radius: 4px;
-  padding: 0.25rem 0.5rem;
-  word-break: break-all;
-}
-.tiles-title { font-weight: 600; color: #aaa; font-size: 0.8rem; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0.5rem; }
-.tile { background: #161616; border: 1px solid #2c2c2c; border-radius: 6px; padding: 0.5rem 0.6rem; display: flex; flex-direction: column; }
-.tile .label { font-size: 0.75rem; color: #888; }
-.tile .value { font-size: 1rem; color: #eee; font-weight: 500; }
-.tile .detail { font-size: 0.75rem; color: #888; }
-.qr img { width: 148px; height: 148px; image-rendering: pixelated; margin-top: 0.3rem; }
-
 button.ghost {
   background: none;
   border: 1px solid #333;

@@ -2,6 +2,7 @@
 #include "r_vss/r_substream_recorder.h"
 #include "r_disco/r_substream.h"
 #include "r_vss/r_ws.h"
+#include "r_vss/r_plugin_action_request.h"
 #include "r_vss/r_ts_discipline.h"
 #include "r_vss/r_appliance.h"
 #include "r_vss/r_storage_summary.h"
@@ -211,6 +212,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_POST, "/storage_op_cancel", &r_ws::_post_storage_op_cancel);
     route(METHOD_GET, "/system_plugins", &r_ws::_get_system_plugins);
     route(METHOD_POST, "/system_plugin_enabled", &r_ws::_post_system_plugin_enabled);
+    route(METHOD_POST, "/system_plugin_action", &r_ws::_post_system_plugin_action);
     route(METHOD_GET, "/revere_cloud_install", &r_ws::_get_revere_cloud_install);
     route(METHOD_POST, "/revere_cloud_install", &r_ws::_post_revere_cloud_install);
     route(METHOD_GET, "/keep_awake", &r_ws::_get_keep_awake);
@@ -4774,6 +4776,21 @@ static string _qr_svg(const string& text)
                                   span, span, span, span, path.c_str());
 }
 
+// A qr line carries its code drawn as "qr_svg"; so does one in a list row's detail, however deep the lists go.
+static void _add_qr_svg(json& line)
+{
+    if(!line.is_object())
+        return;
+    if(line.contains("qr") && line["qr"].is_string())
+        line["qr_svg"] = _qr_svg(line["qr"].get<string>());
+    if(!line.contains("list") || !line["list"].is_object() || !line["list"].contains("rows") || !line["list"]["rows"].is_array())
+        return;
+    for(auto& row : line["list"]["rows"])
+        if(row.is_object() && row.contains("detail") && row["detail"].is_array())
+            for(auto& d : row["detail"])
+                _add_qr_svg(d);
+}
+
 // The system plugins, as the desktop's Plugins section shows them:
 //   {"plugins": [{"name", "display_name", "version", "enabled",
 //                 "status": {"label", "tone"} or null, "lines": [...]}]}
@@ -4821,8 +4838,7 @@ r_http::r_server_response r_ws::_get_system_plugins(r_utils::r_socket_base&, con
                     {
                         if(!line.is_object())
                             continue;
-                        if(line.contains("qr") && line["qr"].is_string())
-                            line["qr_svg"] = _qr_svg(line["qr"].get<string>());
+                        _add_qr_svg(line);
                         p["lines"].push_back(line);
                     }
                 }
@@ -4864,6 +4880,26 @@ r_http::r_server_response r_ws::_post_system_plugin_enabled(r_utils::r_socket_ba
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to set the plugin's enabled state."));
+}
+
+// A plugin's action, as pressing its button or radio row in the desktop's panel does (r_plugin_action_request.h).
+r_http::r_server_response r_ws::_post_system_plugin_action(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    try
+    {
+        plugin_action_host host;
+        host.loaded = [&] { return _stream_keeper.get_loaded_system_plugins(); };
+        host.status_message = [&](const string& name) { return _stream_keeper.get_system_plugin_status_message(name); };
+        // Not run here: system_plugin_action is called on the UI thread only, which picks this up.
+        host.run = [&](const string& name, const string& action) { return _stream_keeper.queue_system_plugin_action(name, action); };
+        return post_system_plugin_action(request, _auth, host);
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to run the plugin's action."));
 }
 
 // {"state": "not_installed"|"installing"|"installed"|"needs_update"|"failed_check",

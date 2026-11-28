@@ -282,7 +282,8 @@ export async function addRtspCamera(fields) {
 // --- system plugins (the desktop's Plugins section) ---
 
 // [{ name, display_name, version, enabled, status: { label, tone } | null,
-//    lines: [{ text, url?, copy? } | { tiles, title? } | { qr, qr_svg }] }]
+//    lines: [{ text, url?, copy?, warn?, choice? } | { tiles, title? } | { qr, qr_svg }] }]
+// A choice is { value, action, options: [{ value, name, subtitle?, cost?, warn? }] } (utils/pluginChoice.js).
 export async function getSystemPlugins() {
   const res = await apiFetch('/system_plugins')
   return (await res.json()).plugins ?? []
@@ -293,6 +294,17 @@ export async function setSystemPluginEnabled(name, enabled) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, enabled }),
+  })
+  return res.json()
+}
+
+// A plugin's action, as pressing its button or radio row in the desktop's panel does: { name, action } is the
+// plugin and the action id one of its lines offers (a choice's action followed by the option's value).
+export async function runSystemPluginAction(name, action) {
+  const res = await apiFetch('/system_plugin_action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, action }),
   })
   return res.json()
 }

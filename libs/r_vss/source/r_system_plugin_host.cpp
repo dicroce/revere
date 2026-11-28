@@ -895,6 +895,29 @@ bool r_system_plugin_host::run_plugin_action(const std::string& plugin_name, con
     }
 }
 
+bool r_system_plugin_host::queue_plugin_action(const std::string& plugin_name, const std::string& action)
+{
+    auto p = _find(plugin_name);
+    if(!p || !p->plugin_handle || !p->action_func)
+        return false;
+    std::lock_guard<std::mutex> g(_action_lock);
+    _queued_actions.emplace_back(plugin_name, action);
+    return true;
+}
+
+size_t r_system_plugin_host::run_queued_plugin_actions()
+{
+    std::vector<std::pair<std::string, std::string>> queued;
+    {
+        std::lock_guard<std::mutex> g(_action_lock);
+        queued.swap(_queued_actions);
+    }
+    // Run without the lock: an action may take a while, and a request meanwhile only joins the next batch.
+    for(const auto& a : queued)
+        run_plugin_action(a.first, a.second);
+    return queued.size();
+}
+
 std::string r_system_plugin_host::get_plugin_status(const std::string& plugin_name) const
 {
     auto p = _find(plugin_name);

@@ -1224,6 +1224,17 @@ void link_text(const std::string& label, const std::string& url, OPEN_CB open_cb
 //     it, plus Copy URL), and optionally "action" with "action_label": a
 //     button that runs the plugin's action (system_plugin_action), asking
 //     the line's "confirm" question first when it has one;
+//     "warn": true draws the text in the warning tone;
+//   {"text", "choice": {"value", "action", "options": [{"value", "name", "subtitle", "cost", "warn"}]}}:
+//     the text is the one-line summary, and the choice is drawn under it as a
+//     radio list, one row for each option: its name (wrapping, never cut off),
+//     its subtitle under it and its cost line below that, in the warning tone
+//     when the option's "warn" is true. The option whose value is the choice's
+//     "value" is the selected one. Picking another calls system_plugin_action
+//     with the choice's "action" and the option's "value" joined (so an action
+//     of "mode:cam1:" and a value of "live" call "mode:cam1:live"). A host
+//     before this drew only the text; a plugin that wants a way to choose there
+//     sends a button for each option as well, or instead;
 //   {"qr": text}, drawn as a QR code;
 //   {"tiles": [{"label", "value", "detail"?, "hint"?}], "title"?}, drawn as
 //     stat cards like a camera's, under the title if there is one.
@@ -1232,6 +1243,27 @@ void link_text(const std::string& label, const std::string& url, OPEN_CB open_cb
 // Text wraps and the buttons wrap onto the next line when they don't fit.
 // The buttons are a size between the action row's and SmallButton, so they
 // don't tower over the line of text they sit beside.
+// One row of a choice line.
+struct plugin_choice_option
+{
+    std::string value;
+    std::string name;
+    std::string subtitle;
+    std::string cost;
+    bool warn {false};
+};
+
+// One row of a list line: a name, what it's set to, its state (in a tone), and the lines shown when it's opened.
+struct plugin_list_row
+{
+    std::string id;
+    std::string name;
+    std::string value;
+    std::string state;
+    std::string tone;           // "ok", "warn", "bad", or anything else for neutral
+    nlohmann::json detail;      // an array of lines, drawn as a plugin's lines are
+};
+
 struct plugin_status_line_view
 {
     std::string qr;
@@ -1244,6 +1276,13 @@ struct plugin_status_line_view
     std::string title;
     std::vector<main_window_detail::stat_card> tiles;
     bool is_tiles {false};
+    bool warn {false};                          // the text in the warning tone
+    std::string choice_value;                   // the selected option's value
+    std::string choice_action;                  // what a pick runs: this + the option's value
+    std::vector<plugin_choice_option> options;  // not empty: draw them as a radio list
+    bool is_list {false};                       // rows to pick from, each opening its own detail
+    std::string back;                           // the list's label for going back from a row's detail
+    std::vector<plugin_list_row> rows;
 };
 
 // Reads one entry of "lines". False when it's malformed or of a type this
@@ -1278,6 +1317,31 @@ inline bool parse_plugin_status_line(const nlohmann::json& line, plugin_status_l
             }
             return !out.tiles.empty();
         }
+        if(line.contains("list"))
+        {
+            // {"list": {"back"?, "rows": [{"id", "name", "value"?, "state"?, "tone"?, "detail"?: [lines]}]}}. A row with no id
+            // or name is left out; a list with no row isn't drawn.
+            const auto& l = line["list"];
+            if(!l.is_object() || !l.contains("rows") || !l["rows"].is_array())
+                return false;
+            out.back = str(l, "back");
+            for(const auto& r : l["rows"])
+            {
+                if(!r.is_object())
+                    continue;
+                plugin_list_row row {str(r, "id"), str(r, "name"), str(r, "value"), str(r, "state"), str(r, "tone"),
+                                     r.contains("detail") && r["detail"].is_array() ? r["detail"] : nlohmann::json::array()};
+                if(row.id.empty() || row.name.empty())
+                    continue;
+                bool repeated = false;
+                for(const auto& o : out.rows)
+                    repeated = repeated || o.id == row.id;
+                if(!repeated)
+                    out.rows.push_back(std::move(row));
+            }
+            out.is_list = !out.rows.empty();
+            return out.is_list;
+        }
         out.text = str(line, "text");
         out.url = str(line, "url");
         out.copy = str(line, "copy");
@@ -1289,6 +1353,32 @@ inline bool parse_plugin_status_line(const nlohmann::json& line, plugin_status_l
         }
         if(out.action.empty())
             out.action_label.clear();
+        out.warn = line.contains("warn") && line["warn"].is_boolean() && line["warn"].get<bool>();
+        // A choice that can't be drawn or acted on (no action, no usable option) is left off: the text still shows.
+        if(line.contains("choice") && line["choice"].is_object())
+        {
+            const auto& c = line["choice"];
+            auto action = str(c, "action");
+            std::vector<plugin_choice_option> options;
+            if(!action.empty() && c.contains("options") && c["options"].is_array())
+            {
+                for(const auto& o : c["options"])
+                {
+                    if(!o.is_object())
+                        continue;
+                    plugin_choice_option opt {str(o, "value"), str(o, "name"), str(o, "subtitle"), str(o, "cost"),
+                                              o.contains("warn") && o["warn"].is_boolean() && o["warn"].get<bool>()};
+                    if(!opt.value.empty() && !opt.name.empty())
+                        options.push_back(std::move(opt));
+                }
+            }
+            if(!options.empty())
+            {
+                out.choice_action = std::move(action);
+                out.choice_value = str(c, "value");
+                out.options = std::move(options);
+            }
+        }
         return !out.text.empty();
     }
     catch(...)
@@ -1297,29 +1387,170 @@ inline bool parse_plugin_status_line(const nlohmann::json& line, plugin_status_l
     }
 }
 
-template<typename OPEN_URL_CB, typename RUN_ACTION_CB>
-void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url, RUN_ACTION_CB run_action, const main_window_fonts& fonts)
+// A radio list of choice rows, as one block under the line's text: a circle, then the option's name,
+// its subtitle under it and its cost line under that, all wrapped to the room there is (never cut off).
+// The whole row is the target. Returns the value of the row picked this frame, or an empty string; a
+// click on the selected row picks nothing.
+// The ring's colour: the accent for the selected row alone. A row the mouse is on is tinted, not ringed, so it
+// can't be taken for a second selection.
+inline ImVec4 plugin_choice_ring(bool selected, bool /*hovered*/)
+{
+    return selected ? r_ui_utils::theme::accent : r_ui_utils::theme::border_strong;
+}
+
+inline std::string plugin_choice_rows(const plugin_status_line_view& line)
 {
     using namespace main_window_detail;
-    if(status_message.empty())
-        return;
+    using namespace r_ui_utils::theme;
+    std::string picked;
+    const float radius = 7.0f;
+    const float indent = radius * 2.0f + 8.0f;
+    auto* dl = ImGui::GetWindowDrawList();
+    for(size_t i = 0; i < line.options.size(); ++i)
+    {
+        const auto& o = line.options[i];
+        const bool selected = o.value == line.choice_value;
+        ImGui::PushID(static_cast<int>(i));
+        const ImVec2 top = ImGui::GetCursorScreenPos();
+        const float width = ImGui::GetContentRegionAvail().x;
+        ImGui::Indent(indent);
+        wrapped_text(text_primary, o.name);
+        if(!o.subtitle.empty())
+            wrapped_text(text_secondary, o.subtitle);
+        if(!o.cost.empty())
+            wrapped_text(o.warn ? status_warning_text : text_tertiary, o.cost);
+        ImGui::Unindent(indent);
+        const float height = std::max(ImGui::GetCursorScreenPos().y - top.y, ImGui::GetTextLineHeight());
 
-    nlohmann::json j;
-    try { j = nlohmann::json::parse(status_message); }
-    catch(...) { return; }
-    if(!j.is_object() || !j.contains("lines") || !j["lines"].is_array())
-        return;
+        ImGui::SetCursorScreenPos(top);
+        const bool clicked = ImGui::InvisibleButton("##choice", ImVec2(width, height));
+        const bool hovered = ImGui::IsItemHovered();
+        // Hover only tints the row. The accent ring means selected and nothing else, so a row the mouse rests on (the one
+        // just clicked, say) isn't taken for a second selection.
+        if(hovered && !selected)
+            dl->AddRectFilled(top, ImVec2(top.x + width, top.y + height), ImGui::GetColorU32(with_alpha(border_strong, 0.25f)), 4.0f);
+        const ImVec2 centre(top.x + radius, top.y + ImGui::GetTextLineHeight() * 0.5f);
+        dl->AddCircle(centre, radius - 1.0f, ImGui::GetColorU32(plugin_choice_ring(selected, hovered)), 0, 1.5f);
+        if(selected)
+            dl->AddCircleFilled(centre, radius - 4.5f, ImGui::GetColorU32(accent));
+        if(clicked && !selected)
+            picked = o.value;
+        ImGui::PopID();
+    }
+    return picked;
+}
 
+// One row of a list line: a status dot in the row's tone, the name over what it's set to, and on the right its state
+// (in the same tone) and a chevron. The whole row is the target. True when clicked.
+inline bool plugin_list_row_button(const plugin_list_row& row, const main_window_fonts& fonts)
+{
+    using namespace main_window_detail;
+    using namespace r_ui_utils::theme;
+    // A font the app hasn't loaded (a headless test's) is ImGui's default.
+    ImFont* name_font = font(fonts.key_22, true) ? font(fonts.key_22, true) : ImGui::GetFont();
+    ImFont* small_font = font(fonts.key_18) ? font(fonts.key_18) : ImGui::GetFont();
+    const bool two_lines = !row.value.empty();
+    const float row_h = name_font->FontSize + (two_lines ? small_font->FontSize + 2.0f : 0.0f) + 16.0f;
+    const float width = ImGui::GetContentRegionAvail().x;
+    const bool clicked = ImGui::Selectable("##row", false, 0, ImVec2(width, row_h));
+    const auto min = ImGui::GetItemRectMin();
+    const auto max = ImGui::GetItemRectMax();
+    auto* dl = ImGui::GetWindowDrawList();
+
+    ImVec4 dot = status_neutral_dot, text = text_tertiary;
+    if(row.tone == "ok") { dot = status_success_dot; text = status_success_text; }
+    else if(row.tone == "warn") { dot = status_warning_dot; text = status_warning_text; }
+    else if(row.tone == "bad") { dot = status_danger_dot; text = status_danger_text; }
+
+    const float pad = 10.0f, r = 4.0f;
+    const float cy = (min.y + max.y) * 0.5f;
+    dl->AddCircleFilled(ImVec2(min.x + pad + r, cy), r, ImGui::GetColorU32(dot));
+
+    // The chevron, then the state to its left; the name and value get what's left.
+    const char* chevron = ">";
+    ImGui::PushFont(small_font);
+    const float chevron_w = ImGui::CalcTextSize(chevron).x;
+    const float state_w = row.state.empty() ? 0.0f : ImGui::CalcTextSize(row.state.c_str()).x;
+    ImGui::PopFont();
+    const float chevron_x = max.x - pad - chevron_w;
+    const float state_x = chevron_x - 10.0f - state_w;
+    ImGui::PushFont(small_font);
+    dl->AddText(ImVec2(chevron_x, cy - small_font->FontSize * 0.5f), ImGui::GetColorU32(text_tertiary), chevron);
+    if(state_w > 0.0f)
+        dl->AddText(ImVec2(state_x, cy - small_font->FontSize * 0.5f), ImGui::GetColorU32(text), row.state.c_str());
+    ImGui::PopFont();
+
+    const float text_x = min.x + pad + r * 2.0f + 10.0f;
+    const float text_right = (state_w > 0.0f ? state_x : chevron_x) - 12.0f;
+    const float top = two_lines ? min.y + 8.0f : cy - name_font->FontSize * 0.5f;
+    ImGui::PushFont(name_font);
+    ellipsis_text(dl, ImVec2(text_x, top), std::max(0.0f, text_right - text_x), text_primary, row.name);
+    ImGui::PopFont();
+    if(two_lines)
+    {
+        ImGui::PushFont(small_font);
+        ellipsis_text(dl, ImVec2(text_x, top + name_font->FontSize + 2.0f), std::max(0.0f, text_right - text_x), text_tertiary, row.value);
+        ImGui::PopFont();
+    }
+    return clicked;
+}
+
+// Draws an array of a plugin's lines (what its status message's "lines" holds, or a list row's "detail").
+template<typename OPEN_URL_CB, typename RUN_ACTION_CB>
+void plugin_status_line_array(const nlohmann::json& lines, OPEN_URL_CB open_url, RUN_ACTION_CB run_action, const main_window_fonts& fonts)
+{
+    using namespace main_window_detail;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
     int n = 0;
-    for(const auto& json_line : j["lines"])
+    for(const auto& json_line : lines)
     {
         plugin_status_line_view line;
         if(!parse_plugin_status_line(json_line, line))
             continue;
         ImGui::PushID(n++);
 
-        if(!line.qr.empty())
+        if(line.is_list)
+        {
+            // Which row is open is kept as its id's hash under this line's ID, as the frames it was last drawn in: a row that
+            // goes away (or a list that does) leaves the list showing.
+            auto* open = ImGui::GetStateStorage();
+            const ImGuiID key = ImGui::GetID("##list_open");
+            const int opened = open->GetInt(key, 0);
+            const plugin_list_row* shown = nullptr;
+            for(const auto& row : line.rows)
+                if(opened != 0 && (int)ImGui::GetID(row.id.c_str()) == opened)
+                    shown = &row;
+            if(!shown)
+            {
+                open->SetInt(key, 0);
+                for(const auto& row : line.rows)
+                {
+                    const int row_key = (int)ImGui::GetID(row.id.c_str());   // in this scope, as the lookup above
+                    ImGui::PushID(row.id.c_str());
+                    if(plugin_list_row_button(row, fonts))
+                        open->SetInt(key, row_key);
+                    ImGui::PopID();
+                }
+            }
+            else
+            {
+                flow_row back;
+                if(flow_button(back, ("< " + (line.back.empty() ? std::string("Back") : line.back)).c_str(), button_kind::ghost))
+                    open->SetInt(key, 0);
+                ImGui::PushFont(font(fonts.key_22, true));
+                wrapped_text(r_ui_utils::theme::text_primary, shown->name);
+                ImGui::PopFont();
+                if(!shown->state.empty())
+                    wrapped_text(shown->tone == "warn" ? r_ui_utils::theme::status_warning_text
+                                 : shown->tone == "bad" ? r_ui_utils::theme::status_danger_text
+                                 : shown->tone == "ok" ? r_ui_utils::theme::status_success_text : r_ui_utils::theme::text_tertiary,
+                                 shown->state);
+                ImGui::PushID(shown->id.c_str());
+                plugin_status_line_array(shown->detail, open_url, run_action, fonts);
+                ImGui::PopID();
+            }
+        }
+        else if(!line.qr.empty())
         {
             static std::string qr_cached_text;
             static r_utils::r_qr_code::qr_code qr_cached;
@@ -1385,8 +1616,14 @@ void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url
             flow_row row;
             row.next(ImGui::CalcTextSize(line.text.c_str()).x);
             ImGui::AlignTextToFramePadding();
-            wrapped_text(r_ui_utils::theme::text_primary, line.text);
+            wrapped_text(line.warn ? r_ui_utils::theme::status_warning_text : r_ui_utils::theme::text_primary, line.text);
             row.after_text();
+            if(!line.options.empty())
+            {
+                auto picked = plugin_choice_rows(line);
+                if(!picked.empty())
+                    run_action(line.choice_action + picked);
+            }
             if(!line.copy.empty() && flow_button(row, "Copy"))
                 ImGui::SetClipboardText(line.copy.c_str());
             if(!line.action.empty())
@@ -1429,6 +1666,20 @@ void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url
         ImGui::PopID();
     }
     ImGui::PopStyleVar();
+}
+
+template<typename OPEN_URL_CB, typename RUN_ACTION_CB>
+void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url, RUN_ACTION_CB run_action, const main_window_fonts& fonts)
+{
+    if(status_message.empty())
+        return;
+
+    nlohmann::json j;
+    try { j = nlohmann::json::parse(status_message); }
+    catch(...) { return; }
+    if(!j.is_object() || !j.contains("lines") || !j["lines"].is_array())
+        return;
+    plugin_status_line_array(j["lines"], open_url, run_action, fonts);
 }
 
 // Adds "Show log" to the View menu that main_menu() draws. ImGui appends to a

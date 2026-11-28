@@ -2945,7 +2945,21 @@ int main(int argc, char** argv)
 
         R_LOG_INFO("Revere running headless. Web UI: http://localhost:8088/");
 
+        // A plugin's action asked for from the web is run by one thread of our own, as the window's loop does
+        // with a window: system_plugin_action is never called from the web's threads.
+        std::atomic<bool> actions_stop {false};
+        std::thread actions_thread([&]{
+            while(!actions_stop)
+            {
+                streamKeeper.run_queued_system_plugin_actions();
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        });
+
         r_shutdown_signal::wait();
+
+        actions_stop = true;
+        actions_thread.join();
 
         R_LOG_INFO("Stopping...");
         if(!streamKeeper.stop())
@@ -3949,6 +3963,9 @@ int main(int argc, char** argv)
     // Main loop
     while(!close_requested)
     {
+        // Plugin actions asked for from the web run here, on the UI thread, as the panel's buttons do.
+        streamKeeper.run_queued_system_plugin_actions();
+
         // Wait for events with timeout (event-driven rendering for low CPU usage)
         // Timeout allows periodic updates and tray pumping even when idle
         SDL_Event event;

@@ -157,13 +157,36 @@ R_API void system_plugin_cameras_changed(r_system_plugin_handle plugin);
 // a "confirm" question) calls this with the line's "action" id. Called on the
 // UI thread, so return promptly and do any slow work on the plugin's own thread.
 // Only a plugin that exports this should put "action" in its lines.
+//
+// A line can also carry a choice, drawn under its text as a radio list (in the desktop's plugin panel and the web's):
+//   {"text": "<summary>", "choice": {"value": "<selected option's value>", "action": "<prefix>",
+//     "options": [{"value", "name", "subtitle", "cost", "warn"}]}}
+// Picking an option calls this with the choice's "action" followed by the option's "value" ("mode:cam1:" and "live"
+// call "mode:cam1:live"); picking the selected option calls nothing. Names, subtitles and cost lines wrap; an option
+// with "warn": true shows its cost line in the warning tone, and a line with "warn": true shows its text in it. A host
+// from before choice lines draws only the text, so a plugin that needs a way to choose there also sends a button for
+// each option. The plugin gets only actions its own lines offered.
+//
+// From host API version 4 (the version in the table below), a line can be a list instead, a row for each item, as a
+// plugin with several things to show (a camera each) draws them:
+//   {"list": {"back": "<label>", "rows": [{"id", "name", "value", "state", "tone", "detail": [<lines>]}]}}
+// A row shows its name over its value (what it's set to), its state on the right in its tone ("ok", "warn", "bad",
+// anything else neutral), and a chevron. Opening a row shows its name and state under a Back button (labelled by
+// "back"), then its detail: lines of any of the kinds above, a list again too. A row with no id or name, or one whose id
+// came before, is left out; a list with no row is not drawn. A host before 4 drops a list line (and with it all its
+// rows), so a plugin sends one only to a host whose version is 4 or more, and plain lines before that.
 R_API void system_plugin_action(r_system_plugin_handle plugin, const char* action);
 
 // ---- Live frames ----
 // A plugin can read cameras' encoded frames as they're recorded. It pulls them on
 // its own thread: the host never calls into the plugin with frames.
 
-#define R_SYSTEM_PLUGIN_HOST_API_VERSION 2
+// The table's version is also what a plugin reads of the host's status lines: 4 and up draws a list line (see
+// system_plugin_action's lines above). The table itself gained nothing in 4, so a version is a floor and not a promise
+// of the fields: a plugin reads a field only after checking that struct_size covers it (the version 3 fields, which come
+// with the plugin state in their own change, are the case). That keeps this change and that one independent of the
+// order they land in.
+#define R_SYSTEM_PLUGIN_HOST_API_VERSION 4
 
 typedef struct r_frame_subscription* r_frame_subscription_handle;
 

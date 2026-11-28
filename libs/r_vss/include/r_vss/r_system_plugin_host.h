@@ -165,6 +165,14 @@ public:
     // False if the plugin isn't loaded or has no actions.
     R_API bool run_plugin_action(const std::string& plugin_name, const std::string& action);
 
+    // For an action asked for from a thread that isn't the UI's (the web's): system_plugin_action is only ever
+    // called on the UI thread, so such a request is queued here and the UI thread runs it (a headless Revere has a
+    // thread of its own do the same). queue_plugin_action is safe from any thread; false, and nothing queued, if the
+    // plugin isn't loaded or has no actions. run_queued_plugin_actions runs what is queued, in order, on the calling
+    // thread, and says how many it ran: call it from the UI thread's loop.
+    R_API bool queue_plugin_action(const std::string& plugin_name, const std::string& action);
+    R_API size_t run_queued_plugin_actions();
+
     // Wire up detection events from the motion plugin host to all system plugins
     // that implement system_plugin_post_detection. Call after construction, before start_all().
     R_API void connect_detection_bus(r_motion_event_plugin_host& meph);
@@ -242,6 +250,9 @@ private:
         std::shared_ptr<frame_api> frames;   // its live-frame functions, once set_frame_source() gave them
         std::string path;   // the file it was loaded from
     };
+
+    std::mutex _action_lock;
+    std::vector<std::pair<std::string, std::string>> _queued_actions;   // plugin name, action: queue_plugin_action's
 
     std::string _top_dir;
     std::string _user_dir;
