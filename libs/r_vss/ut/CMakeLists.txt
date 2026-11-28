@@ -108,6 +108,8 @@ add_executable(
     source/test_r_teardown_queue.cpp
     include/test_r_restream_opus.h
     source/test_r_restream_opus.cpp
+    include/test_r_restream_mount.h
+    source/test_r_restream_mount.cpp
     include/test_r_opus_transcoder.h
     source/test_r_opus_transcoder.cpp
     include/test_r_substream_recorder.h
