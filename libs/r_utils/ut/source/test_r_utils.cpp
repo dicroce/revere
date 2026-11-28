@@ -786,6 +786,50 @@ void test_r_utils::test_raw_socket_shutdown_wakes_a_waiting_recv()
     server.join();
 }
 
+// close() from another thread ends a long wait too, and the wait says false (the socket is gone): on Windows the wait
+// looks at whether its socket is still the object's between its slices.
+void test_r_utils::test_raw_socket_close_ends_a_waiting_recv()
+{
+    using namespace std::chrono;
+
+    int port = RTF_NEXT_PORT();
+    std::atomic<bool> stop_server(false);
+
+    thread server([&](){
+        r_raw_socket listener;
+        listener.bind( port, "127.0.0.1" );
+        listener.listen();
+        auto connected = listener.accept();
+        while(!stop_server)
+            std::this_thread::sleep_for(milliseconds(10));
+    });
+
+    std::this_thread::sleep_for(milliseconds(250));
+
+    r_raw_socket client;
+    client.connect( "127.0.0.1", port );
+
+    std::atomic<bool> will_not_block(true);
+    std::atomic<int64_t> waited_ms(-1);
+    thread waiter([&](){
+        uint64_t millis = 20000;
+        auto start = steady_clock::now();
+        will_not_block = client.wait_till_recv_wont_block( millis );
+        waited_ms = duration_cast<milliseconds>( steady_clock::now() - start ).count();
+    });
+
+    std::this_thread::sleep_for(milliseconds(300));
+    RTF_ASSERT( waited_ms == -1 );
+    client.close();
+    waiter.join();
+
+    RTF_ASSERT( !will_not_block );
+    RTF_ASSERT( waited_ms >= 0 && waited_ms < 3000 );
+
+    stop_server = true;
+    server.join();
+}
+
 // A shutdown belongs to the socket it was made on: a new socket from create() on the same object waits normally, a
 // socket accepted from a listener starts clean, and a moved socket takes the shutdown with it.
 void test_r_utils::test_raw_socket_shutdown_belongs_to_the_socket()

@@ -352,6 +352,14 @@ bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
     uint64_t left = millis;
     for(;;)
     {
+        // The socket this wait started on was closed (or the object went on to another one): stop, and don't wait on
+        // a handle that may now be someone else's. The check after the loop answers false.
+        if(_sok.load(std::memory_order_acquire) != sok)
+        {
+            fds_with_data = 0;
+            break;
+        }
+
         if(_shut.load(std::memory_order_acquire))
         {
             fds_with_data = 1;

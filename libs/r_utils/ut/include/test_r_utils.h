@@ -38,6 +38,7 @@ public:
       TEST(test_r_utils::test_socket_connect_timeout);
       TEST(test_r_utils::test_raw_socket_shutdown_wakes_a_waiting_recv);
       TEST(test_r_utils::test_raw_socket_shutdown_belongs_to_the_socket);
+      TEST(test_r_utils::test_raw_socket_close_ends_a_waiting_recv);
       TEST(test_r_utils::test_buffered);
       TEST(test_r_utils::test_ssl_socket_connect_to_example_com);
       TEST(test_r_utils::test_ssl_socket_connect_to_google);
@@ -163,6 +164,7 @@ public:
     void test_socket_connect_timeout();
     void test_raw_socket_shutdown_wakes_a_waiting_recv();
     void test_raw_socket_shutdown_belongs_to_the_socket();
+    void test_raw_socket_close_ends_a_waiting_recv();
     void test_buffered();
     void test_ssl_socket_connect_to_example_com();
     void test_ssl_socket_connect_to_google();
