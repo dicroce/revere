@@ -3,6 +3,7 @@
 #include "r_http/r_web_server.h"
 #include "r_utils/r_socket.h"
 #include "r_utils/r_std_utils.h"
+#include "r_utils/r_time_utils.h"
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -128,8 +129,7 @@ struct fake_camera
             if(!has_clock)
                 return _soap("<tds:GetSystemDateAndTimeResponse/>");
             const time_t t = time(nullptr) + clock_ahead_s;
-            struct tm u;
-            gmtime_r(&t, &u);
+            const struct tm u = r_time_utils::to_utc_tm(t);
             char buf[512];
             snprintf(buf, sizeof(buf),
                      "<tds:GetSystemDateAndTimeResponse><tds:SystemDateAndTime><tt:DateTimeType>Manual</tt:DateTimeType>"
