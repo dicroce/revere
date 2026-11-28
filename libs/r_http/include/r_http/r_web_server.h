@@ -219,6 +219,17 @@ public:
 
     size_t max_request_body() const { return _maxBodySize; }
 
+    // How long a request may take to arrive in all, headers and body (DEFAULT_REQUEST_READ_DEADLINE_MS unless set; 0
+    // is no limit). A request still arriving past it is answered 408 and its connection closed, so a worker isn't
+    // held by one sent slowly. Set it before start().
+    static constexpr uint64_t DEFAULT_REQUEST_READ_DEADLINE_MS = 30000;
+    void set_request_read_deadline( uint64_t deadline_millis )
+    {
+        _readDeadlineMs = deadline_millis;
+    }
+
+    uint64_t request_read_deadline() const { return _readDeadlineMs; }
+
     void add_route( int method, const std::string& path, http_cb cb )
     {
         _cbs[method][path] = cb;
@@ -298,6 +309,7 @@ private:
     {
         r_server_request request;
         request.set_max_body_size(_maxBodySize);
+        request.set_read_deadline(_readDeadlineMs);
         try
         {
             request.read_request(conn);
@@ -305,7 +317,13 @@ private:
         catch(r_http_413_exception& ex)
         {
             R_LOG_WARNING("%s:%d %s", __FILE__, __LINE__, r_utils::r_string_utils::split(std::string(ex.what()), '\n').front().c_str());
-            _refuse_too_large(conn);
+            _refuse(conn, response_payload_too_large);
+            return;
+        }
+        catch(r_http_408_exception& ex)
+        {
+            R_LOG_WARNING("%s:%d %s", __FILE__, __LINE__, r_utils::r_string_utils::split(std::string(ex.what()), '\n').front().c_str());
+            _refuse(conn, response_request_timeout);
             return;
         }
         catch(r_http_400_exception& ex)
@@ -402,16 +420,16 @@ private:
         }
     }
 
-    // 413, and the connection closed (every response says so, and the server closes it once this returns). What the client has already sent is read
-    // first, briefly and only up to a bound, so closing doesn't reset the connection before it reads the answer; the
-    // rest of its body is never read.
-    static void _refuse_too_large( SOK_T& conn )
+    // A request refused before it was read whole (413, 408): answered, and the connection closed (every response says
+    // so, and the server closes it once this returns). What the client has already sent is read first, briefly and
+    // only up to a bound, so closing doesn't reset the connection before it reads the answer; the rest is never read.
+    static void _refuse( SOK_T& conn, status_code status )
     {
         if( !conn.valid() )
             return;
         try
         {
-            r_server_response response(response_payload_too_large);
+            r_server_response response(status);
             response.write_response(conn, 1000);
 
             char discard[4096];
@@ -437,6 +455,7 @@ private:
     }
 
     size_t _maxBodySize {r_server_request::DEFAULT_MAX_BODY_SIZE};
+    uint64_t _readDeadlineMs {DEFAULT_REQUEST_READ_DEADLINE_MS};
     std::map<int, std::map<std::string, http_cb>> _cbs;
     std::map<std::string, r_utils::r_blob_tree> _bundles;
     r_utils::r_server_threaded<SOK_T> _server;

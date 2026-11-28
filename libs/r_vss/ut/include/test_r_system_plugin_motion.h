@@ -12,6 +12,9 @@ public:
       TEST(test_r_system_plugin_motion::test_a_slow_plugin_does_not_hold_up_the_caller);
       TEST(test_r_system_plugin_motion::test_a_plugin_loaded_after_start_gets_each_cameras_latest_state);
       TEST(test_r_system_plugin_motion::test_stop_all_waits_for_a_call_in_the_plugin);
+      TEST(test_r_system_plugin_motion::test_plugin_gets_doorbell_rings_in_order_with_motion);
+      TEST(test_r_system_plugin_motion::test_a_plugin_without_the_ring_export_is_left_alone);
+      TEST(test_r_system_plugin_motion::test_a_plugin_with_only_the_ring_export_gets_rings);
     RTF_FIXTURE_END();
 
     virtual ~test_r_system_plugin_motion() throw() {}
@@ -27,6 +30,9 @@ public:
     void test_a_slow_plugin_does_not_hold_up_the_caller();
     void test_a_plugin_loaded_after_start_gets_each_cameras_latest_state();
     void test_stop_all_waits_for_a_call_in_the_plugin();
+    void test_plugin_gets_doorbell_rings_in_order_with_motion();
+    void test_a_plugin_without_the_ring_export_is_left_alone();
+    void test_a_plugin_with_only_the_ring_export_gets_rings();
 
 private:
     std::string _top;

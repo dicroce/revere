@@ -11,6 +11,19 @@ public:
       TEST(test_camera_properties_state::test_hours_count_only_with_pruning);
       TEST(test_camera_properties_state::test_hours_must_be_a_whole_number_of_hours);
       TEST(test_camera_properties_state::test_begin_starts_over);
+      TEST(test_camera_properties_state::test_the_press_source_counts_only_on_a_doorbell);
+      TEST(test_camera_properties_state::test_the_press_test_lines);
+      TEST(test_camera_properties_state::test_the_press_test_verdict);
+      TEST(test_camera_properties_state::test_the_mail_status_lines);
+      TEST(test_camera_properties_state::test_the_password_is_shown_as_it_is);
+      TEST(test_camera_properties_state::test_the_mail_setup_rows);
+      TEST(test_camera_properties_state::test_the_column_width);
+      TEST(test_camera_properties_state::test_a_button_beside_its_text);
+      TEST(test_camera_properties_state::test_the_label_column);
+      TEST(test_camera_properties_state::test_the_section_tabs_are_the_sections_drawn);
+      TEST(test_camera_properties_state::test_the_section_in_view);
+      TEST(test_camera_properties_state::test_a_tab_scrolls_to_its_section);
+      TEST(test_camera_properties_state::test_a_clicked_tab_stays_marked_until_the_user_scrolls);
     RTF_FIXTURE_END();
 
     virtual ~test_camera_properties_state() throw() {}
@@ -25,4 +38,17 @@ public:
     void test_hours_count_only_with_pruning();
     void test_hours_must_be_a_whole_number_of_hours();
     void test_begin_starts_over();
+    void test_the_press_source_counts_only_on_a_doorbell();
+    void test_the_press_test_lines();
+    void test_the_press_test_verdict();
+    void test_the_mail_status_lines();
+    void test_the_password_is_shown_as_it_is();
+    void test_the_mail_setup_rows();
+    void test_the_column_width();
+    void test_a_button_beside_its_text();
+    void test_the_label_column();
+    void test_the_section_tabs_are_the_sections_drawn();
+    void test_the_section_in_view();
+    void test_a_tab_scrolls_to_its_section();
+    void test_a_clicked_tab_stays_marked_until_the_user_scrolls();
 };

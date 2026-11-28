@@ -24,6 +24,8 @@ struct pane_ui
     bool doorbell {false}, motion {false}, prune {false};
     string hours {"24"}, tier {"auto"}, tier_status, transport {"TCP"}, transport_status, record_from {"main"};
     bool available {false};
+    string press_source {"onvif"};
+    doorbell_view door;
 
     pane_ui(const string& record_from_now, bool available_now) : ctx(ImGui::CreateContext()), record_from(record_from_now), available(available_now)
     {
@@ -47,8 +49,8 @@ struct pane_ui
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
         ImGui::SetNextWindowSize(ImVec2(1100.0f, 700.0f));
         ImGui::Begin("pane", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
-        camera_properties_pane(session, doorbell, motion, prune, hours, tier, tier_status, transport, transport_status, record_from, available,
-                               "/tmp/cam.nts", streams, false, [](const string&, const string&) {}, []() {}, []() {}, []() {});
+        camera_properties_pane(session, doorbell, press_source, door, motion, prune, hours, tier, tier_status, transport, transport_status, record_from, available,
+                               "/tmp/cam.nts", streams, false, [](const string&, const string&) {}, []() {}, []() {}, []() {}, []() {}, []() {});
         ImGui::End();
         ImGui::Render();
     }
@@ -66,9 +68,10 @@ struct pane_ui
     }
 
     // Clicks on a grid across the pane until `record_from` becomes `want`; whether it did.
+    // From below the row of section tabs: a click on a tab scrolls its section to the top, and Recording out of view.
     bool click_until(const string& want)
     {
-        for(float y = 20.0f; y < 640.0f; y += 6.0f)
+        for(float y = 60.0f; y < 640.0f; y += 6.0f)
             for(float x = 10.0f; x < 1090.0f; x += 12.0f)
             {
                 click(x, y);

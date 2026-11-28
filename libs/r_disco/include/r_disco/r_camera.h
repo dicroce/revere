@@ -91,6 +91,10 @@ struct r_camera
     // What the device is: "camera" or "doorbell", as the person chose it; null until they do (camera_kind()).
     r_utils::r_nullable<std::string> kind;
 
+    // How a doorbell tells revere it was pressed, besides ONVIF (which always counts): "onvif" (nothing more), or
+    // "reolink_email" (its email alerts, to revere's mail listener). Null until chosen: onvif (camera_press_source()).
+    r_utils::r_nullable<std::string> press_source;
+
     std::string stream_config_hash;
 };
 
@@ -115,6 +119,20 @@ inline std::string camera_kind(const r_camera& camera)
 inline bool valid_camera_kind(const std::string& kind)
 {
     return kind == "camera" || kind == "doorbell";
+}
+
+// A doorbell's press source as it's used: the one chosen, or "onvif".
+inline std::string camera_press_source(const r_camera& camera)
+{
+    if(!camera.press_source.is_null() && camera.press_source.value() == "reolink_email")
+        return "reolink_email";
+    return "onvif";
+}
+
+// Whether source is one a person can choose.
+inline bool valid_press_source(const std::string& source)
+{
+    return source == "onvif" || source == "reolink_email";
 }
 
 // Whether a person can choose this for record_from.

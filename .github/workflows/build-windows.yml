@@ -192,6 +192,17 @@ jobs:
           mkdir -p cloud-icon
           cp revere/build/stage/revere/R.ico cloud-icon/
 
+      # The catalog the Store lists plugins from (libs/r_vss/r_plugin_catalog.h): what this
+      # platform's release ships, in the folder with the plugins. The sign job signs it too.
+      - name: Write the plugin catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(git -C revere describe --tags --match 'v[0-9]*' --always)"
+          python revere/scripts/release/write_plugin_catalog.py \
+            --dir cloud --version "${version#v}" --platform windows --arch x86_64 \
+            --asset-platform windows
+
       - name: Upload the cloud plugin and its manifest
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -236,6 +247,20 @@ jobs:
           manifests=(plugin/*.json)
           if [ ${#manifests[@]} -eq 0 ]; then echo "::error::no plugin manifests to sign"; exit 1; fi
           for m in "${manifests[@]}"; do
+            case "$m" in
+              *-plugins.json)
+                # A plugin catalog (libs/r_vss/r_plugin_catalog.h): signed like a manifest, but it
+                # describes no file of its own. Every plugin it lists must be here with its manifest.
+                if [ "$(jq -r .format "$m")" != "1" ]; then echo "::error::$m isn't a format 1 catalog"; exit 1; fi
+                if [ "$(jq -r .revere_version "$m")" != "$version" ]; then echo "::error::$m is for revere $(jq -r .revere_version "$m"), not $version"; exit 1; fi
+                while IFS=$'\t' read -r asset man file; do
+                  case "$asset$man$file" in */*|*\\*) echo "::error::$m names a path, not a file"; exit 1;; esac
+                  if [ ! -f "plugin/$asset" ] || [ ! -f "plugin/$man" ]; then echo "::error::$m lists $asset, which isn't here with its manifest"; exit 1; fi
+                  if [ "$(jq -r .file "plugin/$man")" != "$file" ]; then echo "::error::$m lists $file, but $man is for $(jq -r .file "plugin/$man")"; exit 1; fi
+                done < <(jq -r '.plugins[] | select(.type == "plugin") | [.plugin, .manifest, .file] | @tsv' "$m")
+                echo "OK: $m"; cat "$m"; echo
+                continue ;;
+            esac
             p="${m%.json}"
             if [ ! -f "$p" ]; then echo "::error::no plugin beside $m"; exit 1; fi
             if [ "$(jq -r .format "$m")" != "1" ]; then echo "::error::$m isn't a format 1 manifest"; exit 1; fi
@@ -390,6 +415,21 @@ jobs:
               echo "::error::Expected '${expected}' not found: the in-app Revere Cloud install would fail."
               exit 1
             fi
+          done
+
+      - name: Verify the plugin catalog is there
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for asset_platform in windows; do
+            for suffix in "" .sig; do
+              expected="revere-v${version}-${asset_platform}-plugins.json${suffix}"
+              if [ ! -f "dist/${expected}" ]; then
+                echo "::error::Expected '${expected}' not found: the Store couldn't list plugins."
+                exit 1
+              fi
+            done
           done
 
       - name: Create/update public release and upload installers

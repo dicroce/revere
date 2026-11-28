@@ -56,6 +56,9 @@ public:
     R_API std::string issue_session(clock::time_point now = clock::now());
     // The local token, or an unexpired session token.
     R_API bool valid(const std::string& token, clock::time_point now = clock::now());
+    // Only the local token: a process on this machine (a system plugin), not a person signed in. For settings that
+    // belong to the cloud, such as which cameras' audio is recorded.
+    R_API bool is_local_token(const std::string& token) const;
     // Ends a session (no effect on the local token).
     R_API void revoke(const std::string& token);
     R_API void revoke_all_sessions();

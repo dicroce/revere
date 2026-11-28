@@ -12,7 +12,8 @@ namespace vision
 
 // The View window's corner controls: volume, Keep on top and Close, as small
 // icon buttons in one strip at the top right of the video, the way picture in
-// picture windows do it. They fade in and out with the timeline (alpha).
+// picture windows do it, with a Denoise checkbox under the volume slider. They
+// fade in and out with the timeline (alpha).
 struct overlay_controls_result
 {
     bool close {false};
@@ -30,6 +31,7 @@ constexpr float button = 28.0f;   // square icon button
 constexpr float inset = 10.0f;    // from the window's top and right edges
 constexpr float pad = 2.0f;       // around the buttons inside the strip
 constexpr float slider_w = 72.0f;
+constexpr float denoise_row = 22.0f; // the Denoise checkbox's row, under the buttons
 
 inline ImU32 col(const ImVec4& c, float alpha)
 {
@@ -106,7 +108,7 @@ inline float corner_strip_w()
 
 inline float corner_strip_h()
 {
-    return pad * 2.0f + button;
+    return pad * 2.0f + button + denoise_row;
 }
 
 }
@@ -127,8 +129,9 @@ inline int overlay_min_height(float time_bar_h)
 }
 
 // Draws the strip and returns what was clicked. volume is the stream's gain
-// (0 = silent, up to 4); the slider edits it in place.
-inline overlay_controls_result overlay_corner_controls(float win_w, float alpha, bool pinned, float& volume)
+// (0 = silent, up to 4); the slider edits it in place, and the checkbox under
+// it edits denoise.
+inline overlay_controls_result overlay_corner_controls(float win_w, float alpha, bool pinned, float& volume, bool& denoise)
 {
     using namespace r_ui_utils::theme;
     using namespace overlay_controls_detail;
@@ -185,6 +188,40 @@ inline overlay_controls_result overlay_corner_controls(float win_w, float alpha,
     if(icon_button("##close", false, alpha, "Close (Esc)",
         [&](ImDrawList* dl, ImVec2 c, ImU32 cl) { draw_close(dl, c, cl); }))
         r.close = true;
+
+    // Denoise, under the volume slider: a small box and its label, drawn by
+    // hand so they fade with the strip like the buttons above.
+    {
+        ImVec2 p(r.x + pad + button + gap, r.y + pad + button);
+        const float box = 12.0f;
+        // The click target covers the box and its label only, so a click in the
+        // empty part of the row (under Keep on top and Close) doesn't toggle it.
+        const float hit_w = (std::min)(4.0f + box + 6.0f + ImGui::CalcTextSize("Denoise").x,
+                                       r.x + r.w - pad - p.x);
+        ImGui::SetCursorScreenPos(p);
+        if(ImGui::InvisibleButton("##denoise", ImVec2(hit_w, denoise_row)))
+            denoise = !denoise;
+        bool hovered = ImGui::IsItemHovered();
+        auto* dl = ImGui::GetWindowDrawList();
+        const float cy = p.y + denoise_row * 0.5f;
+        ImVec2 b0(p.x + 4.0f, cy - box * 0.5f), b1(b0.x + box, b0.y + box);
+        if(denoise)
+        {
+            dl->AddRectFilled(b0, b1, col(hovered ? blue_300 : accent, alpha));
+            ImU32 tick = col(text_on_primary, alpha);
+            dl->AddLine(ImVec2(b0.x + 2.5f, cy), ImVec2(b0.x + 5.0f, b1.y - 3.0f), tick, 1.75f);
+            dl->AddLine(ImVec2(b0.x + 5.0f, b1.y - 3.0f), ImVec2(b1.x - 2.5f, b0.y + 3.0f), tick, 1.75f);
+        }
+        else
+            dl->AddRect(b0, b1, col(hovered ? text_primary : text_secondary, alpha), 0.0f, 0, 1.5f);
+        dl->AddText(ImVec2(b1.x + 6.0f, cy - ImGui::GetFontSize() * 0.5f),
+                    col(hovered || denoise ? text_primary : text_secondary, alpha), "Denoise");
+        if(hovered && alpha > 0.5f)
+        {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ImGui::SetTooltip("Suppress background noise to make voices clearer.\nAlso quiets non-speech sounds (barking, glass, engines).");
+        }
+    }
 
     ImGui::End();
     ImGui::PopStyleColor();

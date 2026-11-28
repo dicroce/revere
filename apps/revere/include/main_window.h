@@ -166,6 +166,7 @@ struct main_window_actions
     std::function<void(int)> move_use;      // a held move: use the new address
     std::function<void(int)> move_keep;     // a held move: keep the current address
     std::function<void(int)> move_ok;       // a followed move: notice seen
+    std::function<void(int)> address_confirm;   // a camera held for a different device at its address: it is the camera
     std::function<void(int)> record;
     std::function<void(int)> forget;
     std::function<void(const std::string&, bool)> set_plugin_enabled;
@@ -224,6 +225,18 @@ inline std::string short_version(std::string v)
 
 namespace main_window_detail
 {
+
+// How many InvisibleButtons were given a zero width or height. ImGui asserts on that, but only in a build that has
+// asserts: a Release build goes on, and draws nothing for the button. Every invisible button in the app goes through
+// invisible_button() so that the tests can read this in either build.
+inline int zero_size_buttons = 0;
+
+inline bool invisible_button(const char* id, const ImVec2& size, ImGuiButtonFlags flags = 0)
+{
+    if(size.x == 0.0f || size.y == 0.0f)
+        ++zero_size_buttons;
+    return ImGui::InvisibleButton(id, size, flags);
+}
 
 inline ImFont* font(const std::string& key, bool semibold = false)
 {
@@ -423,7 +436,7 @@ inline void section_header(const std::string& id, const std::string& title, size
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
     const float h = ImGui::GetFontSize() + 10.0f;
     const float width = ImGui::GetContentRegionAvail().x;
-    if(ImGui::InvisibleButton(id.c_str(), ImVec2(width, h)))
+    if(invisible_button(id.c_str(), ImVec2(std::max(1.0f, width), h)))
         open = !open;
     const bool hovered = ImGui::IsItemHovered();
     auto min = ImGui::GetItemRectMin();
@@ -802,7 +815,7 @@ inline bool compact_toggle(const char* label, bool* v, const main_window_fonts& 
     const ImVec2 size(label_size.x + 8.0f + track_w, h);
 
     ImGui::PushID(label);
-    bool clicked = ImGui::InvisibleButton("##toggle", size);
+    bool clicked = invisible_button("##toggle", size);
     ImGui::PopID();
     bool hovered = ImGui::IsItemHovered();
     if(hovered)
@@ -1533,7 +1546,7 @@ inline void main_window(
         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
 
     auto vertical_rule = [&](const char* id, float h, float& value, float sign) {
-        ImGui::InvisibleButton(id, ImVec2(splitter, h));
+        invisible_button(id, ImVec2(splitter, std::max(1.0f, h)));
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
         if(hot)
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -1641,6 +1654,20 @@ inline void main_window(
                 ImGui::PushFont(font(fonts.key_18));
                 wrapped_text(status_danger_text, item.retention);
                 ImGui::PopFont();
+            }
+
+            if(item.address_held)
+            {
+                // A different device answers at the camera's own address (see r_disco/r_address_check.h): stopped, so
+                // its login isn't sent there, until a person says it is theirs.
+                ImGui::PushFont(font(fonts.key_18));
+                wrapped_text(status_warning_text, item.address_notice);
+                ImGui::PopFont();
+                action_row h;
+                if(flow_button(h.row, "It's my camera", button_kind::primary) && actions.address_confirm)
+                    actions.address_confirm(sel_index);
+                if(ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Learn this device's hardware address as the camera's, and record it again, signing in to it with this camera's credentials");
             }
 
             if(!item.move_notice.empty())
@@ -1816,7 +1843,7 @@ inline void main_window(
     // ---- Log ----
     if(state.show_log)
     {
-        ImGui::InvisibleButton("##log_splitter", ImVec2(w, splitter));
+        invisible_button("##log_splitter", ImVec2(std::max(1.0f, w), splitter));
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
         if(hot)
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
@@ -1905,7 +1932,7 @@ inline void main_window(
         float status_room = (right - left) - chips_w - (show_version ? version_w + gap : 0.0f);
         status_room = std::max(min_status, std::min(status_w, status_room));
         ImGui::SetCursorScreenPos(ImVec2(left, cy - line_h * 0.5f));
-        ImGui::InvisibleButton("##status_text", ImVec2(std::max(1.0f, status_room), line_h));
+        invisible_button("##status_text", ImVec2(std::max(1.0f, status_room), line_h));
         ellipsis_text(dl, ImVec2(left, cy - line_h * 0.5f), status_room, status_warning ? status_warning_text : text_secondary, status_text);
         if(status_room < status_w && ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", status_text.c_str());
@@ -1923,7 +1950,7 @@ inline void main_window(
             ImVec2 a(x, cy - ch * 0.5f);
             ImGui::SetCursorScreenPos(a);
             ImGui::PushID((int)i);
-            bool clicked = ImGui::InvisibleButton("##chip", ImVec2(cw, ch));
+            bool clicked = invisible_button("##chip", ImVec2(cw, ch));
             bool hovered = ImGui::IsItemHovered();
             ImGui::PopID();
             ImVec2 b(a.x + cw, a.y + ch);

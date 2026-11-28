@@ -16,6 +16,7 @@
 
 #include "macos_activation.h"
 #include "render_policy.h"
+#include "x11_errors.h"
 #include "vision_launch.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -219,6 +220,10 @@ struct revere_ui_state
 
     // camera properties dialog
     bool is_doorbell {false};
+    // A doorbell's press source ("onvif" or "reolink_email"), and what the Doorbell section shows about its presses.
+    std::string press_source {"onvif"};
+    revere::doorbell_view door_view;
+    std::chrono::steady_clock::time_point door_view_read;
     bool do_motion_detection {false};
     bool do_motion_pruning {false};
     std::string min_continuous_recording_hours {"24"};
@@ -488,6 +493,16 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
             item.stats = ui_state.camera_stats->get(c.first);
         item.reconnects_24h = streamKeeper.reconnects().count_since(c.first, now_wall - chrono::hours(24));
         item.reconnects_counted_since = streamKeeper.reconnects().started_at();
+        auto hold_n = devices.get_address_check(c.first);
+        if(!hold_n.is_null())
+        {
+            item.address_held = true;
+            item.address_since_ms = hold_n.value().since_ms;
+            item.address_notice = r_disco::address_check_message();
+            if(const auto device = r_disco::address_check_device_line(hold_n.value()); !device.empty())
+                item.address_notice += "\n" + device;
+            item.sub_label += " \xC2\xB7 different device?";
+        }
         auto move_n = devices.get_camera_move(c.first);
         if(!move_n.is_null())
         {
@@ -2107,6 +2122,25 @@ void _set_working_dir()
     r_fs::change_working_directory(wd);
 }
 
+// The window's pixels to a point on Windows, where SDL keeps the window in points (SDL_HINT_WINDOWS_DPI_SCALING) and
+// the renderer's output is in pixels: 1.5 at a 150% display scale. `last` while there's no size to read (minimized).
+// 1 elsewhere: macOS keeps its own Retina handling, and Linux isn't DPI-aware.
+static float _display_scale(SDL_Window* window, SDL_Renderer* renderer, float last)
+{
+#ifdef IS_WINDOWS
+    int w = 0, h = 0, pw = 0, ph = 0;
+    SDL_GetWindowSize(window, &w, &h);
+    if(w <= 0 || SDL_GetRendererOutputSize(renderer, &pw, &ph) != 0 || pw <= 0)
+        return last;
+    return r_ui_utils::display_scale(pw, w);
+#else
+    (void)window;
+    (void)renderer;
+    (void)last;
+    return 1.0f;
+#endif
+}
+
 void _set_adaptive_window_size(SDL_Window* window)
 {
     // Get display bounds (which excludes taskbars/menubars on some platforms)
@@ -2806,9 +2840,10 @@ int main(int argc, char** argv)
     ImGui::CreateContext();
 
     r_disco::r_agent agent(r_fs::platform_path(top_dir));
-    // Whether a camera whose address changes pauses until its move is confirmed: the last value the cloud sent, or
-    // off (it keeps recording) when it never sent one (r_disco::load_camera_move_policy).
-    agent.set_pause_on_address_change(r_disco::load_camera_move_policy(r_fs::platform_path(top_dir)));
+    // Whether a camera that moves to an address that can't be checked (no MAC on file or readable there) is followed
+    // without waiting for a person: the last value the cloud sent, or off (held until confirmed) when it never sent
+    // one (r_disco::load_camera_move_policy). A different MAC is always held.
+    agent.set_follow_unverified_moves(r_disco::load_camera_move_policy(r_fs::platform_path(top_dir)));
     r_disco::r_devices devices(r_fs::platform_path(top_dir));
     r_vss::r_stream_keeper streamKeeper(devices, agent, r_fs::platform_path(top_dir));
     streamKeeper.set_system_plugin_api_result_cb([&cfg_state](const std::string& name, const std::string& json) {
@@ -2867,6 +2902,14 @@ int main(int argc, char** argv)
         else
             devices.set_camera_alert(id, msg);
     });
+    // A different device answers at an assigned camera's address (see r_disco/r_address_check.h): the camera is held,
+    // and the stream keeper stops its recording. Kept on r_devices for the stream keeper, the UI and /cameras.
+    agent.set_address_check_cb([&devices](const std::string& id, const r_utils::r_nullable<r_disco::r_address_check>& check){
+        if(check.is_null())
+            devices.clear_address_check(id);
+        else
+            devices.set_address_check(id, check.value());
+    });
     // An assigned camera found at a new address (see r_disco/r_camera_move.h):
     // held until it can be followed, or followed. Kept on r_devices for the
     // UI and for /cameras (the cloud plugin reads it there).
@@ -2894,6 +2937,8 @@ int main(int argc, char** argv)
 
         r_shutdown_signal::arm("RevereHeadlessStop");   // arm before starting worker threads
 
+        // Cameras held for a different device at their address stay held across a restart: before the keeper connects.
+        agent.restore_address_holds();
         streamKeeper.start();
         devices.start();
         agent.start();
@@ -2913,6 +2958,15 @@ int main(int argc, char** argv)
         r_pipeline::gstreamer_deinit();
         return 0;
     }
+
+#ifdef IS_WINDOWS
+    // Per-monitor DPI aware (v2) rather than stretched by Windows, with SDL's window, mouse and display coordinates in
+    // points: the ImGui renderer draws them at the monitor's pixels, and the fonts are made at its scale
+    // (_display_scale), so text is sharp at any display scale and stays so on a monitor with another one. Set before
+    // SDL_Init, which declares the process's awareness.
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1");
+#endif
 
     // Setup SDL2
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
@@ -2947,6 +3001,9 @@ int main(int argc, char** argv)
         SDL_Quit();
         return 1;
     }
+
+    // A monitor going away makes RandR requests fail; without this Xlib ends the app on the first one.
+    revere::install_x11_error_handler(window);
 
 #ifdef IS_WINDOWS
     // Make the native title bar dark so it matches the app's theme instead of
@@ -3077,8 +3134,9 @@ int main(int argc, char** argv)
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer_Init(renderer);
 
-    // Platform-specific font sizes (macOS renders fonts larger, so we use smaller sizes)
-#ifdef IS_MACOS
+    // Font sizes in points. macOS and Windows (DPI aware, so its points are the display's, as a Mac's are) share
+    // them; Linux, which isn't DPI aware, keeps the larger ones.
+#if defined(IS_MACOS) || defined(IS_WINDOWS)
     const float FONT_SIZE_24 = 18.0f;
     const float FONT_SIZE_22 = 16.0f;
     const float FONT_SIZE_20 = 15.0f;
@@ -3092,12 +3150,19 @@ int main(int argc, char** argv)
     const float FONT_SIZE_14 = 16.0f;
 #endif
 
-    r_ui_utils::load_fonts(io, FONT_SIZE_24, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_22, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_20, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_18, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_14, r_ui_utils::fonts);
-    io.FontDefault = r_ui_utils::fonts[r_string_utils::float_to_s(FONT_SIZE_24, 2)].inter_tight_regular;
+    // The fonts, made for the display's scale (1 but on Windows): again when the window reaches a monitor with
+    // another scale (see the frame loop).
+    auto load_ui_fonts = [&](float scale) {
+        io.Fonts->Clear();
+        r_ui_utils::fonts.clear();
+        for(float size : {FONT_SIZE_24, FONT_SIZE_22, FONT_SIZE_20, FONT_SIZE_18, FONT_SIZE_14})
+            r_ui_utils::load_fonts(io, size, scale, r_ui_utils::fonts);
+        r_ui_utils::build_fonts(io, scale);
+        io.FontDefault = r_ui_utils::fonts[r_string_utils::float_to_s(FONT_SIZE_24, 2)].inter_tight_regular;
+    };
+    float font_scale = _display_scale(window, renderer, 1.0f);
+    R_LOG_INFO("Display scale %.2f", font_scale);
+    load_ui_fonts(font_scale);
 
     // Generate font key strings for the loaded sizes
     auto FONT_KEY_24 = r_string_utils::float_to_s(FONT_SIZE_24, 2);
@@ -3121,6 +3186,8 @@ int main(int argc, char** argv)
     uint64_t disk_bytes_per_second = r_vss::benchmark_disk_write_speed(video_path);
 
     // Start background services
+    // Cameras held for a different device at their address stay held across a restart: before the keeper connects.
+    agent.restore_address_holds();
     streamKeeper.start();
     devices.start();
     agent.start();
@@ -3295,6 +3362,72 @@ int main(int argc, char** argv)
             close_properties();
             return;
         }
+        // The Doorbell section's view of its presses and email setup, read every 2 s while it shows; its login once.
+        auto read_door_view = [&](bool now){
+            if(!ui_state.is_doorbell)
+                return;
+            auto t = std::chrono::steady_clock::now();
+            if(!now && ui_state.door_view.loaded && t - ui_state.door_view_read < std::chrono::seconds(2))
+                return;
+            ui_state.door_view_read = t;
+            auto& v = ui_state.door_view;
+            v.loaded = true;
+            auto presses = streamKeeper.doorbell_presses(camera_id.value());
+            if(!presses.is_null())
+            {
+                const auto& p = presses.value();
+                v.saved_source = p.press_source;
+                v.suggest_onvif = p.suggest_onvif;
+                v.last_email_ms = p.last_email_ms.is_null() ? 0 : p.last_email_ms.value();
+                v.test_any = p.test.any;
+                v.test_open = p.test.open;
+                v.test_ends_ms = p.test.ends_ms;
+                v.test_sources.clear();
+                for(auto& src : p.test.sources)
+                    v.test_sources.push_back({src.source, src.seen, src.seen ? src.arrived_ms - src.press_ms : 0});
+                v.test_other_mail = p.test.other_mail;
+                v.clock_known = !p.clock_offset_ms.is_null();
+                v.clock_offset_ms = v.clock_known ? p.clock_offset_ms.value() : 0;
+            }
+            auto mail = streamKeeper.doorbell_mail_setup(camera_id.value(), !v.has_login);
+            v.has_mail = !mail.is_null();
+            if(v.has_mail)
+            {
+                const auto& m = mail.value();
+                v.server = m.setup.server;
+                v.port = m.setup.port;
+                v.sender = m.setup.sender;
+                if(!v.has_login)
+                {
+                    v.password = m.setup.password;
+                    v.has_login = true;
+                }
+                v.recipient = m.setup.recipient;
+                v.listening = m.listening;
+                v.other_mail = m.counts.other_mail;
+                v.bad_logins = m.counts.bad_logins;
+                v.locked_for_ms = m.locked_for_ms;
+                v.last_error = m.counts.last_error;
+            }
+        };
+        read_door_view(false);
+        auto press_test = [&](){
+            streamKeeper.start_doorbell_press_test(camera_id.value(), false);
+            read_door_view(true);
+        };
+        // "New password", confirmed: a new email password, shown at once.
+        auto new_password = [&](){
+            auto made = streamKeeper.new_doorbell_mail_login(camera_id.value());
+            if(made.is_null())
+                return;
+            auto& v = ui_state.door_view;
+            v.password = made.value().setup.password;
+            v.sender = made.value().setup.sender;
+            v.has_login = true;
+            v.reveal = true;
+            read_door_view(true);
+        };
+
         string record_path;
         bool can_sync_time = false;
         // The camera's smaller stream works as saved (and smaller streams are on here): "Record from" can be set to it.
@@ -3447,7 +3580,7 @@ int main(int argc, char** argv)
 
             // The wait first, so a worker that finishes at once isn't overwritten by it.
             camera_setup_wizard.next("sync_camera_time_wait");
-            std::thread th([&agent, &camera_setup_wizard, camera, gen](){
+            std::thread th([&agent, &streamKeeper, &camera_setup_wizard, camera, gen](){
                 string title, message;
                 try
                 {
@@ -3456,6 +3589,9 @@ int main(int argc, char** argv)
                         camera.rtsp_username, camera.rtsp_password,
                         camera.onvif_port, camera.onvif_protocol
                     );
+                    // Its events subscription reads the new clock, for a doorbell's email ring times.
+                    if(r.changed)
+                        streamKeeper.camera_clock_set(camera.id);
                     title = "Camera time synced";
                     message = _describe_time_sync(r);
                 }
@@ -3493,6 +3629,8 @@ int main(int argc, char** argv)
         auto result = revere::camera_properties_pane(
             properties_session,
             ui_state.is_doorbell,
+            ui_state.press_source,
+            ui_state.door_view,
             ui_state.do_motion_detection,
             ui_state.do_motion_pruning,
             ui_state.min_continuous_recording_hours,
@@ -3508,7 +3646,9 @@ int main(int argc, char** argv)
             streams_click,
             sync_time,
             move_storage,
-            change_retention
+            change_retention,
+            press_test,
+            new_password
         );
         if(result == revere::camera_properties_result::cancel)
             close_properties();
@@ -3551,6 +3691,9 @@ int main(int argc, char** argv)
                 if(!camera.kind.is_null() || kind != r_disco::camera_kind(camera))
                     camera.kind.set_value(kind);
             }
+            // A doorbell's press source, kept once it's chosen (onvif is what an unset one means).
+            if(ui_state.is_doorbell && (!camera.press_source.is_null() || ui_state.press_source != "onvif"))
+                camera.press_source.set_value(ui_state.press_source);
             {
                 // The Streams section's choice, when it was changed.
                 std::lock_guard<std::mutex> g(streams.m);
@@ -3576,6 +3719,8 @@ int main(int argc, char** argv)
         // Go to camera properties modal
         auto camera = devices.get_camera_by_id(ui_state.selected_camera_id().value()).value();
         ui_state.is_doorbell = r_disco::camera_kind(camera) == "doorbell";
+        ui_state.press_source = r_disco::camera_press_source(camera);
+        ui_state.door_view = revere::doorbell_view();
         ui_state.record_from = r_disco::record_from_sub(camera) ? "sub" : "main";
         ui_state.do_motion_detection = camera.do_motion_detection.value();
         ui_state.do_motion_pruning = camera.do_motion_pruning.value();
@@ -3650,7 +3795,7 @@ int main(int argc, char** argv)
             }
         }
         properties_session.begin(camera.id, ui_state.is_doorbell, ui_state.do_motion_detection, ui_state.do_motion_pruning && ui_state.do_motion_detection,
-                                 ui_state.min_continuous_recording_hours, ui_state.motion_tier, ui_state.rtsp_transport, ui_state.record_from);
+                                 ui_state.min_continuous_recording_hours, ui_state.motion_tier, ui_state.rtsp_transport, ui_state.record_from, ui_state.press_source);
         main_window_state.properties_open = true;
     };
     // Selecting something else while the properties have unsaved changes asks first.
@@ -3667,7 +3812,7 @@ int main(int argc, char** argv)
             streams_changed = as.streams.changed;
         }
         if(!properties_session.dirty(ui_state.is_doorbell, ui_state.do_motion_detection, ui_state.do_motion_pruning && ui_state.do_motion_detection,
-                                     ui_state.motion_tier, ui_state.rtsp_transport, ui_state.record_from, streams_changed))
+                                     ui_state.motion_tier, ui_state.rtsp_transport, ui_state.record_from, streams_changed, ui_state.press_source))
         {
             close_properties();
             go();
@@ -3718,6 +3863,18 @@ int main(int argc, char** argv)
     main_window_actions.move_keep = [&](int i){
         if(i >= 0 && i < (int)ui_state.recording_items.size())
             agent.dismiss_camera_move(ui_state.recording_items[i].camera_id);
+        force_ui_update = true;
+    };
+    // A camera held for a different device at its address: the person says it is theirs. The hold named is the one on
+    // screen (the item's), so a device that took the address since is not vouched for: the agent says "changed".
+    main_window_actions.address_confirm = [&](int i){
+        if(i >= 0 && i < (int)ui_state.recording_items.size())
+        {
+            const auto& item = ui_state.recording_items[i];
+            auto answer = agent.confirm_address_check(item.camera_id, item.address_since_ms);
+            if(answer == r_disco::address_answer::changed)
+                main_window_state.show_toast("A different device is at this camera's address now. Check it before you confirm.");
+        }
         force_ui_update = true;
     };
     main_window_actions.move_ok = [&](int i){
@@ -4004,9 +4161,10 @@ int main(int argc, char** argv)
                     {
                         ui_state.friendly_name = status.camera.friendly_name.value();
                         ui_state.ipv4 = status.camera.ipv4.value();
-                        // With the credential, so the URL works as copied (e.g. into VLC).
-                        ui_state.restream_url = r_string_utils::format("rtsp://%s:%s@127.0.0.1:8554/%s",
-                            r_vss::r_rtsp_auth::RTSP_USER, streamKeeper.rtsp_password().c_str(), ui_state.friendly_name.c_str());
+                        // With the credential, so the URL works as copied (e.g. into VLC), and at the path the camera is
+                        // mounted at: a name's spaces are underscores there, so the raw name gave a 404.
+                        ui_state.restream_url = r_vss::restream_url("127.0.0.1", 8554, ui_state.friendly_name,
+                            r_vss::r_rtsp_auth::RTSP_USER, streamKeeper.rtsp_password());
                         ui_state.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
                         auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
                         ui_state.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
@@ -4020,6 +4178,20 @@ int main(int argc, char** argv)
             continue;
 
         need_render = false;  // Reset for next iteration
+
+        // The window is on a monitor with another scale (moved, or the display's scale was changed): the fonts again,
+        // sharp at it. The renderer makes their texture again in its NewFrame.
+        {
+            const float scale = _display_scale(window, renderer, font_scale);
+            if(scale != font_scale)
+            {
+                R_LOG_INFO("Display scale %.2f, was %.2f", scale, font_scale);
+                font_scale = scale;
+                ImGui_ImplSDLRenderer_DestroyFontsTexture();
+                load_ui_fonts(scale);
+                frame_skipper.invalidate();
+            }
+        }
 
         // Start the Dear ImGui frame
         ImGui_ImplSDLRenderer_NewFrame();
@@ -4259,6 +4431,12 @@ int main(int argc, char** argv)
             (Uint8)(clear_color.z * 255),
             (Uint8)(clear_color.w * 255));
         SDL_RenderClear(renderer);
+
+#ifdef IS_WINDOWS
+        // Points to the window's pixels: this ImGui renderer doesn't scale its vertices itself, it leaves that to the
+        // SDL renderer's scale (macOS gets it from SDL_RenderSetLogicalSize).
+        SDL_RenderSetScale(renderer, ImGui::GetIO().DisplayFramebufferScale.x, ImGui::GetIO().DisplayFramebufferScale.y);
+#endif
 
         // Render ImGui
         ImGui_ImplSDLRenderer_RenderDrawData(ImGui::GetDrawData());

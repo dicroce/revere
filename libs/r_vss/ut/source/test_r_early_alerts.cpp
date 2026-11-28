@@ -377,3 +377,111 @@ void test_r_early_alerts::test_once_per_class_across_a_chain()
     e.event_started("d", true);
     RTF_ASSERT_EQUAL((int)e.consider("d", "person", 0.9f, LEAVES, T0).verdict, (int)E::early_sent);
 }
+
+void test_r_early_alerts::test_log_notes()
+{
+    // A box for the log: corners and size, whole pixels.
+    RTF_ASSERT_EQUAL(box_text(box(400, 300, 160, 90)), string("[400,300 560,390] 160x90"));
+    RTF_ASSERT_EQUAL(box_text({10.4f, 20.6f, 30.5f, 41.0f}), string("[10,21 31,41] 20x20"));
+
+    E e;
+    // Nothing learnt: no anchor of the class.
+    RTF_ASSERT_EQUAL(e.nearest_anchor("c", "car", PARKED_CAR, T0), string("no car anchor"));
+
+    // Each person, vehicle or animal in the start frame gets a note; other classes don't.
+    const r_box FAR_CAR = box(300, 200, 20, 12);
+    vector<string> notes;
+    e.event_started("c");
+    const r_box TRUCK = box(100, 400, 60, 40);
+    RTF_ASSERT(e.event_ended("c", T0, {{"car", PARKED_CAR}, {"car", FAR_CAR}, {"cat", LEAVES}, {"pottedplant", LEAVES}, {"dog", LEAVES}, {"truck", TRUCK}},
+                             {{"car", PARKED_CAR}, {"car", shift(FAR_CAR, 8, 0)}, {"cat", shift(LEAVES, 12, 0)}, {"truck", shift(TRUCK, 30, 0)}}, &notes));
+    RTF_ASSERT_EQUAL((int)notes.size(), 5);
+    RTF_ASSERT_EQUAL(notes[0], string("car [400,300 560,390] 160x90: end-frame IoU 1.00: new anchor: 1 sighting, strong, active"));
+    // A small far car whose box moved 8 px (of its 20): IoU 0.43, but jitter in place, so a sighting.
+    RTF_ASSERT_EQUAL(notes[1], string("car [300,200 320,212] 20x12: end-frame IoU 0.43, a small box jittering in place: new anchor: 1 sighting, weak, not active"));
+    RTF_ASSERT_EQUAL(notes[2], string("cat [60,120 100,210] 40x90: end-frame IoU 0.54: new anchor: 1 sighting, weak, not active"));
+    RTF_ASSERT_EQUAL(notes[3], string("dog [60,120 100,210] 40x90: no dog in the end frame: not learnt"));
+    // A truck that moved 30 px: neither.
+    RTF_ASSERT_EQUAL(notes[4], string("truck [100,400 160,440] 60x40: end frame's best truck IoU 0.33, under 0.50: not learnt"));
+
+    // Seen again in a later event: the anchor's count and state.
+    notes.clear();
+    e.event_started("c");
+    e.event_ended("c", T0 + HOUR, {{"cat", LEAVES}}, {{"cat", shift(LEAVES, 12, 0)}}, &notes);
+    RTF_ASSERT_EQUAL((int)notes.size(), 1);
+    RTF_ASSERT_EQUAL(notes[0], string("cat [60,120 100,210] 40x90: end-frame IoU 0.54: anchor seen again (IoU 1.00): 2 sightings, weak, active"));
+
+    // The nearest anchor of the class, active or not; another class's anchors don't count.
+    RTF_ASSERT_EQUAL(e.nearest_anchor("c", "car", shift(PARKED_CAR, 16, 0), T0 + HOUR),
+                     string("nearest car anchor [400,300 560,390] 160x90: IoU 0.82, 1 sighting, strong, active"));
+    RTF_ASSERT_EQUAL(e.nearest_anchor("c", "car", PARKED_CAR, T0 + 25 * HOUR),
+                     string("nearest car anchor [400,300 560,390] 160x90: IoU 1.00, 1 sighting, strong, not active"));
+    RTF_ASSERT_EQUAL(e.nearest_anchor("c", "truck", PARKED_CAR, T0 + HOUR), string("no truck anchor"));
+    RTF_ASSERT_EQUAL(e.nearest_anchor("other", "car", PARKED_CAR, T0 + HOUR), string("no car anchor"));
+    // With two car anchors, the one that overlaps best, whichever was learnt first.
+    const r_box SECOND_CAR = box(20, 330, 150, 80);
+    e.event_started("c");
+    e.event_ended("c", T0 + HOUR, {{"car", SECOND_CAR}}, {{"car", SECOND_CAR}});
+    RTF_ASSERT_EQUAL(e.nearest_anchor("c", "car", shift(SECOND_CAR, 4, 0), T0 + HOUR).substr(0, 42),
+                     string("nearest car anchor [20,330 170,410] 150x80"));
+    // Without a notes list, learning is as before.
+    RTF_ASSERT(_event(e, T0 + 2 * HOUR, {{"car", PARKED_CAR}}, {{"car", PARKED_CAR}}));
+}
+
+void test_r_early_alerts::test_small_parked_car()
+{
+    // YOLO's jitter on a far car's small box: the same place, though IoU says otherwise.
+    const r_box FAR_CAR = box(300, 200, 20, 12);
+    RTF_ASSERT(box_iou(FAR_CAR, shift(FAR_CAR, 8, 0)) < 0.5f);
+    RTF_ASSERT(same_place("car", FAR_CAR, shift(FAR_CAR, 8, 0), 0.5f));
+    RTF_ASSERT(same_place("truck", FAR_CAR, shift(FAR_CAR, -8, 6), 0.5f));
+    RTF_ASSERT(!same_place("car", FAR_CAR, shift(FAR_CAR, 9, 0), 0.5f));
+    // Half the box, on a short side: 6 px of its 12.
+    RTF_ASSERT(!same_place("car", FAR_CAR, shift(FAR_CAR, 0, 7), 0.5f));
+    // A box much bigger or smaller isn't the same car, even on the same centre (each of these has IoU under 0.5).
+    RTF_ASSERT(!same_place("car", FAR_CAR, {294.5f, 197.5f, 325.5f, 214.5f}, 0.5f));   // 31x17: too wide
+    RTF_ASSERT(!same_place("car", FAR_CAR, {295.5f, 196.5f, 324.5f, 215.5f}, 0.5f));   // 29x19: too tall
+    RTF_ASSERT(!same_place("car", {294.5f, 197.5f, 325.5f, 214.5f}, FAR_CAR, 0.5f));   // either way round
+    RTF_ASSERT(box_iou(FAR_CAR, box(300, 200, 30, 18)) < 0.5f);
+    RTF_ASSERT(same_place("car", FAR_CAR, box(300, 200, 30, 18), 0.5f));               // 1.5 times: still the car
+    // Persons and animals: IoU only.
+    RTF_ASSERT(!same_place("person", FAR_CAR, shift(FAR_CAR, 8, 0), 0.5f));
+    RTF_ASSERT(!same_place("cat", FAR_CAR, shift(FAR_CAR, 8, 0), 0.5f));
+    RTF_ASSERT(same_place("person", PARKED_CAR, shift(PARKED_CAR, 8, 0), 0.5f));
+    // A big car that drove on, and an empty box, aren't.
+    RTF_ASSERT(!same_place("car", PARKED_CAR, shift(PARKED_CAR, 70, 0), 0.5f));
+    RTF_ASSERT(!same_place("car", box(300, 200, 0, 12), box(300, 200, 0, 12), 0.5f));
+
+    // Two events with the far car jittering between their start and end frames: an active (weak) anchor.
+    E e;
+    _event(e, T0, {{"car", FAR_CAR}}, {{"car", shift(FAR_CAR, 7, 1)}});
+    RTF_ASSERT(e.anchor_count("c", T0) == 0);
+    // Its start-frame box this time is 8 px from the first's (IoU 0.43): the same anchor, seen again.
+    RTF_ASSERT(box_iou(FAR_CAR, shift(FAR_CAR, -8, 0)) < 0.5f);
+    _event(e, T0 + HOUR, {{"car", shift(FAR_CAR, -8, 0)}}, {{"car", shift(FAR_CAR, -1, -2)}});
+    RTF_ASSERT(e.anchor_count("c", T0 + HOUR) == 1);
+
+    // Then a later sighting of it, a few px off (the anchor keeps its latest start-frame box: 8 px left), is held
+    // from the early alert and left out of the record.
+    const r_box LATER = shift(FAR_CAR, -4, 2);
+    e.event_started("c");
+    auto d = e.anchored("c", "car", LATER, T0 + 2 * HOUR);
+    RTF_ASSERT_EQUAL((int)d.verdict, (int)E::early_anchored);
+    RTF_ASSERT(!d.strong_anchor);
+    RTF_ASSERT_EQUAL((int)e.consider("c", "car", 0.91f, LATER, T0 + 2 * HOUR).verdict, (int)E::early_anchored);
+    RTF_ASSERT(e.is_parked_vehicle("c", "car", LATER, T0 + 2 * HOUR, {{"car", shift(FAR_CAR, -3, 0)}}));
+    // A start frame whose box for it is 8 px off the anchor's (IoU 0.43) still shows it parked.
+    RTF_ASSERT(e.is_parked_vehicle("c", "car", LATER, T0 + 2 * HOUR, {{"car", FAR_CAR}}));
+    // anchored() records nothing: the car still isn't sent this event, nor marked so.
+    RTF_ASSERT(!e.sent_early("c", "car", T0 + 2 * HOUR));
+    // Not on it: elsewhere, another class, a class that doesn't alert, or once it has lapsed.
+    RTF_ASSERT_EQUAL((int)e.anchored("c", "car", shift(FAR_CAR, 40, 0), T0 + 2 * HOUR).verdict, (int)E::early_not_alerting);
+    RTF_ASSERT_EQUAL((int)e.anchored("c", "truck", LATER, T0 + 2 * HOUR).verdict, (int)E::early_not_alerting);
+    RTF_ASSERT_EQUAL((int)e.anchored("c", "pottedplant", LATER, T0 + 2 * HOUR).verdict, (int)E::early_not_alerting);
+    RTF_ASSERT_EQUAL((int)e.anchored("c", "car", LATER, T0 + HOUR + 25 * HOUR).verdict, (int)E::early_not_alerting);
+    // Of two anchors it's on (IoU 0.56 with the first learnt, 0.73 with the second), the better one's IoU.
+    _event(e, T0 + 2 * HOUR, {{"car", PARKED_CAR}}, {{"car", PARKED_CAR}});
+    _event(e, T0 + 2 * HOUR, {{"car", shift(PARKED_CAR, 70, 0)}}, {{"car", shift(PARKED_CAR, 70, 0)}});
+    auto two = e.anchored("c", "car", shift(PARKED_CAR, 45, 0), T0 + 2 * HOUR);
+    RTF_ASSERT(two.anchor_iou > 0.7f && two.anchor_iou < 0.75f);
+}

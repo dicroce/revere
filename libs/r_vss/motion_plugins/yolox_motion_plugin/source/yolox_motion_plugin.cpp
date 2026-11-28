@@ -152,8 +152,13 @@ void yolox_motion_plugin::_learn_pending_anchors(const std::string& camera_id)
     auto p = std::move(it->second);
     _camera_pending_anchors.erase(it);
     try {
-        if (_early.event_ended(camera_id, p.ts, p.start_seen, p.end_seen))
+        std::vector<std::string> notes;
+        if (_early.event_ended(camera_id, p.ts, p.start_seen, p.end_seen, &notes))
             _save_anchors();
+        R_LOG_INFO("yolox_motion_plugin: anchors on %s: start frame %zu detections, end frame %zu, %zu anchors active",
+                   camera_id.c_str(), p.start_seen.size(), p.end_seen.size(), _early.anchor_count(camera_id, p.ts));
+        for (const auto& n : notes)
+            R_LOG_INFO("yolox_motion_plugin: anchors on %s: %s", camera_id.c_str(), n.c_str());
     } catch (const std::exception& e) {
         R_LOG_ERROR("yolox_motion_plugin: couldn't learn anchors for %s: %s", camera_id.c_str(), e.what());
     }
@@ -659,7 +664,22 @@ void yolox_motion_plugin::_analyze_and_log_detections(const std::string& camera_
         }
     }
 
-    const auto is_static_detection = [&static_anchors](const Detection& detection) {
+    // What the start frame showed: a learnt vehicle anchor only drops a car that was already parked then.
+    std::vector<r_vss::r_early_alerts::r_seen> start_seen;
+    {
+        auto sf_it = _camera_start_frame_detections.find(camera_id);
+        if(sf_it != _camera_start_frame_detections.end())
+            for(const auto& d : sf_it->second)
+                start_seen.push_back({get_class_name(d.class_id), {d.x1, d.y1, d.x2, d.y2}});
+    }
+
+    // A parked car the camera has seen sit still in earlier events, even if this event's first and last frames
+    // missed it (night, IR): left out of the record, so a raccoon's event isn't a vehicle's.
+    const auto is_parked = [this, &start_seen, &camera_id, end_time_ms](const Detection& detection) {
+        return _early.is_parked_vehicle(camera_id, get_class_name(detection.class_id), {detection.x1, detection.y1, detection.x2, detection.y2}, end_time_ms, start_seen);
+    };
+    // Still between this event's own first and last frames.
+    const auto is_still_in_event = [&static_anchors](const Detection& detection) {
         const float static_iou_threshold = 0.85f;
         for(const auto& anchor : static_anchors) {
             if(anchor.class_id != detection.class_id) continue;
@@ -678,6 +698,44 @@ void yolox_motion_plugin::_analyze_and_log_detections(const std::string& camera_
         }
         return false;
     };
+    const auto is_static_detection = [&is_parked, &is_still_in_event](const Detection& detection) {
+        return is_parked(detection) || is_still_in_event(detection);
+    };
+
+    // Each vehicle class: how many detections the record keeps and leaves out, and for the first one kept, its box
+    // and the nearest anchor, so a parked car that stays in the record (and goes on the bus) says why.
+    {
+        struct vehicle_tally { int kept {0}, parked {0}, still {0}; bool have_kept {false}; r_vss::r_box first_kept; int64_t first_ts {0}; };
+        std::map<std::string, vehicle_tally> vehicles;
+        for (const auto& detection : it->second) {
+            if (disproven.find(detection.class_id) != disproven.end()) continue;
+            const std::string name = get_class_name(detection.class_id);
+            if (r_vss::alert_group_of(name) != "vehicle") continue;
+            auto& t = vehicles[name];
+            if (is_parked(detection)) ++t.parked;
+            else if (is_still_in_event(detection)) ++t.still;
+            else {
+                ++t.kept;
+                if (!t.have_kept) {
+                    t.have_kept = true;
+                    t.first_kept = {detection.x1, detection.y1, detection.x2, detection.y2};
+                    t.first_ts = detection.timestamp;
+                }
+            }
+        }
+        for (const auto& [name, t] : vehicles) {
+            bool in_start = false;
+            for (const auto& s : start_seen)
+                in_start = in_start || s.class_name == name;
+            if (t.have_kept)
+                R_LOG_INFO("yolox_motion_plugin: record on %s: %s: %d kept, %d left out as parked, %d as still in the event; first kept %s, %s; %s in the start frame",
+                           camera_id.c_str(), name.c_str(), t.kept, t.parked, t.still, r_vss::box_text(t.first_kept).c_str(),
+                           _early.nearest_anchor(camera_id, name, t.first_kept, t.first_ts).c_str(), in_start ? "one" : "none");
+            else
+                R_LOG_INFO("yolox_motion_plugin: record on %s: %s: none kept, %d left out as parked, %d as still in the event",
+                           camera_id.c_str(), name.c_str(), t.parked, t.still);
+        }
+    }
 
     // Count detections by class for logging (excluding disproven and static classes)
     std::map<int, int> class_counts;
@@ -828,7 +886,13 @@ void yolox_motion_plugin::_early_alerts_for(const std::string& camera_id, const 
                 break;
         }
 
-        R_LOG_INFO("yolox_motion_plugin: early %s on %s at %.0f%%: sent", class_name, camera_id.c_str(), d.score * 100);
+        // A vehicle that goes out says why no anchor held it: a parked car that keeps alerting shows here.
+        if (r_vss::alert_group_of(class_name) == "vehicle") {
+            const r_vss::r_box box = {d.x1, d.y1, d.x2, d.y2};
+            R_LOG_INFO("yolox_motion_plugin: early %s on %s at %.0f%%: sent, %s, %s", class_name, camera_id.c_str(), d.score * 100,
+                       r_vss::box_text(box).c_str(), _early.nearest_anchor(camera_id, class_name, box, d.timestamp).c_str());
+        } else
+            R_LOG_INFO("yolox_motion_plugin: early %s on %s at %.0f%%: sent", class_name, camera_id.c_str(), d.score * 100);
         r_vss::r_detection det;
         det.camera_id  = camera_id;
         det.ts         = d.timestamp;

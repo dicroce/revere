@@ -16,6 +16,7 @@ static r_detection _det(const string& cls, float x1, float y1, float x2, float y
     r_detection d;
     d.class_name = cls;
     d.confidence = 0.9f;
+    d.ts = 0;
     d.x1 = x1; d.y1 = y1; d.x2 = x2; d.y2 = y2;
     return d;
 }
@@ -35,7 +36,11 @@ static void _run(P& p, int64_t from, int64_t to, const function<vector<r_detecti
                 break;
             if (looks)
                 looks->push_back(l.value());
-            p.look_done(l.value(), true, l.value().ts, dets(l.value()), t);
+            // A detection carries its frame's time, as the detection pass stamps it.
+            auto found = dets(l.value());
+            for (auto& d : found)
+                d.ts = l.value().ts;
+            p.look_done(l.value(), true, l.value().ts, found, t);
         }
         auto f = p.finished(t);
         if (finished)
@@ -220,6 +225,43 @@ void test_r_detection_planner::test_first_and_last_frame_static_check()
     RTF_ASSERT_EQUAL(f[0].detections.size(), (size_t)1);
     RTF_ASSERT_EQUAL(f[0].detections[0].class_name, string("person"));
     RTF_ASSERT_EQUAL(f[0].dropped_static, 4);   // the bin in the first, start, follow-up and end looks
+}
+
+void test_r_detection_planner::test_small_parked_car_jitter()
+{
+    // A far parked car, 20x12 px, whose box YOLO puts a few px off in each frame: IoU under 0.5 with the pre-roll's,
+    // but the same car. A far person moving as little is still news.
+    P p;
+    vector<r_detection_session> f;
+    int look = 0;
+    p.motion("a", "", true, 1000);
+    _run(p, 1000, 4000, [&](const r_look& l) {
+        if (l.kind == look_pre_roll)
+            return vector<r_detection>{_det("car", 300, 200, 320, 212), _det("person", 100, 100, 110, 125)};
+        float dx = (++look % 2) ? 7.0f : -6.0f;
+        return vector<r_detection>{_det("car", 300 + dx, 201, 320 + dx, 213), _det("person", 100 + dx, 100, 110 + dx, 125)};
+    }, nullptr, &f);
+    p.motion("a", "", false, 4000);
+    _run(p, 4100, 40000, [&](const r_look&) {
+        return vector<r_detection>{_det("car", 305, 199, 325, 211)};
+    }, nullptr, &f);
+
+    RTF_ASSERT_EQUAL(f.size(), (size_t)1);
+    // The car isn't news, so not in the instant alert, and the record leaves it out.
+    RTF_ASSERT(!f[0].first_found.empty());
+    for (auto& d : f[0].first_found)
+        RTF_ASSERT_EQUAL(d.class_name, string("person"));
+    for (auto& d : f[0].detections)
+        RTF_ASSERT_EQUAL(d.class_name, string("person"));
+    RTF_ASSERT(f[0].dropped_static >= 3);
+    // The session carries its pre-roll and first and last frames, for the anchors.
+    RTF_ASSERT_EQUAL(f[0].pre_roll.size(), (size_t)2);
+    RTF_ASSERT(!f[0].first_frame.empty() && f[0].first_frame[0].class_name == "car");
+    RTF_ASSERT_EQUAL(f[0].last_frame.size(), (size_t)1);
+    RTF_ASSERT(f[0].last_frame[0].x1 == 305.0f);
+    RTF_ASSERT(P::same_object(_det("car", 300, 200, 320, 212), _det("car", 307, 201, 327, 213)));
+    RTF_ASSERT(!P::same_object(_det("person", 100, 100, 110, 125), _det("person", 107, 100, 117, 125)));
+    RTF_ASSERT(!P::same_object(_det("car", 300, 200, 320, 212), _det("truck", 300, 200, 320, 212)));
 }
 
 void test_r_detection_planner::test_failed_stored_look_retries_once()
@@ -410,6 +452,14 @@ void test_r_detection_planner::test_cut_keeps_what_was_there()
     RTF_ASSERT(f[0].first_found[0].class_name == "car");
     RTF_ASSERT_EQUAL(f[1].first_found.size(), (size_t)1);
     RTF_ASSERT(f[1].first_found[0].class_name == "person");
+    // The first session was cut; the second carries on and has the chain's first frame (the first session's), not
+    // its own frame at the cut, which shows the person too.
+    RTF_ASSERT(f[0].cut && !f[0].continues);
+    RTF_ASSERT(f[1].continues);  // and cut in turn: the motion goes on past 600 s
+    RTF_ASSERT_EQUAL(f[0].chain_first_frame.size(), f[0].first_frame.size());
+    RTF_ASSERT_EQUAL(f[1].chain_first_frame.size(), (size_t)1);
+    RTF_ASSERT(f[1].chain_first_frame[0].class_name == "car" && f[1].chain_first_frame[0].ts == f[0].first_frame[0].ts);
+    RTF_ASSERT(f[1].first_frame[0].ts != f[0].first_frame[0].ts);
 }
 
 void test_r_detection_planner::test_cut_waits_for_looks()
@@ -460,5 +510,32 @@ void test_r_detection_planner::test_cut_waits_for_looks()
         RTF_ASSERT_EQUAL(f.size(), (size_t)1);
         RTF_ASSERT(f[0].cut);
         RTF_ASSERT(f[0].end_ms > (int64_t)P::MAX_SESSION_MS);
+    }
+}
+
+void test_r_detection_planner::test_cut_carries_the_chains_first_frame()
+{
+    // Motion for ~16 minutes: three cuts. Every session after the first has the first session's first frame (a
+    // bicycle, gone by the first cut) as the chain's, never its own or the one before it.
+    P p;
+    vector<r_detection_session> f;
+    auto scene = [](const r_look& l) {
+        vector<r_detection> d;
+        if (l.kind == look_pre_roll)
+            return d;
+        d.push_back(l.ts < 100000 ? _det("bicycle", 50, 50, 90, 90) : _det("dog", 300, 300, 360, 340));
+        return d;
+    };
+    p.motion("a", "", true, 0);
+    _run(p, 0, 960000, scene, nullptr, &f);
+    RTF_ASSERT_EQUAL(f.size(), (size_t)3);
+    RTF_ASSERT(f[0].first_frame.size() == 1 && f[0].first_frame[0].class_name == "bicycle");
+    RTF_ASSERT(!f[0].continues);
+    for (size_t i = 1; i < f.size(); ++i)
+    {
+        RTF_ASSERT(f[i].continues);
+        RTF_ASSERT(f[i].first_frame.size() == 1 && f[i].first_frame[0].class_name == "dog");
+        RTF_ASSERT_EQUAL(f[i].chain_first_frame.size(), (size_t)1);
+        RTF_ASSERT(f[i].chain_first_frame[0].class_name == "bicycle");
     }
 }

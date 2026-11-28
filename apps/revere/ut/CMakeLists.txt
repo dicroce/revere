@@ -23,8 +23,14 @@ add_executable(
     ../source/cloud_download.cpp
     include/test_render_policy.h
     source/test_render_policy.cpp
+    include/test_main_window_address.h
+    source/test_main_window_address.cpp
     include/test_camera_properties_state.h
     source/test_camera_properties_state.cpp
+    include/test_main_window_size.h
+    source/test_main_window_size.cpp
+    include/test_x11_errors.h
+    source/test_x11_errors.cpp
     include/test_camera_properties_pane.h
     source/test_camera_properties_pane.cpp
 )

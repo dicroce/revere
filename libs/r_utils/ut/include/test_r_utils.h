@@ -61,6 +61,7 @@ public:
       TEST(test_r_utils::test_ssl_server_config_generate);
       TEST(test_r_utils::test_ssl_server_config_rejects_mismatched_key);
       TEST(test_r_utils::test_ssl_server_socket_roundtrip);
+      TEST(test_r_utils::test_ssl_socket_shutdown_wakes_a_read);
       TEST(test_r_utils::test_ssl_server_socket_rejects_plaintext_client);
       TEST(test_r_utils::test_ssl_server_socket_threaded_server);
       TEST(test_r_utils::test_ssl_client_sees_server_fingerprint);
@@ -116,6 +117,7 @@ public:
       TEST(test_r_utils::test_instance_lock_one_holder);
       TEST(test_r_utils::test_instance_lock_stale_file);
       TEST(test_r_utils::test_instance_lock_notify);
+      TEST(test_r_utils::test_next_port_skips_a_port_in_use);
       TEST(test_r_utils::test_nullable_bool_is_explicit);
       TEST(test_r_utils::test_restart_windows_command_line);
       TEST(test_r_utils::test_restart_not_restarted);
@@ -173,6 +175,7 @@ public:
     void test_ssl_server_config_generate();
     void test_ssl_server_config_rejects_mismatched_key();
     void test_ssl_server_socket_roundtrip();
+    void test_ssl_socket_shutdown_wakes_a_read();
     void test_ssl_server_socket_rejects_plaintext_client();
     void test_ssl_server_socket_threaded_server();
     void test_ssl_client_sees_server_fingerprint();
@@ -228,6 +231,7 @@ public:
     void test_instance_lock_one_holder();
     void test_instance_lock_stale_file();
     void test_instance_lock_notify();
+    void test_next_port_skips_a_port_in_use();
     void test_nullable_bool_is_explicit();
     void test_restart_windows_command_line();
     void test_restart_not_restarted();

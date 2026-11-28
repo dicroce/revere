@@ -39,11 +39,12 @@ public:
     // The action row's left button.
     static constexpr int left = -2;
 
-    // The same widgets drawn in place, in a pane or a table cell, not in a popup: `width` is the room they have.
+    // The same widgets drawn in place, in a pane, not in a popup: `width` is the room they have. Explanations (body,
+    // error and an option's description) are in the pane's smaller text (key_18), under its own.
     struct embedded_t {};
     static constexpr embedded_t embedded {};
     dialog_frame(embedded_t, float width) :
-        _width(width), _open(true), _popup(false)
+        _width(width), _open(true), _popup(false), _embedded(true)
     {
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
     }
@@ -89,7 +90,9 @@ public:
     // Explanatory text, wrapped to the dialog's width.
     void body(const std::string& text, const ImVec4& color = r_ui_utils::theme::text_secondary)
     {
+        push_small();
         wrapped(color, text);
+        pop_small();
     }
 
     // A wizard step's heading, carried in its popup name after "##" (see
@@ -127,7 +130,7 @@ public:
         return input(id, buf, size, flags, -1.0f, hint, focus);
     }
 
-    void error(const std::string& text) { wrapped(r_ui_utils::theme::status_danger_text, text); }
+    void error(const std::string& text) { body(text, r_ui_utils::theme::status_danger_text); }
 
     // A small uppercase section title with a rule under it.
     void section(const char* title)
@@ -165,12 +168,15 @@ public:
         using namespace r_ui_utils::theme;
         const float pad = 12.0f;
         const auto p = ImGui::GetCursorScreenPos();
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + _width - pad * 2.0f);
+        const float title_h = ImGui::GetTextLineHeight();
+        push_small();
+        ImFont* desc_font = ImGui::GetFont();
+        const float desc_size = ImGui::GetFontSize();
         const float desc_h = description && *description ? ImGui::CalcTextSize(description, nullptr, false, _width - pad * 2.0f).y : 0.0f;
-        ImGui::PopTextWrapPos();
-        const float h = pad + ImGui::GetTextLineHeight() + (desc_h > 0.0f ? 4.0f + desc_h : 0.0f) + pad;
+        pop_small();
+        const float h = pad + title_h + (desc_h > 0.0f ? 4.0f + desc_h : 0.0f) + pad;
 
-        bool clicked = ImGui::InvisibleButton(id, ImVec2(_width, h));
+        bool clicked = main_window_detail::invisible_button(id, ImVec2(_width, h));
         const bool hovered = ImGui::IsItemHovered();
         auto* dl = ImGui::GetWindowDrawList();
         dl->AddRectFilled(p, ImVec2(p.x + _width, p.y + h), ImGui::GetColorU32(hovered ? surface_raised : surface_card));
@@ -178,7 +184,7 @@ public:
         dl->AddText(ImVec2(p.x + pad, p.y + pad), ImGui::GetColorU32(text_primary), title);
         if(desc_h > 0.0f)
         {
-            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(p.x + pad, p.y + pad + ImGui::GetTextLineHeight() + 4.0f),
+            dl->AddText(desc_font, desc_size, ImVec2(p.x + pad, p.y + pad + title_h + 4.0f),
                         ImGui::GetColorU32(text_secondary), description, nullptr, _width - pad * 2.0f);
         }
         return clicked;
@@ -220,6 +226,8 @@ public:
     bool path(const std::string& p, const char* button_label = nullptr, const char* placeholder = "")
     {
         using namespace r_ui_utils::theme;
+        // Where it starts, which is after a label when it's a row's value.
+        const float x0 = ImGui::GetCursorPosX();
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
         const float bw = button_label ? button_size(button_label).x : 0.0f;
         const float max_w = _width - (button_label ? bw + 12.0f : 0.0f);
@@ -246,7 +254,7 @@ public:
         bool clicked = false;
         if(button_label)
         {
-            ImGui::SameLine(ImGui::GetCursorPosX() + _width - bw);
+            ImGui::SameLine(x0 + _width - bw);
             clicked = styled_button(button_label);
         }
         ImGui::PopStyleVar();
@@ -335,6 +343,11 @@ private:
     bool _popup {true};
     bool _appearing {false};
     bool _enter {false};
+    bool _embedded {false};
+
+    // An embedded frame's explanations in the smaller text.
+    void push_small() { if(_embedded) ImGui::PushFont(main_window_detail::font(g_dialog_fonts.key_18)); }
+    void pop_small() { if(_embedded) ImGui::PopFont(); }
 };
 
 // ---- Local web password ----
