@@ -12,7 +12,7 @@ public:
       TEST(test_r_disco::test_agent_reports_why_a_move_is_held);
       TEST(test_r_disco::test_agent_answer_camera_move);
       TEST(test_r_disco::test_agent_confirm_stores_the_mac_seen);
-      TEST(test_r_disco::test_agent_keeps_recording_when_not_pausing);
+      TEST(test_r_disco::test_agent_holds_unverified_moves_unless_set_to_follow);
       TEST(test_r_disco::test_camera_move_policy_file);
       TEST(test_r_disco::test_agent_forget_drops_unconfirmed_address);
       TEST(test_r_disco::test_agent_notes_mac_of_an_unchanged_camera);
@@ -54,7 +54,7 @@ public:
     void test_agent_reports_why_a_move_is_held();
     void test_agent_answer_camera_move();
     void test_agent_confirm_stores_the_mac_seen();
-    void test_agent_keeps_recording_when_not_pausing();
+    void test_agent_holds_unverified_moves_unless_set_to_follow();
     void test_camera_move_policy_file();
     void test_agent_forget_drops_unconfirmed_address();
     void test_agent_notes_mac_of_an_unchanged_camera();

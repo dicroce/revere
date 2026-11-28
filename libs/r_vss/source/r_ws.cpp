@@ -4834,13 +4834,23 @@ static json _keep_awake_json(const r_keep_awake_status& s)
     };
 }
 
-// Whether this computer pauses recording a camera whose address changes until a person confirms
-// (r_disco::load_camera_move_policy): {"pause_on_address_change": bool}. Set by the cloud plugin from the
-// organization's setting, and kept in config/camera_moves.json for when the cloud is out of reach.
+static json _camera_move_policy_reply(bool follow_unverified_moves)
+{
+    auto j = json::parse(r_disco::camera_move_policy_json(follow_unverified_moves));
+    j["pause_on_address_change"] = !follow_unverified_moves;   // the older name, for a client that still reads it
+    return j;
+}
+
+// Whether this computer follows, with no pause, a camera's move to an address that can't be checked (no MAC on file,
+// none readable there), rather than holding it until a person confirms (r_disco::load_camera_move_policy):
+// {"follow_unverified_moves": bool}, off by default. A move to a different MAC is held whatever it says. Set by the
+// cloud plugin from the organization's setting, and kept in config/camera_moves.json for when the cloud is out of reach.
+// The older {"pause_on_address_change": bool} is still answered, as the opposite of this (true unless the above is on),
+// and ignored when posted: it was off by default, and must not turn following on.
 r_http::r_server_response r_ws::_get_camera_move_policy(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
-    return _json_reply(json::parse(r_disco::camera_move_policy_json(_agent.pause_on_address_change())));
+    return _json_reply(_camera_move_policy_reply(_agent.follow_unverified_moves()));
 }
 
 // {"replies_blocked": bool, "warning": "..."}: whether discovery's replies look blocked (r_discovery_health), and what
@@ -4859,17 +4869,22 @@ r_http::r_server_response r_ws::_post_camera_move_policy(r_utils::r_socket_base&
 {
     _require_auth(request);
     auto req = json::parse(request.get_body_as_string(), nullptr, false);
-    if(!req.is_object() || !req.contains("pause_on_address_change") || !req["pause_on_address_change"].is_boolean())
-        return _json_error(response_bad_request, "Expected {\"pause_on_address_change\": true|false}.");
-    auto pause = req["pause_on_address_change"].get<bool>();
-    if(pause != _agent.pause_on_address_change())
+    if(req.is_object() && req.contains("follow_unverified_moves") && req["follow_unverified_moves"].is_boolean())
     {
-        _agent.set_pause_on_address_change(pause);
-        r_disco::save_camera_move_policy(_top_dir, pause);
-        R_LOG_INFO("Camera moves: %s", pause ? "a camera whose address changes pauses until its move is confirmed"
-                                             : "a camera whose address changes keeps recording at the new address");
+        auto follow = req["follow_unverified_moves"].get<bool>();
+        if(follow != _agent.follow_unverified_moves())
+        {
+            _agent.set_follow_unverified_moves(follow);
+            r_disco::save_camera_move_policy(_top_dir, follow);
+            R_LOG_INFO("Camera moves: %s", follow ? "a camera that moves to an address that can't be checked keeps recording there"
+                                                  : "a camera that moves to an address that can't be checked is held until its move is confirmed");
+        }
+        return _json_reply(_camera_move_policy_reply(follow));
     }
-    return _json_reply(json::parse(r_disco::camera_move_policy_json(pause)));
+    // The older setting: accepted, and no longer acted on.
+    if(req.is_object() && req.contains("pause_on_address_change") && req["pause_on_address_change"].is_boolean())
+        return _json_reply(_camera_move_policy_reply(_agent.follow_unverified_moves()));
+    return _json_error(response_bad_request, "Expected {\"follow_unverified_moves\": true|false}.");
 }
 
 // {"enabled", "on_battery", "power": "ac"|"battery"|"unknown", "wanted",
