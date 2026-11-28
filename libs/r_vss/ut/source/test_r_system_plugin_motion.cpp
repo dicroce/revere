@@ -1,5 +1,6 @@
 #include "test_r_system_plugin_motion.h"
 #include "r_vss/r_system_plugin_host.h"
+#include "r_vss/r_motion_event_plugin_host.h"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -184,6 +185,111 @@ void test_r_system_plugin_motion::test_stop_all_waits_for_a_call_in_the_plugin()
     RTF_ASSERT_EQUAL(read_file(_top + "/motion.txt"), string("slow1 1 1\n"));
     this_thread::sleep_for(milliseconds(700));
     RTF_ASSERT_EQUAL(read_file(_top + "/motion.txt"), string("slow1 1 1\n"));
+}
+
+void test_r_system_plugin_motion::test_stop_all_gives_up_on_a_call_that_does_not_return()
+{
+    install(_top, TEST_MOTION_PLUGIN);
+    r_system_plugin_host host(_top);
+    host.set_stop_wait(milliseconds(100));
+    host.start_all();
+
+    // A "slow" call takes the plugin half a second: longer than stop_all is willing to wait, so it goes on without it.
+    host.notify_motion("slow1", true, 1);
+    this_thread::sleep_for(milliseconds(150));
+    auto start = steady_clock::now();
+    host.stop_all();
+    auto took = steady_clock::now() - start;
+    RTF_ASSERT(took >= milliseconds(90));
+    RTF_ASSERT(took < milliseconds(400));
+    RTF_ASSERT(read_file(_top + "/motion.txt").empty());   // the call was still running
+}
+
+void test_r_system_plugin_motion::test_destroying_the_host_leaves_a_plugin_in_a_call_loaded()
+{
+    install(_top, TEST_MOTION_PLUGIN);
+    auto host = make_unique<r_system_plugin_host>(_top);
+    host->set_stop_wait(milliseconds(100));
+    host->start_all();
+
+    // A "slow" call takes the plugin half a second, so it is still inside the plugin when the host is destroyed.
+    host->notify_motion("slow1", true, 1);
+    this_thread::sleep_for(milliseconds(150));
+    auto start = steady_clock::now();
+    host.reset();
+    auto took = steady_clock::now() - start;
+    const string at_once = read_file(_top + "/motion.txt");
+
+    // The call returns into the plugin's code after the host is gone: had the library been closed it would run on
+    // unmapped code, and this process would not be here to read the line it writes at the end.
+    const string later = eventually_reads(_top + "/motion.txt", "slow1 1 1\n");
+    RTF_ASSERT(at_once.empty());   // still in the call when the host was gone
+    RTF_ASSERT(took < seconds(2));   // and destroying the host did not wait for it
+    RTF_ASSERT_EQUAL(later, string("slow1 1 1\n"));
+}
+
+void test_r_system_plugin_motion::test_destroying_the_host_leaves_a_plugin_in_a_detection_loaded()
+{
+    install(_top, TEST_MOTION_PLUGIN);
+    auto host = make_unique<r_system_plugin_host>(_top);
+    host->set_stop_wait(milliseconds(100));
+    host->start_all();
+
+    // A detection for a "slow" camera blocks in the plugin for half a second, on a thread of its own as the bus's would.
+    r_detection det;
+    det.camera_id = "slow1";
+    det.ts = 5;
+    det.class_name = "person";
+    det.confidence = 0.9f;
+    det.x1 = det.y1 = det.x2 = det.y2 = 0.0f;
+    thread caller([&]() { host->dispatch_detection(det, 5); });
+    this_thread::sleep_for(milliseconds(150));
+
+    auto start = steady_clock::now();
+    host.reset();
+    auto took = steady_clock::now() - start;
+    // The plugin is still inside the call: it was not destroyed (destroyed.txt is its destroy running) and its code is
+    // still there to return into. Look now, and let the call finish before judging.
+    const bool destroyed = fs::exists(fs::path(_top) / "destroyed.txt");
+    const string at_once = read_file(_top + "/detection.txt");
+    caller.join();
+    const string later = read_file(_top + "/detection.txt");
+    RTF_ASSERT(!destroyed);
+    RTF_ASSERT(at_once.empty());
+    RTF_ASSERT(took < seconds(2));
+    RTF_ASSERT_EQUAL(later, string("slow1 5 person\n"));
+    RTF_ASSERT(!fs::exists(fs::path(_top) / "destroyed.txt"));
+}
+
+void test_r_system_plugin_motion::test_a_late_detection_does_not_go_on_to_the_next_plugin()
+{
+    // Two plugins, each of which takes half a second over a detection for a "slow" camera and writes a line when it has
+    // it. The host is destroyed while the first is still inside; the second has not been called and its library is
+    // closed by the time the first returns, so it must not be called then: one line, not two.
+    install(_top, TEST_MOTION_PLUGIN);
+    install(_top, TEST_NO_MOTION_PLUGIN);
+    auto host = make_unique<r_system_plugin_host>(_top);
+    host->set_stop_wait(milliseconds(100));
+    host->start_all();
+
+    r_detection det;
+    det.camera_id = "slow1";
+    det.ts = 6;
+    det.class_name = "person";
+    det.confidence = 0.9f;
+    det.x1 = det.y1 = det.x2 = det.y2 = 0.0f;
+    thread caller([&]() { host->dispatch_detection(det, 6); });
+    this_thread::sleep_for(milliseconds(150));
+    host.reset();
+    caller.join();
+    // Give a wrongly made second call time to write its line.
+    this_thread::sleep_for(milliseconds(700));
+    // detection_calls.txt has a line for each call as it started (it needs no handle, so a call into the second plugin
+    // after its destroy shows too, unless the process is gone with its library).
+    const string calls = read_file(_top + "/detection_calls.txt");
+    const string lines = read_file(_top + "/detection.txt");
+    RTF_ASSERT_EQUAL(calls, string("slow1\n"));
+    RTF_ASSERT_EQUAL(lines, string("slow1 6 person\n"));
 }
 
 void test_r_system_plugin_motion::test_plugin_gets_doorbell_rings_in_order_with_motion()

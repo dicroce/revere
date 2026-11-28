@@ -163,8 +163,9 @@ void test_r_plugin_notifier::test_stopping_accepting_waits_for_the_running_call(
     RTF_ASSERT(eventually([&]() { return g->entered.load(); }));
     thread opener([g]() { this_thread::sleep_for(milliseconds(50)); g->release(); });
     n.accept(false);
-    RTF_ASSERT(done->load());   // it had finished when accept(false) returned
+    const bool finished = done->load();
     opener.join();
+    RTF_ASSERT(finished);   // it had finished when accept(false) returned
 }
 
 void test_r_plugin_notifier::test_stopping_accepting_from_inside_a_call_does_not_wait_for_itself()
@@ -199,4 +200,64 @@ void test_r_plugin_notifier::test_destructor_waits_only_for_the_running_call()
     t.join();
     RTF_ASSERT(destroyed);
     RTF_ASSERT_EQUAL(l->size(), (size_t)0);   // and the queued ones are not run
+}
+
+void test_r_plugin_notifier::test_stopping_accepting_gives_up_on_a_call_that_does_not_return()
+{
+    auto g = make_shared<gate>();
+    r_plugin_notifier n;
+    RTF_ASSERT(n.accept(false, milliseconds(50)));   // idle: nothing to wait for
+    n.accept(true);
+    n.post([g]() { g->wait(); });
+    RTF_ASSERT(eventually([&]() { return g->entered.load(); }));
+
+    auto start = steady_clock::now();
+    const bool stopped = n.accept(false, milliseconds(100));
+    auto took = steady_clock::now() - start;
+    // Let the call go before judging: a failed assert leaves here by an exception, and the notifier's destructor
+    // waits for the running call, so a call still held would hang the whole run.
+    g->release();
+    RTF_ASSERT(!stopped);   // still running: says so
+    RTF_ASSERT(took >= milliseconds(90));
+    RTF_ASSERT(took < seconds(2));
+}
+
+void test_r_plugin_notifier::test_shutdown_lets_go_of_a_call_that_does_not_return()
+{
+    auto g = make_shared<gate>();
+    auto finished = make_shared<atomic<bool>>(false);
+    bool gave_up = false;
+    milliseconds took(0);
+    {
+        r_plugin_notifier n;
+        n.accept(true);
+        n.post([g, finished]() { g->wait(); *finished = true; });
+        RTF_ASSERT(eventually([&]() { return g->entered.load(); }));
+        auto start = steady_clock::now();
+        gave_up = !n.shutdown(milliseconds(100));
+        took = duration_cast<milliseconds>(steady_clock::now() - start);
+        // The notifier goes out of scope with its thread still in the call: that must neither hang nor crash.
+    }
+    // The call goes on, and ends, after the notifier is gone. Let it go before judging.
+    g->release();
+    const bool ended = eventually([&]() { return finished->load(); });
+    RTF_ASSERT(gave_up);
+    RTF_ASSERT(took >= milliseconds(90));
+    RTF_ASSERT(took < seconds(2));
+    RTF_ASSERT(ended);
+}
+
+void test_r_plugin_notifier::test_running_says_a_call_is_inside()
+{
+    auto g = make_shared<gate>();
+    r_plugin_notifier n;
+    RTF_ASSERT(!n.running());
+    n.accept(true);
+    n.post([g]() { g->wait(); });
+    RTF_ASSERT(eventually([&]() { return g->entered.load(); }));
+    const bool inside = n.running();
+    g->release();
+    const bool left = eventually([&]() { return !n.running(); });
+    RTF_ASSERT(inside);
+    RTF_ASSERT(left);
 }

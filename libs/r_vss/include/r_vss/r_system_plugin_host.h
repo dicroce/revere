@@ -4,17 +4,19 @@
 
 #include "r_vss/r_system_plugin.h"
 #include "r_vss/r_plugin_notifier.h"
+#include "r_vss/r_call_gate.h"
 #include "r_vss/r_plugin_manifest.h"
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_macro.h"
 
+#include <chrono>
 #include <functional>
+#include <atomic>
 #include <list>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <set>
-#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -169,6 +171,14 @@ public:
     // that implement system_plugin_post_detection. Call after construction, before start_all().
     R_API void connect_detection_bus(r_motion_event_plugin_host& meph);
 
+    // How long stop_all() waits for a plugin's calls that are still running (notifications, detections) before it
+    // logs the plugin and goes on. Default 5 s.
+    void set_stop_wait(std::chrono::milliseconds wait) { _stop_wait = wait; }
+
+    // Hands a detection to every plugin on the calling thread (what the detection bus calls, so public for a test that
+    // has no bus): returns when each plugin has returned from it.
+    R_API void dispatch_detection(const r_detection& det, int64_t posted_at_ms);
+
     // Set the callback invoked when a plugin delivers a cloud API result.
     // result_type identifies the payload; json is the raw result.
     R_API void set_api_result_fn(std::function<void(const std::string&, const std::string&)> fn);
@@ -210,7 +220,6 @@ private:
     const plugin_info* _find(const std::string& plugin_name) const;
     plugin_info* _find(const std::string& plugin_name);
 
-    void _dispatch_detection(const r_detection& det, int64_t posted_at_ms);
     void _on_api_result(const char* name, const char* json);
     static void _api_result_bridge(const char* result_type, const char* json, void* user_data);
     struct frame_api;
@@ -239,6 +248,8 @@ private:
         system_plugin_doorbell_ring_func doorbell_ring_func = nullptr;    // Optional
         // Calls the three above on a thread of its own; only for a plugin that has any of them.
         std::shared_ptr<r_plugin_notifier> notifier {};
+        // Detections inside this plugin right now (a stuck one is still counted after stop_all() gave up on it).
+        std::shared_ptr<std::atomic<int>> detections_inside = std::make_shared<std::atomic<int>>(0);
         std::shared_ptr<frame_api> frames;   // its live-frame functions, once set_frame_source() gave them
         std::string path;   // the file it was loaded from
     };
@@ -258,9 +269,10 @@ private:
     // guards what only they touch.
     std::mutex _ops_lock;
     bool _started {false};
-    // Held shared while a detection is inside a plugin; stop_all() takes it to wait for those, and closes the gate.
-    std::shared_mutex _dispatch_gate;
-    bool _dispatch_open {true};
+    // Detections inside a plugin are counted here; stop_all() closes it and waits (a while, not forever) for them.
+    // Shared with the calls inside it: one that returns after the host is gone leaves a gate that is still there.
+    std::shared_ptr<r_call_gate> _dispatch_gate = std::make_shared<r_call_gate>();
+    std::chrono::milliseconds _stop_wait {5000};
     // The latest receiving_video and stream_failed of each camera, for a plugin that starts after they were
     // given. _state_lock also keeps a notification and a replay from passing each other.
     std::mutex _state_lock;

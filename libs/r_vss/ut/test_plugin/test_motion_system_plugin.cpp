@@ -1,7 +1,9 @@
 // A system plugin for test_r_system_plugin_motion: it appends each system_plugin_post_motion call to
 // <top_dir>/motion.txt ("camera started ts"), each system_plugin_camera_state call to <top_dir>/state.txt
-// ("camera receiving failed") and each system_plugin_doorbell_ring call to <top_dir>/ring.txt ("camera ts"). A call for a camera named "slow..." takes half a second. Built twice, the second time with
-// NO_MOTION_EXPORTS: a plugin with none of the three; and with RING_ONLY, one with only system_plugin_doorbell_ring (and the detection export a plugin of this kind has).
+// ("camera receiving failed") and each system_plugin_doorbell_ring call to <top_dir>/ring.txt ("camera ts"). A call
+// for a camera named "slow..." takes half a second (a detection too). destroy_system_plugin appends to destroyed.txt.
+// Built twice more: with NO_MOTION_EXPORTS, a plugin with none of the three; and with RING_ONLY, one with only
+// system_plugin_doorbell_ring (and the detection export a plugin of this kind has).
 #include "r_vss/r_system_plugin.h"
 #include <chrono>
 #include <cstdio>
@@ -10,6 +12,10 @@
 
 namespace
 {
+// Where this library was loaded from, kept outside the handle: a call into a plugin whose handle was destroyed can
+// still say that it happened (detection_calls.txt, one line per call, written as the call starts).
+std::string g_top_dir;
+
 struct test_plugin
 {
     std::string top_dir;
@@ -43,6 +49,7 @@ R_API const char* get_system_plugin_guid()
 
 R_API r_system_plugin_handle load_system_plugin(const char* top_dir, void*)
 {
+    g_top_dir = top_dir ? top_dir : ".";
     return new test_plugin {top_dir ? top_dir : "."};
 }
 
@@ -51,6 +58,7 @@ R_API void stop_system_plugin(r_system_plugin_handle) {}
 
 R_API void destroy_system_plugin(r_system_plugin_handle h)
 {
+    append(h, "destroyed.txt", "destroyed");
     delete static_cast<test_plugin*>(h);
 }
 
@@ -67,6 +75,12 @@ R_API void system_plugin_set_enabled(r_system_plugin_handle h, bool enabled)
 R_API void system_plugin_post_detection(r_system_plugin_handle h, const char* camera_id, int64_t ts, const char* class_name,
                                         float, float, float, float, float)
 {
+    if(auto f = fopen((g_top_dir + "/detection_calls.txt").c_str(), "a"))
+    {
+        fprintf(f, "%s\n", camera_id);
+        fclose(f);
+    }
+    maybe_slow(camera_id);
     append(h, "detection.txt", std::string(camera_id) + " " + std::to_string(ts) + " " + class_name);
 }
 
