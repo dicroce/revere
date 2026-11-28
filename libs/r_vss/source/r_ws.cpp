@@ -195,6 +195,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_POST, "/forget_camera", &r_ws::_post_forget_camera);
     route(METHOD_POST, "/camera_move_confirm", &r_ws::_post_camera_move_confirm);
     route(METHOD_POST, "/camera_move_dismiss", &r_ws::_post_camera_move_dismiss);
+    route(METHOD_POST, "/camera_address_confirm", &r_ws::_post_camera_address_confirm);
     route(METHOD_GET, "/camera_move_policy", &r_ws::_get_camera_move_policy);
     route(METHOD_POST, "/camera_move_policy", &r_ws::_post_camera_move_policy);
     route(METHOD_GET, "/audio_policy", &r_ws::_get_audio_policy);
@@ -934,6 +935,13 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
 
             // An address change for this camera, held (waiting for the user, or
             // to be followed) or followed; null when none.
+            // A different device answers at the camera's address (r_disco/r_address_check.h): the camera is stopped
+            // until a person confirms it is theirs (POST /camera_address_confirm with this since_ms); null when not.
+            json address_check = nullptr;
+            auto check_n = _devices.get_address_check(c.id);
+            if(!check_n.is_null())
+                address_check = {{"ipv4", check_n.value().ipv4}, {"since_ms", check_n.value().since_ms},
+                                 {"message", r_disco::address_check_message()}};
             json camera_move = nullptr;
             auto move_n = _devices.get_camera_move(c.id);
             if(!move_n.is_null())
@@ -1014,6 +1022,7 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     {"camera_events", camera_events},
                     // An address change (r_disco/r_camera_move.h): held or followed; null when none.
                     {"camera_move", camera_move},
+                    {"address_check", address_check},
                     // "auto", "1", "2" or "3": where motion and object classes come from.
                     {"motion_tier_setting", (c.motion_tier.is_null())?"auto":c.motion_tier.value()},
                     // "camera" or "doorbell" (r_disco::camera_kind): what it was set to, or what its model says.
@@ -3599,6 +3608,9 @@ r_http::r_server_response r_ws::_post_imaging(r_utils::r_socket_base&, const r_h
     if(maybe_camera.is_null())
         return failure(response_not_found, "unknown_camera", "No camera with that id.");
     auto camera = maybe_camera.value();
+    // Held for a different device at its address: its login is not sent there (r_disco/r_address_check.h).
+    if(!_devices.get_address_check(camera_id).is_null())
+        return failure(response_conflict, "address_held", "A different device answers at this camera's address, so its login is not sent there until you confirm it is your camera.");
     if(camera.ipv4.is_null() || camera.xaddrs.is_null())
         return failure(response_not_implemented, "no_onvif", "This camera wasn't found by ONVIF discovery, so its picture can't be set.");
 
@@ -3688,6 +3700,9 @@ r_http::r_server_response r_ws::_post_ptz(r_utils::r_socket_base&, const r_http:
     if(maybe_camera.is_null())
         return failure(response_not_found, "unknown_camera", "No camera with that id.");
     auto camera = maybe_camera.value();
+    // Held for a different device at its address: its login is not sent there (r_disco/r_address_check.h).
+    if(!_devices.get_address_check(camera_id).is_null())
+        return failure(response_conflict, "address_held", "A different device answers at this camera's address, so its login is not sent there until you confirm it is your camera.");
 
     // A camera added by its RTSP URL has no ONVIF address to send PTZ to.
     if(camera.ipv4.is_null() || camera.xaddrs.is_null())
@@ -3814,6 +3829,9 @@ r_http::r_server_response r_ws::_get_ptz_view_frame(r_utils::r_socket_base&, con
 
     if(_devices.get_camera_by_id(camera_id).is_null())
         R_STHROW(r_http_404_exception, ("No camera with that id."));
+    // Held for a different device at its address: no picture from it (and nothing is asked of it).
+    if(!_devices.get_address_check(camera_id).is_null())
+        R_STHROW(r_http_404_exception, ("That camera isn't recording."));
 
     auto result = _stream_keeper.ptz_view_frame(camera_id, long_edge, after);
     if(result.is_null())
@@ -3847,6 +3865,9 @@ r_http::r_server_response r_ws::_get_measure_camera(r_utils::r_socket_base&, con
         if(args.find("camera_id") == args.end())
             R_STHROW(r_http_400_exception, ("Missing camera_id."));
         _camera_or_404(_devices, args["camera_id"]);
+        // Held for a different device at its address: nothing is measured there (its login would be sent).
+        if(!_devices.get_address_check(args["camera_id"]).is_null())
+            R_STHROW(r_http_400_exception, ("A different device answers at this camera's address; confirm it is your camera first."));
 
         measure_job job;
         job.camera_id = args["camera_id"];
@@ -4282,6 +4303,55 @@ r_http::r_server_response r_ws::_answer_camera_move(const r_http::r_server_reque
             j["code"] = "no_move";
         else if(answer == r_disco::move_answer::moved_again)
             j["code"] = "moved_again";
+    }
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+        j = {{"ok", false}, {"code", "failed"}};
+    }
+
+    r_server_response response;
+    response.set_content_type("text/json");
+    response.set_body(j.dump());
+    return response;
+}
+
+// A person's answer to a camera held because a different device answers at its address (r_disco/r_address_check.h):
+// that it is theirs. Body {camera_id, since_ms}, since_ms being the one the hold was shown with. The reply is
+// {"ok": true} or {"ok": false, "code": "no_hold" | "changed" | "failed"}.
+r_http::r_server_response r_ws::_post_camera_address_confirm(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    string camera_id;
+    int64_t since_ms = 0;
+    bool have_since = false;
+    try
+    {
+        auto req = request_json(request.get_body_as_string());
+        if(req.contains("camera_id") && req["camera_id"].is_string())
+            camera_id = req["camera_id"].get<string>();
+        if(req.contains("since_ms") && req["since_ms"].is_number_integer())
+        {
+            since_ms = req["since_ms"].get<int64_t>();
+            have_since = true;
+        }
+    }
+    catch(const std::exception&)
+    {
+    }
+    if(camera_id.empty() || !have_since)
+        R_STHROW(r_http_400_exception, ("Missing camera_id or since_ms."));
+
+    json j;
+    try
+    {
+        auto answer = _agent.confirm_address_check(camera_id, since_ms);
+        j["ok"] = answer == r_disco::address_answer::ok;
+        if(answer == r_disco::address_answer::no_hold)
+            j["code"] = "no_hold";
+        else if(answer == r_disco::address_answer::changed)
+            j["code"] = "changed";
     }
     catch(const std::exception& ex)
     {

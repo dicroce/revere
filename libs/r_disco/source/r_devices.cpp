@@ -203,6 +203,28 @@ void r_devices::set_camera_alert(const std::string& camera_id, const std::string
     _camera_alerts[camera_id] = message;
 }
 
+void r_devices::set_address_check(const std::string& camera_id, const r_address_check& check)
+{
+    lock_guard<mutex> g(_address_checks_mutex);
+    _address_checks[camera_id] = check;
+}
+
+void r_devices::clear_address_check(const std::string& camera_id)
+{
+    lock_guard<mutex> g(_address_checks_mutex);
+    _address_checks.erase(camera_id);
+}
+
+r_nullable<r_address_check> r_devices::get_address_check(const std::string& camera_id) const
+{
+    lock_guard<mutex> g(_address_checks_mutex);
+    auto it = _address_checks.find(camera_id);
+    r_nullable<r_address_check> result;
+    if(it != _address_checks.end())
+        result.set_value(it->second);
+    return result;
+}
+
 void r_devices::set_camera_move(const std::string& camera_id, const r_camera_move& move)
 {
     lock_guard<mutex> g(_camera_moves_mutex);

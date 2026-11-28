@@ -637,6 +637,7 @@ private:
     static void _on_detection_bus(void* userdata, const r_detection& det, int64_t posted_at_ms);
     void _tier_tick();
     void _remove_motion_work_context(const std::string& camera_id);
+    std::vector<r_disco::r_camera> _cameras_held_for_address(const std::vector<r_disco::r_camera>& running);
     void _camera_class_output(const std::string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms);
     // A doorbell's press (a visitor event going active on a camera whose kind is "doorbell"): a ring, unless it's
     // within r_doorbell_rings::DEBOUNCE_MS of the last. Stored in the camera's metadata and handed to plugins.

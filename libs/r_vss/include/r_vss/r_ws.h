@@ -250,6 +250,7 @@ private:
     r_http::r_server_response _post_audio_policy(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
     r_http::r_server_response _post_audio_policy_release(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
     r_http::r_server_response _get_discovery_status(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _post_camera_address_confirm(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
     r_http::r_server_response _answer_camera_move(const r_http::r_server_request& request, bool confirm);
 
     r_http::r_server_response _post_add_rtsp_camera(r_utils::r_socket_base& conn, const r_http::r_server_request& request);

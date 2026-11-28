@@ -166,6 +166,7 @@ struct main_window_actions
     std::function<void(int)> move_use;      // a held move: use the new address
     std::function<void(int)> move_keep;     // a held move: keep the current address
     std::function<void(int)> move_ok;       // a followed move: notice seen
+    std::function<void(int)> address_confirm;   // a camera held for a different device at its address: it is the camera
     std::function<void(int)> record;
     std::function<void(int)> forget;
     std::function<void(const std::string&, bool)> set_plugin_enabled;
@@ -1653,6 +1654,20 @@ inline void main_window(
                 ImGui::PushFont(font(fonts.key_18));
                 wrapped_text(status_danger_text, item.retention);
                 ImGui::PopFont();
+            }
+
+            if(item.address_held)
+            {
+                // A different device answers at the camera's own address (see r_disco/r_address_check.h): stopped, so
+                // its login isn't sent there, until a person says it is theirs.
+                ImGui::PushFont(font(fonts.key_18));
+                wrapped_text(status_warning_text, item.address_notice);
+                ImGui::PopFont();
+                action_row h;
+                if(flow_button(h.row, "It's my camera", button_kind::primary) && actions.address_confirm)
+                    actions.address_confirm(sel_index);
+                if(ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Learn this device's hardware address as the camera's, and record it again, signing in to it with this camera's credentials");
             }
 
             if(!item.move_notice.empty())
