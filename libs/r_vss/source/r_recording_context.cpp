@@ -399,6 +399,13 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 R_LOG_WARNING("recording time[%s]: camera time jumped; the recorded timeline is re-anchored at the wall clock (correction now %lld ms)",
                               name.c_str(), (long long)_ts_discipline.correction_ms());
             }
+            if(_ts_discipline.drift_warning())
+            {
+                auto name = _camera.friendly_name.is_null() ? _camera.id : _camera.friendly_name.value();
+                auto now_ms = duration_cast<milliseconds>(_last_v_time.time_since_epoch()).count();
+                R_LOG_WARNING("recording time[%s]: %s", name.c_str(),
+                              drift_message(_ts_discipline.drift_ms(), now_ms - _ts_discipline.anchored_at_ms()).c_str());
+            }
 
             // NOTE: live restream forwarding (GOP cache + queue posts) happens
             // BEFORE the storage write and motion post. write_frame is

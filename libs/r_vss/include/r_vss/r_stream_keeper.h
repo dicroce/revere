@@ -133,6 +133,11 @@ struct r_stream_status
     bool sub_fresh {false};
     int64_t storage_write_lag_ms {0}; // how far storage persistence trails reception
     int64_t storage_timeline_lag_ms {0}; // how far the written timeline trails the wall clock
+    // The camera's clock against ours, which the recording is corrected for (r_ts_discipline): how far it has
+    // drifted (ms, negative: fast), since when (ms since the epoch; 0 before the first frame), and its jumps.
+    int64_t clock_drift_ms {0};
+    int64_t clock_anchored_at_ms {0};
+    int clock_jumps {0};
     r_overflow_type overflow_flags {r_overflow_type::none};
     size_t dropped_frames {0};  // Total frames dropped since last check
 

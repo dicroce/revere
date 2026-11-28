@@ -2253,6 +2253,9 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
                 s.sub_id_mount = substream_id_mount_path(c.first);
             s.storage_write_lag_ms = c.second->storage_write_lag_ms();
             s.storage_timeline_lag_ms = c.second->storage_timeline_lag_ms();
+            s.clock_drift_ms = c.second->clock_drift_ms();
+            s.clock_anchored_at_ms = c.second->clock_anchored_at_ms();
+            s.clock_jumps = c.second->clock_jumps();
             s.has_camera_events = _camera_events.has(c.first);
             if(s.has_camera_events)
                 s.camera_events = _camera_events.status(c.first);
