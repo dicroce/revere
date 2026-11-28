@@ -484,6 +484,16 @@ void _update_list_ui(revere_ui_state& ui_state, r_disco::r_devices& devices, r_v
             item.stats = ui_state.camera_stats->get(c.first);
         item.reconnects_24h = streamKeeper.reconnects().count_since(c.first, now_wall - chrono::hours(24));
         item.reconnects_counted_since = streamKeeper.reconnects().started_at();
+        auto hold_n = devices.get_address_check(c.first);
+        if(!hold_n.is_null())
+        {
+            item.address_held = true;
+            item.address_since_ms = hold_n.value().since_ms;
+            item.address_notice = r_disco::address_check_message();
+            if(const auto device = r_disco::address_check_device_line(hold_n.value()); !device.empty())
+                item.address_notice += "\n" + device;
+            item.sub_label += " \xC2\xB7 different device?";
+        }
         auto move_n = devices.get_camera_move(c.first);
         if(!move_n.is_null())
         {
@@ -3667,6 +3677,18 @@ int main(int argc, char** argv)
     main_window_actions.move_keep = [&](int i){
         if(i >= 0 && i < (int)ui_state.recording_items.size())
             agent.dismiss_camera_move(ui_state.recording_items[i].camera_id);
+        force_ui_update = true;
+    };
+    // A camera held for a different device at its address: the person says it is theirs. The hold named is the one on
+    // screen (the item's), so a device that took the address since is not vouched for: the agent says "changed".
+    main_window_actions.address_confirm = [&](int i){
+        if(i >= 0 && i < (int)ui_state.recording_items.size())
+        {
+            const auto& item = ui_state.recording_items[i];
+            auto answer = agent.confirm_address_check(item.camera_id, item.address_since_ms);
+            if(answer == r_disco::address_answer::changed)
+                main_window_state.show_toast("A different device is at this camera's address now. Check it before you confirm.");
+        }
         force_ui_update = true;
     };
     main_window_actions.move_ok = [&](int i){

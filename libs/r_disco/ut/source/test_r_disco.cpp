@@ -1480,6 +1480,10 @@ void test_r_disco::test_a_different_device_at_a_cameras_address_holds_it()
         RTF_ASSERT(f.holds() == 1);
         RTF_ASSERT(f.host.checks.size() == 1 && f.host.checks[0].first == "garage" && !f.host.checks[0].second.is_null());
         RTF_ASSERT(f.host.checks[0].second.value().ipv4 == "10.0.0.93" && f.host.checks[0].second.value().since_ms == f.host.now_ms);
+        // It names the device held (normalized MAC), and the card's line says so; with none known there is no line.
+        RTF_ASSERT(f.host.checks[0].second.value().seen_mac == "0c:cd:d0:03:7b:d9");
+        RTF_ASSERT(address_check_device_line(f.host.checks[0].second.value()).find("0c:cd:d0:03:7b:d9") != string::npos);
+        RTF_ASSERT(address_check_device_line(r_address_check()).empty());
         RTF_ASSERT(f.host.saved.empty());      // nothing is written: the camera's record is as it was
     }
     // A MAC that can't be read says nothing: no hold.

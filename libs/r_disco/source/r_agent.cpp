@@ -635,6 +635,7 @@ void r_agent::check_stored_addresses()
                 _address_hold h;
                 h.check.ipv4 = cam.ipv4.value();
                 h.check.since_ms = now;
+                h.check.seen_mac = seen_mac;
                 h.seen_mac = seen_mac;
                 _address_holds[cam.id] = h;
                 told.set_value(h.check);
@@ -678,6 +679,7 @@ void r_agent::restore_address_holds()
             _address_hold h;
             h.check.ipv4 = r.ipv4;
             h.check.since_ms = r.since_ms;
+            h.check.seen_mac = r.seen_mac;
             h.seen_mac = r.seen_mac;
             _address_holds[id] = h;
             restored.push_back({id, h.check});

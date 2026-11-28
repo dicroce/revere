@@ -25,6 +25,9 @@ struct r_address_check
     // When the different device was first seen, in milliseconds on the agent's clock. A person's confirmation names
     // it, so one given for an earlier device is not taken for a later one.
     int64_t since_ms {0};
+    // The different device's hardware (MAC) address, so a card can say which device is held and a person sees a replaced
+    // one is not the one they looked at.
+    std::string seen_mac;
 };
 
 // Whether the two MACs are both known and are not the same device's (the notations vary: case, separators).
@@ -39,6 +42,9 @@ R_API address_hold_action address_hold_action_for(bool running, bool held);
 
 // What the camera's card says while it is held.
 R_API std::string address_check_message();
+
+// The line that says which device: its MAC (empty when not known).
+R_API std::string address_check_device_line(const r_address_check& check);
 
 // What is kept of a hold across a restart (config/address_holds.json): the stream keeper would otherwise connect to
 // the camera's address, with its login, before the first check after startup could find the device again.
