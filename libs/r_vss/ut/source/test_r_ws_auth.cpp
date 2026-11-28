@@ -100,6 +100,25 @@ void test_r_ws_auth::test_local_token()
     RTF_ASSERT(!auth.valid(local.substr(1), t0));
 }
 
+// What only a process on this machine may change (the audio policy): the local token, never a person's session.
+void test_r_ws_auth::test_only_the_local_token_is_local()
+{
+    r_ws_auth auth;
+    RTF_ASSERT(!auth.is_local_token(""));
+    auto session = auth.issue_session();
+    RTF_ASSERT(auth.valid(session));
+    RTF_ASSERT(!auth.is_local_token(session));   // no local token yet
+    auto local = r_ws_auth::generate_token();
+    auth.set_local_token(local);
+    RTF_ASSERT(auth.is_local_token(local));
+    RTF_ASSERT(!auth.is_local_token(session));
+    RTF_ASSERT(!auth.is_local_token(""));
+    auto wrong = local;
+    wrong.back() = (wrong.back() == 'a') ? 'b' : 'a';
+    RTF_ASSERT(!auth.is_local_token(wrong));
+    RTF_ASSERT(!auth.is_local_token(local.substr(1)));
+}
+
 void test_r_ws_auth::test_throttle_per_address()
 {
     r_ws_auth auth;

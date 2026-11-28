@@ -8,6 +8,7 @@ public:
       TEST(test_r_ws_auth::test_generate_token);
       TEST(test_r_ws_auth::test_sessions);
       TEST(test_r_ws_auth::test_local_token);
+      TEST(test_r_ws_auth::test_only_the_local_token_is_local);
       TEST(test_r_ws_auth::test_throttle_per_address);
       TEST(test_r_ws_auth::test_throttle_failures_expire);
       TEST(test_r_ws_auth::test_throttle_table_bounded);
@@ -23,6 +24,7 @@ public:
     void test_generate_token();
     void test_sessions();
     void test_local_token();
+    void test_only_the_local_token_is_local();
     void test_throttle_per_address();
     void test_throttle_failures_expire();
     void test_throttle_table_bounded();

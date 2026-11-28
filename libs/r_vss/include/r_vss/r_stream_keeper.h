@@ -45,6 +45,7 @@
 #include "r_vss/r_rtsp_logins.h"
 #include <memory>
 #include <functional>
+#include "r_vss/r_audio_policy.h"
 #include <chrono>
 
 R_THIRD_PARTY_HEADERS_BEGIN
@@ -360,6 +361,14 @@ public:
 
     R_API void bounce(const std::string& camera_id);
 
+    // Whether each camera's audio is recorded (r_audio_policy.h), as the cloud last said. set_audio_policy keeps it
+    // in config/audio.json; a camera whose session no longer matches starts again on the next pass.
+    R_API void set_audio_policy(const r_audio_policy& policy);
+    // The same values, managed by this computer again (audio_policy_released).
+    R_API void release_audio_policy();
+    R_API r_audio_policy audio_policy() const;
+    R_API bool records_audio(const std::string& camera_id) const;
+
     // Streams lost and restarted (dead contexts replaced), in memory since
     // revere started; see reconnect_log.
     R_API const reconnect_log& reconnects() const { return _reconnects; }
@@ -470,6 +479,8 @@ private:
     r_disco::r_devices& _devices;
     r_disco::r_agent& _agent;
     std::string _top_dir;
+    mutable std::mutex _audio_policy_mutex;
+    r_audio_policy _audio_policy;
     std::thread _th;
     uint32_t _sim_mttf_seconds {0};
     bool _running;

@@ -83,6 +83,38 @@ class r_recording_context;
 // appsinks): the friendly name, or the camera id when it has none, then "_".
 R_API std::string recording_source_name_prefix(const r_disco::r_camera& camera);
 
+// The camera's SDP media as a session uses them: without its audio when the session doesn't record audio
+// (r_audio_policy.h), so nothing downstream (storage, the RTSP restream, the plugins' feeds) has an audio track.
+R_API std::map<std::string, r_pipeline::r_sdp_media> recording_sdp_medias(const std::map<std::string, r_pipeline::r_sdp_media>& medias, bool records_audio);
+
+// One audio sample from the camera, as the session's sinks take it.
+struct r_audio_sample
+{
+    const uint8_t* data {nullptr};
+    size_t size {0};
+    bool key {false};
+    int64_t ts {0};    // the stream's time, ms
+    int64_t pts {0};
+};
+
+// Where a kept audio sample goes: the recording's storage, the plugins' frame feeds and the live restream sessions,
+// after prepare (the first sample's write context, the session's counts; false drops the sample).
+struct r_audio_sinks
+{
+    std::function<bool()> prepare;
+    std::function<void(const r_audio_sample&)> store;
+    std::function<void(const r_audio_sample&)> feed;
+    std::function<void(const r_audio_sample&)> restream;
+};
+
+// The audio callback's gate: with the session's audio off (r_audio_policy.h) the sample goes nowhere and prepare
+// isn't called; on, it's prepared and goes to storage, the feeds and the restream, in that order. Whether it went.
+R_API bool route_audio_sample(bool records_audio, const r_audio_sample& sample, const r_audio_sinks& sinks);
+
+// The camera's audio encoding as the session's RTSP restream gets it: none when the session doesn't record audio, so
+// the restream has video only, even though the camera still sends audio.
+R_API r_utils::r_nullable<r_pipeline::r_encoding> recording_audio_encoding(const r_utils::r_nullable<r_pipeline::r_encoding>& encoding, bool records_audio);
+
 // The codec parameters a stream's video is stored with: the SDP's (sdp_codec_parameters), plus the source's caps
 // (encoded_video_sample_caps), its frame rate, and the H.264 or H.265 parameter sets it saw.
 R_API std::string stored_video_codec_parameters(const std::string& video_codec_name, const std::string& sdp_codec_parameters,
@@ -251,6 +283,9 @@ public:
     // The RTSP transport this attempt uses ("TCP" or "UDP")
     R_API const std::string& rtsp_protocols() const { return _rtsp_protocols; }
 
+    // Whether this session records the camera's audio: the audio policy when it started (r_audio_policy.h)
+    R_API bool records_audio() const { return _records_audio; }
+
     // How far storage persistence trails frame reception, in ms: the newest
     // video frame received versus when the newest one written to storage was
     // received. ~0 when healthy; it's the queue's delay while frames wait
@@ -316,6 +351,7 @@ private:
     std::chrono::system_clock::time_point _last_a_time;
     std::chrono::system_clock::time_point _last_v_write_time; // creation: storage_write_lag_ms() before the first write
     bool _has_audio;
+    bool _records_audio {true};
     std::chrono::system_clock::time_point _stream_start_ts;
     bool _stream_start_ts_set;
     uint64_t _v_bytes_received;
