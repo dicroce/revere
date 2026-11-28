@@ -7,6 +7,11 @@
 #include "r_utils/r_file.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <string>
+#ifndef IS_WINDOWS
+#include <dirent.h>
+#endif
 
 #include "true_north.h"
 
@@ -226,4 +231,101 @@ void test_r_mux::test_fragmented_transcode_window()
         RTF_ASSERT(out_frames == input_frames);
     }
     r_fs::remove_file("fragout.mp4");
+}
+
+
+namespace
+{
+
+// The files this process has open (POSIX; -1 where there is no /dev/fd to count).
+int _open_file_count()
+{
+#ifdef IS_WINDOWS
+    return -1;
+#else
+    int n = 0;
+    if(auto* d = opendir("/dev/fd"))
+    {
+        while(readdir(d))
+            ++n;
+        closedir(d);
+    }
+    return n;
+#endif
+}
+
+// A mu-law audio stream, which an mp4 can't take: the header write fails after the output was opened.
+void _add_streams_the_container_refuses(r_muxer& muxer, r_demuxer& demuxer)
+{
+    auto vsi = demuxer.get_stream_info(demuxer.get_video_stream_index());
+    muxer.add_video_stream(vsi.frame_rate, vsi.codec_id, vsi.resolution.first, vsi.resolution.second, vsi.profile, vsi.level);
+    muxer.set_video_extradata(demuxer.get_extradata(demuxer.get_video_stream_index()));
+    muxer.add_audio_stream(AV_CODEC_ID_PCM_MULAW, 1, 8000);
+}
+
+}
+
+// A failed header must not leave the file open: on Windows an open file can't be deleted, so an export's temporary
+// file stayed behind.
+void test_r_mux::test_a_failed_header_closes_the_output_file()
+{
+    r_demuxer demuxer("true_north.mp4");
+
+    const int before = _open_file_count();
+    {
+        r_muxer muxer("failed_header.mp4");
+        _add_streams_the_container_refuses(muxer, demuxer);
+        bool threw = false;
+        try { muxer.open(); }
+        catch(...) { threw = true; }
+        RTF_ASSERT(threw);
+
+        // Closed at the failure, not when the muxer goes (the destructor does not close it).
+        if(before >= 0)
+            RTF_ASSERT(_open_file_count() == before);
+    }
+    if(before >= 0)
+        RTF_ASSERT(_open_file_count() == before);
+
+    // And the file can be removed now.
+    r_fs::remove_file("failed_header.mp4");
+    RTF_ASSERT(!r_fs::file_exists("failed_header.mp4"));
+}
+
+// The same failure with the output going to memory: the buffer is freed (visible under a leak checker), and the
+// muxer is left safe to destroy.
+void test_r_mux::test_a_failed_header_frees_the_buffer_output()
+{
+    r_demuxer demuxer("true_north.mp4");
+
+    for(int i = 0; i < 3; ++i)
+    {
+        r_muxer muxer("", /*output_to_buffer=*/true, "mp4");
+        _add_streams_the_container_refuses(muxer, demuxer);
+        bool threw = false;
+        try { muxer.open(); }
+        catch(...) { threw = true; }
+        RTF_ASSERT(threw);
+    }
+}
+
+// After the failure the muxer can be asked to open again (a caller's retry): it opens the output afresh instead of
+// finding the old one, and it still fails the same way.
+void test_r_mux::test_a_failed_header_can_be_opened_again()
+{
+    r_demuxer demuxer("true_north.mp4");
+
+    const int before = _open_file_count();
+    r_muxer muxer("failed_header_again.mp4");
+    _add_streams_the_container_refuses(muxer, demuxer);
+    for(int i = 0; i < 3; ++i)
+    {
+        bool threw = false;
+        try { muxer.open(); }
+        catch(...) { threw = true; }
+        RTF_ASSERT(threw);
+        if(before >= 0)
+            RTF_ASSERT(_open_file_count() == before);
+    }
+    r_fs::remove_file("failed_header_again.mp4");
 }

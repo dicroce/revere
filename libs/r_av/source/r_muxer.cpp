@@ -350,7 +350,29 @@ void r_muxer::open()
     int res = avformat_write_header(_fc.get(), fmt_opts ? &fmt_opts : nullptr);
     av_dict_free(&fmt_opts);
     if(res < 0)
+    {
+        // The output was opened above but _needs_finalize is still false, so neither finalize() nor the destructor
+        // closes it (and the format context's deleter doesn't): a failed header (a codec the container can't take)
+        // would leak the file handle, which on Windows keeps the file from being deleted, or the memory buffer.
+        // An SRT output is closed here too (not left to the destructor, where closing it after a failed header was seen
+        // to crash).
+        if(_output_to_buffer)
+        {
+            uint8_t* discarded = nullptr;
+            avio_close_dyn_buf(_fc.get()->pb, &discarded);
+            av_free(discarded);
+            _fc.get()->pb = nullptr;
+        }
+        else if(!_srt)
+        {
+            avio_closep(&_fc.get()->pb);
+        }
+        else
+        {
+            _close_libsrt();
+        }
         R_THROW(("Unable to write header to output file: %s", ff_rc_to_msg(res).c_str()));
+    }
 
     _needs_finalize = true;
 }
