@@ -85,6 +85,7 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 #include "imgui_ui.h"
 #include "main_window.h"
 #include "dialogs.h"
+#include "r_vss/r_substream_recorder.h"
 #include "camera_properties_pane.h"
 #include "r_vss/r_camera_source_info.h"
 #include "r_vss/r_camera_stats.h"
@@ -230,6 +231,8 @@ struct revere_ui_state
     std::string motion_tier_status;
     std::string rtsp_transport {"TCP"};
     std::string rtsp_transport_status;
+    // "main" or "sub": which stream the camera records from (r_camera::record_from), edited in its properties.
+    std::string record_from {"main"};
 
     // camera removal dialog
     bool delete_camera_files {false};
@@ -3427,11 +3430,14 @@ int main(int argc, char** argv)
 
         string record_path;
         bool can_sync_time = false;
+        // The camera's smaller stream works as saved (and smaller streams are on here): "Record from" can be set to it.
+        bool record_from_available = false;
         {
             auto camera_opt = devices.get_camera_by_id(camera_id.value());
             if(!camera_opt.is_null())
             {
                 const auto& c = camera_opt.value();
+                record_from_available = r_vss::substream_usable(c, streamKeeper.substreams_enabled());
                 if(!c.record_file_path.is_null())
                     record_path = _get_storage_path(c.record_file_path.value());
                 can_sync_time = !c.ipv4.is_null() && !c.xaddrs.is_null();
@@ -3632,6 +3638,8 @@ int main(int argc, char** argv)
             ui_state.motion_tier_status,
             ui_state.rtsp_transport,
             ui_state.rtsp_transport_status,
+            ui_state.record_from,
+            record_from_available,
             record_path,
             streams,
             can_sync_time,
@@ -3674,6 +3682,9 @@ int main(int argc, char** argv)
             camera.min_continuous_recording_hours.set_value(r_string_utils::s_to_int(ui_state.min_continuous_recording_hours));
             camera.motion_tier.set_value(ui_state.motion_tier);
             camera.rtsp_transport.set_value(ui_state.rtsp_transport);
+            // The stream recorded: kept null (main) until the smaller one is chosen once, then kept as chosen.
+            if(ui_state.record_from == "sub" || !camera.record_from.is_null())
+                camera.record_from.set_value(ui_state.record_from == "sub" ? "sub" : "main");
             // Kept as a choice only once it differs from what the model suggests, or was chosen before.
             {
                 const string kind = ui_state.is_doorbell ? "doorbell" : "camera";
@@ -3710,6 +3721,7 @@ int main(int argc, char** argv)
         ui_state.is_doorbell = r_disco::camera_kind(camera) == "doorbell";
         ui_state.press_source = r_disco::camera_press_source(camera);
         ui_state.door_view = revere::doorbell_view();
+        ui_state.record_from = r_disco::record_from_sub(camera) ? "sub" : "main";
         ui_state.do_motion_detection = camera.do_motion_detection.value();
         ui_state.do_motion_pruning = camera.do_motion_pruning.value();
         ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());
@@ -3783,7 +3795,7 @@ int main(int argc, char** argv)
             }
         }
         properties_session.begin(camera.id, ui_state.is_doorbell, ui_state.do_motion_detection, ui_state.do_motion_pruning && ui_state.do_motion_detection,
-                                 ui_state.min_continuous_recording_hours, ui_state.motion_tier, ui_state.rtsp_transport, ui_state.press_source);
+                                 ui_state.min_continuous_recording_hours, ui_state.motion_tier, ui_state.rtsp_transport, ui_state.record_from, ui_state.press_source);
         main_window_state.properties_open = true;
     };
     // Selecting something else while the properties have unsaved changes asks first.
@@ -3800,7 +3812,7 @@ int main(int argc, char** argv)
             streams_changed = as.streams.changed;
         }
         if(!properties_session.dirty(ui_state.is_doorbell, ui_state.do_motion_detection, ui_state.do_motion_pruning && ui_state.do_motion_detection,
-                                     ui_state.motion_tier, ui_state.rtsp_transport, streams_changed, ui_state.press_source))
+                                     ui_state.motion_tier, ui_state.rtsp_transport, ui_state.record_from, streams_changed, ui_state.press_source))
         {
             close_properties();
             go();

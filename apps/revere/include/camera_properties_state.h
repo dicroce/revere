@@ -130,6 +130,8 @@ struct camera_properties_session
     std::string transport;
     // A doorbell's press source: "onvif" or "reolink_email".
     std::string press_source {"onvif"};
+    // "main" or "sub": the stream the camera records from (r_camera::record_from).
+    std::string record_from;
     // The hours field's text.
     char hours_text[16] {0};
     // Save was tried: show what's wrong with the hours.
@@ -138,7 +140,7 @@ struct camera_properties_session
     properties_nav nav;
 
     void begin(const std::string& id, bool doorbell_on, bool motion_on, bool prune_on, const std::string& hours_now, const std::string& tier_now,
-               const std::string& transport_now, const std::string& press_source_now = "onvif")
+               const std::string& transport_now, const std::string& record_from_now, const std::string& press_source_now = "onvif")
     {
         press_source = press_source_now;
         camera_id = id;
@@ -148,6 +150,7 @@ struct camera_properties_session
         hours = hours_now;
         tier = tier_now;
         transport = transport_now;
+        record_from = record_from_now;
         std::snprintf(hours_text, sizeof(hours_text), "%s", hours_now.c_str());
         tried = false;
         nav.reset();
@@ -162,10 +165,11 @@ struct camera_properties_session
 
     // Anything differs from when the pane opened. The hours only count while pruning is on, and the press source while
     // it's a doorbell (they aren't saved otherwise).
-    bool dirty(bool doorbell_now, bool motion_now, bool prune_now, const std::string& tier_now, const std::string& transport_now, bool streams_changed,
-               const std::string& press_source_now = "onvif") const
+    bool dirty(bool doorbell_now, bool motion_now, bool prune_now, const std::string& tier_now, const std::string& transport_now,
+               const std::string& record_from_now, bool streams_changed, const std::string& press_source_now = "onvif") const
     {
-        if(streams_changed || doorbell_now != doorbell || motion_now != motion || prune_now != prune || tier_now != tier || transport_now != transport)
+        if(streams_changed || doorbell_now != doorbell || motion_now != motion || prune_now != prune || tier_now != tier || transport_now != transport ||
+           record_from_now != record_from)
             return true;
         if(doorbell_now && press_source_now != press_source)
             return true;
@@ -381,6 +385,27 @@ inline std::vector<std::string> mail_status_lines(const doorbell_view& v, const 
         out.push_back("Too many wrong passwords from the doorbell. Locked for " + std::to_string(mins) + (mins == 1 ? " more minute." : " more minutes."));
     }
     return out;
+}
+
+// What "Record from" says under its choice (the stream the camera records from, r_camera::record_from): what it does.
+inline std::string record_from_description(const std::string& record_from)
+{
+    return record_from == "sub"
+        ? "Records, shows live, finds motion and takes pictures from the camera's smaller stream, and never opens its main stream, so a camera on a weak link "
+          "(Wi-Fi, say) can keep up. The picture is smaller, and there is no HD."
+        : "Records from the camera's main stream. Choose the smaller stream for a camera on a weak link that keeps falling behind.";
+}
+
+// A line under it when what is set is not what happens: set to the smaller stream, which can't be used now (it is off,
+// not found, or smaller streams are off for this computer), so the camera records from its main stream and goes back
+// when the smaller one works. `available`: the camera's smaller stream works as saved.
+inline std::string record_from_status(const std::string& record_from, bool available)
+{
+    if(record_from == "sub" && !available)
+        return "The camera's smaller stream isn't available now, so it records from the main stream; it goes back to the smaller one when that works.";
+    if(record_from != "sub" && !available)
+        return "The smaller stream has to be set up and working first (Streams and connection, below; smaller streams also have to be on in Settings), and saved.";
+    return std::string();
 }
 
 }

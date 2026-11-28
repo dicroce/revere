@@ -31,6 +31,8 @@ add_executable(
     source/test_main_window_size.cpp
     include/test_x11_errors.h
     source/test_x11_errors.cpp
+    include/test_camera_properties_pane.h
+    source/test_camera_properties_pane.cpp
 )
 
 target_include_directories(

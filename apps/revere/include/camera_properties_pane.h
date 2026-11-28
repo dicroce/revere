@@ -40,7 +40,9 @@ inline const tier_choice* tier_choices(size_t& n)
 
 // Draws the properties in the space left in the current window and returns what the user chose at the bottom.
 // tier_status says what the camera uses now and why; rtsp_transport is "TCP" or "UDP"; transport_status, when not
-// empty, says the camera is on UDP because it refused TCP; streams is the Streams state (see streams_state) and
+// empty, says the camera is on UDP because it refused TCP; record_from is "main" or "sub", the stream it records from,
+// and record_from_available says the camera's smaller stream works as saved (the choice is off until it does, unless
+// it is already set); streams is the Streams state (see streams_state) and
 // streams_cb(op, token) is called for a click in it: op "off" (use the recording stream), "use" (the smaller stream
 // with that profile token), "find" (look again) or "analysis" (token "1" or "0"). can_sync_time: the camera was found
 // by ONVIF discovery, so its clock can be set. sync_time_cb, move_storage_cb and change_retention_cb open the small
@@ -62,6 +64,8 @@ camera_properties_result camera_properties_pane(
     const std::string& tier_status,
     std::string& rtsp_transport,
     const std::string& transport_status,
+    std::string& record_from,
+    bool record_from_available,
     const std::string& record_file_path,
     streams_state& streams,
     bool can_sync_time,
@@ -84,7 +88,7 @@ camera_properties_result camera_properties_pane(
     // Pruning needs motion detection.
     if(!do_motion_detection)
         do_motion_pruning = false;
-    const bool dirty = session.dirty(is_doorbell, do_motion_detection, do_motion_pruning, motion_tier, rtsp_transport, streams_changed, press_source);
+    const bool dirty = session.dirty(is_doorbell, do_motion_detection, do_motion_pruning, motion_tier, rtsp_transport, record_from, streams_changed, press_source);
 
     // The row of tabs, one per section, above the sections and so fixed while they scroll: a click scrolls to that
     // section and marks it until the user scrolls, and the one in view is marked. The sections report where they start as they're drawn (properties_nav),
@@ -245,7 +249,27 @@ camera_properties_result camera_properties_pane(
             divider(d);
             if(action(d, nullptr, "Change retention", "Resize the recording file to hold more or fewer days of video. Clears this camera's existing recordings."))
                 change_retention_cb();
-            // "Record from" (the stream recorded) goes here.
+            // The stream recorded. The smaller stream can be chosen once it works (and stays chosen if it goes away).
+            divider(d);
+            d.label("Record from");
+            d.gap(2.0f);
+            if(d.pill("##record_main", "Main stream", record_from != "sub", true))
+                record_from = "main";
+            // Already the saved choice when the pane opened (the stream may just be away): it stays choosable, so flipping to Main
+            // and back needs no Cancel.
+            const bool sub_choosable = record_from_available || session.record_from == "sub";
+            ImGui::BeginDisabled(!sub_choosable);
+            if(d.pill("##record_sub", "Smaller stream", record_from == "sub", false))
+                record_from = "sub";
+            ImGui::EndDisabled();
+            d.gap(2.0f);
+            d.body(record_from_description(record_from));
+            const auto status = record_from_status(record_from, record_from_available);
+            if(!status.empty())
+            {
+                d.gap(2.0f);
+                d.body(status, record_from == "sub" ? status_warning_text : text_secondary);
+            }
         };
 
         auto detection = [&](dialog_frame& d) {
