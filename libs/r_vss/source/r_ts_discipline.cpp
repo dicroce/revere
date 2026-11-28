@@ -95,11 +95,11 @@ string r_vss::drift_message(int64_t drift_ms, int64_t over_ms)
     char buf[256];
     if(hours >= 0.1)
         snprintf(buf, sizeof(buf), "the camera's clock is %.1f s %s of ours after %.1f h (about %.1f s an hour); "
-                 "the recording is kept on our clock, but the camera should take its time from NTP",
+                 "the recording is kept on our clock; check that the camera takes its time from the internet (NTP)",
                  secs, drift_ms < 0 ? "fast" : "slow", hours, secs / hours);
     else
         snprintf(buf, sizeof(buf), "the camera's clock is %.1f s %s of ours; "
-                 "the recording is kept on our clock, but the camera should take its time from NTP",
+                 "the recording is kept on our clock; check that the camera takes its time from the internet (NTP)",
                  secs, drift_ms < 0 ? "fast" : "slow");
     return buf;
 }

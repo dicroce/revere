@@ -538,14 +538,14 @@ void test_r_ts_discipline::test_drift_message()
 {
     RTF_ASSERT(drift_message(-10000, (int64_t)(8.3 * HOUR)) ==
                "the camera's clock is 10.0 s fast of ours after 8.3 h (about 1.2 s an hour); "
-               "the recording is kept on our clock, but the camera should take its time from NTP");
+               "the recording is kept on our clock; check that the camera takes its time from the internet (NTP)");
     RTF_ASSERT(drift_message(20500, 10 * HOUR) ==
                "the camera's clock is 20.5 s slow of ours after 10.0 h (about 2.0 s an hour); "
-               "the recording is kept on our clock, but the camera should take its time from NTP");
+               "the recording is kept on our clock; check that the camera takes its time from the internet (NTP)");
     // Too soon for a rate.
     RTF_ASSERT(drift_message(-10000, 2 * MIN) ==
                "the camera's clock is 10.0 s fast of ours; "
-               "the recording is kept on our clock, but the camera should take its time from NTP");
+               "the recording is kept on our clock; check that the camera takes its time from the internet (NTP)");
 }
 
 void test_r_ts_discipline::test_recording_clock_json()

@@ -67,7 +67,7 @@ namespace r_vss
 // how far the detection pass looks for a stored frame (STORED_MAX_GAP_MS): a
 // recorder without this correction, or one where it couldn't keep up, would
 // show an event's video from the wrong moment by then. The recording stays
-// right, but such a camera should take its time from NTP.
+// right, but check that such a camera takes its time from the internet (NTP).
 class r_ts_discipline
 {
 public:
@@ -131,7 +131,8 @@ private:
 };
 
 // The warning for a drift of drift_ms over_ms after the anchor: "the camera's
-// clock is 10.0 s fast of ours after 8.3 h (about 1.2 s an hour); ...".
+// clock is 10.0 s fast of ours after 8.3 h (about 1.2 s an hour); ...; check
+// that the camera takes its time from the internet (NTP)".
 R_API std::string drift_message(int64_t drift_ms, int64_t over_ms);
 
 // /cameras' recording_clock: {"drift_ms", "since_ms", "jumps"}, or null while
