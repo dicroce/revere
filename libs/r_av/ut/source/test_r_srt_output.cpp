@@ -190,9 +190,30 @@ void test_r_srt_output::test_a_muxer_that_is_not_srt_has_no_stats()
     std::filesystem::remove(path);
 }
 
+// A header the container refuses, over libsrt: open() throws, the SRT output is closed by the failure (the link is
+// gone, no stats), and the muxer is safe to destroy.
+void test_r_srt_output::test_a_failed_header_over_libsrt_is_closed_by_the_muxer()
+{
+    listener l("");
+    for(int i = 0; i < 3; ++i)
+    {
+        r_muxer m(l.url("streamid=x"), false, "mp4");
+        m.enable_fragmented_mp4();   // an mp4 over a stream is fragmented; the plain one fails earlier, on the unseekable output
+        m.add_video_stream(AVRational{15, 1}, AV_CODEC_ID_H264, 854, 480, AV_PROFILE_H264_MAIN, 41);
+        m.add_audio_stream(AV_CODEC_ID_PCM_MULAW, 1, 8000);
+        m.use_libsrt();
+        bool threw = false;
+        try { m.open(); }
+        catch(...) { threw = true; }
+        RTF_ASSERT(threw);
+        RTF_ASSERT(!m.srt_stats().has_value());
+    }
+}
+
 #else
 
 void test_r_srt_output::test_a_muxer_sends_mpegts_through_libsrt_and_reads_stats() {}
+void test_r_srt_output::test_a_failed_header_over_libsrt_is_closed_by_the_muxer() {}
 void test_r_srt_output::test_a_muxer_that_is_not_srt_has_no_stats() {}
 
 void test_r_srt_output::test_sends_to_a_listener_and_reports_stats()
