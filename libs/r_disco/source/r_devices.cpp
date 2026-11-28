@@ -600,10 +600,12 @@ const camera_column CAMERA_COLUMNS[] = {
     // Camera or doorbell (r_camera::kind); null on existing rows until someone chooses.
     {12, "kind", "TEXT"},
     // A doorbell's press source (r_camera::press_source); null on existing rows: onvif.
-    {13, "press_source", "TEXT"}
+    {13, "press_source", "TEXT"},
+    // Which stream the camera records from (r_camera::record_from); null on existing rows, which record from main.
+    {14, "record_from", "TEXT"}
 };
 
-const int CAMERA_DB_VERSION = 13;
+const int CAMERA_DB_VERSION = 14;
 }
 
 void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
@@ -902,6 +904,7 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
     number("sub_analysis", camera.sub_analysis);
     text("kind", camera.kind);
     text("press_source", camera.press_source);
+    text("record_from", camera.record_from);
 
     camera.stream_config_hash = row.at("stream_config_hash").value();
     return camera;
@@ -1042,6 +1045,7 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
     cols.add("mac", mac);
     cols.add("kind", camera.kind);
     cols.add("press_source", camera.press_source);
+    cols.add("record_from", camera.record_from);
     cols.add("stream_config_hash", hash);
 
     r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){

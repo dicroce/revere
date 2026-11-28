@@ -969,7 +969,7 @@ void test_r_disco::test_db_upgrade_from_mac_at_version_8()
     RTF_ASSERT(camera.value().firmware_version.value() == "1.3.7");
     RTF_ASSERT(camera.value().mac.value() == "aa:bb:cc:dd:ee:ff");
 
-    RTF_ASSERT_EQUAL(db_version(), 13);
+    RTF_ASSERT_EQUAL(db_version(), 14);
     auto columns = db_columns();
     for(auto c : {"manufacturer", "model", "firmware_version", "mac"})
         RTF_ASSERT(columns.count(c) == 1);
@@ -981,7 +981,7 @@ void test_r_disco::test_db_upgrade_from_device_info_at_version_8()
     make_cameras_db(8, {"manufacturer TEXT", "model TEXT", "firmware_version TEXT"});
     auto camera = start_and_save_device_info();
     RTF_ASSERT(camera.value().model.value() == "C500");
-    RTF_ASSERT_EQUAL(db_version(), 13);
+    RTF_ASSERT_EQUAL(db_version(), 14);
     RTF_ASSERT(db_columns().count("mac") == 1);
 }
 
@@ -993,16 +993,16 @@ void test_r_disco::test_db_upgrade_repairs_a_missing_column()
     auto camera = start_and_save_device_info();
     RTF_ASSERT(camera.value().model.value() == "C500");
     RTF_ASSERT(db_columns().count("model") == 1);
-    RTF_ASSERT_EQUAL(db_version(), 13);
+    RTF_ASSERT_EQUAL(db_version(), 14);
 }
 
 void test_r_disco::test_db_upgrade_keeps_a_newer_version()
 {
     // A database a newer build has used keeps its version.
-    make_cameras_db(13, {"manufacturer TEXT", "model TEXT", "firmware_version TEXT", "mac TEXT"});
+    make_cameras_db(15, {"manufacturer TEXT", "model TEXT", "firmware_version TEXT", "mac TEXT"});
     auto camera = start_and_save_device_info();
     RTF_ASSERT(!camera.is_null());
-    RTF_ASSERT_EQUAL(db_version(), 13);
+    RTF_ASSERT_EQUAL(db_version(), 15);
 }
 
 void test_r_disco::test_db_upgrade_twice()
@@ -1010,12 +1010,12 @@ void test_r_disco::test_db_upgrade_twice()
     // A new database, then a second start on it: nothing to add, nothing fails.
     auto first = start_and_save_device_info();
     RTF_ASSERT(first.value().manufacturer.value() == "TP-Link");
-    RTF_ASSERT_EQUAL(db_version(), 13);
+    RTF_ASSERT_EQUAL(db_version(), 14);
     auto columns = db_columns();
     auto second = start_and_save_device_info();
     RTF_ASSERT(second.value().manufacturer.value() == "TP-Link");
     RTF_ASSERT(db_columns() == columns);
-    RTF_ASSERT_EQUAL(db_version(), 13);
+    RTF_ASSERT_EQUAL(db_version(), 14);
 }
 
 void test_r_disco::test_db_upgrade_from_version_7()
@@ -1030,7 +1030,7 @@ void test_r_disco::test_db_upgrade_from_version_7()
     auto camera = start_and_save_device_info();
     RTF_ASSERT(camera.value().manufacturer.value() == "TP-Link");
     RTF_ASSERT(camera.value().firmware_version.value() == "1.3.7");
-    RTF_ASSERT_EQUAL(db_version(), 13);
+    RTF_ASSERT_EQUAL(db_version(), 14);
     auto after = db_columns();
     for(auto c : {"manufacturer", "model", "firmware_version", "mac"})
         RTF_ASSERT(after.count(c) == 1);
@@ -1070,7 +1070,7 @@ void test_r_disco::test_startup_logs_the_database()
     auto lines = log.lines();
     RTF_ASSERT_EQUAL(lines.size(), (size_t)1);
     RTF_ASSERT(lines[0].find(string("top_dir") + PATH_SLASH + "db" + PATH_SLASH + "cameras.db") != string::npos);
-    RTF_ASSERT(lines[0].find("(schema version 13, was 0)") != string::npos);
+    RTF_ASSERT(lines[0].find("(schema version 14, was 0)") != string::npos);
 }
 
 void test_r_disco::test_failed_writes_are_logged()
@@ -1366,7 +1366,7 @@ void test_r_disco::test_db_upgrade_existing_camera_has_no_substream()
     RTF_ASSERT(c.sub_rtsp_url.is_null());
     RTF_ASSERT(c.sub_analysis.is_null() || c.sub_analysis.value() == 0);   // an existing camera finds motion where it did
     devices.stop();
-    RTF_ASSERT_EQUAL(db_version(), 13);
+    RTF_ASSERT_EQUAL(db_version(), 14);
     auto columns = db_columns();
     for(auto col : {"sub_mode", "sub_status", "sub_onvif_profile_token", "sub_rtsp_url", "sub_video_codec",
                     "sub_video_codec_parameters", "sub_video_timebase", "sub_width", "sub_height", "sub_key_interval_ms", "sub_analysis"})
@@ -1477,7 +1477,24 @@ void test_r_disco::test_db_upgrade_adds_press_source()
     RTF_ASSERT(camera_press_source(c) == "onvif");
     devices.stop();
     RTF_ASSERT(db_columns().count("press_source") == 1);
-    RTF_ASSERT_EQUAL(db_version(), 13);
+    RTF_ASSERT_EQUAL(db_version(), 14);
+}
+
+void test_r_disco::test_db_upgrade_from_13_adds_record_from()
+{
+    // A database that already ran version 13 (the doorbell press source) still gets version 14's record_from, and
+    // keeps press_source. An existing camera has none set, so it records from main.
+    make_cameras_db(13, {"manufacturer TEXT", "model TEXT", "firmware_version TEXT", "mac TEXT", "press_source TEXT"});
+    RTF_ASSERT(db_columns().count("record_from") == 0);
+    r_devices devices("top_dir");
+    devices.start();
+    auto c = devices.get_camera_by_id("cam-1").value();
+    RTF_ASSERT(c.record_from.is_null());
+    RTF_ASSERT(!record_from_sub(c));
+    devices.stop();
+    RTF_ASSERT_EQUAL(db_version(), 14);
+    RTF_ASSERT(db_columns().count("record_from") == 1);
+    RTF_ASSERT(db_columns().count("press_source") == 1);
 }
 
 void test_r_disco::test_db_upgrade_existing_camera_has_no_kind()
@@ -1491,7 +1508,7 @@ void test_r_disco::test_db_upgrade_existing_camera_has_no_kind()
     RTF_ASSERT(c.kind.is_null());
     RTF_ASSERT(camera_kind(c) == "camera");
     devices.stop();
-    RTF_ASSERT_EQUAL(db_version(), 13);
+    RTF_ASSERT_EQUAL(db_version(), 14);
     RTF_ASSERT(db_columns().count("kind") == 1);
 }
 

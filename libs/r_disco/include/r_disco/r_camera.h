@@ -83,6 +83,11 @@ struct r_camera
     // the decoding. Off (0, or null) until chosen, and off whenever the camera has no substream in use.
     r_utils::r_nullable<int> sub_analysis;
 
+    // Which stream the camera records from: "main" (or null, the default) or "sub", the substream above, for a camera
+    // on a link that cannot carry its main stream. "sub" only takes effect while the substream is usable; otherwise
+    // the camera records from main and this stays as the person set it, so it applies again when the substream does.
+    r_utils::r_nullable<std::string> record_from;
+
     // What the device is: "camera" or "doorbell", as the person chose it; null until they do (camera_kind()).
     r_utils::r_nullable<std::string> kind;
 
@@ -128,6 +133,18 @@ inline std::string camera_press_source(const r_camera& camera)
 inline bool valid_press_source(const std::string& source)
 {
     return source == "onvif" || source == "reolink_email";
+}
+
+// Whether a person can choose this for record_from.
+inline bool valid_record_from(const std::string& value)
+{
+    return value == "main" || value == "sub";
+}
+
+// Whether the camera is set to record from its substream (what was chosen, not whether it can now).
+inline bool record_from_sub(const r_camera& camera)
+{
+    return !camera.record_from.is_null() && camera.record_from.value() == "sub";
 }
 
 // Whether the camera uses its substream: only sub_mode "on" counts; null or
