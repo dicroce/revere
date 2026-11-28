@@ -1204,6 +1204,17 @@ void link_text(const std::string& label, const std::string& url, OPEN_CB open_cb
 //     it, plus Copy URL), and optionally "action" with "action_label": a
 //     button that runs the plugin's action (system_plugin_action), asking
 //     the line's "confirm" question first when it has one;
+//     "warn": true draws the text in the warning tone;
+//   {"text", "choice": {"value", "action", "options": [{"value", "name", "subtitle", "cost", "warn"}]}}:
+//     the text is the one-line summary, and the choice is drawn under it as a
+//     radio list, one row for each option: its name (wrapping, never cut off),
+//     its subtitle under it and its cost line below that, in the warning tone
+//     when the option's "warn" is true. The option whose value is the choice's
+//     "value" is the selected one. Picking another calls system_plugin_action
+//     with the choice's "action" and the option's "value" joined (so an action
+//     of "mode:cam1:" and a value of "live" call "mode:cam1:live"). A host
+//     before this drew only the text; a plugin that wants a way to choose there
+//     sends a button for each option as well, or instead;
 //   {"qr": text}, drawn as a QR code;
 //   {"tiles": [{"label", "value", "detail"?, "hint"?}], "title"?}, drawn as
 //     stat cards like a camera's, under the title if there is one.
@@ -1212,6 +1223,16 @@ void link_text(const std::string& label, const std::string& url, OPEN_CB open_cb
 // Text wraps and the buttons wrap onto the next line when they don't fit.
 // The buttons are a size between the action row's and SmallButton, so they
 // don't tower over the line of text they sit beside.
+// One row of a choice line.
+struct plugin_choice_option
+{
+    std::string value;
+    std::string name;
+    std::string subtitle;
+    std::string cost;
+    bool warn {false};
+};
+
 struct plugin_status_line_view
 {
     std::string qr;
@@ -1224,6 +1245,10 @@ struct plugin_status_line_view
     std::string title;
     std::vector<main_window_detail::stat_card> tiles;
     bool is_tiles {false};
+    bool warn {false};                          // the text in the warning tone
+    std::string choice_value;                   // the selected option's value
+    std::string choice_action;                  // what a pick runs: this + the option's value
+    std::vector<plugin_choice_option> options;  // not empty: draw them as a radio list
 };
 
 // Reads one entry of "lines". False when it's malformed or of a type this
@@ -1269,12 +1294,80 @@ inline bool parse_plugin_status_line(const nlohmann::json& line, plugin_status_l
         }
         if(out.action.empty())
             out.action_label.clear();
+        out.warn = line.contains("warn") && line["warn"].is_boolean() && line["warn"].get<bool>();
+        // A choice that can't be drawn or acted on (no action, no usable option) is left off: the text still shows.
+        if(line.contains("choice") && line["choice"].is_object())
+        {
+            const auto& c = line["choice"];
+            auto action = str(c, "action");
+            std::vector<plugin_choice_option> options;
+            if(!action.empty() && c.contains("options") && c["options"].is_array())
+            {
+                for(const auto& o : c["options"])
+                {
+                    if(!o.is_object())
+                        continue;
+                    plugin_choice_option opt {str(o, "value"), str(o, "name"), str(o, "subtitle"), str(o, "cost"),
+                                              o.contains("warn") && o["warn"].is_boolean() && o["warn"].get<bool>()};
+                    if(!opt.value.empty() && !opt.name.empty())
+                        options.push_back(std::move(opt));
+                }
+            }
+            if(!options.empty())
+            {
+                out.choice_action = std::move(action);
+                out.choice_value = str(c, "value");
+                out.options = std::move(options);
+            }
+        }
         return !out.text.empty();
     }
     catch(...)
     {
         return false;
     }
+}
+
+// A radio list of choice rows, as one block under the line's text: a circle, then the option's name,
+// its subtitle under it and its cost line under that, all wrapped to the room there is (never cut off).
+// The whole row is the target. Returns the value of the row picked this frame, or an empty string; a
+// click on the selected row picks nothing.
+inline std::string plugin_choice_rows(const plugin_status_line_view& line)
+{
+    using namespace main_window_detail;
+    using namespace r_ui_utils::theme;
+    std::string picked;
+    const float radius = 7.0f;
+    const float indent = radius * 2.0f + 8.0f;
+    auto* dl = ImGui::GetWindowDrawList();
+    for(size_t i = 0; i < line.options.size(); ++i)
+    {
+        const auto& o = line.options[i];
+        const bool selected = o.value == line.choice_value;
+        ImGui::PushID(static_cast<int>(i));
+        const ImVec2 top = ImGui::GetCursorScreenPos();
+        const float width = ImGui::GetContentRegionAvail().x;
+        ImGui::Indent(indent);
+        wrapped_text(text_primary, o.name);
+        if(!o.subtitle.empty())
+            wrapped_text(text_secondary, o.subtitle);
+        if(!o.cost.empty())
+            wrapped_text(o.warn ? status_warning_text : text_tertiary, o.cost);
+        ImGui::Unindent(indent);
+        const float height = std::max(ImGui::GetCursorScreenPos().y - top.y, ImGui::GetTextLineHeight());
+
+        ImGui::SetCursorScreenPos(top);
+        const bool clicked = ImGui::InvisibleButton("##choice", ImVec2(width, height));
+        const bool hovered = ImGui::IsItemHovered();
+        const ImVec2 centre(top.x + radius, top.y + ImGui::GetTextLineHeight() * 0.5f);
+        dl->AddCircle(centre, radius - 1.0f, ImGui::GetColorU32(hovered || selected ? accent : border_strong), 0, 1.5f);
+        if(selected)
+            dl->AddCircleFilled(centre, radius - 4.5f, ImGui::GetColorU32(accent));
+        if(clicked && !selected)
+            picked = o.value;
+        ImGui::PopID();
+    }
+    return picked;
 }
 
 template<typename OPEN_URL_CB, typename RUN_ACTION_CB>
@@ -1365,8 +1458,14 @@ void plugin_status_lines(const std::string& status_message, OPEN_URL_CB open_url
             flow_row row;
             row.next(ImGui::CalcTextSize(line.text.c_str()).x);
             ImGui::AlignTextToFramePadding();
-            wrapped_text(r_ui_utils::theme::text_primary, line.text);
+            wrapped_text(line.warn ? r_ui_utils::theme::status_warning_text : r_ui_utils::theme::text_primary, line.text);
             row.after_text();
+            if(!line.options.empty())
+            {
+                auto picked = plugin_choice_rows(line);
+                if(!picked.empty())
+                    run_action(line.choice_action + picked);
+            }
             if(!line.copy.empty() && flow_button(row, "Copy"))
                 ImGui::SetClipboardText(line.copy.c_str());
             if(!line.action.empty())

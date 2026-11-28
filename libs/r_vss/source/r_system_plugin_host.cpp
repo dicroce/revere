@@ -2,6 +2,7 @@
 #include "r_vss/r_system_plugin_host.h"
 #include "r_vss/r_frame_feeds.h"
 #include <algorithm>
+#include "r_utils/3rdparty/json/json.h"
 #include <cstddef>
 #include <cstring>
 #include <mutex>
@@ -61,6 +62,8 @@ struct r_system_plugin_host::frame_api
     // Revere's pressure JSON, and the lock it is set under (set_pressure_source may come after the plugin has its table).
     std::mutex pressure_lock;
     std::function<std::string()> pressure;
+    // The host, for the plugin-state calls; it outlives its plugins' tables.
+    r_system_plugin_host* owner {nullptr};
     // The plugin's feeds by handle. next() holds its own reference while it reads, so an
     // unsubscribe from another thread meanwhile only drops the map's: the last one frees it.
     std::mutex lock;
@@ -169,6 +172,50 @@ struct r_system_plugin_host::frame_api
         return (int)json.size();
     }
 
+    // Copies json into buf as snprintf does and returns its full length.
+    static int copy_out(const std::string& json, char* buf, size_t capacity)
+    {
+        if(buf && capacity > 0)
+        {
+            const size_t n = std::min(json.size(), capacity - 1);
+            memcpy(buf, json.data(), n);
+            buf[n] = '\0';
+        }
+        return (int)json.size();
+    }
+
+    static int set_plugin_state(void* host, const char* state_json)
+    {
+        auto api = static_cast<frame_api*>(host);
+        if(!api || !api->owner || !state_json || api->guid.empty())
+            return -1;
+        // A plugin that is disabled, or stopping, has no state to tell: what it says is not true of it now.
+        if(!api->owner->_may_publish_state(api->guid))
+            return -1;
+        const int r = api->owner->_states.set(api->guid, state_json);
+        if(r != 0)
+            R_LOG_WARNING("System plugin %s: its state was refused (not a JSON object, or over %zu bytes); the last one stays", api->guid.c_str(), r_plugin_states::MAX_STATE_BYTES);
+        return r;
+    }
+
+    static int get_plugin_states(void* host, char* buf, size_t capacity)
+    {
+        auto api = static_cast<frame_api*>(host);
+        if(!api || !api->owner || api->guid != PLUGIN_STATES_READER_GUID)
+            return -1;
+        return copy_out(api->owner->_states.json(), buf, capacity);
+    }
+
+    static int plugin_action(void* host, const char* plugin_guid, const char* action_json, char* result, size_t capacity)
+    {
+        auto api = static_cast<frame_api*>(host);
+        if(!api || !api->owner)
+            return -1;
+        if(api->guid != PLUGIN_STATES_READER_GUID)
+            return copy_out("{\"error\":\"not allowed\",\"ok\":false}", result, capacity);
+        return copy_out(api->owner->plugin_action(plugin_guid ? plugin_guid : "", action_json ? action_json : ""), result, capacity);
+    }
+
     static void unsubscribe(void* host, r_frame_subscription_handle sub)
     {
         auto api = static_cast<frame_api*>(host);
@@ -207,6 +254,10 @@ void r_system_plugin_host::_give_frames(plugin_info& p)
     api->table.unsubscribe = &frame_api::unsubscribe;
     api->table.subscribe_frames_from = &frame_api::subscribe_from;
     api->table.get_pressure = &frame_api::get_pressure;
+    api->table.set_plugin_state = &frame_api::set_plugin_state;
+    api->table.get_plugin_states = &frame_api::get_plugin_states;
+    api->table.plugin_action = &frame_api::plugin_action;
+    api->owner = this;
     api->pressure = _pressure;
     p.frames = api;
     try
@@ -813,6 +864,8 @@ void r_system_plugin_host::stop_all()
                 R_LOG_ERROR("Error stopping system plugin %s: %s", p->name.c_str(), e.what());
             }
         }
+        // Stopped (and about to be unloaded, when the host is going): its state is no longer true.
+        _states.remove(p->guid);
     }
     // A plugin stopping unsubscribes its feeds; any left are closed, so a next_frame
     // on them returns -1 at once. They're freed when the plugin is destroyed.
@@ -924,12 +977,38 @@ void r_system_plugin_host::set_plugin_enabled(const std::string& plugin_name, bo
         {
             p->set_enabled_func(p->plugin_handle, enabled);
             R_LOG_INFO("Set plugin %s enabled=%s", plugin_name.c_str(), enabled ? "true" : "false");
+            // Disabled, it has nothing to say: what it said before is gone from the states (and the version moves).
+            if(!enabled)
+                _states.remove(p->guid);
         }
         catch (const std::exception& e)
         {
             R_LOG_ERROR("Error setting enabled state for plugin %s: %s", plugin_name.c_str(), e.what());
         }
     }
+}
+
+// Whether the plugin with this GUID may have a state: it is loaded and enabled, and the host isn't stopping.
+bool r_system_plugin_host::_may_publish_state(const std::string& guid)
+{
+    {
+        std::shared_lock<std::shared_mutex> r(_dispatch_gate);
+        if(!_dispatch_open)
+            return false;
+    }
+    for(auto p : _snapshot())
+        if(p->guid == guid)
+        {
+            try
+            {
+                return p->plugin_handle && (!p->enabled_func || p->enabled_func(p->plugin_handle));
+            }
+            catch(const std::exception&)
+            {
+                return false;
+            }
+        }
+    return false;
 }
 
 bool r_system_plugin_host::run_plugin_action(const std::string& plugin_name, const std::string& action)
@@ -948,6 +1027,66 @@ bool r_system_plugin_host::run_plugin_action(const std::string& plugin_name, con
         R_LOG_ERROR("Error running plugin %s action %s: %s", plugin_name.c_str(), action.c_str(), e.what());
         return false;
     }
+}
+
+bool r_system_plugin_host::queue_plugin_action(const std::string& plugin_name, const std::string& action)
+{
+    auto p = _find(plugin_name);
+    if(!p || !p->plugin_handle || !p->action_func)
+        return false;
+    std::lock_guard<std::mutex> g(_action_lock);
+    _queued_actions.emplace_back(plugin_name, action);
+    return true;
+}
+
+size_t r_system_plugin_host::run_queued_plugin_actions()
+{
+    std::vector<std::pair<std::string, std::string>> queued;
+    {
+        std::lock_guard<std::mutex> g(_action_lock);
+        queued.swap(_queued_actions);
+    }
+    // Run without the lock: an action may take a while, and a request meanwhile only joins the next batch.
+    for(const auto& a : queued)
+        run_plugin_action(a.first, a.second);
+    return queued.size();
+}
+
+// The caller's thread is not the UI's, and system_plugin_action is only ever called from it (r_system_plugin.h), so the
+// action is queued for it (queue_plugin_action) and the answer says it was queued, not that it ran.
+std::string r_system_plugin_host::plugin_action(const std::string& plugin_guid, const std::string& action_json)
+{
+    auto fail = [](const std::string& why) {
+        nlohmann::json j = {{"ok", false}, {"error", why}};
+        return j.dump();
+    };
+    // The action is a JSON object ({"action": "set_mode", ...}), as the contract has it.
+    try
+    {
+        if(!nlohmann::json::parse(action_json).is_object())
+            return fail("the action isn't a JSON object");
+    }
+    catch(const std::exception&)
+    {
+        return fail("the action isn't a JSON object");
+    }
+
+    std::string name;
+    bool has_action = false;
+    for(auto p : _snapshot())
+        if(p->guid == plugin_guid && p->plugin_handle)
+        {
+            name = p->name;
+            has_action = p->action_func != nullptr;
+            break;
+        }
+    if(name.empty())
+        return fail("no such plugin");
+    if(!has_action)
+        return fail("the plugin takes no actions");
+    if(!queue_plugin_action(name, action_json))
+        return fail("the action could not be queued");
+    return "{\"ok\":true}";
 }
 
 std::string r_system_plugin_host::get_plugin_status(const std::string& plugin_name) const

@@ -4,6 +4,7 @@
 #include <fstream>
 #include <random>
 #include <sstream>
+#include <thread>
 
 using namespace r_vss;
 using namespace std;
@@ -48,5 +49,36 @@ void test_r_system_plugin_action::test_no_export_or_no_plugin()
     r_system_plugin_host host(_top);
     RTF_ASSERT(!host.run_plugin_action(fs::path(TEST_NO_ACTION_PLUGIN).stem().string(), "reset:cam1"));
     RTF_ASSERT(!host.run_plugin_action("not_loaded", "reset:cam1"));
+    RTF_ASSERT(!fs::exists(_top + "/actions.txt"));
+}
+
+void test_r_system_plugin_action::test_queued_action_waits_for_the_ui_thread()
+{
+    r_system_plugin_host host(_top);
+    auto name = fs::path(TEST_ACTION_PLUGIN).stem().string();
+
+    // Asked for from another thread (the web's): queued, and the plugin hears nothing yet.
+    bool queued_first = false, queued_second = false;
+    thread web([&] {
+        queued_first = host.queue_plugin_action(name, "mode:cam1:live");
+        queued_second = host.queue_plugin_action(name, "mode:cam1:off");
+    });
+    web.join();
+    RTF_ASSERT(queued_first && queued_second);
+    RTF_ASSERT(!fs::exists(_top + "/actions.txt"));
+
+    // The UI thread runs them, in the order they came, once.
+    RTF_ASSERT(host.run_queued_plugin_actions() == 2);
+    RTF_ASSERT(_read(_top + "/actions.txt") == "mode:cam1:live\nmode:cam1:off\n");
+    RTF_ASSERT(host.run_queued_plugin_actions() == 0);
+    RTF_ASSERT(_read(_top + "/actions.txt") == "mode:cam1:live\nmode:cam1:off\n");
+}
+
+void test_r_system_plugin_action::test_nothing_queued_without_an_action_export()
+{
+    r_system_plugin_host host(_top);
+    RTF_ASSERT(!host.queue_plugin_action(fs::path(TEST_NO_ACTION_PLUGIN).stem().string(), "reset:cam1"));
+    RTF_ASSERT(!host.queue_plugin_action("not_loaded", "reset:cam1"));
+    RTF_ASSERT(host.run_queued_plugin_actions() == 0);
     RTF_ASSERT(!fs::exists(_top + "/actions.txt"));
 }

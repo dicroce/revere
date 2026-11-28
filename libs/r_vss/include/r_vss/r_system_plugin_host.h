@@ -5,6 +5,7 @@
 #include "r_vss/r_system_plugin.h"
 #include "r_vss/r_plugin_notifier.h"
 #include "r_vss/r_plugin_manifest.h"
+#include "r_vss/r_plugin_states.h"
 #include "r_utils/r_dynamic_library.h"
 #include "r_utils/r_macro.h"
 
@@ -165,6 +166,14 @@ public:
     // False if the plugin isn't loaded or has no actions.
     R_API bool run_plugin_action(const std::string& plugin_name, const std::string& action);
 
+    // For an action asked for from a thread that isn't the UI's (the web's): system_plugin_action is only ever
+    // called on the UI thread, so such a request is queued here and the UI thread runs it (a headless Revere has a
+    // thread of its own do the same). queue_plugin_action is safe from any thread; false, and nothing queued, if the
+    // plugin isn't loaded or has no actions. run_queued_plugin_actions runs what is queued, in order, on the calling
+    // thread, and says how many it ran: call it from the UI thread's loop.
+    R_API bool queue_plugin_action(const std::string& plugin_name, const std::string& action);
+    R_API size_t run_queued_plugin_actions();
+
     // Wire up detection events from the motion plugin host to all system plugins
     // that implement system_plugin_post_detection. Call after construction, before start_all().
     R_API void connect_detection_bus(r_motion_event_plugin_host& meph);
@@ -203,6 +212,16 @@ public:
     // after set_frame_source(): a plugin's table is made once, by whichever of the two comes first.
     R_API void set_pressure_source(std::function<std::string()> pressure);
 
+    // What plugins have said about themselves (set_plugin_state, host API version 3), as get_plugin_states() gives it:
+    // {"version", "plugins": {"<GUID>": <state>}}. The version rises with every change.
+    R_API std::string get_plugin_states_json() const { return _states.json(); }
+    R_API int64_t plugin_states_version() const { return _states.version(); }
+
+    // Queues an action for the loaded plugin with this GUID (queue_plugin_action: it runs on the UI's thread, as its
+    // panel's button does); the result is {"ok": true} once queued, or {"ok": false, "error": "..."} when it could not be
+    // (the host API's plugin_action).
+    R_API std::string plugin_action(const std::string& plugin_guid, const std::string& action_json);
+
 private:
     struct plugin_info;
     std::string _uninstallable_path(const std::string& plugin_name) const;
@@ -215,6 +234,7 @@ private:
     plugin_info* _find(const std::string& plugin_name);
 
     void _dispatch_detection(const r_detection& det, int64_t posted_at_ms);
+    bool _may_publish_state(const std::string& guid);
     void _on_api_result(const char* name, const char* json);
     static void _api_result_bridge(const char* result_type, const char* json, void* user_data);
     struct frame_api;
@@ -247,6 +267,9 @@ private:
         std::string path;   // the file it was loaded from
     };
 
+    std::mutex _action_lock;
+    std::vector<std::pair<std::string, std::string>> _queued_actions;   // plugin name, action: queue_plugin_action's
+
     std::string _top_dir;
     std::string _user_dir;
     bool _require_signed {false};
@@ -276,6 +299,7 @@ private:
     r_frame_feeds* _feeds {nullptr};
     std::function<bool(const std::string&)> _camera_recording;
     std::function<std::string()> _pressure;
+    r_plugin_states _states;
 };
 
 }

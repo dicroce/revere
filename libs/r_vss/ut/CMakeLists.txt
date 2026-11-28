@@ -89,6 +89,8 @@ add_executable(
     source/test_r_appliance.cpp
     include/test_r_web_password.h
     source/test_r_web_password.cpp
+    include/test_r_plugin_action_request.h
+    source/test_r_plugin_action_request.cpp
     include/test_r_rtsp_auth.h
     source/test_r_rtsp_auth.cpp
     include/test_r_rtsp_logins.h
@@ -147,11 +149,20 @@ target_link_libraries(test_frames_system_plugin PRIVATE r_utils)
 target_include_directories(test_frames_system_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 set_target_properties(test_frames_system_plugin PROPERTIES PREFIX "")
 add_dependencies(r_vss_ut test_frames_system_plugin)
+# The same plugin under the cloud's GUID (the only one that may read every plugin's state and run actions on them), writing
+# cloud.txt beside frames.txt.
+add_library(test_frames_cloud_system_plugin SHARED test_plugin/test_frames_system_plugin.cpp)
+target_link_libraries(test_frames_cloud_system_plugin PRIVATE r_utils)
+target_include_directories(test_frames_cloud_system_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_compile_definitions(test_frames_cloud_system_plugin PRIVATE TEST_PLUGIN_GUID="com.revere.cloud" TEST_NOTE_FILE="cloud.txt")
+set_target_properties(test_frames_cloud_system_plugin PROPERTIES PREFIX "")
+add_dependencies(r_vss_ut test_frames_cloud_system_plugin)
 target_compile_definitions(r_vss_ut PRIVATE
     TEST_ACTION_PLUGIN="$<TARGET_FILE:test_action_system_plugin>"
     TEST_NO_ACTION_PLUGIN="$<TARGET_FILE:test_no_action_system_plugin>"
     TEST_OTHER_API_PLUGIN="$<TARGET_FILE:test_other_api_system_plugin>"
     TEST_FRAMES_PLUGIN="$<TARGET_FILE:test_frames_system_plugin>"
+    TEST_FRAMES_CLOUD_PLUGIN="$<TARGET_FILE:test_frames_cloud_system_plugin>"
     TEST_MOTION_PLUGIN="$<TARGET_FILE:test_motion_system_plugin>"
     TEST_NO_MOTION_PLUGIN="$<TARGET_FILE:test_no_motion_system_plugin>"
     TEST_RING_ONLY_PLUGIN="$<TARGET_FILE:test_ring_only_system_plugin>"
