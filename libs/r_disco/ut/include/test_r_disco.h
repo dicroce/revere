@@ -7,12 +7,17 @@ public:
     RTF_FIXTURE(test_r_disco);
       TEST(test_r_disco::test_r_disco_r_agent_basics);
       TEST(test_r_disco::test_camera_move_from);
+      TEST(test_r_disco::test_mac_differs);
+      TEST(test_r_disco::test_a_hold_is_kept_across_a_restart);
+      TEST(test_r_disco::test_a_different_device_at_a_cameras_address_holds_it);
+      TEST(test_r_disco::test_the_keeper_stops_or_never_starts_a_held_camera);
+      TEST(test_r_disco::test_confirming_a_held_address_learns_the_mac_and_releases_it);
       TEST(test_r_disco::test_decide_camera_move);
       TEST(test_r_disco::test_hold_reason_for);
       TEST(test_r_disco::test_agent_reports_why_a_move_is_held);
       TEST(test_r_disco::test_agent_answer_camera_move);
       TEST(test_r_disco::test_agent_confirm_stores_the_mac_seen);
-      TEST(test_r_disco::test_agent_keeps_recording_when_not_pausing);
+      TEST(test_r_disco::test_agent_holds_unverified_moves_unless_set_to_follow);
       TEST(test_r_disco::test_camera_move_policy_file);
       TEST(test_r_disco::test_agent_forget_drops_unconfirmed_address);
       TEST(test_r_disco::test_agent_notes_mac_of_an_unchanged_camera);
@@ -37,6 +42,9 @@ public:
       TEST(test_r_disco::test_camera_kind);
       TEST(test_r_disco::test_camera_kind_saved_and_loaded);
       TEST(test_r_disco::test_db_upgrade_existing_camera_has_no_kind);
+      TEST(test_r_disco::test_press_source_saved_and_loaded);
+      TEST(test_r_disco::test_db_upgrade_adds_press_source);
+      TEST(test_r_disco::test_db_upgrade_from_13_adds_record_from);
       TEST(test_r_disco::test_db_upgrade_existing_camera_has_no_substream);
     RTF_FIXTURE_END();
 
@@ -47,12 +55,17 @@ public:
 
     void test_r_disco_r_agent_basics();
     void test_camera_move_from();
+    void test_mac_differs();
+    void test_a_hold_is_kept_across_a_restart();
+    void test_a_different_device_at_a_cameras_address_holds_it();
+    void test_the_keeper_stops_or_never_starts_a_held_camera();
+    void test_confirming_a_held_address_learns_the_mac_and_releases_it();
     void test_decide_camera_move();
     void test_hold_reason_for();
     void test_agent_reports_why_a_move_is_held();
     void test_agent_answer_camera_move();
     void test_agent_confirm_stores_the_mac_seen();
-    void test_agent_keeps_recording_when_not_pausing();
+    void test_agent_holds_unverified_moves_unless_set_to_follow();
     void test_camera_move_policy_file();
     void test_agent_forget_drops_unconfirmed_address();
     void test_agent_notes_mac_of_an_unchanged_camera();
@@ -77,5 +90,8 @@ public:
     void test_camera_kind();
     void test_camera_kind_saved_and_loaded();
     void test_db_upgrade_existing_camera_has_no_kind();
+    void test_press_source_saved_and_loaded();
+    void test_db_upgrade_adds_press_source();
+    void test_db_upgrade_from_13_adds_record_from();
     void test_db_upgrade_existing_camera_has_no_substream();
 };

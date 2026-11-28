@@ -52,6 +52,10 @@ R_API std::string substream_id_mount_path(const std::string& camera_id);
 // one that is not mounted (a request is routed to the longest mounted prefix).
 R_API std::string friendly_mount_path(const std::string& name);
 
+// The RTSP URL of a camera's restream by its friendly name, at friendly_mount_path (spaces as underscores), so the
+// URL a client copies reaches the mount; with the credential when one is given ("rtsp://user:pass@host:port/path").
+R_API std::string restream_url(const std::string& host, int port, const std::string& name, const std::string& user = "", const std::string& password = "");
+
 // Serves `factory` at both `path` and `id_path`: the same stream, the same credential check (it is the factory's).
 // Takes the caller's reference to the factory. Each path is removed on its own (remove_restream_mount).
 R_API void add_factory_at_both(_GstRTSPMountPoints* mounts, _GstRTSPMediaFactory* factory, const std::string& path, const std::string& id_path);

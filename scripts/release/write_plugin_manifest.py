@@ -61,6 +61,8 @@ def main():
     p.add_argument("--arch", required=True, choices=sorted(ARCHES))
     p.add_argument("--asset-platform", required=True,
                    help="the platform part of the asset names: windows, macos, macos-intel, linux, linux-arm64")
+    p.add_argument("--asset", default="cloud",
+                   help="the plugin's part of the asset names: revere-v0.0.41-linux-<asset>-plugin.so (default: cloud)")
     p.add_argument("--out", required=True, help="folder to write the asset and manifest into")
     a = p.parse_args()
 
@@ -69,6 +71,9 @@ def main():
         sys.exit(f"error: unexpected version {a.version!r}")
     if not re.fullmatch(r"[a-z0-9\-]+", a.asset_platform):
         sys.exit(f"error: unexpected asset platform {a.asset_platform!r}")
+
+    if not re.fullmatch(r"[a-z0-9]+", a.asset):
+        sys.exit(f"error: unexpected asset name {a.asset!r}")
 
     ext = PLATFORMS[a.platform]
     file_name = os.path.basename(a.plugin)
@@ -88,7 +93,7 @@ def main():
     }
 
     os.makedirs(a.out, exist_ok=True)
-    asset = os.path.join(a.out, f"revere-v{version}-{a.asset_platform}-cloud-plugin{ext}")
+    asset = os.path.join(a.out, f"revere-v{version}-{a.asset_platform}-{a.asset}-plugin{ext}")
     shutil.copyfile(a.plugin, asset)
     # Compact and with no trailing newline: these exact bytes are what's signed.
     with open(asset + ".json", "wb") as f:

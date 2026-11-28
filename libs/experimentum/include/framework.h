@@ -188,10 +188,9 @@ std::vector<std::shared_ptr<test_fixture>>& rtf_get_fixtures();
   };                                                         \
   a##_static_init a##_static_init_instance;
 
-// This is a globally (across test) incrementing counter so that tests can avoid
-// having hardcoded port numbers but can avoid stepping on eachothers ports.
-int& rtf_get_next_port();
-
+// A port for a test to listen on: a different one on each call, started from a place of its own in each test process,
+// and never one that something on the machine already holds (on Linux and macOS), so that tests can avoid hardcoded
+// port numbers and avoid stepping on each other's ports, in one process or in several at once.
 int rtf_next_port();
 
 #define RTF_NEXT_PORT() rtf_next_port()

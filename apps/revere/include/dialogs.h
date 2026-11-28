@@ -39,6 +39,16 @@ public:
     // The action row's left button.
     static constexpr int left = -2;
 
+    // The same widgets drawn in place, in a pane, not in a popup: `width` is the room they have. Explanations (body,
+    // error and an option's description) are in the pane's smaller text (key_18), under its own.
+    struct embedded_t {};
+    static constexpr embedded_t embedded {};
+    dialog_frame(embedded_t, float width) :
+        _width(width), _open(true), _popup(false), _embedded(true)
+    {
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
+    }
+
     explicit dialog_frame(const char* popup_name, float width = 440.0f, ImGuiWindowFlags extra_flags = 0) :
         _width(width)
     {
@@ -57,7 +67,8 @@ public:
         if(!_open)
             return;
         ImGui::PopStyleVar();
-        ImGui::EndPopup();
+        if(_popup)
+            ImGui::EndPopup();
     }
 
     dialog_frame(const dialog_frame&) = delete;
@@ -79,7 +90,9 @@ public:
     // Explanatory text, wrapped to the dialog's width.
     void body(const std::string& text, const ImVec4& color = r_ui_utils::theme::text_secondary)
     {
+        push_small();
         wrapped(color, text);
+        pop_small();
     }
 
     // A wizard step's heading, carried in its popup name after "##" (see
@@ -117,7 +130,7 @@ public:
         return input(id, buf, size, flags, -1.0f, hint, focus);
     }
 
-    void error(const std::string& text) { wrapped(r_ui_utils::theme::status_danger_text, text); }
+    void error(const std::string& text) { body(text, r_ui_utils::theme::status_danger_text); }
 
     // A small uppercase section title with a rule under it.
     void section(const char* title)
@@ -155,12 +168,15 @@ public:
         using namespace r_ui_utils::theme;
         const float pad = 12.0f;
         const auto p = ImGui::GetCursorScreenPos();
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + _width - pad * 2.0f);
+        const float title_h = ImGui::GetTextLineHeight();
+        push_small();
+        ImFont* desc_font = ImGui::GetFont();
+        const float desc_size = ImGui::GetFontSize();
         const float desc_h = description && *description ? ImGui::CalcTextSize(description, nullptr, false, _width - pad * 2.0f).y : 0.0f;
-        ImGui::PopTextWrapPos();
-        const float h = pad + ImGui::GetTextLineHeight() + (desc_h > 0.0f ? 4.0f + desc_h : 0.0f) + pad;
+        pop_small();
+        const float h = pad + title_h + (desc_h > 0.0f ? 4.0f + desc_h : 0.0f) + pad;
 
-        bool clicked = ImGui::InvisibleButton(id, ImVec2(_width, h));
+        bool clicked = main_window_detail::invisible_button(id, ImVec2(_width, h));
         const bool hovered = ImGui::IsItemHovered();
         auto* dl = ImGui::GetWindowDrawList();
         dl->AddRectFilled(p, ImVec2(p.x + _width, p.y + h), ImGui::GetColorU32(hovered ? surface_raised : surface_card));
@@ -168,9 +184,38 @@ public:
         dl->AddText(ImVec2(p.x + pad, p.y + pad), ImGui::GetColorU32(text_primary), title);
         if(desc_h > 0.0f)
         {
-            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(p.x + pad, p.y + pad + ImGui::GetTextLineHeight() + 4.0f),
+            dl->AddText(desc_font, desc_size, ImVec2(p.x + pad, p.y + pad + title_h + 4.0f),
                         ImGui::GetColorU32(text_secondary), description, nullptr, _width - pad * 2.0f);
         }
+        return clicked;
+    }
+
+    // One of a few short choices as a row of pills, wrapping to the next line when they don't fit; the selected one is
+    // outlined in accent. Call it once per pill, in order: `first` starts the row. Returns true when clicked.
+    bool pill(const char* id, const char* title, bool selected, bool first)
+    {
+        using namespace r_ui_utils::theme;
+        const ImVec2 pad(12.0f, 5.0f);
+        const float gap_x = 6.0f;
+        const float w = ImGui::CalcTextSize(title).x + pad.x * 2.0f;
+        const float h = ImGui::GetTextLineHeight() + pad.y * 2.0f;
+        if(first)
+            _row_used = 0.0f;
+        else if(_row_used + gap_x + w <= _width)
+        {
+            ImGui::SameLine(0.0f, gap_x);
+            _row_used += gap_x;
+        }
+        else
+            _row_used = 0.0f;
+        _row_used += w;
+        const auto p = ImGui::GetCursorScreenPos();
+        bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+        const bool hovered = ImGui::IsItemHovered();
+        auto* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ImGui::GetColorU32(hovered ? surface_raised : surface_card));
+        dl->AddRect(p, ImVec2(p.x + w, p.y + h), ImGui::GetColorU32(selected ? accent : border_subtle), 0.0f, 0, selected ? 2.0f : 1.0f);
+        dl->AddText(ImVec2(p.x + pad.x, p.y + pad.y), ImGui::GetColorU32(selected ? text_primary : text_secondary), title);
         return clicked;
     }
 
@@ -181,6 +226,8 @@ public:
     bool path(const std::string& p, const char* button_label = nullptr, const char* placeholder = "")
     {
         using namespace r_ui_utils::theme;
+        // Where it starts, which is after a label when it's a row's value.
+        const float x0 = ImGui::GetCursorPosX();
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
         const float bw = button_label ? button_size(button_label).x : 0.0f;
         const float max_w = _width - (button_label ? bw + 12.0f : 0.0f);
@@ -207,7 +254,7 @@ public:
         bool clicked = false;
         if(button_label)
         {
-            ImGui::SameLine(ImGui::GetCursorPosX() + _width - bw);
+            ImGui::SameLine(x0 + _width - bw);
             clicked = styled_button(button_label);
         }
         ImGui::PopStyleVar();
@@ -291,9 +338,16 @@ private:
     }
 
     float _width;
+    float _row_used {0.0f};
     bool _open {false};
+    bool _popup {true};
     bool _appearing {false};
     bool _enter {false};
+    bool _embedded {false};
+
+    // An embedded frame's explanations in the smaller text.
+    void push_small() { if(_embedded) ImGui::PushFont(main_window_detail::font(g_dialog_fonts.key_18)); }
+    void pop_small() { if(_embedded) ImGui::PopFont(); }
 };
 
 // ---- Local web password ----
@@ -470,7 +524,7 @@ inline void rtsp_transport_options(dialog_frame& d, std::string& transport)
 // The Streams section of camera properties: the stream recorded, and whether live view and analysis use the
 // recording stream or a smaller one the camera offers.
 template<typename STREAMS_CB>
-void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams_cb)
+void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams_cb, bool titled = true)
 {
     using namespace r_ui_utils::theme;
 
@@ -489,7 +543,8 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
         sub = streams.sub;
     }
 
-    d.section("Streams");
+    if(titled)
+        d.section("Streams");
     if(!onvif)
     {
         d.body("This camera was added by its address, so Revere can't look for a smaller stream. Live view uses the recording stream.");
@@ -525,7 +580,7 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
     const bool failed = !on && !reason.empty() && !working;
     ImGui::BeginDisabled(working);
     {
-        std::string title = "Use the recording stream";
+        std::string title = "Recording stream";
         if(!recording.empty())
             title += dot + recording;
         if(!on)
@@ -549,7 +604,7 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
         {
             d.gap(2.0f);
             ImGui::PushID(i);
-            std::string title = "Use the smaller stream";
+            std::string title = "Smaller stream";
             if(!cards[i].title.empty())
                 title += dot + cards[i].title;
             if(working)
@@ -607,200 +662,27 @@ void streams_section(dialog_frame& d, streams_state& streams, STREAMS_CB streams
     ImGui::EndDisabled();
 }
 
-// Detection settings first (each a switch with a line saying what it does),
-// then a Storage section with where the recording lives and the two storage
-// operations. The hours field only matters when still-video pruning is on, so
-// it sits under that switch and is disabled otherwise. ok_cb runs with
-// min_continuous_retention_hours holding a whole number of hours, 1 or more.
-// motion_tier is "auto", "1", "2" or "3" (see r_vss::r_tier_controller);
-// tier_status says what the camera uses now and why.
-// rtsp_transport is "TCP" or "UDP"; transport_status, when not empty, says
-// the camera is on UDP because it refused TCP.
-// streams is the Streams section's state (see streams_state); streams_cb(op, token) is called for a click in it:
-// op "off" (use the recording stream), "use" (the smaller stream with that profile token), "find" (look again) or
-// "analysis" (token "1" or "0": find motion in the smaller stream).
-// can_sync_time: the camera was found by ONVIF discovery, so sync_time_cb can set its clock.
-// is_doorbell: the device is a doorbell (r_disco::camera_kind), so its button presses ring.
-template<typename OK_CB, typename CANCEL_CB, typename MOVE_STORAGE_CB, typename CHANGE_RETENTION_CB, typename STREAMS_CB, typename SYNC_TIME_CB>
-void camera_properties_modal(
-    const char* popup_name,
-    const std::string& camera_name,
-    bool& is_doorbell,
-    bool& do_motion_detection,
-    bool& do_motion_pruning,
-    std::string& min_continuous_retention_hours,
-    std::string& motion_tier,
-    const std::string& tier_status,
-    std::string& rtsp_transport,
-    const std::string& transport_status,
-    const std::string& record_file_path,
-    streams_state& streams,
-    bool can_sync_time,
-    OK_CB ok_cb,
-    CANCEL_CB cancel_cb,
-    MOVE_STORAGE_CB move_storage_cb,
-    CHANGE_RETENTION_CB change_retention_cb,
-    STREAMS_CB streams_cb,
-    SYNC_TIME_CB sync_time_cb
-)
+// ---- Unsaved changes ----
+
+// Asked when the user leaves a camera's properties with changes not saved.
+template<typename KEEP_CB, typename DISCARD_CB>
+void discard_changes_modal(const char* popup_name, KEEP_CB keep_cb, DISCARD_CB discard_cb)
 {
-    using namespace r_ui_utils::theme;
-    dialog_frame d(popup_name, 460.0f);
+    dialog_frame d(popup_name, 380.0f);
     if(!d)
         return;
 
-    static char hours[16] = {0};
-    static bool tried = false;
-    if(d.appearing())
-    {
-        r_ui_utils::copy_s(hours, sizeof(hours), min_continuous_retention_hours);
-        tried = false;
-    }
-
-    if(!camera_name.empty())
-        d.heading(camera_name);
-
-    d.toggle("##doorbell", "Doorbell",
-        "This is a doorbell: a press of its button rings, as an event and a notification, whatever the detection settings.",
-        &is_doorbell);
-    d.gap(4.0f);
-
-    d.toggle("##motion", "Motion detection",
-        "Finds movement in this camera's video and marks it as motion events you can search and review.",
-        &do_motion_detection);
-    if(!do_motion_detection)
-        do_motion_pruning = false;
-
-    ImGui::BeginDisabled(!do_motion_detection);
-    d.gap(4.0f);
-    d.label("Motion and objects from");
-    struct tier_choice { const char* value; const char* title; const char* description; };
-    static const tier_choice choices[] = {
-        {"auto", "Automatic", "The camera's own detection once Revere has checked it reports what Revere sees; Revere's otherwise."},
-        {"1", "Revere", "Revere finds motion and objects in the video. Uses the most CPU."},
-        {"2", "Camera", "The camera's motion and its person, vehicle and animal events. Uses the least CPU."},
-        {"3", "Camera motion, Revere objects", "The camera's motion events; Revere finds the objects in them."}
-    };
-    for(auto& c : choices)
-    {
-        d.gap(2.0f);
-        if(d.option((std::string("##tier") + c.value).c_str(), c.title, c.description, motion_tier == c.value))
-            motion_tier = c.value;
-    }
-    if(!tier_status.empty())
-    {
-        d.gap(2.0f);
-        d.body(tier_status);
-    }
-
-    d.gap(4.0f);
-    d.toggle("##prune", "Keep only motion in older video",
-        "Video older than the time below is deleted unless it has motion in it, so motion is kept for longer in the same space.",
-        &do_motion_pruning);
-    ImGui::EndDisabled();
-
-    ImGui::BeginDisabled(!do_motion_pruning);
-    d.gap(2.0f);
-    d.label("Keep continuous video for at least");
-    d.input("##hours", hours, sizeof(hours), ImGuiInputTextFlags_CharsDecimal, 80.0f);
-    ImGui::SameLine();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(text_secondary, "hours");
-    ImGui::EndDisabled();
-
-    std::string hours_s(hours);
-    const bool hours_ok = !hours_s.empty() && hours_s.size() <= 6 &&
-                          std::all_of(hours_s.begin(), hours_s.end(), [](unsigned char c) { return std::isdigit(c); }) &&
-                          std::stol(hours_s) >= 1;
-    if(tried && do_motion_pruning && !hours_ok)
-        d.error("Enter a whole number of hours, 1 or more.");
-
-    streams_section(d, streams, streams_cb);
-
-    bool closing = false;
-    // A button with a line saying what it does beside it.
-    auto row_action = [&](const char* label, const char* description) {
-        d.gap(2.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
-        // The widest label, so every row's button lines up.
-        const float bw = std::max(button_size("Change retention").x, button_size("Sync Camera Time").x);
-        bool clicked = ImGui::Button(label, ImVec2(bw, 0.0f));
-        ImGui::SameLine(0.0f, 12.0f);
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + d.width() - bw - 12.0f);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(text_secondary, "%s", description);
-        ImGui::PopTextWrapPos();
-        ImGui::PopStyleVar();
-        return clicked;
-    };
-
-    d.section("Network");
-    rtsp_transport_options(d, rtsp_transport);
-    if(!transport_status.empty())
-    {
-        d.gap(2.0f);
-        d.body(transport_status, r_ui_utils::theme::status_warning_text);
-    }
-
-    d.section("Camera");
-    ImGui::BeginDisabled(!can_sync_time);
-    bool sync_clicked = row_action("Sync Camera Time", can_sync_time
-        ? "Set the camera's clock to this computer's. Its time zone is left as it is."
-        : "Only a camera Revere found on the network (ONVIF) can have its clock set.");
-    ImGui::EndDisabled();
-    if(sync_clicked)
-    {
-        closing = true;
-        d.close();
-        sync_time_cb();
-    }
-
-    d.section("Storage");
-    if(!record_file_path.empty())
-    {
-        d.label("Recording file");
-        if(d.path(record_file_path, "Copy path"))
-            ImGui::SetClipboardText(record_file_path.c_str());
-    }
-
-    if(!closing && row_action("Move storage", "Move this camera's recording files to another folder or disk."))
-    {
-        closing = true;
-        d.close();
-        move_storage_cb();
-    }
-    if(!closing && row_action("Change retention", "Resize the recording file to hold more or fewer days of video. Clears this camera's existing recordings."))
-    {
-        closing = true;
-        d.close();
-        change_retention_cb();
-    }
-
-    // Not while the camera is being asked about its streams: that answer is what Save would write.
-    bool checking_streams;
-    {
-        std::lock_guard<std::mutex> g(streams.m);
-        checking_streams = streams.working;
-    }
-    int a = d.actions({{"Cancel"}, {"Save", button_kind::primary, !checking_streams}});
-    if(closing)
-        return;
+    d.body("This camera's properties have changes that aren't saved. Leave without saving them?", r_ui_utils::theme::text_primary);
+    int a = d.actions({{"Keep editing"}, {"Discard changes", button_kind::destructive}});
     if(a == 0 || d.escape())
     {
         d.close();
-        cancel_cb();
+        keep_cb();
     }
-    else if((a == 1 || d.enter()) && !checking_streams)
+    else if(a == 1)
     {
-        tried = true;
-        // The hours only apply with pruning on; leave a bad value alone otherwise.
-        if(hours_ok || !do_motion_pruning)
-        {
-            if(hours_ok)
-                min_continuous_retention_hours = hours_s;
-            d.close();
-            ok_cb();
-        }
+        d.close();
+        discard_cb();
     }
 }
 

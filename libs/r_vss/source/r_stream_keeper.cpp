@@ -118,6 +118,9 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
 {
     _meph.register_detection_consumer(&r_stream_keeper::_on_detection_bus, this);
 
+    // The cloud's last word on each camera's audio, before any camera starts (none saved: all recorded).
+    _audio_policy = load_audio_policy(top_dir);
+
     auto video_path = top_dir + PATH_SLASH + "video";
 
     if(!r_fs::file_exists(video_path))
@@ -155,6 +158,21 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
     });
     _system_plugin_host.start_all();
 
+    // No Revere Cloud running: a computer that has left the cloud manages its own audio policy again, with the same
+    // values (r_audio_policy.h).
+    {
+        bool cloud = false;
+        for(auto& name : _system_plugin_host.get_loaded_plugins())
+            if(is_cloud_plugin_name(name) && _system_plugin_host.is_plugin_enabled(name))
+                cloud = true;
+        auto was = audio_policy();
+        if(was.cloud_managed && !cloud)
+        {
+            R_LOG_INFO("Audio: Revere Cloud isn't running, so this computer manages its audio policy again");
+            set_audio_policy(audio_policy_at_startup(was, cloud));
+        }
+    }
+
     // A Revere Cloud built for an older revere wasn't loaded: see whether this
     // release has its update, so the UIs can offer it.
     _cloud_install.check_for_update();
@@ -164,6 +182,8 @@ r_stream_keeper::~r_stream_keeper() noexcept
 {
     if(_running)
         stop();
+    // Its rings reach the plugins and storage: it goes before they do.
+    _set_mail_rings(nullptr, string());
 
     _system_plugin_host.stop_all();
     _motionEngine.stop();
@@ -174,6 +194,11 @@ r_stream_keeper::~r_stream_keeper() noexcept
         std::lock_guard<std::mutex> lock(_streams_mutex);
         _streams.clear();
     }
+    // Every subscription ends, and is waited for, while what its transitions reach is still here.
+    _camera_events.clear();
+    for(auto& f : _events_reaping)
+        f.wait();
+    _events_reaping.clear();
 
     for(auto f : _factories)
         g_object_unref(f);
@@ -232,6 +257,21 @@ void r_stream_keeper::start()
 
     if(_meph.has_object_detector())
     {
+        // Tier 3's parked cars, learnt before a restart.
+        try
+        {
+            auto path = _pass_anchors_path();
+            if(r_fs::file_exists(path))
+            {
+                auto bytes = r_fs::read_file(path);
+                _pass_anchors.from_json(string(bytes.begin(), bytes.end()));
+            }
+        }
+        catch(const exception& e)
+        {
+            R_LOG_ERROR("detection pass: couldn't read its static anchors: %s", e.what());
+        }
+
         auto pass = make_unique<r_detection_pass>(
             [this](const string& camera_id, int64_t) -> r_nullable<r_letterboxed_frame> {
                 std::shared_ptr<r_recording_context> rc;
@@ -261,7 +301,7 @@ void r_stream_keeper::start()
                 return _meph.detect_objects(camera_id, frame.ts, frame.rgb, frame.size, frame.size, out);
             },
             [this](const string& camera_id) -> string { return _camera_name(camera_id); },
-            [this](const string& camera_id, const vector<r_detection>& detections) { _pass_found(camera_id, detections); },
+            [this](const string& camera_id, const vector<r_detection>& detections, const vector<r_detection>& frame) { _pass_found(camera_id, detections, frame); },
             [this](const r_detection_session& session) { _pass_session(session); });
         pass->start();
         std::lock_guard<std::mutex> g(_detection_pass_lock);
@@ -315,6 +355,10 @@ bool r_stream_keeper::stop()
         for(auto& t : stopping)
             t.join();
     }
+    // Their event subscriptions too: asked, not waited for (the destructor does).
+    _camera_events.request_stop_all();
+    // No more rings by email: before the plugins that hear them stop.
+    _set_mail_rings(nullptr, string());
 
     R_LOG_INFO("Stopping prune...");
     _prune.stop();
@@ -567,19 +611,60 @@ void r_stream_keeper::notify_motion(const string& camera_id, bool started, int64
 
 vector<r_cameras::r_camera_span> r_stream_keeper::camera_spans(const string& camera_id, int64_t since_ms)
 {
-    std::shared_ptr<r_recording_context> rc;
-    {
-        std::lock_guard<std::mutex> lock(_streams_mutex);
-        auto it = _streams.find(camera_id);
-        if(it != _streams.end())
-            rc = it->second;
-    }
-    return rc ? rc->camera_spans(since_ms) : vector<r_cameras::r_camera_span>();
+    // The camera's subscription's, kept across reconnects: spans from before the stream last restarted are still there.
+    return _camera_events.spans(camera_id, since_ms);
 }
 
 static int64_t _epoch_ms()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+void r_stream_keeper::camera_events_detach(const string& camera_id, const r_recording_context* rc)
+{
+    _camera_events.detach(camera_id, rc);
+}
+
+void r_stream_keeper::_reap_events(vector<r_camera_events_keeper::events_ptr> events)
+{
+    // The ones done since the last call are let go.
+    for(auto it = _events_reaping.begin(); it != _events_reaping.end();)
+        it = it->wait_for(std::chrono::seconds(0)) == std::future_status::ready ? _events_reaping.erase(it) : std::next(it);
+    if(events.empty())
+        return;
+    auto shared = std::make_shared<vector<r_camera_events_keeper::events_ptr>>(std::move(events));
+    _events_reaping.push_back(std::async(std::launch::async, [shared]() { shared->clear(); }));
+}
+
+void r_stream_keeper::_settle_camera_events()
+{
+    vector<string> drops;
+    vector<r_camera> ensures;
+    vector<std::weak_ptr<r_recording_context>> attaches;
+    {
+        std::lock_guard<std::mutex> lock(_streams_mutex);
+        drops.swap(_events_to_drop);
+        ensures.swap(_events_to_ensure);
+        attaches.swap(_events_to_attach);
+    }
+    vector<r_camera_events_keeper::events_ptr> ended;
+    for(auto& id : drops)
+        if(auto e = _camera_events.drop(id))
+            ended.push_back(std::move(e));
+    // Out of _streams_mutex: replacing a subscription calls the context it was attached to.
+    for(auto& camera : ensures)
+        for(auto& e : _camera_events.ensure(camera))
+            ended.push_back(std::move(e));
+    _reap_events(std::move(ended));
+    for(auto& w : attaches)
+    {
+        // Held while it attaches: it can't go away under us. Once attached, its destructor detaches it first.
+        auto rc = w.lock();
+        if(!rc)
+            continue;
+        auto* p = rc.get();
+        _camera_events.attach(p->camera().id, p, [p](const r_cameras::r_camera_transition& t) { p->on_camera_transition(t); });
+    }
 }
 
 void r_stream_keeper::camera_transition(const string& camera_id, const r_cameras::r_camera_transition& t)
@@ -714,19 +799,20 @@ void r_stream_keeper::_tier_tick()
 
     // Each camera's setting, saved verification and subscription state,
     // gathered before the lock.
-    struct fact { string id; string setting; int subscription; int saved_verified; };  // subscription: -1 none, 0 down, 1 up
+    struct fact { string id; string setting; int subscription; int saved_verified; bool doorbell; };  // subscription: -1 none, 0 down, 1 up
     vector<fact> facts;
     for(auto& s : streams)
     {
-        fact f {s.first, string(), -1, 0};
+        fact f {s.first, string(), -1, 0, false};
         auto c = _devices.get_camera_by_id(s.first);
+        f.doorbell = !c.is_null() && r_disco::camera_kind(c.value()) == "doorbell";
         if(!c.is_null() && !c.value().motion_tier.is_null())
             f.setting = c.value().motion_tier.value();
         if(!c.is_null() && !c.value().motion_tier_verified.is_null())
             f.saved_verified = c.value().motion_tier_verified.value();
-        if(s.second->has_camera_events())
+        if(_camera_events.has(s.first))
         {
-            auto events = s.second->camera_events_status();
+            auto events = _camera_events.status(s.first);
             f.subscription = tier_subscription_state(true, events.up, events.unavailable());
         }
         facts.push_back(f);
@@ -742,6 +828,7 @@ void r_stream_keeper::_tier_tick()
             if(_tiers_restored.insert(f.id).second)
                 _tiers.restore(f.id, f.saved_verified, now);
             _tiers.set_setting(f.id, f.setting);
+            _tiers.set_doorbell(f.id, f.doorbell);
             if(f.subscription >= 0)
                 _tiers.subscription(f.id, f.subscription == 1, now);
         }
@@ -780,19 +867,162 @@ void r_stream_keeper::_tier_tick()
     }
 }
 
-void r_stream_keeper::_doorbell_press(const string& camera_id, int64_t now_ms)
+void r_stream_keeper::_doorbell_press(const string& camera_id, int64_t press_ms, const string& source)
 {
-    auto press = doorbell_press(_doorbell_rings, _devices.get_camera_by_id(camera_id), "visitor", true, now_ms);
+    auto press = doorbell_press(_doorbell_rings, _devices.get_camera_by_id(camera_id), "visitor", true, press_ms, source);
     if(press == r_doorbell_press::none)
         return;
+    // A press test notes every source's report, a ring or the same press told again; a test's ring isn't for phones.
+    bool held = _press_check.press(camera_id, source, press_ms, _epoch_ms());
     if(press == r_doorbell_press::repeat)
     {
-        R_LOG_INFO("doorbell [%s]: pressed again within %d s of its ring", _camera_name(camera_id).c_str(), r_doorbell_rings::DEBOUNCE_MS / 1000);
+        R_LOG_INFO("doorbell [%s]: the same press again (%s)", _camera_name(camera_id).c_str(), source.c_str());
         return;
     }
-    R_LOG_INFO("doorbell [%s]: ring", _camera_name(camera_id).c_str());
-    _system_plugin_host.notify_doorbell_ring(camera_id, now_ms);
-    write_metadata(camera_id, "doorbell_rings", doorbell_ring_json(now_ms), now_ms);
+    if(held)
+    {
+        R_LOG_INFO("doorbell [%s]: a test press (%s), not sent to phones", _camera_name(camera_id).c_str(), source.c_str());
+        return;
+    }
+    R_LOG_INFO("doorbell [%s]: ring (%s)", _camera_name(camera_id).c_str(), source.c_str());
+    _system_plugin_host.notify_doorbell_ring(camera_id, press_ms);
+    write_metadata(camera_id, "doorbell_rings", doorbell_ring_json(press_ms), press_ms);
+}
+
+void r_stream_keeper::camera_clock_set(const string& camera_id)
+{
+    _camera_events.read_clock(camera_id);
+}
+
+r_utils::r_nullable<r_stream_keeper::doorbell_press_status> r_stream_keeper::doorbell_presses(const string& camera_id)
+{
+    auto camera = _devices.get_camera_by_id(camera_id);
+    if(camera.is_null() || r_disco::camera_kind(camera.value()) != "doorbell")
+        return {};
+    doorbell_press_status s;
+    s.press_source = r_disco::camera_press_source(camera.value());
+    s.last_onvif_ms = _doorbell_rings.last_press(camera_id, "onvif");
+    s.last_email_ms = _doorbell_rings.last_press(camera_id, "reolink_email");
+    s.suggest_onvif = suggest_onvif(camera.value(), s.last_onvif_ms);
+    s.test = _press_check.test(camera_id, _epoch_ms());
+    s.clock_offset_ms = _camera_events.status(camera_id).clock_offset_ms;
+    return s;
+}
+
+r_utils::r_nullable<r_press_test> r_stream_keeper::start_doorbell_press_test(const string& camera_id, bool ring_phones)
+{
+    auto camera = _devices.get_camera_by_id(camera_id);
+    if(camera.is_null() || r_disco::camera_kind(camera.value()) != "doorbell")
+        return {};
+    R_LOG_INFO("doorbell [%s]: press test for %d s%s", _camera_name(camera_id).c_str(), r_press_check::TEST_MS / 1000,
+               ring_phones ? ", ringing phones" : "");
+    return _press_check.start(camera_id, _epoch_ms(), ring_phones, press_test_sources(camera.value()));
+}
+
+void r_stream_keeper::_set_mail_rings(std::unique_ptr<r_mail_rings> rings, const string& bind)
+{
+    std::unique_ptr<r_mail_rings> old;
+    {
+        std::lock_guard<std::mutex> g(_mail_rings_lock);
+        old = std::move(_mail_rings);
+        _mail_rings = std::move(rings);
+        _mail_rings_bind = bind;
+    }
+    // The old one stops here, outside the lock: it waits for its connections.
+}
+
+r_utils::r_nullable<r_stream_keeper::doorbell_mail_status> r_stream_keeper::doorbell_mail_setup(const string& camera_id, bool with_login)
+{
+    auto camera = _devices.get_camera_by_id(camera_id);
+    if(camera.is_null() || r_disco::camera_kind(camera.value()) != "doorbell" || camera.value().ipv4.is_null())
+        return {};
+    auto server = r_utils::r_networking::r_local_ip_for(camera.value().ipv4.value());
+    if(server.empty())
+        return {};
+    doorbell_mail_status s;
+    s.setup = mail_setup_for(server, mail_rings_port(),
+                             with_login ? load_or_make_mail_login(_top_dir + PATH_SLASH + "mail_rings" + PATH_SLASH + "login") : r_mail_login());
+    bool takes_it = false;
+    {
+        std::lock_guard<std::mutex> g(_mail_doorbells_lock);
+        takes_it = _mail_doorbells.count(camera.value().ipv4.value()) > 0;
+    }
+    std::lock_guard<std::mutex> g(_mail_rings_lock);
+    if(_mail_rings && takes_it)
+    {
+        s.listening = true;
+        s.counts = _mail_rings->status();
+        s.locked_for_ms = _mail_rings->locked_for_ms(camera.value().ipv4.value());
+    }
+    return s;
+}
+
+r_utils::r_nullable<r_stream_keeper::doorbell_mail_status> r_stream_keeper::new_doorbell_mail_login(const string& camera_id)
+{
+    if(doorbell_mail_setup(camera_id, false).is_null())
+        return {};
+    make_new_mail_login(_top_dir + PATH_SLASH + "mail_rings" + PATH_SLASH + "login");
+    // Only the keeper's thread replaces the listener (_tend_mail_rings, on its next turn).
+    _mail_login_changed = true;
+    return doorbell_mail_setup(camera_id, true);
+}
+
+void r_stream_keeper::_tend_mail_rings(const vector<r_disco::r_camera>& assigned)
+{
+    auto doorbells = mail_ring_doorbells(assigned);
+    {
+        std::lock_guard<std::mutex> g(_mail_doorbells_lock);
+        _mail_doorbells = doorbells;
+    }
+    if(doorbells.empty())
+    {
+        if(_mail_rings)
+        {
+            R_LOG_INFO("mail rings: no doorbell sends rings by email now; the listener stops");
+            _set_mail_rings(nullptr, string());
+        }
+        return;
+    }
+    // The box's address toward its first such doorbell: its LAN address, never every address.
+    auto bind = r_utils::r_networking::r_local_ip_for(doorbells.begin()->first);
+    if(bind.empty())
+        return;
+    // A new login restarts it, so the new password is the one it takes.
+    const bool new_login = _mail_login_changed.exchange(false);
+    if(_mail_rings && bind == _mail_rings_bind && !new_login)
+        return;
+    if(new_login && _mail_rings)
+        R_LOG_INFO("mail rings: the listener restarts with the new login");
+    _set_mail_rings(nullptr, string());
+    try
+    {
+        auto dir = _top_dir + PATH_SLASH + "mail_rings";
+        auto login = load_or_make_mail_login(dir + PATH_SLASH + "login");
+        auto pems = load_or_make_mail_cert(dir + PATH_SLASH + "mail_rings.crt", dir + PATH_SLASH + "mail_rings.key");
+        r_mail_rings_config c;
+        c.bind_ip = bind;
+        c.port = mail_rings_port();
+        c.password = login.password;
+        c.cert_pem = pems.first;
+        c.key_pem = pems.second;
+        auto rings = std::make_unique<r_mail_rings>(c,
+            [this](const string& ip) {
+                std::lock_guard<std::mutex> g(_mail_doorbells_lock);
+                auto it = _mail_doorbells.find(ip);
+                return it == _mail_doorbells.end() ? r_utils::r_nullable<string>() : r_utils::r_nullable<string>(it->second);
+            },
+            [this](const r_mail_ring& r) { _doorbell_press(r.camera_id, r.press_ms, "reolink_email"); },
+            // The camera's clock as its event subscription last read it (null until then): the subject's time is on it.
+            [this](const string& camera_id) { return _camera_events.status(camera_id).clock_offset_ms; }, r_mail_rings::now_fn(),
+            [this](const string& camera_id, int64_t) { _press_check.other_mail(camera_id, _epoch_ms()); });
+        rings->start();
+        _set_mail_rings(std::move(rings), bind);
+        R_LOG_INFO("mail rings: listening on %s:%d for %d doorbell(s)", bind.c_str(), c.port, (int)doorbells.size());
+    }
+    catch(const std::exception& e)
+    {
+        R_LOG_ERROR("mail rings: the listener didn't start: %s", e.what());
+    }
 }
 
 void r_stream_keeper::_camera_class_output(const string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms)
@@ -835,7 +1065,7 @@ static bool _same_detection(const r_detection& a, const r_detection& b)
     return a.ts == b.ts && a.class_name == b.class_name && a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
 }
 
-void r_stream_keeper::_pass_found(const string& camera_id, const vector<r_detection>& detections)
+void r_stream_keeper::_pass_found(const string& camera_id, const vector<r_detection>& detections, const vector<r_detection>& frame)
 {
     if(motion_tier(camera_id) != motion_tier_3 || !_motion_detection_on(camera_id))
         return;
@@ -845,7 +1075,12 @@ void r_stream_keeper::_pass_found(const string& camera_id, const vector<r_detect
         if(reported_class(d.class_name))
             reported.push_back(d);
 
-    // On the bus at once: an alert shouldn't wait for the session to finish.
+    // On the bus at once: an alert shouldn't wait for the session to finish. Less what sits on a parked car's
+    // anchor: that goes at the session's end, if the record keeps it.
+    vector<string> notes;
+    reported = pass_alert_now(_pass_anchors, camera_id, reported, &notes, &frame);
+    for(auto& n : notes)
+        R_LOG_INFO("detection pass [%s]: alert: %s", _camera_name(camera_id).c_str(), n.c_str());
     for(auto& d : reported)
         _meph.emit_detection(d);
 
@@ -876,13 +1111,38 @@ void r_stream_keeper::_pass_session(const r_detection_session& session)
         _tiers.pass_session(session.camera_id, yolo_person, camera_person);
     }
 
-    if(motion_tier(session.camera_id) != motion_tier_3 || !_motion_detection_on(session.camera_id))
+    const bool tier_3 = motion_tier(session.camera_id) == motion_tier_3 && _motion_detection_on(session.camera_id);
+
+    // The record: less each parked car (before learning from this session, as tier 1 does).
+    vector<r_detection> kept;
+    if(tier_3)
+    {
+        vector<string> notes;
+        kept = pass_record(_pass_anchors, session, &notes);
+        for(auto& n : notes)
+            R_LOG_INFO("detection pass [%s]: record: %s", _camera_name(session.camera_id).c_str(), n.c_str());
+    }
+
+    // Anchors from every chain's end, on any tier (none at a cut: pass_learn): a camera that moves to tier 3 already
+    // knows its parked cars.
+    {
+        vector<string> notes;
+        if(pass_learn(_pass_anchors, session, &notes))
+            _save_pass_anchors();
+        for(auto& n : notes)
+            R_LOG_INFO("detection pass [%s]: anchors: %s", _camera_name(session.camera_id).c_str(), n.c_str());
+    }
+
+    if(!tier_3)
         return;
 
-    vector<r_detection> kept;
-    for(auto& d : session.detections)
-        if(reported_class(d.class_name))
-            kept.push_back(d);
+    {
+        vector<r_detection> reported;
+        for(auto& d : kept)
+            if(reported_class(d.class_name))
+                reported.push_back(d);
+        kept = std::move(reported);
+    }
     if(kept.empty())
         return;
 
@@ -895,6 +1155,27 @@ void r_stream_keeper::_pass_session(const r_detection_session& session)
             sent = sent || _same_detection(a, d);
         if(!sent)
             _meph.emit_detection(d);
+    }
+}
+
+string r_stream_keeper::_pass_anchors_path() const
+{
+    return _top_dir + PATH_SLASH + "detection_pass_static_anchors.json";
+}
+
+void r_stream_keeper::_save_pass_anchors()
+{
+    try
+    {
+        auto path = _pass_anchors_path();
+        auto j = _pass_anchors.to_json();
+        auto tmp = path + ".tmp";
+        r_fs::write_file((const uint8_t*)j.data(), j.size(), tmp);
+        r_fs::atomic_rename_file(tmp, path);
+    }
+    catch(const exception& e)
+    {
+        R_LOG_ERROR("detection pass: couldn't save its static anchors: %s", e.what());
     }
 }
 
@@ -1061,7 +1342,7 @@ bool r_stream_keeper::_lag_reconnect(const string& camera_id, const r_recording_
                   name.c_str(), (long long)lag.lag_ms, (long long)lag.behind_for_ms, lag.rate,
                   _lag_reconnects.recent(camera_id, now_ms), (long long)(_lag_reconnects.held_off_ms(camera_id, now_ms) / 1000),
                   _lag_reconnects.flagged(camera_id, now_ms) ? ": " : "",
-                  _lag_reconnects.flagged(camera_id, now_ms) ? LAG_FLAG_MESSAGE : "");
+                  _lag_reconnects.flagged(camera_id, now_ms) ? lag_flag_message(c, substreams_enabled()).c_str() : "");
     return true;
 }
 
@@ -1276,6 +1557,34 @@ void r_stream_keeper::bounce(const std::string& camera_id)
     cmd.id = camera_id;
 
     _cmd_q.post(cmd).get();
+}
+
+void r_stream_keeper::set_audio_policy(const r_audio_policy& policy)
+{
+    {
+        std::lock_guard<std::mutex> g(_audio_policy_mutex);
+        if(policy == _audio_policy)
+            return;
+        _audio_policy = policy;
+    }
+    save_audio_policy(_top_dir, policy);
+}
+
+void r_stream_keeper::release_audio_policy()
+{
+    set_audio_policy(audio_policy_released(audio_policy()));
+}
+
+r_audio_policy r_stream_keeper::audio_policy() const
+{
+    std::lock_guard<std::mutex> g(_audio_policy_mutex);
+    return _audio_policy;
+}
+
+bool r_stream_keeper::records_audio(const std::string& camera_id) const
+{
+    std::lock_guard<std::mutex> g(_audio_policy_mutex);
+    return _audio_policy.records_audio(camera_id);
 }
 
 void r_stream_keeper::suspend(const std::string& camera_id)
@@ -1500,9 +1809,37 @@ void r_stream_keeper::_entry_point()
                             doomed.push_back(rc);
                         for(auto& rc : _remove_recording_contexts(_devices.get_assigned_cameras_removed(cameras)))
                             doomed.push_back(rc);
+                        // A camera held for a different device at its address stops recording (r_address_check.h).
+                        for(auto& rc : _remove_recording_contexts(_cameras_held_for_address(cameras)))
+                            doomed.push_back(rc);
+
+                        // A camera whose audio setting changed starts again with it, so its next segment has its
+                        // audio, or none (r_audio_policy.h).
+                        std::map<std::string, bool> running;
+                        for(auto& s : _streams)
+                            running[s.first] = s.second->records_audio();
+                        auto policy = audio_policy();
+                        std::vector<r_camera> audio_changed;
+                        for(auto& id : audio_policy_restarts(running, policy))
+                        {
+                            R_LOG_INFO("Audio for camera %s is now %s: starting its stream again", id.c_str(),
+                                       policy.records_audio(id) ? "on" : "off");
+                            audio_changed.push_back(_streams[id]->camera());
+                        }
+                        for(auto& rc : _remove_recording_contexts(audio_changed))
+                            doomed.push_back(rc);
+
+                        // A camera set to record from its smaller stream whose stream went away (or came back) changes
+                        // streams: back to main, or to the smaller one again. The stored stream_config_hash does not
+                        // cover this, so it is looked at here.
+                        for(auto& rc : _remove_recording_contexts(_cameras_on_the_wrong_stream()))
+                            doomed.push_back(rc);
                     }
                 }
 
+                // The subscriptions of cameras changed or removed end first: their contexts, still here, are told
+                // what was open has ended.
+                _settle_camera_events();
                 for(auto& rc : doomed)
                     _teardowns.push(rc->camera().id, _display_name(rc->camera()), rc);
                 doomed.clear();
@@ -1513,11 +1850,15 @@ void r_stream_keeper::_entry_point()
                     _give_up_substream(id);
                 }
 
-                std::lock_guard<std::mutex> lock(_streams_mutex);
-                if(_streams.empty())
-                    _add_recording_contexts(_devices.get_assigned_cameras());
-                else
-                    _add_recording_contexts(_devices.get_assigned_cameras_added(_get_current_cameras()));
+                {
+                    std::lock_guard<std::mutex> lock(_streams_mutex);
+                    if(_streams.empty())
+                        _add_recording_contexts(_devices.get_assigned_cameras());
+                    else
+                        _add_recording_contexts(_devices.get_assigned_cameras_added(_get_current_cameras()));
+                }
+                // The new contexts attach to their cameras' events, outside the lock.
+                _settle_camera_events();
             }
 
             _tend_substreams();
@@ -1529,8 +1870,14 @@ void r_stream_keeper::_entry_point()
             // won't trigger this.
             {
                 std::set<std::string> assigned_ids;
-                for(const auto& c : _devices.get_assigned_cameras())
+                auto assigned = _devices.get_assigned_cameras();
+                for(const auto& c : assigned)
                     assigned_ids.insert(c.id);
+                // A camera no longer assigned has no subscription, whether or not its stream was up.
+                _reap_events(_camera_events.drop_except(assigned_ids));
+                // Doorbells that send rings by email: the mail listener runs while there are any.
+                if(!_stopping)
+                    _tend_mail_rings(assigned);
                 if(assigned_ids != _last_assigned_camera_ids)
                 {
                     _last_assigned_camera_ids = std::move(assigned_ids);
@@ -1709,6 +2056,70 @@ void r_stream_keeper::_rtsp_server_entry_point()
     g_main_context_unref(context);
 }
 
+// The running cameras that are held for a different device at their address. Called with _streams_mutex held.
+vector<r_camera> r_stream_keeper::_cameras_held_for_address(const vector<r_camera>& running)
+{
+    vector<r_camera> held;
+    for(const auto& c : running)
+        if(r_disco::address_hold_action_for(true, !_devices.get_address_check(c.id).is_null()) == r_disco::address_hold_action::stop)
+        {
+            R_LOG_WARNING("Camera %s: a different device answers at its address; its recording is stopped", c.id.c_str());
+            held.push_back(c);
+        }
+    return held;
+}
+
+// The recording cameras whose stream is not the one they should be on now: recording from main but set to the smaller
+// stream and it works, or the other way round. The stored camera, not the context's copy: the substream's state changes
+// in the database. Called with _streams_mutex held.
+vector<r_camera> r_stream_keeper::_cameras_on_the_wrong_stream()
+{
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const bool on = substreams_enabled();
+    auto assigned = _devices.get_assigned_cameras();
+
+    // A camera set to the smaller stream, which works as stored: is that stream delivering? A camera whose context is
+    // on it and gets no video for a couple of minutes, or has none to get it on, goes to main for a while.
+    for(const auto& c : assigned)
+    {
+        if(!recording_from_sub(c, on))
+        {
+            _sub_record_governor.forget(c.id);
+            continue;
+        }
+        auto s = _streams.find(c.id);
+        auto from = _recording_from_sub.find(c.id);
+        const bool on_sub = s != _streams.end() && from != _recording_from_sub.end() && from->second;
+        // A frame lately, not "got a first frame once": a stream that gave a frame and stalled is not delivering.
+        const bool receiving = on_sub && s->second->receiving_video() && s->second->video_age_ms() < SUB_RECORD_FRESH_MS;
+        const bool was_away = _sub_record_governor.away(c.id, now_ms);
+        if(!_sub_record_governor.pass(c.id, on_sub, receiving, now_ms) && !was_away)
+            R_LOG_WARNING("Camera %s: its smaller stream is not delivering video; recording from main, and trying it again in %lld s",
+                          c.id.c_str(), (long long)(_sub_record_governor.retry_in_ms(c.id, now_ms) / 1000));
+    }
+
+    // What is running, by whether each context was built on the smaller stream.
+    map<string, bool> running;
+    for(const auto& s : _streams)
+    {
+        auto from = _recording_from_sub.find(s.first);
+        if(from != _recording_from_sub.end())
+            running[s.first] = from->second;
+    }
+    vector<r_camera> wrong;
+    for(const auto& id : cameras_on_the_wrong_stream(running, assigned, on, _sub_record_governor.away_cameras(now_ms)))
+    {
+        for(const auto& c : assigned)
+        {
+            if(c.id != id)
+                continue;
+            R_LOG_INFO("Camera %s changes streams: %s", id.c_str(), running[id] ? "its smaller stream is away, so main" : "its smaller stream is back, so it");
+            wrong.push_back(c);
+        }
+    }
+    return wrong;
+}
+
 vector<r_camera> r_stream_keeper::_get_current_cameras()
 {
     vector<r_camera> cameras;
@@ -1735,6 +2146,17 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         auto name = camera.friendly_name.is_null() ?
             (camera.camera_name.is_null() ? camera.id : camera.camera_name.value()) :
             camera.friendly_name.value();
+
+        // A different device answers at the camera's address (r_address_check.h): not started, until a person confirms
+        // it is the camera. Shown on its card like an alert; unlike one, a re-interrogation does not clear it.
+        if(r_disco::address_hold_action_for(false, !_devices.get_address_check(camera.id).is_null()) == r_disco::address_hold_action::do_not_start)
+        {
+            auto& fc = _failed_cameras[camera.id];
+            fc.friendly_name = name;
+            fc.last_error = r_disco::address_check_message();
+            fc.next_retry_time = now;
+            continue;
+        }
 
         // r_agent may have raised an alert for this camera (e.g. background
         // re-interrogation discovered a codec/profile change it can't safely
@@ -1776,7 +2198,22 @@ void r_stream_keeper::_add_recording_contexts(const vector<r_camera>& cameras)
         R_LOG_INFO("Starting camera stream: %s (%s) over RTSP/%s", name.c_str(), camera.id.c_str(), protocols.c_str());
         try
         {
-            _streams[camera.id] = make_shared<r_recording_context>(this, camera, _top_dir, _ws, _sim_mttf_seconds, protocols);
+            // From the camera's smaller stream when it is set to record from it and that works: its address and details
+            // stand in for main's, and main is not opened.
+            const bool sub_away = _sub_record_governor.away(camera.id, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+            const bool from_sub = recording_from_sub(camera, substreams_enabled(), sub_away);
+            _streams[camera.id] = make_shared<r_recording_context>(this, recording_camera(camera, substreams_enabled(), sub_away), _top_dir, _ws, _sim_mttf_seconds, protocols);
+            _recording_from_sub[camera.id] = from_sub;
+            if(from_sub)
+                R_LOG_INFO("Camera %s records from its smaller stream", camera.id.c_str());
+            // Its events: the camera's subscription, kept from before when it's the same camera with the same
+            // settings (a reconnect); made and attached once the lock is let go (_settle_camera_events), since a
+            // subscription replaced tells the context it was attached to, which may be one going away.
+            if(r_cameras::camera_events_wanted(camera))
+            {
+                _events_to_ensure.push_back(camera);
+                _events_to_attach.push_back(_streams[camera.id]);
+            }
             // Construction succeeded — clear any prior failure state for this camera.
             _failed_cameras.erase(camera.id);
         }
@@ -1999,6 +2436,8 @@ vector<shared_ptr<r_recording_context>> r_stream_keeper::_remove_recording_conte
     {
         // Always clear backoff entry so a remove+re-add resets the retry counter.
         _failed_cameras.erase(camera.id);
+        // Changed or gone: its subscription ends too (a changed one starts again with the new settings).
+        _events_to_drop.push_back(camera.id);
 
         if(_streams.count(camera.id) > 0)
         {
@@ -2043,9 +2482,12 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
                 s.sub_id_mount = substream_id_mount_path(c.first);
             s.storage_write_lag_ms = c.second->storage_write_lag_ms();
             s.storage_timeline_lag_ms = c.second->storage_timeline_lag_ms();
-            s.has_camera_events = c.second->has_camera_events();
+            s.clock_drift_ms = c.second->clock_drift_ms();
+            s.clock_anchored_at_ms = c.second->clock_anchored_at_ms();
+            s.clock_jumps = c.second->clock_jumps();
+            s.has_camera_events = _camera_events.has(c.first);
             if(s.has_camera_events)
-                s.camera_events = c.second->camera_events_status();
+                s.camera_events = _camera_events.status(c.first);
             s.motion_tier = motion_tier_status(c.first);
             s.rtsp_transport = c.second->rtsp_protocols();
             const bool set_udp = !s.camera.rtsp_transport.is_null() && s.camera.rtsp_transport.value() == "UDP";
@@ -2054,6 +2496,11 @@ vector<r_stream_status> r_stream_keeper::_fetch_stream_status() const
             s.ingest_lag = c.second->ingest_lag();
             s.lag_reconnects_1h = _lag_reconnects.recent(c.first, now_ms);
             s.falling_behind = s.ingest_lag.lagging || _lag_reconnects.flagged(c.first, now_ms);
+            {
+                const auto steady_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                s.sub_away = _sub_record_governor.away(c.first, steady_ms);
+                s.sub_retry_in_ms = _sub_record_governor.retry_in_ms(c.first, steady_ms);
+            }
             return s;
         }
     );

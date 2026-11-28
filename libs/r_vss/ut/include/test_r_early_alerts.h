@@ -17,6 +17,8 @@ public:
       TEST(test_r_early_alerts::test_anchor_cap);
       TEST(test_r_early_alerts::test_json_round_trip);
       TEST(test_r_early_alerts::test_probe_confirms);
+      TEST(test_r_early_alerts::test_log_notes);
+      TEST(test_r_early_alerts::test_small_parked_car);
     RTF_FIXTURE_END();
 
     virtual ~test_r_early_alerts() throw() {}
@@ -37,4 +39,6 @@ public:
     void test_anchor_cap();
     void test_json_round_trip();
     void test_probe_confirms();
+    void test_log_notes();
+    void test_small_parked_car();
 };

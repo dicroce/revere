@@ -19,6 +19,7 @@ public:
       TEST(test_r_tier_controller::test_status_without_detector);
       TEST(test_r_tier_controller::test_camera_reports_are_not_yolo);
       TEST(test_r_tier_controller::test_unavailable_events_say_so);
+      TEST(test_r_tier_controller::test_a_doorbell_stays_on_tier_3);
     RTF_FIXTURE_END();
 
     virtual ~test_r_tier_controller() throw() {}
@@ -41,4 +42,5 @@ public:
     void test_status_without_detector();
     void test_camera_reports_are_not_yolo();
     void test_unavailable_events_say_so();
+    void test_a_doorbell_stays_on_tier_3();
 };

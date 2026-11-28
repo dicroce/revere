@@ -1,6 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none" role="img" aria-label="Revere">
-  <!-- The Revere mark, compact geometry for small sizes: outer square 12,12 → 52,52 (40×40) with a 3.5 stroke;
-       inner stamp 27,27 → 37,37 (10×10) filled. build-icons.sh renders the desktop icons from these numbers. -->
-  <rect x="12" y="12" width="40" height="40" stroke="currentColor" stroke-width="3.5"/>
-  <rect x="27" y="27" width="10" height="10" fill="currentColor"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="currentColor" role="img" aria-label="Revere">
+  <!-- The Revere mark (the Shutter), compact cut for 32 px and below: the display cut (revere-mark.svg) with 4-unit
+       gaps so the blades stay apart when small. Outer bounds 12 to 52, opening 16 x 16 at the centre.
+       build-icons.sh and make_app_icons.py render the desktop icons from these numbers. -->
+  <rect x="12" y="12" width="24" height="12"/>
+  <rect x="40" y="12" width="12" height="24"/>
+  <rect x="28" y="40" width="24" height="12"/>
+  <rect x="12" y="28" width="12" height="24"/>
 </svg>

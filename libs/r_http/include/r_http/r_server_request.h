@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <vector>
+#include <chrono>
 #include <functional>
 #include "r_utils/interfaces/r_socket_base.h"
 #include "r_utils/r_string_utils.h"
@@ -64,6 +65,11 @@ public:
     R_API void set_max_body_size(size_t max_body_size);
     R_API size_t get_max_body_size() const;
 
+    // How long read_request() may take in all, headers and body, from when it's called (0, the default: no limit,
+    // only timeout_millis between bytes). Past it, it throws r_http_408_exception, however steadily bytes are coming.
+    R_API void set_read_deadline(uint64_t deadline_millis);
+    R_API uint64_t get_read_deadline() const;
+
 private:
     void _set_header(const std::string& name, const std::string& value);
     std::string _read_headers(r_utils::r_socket_base& socket, uint64_t timeout_millis);
@@ -73,6 +79,9 @@ private:
     void _read_chunked_body(r_utils::r_socket_base& socket, uint64_t timeout_millis);
     bool _read_line(r_utils::r_socket_base& socket, std::string& line, uint64_t timeout_millis);
     void _consume_footer(r_utils::r_socket_base& socket, uint64_t timeout_millis);
+    // Waits for bytes (at most timeout_millis, and never past the read deadline), then takes what has come, up to
+    // len: > 0 bytes read, <= 0 the peer closed. Throws r_http_408_exception past the deadline.
+    int _recv_some(r_utils::r_socket_base& socket, void* buf, size_t len, uint64_t timeout_millis);
 
     std::string _initialLine;
     std::map<std::string,std::string> _headerParts;
@@ -83,6 +92,8 @@ private:
     server_chunk_callback _chunkCallback;
     std::vector<uint8_t> _chunk;
     size_t _maxBodySize;
+    uint64_t _readDeadlineMillis;
+    std::chrono::steady_clock::time_point _readDeadlineAt;
 };
 
 }

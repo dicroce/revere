@@ -2245,6 +2245,7 @@ int run_overlay(const overlay_opts& opts)
         }
         mcs.obos.cbs.has_audio = false;
         ph.set_stream_volume(si.name, mcs.obos.cbs.volume_gain);
+        ph.set_stream_denoise(si.name, mcs.obos.cbs.denoise);
 
         // The time bar at the bottom and the corner strip at the top right,
         // fading together.
@@ -2309,8 +2310,8 @@ int run_overlay(const overlay_opts& opts)
 
             ImGui::PopStyleVar();  // alpha
 
-            // Volume, keep on top and close (it fades by the alpha it's given).
-            auto corner = overlay_corner_controls((float)win_w, bar_alpha, on_top, mcs.obos.cbs.volume_gain);
+            // Volume, denoise, keep on top and close (it fades by the alpha it's given).
+            auto corner = overlay_corner_controls((float)win_w, bar_alpha, on_top, mcs.obos.cbs.volume_gain, mcs.obos.cbs.denoise);
             if(corner.close)
                 close_requested = true;
             if(corner.toggle_pin)

@@ -64,6 +64,14 @@ string r_ws_auth::issue_session(clock::time_point now)
     return token;
 }
 
+bool r_ws_auth::is_local_token(const string& token) const
+{
+    if(token.empty())
+        return false;
+    lock_guard<mutex> g(_lock);
+    return !_local_token.empty() && constant_time_equal(token, _local_token);
+}
+
 bool r_ws_auth::valid(const string& token, clock::time_point now)
 {
     if(token.empty())

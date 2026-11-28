@@ -15,6 +15,11 @@ void r_tier_controller::set_setting(const string& camera_id, const string& setti
     c.forced = (setting == "1") ? 1 : (setting == "2") ? 2 : (setting == "3") ? 3 : 0;
 }
 
+void r_tier_controller::set_doorbell(const string& camera_id, bool doorbell)
+{
+    _cameras[camera_id].doorbell = doorbell;
+}
+
 void r_tier_controller::subscription(const string& camera_id, bool up, int64_t now_ms)
 {
     auto& c = _cameras[camera_id];
@@ -235,6 +240,12 @@ int r_tier_controller::_decide(_camera& c, int64_t now_ms)
     // Verified for tier 3, and its person reports now shown to match: tier 2.
     if (c.verified_tier == motion_tier_3 && _person_ok(c))
         c.verified_tier = motion_tier_2;
+    // A doorbell stays on tier 3 (see the class comment): its verification is kept as it is.
+    if (c.verified_tier == motion_tier_2 && c.doorbell)
+    {
+        c.reason = "a doorbell: the camera's motion events match Revere's; Revere finds the objects, so a person at the door isn't missed";
+        return motion_tier_3;
+    }
     c.reason = (c.verified_tier == motion_tier_2)
         ? "the camera's motion and person events match Revere's"
         : "the camera's motion events match Revere's; Revere finds the objects";

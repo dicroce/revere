@@ -203,6 +203,28 @@ void r_devices::set_camera_alert(const std::string& camera_id, const std::string
     _camera_alerts[camera_id] = message;
 }
 
+void r_devices::set_address_check(const std::string& camera_id, const r_address_check& check)
+{
+    lock_guard<mutex> g(_address_checks_mutex);
+    _address_checks[camera_id] = check;
+}
+
+void r_devices::clear_address_check(const std::string& camera_id)
+{
+    lock_guard<mutex> g(_address_checks_mutex);
+    _address_checks.erase(camera_id);
+}
+
+r_nullable<r_address_check> r_devices::get_address_check(const std::string& camera_id) const
+{
+    lock_guard<mutex> g(_address_checks_mutex);
+    auto it = _address_checks.find(camera_id);
+    r_nullable<r_address_check> result;
+    if(it != _address_checks.end())
+        result.set_value(it->second);
+    return result;
+}
+
 void r_devices::set_camera_move(const std::string& camera_id, const r_camera_move& move)
 {
     lock_guard<mutex> g(_camera_moves_mutex);
@@ -576,10 +598,14 @@ const camera_column CAMERA_COLUMNS[] = {
     // Motion detection on the substream (r_camera::sub_analysis); existing cameras read as off.
     {11, "sub_analysis", "INTEGER DEFAULT 0"},
     // Camera or doorbell (r_camera::kind); null on existing rows until someone chooses.
-    {12, "kind", "TEXT"}
+    {12, "kind", "TEXT"},
+    // A doorbell's press source (r_camera::press_source); null on existing rows: onvif.
+    {13, "press_source", "TEXT"},
+    // Which stream the camera records from (r_camera::record_from); null on existing rows, which record from main.
+    {14, "record_from", "TEXT"}
 };
 
-const int CAMERA_DB_VERSION = 12;
+const int CAMERA_DB_VERSION = 14;
 }
 
 void r_devices::_upgrade_db(const r_sqlite_conn& conn) const
@@ -877,6 +903,8 @@ r_camera r_devices::_create_camera(const map<string, r_nullable<string>>& row) c
     number("sub_key_interval_ms", camera.sub_key_interval_ms);
     number("sub_analysis", camera.sub_analysis);
     text("kind", camera.kind);
+    text("press_source", camera.press_source);
+    text("record_from", camera.record_from);
 
     camera.stream_config_hash = row.at("stream_config_hash").value();
     return camera;
@@ -1016,6 +1044,8 @@ r_devices_cmd_result r_devices::_save_camera(const r_sqlite_conn& conn, const r_
     cols.add("rtsp_transport", rtsp_transport);
     cols.add("mac", mac);
     cols.add("kind", camera.kind);
+    cols.add("press_source", camera.press_source);
+    cols.add("record_from", camera.record_from);
     cols.add("stream_config_hash", hash);
 
     r_sqlite_transaction(conn, true, [&](const r_sqlite_conn& conn){

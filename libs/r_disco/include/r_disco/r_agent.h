@@ -4,6 +4,7 @@
 
 #include "r_disco/r_stream_config.h"
 #include "r_disco/r_camera.h"
+#include "r_disco/r_address_check.h"
 #include "r_disco/r_camera_move.h"
 #include "r_disco/r_substream.h"
 #include "r_utils/r_timer.h"
@@ -64,6 +65,9 @@ typedef std::function<std::vector<r_camera>()> assigned_cameras_cb;
 // followed (see r_camera_move.h). The host app keeps it for its UI and API.
 typedef std::function<void(const std::string& camera_id, const r_utils::r_nullable<r_camera_move>& move)> camera_move_cb;
 
+// A camera held because a different device answers at its stored address (see r_address_check.h), or released.
+typedef std::function<void(const std::string& camera_id, const r_utils::r_nullable<r_address_check>& check)> address_check_cb;
+
 // r_agent::answer_camera_move's outcome.
 enum class move_answer { ok, no_move, moved_again };
 
@@ -91,12 +95,13 @@ public:
     R_API void set_camera_alert_cb(camera_alert_cb cb) {_camera_alert_cb = cb;}
     R_API void set_assigned_cameras_cb(assigned_cameras_cb cb) {_assigned_cameras_cb = cb;}
     R_API void set_camera_move_cb(camera_move_cb cb) {_camera_move_cb = cb;}
+    R_API void set_address_check_cb(address_check_cb cb) {_address_check_cb = cb;}
     R_API void set_mac_lookup(mac_lookup l) {_mac_lookup = l;}
-    // Whether to pause recording a camera that turns up at a new address its MAC doesn't vouch for, until a person
-    // confirms (r_camera_move.h's load_camera_move_policy). Off by default, as on a computer the cloud never told: the
-    // camera keeps recording at the new address, and the move says how its MAC compared.
-    R_API void set_pause_on_address_change(bool pause) {_pause_on_address_change = pause;}
-    R_API bool pause_on_address_change() const {return _pause_on_address_change.load();}
+    // Whether to follow, with no pause, a move to an address that can't be checked (no MAC stored, none readable
+    // there) rather than hold it until a person confirms (r_camera_move.h's load_camera_move_policy). Off by default.
+    // A different MAC at the new address is held whatever this says.
+    R_API void set_follow_unverified_moves(bool follow) {_follow_unverified_moves = follow;}
+    R_API bool follow_unverified_moves() const {return _follow_unverified_moves.load();}
     R_API void set_clock_ms(clock_ms c) {_clock_ms = c;}
 
     // Notes the MAC of each assigned camera that has none, at its stored address, as discovery does for a camera it
@@ -108,6 +113,28 @@ public:
     // tried again after MAC_NOTE_RETRY_MS. Each discovery pass calls it.
     R_API void note_missing_macs(const std::map<std::string, std::string>& seen_at);
     static constexpr int64_t MAC_NOTE_RETRY_MS = 10 * 60 * 1000;
+
+    // Reads the MAC at the stored address of every assigned camera that has one on file, whether or not discovery saw
+    // it there (a device that simply took the address of a camera that went away answers no discovery as the camera),
+    // and holds the camera when it is another device's (r_address_check.h); a held camera whose own MAC is seen again
+    // is released. Each camera is read every ADDRESS_CHECK_INTERVAL_MS (every ADDRESS_CHECK_HELD_INTERVAL_MS while
+    // held). Not a camera with a held move, which is guarded already. A MAC that cannot be read changes nothing: with
+    // nothing at the address there is no neighbour entry, so a camera that is off is not held. A hold for a camera
+    // that is no longer assigned is dropped. Each discovery pass calls it, after note_missing_macs.
+    R_API void check_stored_addresses();
+    // Whether the camera is held for a different device at its address: nothing may send it the camera's login
+    // (the stream keeper, PTZ and imaging, re-interrogation, a measurement).
+    R_API bool is_address_held(const std::string& camera_id) const;
+    // Brings back the holds saved before a restart (and tells the host of each), so that nothing connects to a held
+    // camera's address before the first check can find the device again. Call after set_address_check_cb and before
+    // the stream keeper starts.
+    R_API void restore_address_holds();
+    // A person's answer to a held camera: that it is their camera. Learns the MAC seen as the camera's (saved) and
+    // releases it. `since_ms` is the one the hold was shown with (r_address_check::since_ms); no_hold when the camera
+    // is not held, changed when it is held for a different device now.
+    R_API address_answer confirm_address_check(const std::string& camera_id, int64_t since_ms);
+    // The cameras held now, by camera id.
+    R_API std::map<std::string, r_address_check> address_checks() const;
 
     // Discovery's new or changed cameras (and each config's hash), after a
     // poll. Each is written through the changed-streams callback, except an
@@ -297,13 +324,26 @@ private:
         r_camera_move move;
     };
     camera_move_cb _camera_move_cb;
+    address_check_cb _address_check_cb;
+    // Cameras held for a different device at their address, with the MAC seen; and when each was last read. Under
+    // _moves_mutex.
+    struct _address_hold
+    {
+        r_address_check check;
+        std::string seen_mac;
+    };
+    std::map<std::string, _address_hold> _address_holds;
+    std::map<std::string, int64_t> _address_check_tries;
+    // The holds are kept in config/address_holds.json: written after each change, in the order they were made.
+    std::mutex _address_hold_save_mutex;
+    void _save_address_holds();
     mac_lookup _mac_lookup;
     clock_ms _clock_ms;
     int64_t _now() const;
     mutable std::mutex _moves_mutex;
     std::map<std::string, _held_move> _held_moves;
     std::map<std::string, r_camera_move> _followed_moves;
-    std::atomic<bool> _pause_on_address_change {false};
+    std::atomic<bool> _follow_unverified_moves {false};
     // Cameras followed without pausing while no MAC was on file: id -> that address (load_unconfirmed_addresses).
     // Kept across restarts; under _moves_mutex.
     std::map<std::string, std::string> _unconfirmed_addresses;
