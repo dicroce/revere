@@ -631,7 +631,7 @@ private:
     // within r_doorbell_rings::DEBOUNCE_MS of the last. Stored in the camera's metadata and handed to plugins.
     // A press of a doorbell at press_ms, as source reported it ("onvif", "reolink_email").
     void _doorbell_press(const std::string& camera_id, int64_t press_ms, const std::string& source = "onvif");
-    void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections);
+    void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections, const std::vector<r_detection>& frame);
     void _pass_session(const r_detection_session& session);
     bool _motion_detection_on(const std::string& camera_id);
     std::string _camera_name(const std::string& camera_id);

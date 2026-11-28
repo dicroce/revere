@@ -62,6 +62,9 @@ struct r_detection_session
     // motion's first look showed, not the frame at a cut. Anchors are learnt once per chain, from it to the final
     // session's last_frame (pass_learn).
     std::vector<r_detection> chain_first_frame;
+    // Every detection the session's looks returned (not the pre-roll's), unfiltered: each frame (by ts) as YOLO saw
+    // it, what was already there included. What tells part of a parked vehicle from a car in front of it.
+    std::vector<r_detection> seen;
 };
 
 // Plans the detection pass over camera-reported motion (milestone 4): when to

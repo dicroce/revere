@@ -42,6 +42,32 @@ bool r_vss::same_place(const string& class_name, const r_box& a, const r_box& b,
     return dx <= min(VEHICLE_JITTER_PX, (aw + bw) / 4) && dy <= min(VEHICLE_JITTER_PX, (ah + bh) / 4);
 }
 
+bool r_vss::mostly_inside(const r_box& part, const r_box& whole)
+{
+    const float pa = (part.x2 - part.x1) * (part.y2 - part.y1), wa = (whole.x2 - whole.x1) * (whole.y2 - whole.y1);
+    if(pa <= 0 || wa <= 0)
+        return false;
+    float ix1 = (std::max)(part.x1, whole.x1), iy1 = (std::max)(part.y1, whole.y1);
+    float ix2 = (std::min)(part.x2, whole.x2), iy2 = (std::min)(part.y2, whole.y2);
+    if(ix1 >= ix2 || iy1 >= iy2)
+        return false;
+    if((ix2 - ix1) * (iy2 - iy1) >= CONTAINED_FRACTION * pa)
+        return true;
+    // Within it across, and overlapping it for at least half its height, sticking out only above it: a cab whose box
+    // reaches above the truck's. A car in front of the truck sticks out below it (it's nearer the camera), so it isn't.
+    return part.y2 <= whole.y2 && (ix2 - ix1) >= CONTAINED_ACROSS * (part.x2 - part.x1) &&
+           (iy2 - iy1) >= CONTAINED_DOWN * (part.y2 - part.y1);
+}
+
+bool r_vss::upper_part_of(const r_box& part, const r_box& whole)
+{
+    const float wh = whole.y2 - whole.y1;
+    const float pa = (part.x2 - part.x1) * (part.y2 - part.y1), wa = (whole.x2 - whole.x1) * wh;
+    if(pa <= 0 || wa <= 0)
+        return false;
+    return part.y2 <= whole.y1 + UPPER_PART_LINE * wh && pa < UPPER_PART_AREA * wa;
+}
+
 // How an anchor stands, for the log: "2 sightings, weak, active".
 static string anchor_state_text(int sightings, bool strong, bool active)
 {
@@ -126,15 +152,65 @@ r_early_alerts::r_decision r_early_alerts::_anchored_locked(const string& camera
     return d;
 }
 
-r_early_alerts::r_decision r_early_alerts::anchored(const string& camera_id, const string& class_name, const r_box& box, int64_t ts) const
+const r_early_alerts::anchor* r_early_alerts::_containing_anchor_locked(const string& camera_id, const string& class_name, const r_box& box, int64_t ts,
+                                                                          const vector<r_seen>& same_frame, bool* whole_in_frame) const
+{
+    if(alert_group_of(class_name) != "vehicle")
+        return nullptr;
+    auto it = _anchors.find(camera_id);
+    if(it == _anchors.end())
+        return nullptr;
+    for(const auto& a : it->second)
+    {
+        if(!a.strong || !a.active(ts) || alert_group_of(a.class_name) != "vehicle" || !mostly_inside(box, a.box))
+            continue;
+        // The whole vehicle in the same frame: this box is something else in front of it, unless it's an upper part
+        // of the vehicle (its cab, boxed as well as the truck).
+        bool whole_seen = false;
+        for(const auto& s : same_frame)
+            if(alert_group_of(s.class_name) == "vehicle" && same_place(a.class_name, a.box, s.box, ANCHOR_MATCH_IOU))
+                whole_seen = true;
+        if(!whole_seen || upper_part_of(box, a.box))
+        {
+            if(whole_in_frame)
+                *whole_in_frame = whole_seen;
+            return &a;
+        }
+    }
+    return nullptr;
+}
+
+r_early_alerts::r_decision r_early_alerts::anchored(const string& camera_id, const string& class_name, const r_box& box, int64_t ts,
+                                                    const vector<r_seen>* same_frame) const
 {
     if(alert_group_of(class_name).empty())
         return r_decision();
     lock_guard<mutex> g(_mtx);
-    return _anchored_locked(camera_id, class_name, box, ts);
+    auto d = _anchored_locked(camera_id, class_name, box, ts);
+    if(d.verdict != early_anchored && same_frame)
+    {
+        bool whole = false;
+        if(auto a = _containing_anchor_locked(camera_id, class_name, box, ts, *same_frame, &whole))
+        {
+            d.whole_in_frame = whole;
+            d.verdict = early_anchored;
+            d.anchor_iou = box_iou(a->box, box);
+            d.strong_anchor = true;
+            d.part_of_vehicle = true;
+        }
+    }
+    return d;
 }
 
-bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts, const vector<r_seen>& start_frame) const
+bool r_early_alerts::part_of_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts,
+                                            const vector<r_seen>& same_frame) const
+{
+    lock_guard<mutex> g(_mtx);
+    return _containing_anchor_locked(camera_id, class_name, box, ts, same_frame) != nullptr;
+}
+
+bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts, const vector<r_seen>& start_frame,
+                                       const vector<r_seen>* same_frame, string* why) const
 {
     if(alert_group_of(class_name) != "vehicle")
         return false;
@@ -148,8 +224,24 @@ bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& cl
             // Parked before the event began? Otherwise it arrived at (or took) the spot during it.
             for(const auto& s : start_frame)
                 if(s.class_name == class_name && same_place(class_name, a.box, s.box, ANCHOR_MATCH_IOU))
+                {
+                    if(why)
+                        *why = "on its anchor (IoU " + iou_text(box_iou(a.box, box)) + ")";
                     return true;
+                }
         }
+    // Only part of a parked vehicle (its cab, the rest hidden or boxed too): parked if the whole vehicle was there before.
+    bool whole = false;
+    if(same_frame)
+        if(auto a = _containing_anchor_locked(camera_id, class_name, box, ts, *same_frame, &whole))
+            for(const auto& s : start_frame)
+                if(s.class_name == a->class_name && same_place(a->class_name, a->box, s.box, ANCHOR_MATCH_IOU))
+                {
+                    if(why)
+                        *why = string("part of a parked vehicle (") + (whole ? "upper part, whole vehicle in frame" : "inside its anchor") +
+                               ", IoU " + iou_text(box_iou(a->box, box)) + ")";
+                    return true;
+                }
     return false;
 }
 

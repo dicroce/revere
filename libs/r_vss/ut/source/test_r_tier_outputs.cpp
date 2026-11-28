@@ -2,7 +2,10 @@
 #include "r_vss/r_tier_outputs.h"
 #include "r_vss/r_camera_stats.h"
 #include "r_vss/r_system_plugin_host.h"
+#include "r_vss/r_detection_planner.h"
 #include "r_utils/3rdparty/json/json.h"
+#include <algorithm>
+#include <functional>
 #include <string>
 #include <map>
 #include <tuple>
@@ -191,8 +194,17 @@ void test_r_tier_outputs::test_pass_parked_car()
                                          {car(5, 1, T + 2000), cat, car(-4, 0, T + 6000), car(2, 2, T + 10000)}), &notes);
     RTF_ASSERT_EQUAL(kept.size(), (size_t)1);
     RTF_ASSERT_EQUAL(kept[0].class_name, string("cat"));
-    RTF_ASSERT_EQUAL(notes.size(), (size_t)1);
+    // The tally, then each one left out (up to three) with why.
+    RTF_ASSERT_EQUAL(notes.size(), (size_t)4);
     RTF_ASSERT_EQUAL(notes[0], string("car: 0 kept, 3 left out as parked"));
+    RTF_ASSERT(notes[1].find("car [305,201 325,213] 20x12 at 91%: left out, on its anchor (IoU ") == 0);
+    RTF_ASSERT(notes[3].find(": left out, on its anchor (IoU ") != string::npos);
+    // At most three of them listed, however many are left out.
+    notes.clear();
+    pass_record(anchors, _ps(T, {car(1, 0, T - 3000)}, {car(-2, 1, T)}, {}, {car(5, 1, T + 2000), car(-4, 0, T + 6000), car(2, 2, T + 10000),
+                                                                               car(1, 1, T + 14000), car(0, 0, T + 18000)}), &notes);
+    RTF_ASSERT_EQUAL(notes.size(), (size_t)4);
+    RTF_ASSERT_EQUAL(notes[0], string("car: 0 kept, 5 left out as parked"));
 
     // Seen only in the first frame, not the pre-roll (YOLO missed it there): still parked before the session.
     kept = pass_record(anchors, _ps(T, {}, {car(0, 0, T)}, {}, {car(5, 1, T + 2000)}));
@@ -270,4 +282,224 @@ void test_r_tier_outputs::test_pass_learns_once_per_chain()
     const int64_t after = later + 4 * 60 * 60 * 1000;
     RTF_ASSERT_EQUAL(anchors.anchor_count("cats", after), (size_t)1);
     RTF_ASSERT(pass_alert_now(anchors, "cats", {car(after)}, nullptr).empty());
+}
+
+// A pickup parked in the drive, its anchor strong. While a person stands at its door, YOLO boxes only its cab (as a
+// car: IoU 0.12-0.16 with the pickup's anchor), which went out as a car alert in every such session.
+// Each case runs through the planner, so the lists are the ones it hands on: its finds and kept detections leave out
+// what was already there (the pickup, in the pre-roll), and only the whole frames (the look's, session.seen) show it.
+namespace
+{
+struct pass_run
+{
+    vector<r_detection> alerted;            // what pass_alert_now sent, from each look's finds
+    vector<r_detection> held_notes_dummy;
+    vector<string> notes;
+    vector<r_detection> kept;               // pass_record of the session
+    bool finished {false};
+};
+
+// Motion from t to t + 20 s on camera "cats"; scene(look kind, frame ts) is what YOLO sees in each frame.
+pass_run run_pass(const r_early_alerts& anchors, int64_t t, const function<vector<r_detection>(r_look_kind, int64_t)>& scene)
+{
+    pass_run out;
+    r_detection_planner p;
+    p.motion("cats", "", true, t);
+    for (int64_t now = t; now <= t + 120000; now += 100)
+    {
+        if (now == t + 20000)
+            p.motion("cats", "", false, now);
+        while (true)
+        {
+            auto l = p.next_look(now);
+            if (l.is_null())
+                break;
+            const int64_t frame_ts = l.value().ts ? l.value().ts : now;
+            auto dets = scene(l.value().kind, frame_ts);
+            for (auto& d : dets)
+            {
+                d.camera_id = "cats";
+                d.ts = frame_ts;
+            }
+            auto found = p.look_done(l.value(), true, frame_ts, dets, now);
+            if (!found.empty())
+            {
+                auto sent = pass_alert_now(anchors, "cats", found, &out.notes, &dets);
+                out.alerted.insert(out.alerted.end(), sent.begin(), sent.end());
+            }
+        }
+        for (auto& s : p.finished(now))
+        {
+            out.kept = pass_record(anchors, s);
+            out.finished = true;
+        }
+    }
+    return out;
+}
+}
+
+void test_r_tier_outputs::test_pass_part_of_parked_vehicle()
+{
+    const int64_t T = T0 + 60 * 60 * 1000;
+    auto pickup = [](int64_t ts, const string& cls = "car") { return _pd(cls, 200, 200, 300, 150, ts); };
+    auto cab = [](int64_t ts, float dx = 0) { return _pd("car", 380 + dx, 210, 110, 110, ts); };  // inside the pickup's box
+    auto person = [](int64_t ts) { return _pd("person", 470, 220, 50, 140, ts); };
+    auto count = [](const vector<r_detection>& v, const string& cls) { return (size_t)count_if(v.begin(), v.end(), [&](const r_detection& d) { return d.class_name == cls; }); };
+    r_early_alerts anchors;
+    RTF_ASSERT(pass_learn(anchors, _ps(T0, {}, {pickup(T0)}, {pickup(T0 + 80000)}, {})));
+    RTF_ASSERT(anchors.anchor_count("cats", T) == 1);
+    RTF_ASSERT(box_iou({200, 200, 500, 350}, {380, 210, 490, 320}) < 0.3f);
+
+    // In the middle of the motion (not its first or last frame, which the planner compares for things sitting still).
+    auto middle = [T](int64_t ts) { return ts >= T + 3000 && ts <= T + 15000; };
+
+    // The person at the door: the pickup whole in the pre-roll and at the start and end; while the person is there,
+    // only its cab. Judged frame by frame: the pickup whole in other frames doesn't make the cab new.
+    auto at_door = run_pass(anchors, T, [&](r_look_kind k, int64_t ts) {
+        return (k != look_pre_roll && middle(ts)) ? vector<r_detection>{cab(ts), person(ts)} : vector<r_detection>{pickup(ts)};
+    });
+    RTF_ASSERT(at_door.finished);
+    RTF_ASSERT_EQUAL(count(at_door.alerted, "person"), (size_t)1);
+    RTF_ASSERT_EQUAL(count(at_door.alerted, "car"), (size_t)0);
+    RTF_ASSERT(any_of(at_door.notes.begin(), at_door.notes.end(), [](const string& n) { return n.find(": held, part of a parked vehicle (inside its anchor, IoU ") != string::npos; }));
+    RTF_ASSERT_EQUAL(count(at_door.kept, "car"), (size_t)0);
+    RTF_ASSERT(count(at_door.kept, "person") > 0);
+
+    // A car pulling up in front of the pickup: the pickup is in the pre-roll and every frame (so in neither the
+    // planner's finds nor its kept detections), the car only in the middle. The car is sent and kept.
+    auto arrival = run_pass(anchors, T, [&](r_look_kind k, int64_t ts) {
+        if (k != look_pre_roll && middle(ts))
+            return vector<r_detection>{pickup(ts), cab(ts)};
+        return vector<r_detection>{pickup(ts)};
+    });
+    RTF_ASSERT(arrival.finished);
+    RTF_ASSERT_EQUAL(count(arrival.alerted, "car"), (size_t)1);
+    RTF_ASSERT(arrival.alerted[0].x1 == 380);
+    RTF_ASSERT(count(arrival.kept, "car") > 0);
+    RTF_ASSERT(all_of(arrival.kept.begin(), arrival.kept.end(), [](const r_detection& d) { return d.x1 == 380; }));
+
+    // The pickup gone before the motion (not in the pre-roll or the first frame): a car in its spot is sent and kept.
+    auto gone = run_pass(anchors, T, [&](r_look_kind k, int64_t ts) {
+        return (k != look_pre_roll && middle(ts)) ? vector<r_detection>{cab(ts), person(ts)} : vector<r_detection>{};
+    });
+    RTF_ASSERT(count(gone.kept, "car") > 0);
+
+    // Without the whole frame, no judgement: the finds alone never hold a part.
+    RTF_ASSERT_EQUAL(pass_alert_now(anchors, "cats", {cab(T)}, nullptr).size(), (size_t)1);
+    auto frame = [](vector<r_detection> v) { return v; };
+    auto alone = frame({cab(T)});
+    // Mostly outside the anchor: not part of it.
+    auto outside = frame({cab(T, 60)});
+    RTF_ASSERT_EQUAL(pass_alert_now(anchors, "cats", outside, nullptr, &outside).size(), (size_t)1);
+    RTF_ASSERT(pass_alert_now(anchors, "cats", alone, nullptr, &alone).empty());
+    // Not a vehicle: a person inside the pickup's box is never held by it.
+    auto inside_person = frame({_pd("person", 400, 215, 40, 120, T)});
+    RTF_ASSERT_EQUAL(pass_alert_now(anchors, "cats", inside_person, nullptr, &inside_person).size(), (size_t)1);
+    // Bigger than the anchor, and mostly outside it: not part of it.
+    auto big = frame({_pd("truck", 150, 150, 400, 250, T)});
+    RTF_ASSERT_EQUAL(pass_alert_now(anchors, "cats", big, nullptr, &big).size(), (size_t)1);
+    // Vehicle classes match each other: YOLO's "truck" for the cab is part of the pickup's "car" anchor.
+    auto truck_cab = frame({_pd("truck", 380, 210, 110, 110, T)});
+    RTF_ASSERT(pass_alert_now(anchors, "cats", truck_cab, nullptr, &truck_cab).empty());
+    // Another camera has no anchors.
+    RTF_ASSERT_EQUAL(pass_alert_now(anchors, "porch", alone, nullptr, &alone).size(), (size_t)1);
+
+    // From a real clip: the pickup's anchor [0,246 157,500]; YOLO's cab boxes reach above it (63-65% inside by area)
+    // but lie within it across and overlap it for more than half their height.
+    {
+        r_early_alerts real;
+        auto truck = [](int64_t ts) { return _pd("car", 0, 246, 157, 254, ts); };
+        RTF_ASSERT(pass_learn(real, _ps(T0, {}, {truck(T0)}, {truck(T0 + 80000)}, {})));
+        const r_box anchor {0, 246, 157, 500};
+        for (auto b : {r_box{29, 207, 127, 313}, r_box{16, 206, 127, 313}, r_box{24, 212, 121, 310}})
+        {
+            RTF_ASSERT(mostly_inside(b, anchor));
+            const float inside = (b.x2 - b.x1) * (b.y2 - 246) / ((b.x2 - b.x1) * (b.y2 - b.y1));
+            RTF_ASSERT(inside > 0.6f && inside < 0.66f);
+            const int64_t F = T + 4000;  // the cab's frame
+            auto part = _pd("car", b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1, F);
+            auto at_door = frame({part, _pd("person", 140, 220, 60, 200, F)});
+            auto sent = pass_alert_now(real, "cats", at_door, nullptr, &at_door);
+            RTF_ASSERT(sent.size() == 1 && sent[0].class_name == "person");
+            // The whole truck boxed in the same look as well (as on the real clip): still an upper part of it, held.
+            auto with_truck = frame({part, truck(F)});
+            vector<string> notes;
+            RTF_ASSERT(pass_alert_now(real, "cats", {part}, &notes, &with_truck).empty());
+            RTF_ASSERT(notes.size() == 1 && notes[0].find(": held, part of a parked vehicle (upper part, whole vehicle in frame, IoU ") != string::npos);
+            // And the record leaves it out, the truck in its frame or not (the truck was there before), and says why.
+            auto s = _ps(T, {truck(T - 3000)}, {truck(T)}, {truck(T + 80000)}, {part});
+            s.seen = {part, truck(T + 80000), truck(T)};
+            vector<string> rec;
+            RTF_ASSERT(pass_record(real, s, &rec).empty());
+            RTF_ASSERT(rec.size() == 2 && rec[0] == "car: 0 kept, 1 left out as parked");
+            RTF_ASSERT(rec[1].find(box_text(b) + " at 90%: left out, part of a parked vehicle (inside its anchor, IoU ") == 4);
+            s.seen.push_back(truck(F));
+            rec.clear();
+            RTF_ASSERT(pass_record(real, s, &rec).empty());
+            RTF_ASSERT(rec.size() == 2 && rec[1].find(": left out, part of a parked vehicle (upper part, whole vehicle in frame, IoU ") != string::npos);
+        }
+        // A car pulling up in front of the truck, with the truck in every look: lower in the frame, about its size. Sent
+        // and kept. The cab with the truck in every look: held and left out. Both through the planner.
+        // (IoU 0.43 with the anchor: under ANCHOR_MATCH_IOU, so only the part rule decides it; mostly inside across.)
+        auto in_front = [](int64_t ts) { return _pd("car", 30, 330, 120, 230, ts); };
+        auto pulled_up = run_pass(real, T, [&](r_look_kind k, int64_t ts) {
+            if (k != look_pre_roll && ts >= T + 3000 && ts <= T + 15000)
+                return vector<r_detection>{truck(ts), in_front(ts)};
+            return vector<r_detection>{truck(ts)};
+        });
+        RTF_ASSERT(pulled_up.finished);
+        RTF_ASSERT(box_iou({30, 330, 150, 560}, anchor) < 0.5f);
+        // It sticks out below the truck, so it's never part of it: not even in a look where it hides the truck and
+        // YOLO boxes only the car.
+        RTF_ASSERT(!mostly_inside({30, 330, 150, 560}, anchor));
+        // At the bottom edge (63% inside by area, so only the across rule decides): ending at the truck's bottom is
+        // part of it, 5 px below it is not.
+        RTF_ASSERT(mostly_inside({29, 95, 127, 500}, anchor));
+        RTF_ASSERT(!mostly_inside({29, 100, 127, 505}, anchor));
+        auto hides_it = run_pass(real, T, [&](r_look_kind k, int64_t ts) {
+            if (k != look_pre_roll && ts >= T + 3000 && ts <= T + 15000)
+                return vector<r_detection>{in_front(ts)};
+            return vector<r_detection>{truck(ts)};
+        });
+        RTF_ASSERT(hides_it.finished);
+        RTF_ASSERT(hides_it.alerted.size() == 1 && hides_it.alerted[0].y1 == 330);
+        RTF_ASSERT(!hides_it.kept.empty() && all_of(hides_it.kept.begin(), hides_it.kept.end(), [](const r_detection& d) { return d.y1 == 330; }));
+        RTF_ASSERT(pulled_up.alerted.size() == 1 && pulled_up.alerted[0].y1 == 330);
+        RTF_ASSERT(!pulled_up.kept.empty() && all_of(pulled_up.kept.begin(), pulled_up.kept.end(), [](const r_detection& d) { return d.y1 == 330; }));
+        auto cab_too = run_pass(real, T, [&](r_look_kind k, int64_t ts) {
+            if (k != look_pre_roll && ts >= T + 3000 && ts <= T + 15000)
+                return vector<r_detection>{truck(ts), _pd("car", 29, 207, 98, 106, ts), _pd("person", 140, 220, 60, 200, ts)};
+            return vector<r_detection>{truck(ts)};
+        });
+        RTF_ASSERT(cab_too.finished);
+        RTF_ASSERT(cab_too.alerted.size() == 1 && cab_too.alerted[0].class_name == "person");
+        RTF_ASSERT(none_of(cab_too.kept.begin(), cab_too.kept.end(), [](const r_detection& d) { return d.class_name == "car"; }));
+        RTF_ASSERT(any_of(cab_too.kept.begin(), cab_too.kept.end(), [](const r_detection& d) { return d.class_name == "person"; }));
+
+        // The upper half's line (373 here) and the area cap (19939 here): either side of each.
+        RTF_ASSERT(upper_part_of({29, 207, 127, 373}, anchor));
+        RTF_ASSERT(!upper_part_of({29, 207, 127, 374}, anchor));
+        RTF_ASSERT(upper_part_of({20, 207, 140, 373}, anchor));    // 120 x 166 = 19920
+        RTF_ASSERT(!upper_part_of({20, 207, 141, 373}, anchor));   // 121 x 166 = 20086
+        // So with the truck in its look, a box just below the line is new (sent), just above it held.
+        auto below = frame({_pd("car", 29, 207, 98, 167, T), truck(T)});
+        RTF_ASSERT_EQUAL(pass_alert_now(real, "cats", {below[0]}, nullptr, &below).size(), (size_t)1);
+        auto above = frame({_pd("car", 29, 207, 98, 166, T), truck(T)});
+        RTF_ASSERT(pass_alert_now(real, "cats", {above[0]}, nullptr, &above).empty());
+
+        // Not within it across (a car off to the side, overlapping), or under half its height in it: not part of it.
+        RTF_ASSERT(!mostly_inside({120, 207, 220, 313}, anchor));
+        RTF_ASSERT(!mostly_inside({45, 207, 170, 313}, anchor));  // 89.6% across: just under
+        RTF_ASSERT(!mostly_inside({29, 150, 127, 290}, anchor));
+        RTF_ASSERT(mostly_inside({29, 196, 127, 300}, anchor));   // just over half
+    }
+
+    // Only a strong anchor: a weak one (two jittering sightings) never takes a part as its vehicle.
+    r_early_alerts weak;
+    auto distant = [](float dx, int64_t ts) { return _pd("car", 300 + dx, 200, 40, 24, ts); };
+    RTF_ASSERT(pass_learn(weak, _ps(T0, {}, {distant(0, T0)}, {distant(7, T0 + 80000)}, {})));
+    RTF_ASSERT(pass_learn(weak, _ps(T0 + 1000, {}, {distant(-3, T0 + 1000)}, {distant(4, T0 + 81000)}, {})));
+    RTF_ASSERT(weak.anchor_count("cats", T) == 1);
+    auto small_car = frame({_pd("car", 310, 205, 15, 12, T)});
+    RTF_ASSERT_EQUAL(pass_alert_now(weak, "cats", small_car, nullptr, &small_car).size(), (size_t)1);
 }

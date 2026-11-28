@@ -176,7 +176,7 @@ void r_detection_pass::_entry_point()
             found = _planner.look_done(l, got, frame_ts, dets, _now_ms());
         }
         if (!found.empty() && _on_found)
-            _on_found(l.camera_id, found);
+            _on_found(l.camera_id, found, dets);
     }
 }
 

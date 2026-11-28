@@ -74,9 +74,11 @@ inline std::optional<int64_t> end_mog2_window(std::map<std::string, int64_t>& st
 // Which of a session's first finds go on the bus at once: one on an active
 // anchor of its class is held, as tier 1's early alert holds it, and goes at
 // the session's end if the record keeps it. notes, if given: a line for each
-// one held, and for each vehicle sent (with the nearest anchor).
+// one held, and for each vehicle sent (with the nearest anchor). frame, if
+// given, is the look's whole frame (unfiltered): a vehicle that is only part
+// of a parked one, with the rest unseen in it, is held too.
 R_API std::vector<r_detection> pass_alert_now(const r_early_alerts& anchors, const std::string& camera_id, const std::vector<r_detection>& found,
-                                              std::vector<std::string>* notes = nullptr);
+                                              std::vector<std::string>* notes = nullptr, const std::vector<r_detection>* frame = nullptr);
 
 // The session's detections the record keeps: less each vehicle on an active
 // anchor that was already there before the session (in the pre-roll or the
