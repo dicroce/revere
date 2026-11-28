@@ -9,6 +9,8 @@
 #include <gst/app/gstappsink.h>
 #include <gst/app/gstappsrc.h>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <gst/rtsp-server/rtsp-server.h>
 #include <string>
 #include <thread>
@@ -23,6 +25,38 @@ REGISTER_TEST_FIXTURE(test_r_restream_opus);
 void test_r_restream_opus::setup()
 {
     r_pipeline::gstreamer_init();
+}
+
+static bool _element_exists(const char* name)
+{
+    auto f = gst_element_factory_find(name);
+    if(!f)
+        return false;
+    gst_object_unref(f);
+    return true;
+}
+
+// The Opus branch for an encoding, which the build and its package are expected to be able to make: an empty one
+// FAILS the test, naming the GStreamer elements that are missing (a bundle that doesn't carry the audio plugins looked
+// like a pass for a long time: the tests returned early on an empty branch). Set REVERE_ALLOW_NO_OPUS=1 to run
+// without them on a machine whose GStreamer really can't encode Opus.
+static string _opus_branch_expected(r_encoding encoding)
+{
+    auto branch = restream_opus_audio_branch(encoding);
+    if(branch.empty())
+    {
+        string missing;
+        for(auto e : {"audioconvert", "audioresample", "opusenc", "rtpopuspay", "mulawdec", "alawdec"})
+            if(!_element_exists(e))
+                missing += string(missing.empty() ? "" : ", ") + e;
+        fprintf(stderr, "[restream_opus] no Opus branch for %s; GStreamer elements missing: %s\n",
+                r_pipeline::encoding_to_str(encoding).c_str(), missing.empty() ? "(none of the usual ones)" : missing.c_str());
+        if(getenv("REVERE_ALLOW_NO_OPUS"))
+            fprintf(stderr, "[restream_opus] REVERE_ALLOW_NO_OPUS is set: skipping\n");
+        else
+            RTF_ASSERT(!branch.empty());
+    }
+    return branch;
 }
 
 void test_r_restream_opus::test_launch_strings()
@@ -64,7 +98,12 @@ void test_r_restream_opus::test_no_opus_without_audio_it_decodes()
     auto registry = gst_registry_get();
     auto feature = gst_registry_lookup_feature(registry, "rtpopuspay");
     if(!feature)
+    {
+        fprintf(stderr, "[restream_opus] rtpopuspay is not in the registry\n");
+        if(!getenv("REVERE_ALLOW_NO_OPUS"))
+            RTF_ASSERT(feature != nullptr);
         return;
+    }
     gst_registry_remove_feature(registry, feature);
     auto without = r_stream_keeper::create_restream_opus_launch_string(r_encoding::H264_ENCODING, 96, r_nullable<r_encoding>(r_encoding::AAC_GENERIC_ENCODING));
     gst_registry_add_feature(registry, feature);   // takes the lookup's reference
@@ -132,8 +171,7 @@ static bool _have(std::initializer_list<const char*> elements)
 
 void test_r_restream_opus::test_aac_becomes_opus()
 {
-    // Where GStreamer can't encode Opus there's no Opus restream (and nothing to run here).
-    auto branch = restream_opus_audio_branch(r_encoding::AAC_GENERIC_ENCODING);
+    auto branch = _opus_branch_expected(r_encoding::AAC_GENERIC_ENCODING);
     if(branch.empty())
         return;
 
@@ -168,10 +206,17 @@ void test_r_restream_opus::test_aac_becomes_opus()
 
 void test_r_restream_opus::test_mulaw_becomes_opus()
 {
-    if(restream_opus_audio_branch(r_encoding::PCMU_ENCODING).empty() || !_have({"mulawenc"}))
+    auto branch = _opus_branch_expected(r_encoding::PCMU_ENCODING);
+    if(branch.empty())
         return;
-    auto n = _opus_packets_from("audiotestsrc num-buffers=16 samplesperbuffer=1000 ! audio/x-raw,rate=8000,channels=1 ! mulawenc",
-                                restream_opus_audio_branch(r_encoding::PCMU_ENCODING));
+    // The test's own source and encoder: audiotestsrc isn't shipped (only the product's elements are), so a build
+    // without it skips this, but says so.
+    if(!_have({"mulawenc", "audiotestsrc"}))
+    {
+        fprintf(stderr, "[restream_opus] mulawenc or audiotestsrc missing: skipping the mu-law to Opus run\n");
+        return;
+    }
+    auto n = _opus_packets_from("audiotestsrc num-buffers=16 samplesperbuffer=1000 ! audio/x-raw,rate=8000,channels=1 ! mulawenc", branch);
     RTF_ASSERT(n >= 90 && n <= 110);
 }
 
@@ -179,9 +224,15 @@ void test_r_restream_opus::test_mulaw_becomes_opus()
 // (its appsrcs stood in for by test sources) with H.264 video and Opus audio.
 void test_r_restream_opus::test_mount_describes_opus()
 {
+    _opus_branch_expected(r_encoding::AAC_GENERIC_ENCODING);
     auto launch = r_stream_keeper::create_restream_opus_launch_string(r_encoding::H264_ENCODING, 96, r_nullable<r_encoding>(r_encoding::AAC_GENERIC_ENCODING));
-    if(launch.empty() || !_have({"x264enc"}))
+    if(launch.empty())
         return;
+    if(!_have({"x264enc"}))
+    {
+        fprintf(stderr, "[restream_opus] x264enc missing: skipping the mount description\n");
+        return;
+    }
     launch = r_string_utils::replace_all(launch, "appsrc name=videosrc",
         "videotestsrc is-live=true ! video/x-raw,width=320,height=240,framerate=10/1 ! x264enc tune=zerolatency key-int-max=10 ! video/x-h264,stream-format=byte-stream");
     launch = r_string_utils::replace_all(launch, "appsrc name=pcmsrc",

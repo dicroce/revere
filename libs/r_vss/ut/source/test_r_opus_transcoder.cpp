@@ -1,4 +1,6 @@
 #include "test_r_opus_transcoder.h"
+#include <cstdio>
+#include <cstdlib>
 #include "r_vss/r_opus_transcoder.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_av/r_audio_encoder.h"
@@ -70,9 +72,19 @@ size_t _mulaw_tone_packets(r_opus_transcoder& tc, int seconds)
     return n;
 }
 
+// True when there is no Opus branch to run. Where the build and its package are expected to have one, that FAILS the
+// test (the audio plugins missing from a bundle used to pass these by returning early): set REVERE_ALLOW_NO_OPUS=1 on a
+// machine whose GStreamer really can't encode Opus.
 bool _no_opus(r_encoding enc)
 {
-    return restream_opus_audio_branch(enc).empty();
+    const bool none = restream_opus_audio_branch(enc).empty();
+    if(none)
+    {
+        fprintf(stderr, "[opus_transcoder] no Opus branch for %s (GStreamer is missing an element it needs)\n", r_pipeline::encoding_to_str(enc).c_str());
+        if(!getenv("REVERE_ALLOW_NO_OPUS"))
+            RTF_ASSERT(!none);
+    }
+    return none;
 }
 
 }
@@ -84,7 +96,6 @@ void test_r_opus_transcoder::setup()
 
 void test_r_opus_transcoder::test_mulaw_becomes_opus()
 {
-    // Where GStreamer can't make Opus there's nothing to run here.
     if(_no_opus(r_encoding::PCMU_ENCODING))
         return;
     r_opus_transcoder tc("PCMU", _mulaw_params());

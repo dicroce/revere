@@ -63,6 +63,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
             "${GST_TOP_DIR}/bin/ffi-7.dll"
             "${GST_TOP_DIR}/bin/z-1.dll"
             "${GST_TOP_DIR}/bin/orc-0.4-0.dll"
+            "${GST_TOP_DIR}/bin/opus-0.dll"
             "$<TARGET_FILE_DIR:r_pipeline>"
         COMMENT "Copying GStreamer DLLs to build output directory"
     )
@@ -71,9 +72,14 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     add_custom_command(TARGET r_pipeline POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:r_pipeline>/gstreamer_plugins"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${GST_TOP_DIR}/lib/gstreamer-1.0/gstalaw.dll"
             "${GST_TOP_DIR}/lib/gstreamer-1.0/gstapp.dll"
+            "${GST_TOP_DIR}/lib/gstreamer-1.0/gstaudioconvert.dll"
             "${GST_TOP_DIR}/lib/gstreamer-1.0/gstaudioparsers.dll"
+            "${GST_TOP_DIR}/lib/gstreamer-1.0/gstaudioresample.dll"
             "${GST_TOP_DIR}/lib/gstreamer-1.0/gstcoreelements.dll"
+            "${GST_TOP_DIR}/lib/gstreamer-1.0/gstmulaw.dll"
+            "${GST_TOP_DIR}/lib/gstreamer-1.0/gstopus.dll"
             "${GST_TOP_DIR}/lib/gstreamer-1.0/gstrtp.dll"
             "${GST_TOP_DIR}/lib/gstreamer-1.0/gstrtpmanager.dll"
             "${GST_TOP_DIR}/lib/gstreamer-1.0/gstrtsp.dll"
