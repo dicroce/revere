@@ -12,7 +12,7 @@
 #   apps/vision/vision.icns    macOS app bundle icon for Vision: its own mark, a square outline with a play
 #                              triangle, on the same tile
 #   snap/gui/revere.png        256: snap desktop icon
-#   libs/r_vss/webui/public/favicon.svg, favicon-32.png   web UI favicon
+#   libs/r_vss/webui/public/favicon.svg, favicon-16.png, favicon-32.png   web UI favicon
 #
 # Needs rsvg-convert (librsvg) and ImageMagick 7 (`magick`); iconutil on macOS
 # for the .icns (skipped elsewhere). Run from anywhere:
@@ -130,8 +130,9 @@ else
   echo "iconutil not found (not macOS): left apps/revere/revere.icns and apps/vision/vision.icns as they are" >&2
 fi
 
-# Web UI favicon: the plain mark, ink on light tabs and white on dark ones.
+# Web UI favicon: the plain mark in the 16 px cut (whole pixels at 16 and 32 px), ink on light tabs and white on dark ones.
 cp "$HERE/favicon.svg" "$ROOT/libs/r_vss/webui/public/favicon.svg"
 rsvg-convert -w 32 -h 32 "$HERE/favicon.svg" -o "$ROOT/libs/r_vss/webui/public/favicon-32.png"
+rsvg-convert -w 16 -h 16 "$HERE/favicon.svg" -o "$ROOT/libs/r_vss/webui/public/favicon-16.png"
 
 echo "Icons written."
