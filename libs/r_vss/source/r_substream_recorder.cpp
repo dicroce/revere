@@ -8,6 +8,7 @@
 #include "r_pipeline/r_arg.h"
 #include "r_utils/r_file.h"
 #include "r_utils/r_logger.h"
+#include "r_utils/r_string_utils.h"
 #include <algorithm>
 #include <cmath>
 
@@ -561,6 +562,12 @@ string r_vss::friendly_mount_path(const string& name)
     if(path == reserved || path.compare(0, reserved.size() + 1, reserved + "/") == 0)
         path.insert(reserved.size(), "_");
     return path;
+}
+
+string r_vss::restream_url(const string& host, int port, const string& name, const string& user, const string& password)
+{
+    const string credential = user.empty() ? string() : user + ":" + password + "@";
+    return r_string_utils::format("rtsp://%s%s:%d%s", credential.c_str(), host.c_str(), port, friendly_mount_path(name).c_str());
 }
 
 string r_vss::restream_id_mount_path(const string& camera_id)

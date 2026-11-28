@@ -374,3 +374,55 @@ void test_r_tier_controller::test_unavailable_events_say_so()
     d.tick(MIN);
     RTF_ASSERT(d.status("b").reason.find("checking") != string::npos);
 }
+
+// A doorbell whose motion and person events match Revere's runs on tier 3, not 2: Revere's YOLO looks at its motion,
+// as a doorbell's own person events can miss someone at the door. Its verification is kept, and a forced tier 2 holds.
+void test_r_tier_controller::test_a_doorbell_stays_on_tier_3()
+{
+    T t;
+    t.set_doorbell("door", true);
+    t.subscription("door", true, 0);
+    _events(t, "door", 10 * MIN, 4);
+    auto now = _events(t, "door", 20 * MIN, 4, true, true);
+    RTF_ASSERT_EQUAL(t.tier("door"), (int)motion_tier_3);
+    RTF_ASSERT_EQUAL(t.verified_tier("door"), (int)motion_tier_2);   // saved as verified
+    RTF_ASSERT(t.status("door").automatic);
+    RTF_ASSERT(t.status("door").reason.find("a doorbell") == 0);
+
+    // Its tier 3 person checks match too: still tier 3.
+    for (int i = 0; i < 3; ++i)
+        t.pass_session("door", true, true);
+    t.tick(now + 1000);
+    RTF_ASSERT_EQUAL(t.tier("door"), (int)motion_tier_3);
+
+    // No longer a doorbell: tier 2, with nothing checked again.
+    t.set_doorbell("door", false);
+    auto changed = t.tick(now + 2000);
+    RTF_ASSERT_EQUAL(t.tier("door"), (int)motion_tier_2);
+    RTF_ASSERT(changed.size() == 1 && changed[0] == "door");
+    RTF_ASSERT_EQUAL(t.status("door").reason, string("the camera's motion and person events match Revere's"));
+
+    // Forced to tier 2 in its settings: honored.
+    t.set_doorbell("door", true);
+    t.set_setting("door", "2");
+    t.tick(now + 3000);
+    RTF_ASSERT_EQUAL(t.tier("door"), (int)motion_tier_2);
+    RTF_ASSERT(!t.status("door").automatic);
+
+    // Restored after a restart as verified for tier 2: tier 3, once its subscription is stable.
+    T u;
+    u.set_doorbell("door", true);
+    u.restore("door", 2, 0);
+    u.subscription("door", true, 1000);
+    u.tick(1000 + T::STABLE_MS);
+    RTF_ASSERT_EQUAL(u.tier("door"), (int)motion_tier_3);
+    RTF_ASSERT_EQUAL(u.verified_tier("door"), (int)motion_tier_2);
+
+    // A doorbell verified only for tier 3 (its person events not shown to match): tier 3, as any camera.
+    T v;
+    v.set_doorbell("door", true);
+    v.subscription("door", true, 0);
+    _events(v, "door", 10 * MIN, (int)T::MIN_EVENTS);
+    RTF_ASSERT_EQUAL(v.tier("door"), (int)motion_tier_3);
+    RTF_ASSERT_EQUAL(v.verified_tier("door"), (int)motion_tier_3);
+}

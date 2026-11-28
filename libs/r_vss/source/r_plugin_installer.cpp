@@ -240,6 +240,22 @@ vector<uint8_t> r_vss::http_get(const string& url, size_t max_bytes, uint64_t ti
     R_STHROW(r_exception, ("More than %d redirects from %s", MAX_REDIRECTS, url.c_str()));
 }
 
+string r_vss::plugin_asset_platform(const string& platform, const string& arch)
+{
+    // The installers' platform names: revere-v0.0.41-linux-arm64-cloud.run,
+    // revere-v0.0.41-macos-intel-cloud.command, ...
+    if(platform == "linux" && arch == "arm64")
+        return "linux-arm64";
+    if(platform == "macos" && arch == "x86_64")
+        return "macos-intel";
+    return platform;
+}
+
+string r_vss::plugin_file_extension(const string& platform)
+{
+    return _plugin_ext(platform);
+}
+
 string r_vss::revere_cloud_plugin_file()
 {
     return "revere_cloud_system_plugin" + _plugin_ext(plugin_platform());
@@ -247,13 +263,7 @@ string r_vss::revere_cloud_plugin_file()
 
 r_plugin_release_assets r_vss::revere_cloud_release_assets(const string& revere_version, const string& platform, const string& arch)
 {
-    // The installers' platform names: revere-v0.0.41-linux-arm64-cloud.run,
-    // revere-v0.0.41-macos-intel-cloud.command, ...
-    string asset_platform = platform;
-    if(platform == "linux" && arch == "arm64")
-        asset_platform = "linux-arm64";
-    else if(platform == "macos" && arch == "x86_64")
-        asset_platform = "macos-intel";
+    auto asset_platform = plugin_asset_platform(platform, arch);
 
     auto base = "https://github.com/dicroce/revere/releases/download/v" + revere_version + "/";
     auto plugin = "revere-v" + revere_version + "-" + asset_platform + "-cloud-plugin" + _plugin_ext(platform);

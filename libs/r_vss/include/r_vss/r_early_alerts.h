@@ -21,6 +21,42 @@ struct r_box
 };
 
 R_API float box_iou(const r_box& a, const r_box& b);
+// A box for the log: "[x1,y1 x2,y2] WxH", whole pixels of the letterbox.
+R_API std::string box_text(const r_box& b);
+
+// Whether two boxes of a class are the same thing in the same place: IoU at
+// least iou, or, for a vehicle, YOLO's jitter on a small box. A far car only
+// 20x12 px in the letterbox drops under IoU 0.5 when its box moves 8 px, so
+// IoU alone never saw it sit still. A vehicle's boxes also match when their
+// centres are within VEHICLE_JITTER_PX (and half the box) on each axis and
+// each side is within VEHICLE_JITTER_SIZE of the other's. On a big box that
+// much jitter keeps a high IoU anyway; a car driving past moves further.
+// Persons and animals: IoU only (a far person walking slowly moves little).
+constexpr float VEHICLE_JITTER_PX = 8.0f;
+constexpr float VEHICLE_JITTER_SIZE = 1.5f;
+R_API bool same_place(const std::string& class_name, const r_box& a, const r_box& b, float iou);
+
+// Whether part lies mostly inside whole: CONTAINED_FRACTION of part's area; or,
+// across, CONTAINED_ACROSS of its width, with CONTAINED_DOWN of its height
+// overlapping whole and none of it below whole. How a parked pickup's cab, all YOLO boxes while a person
+// stands at its door, is told to be part of the pickup (its IoU with the whole
+// truck's box is 0.12 to 0.16). YOLO's box for the cab reaches above the truck's
+// (on a real clip: the truck [0,246 157,500], the cab [29,207 127,313], 63% of it
+// inside), so the area rule alone missed it.
+constexpr float CONTAINED_FRACTION = 0.8f;
+constexpr float CONTAINED_ACROSS = 0.9f;
+constexpr float CONTAINED_DOWN = 0.5f;
+R_API bool mostly_inside(const r_box& part, const r_box& whole);
+
+// Whether part is an upper part of whole: its bottom edge in whole's upper half
+// (UPPER_PART_LINE of its height), and under UPPER_PART_AREA of whole's area. A
+// parked pickup's cab, boxed apart from the whole truck with a person at its door
+// (on a real clip both came in the same look), is one; a car pulling up in front
+// of the truck is nearer the camera, so lower in the frame and about its size, and
+// isn't.
+constexpr float UPPER_PART_LINE = 0.5f;
+constexpr float UPPER_PART_AREA = 0.5f;
+R_API bool upper_part_of(const r_box& part, const r_box& whole);
 
 // "person", "vehicle" or "animal" for the classes that alert (as revere_cloud
 // and belfry group them), "" for the rest.
@@ -101,6 +137,8 @@ public:
         r_verdict verdict {early_not_alerting};
         float anchor_iou {0}; // the anchor's IoU, for early_anchored
         bool strong_anchor {false};
+        bool part_of_vehicle {false}; // early_anchored as part of a parked vehicle (part_of_parked_vehicle)
+        bool whole_in_frame {false};  // ... an upper part of it, the whole vehicle in the same frame too
     };
 
     struct r_seen
@@ -117,6 +155,22 @@ public:
     // Decides for one detection YOLO found over the motion at ts, and
     // records it as sent if it is.
     R_API r_decision consider(const std::string& camera_id, const std::string& class_name, float confidence, const r_box& box, int64_t ts);
+    // Whether a detection is on one of the camera's active anchors of its
+    // class, as consider() holds it (early_anchored or early_not_alerting),
+    // with no floor and nothing recorded: for the detection pass on tier 3,
+    // which sends once per session itself.
+    // With same_frame (the frame's other detections), a vehicle box that is only part of a parked vehicle
+    // (part_of_parked_vehicle) is anchored too.
+    R_API r_decision anchored(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts,
+                              const std::vector<r_seen>* same_frame = nullptr) const;
+    // Whether a vehicle box is only part of the vehicle on one of the camera's strong vehicle anchors: mostly inside
+    // the anchor (mostly_inside), while nothing else in the same frame (same_frame) is at the anchor itself, so the
+    // whole vehicle isn't seen there, only that part (a person at the cab's door hides the rest); or, with the whole
+    // vehicle in the frame too, while it is an upper part of the anchor (upper_part_of: YOLO may box the cab as well
+    // as the truck). Any vehicle class either side: YOLO may call a pickup's cab a car. A car pulling up in front of a
+    // parked truck is seen with the truck and reaches its lower half, so it isn't part of it.
+    R_API bool part_of_parked_vehicle(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts,
+                                      const std::vector<r_seen>& same_frame) const;
     // Whether a detection (class at ts) went out early this event.
     R_API bool sent_early(const std::string& camera_id, const std::string& class_name, int64_t ts) const;
     // Whether a vehicle at box (at ts) sits on one of the camera's learnt anchors: a parked car seen in an event
@@ -126,12 +180,26 @@ public:
     // An anchor stays active for a day and is not cleared when the car leaves, so the car must also have been on
     // the anchor in the event's start frame (start_frame): parked before the event began. A car arriving into
     // the spot during the event, or a visitor taking it, is kept.
-    R_API bool is_parked_vehicle(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts, const std::vector<r_seen>& start_frame) const;
+    // With same_frame, a box that is only part of a parked vehicle (part_of_parked_vehicle) is parked too, if the
+    // whole vehicle was there in start_frame.
+    // why, if given, gets the reason when it is, for the log: "on its anchor (IoU 0.91)", "part of a parked vehicle
+    // (inside its anchor, IoU 0.14)" or "part of a parked vehicle (upper part, whole vehicle in frame, IoU 0.14)".
+    R_API bool is_parked_vehicle(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts, const std::vector<r_seen>& start_frame,
+                                 const std::vector<r_seen>* same_frame = nullptr, std::string* why = nullptr) const;
     // How long to wait between looks during this camera's event.
     R_API int64_t look_interval_ms(const std::string& camera_id) const;
     // Learns anchors from the detections (unfiltered) in the frames that
     // started and ended the event; true if the camera's anchors changed.
-    R_API bool event_ended(const std::string& camera_id, int64_t ts, const std::vector<r_seen>& start_frame, const std::vector<r_seen>& end_frame);
+    // notes, if given, gets a line for each person, vehicle or animal in the
+    // start frame: its best match in the end frame and what that did to the
+    // anchors (nothing, a new one, or one seen again), for the log.
+    R_API bool event_ended(const std::string& camera_id, int64_t ts, const std::vector<r_seen>& start_frame, const std::vector<r_seen>& end_frame,
+                           std::vector<std::string>* notes = nullptr);
+    // For the log, when a detection wasn't held or left out: the camera's
+    // anchor of its class that best overlaps box, active or not, as
+    // "nearest car anchor [..] WxH: IoU 0.31, 1 sighting, weak, not active",
+    // or "no car anchor".
+    R_API std::string nearest_anchor(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts) const;
 
     R_API size_t anchor_count(const std::string& camera_id, int64_t now) const;
     R_API std::string to_json() const;
@@ -159,6 +227,13 @@ private:
         std::set<std::string> classes_sent;
         std::set<std::pair<std::string, int64_t>> sent;
     };
+
+    // consider()'s anchor test. PRECONDITION: _mtx held.
+    r_decision _anchored_locked(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts) const;
+    // The strong vehicle anchor box is part of (part_of_parked_vehicle), or null. PRECONDITION: _mtx held.
+    // whole_in_frame, if given: whether it was taken as an upper part with the whole vehicle in the frame.
+    const anchor* _containing_anchor_locked(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts,
+                                            const std::vector<r_seen>& same_frame, bool* whole_in_frame = nullptr) const;
 
     mutable std::mutex _mtx;
     std::map<std::string, std::vector<anchor>> _anchors;

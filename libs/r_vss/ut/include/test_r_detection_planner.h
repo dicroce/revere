@@ -10,6 +10,7 @@ public:
       TEST(test_r_detection_planner::test_far_apart_events_are_separate);
       TEST(test_r_detection_planner::test_pre_roll_drops_parked_objects);
       TEST(test_r_detection_planner::test_first_and_last_frame_static_check);
+      TEST(test_r_detection_planner::test_small_parked_car_jitter);
       TEST(test_r_detection_planner::test_failed_stored_look_retries_once);
       TEST(test_r_detection_planner::test_fair_between_cameras);
       TEST(test_r_detection_planner::test_early_camera_class);
@@ -18,6 +19,7 @@ public:
       TEST(test_r_detection_planner::test_long_motion_still_finds);
       TEST(test_r_detection_planner::test_cut_keeps_what_was_there);
       TEST(test_r_detection_planner::test_cut_waits_for_looks);
+      TEST(test_r_detection_planner::test_cut_carries_the_chains_first_frame);
     RTF_FIXTURE_END();
 
     virtual ~test_r_detection_planner() throw() {}
@@ -31,6 +33,7 @@ public:
     void test_far_apart_events_are_separate();
     void test_pre_roll_drops_parked_objects();
     void test_first_and_last_frame_static_check();
+    void test_small_parked_car_jitter();
     void test_failed_stored_look_retries_once();
     void test_fair_between_cameras();
     void test_early_camera_class();
@@ -39,4 +42,5 @@ public:
     void test_long_motion_still_finds();
     void test_cut_keeps_what_was_there();
     void test_cut_waits_for_looks();
+    void test_cut_carries_the_chains_first_frame();
 };

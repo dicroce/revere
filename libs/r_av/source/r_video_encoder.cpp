@@ -196,6 +196,15 @@ void r_video_encoder::_open(
         av_dict_set(&opts, "rc_mode", "VBR", 0);
     }
 
+    if(_codec_id == AV_CODEC_ID_H264 || _codec_id == AV_CODEC_ID_HEVC)
+    {
+        // A forced key frame (attach_buffer's force_key) as an IDR, which a decoder can start at, not an I-frame.
+        // libx264 and NVENC call it "forced-idr", QSV "forced_idr"; an encoder with neither leaves both unused
+        // (VideoToolbox, VAAPI and OpenH264 make an IDR anyway). Frames not forced are untouched.
+        av_dict_set(&opts, "forced-idr", "1", 0);
+        av_dict_set(&opts, "forced_idr", "1", 0);
+    }
+
     auto ret = r_hw_encoder_open(_context, _codec, &opts, why);
     av_dict_free(&opts);
 
@@ -225,6 +234,7 @@ r_video_encoder::r_video_encoder(r_video_encoder&& obj) :
     _pts(std::move(obj._pts)),
     _frame_sent(obj._frame_sent),
     _flushing(obj._flushing),
+    _force_key(obj._force_key),
     _buffer(std::move(obj._buffer)),
     _pkt(std::move(obj._pkt))
 {
@@ -262,6 +272,7 @@ r_video_encoder& r_video_encoder::operator=(r_video_encoder&& obj)
         _pts = std::move(obj._pts);
         _frame_sent = obj._frame_sent;
         _flushing = obj._flushing;
+        _force_key = obj._force_key;
         _buffer = std::move(obj._buffer);
         _pkt = std::move(obj._pkt);
     }
@@ -271,11 +282,17 @@ r_video_encoder& r_video_encoder::operator=(r_video_encoder&& obj)
 
 void r_video_encoder::attach_buffer(const uint8_t* data, size_t size, int64_t pts)
 {
+    attach_buffer(data, size, pts, false);
+}
+
+void r_video_encoder::attach_buffer(const uint8_t* data, size_t size, int64_t pts, bool force_key)
+{
     _buffer.resize(size);
     memcpy(_buffer.data(), data, size);
     _pts = pts;
     _frame_sent = false;
     _flushing = false;
+    _force_key = force_key;
 }
 
 void r_video_encoder::set_bitrate(uint32_t bitrate)
@@ -349,6 +366,10 @@ r_codec_state r_video_encoder::encode()
         if(_codec_id == AV_CODEC_ID_MJPEG)
             frame->quality = _context->global_quality;
 
+        // A forced key frame: every encoder reads the picture type (with forced_idr set at open, an IDR).
+        if(_force_key)
+            frame->pict_type = AV_PICTURE_TYPE_I;
+
         int sf_ret = avcodec_send_frame(_context, frame);
 
         if(sf_ret == AVERROR(EAGAIN))
@@ -368,7 +389,7 @@ r_codec_state r_video_encoder::encode()
             return R_CODEC_STATE_EOF;
         else if(sf_ret < 0)
             R_THROW(("Failed to send frame: %s", _ff_rc_to_msg(sf_ret).c_str()));
-        
+
         _frame_sent = true;
     }
 

@@ -54,7 +54,7 @@ struct fixture
 
     void update(const r_nullable<string>& record_from)
     {
-        query_update_camera_properties(dir, *devices, "cam-1", false, false, 24, r_nullable<string>(), r_nullable<string>(), record_from);
+        query_update_camera_properties(dir, *devices, "cam-1", false, false, 24, r_nullable<string>(), r_nullable<string>(), r_nullable<string>(), record_from);
     }
 
     bool refused(const string& value)
@@ -93,7 +93,7 @@ void test_r_record_from::test_update_properties_sets_record_from()
     RTF_ASSERT(f.record_from().value() == "main");    // a refused change changes nothing
 
     bool not_found = false;
-    try { query_update_camera_properties(f.dir, *f.devices, "no-such", false, false, 24, r_nullable<string>(), r_nullable<string>(), string("main")); }
+    try { query_update_camera_properties(f.dir, *f.devices, "no-such", false, false, 24, r_nullable<string>(), r_nullable<string>(), r_nullable<string>(), string("main")); }
     catch(const r_not_found_exception&) { not_found = true; }
     RTF_ASSERT(not_found);
 }

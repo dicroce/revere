@@ -4,6 +4,7 @@
 
 #include "r_disco/r_camera.h"
 #include "r_disco/r_stream_config.h"
+#include "r_disco/r_address_check.h"
 #include "r_disco/r_camera_move.h"
 #include "r_db/r_sqlite_conn.h"
 #include "r_utils/r_work_q.h"
@@ -99,6 +100,13 @@ public:
     R_API void clear_camera_move(const std::string& camera_id);
     R_API r_utils::r_nullable<r_camera_move> get_camera_move(const std::string& camera_id) const;
 
+    // In-memory per-camera hold for a different device at the camera's address (see r_address_check.h), set and
+    // cleared by r_agent. Unlike a move, it stops the camera: the stream keeper stops its recording and does not start
+    // it again while this is set. Not persisted: discovery finds the device again after a restart.
+    R_API void set_address_check(const std::string& camera_id, const r_address_check& check);
+    R_API void clear_address_check(const std::string& camera_id);
+    R_API r_utils::r_nullable<r_address_check> get_address_check(const std::string& camera_id) const;
+
 private:
     void _entry_point();
 
@@ -159,6 +167,10 @@ private:
     // Moves waiting for the user — see set_camera_move() above.
     mutable std::mutex _camera_moves_mutex;
     std::map<std::string, r_camera_move> _camera_moves;
+
+    // Cameras held for a different device at their address — see set_address_check() above.
+    mutable std::mutex _address_checks_mutex;
+    std::map<std::string, r_address_check> _address_checks;
 };
 
 }

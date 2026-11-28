@@ -53,11 +53,11 @@ string r_disco::camera_move_message(const r_camera_move& move)
     }
     string why;
     if(move.hold_reason == "no_stored_mac")
-        why = " There is no hardware (MAC) address on file to check it's the same camera.";
+        why = " There is no hardware (MAC) address on file to check it's the same camera. Confirming sends the camera's login to it.";
     else if(move.hold_reason == "mac_unknown")
-        why = " Its hardware (MAC) address couldn't be read there to check it's the same camera.";
+        why = " Its hardware (MAC) address couldn't be read there to check it's the same camera. Confirming sends the camera's login to it.";
     else if(move.hold_reason == "mac_mismatch")
-        why = " The device there has a different hardware (MAC) address.";
+        why = " A different device answers there (its hardware (MAC) address isn't the camera's). Confirming sends the camera's login to it.";
     return "Camera moved? It answers discovery at a new address: " + change + "." + why +
            " Confirm the new address, or keep the current one.";
 }
@@ -94,13 +94,13 @@ string r_disco::mac_check_for(const string& hold_reason)
 bool r_disco::parse_camera_move_policy(const string& json_text)
 {
     auto j = nlohmann::json::parse(json_text, nullptr, false);
-    return j.is_object() && j.contains("pause_on_address_change") && j["pause_on_address_change"].is_boolean() &&
-           j["pause_on_address_change"].get<bool>();
+    return j.is_object() && j.contains("follow_unverified_moves") && j["follow_unverified_moves"].is_boolean() &&
+           j["follow_unverified_moves"].get<bool>();
 }
 
-string r_disco::camera_move_policy_json(bool pause_on_address_change)
+string r_disco::camera_move_policy_json(bool follow_unverified_moves)
 {
-    return nlohmann::json{{"pause_on_address_change", pause_on_address_change}}.dump();
+    return nlohmann::json{{"follow_unverified_moves", follow_unverified_moves}}.dump();
 }
 
 static string _policy_path(const string& top_dir)
@@ -120,15 +120,15 @@ bool r_disco::load_camera_move_policy(const string& top_dir)
     }
     catch(const exception& ex)
     {
-        R_LOG_WARNING("Camera moves: couldn't read %s, so a camera at a new address keeps recording: %s", path.c_str(), ex.what());
+        R_LOG_WARNING("Camera moves: couldn't read %s, so a camera at a new address is held until a person confirms: %s", path.c_str(), ex.what());
         return false;
     }
 }
 
-bool r_disco::save_camera_move_policy(const string& top_dir, bool pause_on_address_change)
+bool r_disco::save_camera_move_policy(const string& top_dir, bool follow_unverified_moves)
 {
     auto path = _policy_path(top_dir);
-    auto txt = camera_move_policy_json(pause_on_address_change);
+    auto txt = camera_move_policy_json(follow_unverified_moves);
     try
     {
         r_fs::mkdir_p(top_dir + PATH_SLASH + "config");

@@ -122,7 +122,14 @@ public:
     R_API void handshake();
     R_API bool handshake_done() const;
 
+    // STARTTLS (SMTP, RFC 3207): an accepted connection that speaks plain text until the client asks for TLS. Call
+    // start_plain() before any I/O; start_tls() once the client has been told to start it, which does the handshake
+    // (throws when it fails). Bytes already read as plain text are the caller's: none may be left over at that point.
+    R_API void start_plain();
+    R_API void start_tls();
+
     R_API virtual void close() override;
+    R_API virtual void shutdown() override;
     R_API virtual bool valid() const override;
 
     // Return bytes moved, or < 0 on error (mbedTLS/-1 codes, as r_ssl_socket).

@@ -301,16 +301,21 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def serve(harness_dir: pathlib.Path, runs_dir: pathlib.Path, port: int = 8090,
-          revere_dir: pathlib.Path | None = None) -> int:
-    """Serve the control page on loopback until interrupted."""
+          revere_dir: pathlib.Path | None = None, bind: str = "127.0.0.1") -> int:
+    """Serve the control page until interrupted; on loopback unless inside a container."""
+    if bind != "127.0.0.1" and os.environ.get("REVERE_HARNESS_CONTAINER") != "1":
+        # Any other address would put a page that starts test runs on the network. Inside a
+        # container it is the only way to be reached, and the container's port is published
+        # to its host's loopback; the token, Host and Origin checks apply as before.
+        print("error: --bind is only for the harness container", file=sys.stderr)
+        return 2
     state = _State(harness_dir, runs_dir, port, revere_dir)
     handler = type("BoundHandler", (_Handler,), {"state": state})
     ThreadingHTTPServer.daemon_threads = True
     try:
-        # Loopback only, on purpose: never another address.
-        server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+        server = ThreadingHTTPServer((bind, port), handler)
     except OSError as exc:
-        print(f"error: cannot listen on 127.0.0.1:{port}: {exc}", file=sys.stderr)
+        print(f"error: cannot listen on {bind}:{port}: {exc}", file=sys.stderr)
         return 1
     print(f"http://127.0.0.1:{port}/?token={state.token}", flush=True)
     print("local only: this page can start test runs on this machine", flush=True)
