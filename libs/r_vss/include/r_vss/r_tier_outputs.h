@@ -3,6 +3,8 @@
 #define __r_vss_r_tier_outputs_h
 
 #include "r_vss/r_motion_event_plugin_host.h"
+#include "r_vss/r_early_alerts.h"
+#include "r_vss/r_detection_planner.h"
 #include "r_utils/r_macro.h"
 #include <cstdint>
 #include <functional>
@@ -63,6 +65,35 @@ inline std::optional<int64_t> end_mog2_window(std::map<std::string, int64_t>& st
     notify_motion(camera_id, false, ts);
     return opened;
 }
+
+// Tier 3's parked cars. The detection pass keeps its own static anchors (an
+// r_early_alerts, as the YOLO plugin does on tier 1), so a car parked in view
+// stops alerting and colouring other events once it has been seen to sit
+// still. Without them, a far car's jittering box was news in every session.
+
+// Which of a session's first finds go on the bus at once: one on an active
+// anchor of its class is held, as tier 1's early alert holds it, and goes at
+// the session's end if the record keeps it. notes, if given: a line for each
+// one held, and for each vehicle sent (with the nearest anchor). frame, if
+// given, is the look's whole frame (unfiltered): a vehicle that is only part
+// of a parked one, with the rest unseen in it, is held too.
+R_API std::vector<r_detection> pass_alert_now(const r_early_alerts& anchors, const std::string& camera_id, const std::vector<r_detection>& found,
+                                              std::vector<std::string>* notes = nullptr, const std::vector<r_detection>* frame = nullptr);
+
+// The session's detections the record keeps: less each vehicle on an active
+// anchor that was already there before the session (in the pre-roll or the
+// first frame), as is_parked_vehicle decides. notes, if given: for each
+// vehicle class, how many were kept and left out, and for the first kept,
+// its box and the nearest anchor.
+R_API std::vector<r_detection> pass_record(const r_early_alerts& anchors, const r_detection_session& session,
+                                           std::vector<std::string>* notes = nullptr);
+
+// Learns the anchors once per chain of sessions (motion cut at MAX_SESSION_MS
+// carries on in a new session), as tier 1 learns once per motion chain
+// (r_early_alerts::event_ended): nothing from a session that was cut, and from
+// the chain's first frame (chain_first_frame) to its final session's last
+// frame. True if they changed.
+R_API bool pass_learn(r_early_alerts& anchors, const r_detection_session& session, std::vector<std::string>* notes = nullptr);
 
 }
 

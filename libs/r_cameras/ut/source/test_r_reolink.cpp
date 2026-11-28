@@ -111,14 +111,18 @@ struct fake_events : public r_camera_events
         r_camera_events_status s;
         s.source = _source;
         s.up = *_up;
+        s.clock_offset_ms = clock_offset_ms;
         return s;
     }
     vector<r_camera_span> spans(int64_t) const override { return {{_source, 1, 2}}; }
+    void read_clock() override { if (clock_reads) ++*clock_reads; }
 
     bool* _up;
     int* _started;
     int* _destroyed;
     string _source;
+    r_utils::r_nullable<int64_t> clock_offset_ms;
+    int* clock_reads {nullptr};
 };
 
 void test_r_reolink::test_chain_falls_back_and_returns()
@@ -197,4 +201,36 @@ void test_r_reolink::test_chain_probe_fails()
     RTF_ASSERT_EQUAL(probes, 2);
     RTF_ASSERT_EQUAL(reolink_started, 0);
     RTF_ASSERT_EQUAL(chain.status().source, string("onvif"));
+}
+
+void test_r_reolink::test_chain_keeps_the_cameras_clock()
+{
+    // While the Reolink fallback runs (it doesn't read the camera's clock), the status keeps ONVIF's clock offset, so a
+    // doorbell's email rings stay corrected; and a request to read the clock again reaches ONVIF.
+    bool onvif_up = true, reolink_up = true;
+    int onvif_started = 0, reolink_started = 0, onvif_clock_reads = 0;
+    r_camera_events_chain chain(
+        [&](r_camera_events::transition_fn) -> unique_ptr<r_camera_events> {
+            auto e = make_unique<fake_events>(&onvif_up, &onvif_started, nullptr, "onvif");
+            e->clock_offset_ms = (int64_t)-9000;
+            e->clock_reads = &onvif_clock_reads;
+            return e;
+        },
+        [&](r_camera_events::transition_fn) -> unique_ptr<r_camera_events> { return make_unique<fake_events>(&reolink_up, &reolink_started, nullptr, "reolink"); },
+        [&]() { return true; },
+        {}, "test");
+    chain.start_without_thread();
+    chain.tick(1000);
+    RTF_ASSERT_EQUAL(chain.status().clock_offset_ms.value(), (int64_t)-9000);
+
+    onvif_up = false;
+    chain.tick(2000);
+    chain.tick(2000 + r_camera_events_chain::FALLBACK_AFTER_MS);
+    RTF_ASSERT(chain.fallback_running());
+    RTF_ASSERT_EQUAL(chain.status().source, string("reolink"));
+    RTF_ASSERT(!chain.status().clock_offset_ms.is_null());
+    RTF_ASSERT_EQUAL(chain.status().clock_offset_ms.value(), (int64_t)-9000);
+
+    chain.read_clock();
+    RTF_ASSERT_EQUAL(onvif_clock_reads, 1);
 }

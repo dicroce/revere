@@ -25,10 +25,11 @@ REGISTER_TEST_FIXTURE(test_r_ptz_session);
 namespace
 {
 
+// From the framework, not a counter of its own: test processes run at the same time and a counter that every one
+// starts at the same number has them use the same ports.
 int _next_port()
 {
-    static std::atomic<int> port {23417};
-    return port++;
+    return RTF_NEXT_PORT();
 }
 
 string _envelope(const string& body)
@@ -368,6 +369,15 @@ void test_r_ptz_session::test_new_session_failure_not_retried()
 void test_r_ptz_session::test_tapo_port_found()
 {
     // A Tapo answers ONVIF on 2020: found with no stored port, after the other usual ports.
+    // 2020 is a port of its own, not one the framework hands out: if something already listens there (another test
+    // process, a camera on this machine) this cannot run now, and it would be talking to that.
+    try
+    {
+        r_socket busy;
+        busy.connect("127.0.0.1", 2020);
+        return;
+    }
+    catch(...) {}
     fake_camera cam(true, 2020);
     r_onvif_provider p("", nullptr);
     RTF_ASSERT_NO_THROW(p.ptz_control("127.0.0.1", "/onvif/device_service", _s("admin"), _s("pw"),

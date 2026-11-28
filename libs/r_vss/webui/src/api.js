@@ -230,6 +230,33 @@ export async function updateCameraProperties(cameraId, props) {
   return res.json()
 }
 
+// A doorbell's press source, each source's last press and its "Press the doorbell now" test (GET /doorbell_presses).
+export async function getDoorbellPresses(cameraId) {
+  const res = await apiFetch(`/doorbell_presses?camera_id=${encodeURIComponent(cameraId)}`)
+  return res.json()
+}
+
+// What to type in a Reolink doorbell's email settings, and how the listener is doing (GET /doorbell_mail_setup).
+// login: false leaves the user and password out, for the status read every few seconds.
+export async function getDoorbellMailSetup(cameraId, { login = true } = {}) {
+  const res = await apiFetch(`/doorbell_mail_setup?camera_id=${encodeURIComponent(cameraId)}${login ? '' : '&login=0'}`)
+  return res.json()
+}
+
+// A new password for the doorbells' email (POST /doorbell_mail_login), and the setup with it. A doorbell's presses by
+// email stop until the new password is typed in its app.
+export async function newDoorbellMailLogin(cameraId) {
+  const res = await apiFetch(`/doorbell_mail_login?camera_id=${encodeURIComponent(cameraId)}`, { method: 'POST' })
+  return res.json()
+}
+
+// "Press the doorbell now": a minute in which each of the doorbell's reports of a press is noted; that press doesn't
+// ring the phones.
+export async function startDoorbellPressTest(cameraId) {
+  const res = await apiFetch(`/doorbell_press_test?camera_id=${encodeURIComponent(cameraId)}`, { method: 'POST' })
+  return res.json()
+}
+
 // Drops a discovered camera. If it's still on the network it will be
 // re-discovered on the next poll (mirrors the desktop "Forget" button).
 export async function forgetCamera(cameraId) {

@@ -29,6 +29,8 @@
 #include <functional>
 #include "r_disco/r_devices.h"
 #include "r_vss/r_doorbell_rings.h"
+#include "r_vss/r_mail_rings.h"
+#include "r_vss/r_press_check.h"
 #include "r_disco/r_camera.h"
 #include "r_utils/r_nullable.h"
 #include "r_utils/r_work_q.h"
@@ -44,9 +46,13 @@
 #include "r_vss/r_rtsp_logins.h"
 #include <memory>
 #include <functional>
+#include "r_vss/r_audio_policy.h"
 #include <chrono>
 
 R_THIRD_PARTY_HEADERS_BEGIN
+#include "r_vss/r_camera_events_keeper.h"
+#include <future>
+#include <list>
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h>
 R_THIRD_PARTY_HEADERS_END
@@ -129,6 +135,11 @@ struct r_stream_status
     bool sub_fresh {false};
     int64_t storage_write_lag_ms {0}; // how far storage persistence trails reception
     int64_t storage_timeline_lag_ms {0}; // how far the written timeline trails the wall clock
+    // The camera's clock against ours, which the recording is corrected for (r_ts_discipline): how far it has
+    // drifted (ms, negative: fast), since when (ms since the epoch; 0 before the first frame), and its jumps.
+    int64_t clock_drift_ms {0};
+    int64_t clock_anchored_at_ms {0};
+    int clock_jumps {0};
     r_overflow_type overflow_flags {r_overflow_type::none};
     size_t dropped_frames {0};  // Total frames dropped since last check
 
@@ -157,6 +168,9 @@ struct r_stream_status
     r_lag_snapshot ingest_lag;
     int lag_reconnects_1h {0};
     bool falling_behind {false};
+    // Set to record from the smaller stream, which is not delivering: on main for now, and tried again later.
+    bool sub_away {false};
+    int64_t sub_retry_in_ms {0};
 };
 
 // Passes MOG2's events on to the motion plugins, and tells the stream keeper
@@ -255,6 +269,52 @@ public:
 
     // A camera's event subscription reporting a start or end (any thread).
     R_API void camera_transition(const std::string& camera_id, const r_cameras::r_camera_transition& t);
+    // A recording context going away: its camera's events stop reaching it (r_camera_events_keeper::detach), and it's
+    // told the events open now end. Called first in its destructor.
+    R_API void camera_events_detach(const std::string& camera_id, const r_recording_context* rc);
+
+    // A doorbell's presses as revere sees them, for its setup: its press source, when each source last reported a
+    // press (since revere started), whether to suggest ONVIF again, and its press test.
+    struct doorbell_press_status
+    {
+        std::string press_source;
+        r_utils::r_nullable<int64_t> last_onvif_ms;
+        r_utils::r_nullable<int64_t> last_email_ms;
+        bool suggest_onvif {false};
+        r_press_test test;
+        // The doorbell's clock less this box's (r_camera_events_status::clock_offset_ms), null until its event
+        // subscription has read it: an email's times are on it.
+        r_utils::r_nullable<int64_t> clock_offset_ms;
+    };
+    // Null when the camera isn't a doorbell (or is gone).
+    R_API r_utils::r_nullable<doorbell_press_status> doorbell_presses(const std::string& camera_id);
+
+    // Revere just set the camera's clock (Sync Camera Time): its events subscription reads the clock again, so the
+    // offset a doorbell's email rings are corrected by is the new one, not the one from before the sync.
+    R_API void camera_clock_set(const std::string& camera_id);
+
+    // A Reolink doorbell's email setup (r_mail_setup: what to type in its app) and the listener's counts. The login is
+    // made here if it isn't yet, so setup can show it before the press source is saved. listening: the listener is up
+    // and takes this doorbell's mail (its press source is saved as reolink_email). Null for a camera that isn't a
+    // doorbell, or has no address. with_login false leaves the password out (and the login file unread), for
+    // a status read made every few seconds.
+    struct doorbell_mail_status
+    {
+        r_mail_setup setup;
+        bool listening {false};
+        r_mail_rings::counts counts;
+        // How long the doorbell's email login stays refused for its wrong passwords (r_mail_rings::locked_for_ms); 0
+        // when it isn't.
+        int64_t locked_for_ms {0};
+    };
+    R_API r_utils::r_nullable<doorbell_mail_status> doorbell_mail_setup(const std::string& camera_id, bool with_login = true);
+    // A new password for the doorbells' mail login (make_new_mail_login), and the setup to show with it; null as
+    // doorbell_mail_setup's, with nothing changed. The listener takes the new password within a few seconds (the keeper's
+    // thread restarts it); a doorbell's mail is refused until the new password is typed in its app.
+    R_API r_utils::r_nullable<doorbell_mail_status> new_doorbell_mail_login(const std::string& camera_id);
+    // "Press the doorbell now": a TEST_MS window in which each source's report of a press is noted; its press rings the
+    // phones only if ring_phones. Null when the camera isn't a doorbell (or is gone).
+    R_API r_utils::r_nullable<r_press_test> start_doorbell_press_test(const std::string& camera_id, bool ring_phones);
 
     // The detection pass's finished sessions for a camera.
     R_API std::vector<r_detection_session> detection_sessions(const std::string& camera_id, int64_t since_ms);
@@ -307,6 +367,14 @@ public:
     R_API std::chrono::hours get_retention_hours(const std::string& camera_id);
 
     R_API void bounce(const std::string& camera_id);
+
+    // Whether each camera's audio is recorded (r_audio_policy.h), as the cloud last said. set_audio_policy keeps it
+    // in config/audio.json; a camera whose session no longer matches starts again on the next pass.
+    R_API void set_audio_policy(const r_audio_policy& policy);
+    // The same values, managed by this computer again (audio_policy_released).
+    R_API void release_audio_policy();
+    R_API r_audio_policy audio_policy() const;
+    R_API bool records_audio(const std::string& camera_id) const;
 
     // Streams lost and restarted (dead contexts replaced), in memory since
     // revere started; see reconnect_log.
@@ -421,12 +489,29 @@ private:
     r_disco::r_devices& _devices;
     r_disco::r_agent& _agent;
     std::string _top_dir;
+    mutable std::mutex _audio_policy_mutex;
+    r_audio_policy _audio_policy;
     std::thread _th;
     uint32_t _sim_mttf_seconds {0};
     bool _running;
     mutable std::mutex _streams_mutex;  // Protects _streams and _suspended_cameras
     std::map<std::string, std::shared_ptr<r_recording_context>> _streams;
     std::set<std::string> _suspended_cameras;
+
+    // Each camera's event subscription, kept across its stream's reconnects; its recording context attaches while
+    // it's up. Contexts made under _streams_mutex are attached, and subscriptions of cameras that were changed or
+    // removed are ended, after the lock is let go: those tell the context what's open, and it tells the plugins.
+    r_camera_events_keeper _camera_events {
+        [](const r_disco::r_camera& camera, r_cameras::r_camera_events::transition_fn t) { return r_cameras::make_camera_events(camera, std::move(t)); },
+        [this](const std::string& camera_id, const r_cameras::r_camera_transition& t) { camera_transition(camera_id, t); }
+    };
+    std::vector<std::weak_ptr<r_recording_context>> _events_to_attach;   // under _streams_mutex
+    std::vector<r_disco::r_camera> _events_to_ensure;                      // under _streams_mutex
+    std::vector<std::string> _events_to_drop;                            // under _streams_mutex
+    // Ended subscriptions being destroyed (each waits for its thread, perhaps a request), off the keeper's thread.
+    std::list<std::future<void>> _events_reaping;
+    void _reap_events(std::vector<r_camera_events_keeper::events_ptr> events);
+    void _settle_camera_events();
 
     // Each recording camera's substream recorder, when it has one (r_substream_recorder.h), and what to do about
     // them; keeper thread only.
@@ -512,6 +597,21 @@ private:
     r_motion_tuning_fn _motion_tuning_fn;
     r_motion_event_plugin_host _meph;
     r_doorbell_rings _doorbell_rings;
+    r_press_check _press_check;
+
+    // The mail listener for doorbells that send rings by email (r_mail_rings), running only while one is set to:
+    // keeper thread only, but for _mail_doorbells, which its connections read.
+    std::unique_ptr<r_mail_rings> _mail_rings;
+    std::string _mail_rings_bind;
+    // Guards _mail_rings and _mail_rings_bind for readers on other threads (doorbell_mail_setup); the keeper thread
+    // replaces them through _set_mail_rings.
+    mutable std::mutex _mail_rings_lock;
+    void _set_mail_rings(std::unique_ptr<r_mail_rings> rings, const std::string& bind);
+    mutable std::mutex _mail_doorbells_lock;
+    std::map<std::string, std::string> _mail_doorbells;   // by address, to the camera's id
+    // A new login was made (new_doorbell_mail_login, any thread): _tend_mail_rings restarts the listener with it.
+    std::atomic<bool> _mail_login_changed {false};
+    void _tend_mail_rings(const std::vector<r_disco::r_camera>& assigned);
     r_motion_event_tee _motion_tee;
     r_motion_engine _motionEngine;
     // Revere's own pressure (r_pressure.h), made in the constructor with its sources. Stopped before the engine and the
@@ -550,11 +650,18 @@ private:
     static void _on_detection_bus(void* userdata, const r_detection& det, int64_t posted_at_ms);
     void _tier_tick();
     void _remove_motion_work_context(const std::string& camera_id);
+    // Whether each running recording context was built on the camera's smaller stream (r_camera::record_from).
+    std::map<std::string, bool> _recording_from_sub;
+    // Cameras set to the smaller stream that it is not delivering for: on main for a while (r_sub_record_governor).
+    r_sub_record_governor _sub_record_governor;
+    std::vector<r_disco::r_camera> _cameras_on_the_wrong_stream();
+    std::vector<r_disco::r_camera> _cameras_held_for_address(const std::vector<r_disco::r_camera>& running);
     void _camera_class_output(const std::string& camera_id, const r_cameras::r_camera_transition& t, int64_t now_ms);
     // A doorbell's press (a visitor event going active on a camera whose kind is "doorbell"): a ring, unless it's
     // within r_doorbell_rings::DEBOUNCE_MS of the last. Stored in the camera's metadata and handed to plugins.
-    void _doorbell_press(const std::string& camera_id, int64_t now_ms);
-    void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections);
+    // A press of a doorbell at press_ms, as source reported it ("onvif", "reolink_email").
+    void _doorbell_press(const std::string& camera_id, int64_t press_ms, const std::string& source = "onvif");
+    void _pass_found(const std::string& camera_id, const std::vector<r_detection>& detections, const std::vector<r_detection>& frame);
     void _pass_session(const r_detection_session& session);
     bool _motion_detection_on(const std::string& camera_id);
     std::string _camera_name(const std::string& camera_id);
@@ -564,6 +671,11 @@ private:
     std::map<std::string, int64_t> _mog2_starts;                       // camera id -> its MOG2 event's start
     std::map<std::string, int64_t> _camera_class_starts;               // camera id + "|" + class -> start (tier 2)
     std::map<std::string, std::vector<r_detection>> _emitted_first;    // camera id -> first found, already on the bus (tier 3)
+    // Tier 3's parked cars (r_tier_outputs' pass_*): the detection pass's own static anchors, kept across restarts in
+    // the top dir's detection_pass_static_anchors.json. The YOLO plugin's are its own (tier 1). Thread-safe.
+    r_early_alerts _pass_anchors;
+    std::string _pass_anchors_path() const;
+    void _save_pass_anchors();
     std::set<std::string> _tiers_restored;                             // cameras whose saved verification was given back
 };
 

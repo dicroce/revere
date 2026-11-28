@@ -108,6 +108,7 @@ public:
     R_API virtual int recv(void* buf, size_t len);
 
     R_API virtual void close();
+    R_API virtual void shutdown() override;
 
     R_API virtual bool wait_till_recv_wont_block( uint64_t& millis ) const;
     R_API virtual bool wait_till_send_wont_block( uint64_t& millis ) const;
@@ -178,6 +179,7 @@ public:
     R_API virtual int recv( void* buf, size_t len );
 
     R_API inline void close() { _sok.close(); }
+    R_API inline void shutdown() override { _sok.shutdown(); }
 
     R_API inline virtual bool wait_till_recv_wont_block( uint64_t& millis ) const { return _sok.wait_till_recv_wont_block(millis); }
     R_API inline virtual bool wait_till_send_wont_block( uint64_t& millis ) const { return _sok.wait_till_send_wont_block(millis); }

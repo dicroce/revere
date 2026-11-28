@@ -1,0 +1,413 @@
+#ifndef __revere_camera_properties_state_h
+#define __revere_camera_properties_state_h
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <ctime>
+#include <string>
+#include <vector>
+
+namespace revere
+{
+
+// The row of tab-like links at the top of the pane, one per section the pane draws, and what it needs to scroll to a
+// section and to say which one is in view. The sections report where they start as they are drawn (so a section added
+// to the pane, or one that only shows for some cameras, gets its tab with no other change); the tabs and the scroll use
+// the last complete frame's answer.
+struct properties_nav
+{
+    std::vector<std::string> titles;
+    std::vector<float> tops;
+    // A tab was clicked: the section to scroll to on the next draw, or -1.
+    int jump {-1};
+    // The clicked tab, kept marked until the user scrolls (a section too near the end to reach the top would else lose
+    // the mark to the one before it, or after), or -1. The scroll settles over the frames after the click (pin_y follows
+    // it, settle counts them); a scroll beyond that unpins.
+    int pinned {-1};
+    float pin_y {0.0f};
+    int settle {0};
+    // The sections' scroll, as of the last draw.
+    float scroll_y {0.0f};
+    float scroll_max {0.0f};
+
+    // A tab was clicked: scroll to its section and mark it.
+    void pin(int i)
+    {
+        jump = i;
+        pinned = i;
+        settle = 4;
+        pin_y = scroll_y;
+    }
+    // The sections' scroll at the end of a draw.
+    void observe(float y, float max)
+    {
+        scroll_y = y;
+        scroll_max = max;
+        if(pinned < 0)
+            return;
+        if(settle > 0)
+        {
+            --settle;
+            pin_y = y;
+        }
+        else if(std::fabs(y - pin_y) > 1.5f)
+            pinned = -1;
+    }
+
+    void begin_frame()
+    {
+        drawing_titles.clear();
+        drawing_tops.clear();
+    }
+    // A section starts at `top` (its distance from the top of the scrolled content, whatever the scroll).
+    void add(const std::string& title, float top)
+    {
+        drawing_titles.push_back(title);
+        drawing_tops.push_back(top);
+    }
+    void end_frame()
+    {
+        titles = drawing_titles;
+        tops = drawing_tops;
+        if(jump >= (int)tops.size())
+            jump = -1;
+        if(pinned >= (int)tops.size())
+            pinned = -1;
+    }
+    void reset()
+    {
+        titles.clear();
+        tops.clear();
+        drawing_titles.clear();
+        drawing_tops.clear();
+        jump = -1;
+        pinned = -1;
+        settle = 0;
+        pin_y = scroll_y = scroll_max = 0.0f;
+    }
+    // The section in view (the clicked tab until the user scrolls): the last one that has reached the top (within `lead` of it), the last when scrolled to the
+    // bottom (a short last section never gets to the top), -1 with no sections.
+    int active() const
+    {
+        if(tops.empty())
+            return -1;
+        if(pinned >= 0 && pinned < (int)tops.size())
+            return pinned;
+        if(scroll_max > 1.0f && scroll_y >= scroll_max - 1.0f)
+            return (int)tops.size() - 1;
+        constexpr float lead = 24.0f;
+        int a = 0;
+        for(size_t i = 0; i < tops.size(); ++i)
+            if(tops[i] - lead <= scroll_y)
+                a = (int)i;
+        return a;
+    }
+    // Where to scroll to to show section `i` at the top, clamped to what the content can scroll.
+    float scroll_target(int i) const
+    {
+        if(i < 0 || i >= (int)tops.size())
+            return scroll_y;
+        return std::max(0.0f, scroll_max > 0.0f ? std::min(tops[i], scroll_max) : tops[i]);
+    }
+private:
+    std::vector<std::string> drawing_titles;
+    std::vector<float> drawing_tops;
+};
+
+// What a camera's properties looked like when the pane opened, so the pane knows whether anything changed (Save is
+// off until it has) and whether leaving would lose something.
+struct camera_properties_session
+{
+    std::string camera_id;
+    bool doorbell {false};
+    bool motion {false};
+    bool prune {false};
+    std::string hours;
+    std::string tier;
+    std::string transport;
+    // A doorbell's press source: "onvif" or "reolink_email".
+    std::string press_source {"onvif"};
+    // "main" or "sub": the stream the camera records from (r_camera::record_from).
+    std::string record_from;
+    // The hours field's text.
+    char hours_text[16] {0};
+    // Save was tried: show what's wrong with the hours.
+    bool tried {false};
+    // The section tabs and the scroll.
+    properties_nav nav;
+
+    void begin(const std::string& id, bool doorbell_on, bool motion_on, bool prune_on, const std::string& hours_now, const std::string& tier_now,
+               const std::string& transport_now, const std::string& record_from_now, const std::string& press_source_now = "onvif")
+    {
+        press_source = press_source_now;
+        camera_id = id;
+        doorbell = doorbell_on;
+        motion = motion_on;
+        prune = prune_on;
+        hours = hours_now;
+        tier = tier_now;
+        transport = transport_now;
+        record_from = record_from_now;
+        std::snprintf(hours_text, sizeof(hours_text), "%s", hours_now.c_str());
+        tried = false;
+        nav.reset();
+    }
+
+    // The hours field holds a whole number of hours, 1 or more.
+    bool hours_ok() const
+    {
+        const std::string h(hours_text);
+        return !h.empty() && h.size() <= 6 && std::all_of(h.begin(), h.end(), [](unsigned char c) { return std::isdigit(c); }) && std::stol(h) >= 1;
+    }
+
+    // Anything differs from when the pane opened. The hours only count while pruning is on, and the press source while
+    // it's a doorbell (they aren't saved otherwise).
+    bool dirty(bool doorbell_now, bool motion_now, bool prune_now, const std::string& tier_now, const std::string& transport_now,
+               const std::string& record_from_now, bool streams_changed, const std::string& press_source_now = "onvif") const
+    {
+        if(streams_changed || doorbell_now != doorbell || motion_now != motion || prune_now != prune || tier_now != tier || transport_now != transport ||
+           record_from_now != record_from)
+            return true;
+        if(doorbell_now && press_source_now != press_source)
+            return true;
+        return prune_now && std::string(hours_text) != hours;
+    }
+};
+
+// A doorbell's press setup as the Doorbell section shows it: filled by the app about once a second while the pane is
+// open (r_stream_keeper::doorbell_presses and doorbell_mail_setup). Reading it changes nothing on the camera, so it's
+// never an unsaved change.
+struct doorbell_view
+{
+    bool loaded {false};
+    std::string saved_source {"onvif"};
+    // A doorbell set to email whose presses now come over ONVIF too.
+    bool suggest_onvif {false};
+    int64_t last_email_ms {0};   // 0: none since revere started
+
+    // "Press the doorbell now": its window, and each source's report.
+    struct source_result
+    {
+        std::string source;
+        bool seen {false};
+        int64_t after_ms {0};    // how long after the press its report came
+    };
+    bool test_any {false};
+    bool test_open {false};
+    int64_t test_ends_ms {0};
+    std::vector<source_result> test_sources;
+    bool test_other_mail {false};   // an email from the doorbell that wasn't a press came during the test
+    // The doorbell's clock less this box's, once its event subscription has read it: its email's times are on it.
+    bool clock_known {false};
+    int64_t clock_offset_ms {0};
+
+    // What to type in the Reolink app; has_mail false while the box has no address toward the doorbell. The password is
+    // read once (has_login), and again when a new one is made; the rest is read with the status.
+    bool has_mail {false};
+    bool has_login {false};
+    std::string server;
+    int port {0};
+    std::string sender;
+    std::string password;
+    std::string recipient;
+    bool listening {false};
+    uint64_t other_mail {0};
+    uint64_t bad_logins {0};
+    int64_t locked_for_ms {0};   // the doorbell's email login is refused this much longer, for its wrong passwords
+    std::string last_error;
+
+    // The pane's own: the password shown in plain text, and "New password" asking before it makes one.
+    bool reveal {false};
+    bool confirm_new_password {false};
+};
+
+inline std::string press_source_name(const std::string& source) { return source == "reolink_email" ? "Email" : "ONVIF"; }
+
+// ---- The pane's layout ----
+
+// The width of the pane's one column of sections: the room there is, up to about 36 of its characters wide (576 px
+// at the 16 px text macOS and Windows use, 792 at Linux's 22), so lines stay readable in a wide pane. Never less
+// than 420 px unless there's less room than that.
+inline float properties_content_width(float avail, float font_size)
+{
+    return std::min(avail, std::max(420.0f, font_size * 36.0f));
+}
+
+// A row's text with something at its right (a button): side by side when the text keeps at least min_text beside it,
+// else the text above and the thing under it.
+inline bool fits_beside(float width, float right_w, float min_text)
+{
+    return width - right_w - 16.0f >= min_text;
+}
+
+// The label column of label and value rows: the widest label and a gap, unless that leaves the values less than
+// min_value, when each label goes above its value (0).
+inline float label_column_width(float widest_label, float width, float min_value)
+{
+    const float column = widest_label + 20.0f;
+    return width - column >= min_value ? column : 0.0f;
+}
+
+// The rows to type into the Reolink app (Settings > Email Alerts > Email Settings), named and ordered as the app has
+// them: it has no user field (it logs in with the sender's email, and the listener takes any user with the password).
+struct mail_setup_row
+{
+    const char* key;
+    const char* name;
+    std::string value;
+    bool copy;      // a Copy button
+    bool secret;    // the password: hidden until shown
+};
+inline std::vector<mail_setup_row> mail_setup_rows(const doorbell_view& v)
+{
+    return {
+        {"server", "SMTP server", v.server, true, false},
+        {"port", "SMTP port", std::to_string(v.port), true, false},
+        {"tls", "SSL or TLS", "On", false, false},
+        {"sender", "Sender's email", v.sender, true, false},
+        {"password", "Password", v.password, true, true},
+        {"recipient", "Recipient", v.recipient, true, false},
+    };
+}
+
+// The password as the row shows it: exactly as it is, all its characters together, as Copy copies it (a space or dash
+// added for reading would be typed into the doorbell's app too); hidden until shown.
+inline std::string password_shown(const std::string& password, bool reveal)
+{
+    return reveal ? password : std::string(12, '*');
+}
+
+// A time today as the box shows it, "13:16:35".
+inline std::string clock_text(int64_t ms)
+{
+    time_t secs = (time_t)(ms / 1000);
+    tm t {};
+#ifdef IS_WINDOWS
+    localtime_s(&t, &secs);
+#else
+    localtime_r(&secs, &t);
+#endif
+    char buf[16];
+    std::strftime(buf, sizeof(buf), "%H:%M:%S", &t);
+    return buf;
+}
+
+// How far off a doorbell's clock may be before setup says so: its email's times would be off by that much.
+const int64_t CLOCK_OFF_MS = 3000;
+
+// "The doorbell's clock is 9 seconds slow. Turn on time sync (NTP) in the Reolink app.", or empty while the clock isn't
+// known or is near enough.
+inline std::string clock_off_line(const doorbell_view& v)
+{
+    if(!v.clock_known || (v.clock_offset_ms < CLOCK_OFF_MS && v.clock_offset_ms > -CLOCK_OFF_MS))
+        return std::string();
+    const int64_t secs = ((v.clock_offset_ms < 0 ? -v.clock_offset_ms : v.clock_offset_ms) + 500) / 1000;
+    return "The doorbell's clock is " + std::to_string(secs) + " seconds " + (v.clock_offset_ms < 0 ? "slow" : "fast") +
+           ". Turn on time sync (NTP) in the Reolink app.";
+}
+
+// The press test's lines, one per source: "ONVIF: arrived right away", "Email: arrived after 14 seconds", "ONVIF: didn't
+// arrive", or while the test is open "Email: not yet".
+inline std::vector<std::string> press_test_lines(const doorbell_view& v)
+{
+    std::vector<std::string> out;
+    for(auto& s : v.test_sources)
+    {
+        std::string line = press_source_name(s.source) + ": ";
+        if(s.seen && s.after_ms < 1000)
+            line += "arrived right away";
+        else if(s.seen)
+        {
+            const int64_t secs = (s.after_ms + 500) / 1000;
+            line += "arrived after " + std::to_string(secs) + (secs == 1 ? " second" : " seconds");
+        }
+        else
+            line += v.test_open ? "not yet" : "didn't arrive";
+        out.push_back(line);
+    }
+    if(v.test_other_mail)
+        out.push_back("Got an email from the doorbell, but it wasn't a press.");
+    auto clock = clock_off_line(v);
+    if(v.test_any && !clock.empty())
+        out.push_back(clock);
+    return out;
+}
+
+// What a finished press test means for the choice; empty while it runs or before one.
+inline std::string press_test_verdict(const doorbell_view& v, const std::string& chosen)
+{
+    if(!v.test_any || v.test_open)
+        return std::string();
+    bool onvif = false, email = false;
+    for(auto& s : v.test_sources)
+    {
+        if(s.seen && s.source == "onvif")
+            onvif = true;
+        else if(s.seen)
+            email = true;
+    }
+    if(onvif)
+        return chosen == "onvif" ? "The doorbell sent the press over ONVIF. Rings will arrive right away."
+                                 : "The doorbell sent the press over ONVIF. Choose ONVIF so rings arrive right away.";
+    if(email)
+        return "The doorbell only emailed the press. Keep Reolink email.";
+    return chosen == "onvif" ? "No press arrived. If this is a Reolink doorbell, choose Reolink email and set it up."
+                             : "No press arrived. Check the email settings in the Reolink app, then test again.";
+}
+
+// How the doorbell's email is getting through, a line at a time.
+inline std::vector<std::string> mail_status_lines(const doorbell_view& v, const std::string& chosen)
+{
+    std::vector<std::string> out;
+    if(chosen != "reolink_email")
+        return out;
+    if(v.saved_source != "reolink_email")
+        out.push_back("Save to start receiving this doorbell's email.");
+    else if(!v.listening)
+        out.push_back(v.last_error.empty() ? std::string("Revere is getting ready to receive the doorbell's email. This takes a few seconds.")
+                                           : "Revere can't receive the doorbell's email: " + v.last_error);
+    else if(v.last_email_ms)
+        out.push_back("The doorbell last emailed a press at " + clock_text(v.last_email_ms) + ".");
+    else
+        out.push_back("Ready. The doorbell hasn't emailed a press yet. Press it once to check.");
+    if(v.other_mail)
+        out.push_back("The doorbell sent " + std::to_string(v.other_mail) + (v.other_mail == 1 ? " email that wasn't a press." : " emails that weren't presses.") +
+                      " In the Reolink app, set the email Alarm Schedule to Ring only.");
+    if(v.bad_logins)
+        out.push_back("The doorbell's email login failed " + std::to_string(v.bad_logins) + (v.bad_logins == 1 ? " time." : " times.") +
+                      " Check the password in the Reolink app.");
+    if(v.locked_for_ms > 0)
+    {
+        const int64_t mins = (v.locked_for_ms + 59999) / 60000;
+        out.push_back("Too many wrong passwords from the doorbell. Locked for " + std::to_string(mins) + (mins == 1 ? " more minute." : " more minutes."));
+    }
+    return out;
+}
+
+// What "Record from" says under its choice (the stream the camera records from, r_camera::record_from): what it does.
+inline std::string record_from_description(const std::string& record_from)
+{
+    return record_from == "sub"
+        ? "Records, shows live, finds motion and takes pictures from the camera's smaller stream, and never opens its main stream, so a camera on a weak link "
+          "(Wi-Fi, say) can keep up. The picture is smaller, and there is no HD."
+        : "Records from the camera's main stream. Choose the smaller stream for a camera on a weak link that keeps falling behind.";
+}
+
+// A line under it when what is set is not what happens: set to the smaller stream, which can't be used now (it is off,
+// not found, or smaller streams are off for this computer), so the camera records from its main stream and goes back
+// when the smaller one works. `available`: the camera's smaller stream works as saved.
+inline std::string record_from_status(const std::string& record_from, bool available)
+{
+    if(record_from == "sub" && !available)
+        return "The camera's smaller stream isn't available now, so it records from the main stream; it goes back to the smaller one when that works.";
+    if(record_from != "sub" && !available)
+        return "The smaller stream has to be set up and working first (Streams and connection, below; smaller streams also have to be on in Settings), and saved.";
+    return std::string();
+}
+
+}
+
+#endif

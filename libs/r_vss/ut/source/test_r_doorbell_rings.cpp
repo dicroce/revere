@@ -56,6 +56,52 @@ void test_r_doorbell_rings::test_only_a_doorbells_press_rings()
     RTF_ASSERT(p(r_nullable<r_camera>(), "visitor", true, 1000) == r_doorbell_press::none);   // gone
 }
 
+// The same press told twice, by ONVIF and by email (late, with the press's own time): one ring. Apart: two.
+void test_r_doorbell_rings::test_one_ring_across_sources()
+{
+    r_doorbell_rings rings;
+    RTF_ASSERT(rings.press("door", 100000, "onvif"));
+    RTF_ASSERT(!rings.press("door", 99000, "reolink_email"));    // a second before, by its subject's time
+    RTF_ASSERT(!rings.press("door", 114999, "reolink_email"));   // up to 15 s after
+    RTF_ASSERT(rings.press("door", 115000, "reolink_email"));    // 15 s after: another press
+    RTF_ASSERT(!rings.press("door", 101000 + 14000, "onvif"));   // within 15 s of that ring, before or after
+    // The email first (ONVIF late or restarting), then ONVIF: still one.
+    RTF_ASSERT(rings.press("side", 50000, "reolink_email"));
+    RTF_ASSERT(!rings.press("side", 50500, "onvif"));
+    // Same source: 5 s, as before.
+    RTF_ASSERT(rings.press("side", 200000, "onvif"));
+    RTF_ASSERT(!rings.press("side", 204999, "onvif"));
+    RTF_ASSERT(rings.press("side", 205000, "onvif"));
+}
+
+// Each source's last press, ring or not, for saying which sources a doorbell's presses come by.
+void test_r_doorbell_rings::test_last_press_by_source()
+{
+    r_doorbell_rings rings;
+    RTF_ASSERT(rings.last_press("door", "onvif").is_null());
+    rings.press("door", 1000, "reolink_email");
+    rings.press("door", 1500, "onvif");                            // the same ring: still recorded
+    RTF_ASSERT_EQUAL(rings.last_press("door", "reolink_email").value(), (int64_t)1000);
+    RTF_ASSERT_EQUAL(rings.last_press("door", "onvif").value(), (int64_t)1500);
+    RTF_ASSERT(rings.last_press("side", "onvif").is_null());
+    rings.forget("door");
+    RTF_ASSERT(rings.last_press("door", "onvif").is_null());
+}
+
+// A press by email counts only from a doorbell set to send them; ONVIF's always counts.
+void test_r_doorbell_rings::test_a_source_the_doorbell_isnt_set_to()
+{
+    r_camera door;
+    door.id = "door";
+    door.kind = string("doorbell");
+    r_doorbell_rings rings;
+    RTF_ASSERT(doorbell_press(rings, door, "visitor", true, 1000, "reolink_email") == r_doorbell_press::none);
+    RTF_ASSERT(doorbell_press(rings, door, "visitor", true, 1000, "onvif") == r_doorbell_press::ring);
+    door.press_source = string("reolink_email");
+    RTF_ASSERT(doorbell_press(rings, door, "visitor", true, 60000, "reolink_email") == r_doorbell_press::ring);
+    RTF_ASSERT(doorbell_press(rings, door, "visitor", true, 61000, "onvif") == r_doorbell_press::repeat);
+}
+
 void test_r_doorbell_rings::test_ring_json()
 {
     RTF_ASSERT_EQUAL(doorbell_ring_json(1795000000123), string("{\"ts\":1795000000123}"));

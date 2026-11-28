@@ -5,8 +5,6 @@
 using namespace r_vss;
 using namespace std;
 
-const char* const r_vss::LAG_FLAG_MESSAGE = "network can't keep up with this stream: use the sub-stream or a wired link";
-
 r_lag_watchdog::r_lag_event r_lag_watchdog::frame(int64_t camera_ms, int64_t arrival_ms)
 {
     double offset = (double)(arrival_ms - camera_ms);

@@ -6,6 +6,7 @@
 #include "r_vss/r_live_key_frame.h"
 #include "r_vss/r_key_interval.h"
 #include "r_vss/r_lag_watchdog.h"
+#include "r_vss/r_ts_discipline.h"
 #include "r_vss/r_stream_keeper.h"
 #include "r_vss/r_live_restream_host.h"
 #include "r_vss/r_ws.h"
@@ -81,6 +82,38 @@ class r_recording_context;
 // Prefix for a camera's GStreamer element names (its pipeline, depayloaders,
 // appsinks): the friendly name, or the camera id when it has none, then "_".
 R_API std::string recording_source_name_prefix(const r_disco::r_camera& camera);
+
+// The camera's SDP media as a session uses them: without its audio when the session doesn't record audio
+// (r_audio_policy.h), so nothing downstream (storage, the RTSP restream, the plugins' feeds) has an audio track.
+R_API std::map<std::string, r_pipeline::r_sdp_media> recording_sdp_medias(const std::map<std::string, r_pipeline::r_sdp_media>& medias, bool records_audio);
+
+// One audio sample from the camera, as the session's sinks take it.
+struct r_audio_sample
+{
+    const uint8_t* data {nullptr};
+    size_t size {0};
+    bool key {false};
+    int64_t ts {0};    // the stream's time, ms
+    int64_t pts {0};
+};
+
+// Where a kept audio sample goes: the recording's storage, the plugins' frame feeds and the live restream sessions,
+// after prepare (the first sample's write context, the session's counts; false drops the sample).
+struct r_audio_sinks
+{
+    std::function<bool()> prepare;
+    std::function<void(const r_audio_sample&)> store;
+    std::function<void(const r_audio_sample&)> feed;
+    std::function<void(const r_audio_sample&)> restream;
+};
+
+// The audio callback's gate: with the session's audio off (r_audio_policy.h) the sample goes nowhere and prepare
+// isn't called; on, it's prepared and goes to storage, the feeds and the restream, in that order. Whether it went.
+R_API bool route_audio_sample(bool records_audio, const r_audio_sample& sample, const r_audio_sinks& sinks);
+
+// The camera's audio encoding as the session's RTSP restream gets it: none when the session doesn't record audio, so
+// the restream has video only, even though the camera still sends audio.
+R_API r_utils::r_nullable<r_pipeline::r_encoding> recording_audio_encoding(const r_utils::r_nullable<r_pipeline::r_encoding>& encoding, bool records_audio);
 
 // The codec parameters a stream's video is stored with: the SDP's (sdp_codec_parameters), plus the source's caps
 // (encoded_video_sample_caps), its frame rate, and the H.264 or H.265 parameter sets it saw.
@@ -250,6 +283,9 @@ public:
     // The RTSP transport this attempt uses ("TCP" or "UDP")
     R_API const std::string& rtsp_protocols() const { return _rtsp_protocols; }
 
+    // Whether this session records the camera's audio: the audio policy when it started (r_audio_policy.h)
+    R_API bool records_audio() const { return _records_audio; }
+
     // How far storage persistence trails frame reception, in ms: the newest
     // video frame received versus when the newest one written to storage was
     // received. ~0 when healthy; it's the queue's delay while frames wait
@@ -267,6 +303,13 @@ public:
     // video.
     R_API int64_t storage_timeline_lag_ms() const;
 
+    // The camera's clock against ours (r_ts_discipline): how far it has drifted
+    // in ms (negative: fast), since when (ms since the epoch, 0 before the first
+    // frame), and how many times it jumped. The recording is corrected for it.
+    R_API int64_t clock_drift_ms() const { return _ts_discipline.drift_ms(); }
+    R_API int64_t clock_anchored_at_ms() const { return _ts_discipline.anchored_at_ms(); }
+    R_API int clock_jumps() const { return _ts_discipline.jumps(); }
+
     // How far this camera's frames reach us behind live (see r_lag_watchdog).
     // wants_reconnect: far enough behind, for long enough, that the stream
     // keeper should reconnect it to drop the backlog (it decides, with backoff).
@@ -280,26 +323,18 @@ public:
 
     R_API void stop();
 
-    // Asks its camera event subscription to stop (and unsubscribe) without
-    // waiting: first thing at shutdown, before anything that can block.
-    R_API void stop_camera_events();
-
-    // The camera's ONVIF event subscription (shadow mode). Null status/empty
-    // spans for a camera without one (added by RTSP URL).
-    R_API bool has_camera_events() const;
-    R_API r_cameras::r_camera_events_status camera_events_status() const;
+    // One of its camera's event transitions, from the stream keeper's subscription (r_camera_events_keeper), while
+    // attached. Tiers 2 and 3: the camera's motion goes to the motion ring (.mdb) in place of MOG2's: a run of 1s when
+    // an event ends, 0 each second between.
+    R_API void on_camera_transition(const r_cameras::r_camera_transition& t);
 
     // The newest key frame received (null before the first).
     R_API r_utils::r_nullable<r_live_key_frame> latest_key_frame() const;
 
 private:
-    // Tiers 2 and 3: the camera's motion goes to the motion ring (.mdb) in
-    // place of MOG2's: a run of 1s when an event ends, 0 each second between.
-    void _on_camera_transition(const r_cameras::r_camera_transition& t);
     void _camera_motion_tick(int64_t ts);
     void _close_camera_motion_ring();
 public:
-    R_API std::vector<r_cameras::r_camera_span> camera_spans(int64_t since_ms) const;
 
 private:
     static void _live_restream_cleanup_cbs(live_restreaming_state* lrs);
@@ -316,6 +351,7 @@ private:
     std::chrono::system_clock::time_point _last_a_time;
     std::chrono::system_clock::time_point _last_v_write_time; // creation: storage_write_lag_ms() before the first write
     bool _has_audio;
+    bool _records_audio {true};
     std::chrono::system_clock::time_point _stream_start_ts;
     bool _stream_start_ts_set;
     uint64_t _v_bytes_received;
@@ -340,6 +376,9 @@ private:
     // Fed from the video sample callback, read by the stream keeper.
     mutable std::mutex _lag_lok;
     r_lag_watchdog _lag;
+    // Keeps the recorded timeline on the wall clock. Fed from the video sample
+    // callback; the audio callback reads its correction.
+    r_ts_discipline _ts_discipline;
     mutable std::deque<std::pair<std::chrono::system_clock::time_point, uint64_t>> _byte_rate_samples;
 
     void _record_byte_sample();
@@ -352,7 +391,6 @@ private:
     // no mutex needed. Drained into a new live RTSP viewer's queue when
     // their LRS appears with needs_gop_replay set.
     r_live_video_fanout _video_fanout;
-    std::unique_ptr<r_cameras::r_camera_events> _camera_events;
 
     std::mutex _camera_motion_lock;
     std::unique_ptr<r_ring_storage_sink> _camera_motion_ring;
