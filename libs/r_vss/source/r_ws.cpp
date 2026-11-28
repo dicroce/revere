@@ -198,6 +198,9 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_POST, "/camera_address_confirm", &r_ws::_post_camera_address_confirm);
     route(METHOD_GET, "/camera_move_policy", &r_ws::_get_camera_move_policy);
     route(METHOD_POST, "/camera_move_policy", &r_ws::_post_camera_move_policy);
+    route(METHOD_GET, "/audio_policy", &r_ws::_get_audio_policy);
+    route(METHOD_POST, "/audio_policy", &r_ws::_post_audio_policy);
+    route(METHOD_POST, "/audio_policy_release", &r_ws::_post_audio_policy_release);
     route(METHOD_GET, "/discovery_status", &r_ws::_get_discovery_status);
     route(METHOD_POST, "/add_rtsp_camera", &r_ws::_post_add_rtsp_camera);
     route(METHOD_GET, "/storage_info", &r_ws::_get_storage_info);
@@ -4921,6 +4924,51 @@ r_http::r_server_response r_ws::_get_camera_move_policy(r_utils::r_socket_base&,
 {
     _require_auth(request);
     return _json_reply(_camera_move_policy_reply(_agent.follow_unverified_moves()));
+}
+
+// Whether each camera's audio is recorded (r_audio_policy.h): {"default_audio": bool, "cameras": {"<id>": bool}}. Set
+// by the cloud plugin from the organization's, the site's and each camera's settings, as a whole each time, and kept
+// in config/audio.json for when the cloud is out of reach. A camera whose audio turns off or on starts its stream
+// again, so its next segment follows. Anyone signed in may read it. Once the cloud plugin (the local token) has set
+// it, the computer is cloud-managed and a person signed in can't change it (audio_policy_set_allowed): an
+// organization may turn audio off for legal reasons. The plugin also reads it back and sets it again if it ever
+// differs from the cloud's. With no cloud, a person signed in sets it.
+r_http::r_server_response r_ws::_get_audio_policy(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    return _json_reply(json::parse(audio_policy_json(_stream_keeper.audio_policy())));
+}
+
+r_http::r_server_response r_ws::_post_audio_policy(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    auto token = _request_token(request);
+    bool local = !token.is_null() && _auth.is_local_token(token.value());
+    if(!audio_policy_set_allowed(_stream_keeper.audio_policy(), local))
+    {
+        R_LOG_WARNING("Audio: refused a change to the audio policy from a signed-in session; Revere Cloud manages it");
+        return _json_error(response_forbidden, "Audio is set by Revere Cloud, in the organization's settings.");
+    }
+    auto policy = parse_audio_policy(request.get_body_as_string());
+    if(policy.is_null())
+        return _json_error(response_bad_request, "Expected {\"default_audio\": true|false, \"cameras\": {\"<camera id>\": true|false}}.");
+    auto kept = audio_policy_as_set(policy.value(), local);
+    _stream_keeper.set_audio_policy(kept);
+    return _json_reply(json::parse(audio_policy_json(kept)));
+}
+
+// The cloud plugin, signing out or unpaired, lets go of the audio policy: the same values, which a person signed in
+// may change again. Only the local token; anyone else gets 403.
+r_http::r_server_response r_ws::_post_audio_policy_release(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    auto token = _request_token(request);
+    if(token.is_null() || !_auth.is_local_token(token.value()))
+        return _json_error(response_forbidden, "Only Revere Cloud can release its audio policy.");
+    if(_stream_keeper.audio_policy().cloud_managed)
+        R_LOG_INFO("Audio: Revere Cloud released the audio policy; this computer manages it again");
+    _stream_keeper.release_audio_policy();
+    return _json_reply(json::parse(audio_policy_json(_stream_keeper.audio_policy())));
 }
 
 // {"replies_blocked": bool, "warning": "..."}: whether discovery's replies look blocked (r_discovery_health), and what

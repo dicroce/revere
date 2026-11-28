@@ -93,6 +93,8 @@ add_executable(
     source/test_r_camera_kind.cpp
     include/test_r_doorbell_rings.h
     source/test_r_doorbell_rings.cpp
+    include/test_r_audio_policy.h
+    source/test_r_audio_policy.cpp
     include/test_r_ws_auth.h
     source/test_r_ws_auth.cpp
     include/test_r_appliance.h

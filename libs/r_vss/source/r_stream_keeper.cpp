@@ -118,6 +118,9 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
 {
     _meph.register_detection_consumer(&r_stream_keeper::_on_detection_bus, this);
 
+    // The cloud's last word on each camera's audio, before any camera starts (none saved: all recorded).
+    _audio_policy = load_audio_policy(top_dir);
+
     auto video_path = top_dir + PATH_SLASH + "video";
 
     if(!r_fs::file_exists(video_path))
@@ -154,6 +157,21 @@ r_stream_keeper::r_stream_keeper(r_devices& devices, r_agent& agent, const strin
         return _streams.find(camera_id) != _streams.end();
     });
     _system_plugin_host.start_all();
+
+    // No Revere Cloud running: a computer that has left the cloud manages its own audio policy again, with the same
+    // values (r_audio_policy.h).
+    {
+        bool cloud = false;
+        for(auto& name : _system_plugin_host.get_loaded_plugins())
+            if(is_cloud_plugin_name(name) && _system_plugin_host.is_plugin_enabled(name))
+                cloud = true;
+        auto was = audio_policy();
+        if(was.cloud_managed && !cloud)
+        {
+            R_LOG_INFO("Audio: Revere Cloud isn't running, so this computer manages its audio policy again");
+            set_audio_policy(audio_policy_at_startup(was, cloud));
+        }
+    }
 
     // A Revere Cloud built for an older revere wasn't loaded: see whether this
     // release has its update, so the UIs can offer it.
@@ -1531,6 +1549,34 @@ void r_stream_keeper::bounce(const std::string& camera_id)
     _cmd_q.post(cmd).get();
 }
 
+void r_stream_keeper::set_audio_policy(const r_audio_policy& policy)
+{
+    {
+        std::lock_guard<std::mutex> g(_audio_policy_mutex);
+        if(policy == _audio_policy)
+            return;
+        _audio_policy = policy;
+    }
+    save_audio_policy(_top_dir, policy);
+}
+
+void r_stream_keeper::release_audio_policy()
+{
+    set_audio_policy(audio_policy_released(audio_policy()));
+}
+
+r_audio_policy r_stream_keeper::audio_policy() const
+{
+    std::lock_guard<std::mutex> g(_audio_policy_mutex);
+    return _audio_policy;
+}
+
+bool r_stream_keeper::records_audio(const std::string& camera_id) const
+{
+    std::lock_guard<std::mutex> g(_audio_policy_mutex);
+    return _audio_policy.records_audio(camera_id);
+}
+
 void r_stream_keeper::suspend(const std::string& camera_id)
 {
     r_stream_keeper_cmd cmd;
@@ -1755,6 +1801,22 @@ void r_stream_keeper::_entry_point()
                             doomed.push_back(rc);
                         // A camera held for a different device at its address stops recording (r_address_check.h).
                         for(auto& rc : _remove_recording_contexts(_cameras_held_for_address(cameras)))
+                            doomed.push_back(rc);
+
+                        // A camera whose audio setting changed starts again with it, so its next segment has its
+                        // audio, or none (r_audio_policy.h).
+                        std::map<std::string, bool> running;
+                        for(auto& s : _streams)
+                            running[s.first] = s.second->records_audio();
+                        auto policy = audio_policy();
+                        std::vector<r_camera> audio_changed;
+                        for(auto& id : audio_policy_restarts(running, policy))
+                        {
+                            R_LOG_INFO("Audio for camera %s is now %s: starting its stream again", id.c_str(),
+                                       policy.records_audio(id) ? "on" : "off");
+                            audio_changed.push_back(_streams[id]->camera());
+                        }
+                        for(auto& rc : _remove_recording_contexts(audio_changed))
                             doomed.push_back(rc);
                     }
                 }

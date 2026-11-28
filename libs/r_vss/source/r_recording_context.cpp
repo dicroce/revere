@@ -105,6 +105,34 @@ string r_vss::stored_video_codec_parameters(const string& video_codec_name, cons
     return video_codec_parameters;
 }
 
+bool r_vss::route_audio_sample(bool records_audio, const r_audio_sample& sample, const r_audio_sinks& sinks)
+{
+    if(!records_audio)
+        return false;
+    if(sinks.prepare && !sinks.prepare())
+        return false;
+    if(sinks.store)
+        sinks.store(sample);
+    if(sinks.feed)
+        sinks.feed(sample);
+    if(sinks.restream)
+        sinks.restream(sample);
+    return true;
+}
+
+r_nullable<r_encoding> r_vss::recording_audio_encoding(const r_nullable<r_encoding>& encoding, bool records_audio)
+{
+    return records_audio ? encoding : r_nullable<r_encoding>();
+}
+
+map<string, r_sdp_media> r_vss::recording_sdp_medias(const map<string, r_sdp_media>& medias, bool records_audio)
+{
+    auto kept = medias;
+    if(!records_audio)
+        kept.erase("audio");
+    return kept;
+}
+
 string r_vss::recording_source_name_prefix(const r_camera& camera)
 {
     // Not camera.friendly_name + "_": r_nullable converts to bool, so that
@@ -174,164 +202,184 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
     
     _source.set_args(arguments);
 
+    // The audio policy as this session starts (r_audio_policy.h); a change starts the session again.
+    _records_audio = sk ? sk->records_audio(camera.id) : true;
+    if(!_records_audio)
+        R_LOG_INFO("Camera %s: audio is off, so its audio isn't recorded or restreamed", camera.id.c_str());
+
     _source.set_audio_sample_cb([this](const sample_context& sc, const r_gst_buffer& buffer, bool key, int64_t pts){
 
         try
         {
-            if(!_stream_start_ts_set)
-            {
-                _stream_start_ts = system_clock::now();
-                _stream_start_ts_set = true;
-            }
+            auto mi = buffer.map(r_gst_buffer::MT_READ);
+            // With the video's wall-clock correction (r_ts_discipline), so sound
+            // and picture stay as far apart as the camera sent them.
+            const r_audio_sample sample {mi.data(), mi.size(), key, (sc.stream_start_ts() + pts) + _ts_discipline.correction_ms(), pts};
+            r_audio_sinks sinks;
 
-            if(_maybe_audio_storage_write_context.is_null())
-            {
-                string audio_codec_name, audio_codec_parameters;
-                int audio_timebase = 0;
-                if(this->_has_audio)
-                    tie(audio_codec_name, audio_codec_parameters, audio_timebase) = sdp_media_map_to_s(AUDIO_MEDIA, this->_sdp_medias);
-
-                if(audio_codec_parameters.find("encoded_audio_sample_caps") == std::string::npos)
+            // The first kept sample's setup, and the session's counts.
+            sinks.prepare = [&]() {
+                if(!_stream_start_ts_set)
                 {
-                    auto acaps = _source.get_audio_caps();
-                    gchar* acaps_sp = gst_caps_serialize(acaps.value(), GST_SERIALIZE_FLAG_NONE);
-                    string acaps_s(acaps_sp);
-                    g_free(acaps_sp);
-                    auto encoded_acaps_s = r_string_utils::to_base64(acaps_s.data(), acaps_s.size());
+                    _stream_start_ts = system_clock::now();
+                    _stream_start_ts_set = true;
+                }
 
-                    audio_codec_parameters += ", encoded_audio_sample_caps=" + encoded_acaps_s;
+                if(_maybe_audio_storage_write_context.is_null())
+                {
+                    string audio_codec_name, audio_codec_parameters;
+                    int audio_timebase = 0;
+                    if(this->_has_audio)
+                        tie(audio_codec_name, audio_codec_parameters, audio_timebase) = sdp_media_map_to_s(AUDIO_MEDIA, this->_sdp_medias);
 
-                    // Extract AAC AudioSpecificConfig (ASC) from the caps codec_data buffer.
-                    // This is present for AAC streams and is needed by the transcoder decoder.
-                    // Storing it as sc_asc= avoids relying solely on the SDP config= fallback.
-                    if(audio_codec_parameters.find("sc_asc") == string::npos)
+                    if(audio_codec_parameters.find("encoded_audio_sample_caps") == std::string::npos)
                     {
-                        auto* s = gst_caps_get_structure(acaps.value(), 0);
-                        const GValue* cd = s ? gst_structure_get_value(s, "codec_data") : nullptr;
-                        if(cd && GST_VALUE_HOLDS_BUFFER(cd))
+                        auto acaps = _source.get_audio_caps();
+                        gchar* acaps_sp = gst_caps_serialize(acaps.value(), GST_SERIALIZE_FLAG_NONE);
+                        string acaps_s(acaps_sp);
+                        g_free(acaps_sp);
+                        auto encoded_acaps_s = r_string_utils::to_base64(acaps_s.data(), acaps_s.size());
+
+                        audio_codec_parameters += ", encoded_audio_sample_caps=" + encoded_acaps_s;
+
+                        // Extract AAC AudioSpecificConfig (ASC) from the caps codec_data buffer.
+                        // This is present for AAC streams and is needed by the transcoder decoder.
+                        // Storing it as sc_asc= avoids relying solely on the SDP config= fallback.
+                        if(audio_codec_parameters.find("sc_asc") == string::npos)
                         {
-                            GstBuffer* buf = gst_value_get_buffer(cd);
-                            GstMapInfo map;
-                            if(gst_buffer_map(buf, &map, GST_MAP_READ))
+                            auto* s = gst_caps_get_structure(acaps.value(), 0);
+                            const GValue* cd = s ? gst_structure_get_value(s, "codec_data") : nullptr;
+                            if(cd && GST_VALUE_HOLDS_BUFFER(cd))
                             {
-                                vector<uint8_t> asc(map.data, map.data + map.size);
-                                gst_buffer_unmap(buf, &map);
-                                audio_codec_parameters += ", sc_asc=" + r_string_utils::to_base64(asc.data(), asc.size());
+                                GstBuffer* buf = gst_value_get_buffer(cd);
+                                GstMapInfo map;
+                                if(gst_buffer_map(buf, &map, GST_MAP_READ))
+                                {
+                                    vector<uint8_t> asc(map.data, map.data + map.size);
+                                    gst_buffer_unmap(buf, &map);
+                                    audio_codec_parameters += ", sc_asc=" + r_string_utils::to_base64(asc.data(), asc.size());
+                                }
                             }
                         }
                     }
+
+                    audio_codec_parameters += ", sc_audio_rate=" + r_string_utils::uint32_to_s(sc.audio_sample_rate().value());
+                    audio_codec_parameters += ", sc_audio_channels=" + r_string_utils::uint32_to_s(sc.audio_channels().value());
+
+                    _maybe_audio_storage_write_context = this->_storage_file.create_write_context(audio_codec_name, audio_codec_parameters, R_STORAGE_MEDIA_TYPE_AUDIO);
+                    _maybe_audio_storage_write_context->codec_name = audio_codec_name;
+                    _maybe_audio_storage_write_context->codec_parameters = audio_codec_parameters;
                 }
 
-                audio_codec_parameters += ", sc_audio_rate=" + r_string_utils::uint32_to_s(sc.audio_sample_rate().value());
-                audio_codec_parameters += ", sc_audio_channels=" + r_string_utils::uint32_to_s(sc.audio_channels().value());
+                if(!this->_got_first_audio_sample)
+                    this->_got_first_audio_sample = true;
 
-                _maybe_audio_storage_write_context = this->_storage_file.create_write_context(audio_codec_name, audio_codec_parameters, R_STORAGE_MEDIA_TYPE_AUDIO);
-                _maybe_audio_storage_write_context->codec_name = audio_codec_name;
-                _maybe_audio_storage_write_context->codec_parameters = audio_codec_parameters;
-            }
+                _last_a_time = system_clock::now();
+                _a_bytes_received += sample.size;
+                _record_byte_sample();
 
-            if(!this->_got_first_audio_sample)
-                this->_got_first_audio_sample = true;
+                if(this->_audio_caps.is_null())
+                    this->_audio_caps = _source.get_audio_caps();
 
-            _last_a_time = system_clock::now();
-            auto mi = buffer.map(r_gst_buffer::MT_READ);
-            _a_bytes_received += mi.size();
-            _record_byte_sample();
-
-            if(this->_audio_caps.is_null())
-                this->_audio_caps = _source.get_audio_caps();
-
-            if(!this->_video_caps.is_null() && this->_restream_mount_path.empty())
-            {
-                auto mount = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), sc.audio_encoding());
-                std::lock_guard<std::mutex> g(_restream_mount_lock);
-                this->_restream_mount_path = mount;
-            }
-
-            // With the video's wall-clock correction (r_ts_discipline), so sound
-            // and picture stay as far apart as the camera sent them.
-            auto ts = (sc.stream_start_ts() + pts) + _ts_discipline.correction_ms();
-            this->_storage_file.write_frame(
-                this->_maybe_audio_storage_write_context.value(),
-                R_STORAGE_MEDIA_TYPE_AUDIO,
-                mi.data(),
-                mi.size(),
-                key,
-                ts,
-                pts
-            );
-
-            // Plugins' frame feeds, as stored: one atomic load while none is open.
-            this->_sk->post_audio_to_feeds(
-                this->_camera.id,
-                mi.data(),
-                mi.size(),
-                ts,
-                this->_maybe_audio_storage_write_context.value().codec_name,
-                this->_maybe_audio_storage_write_context.value().codec_parameters
-            );
-
-            this->_sk->iterate_live_restreaming_states(this->_camera.id, [&](live_restreaming_state& lrs) {
-                // Only queue audio this session's pipeline is reading: a client
-                // that didn't set up the audio track (or whose audio branch
-                // stopped) would otherwise fill the queue and drop a frame per
-                // audio frame for as long as it watches.
-                auto now = std::chrono::steady_clock::now();
-                if(!lrs.audio_gate.wanted(now))
+                if(!this->_video_caps.is_null() && this->_restream_mount_path.empty())
                 {
-                    // A new session's audio branch may not have asked yet: only
-                    // call it unread once the session is older than that.
-                    if(!lrs.audio_unread && now - lrs.created_at >= LIVE_RESTREAM_TRACK_IDLE)
+                    auto mount = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), sc.audio_encoding());
+                    std::lock_guard<std::mutex> g(_restream_mount_lock);
+                    this->_restream_mount_path = mount;
+                }
+                return true;
+            };
+
+            sinks.store = [&](const r_audio_sample& a) {
+                this->_storage_file.write_frame(
+                    this->_maybe_audio_storage_write_context.value(),
+                    R_STORAGE_MEDIA_TYPE_AUDIO,
+                    a.data,
+                    a.size,
+                    a.key,
+                    a.ts,
+                    a.pts
+                );
+            };
+
+            sinks.feed = [&](const r_audio_sample& a) {
+                // Plugins' frame feeds, as stored: one atomic load while none is open.
+                this->_sk->post_audio_to_feeds(
+                    this->_camera.id,
+                    a.data,
+                    a.size,
+                    a.ts,
+                    this->_maybe_audio_storage_write_context.value().codec_name,
+                    this->_maybe_audio_storage_write_context.value().codec_parameters
+                );
+            };
+
+            sinks.restream = [&](const r_audio_sample&) {
+                this->_sk->iterate_live_restreaming_states(this->_camera.id, [&](live_restreaming_state& lrs) {
+                    // Only queue audio this session's pipeline is reading: a client
+                    // that didn't set up the audio track (or whose audio branch
+                    // stopped) would otherwise fill the queue and drop a frame per
+                    // audio frame for as long as it watches.
+                    auto now = std::chrono::steady_clock::now();
+                    if(!lrs.audio_gate.wanted(now))
                     {
-                        lrs.audio_unread = true;
-                        lrs.audio_samples.clear();
-                        R_LOG_INFO("live restream: %s session %llu isn't reading audio; not queueing it",
+                        // A new session's audio branch may not have asked yet: only
+                        // call it unread once the session is older than that.
+                        if(!lrs.audio_unread && now - lrs.created_at >= LIVE_RESTREAM_TRACK_IDLE)
+                        {
+                            lrs.audio_unread = true;
+                            lrs.audio_samples.clear();
+                            R_LOG_INFO("live restream: %s session %llu isn't reading audio; not queueing it",
+                                       lrs.camera_name.c_str(), (unsigned long long)lrs.session_id);
+                        }
+                        return;
+                    }
+                    if(lrs.audio_unread)
+                    {
+                        lrs.audio_unread = false;
+                        R_LOG_INFO("live restream: %s session %llu is reading audio again",
                                    lrs.camera_name.c_str(), (unsigned long long)lrs.session_id);
                     }
-                    return;
-                }
-                if(lrs.audio_unread)
-                {
-                    lrs.audio_unread = false;
-                    R_LOG_INFO("live restream: %s session %llu is reading audio again",
-                               lrs.camera_name.c_str(), (unsigned long long)lrs.session_id);
-                }
 
-                if(lrs.live_restream_key_sent)
-                {
-                    if(!lrs.first_restream_a_times_set)
+                    if(lrs.live_restream_key_sent)
                     {
-                        lrs.first_restream_a_times_set = true;
-                        // Fold any skew that accumulated before the first audio
-                        // frame into the base, so the first outgoing audio pts
-                        // is 0 (not 0 - skew, which would wrap unsigned).
-                        auto skew_at_set = lrs.catchup_skew_ns.load(std::memory_order_relaxed);
-                        lrs.first_restream_a_pts = pts * 1000000 - skew_at_set;
-                        lrs.first_restream_a_dts = pts * 1000000 - skew_at_set;
-                    }
+                        if(!lrs.first_restream_a_times_set)
+                        {
+                            lrs.first_restream_a_times_set = true;
+                            // Fold any skew that accumulated before the first audio
+                            // frame into the base, so the first outgoing audio pts
+                            // is 0 (not 0 - skew, which would wrap unsigned).
+                            auto skew_at_set = lrs.catchup_skew_ns.load(std::memory_order_relaxed);
+                            lrs.first_restream_a_pts = pts * 1000000 - skew_at_set;
+                            lrs.first_restream_a_dts = pts * 1000000 - skew_at_set;
+                        }
 
-                    // Apply the video-driven catch-up skew (see the video post
-                    // path) to audio too, so the session's A/V timelines shift
-                    // together. Worst case the skew grows by ~rate * one video
-                    // frame interval between two audio frames — well under an
-                    // audio frame interval, so audio pts stay monotonic.
-                    auto skew = lrs.catchup_skew_ns.load(std::memory_order_relaxed);
-                    _frame_context fc;
-                    fc.gst_pts = (pts * 1000000) - lrs.first_restream_a_pts - skew;
-                    fc.gst_dts = (pts * 1000000) - lrs.first_restream_a_dts - skew;
+                        // Apply the video-driven catch-up skew (see the video post
+                        // path) to audio too, so the session's A/V timelines shift
+                        // together. Worst case the skew grows by ~rate * one video
+                        // frame interval between two audio frames — well under an
+                        // audio frame interval, so audio pts stay monotonic.
+                        auto skew = lrs.catchup_skew_ns.load(std::memory_order_relaxed);
+                        _frame_context fc;
+                        fc.gst_pts = (pts * 1000000) - lrs.first_restream_a_pts - skew;
+                        fc.gst_dts = (pts * 1000000) - lrs.first_restream_a_dts - skew;
 
-                    fc.key = key;
-                    if(lrs.pcm_decoder)
-                    {
-                        auto pcm = restream_pcm(*lrs.pcm_decoder, mi.data(), mi.size());
-                        if(pcm.empty())
-                            return;
-                        fc.buffer = r_gst_buffer(pcm.data(), pcm.size());
+                        fc.key = key;
+                        if(lrs.pcm_decoder)
+                        {
+                            auto pcm = restream_pcm(*lrs.pcm_decoder, mi.data(), mi.size());
+                            if(pcm.empty())
+                                return;
+                            fc.buffer = r_gst_buffer(pcm.data(), pcm.size());
+                        }
+                        else fc.buffer = buffer;
+                        lrs.audio_samples.post(fc);
                     }
-                    else fc.buffer = buffer;
-                    lrs.audio_samples.post(fc);
-                }
-            });
+                });
+            };
+
+            // Audio off (r_audio_policy.h): none of it is stored, handed to plugins or restreamed.
+            route_audio_sample(this->_records_audio, sample, sinks);
         }
         catch(exception& e)
         {
@@ -379,7 +427,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 this->_video_caps = _source.get_video_caps();
                 if(!this->_has_audio)
                 {
-                    auto mount = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), sc.audio_encoding());
+                    auto mount = this->_sk->add_restream_mount(_sdp_medias, _camera, this, sc.video_encoding(), recording_audio_encoding(sc.audio_encoding(), this->_records_audio));
                     std::lock_guard<std::mutex> g(_restream_mount_lock);
                     this->_restream_mount_path = mount;
                 }
@@ -515,7 +563,7 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
     _source.set_sdp_media_cb([this](const map<string, r_sdp_media>& sdp_medias){
         this->_answered = true;
-        this->_sdp_medias = sdp_medias;
+        this->_sdp_medias = recording_sdp_medias(sdp_medias, this->_records_audio);
         if(this->_sdp_medias.find("audio") != this->_sdp_medias.end())
             this->_has_audio = true;
     });
