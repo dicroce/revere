@@ -107,10 +107,10 @@ void test_r_failure_reason::test_text_from_a_caller_is_bounded_and_clean()
         }
         return best;
     };
-    const auto small = cost(20000);
-    const auto large = cost(160000);
-    RTF_ASSERT(small >= 0 && large >= 0);     // both were bounded
-    RTF_ASSERT(large < 24 * (small < 100 ? 100 : small));     // 8x the input: linear is about 8x, quadratic 64x
+    const auto cost_small = cost(20000);
+    const auto cost_large = cost(160000);
+    RTF_ASSERT(cost_small >= 0 && cost_large >= 0);     // both were bounded
+    RTF_ASSERT(cost_large < 24 * (cost_small < 100 ? 100 : cost_small));     // 8x the input: linear is about 8x, quadratic 64x
 
     // Control characters are dropped from the message.
     RTF_ASSERT(r_failure_reason(string("bad\tvalue\x1b[31m here\r")) == "badvalue[31m here");
