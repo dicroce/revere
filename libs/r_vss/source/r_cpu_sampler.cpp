@@ -83,7 +83,7 @@ void r_cpu_sampler::add(int64_t now_ms, const r_cpu_ticks& ticks)
             _last = ticks;
         return;
     }
-    const double busy = std::min(1.0, (double)(ticks.busy - _last.busy) / (double)(ticks.total - _last.total));
+    const double busy = (std::min)(1.0, (double)(ticks.busy - _last.busy) / (double)(ticks.total - _last.total));
     _last = ticks;
 
     _window.push_back({now_ms, busy});
@@ -148,5 +148,5 @@ double r_cpu_sampler::busy_p95_24h() const
     size_t rank = (size_t)((double)v.size() * 0.95 + 0.999999);
     if(rank < 1)
         rank = 1;
-    return v[std::min(rank, v.size()) - 1];
+    return v[(std::min)(rank, v.size()) - 1];
 }

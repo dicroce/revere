@@ -165,7 +165,7 @@ struct r_system_plugin_host::frame_api
         }
         if(buf && capacity > 0)
         {
-            const size_t n = std::min(json.size(), capacity - 1);
+            const size_t n = (std::min)(json.size(), capacity - 1);
             memcpy(buf, json.data(), n);
             buf[n] = '\0';
         }
@@ -177,7 +177,7 @@ struct r_system_plugin_host::frame_api
     {
         if(buf && capacity > 0)
         {
-            const size_t n = std::min(json.size(), capacity - 1);
+            const size_t n = (std::min)(json.size(), capacity - 1);
             memcpy(buf, json.data(), n);
             buf[n] = '\0';
         }
