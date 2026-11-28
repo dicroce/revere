@@ -4438,6 +4438,21 @@ static string _qr_svg(const string& text)
                                   span, span, span, span, path.c_str());
 }
 
+// A qr line carries its code drawn as "qr_svg"; so does one in a list row's detail, however deep the lists go.
+static void _add_qr_svg(json& line)
+{
+    if(!line.is_object())
+        return;
+    if(line.contains("qr") && line["qr"].is_string())
+        line["qr_svg"] = _qr_svg(line["qr"].get<string>());
+    if(!line.contains("list") || !line["list"].is_object() || !line["list"].contains("rows") || !line["list"]["rows"].is_array())
+        return;
+    for(auto& row : line["list"]["rows"])
+        if(row.is_object() && row.contains("detail") && row["detail"].is_array())
+            for(auto& d : row["detail"])
+                _add_qr_svg(d);
+}
+
 // The system plugins, as the desktop's Plugins section shows them:
 //   {"plugins": [{"name", "display_name", "version", "enabled",
 //                 "status": {"label", "tone"} or null, "lines": [...]}]}
@@ -4485,8 +4500,7 @@ r_http::r_server_response r_ws::_get_system_plugins(r_utils::r_socket_base&, con
                     {
                         if(!line.is_object())
                             continue;
-                        if(line.contains("qr") && line["qr"].is_string())
-                            line["qr_svg"] = _qr_svg(line["qr"].get<string>());
+                        _add_qr_svg(line);
                         p["lines"].push_back(line);
                     }
                 }

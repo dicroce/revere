@@ -14,7 +14,8 @@ namespace r_vss
 
 // The actions a plugin's status message (the {"lines": [...]} it returns from
 // system_plugin_get_status_message) offers right now: each line's "action", and for a line with a
-// "choice", the choice's "action" followed by each option's "value" (what picking that option runs).
+// "choice", the choice's "action" followed by each option's "value" (what picking that option runs). The lines in the
+// detail of each row of a "list" line count too, however deep the lists go (as far as a person can open them).
 R_API std::vector<std::string> plugin_offered_actions(const std::string& status_message);
 
 // What POST /system_plugin_action needs of Revere's plugins; r_ws gives it the stream keeper's.

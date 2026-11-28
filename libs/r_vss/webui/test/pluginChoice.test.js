@@ -1,7 +1,7 @@
 // Run with: npm test (node's built-in test runner; no extra dependencies).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { choiceOptions, choiceAction, choiceSelected, lineWarn, pickChoice, PICK_RECHECK_MS } from '../src/utils/pluginChoice.js'
+import { choiceOptions, choiceAction, choiceSelected, lineWarn, pickChoice, runAndSettle, PICK_RECHECK_MS } from '../src/utils/pluginChoice.js'
 
 const line = {
   text: 'Porch: Live',
@@ -101,4 +101,30 @@ test('the selected row asks for nothing', async () => {
   const [, live] = choiceOptions(line)
   assert.deepEqual(await pickChoice(line, live, h.hooks), { ran: false, error: null })
   assert.deepEqual(h.calls, [])
+})
+
+test('a button\'s action runs, and the lines are read twice, a moment apart, settling after each', async () => {
+  const calls = []
+  const deps = {
+    run: async (a) => { calls.push('run ' + a) },
+    refresh: async () => { calls.push('refresh') },
+    settle: () => { calls.push('settle') },
+    wait: async (ms) => { calls.push('wait ' + ms) },
+  }
+  const r = await runAndSettle('reset:b', deps)
+  assert.deepEqual(r, { ran: true, error: null })
+  assert.deepEqual(calls, ['run reset:b', 'refresh', 'settle', 'wait ' + PICK_RECHECK_MS, 'refresh', 'settle'])
+})
+
+test('a refused action is read once, with no wait, and its error comes back', async () => {
+  const calls = []
+  const boom = new Error('nope')
+  const r = await runAndSettle('reset:b', {
+    run: async () => { throw boom },
+    refresh: async () => { calls.push('refresh') },
+    settle: () => { calls.push('settle') },
+    wait: async () => { calls.push('wait') },
+  })
+  assert.equal(r.error, boom)
+  assert.deepEqual(calls, ['refresh', 'settle'])
 })

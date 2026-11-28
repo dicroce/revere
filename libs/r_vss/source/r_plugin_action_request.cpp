@@ -29,36 +29,57 @@ r_server_response _error(status_code code, const string& message)
 
 }
 
-vector<string> r_vss::plugin_offered_actions(const string& status_message)
+namespace
 {
-    vector<string> out;
-    auto j = json::parse(status_message, nullptr, false);
-    if(!j.is_object() || !j.contains("lines") || !j["lines"].is_array())
-        return out;
-    auto str = [](const json& o, const char* key) {
-        return o.is_object() && o.contains(key) && o[key].is_string() ? o[key].get<string>() : string();
-    };
-    for(const auto& line : j["lines"])
+
+string _str(const json& o, const char* key)
+{
+    return o.is_object() && o.contains(key) && o[key].is_string() ? o[key].get<string>() : string();
+}
+
+// A list of lines, and the detail of each row of a list line in them (which are lines too, and may hold lists). The
+// depth is bounded: a plugin's message is nested no deeper than a person can open rows.
+void _collect_offered(const json& lines, vector<string>& out, int depth)
+{
+    if(!lines.is_array() || depth > 8)
+        return;
+    for(const auto& line : lines)
     {
         if(!line.is_object())
             continue;
-        auto action = str(line, "action");
+        auto action = _str(line, "action");
         if(!action.empty())
             out.push_back(action);
         if(line.contains("choice") && line["choice"].is_object())
         {
             const auto& c = line["choice"];
-            auto prefix = str(c, "action");
-            if(prefix.empty() || !c.contains("options") || !c["options"].is_array())
-                continue;
-            for(const auto& o : c["options"])
+            auto prefix = _str(c, "action");
+            if(!prefix.empty() && c.contains("options") && c["options"].is_array())
             {
-                auto value = str(o, "value");
-                if(!value.empty())
-                    out.push_back(prefix + value);
+                for(const auto& o : c["options"])
+                {
+                    auto value = _str(o, "value");
+                    if(!value.empty())
+                        out.push_back(prefix + value);
+                }
             }
         }
+        if(line.contains("list") && line["list"].is_object() && line["list"].contains("rows") && line["list"]["rows"].is_array())
+            for(const auto& row : line["list"]["rows"])
+                if(row.is_object() && row.contains("detail"))
+                    _collect_offered(row["detail"], out, depth + 1);
     }
+}
+
+}
+
+vector<string> r_vss::plugin_offered_actions(const string& status_message)
+{
+    vector<string> out;
+    auto j = json::parse(status_message, nullptr, false);
+    if(!j.is_object() || !j.contains("lines"))
+        return out;
+    _collect_offered(j["lines"], out, 0);
     return out;
 }
 
