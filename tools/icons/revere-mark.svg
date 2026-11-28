@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="currentColor" role="img" aria-label="Revere">
+  <!-- The Revere mark (the Shutter), display cut for 48 px and up: four blades turning clockwise around a square
+       opening, each overhanging the next, with 2-unit gaps. Sharp corners; never rotated, mirrored or recoloured
+       (ink #18181b on light, #ffffff on dark). Outer bounds 12 to 52, opening 14 x 14 at the centre. -->
+  <rect x="12" y="12" width="25" height="13"/>
+  <rect x="39" y="12" width="13" height="25"/>
+  <rect x="27" y="39" width="25" height="13"/>
+  <rect x="12" y="27" width="13" height="25"/>
+</svg>

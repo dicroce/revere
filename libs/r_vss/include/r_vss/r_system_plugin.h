@@ -31,7 +31,7 @@ typedef void* r_system_plugin_handle;
 // to choose, and differ between builds (a release bundles its own, a self-built
 // revere uses the system's), so a plugin linking one loads in only some of them.
 #define R_SYSTEM_PLUGIN_API_MAJOR 1
-#define R_SYSTEM_PLUGIN_API_MINOR 1
+#define R_SYSTEM_PLUGIN_API_MINOR 2
 // Both in one number, as get_system_plugin_api_version() returns it: major << 16 | minor.
 #define R_SYSTEM_PLUGIN_API_VERSION ((uint32_t)(R_SYSTEM_PLUGIN_API_MAJOR) << 16 | (uint32_t)(R_SYSTEM_PLUGIN_API_MINOR))
 
@@ -127,6 +127,13 @@ R_API void system_plugin_post_motion(r_system_plugin_handle plugin,
 // system_plugin_post_motion, in order with it.
 R_API void system_plugin_camera_state(r_system_plugin_handle plugin,
     const char* camera_id, int receiving_video, int stream_failed);
+
+// Optional (plugin interface 1.2): a doorbell's button was pressed (a camera whose kind is "doorbell",
+// r_disco::camera_kind, reported its visitor event), at ts_ms, epoch ms on the host's clock. One call per press: presses
+// of the same doorbell within 5 s of the last ring are one ring. Sent whatever the camera's motion detection setting or
+// motion tier. Delivered like system_plugin_post_motion, in order with it.
+R_API void system_plugin_doorbell_ring(r_system_plugin_handle plugin,
+    const char* camera_id, int64_t ts_ms);
 
 // Callback type the plugin invokes to deliver API results back to the host.
 // name: identifies the payload (e.g. "camera_answers")

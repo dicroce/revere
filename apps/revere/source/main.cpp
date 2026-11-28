@@ -16,6 +16,7 @@
 
 #include "macos_activation.h"
 #include "render_policy.h"
+#include "x11_errors.h"
 #include "vision_launch.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -84,6 +85,7 @@ std::unordered_map<std::string, r_ui_utils::font_catalog> r_ui_utils::fonts;
 #include "imgui_ui.h"
 #include "main_window.h"
 #include "dialogs.h"
+#include "camera_properties_pane.h"
 #include "r_vss/r_camera_source_info.h"
 #include "r_vss/r_camera_stats.h"
 #include "r_vss/r_motion_engine.h"
@@ -216,6 +218,11 @@ struct revere_ui_state
     string retention;
 
     // camera properties dialog
+    bool is_doorbell {false};
+    // A doorbell's press source ("onvif" or "reolink_email"), and what the Doorbell section shows about its presses.
+    std::string press_source {"onvif"};
+    revere::doorbell_view door_view;
+    std::chrono::steady_clock::time_point door_view_read;
     bool do_motion_detection {false};
     bool do_motion_pruning {false};
     std::string min_continuous_recording_hours {"24"};
@@ -1734,275 +1741,6 @@ void configure_camera_setup_wizard(
     );
 
     camera_setup_wizard.add_step(
-        "camera_properties_modal",
-        [&ui_state, &camera_setup_wizard, &rscc, &devices, &stream_keeper, &as, &agent](){
-            auto& streams = as.streams;
-
-            // Get camera info to display record file path
-            auto camera_id = ui_state.selected_camera_id();
-            string record_path;
-            string camera_name;
-            bool can_sync_time = false;
-            if(!camera_id.is_null())
-            {
-                auto camera_opt = devices.get_camera_by_id(camera_id.value());
-                if(!camera_opt.is_null() && !camera_opt.value().record_file_path.is_null())
-                    record_path = _get_storage_path(camera_opt.value().record_file_path.value());
-                if(!camera_opt.is_null())
-                {
-                    const auto& c = camera_opt.value();
-                    camera_name = !c.friendly_name.is_null() ? c.friendly_name.value() : (!c.camera_name.is_null() ? c.camera_name.value() : string());
-                    can_sync_time = !c.ipv4.is_null() && !c.xaddrs.is_null();
-                }
-            }
-
-            ImGui::OpenPopup("Camera properties");
-            revere::camera_properties_modal(
-                "Camera properties",
-                camera_name,
-                ui_state.do_motion_detection,
-                ui_state.do_motion_pruning,
-                ui_state.min_continuous_recording_hours,
-                ui_state.motion_tier,
-                ui_state.motion_tier_status,
-                ui_state.rtsp_transport,
-                ui_state.rtsp_transport_status,
-                record_path,
-                streams,
-                can_sync_time,
-                [&](){
-                    // OK button
-                    auto camera_id = ui_state.selected_camera_id();
-                    auto camera = devices.get_camera_by_id(camera_id.value()).value();
-
-                    string initial_md_file_name;
-                    if(!camera.motion_detection_file_path.is_null())
-                        initial_md_file_name = camera.motion_detection_file_path.value();
-
-                    string motion_file_name = initial_md_file_name;
-                    auto existing_path = _get_storage_path(motion_file_name);
-                    if(motion_file_name.empty() || !r_fs::file_exists(existing_path))
-                    {
-                        motion_file_name = camera.record_file_path.value();
-
-                        auto dot_pos = motion_file_name.find_last_of('.');
-
-                        motion_file_name = (dot_pos == string::npos)?motion_file_name+".mdb":motion_file_name.substr(0, dot_pos)+".mdb";
-
-                        auto motion_path = _get_storage_path(motion_file_name);
-
-                        _create_motion_files(motion_path);
-                    }
-
-                    camera.do_motion_detection.set_value(ui_state.do_motion_detection);
-                    camera.motion_detection_file_path.set_value(motion_file_name);
-                    camera.do_motion_pruning.set_value(ui_state.do_motion_pruning);
-                    camera.min_continuous_recording_hours.set_value(r_string_utils::s_to_int(ui_state.min_continuous_recording_hours));
-                    camera.motion_tier.set_value(ui_state.motion_tier);
-                    camera.rtsp_transport.set_value(ui_state.rtsp_transport);
-                    {
-                        // The Streams section's choice, when it was changed.
-                        std::lock_guard<std::mutex> g(streams.m);
-                        if(streams.changed)
-                            r_disco::substream_copy(streams.sub, camera);
-                    }
-                    devices.save_camera(camera);
-
-                    stream_keeper.bounce(camera_id.value());
-
-                    ui_state.do_motion_detection = false;
-                    ui_state.do_motion_pruning = false;
-                    ui_state.min_continuous_recording_hours = "24";
-
-                    camera_setup_wizard.cancel();
-                },
-                [&](){
-                    ui_state.do_motion_detection = false;
-                    ui_state.do_motion_pruning = false;
-                    ui_state.min_continuous_recording_hours = "24";
-
-                    camera_setup_wizard.cancel();
-                },
-                [&](){
-                    // Move Storage button
-                    auto cid = ui_state.selected_camera_id();
-                    if(!cid.is_null())
-                    {
-                        auto maybe_camera = devices.get_camera_by_id(cid.value());
-                        if(!maybe_camera.is_null())
-                        {
-                            auto& c = maybe_camera.value();
-                            s_storage_op.camera_id = c.id;
-                            s_storage_op.camera_name = c.friendly_name.is_null() ? c.camera_name.value() : c.friendly_name.value();
-                            s_storage_op.new_dir.clear();
-                            s_storage_op.running = false;
-                            s_storage_op.done = false;
-                            s_storage_op.error = false;
-                            s_storage_op.progress = 0.f;
-                            s_storage_op.start_fresh = false;
-                            s_storage_op.delete_confirmed = false;
-                        }
-                    }
-                    camera_setup_wizard.next("move_storage_modal");
-                },
-                [&](){
-                    // Change Retention button
-                    auto cid = ui_state.selected_camera_id();
-                    if(!cid.is_null())
-                    {
-                        auto maybe_camera = devices.get_camera_by_id(cid.value());
-                        if(!maybe_camera.is_null())
-                        {
-                            auto& c = maybe_camera.value();
-
-                            // Live bitrate drives the new ring size (same source
-                            // the recording list uses to show retention).
-                            int64_t bps = 0;
-                            for(auto& st : stream_keeper.fetch_stream_status())
-                            {
-                                if(st.camera.id == c.id) { bps = st.bytes_per_second; break; }
-                            }
-
-                            int64_t nb = c.n_record_file_blocks.is_null() ? 0 : c.n_record_file_blocks.value();
-                            int64_t bs = c.record_file_block_size.is_null() ? 0 : c.record_file_block_size.value();
-                            double cap_days = (bps > 0 && nb > 0 && bs > 0)
-                                ? ((double)(nb * bs) / (double)bps / 86400.0) : 0.0;
-
-                            s_storage_op.camera_id = c.id;
-                            s_storage_op.camera_name = c.friendly_name.is_null() ? c.camera_name.value() : c.friendly_name.value();
-                            s_storage_op.byte_rate = bps;
-                            s_storage_op.retention_days = (cap_days > 0.0) ? cap_days : 1.0;
-                            s_storage_op.new_num_blocks = nb;
-                            s_storage_op.new_block_size = bs;
-                            s_storage_op.running = false;
-                            s_storage_op.done = false;
-                            s_storage_op.error = false;
-                            s_storage_op.progress = 0.f;
-                            s_storage_op.delete_confirmed = false;
-                            {
-                                std::lock_guard<std::mutex> g(s_storage_op.mtx);
-                                s_storage_op.status.clear();
-                            }
-                        }
-                    }
-                    camera_setup_wizard.next("change_retention_modal");
-                },
-                [&](const std::string& op, const std::string& token){
-                    // A click in the Streams section: Off, a smaller stream, or look again.
-                    auto cid = ui_state.selected_camera_id();
-                    if(cid.is_null())
-                        return;
-                    if(op == "analysis")
-                    {
-                        std::lock_guard<std::mutex> g(streams.m);
-                        streams.sub.sub_analysis.set_value(token == "1" ? 1 : 0);
-                        streams.changed = true;
-                        return;
-                    }
-                    if(op == "off")
-                    {
-                        std::lock_guard<std::mutex> g(streams.m);
-                        if(!streams.working)
-                        {
-                            streams.sub.sub_mode.set_value("off");
-                            streams.changed = true;
-                        }
-                        return;
-                    }
-                    auto maybe_camera = devices.get_camera_by_id(cid.value());
-                    if(maybe_camera.is_null())
-                        return;
-                    uint64_t gen = 0;
-                    {
-                        std::lock_guard<std::mutex> g(streams.m);
-                        if(streams.working)
-                            return;
-                        streams.working = true;
-                        gen = streams.generation;
-                    }
-                    // Asking the camera and probing its streams takes seconds; off the UI thread.
-                    std::thread([&agent, &devices, &streams, camera = maybe_camera.value(), token, gen]() mutable {
-                        try
-                        {
-                            auto creds = devices.get_credentials(camera.id);
-                            std::pair<uint16_t, uint16_t> size {0, 0};
-                            if(!camera.video_codec.is_null() && !camera.video_codec_parameters.is_null())
-                                size = r_disco::main_picture_size(camera.video_codec.value(), camera.video_codec_parameters.value());
-                            agent.find_camera_substream(camera, creds.first, creds.second, size.first, size.second, token);
-                        }
-                        catch(const std::exception& e)
-                        {
-                            R_LOG_INFO("substream: not looked for: %s", e.what());
-                            r_disco::substream_clear(camera, "couldn't ask the camera");
-                        }
-                        std::lock_guard<std::mutex> g(streams.m);
-                        if(streams.generation != gen)
-                            return;
-                        r_disco::substream_copy(camera, streams.sub);
-                        streams.changed = true;
-                        streams.working = false;
-                    }).detach();
-                },
-                [&](){
-                    // Sync Camera Time button
-                    auto cid = ui_state.selected_camera_id();
-                    if(cid.is_null())
-                        return;
-                    auto maybe_camera = devices.get_camera_by_id(cid.value());
-                    if(maybe_camera.is_null() || maybe_camera.value().ipv4.is_null() || maybe_camera.value().xaddrs.is_null())
-                        return;
-                    auto camera = maybe_camera.value();
-                    int gen = ++s_sync_time.generation;
-
-                    // The wait first, so a worker that finishes at once isn't overwritten by it.
-                    camera_setup_wizard.next("sync_camera_time_wait");
-                    std::thread th([&agent, &camera_setup_wizard, camera, gen](){
-                        string title, message;
-                        try
-                        {
-                            auto r = agent.sync_camera_time(
-                                camera.ipv4.value(), camera.xaddrs.value(),
-                                camera.rtsp_username, camera.rtsp_password,
-                                camera.onvif_port, camera.onvif_protocol
-                            );
-                            title = "Camera time synced";
-                            message = _describe_time_sync(r);
-                        }
-                        catch(const r_disco::r_ptz_error& e)
-                        {
-                            R_LOG_ERROR("Sync camera time for %s failed (%s): %s", camera.id.c_str(), e.code().c_str(), e.what());
-                            title = "Couldn't sync camera time";
-                            if(e.code() == "unreachable")
-                                message = "Revere couldn't reach the camera's ONVIF service. Check that the camera is on and has ONVIF turned on.";
-                            else if(e.code() == "not_authorized")
-                                message = "The camera wouldn't let Revere change its time. On most cameras that needs an administrator account; "
-                                          "the account Revere uses for this camera may not be one.";
-                            else
-                                message = string("The camera didn't set its time.\n\n") + e.what();
-                        }
-                        catch(const std::exception& e)
-                        {
-                            R_LOG_ERROR("Sync camera time for %s failed: %s", camera.id.c_str(), e.what());
-                            title = "Couldn't sync camera time";
-                            message = string("The camera didn't set its time.\n\n") + e.what();
-                        }
-
-                        if(gen != s_sync_time.generation.load())
-                            return;  // the wait was cancelled
-                        {
-                            std::lock_guard<std::mutex> g(s_sync_time.mtx);
-                            s_sync_time.title = title;
-                            s_sync_time.message = message;
-                        }
-                        camera_setup_wizard.next("sync_camera_time_result");
-                    });
-                    th.detach();
-                }
-            );
-        }
-    );
-
-    camera_setup_wizard.add_step(
         "sync_camera_time_wait",
         [&camera_setup_wizard](){
             ImGui::OpenPopup("Syncing camera time");
@@ -2012,7 +1750,7 @@ void configure_camera_setup_wizard(
                 "",
                 [&](){
                     ++s_sync_time.generation;
-                    camera_setup_wizard.next("camera_properties_modal");
+                    camera_setup_wizard.cancel();
                 }
             );
         }
@@ -2032,7 +1770,7 @@ void configure_camera_setup_wizard(
                 GImGui,
                 title,
                 message,
-                [&](){ camera_setup_wizard.next("camera_properties_modal"); }
+                [&](){ camera_setup_wizard.cancel(); }
             );
         }
     );
@@ -2369,6 +2107,25 @@ void _set_working_dir()
     auto wd = exe_path.substr(0, exe_path.find_last_of(PATH_SLASH));
     R_LOG_INFO("wd: %s", wd.c_str());
     r_fs::change_working_directory(wd);
+}
+
+// The window's pixels to a point on Windows, where SDL keeps the window in points (SDL_HINT_WINDOWS_DPI_SCALING) and
+// the renderer's output is in pixels: 1.5 at a 150% display scale. `last` while there's no size to read (minimized).
+// 1 elsewhere: macOS keeps its own Retina handling, and Linux isn't DPI-aware.
+static float _display_scale(SDL_Window* window, SDL_Renderer* renderer, float last)
+{
+#ifdef IS_WINDOWS
+    int w = 0, h = 0, pw = 0, ph = 0;
+    SDL_GetWindowSize(window, &w, &h);
+    if(w <= 0 || SDL_GetRendererOutputSize(renderer, &pw, &ph) != 0 || pw <= 0)
+        return last;
+    return r_ui_utils::display_scale(pw, w);
+#else
+    (void)window;
+    (void)renderer;
+    (void)last;
+    return 1.0f;
+#endif
 }
 
 void _set_adaptive_window_size(SDL_Window* window)
@@ -3070,9 +2827,10 @@ int main(int argc, char** argv)
     ImGui::CreateContext();
 
     r_disco::r_agent agent(r_fs::platform_path(top_dir));
-    // Whether a camera whose address changes pauses until its move is confirmed: the last value the cloud sent, or
-    // off (it keeps recording) when it never sent one (r_disco::load_camera_move_policy).
-    agent.set_pause_on_address_change(r_disco::load_camera_move_policy(r_fs::platform_path(top_dir)));
+    // Whether a camera that moves to an address that can't be checked (no MAC on file or readable there) is followed
+    // without waiting for a person: the last value the cloud sent, or off (held until confirmed) when it never sent
+    // one (r_disco::load_camera_move_policy). A different MAC is always held.
+    agent.set_follow_unverified_moves(r_disco::load_camera_move_policy(r_fs::platform_path(top_dir)));
     r_disco::r_devices devices(r_fs::platform_path(top_dir));
     r_vss::r_stream_keeper streamKeeper(devices, agent, r_fs::platform_path(top_dir));
     streamKeeper.set_system_plugin_api_result_cb([&cfg_state](const std::string& name, const std::string& json) {
@@ -3178,6 +2936,15 @@ int main(int argc, char** argv)
         return 0;
     }
 
+#ifdef IS_WINDOWS
+    // Per-monitor DPI aware (v2) rather than stretched by Windows, with SDL's window, mouse and display coordinates in
+    // points: the ImGui renderer draws them at the monitor's pixels, and the fonts are made at its scale
+    // (_display_scale), so text is sharp at any display scale and stays so on a monitor with another one. Set before
+    // SDL_Init, which declares the process's awareness.
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1");
+#endif
+
     // Setup SDL2
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
     {
@@ -3211,6 +2978,9 @@ int main(int argc, char** argv)
         SDL_Quit();
         return 1;
     }
+
+    // A monitor going away makes RandR requests fail; without this Xlib ends the app on the first one.
+    revere::install_x11_error_handler(window);
 
 #ifdef IS_WINDOWS
     // Make the native title bar dark so it matches the app's theme instead of
@@ -3341,8 +3111,9 @@ int main(int argc, char** argv)
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer_Init(renderer);
 
-    // Platform-specific font sizes (macOS renders fonts larger, so we use smaller sizes)
-#ifdef IS_MACOS
+    // Font sizes in points. macOS and Windows (DPI aware, so its points are the display's, as a Mac's are) share
+    // them; Linux, which isn't DPI aware, keeps the larger ones.
+#if defined(IS_MACOS) || defined(IS_WINDOWS)
     const float FONT_SIZE_24 = 18.0f;
     const float FONT_SIZE_22 = 16.0f;
     const float FONT_SIZE_20 = 15.0f;
@@ -3356,12 +3127,19 @@ int main(int argc, char** argv)
     const float FONT_SIZE_14 = 16.0f;
 #endif
 
-    r_ui_utils::load_fonts(io, FONT_SIZE_24, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_22, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_20, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_18, r_ui_utils::fonts);
-    r_ui_utils::load_fonts(io, FONT_SIZE_14, r_ui_utils::fonts);
-    io.FontDefault = r_ui_utils::fonts[r_string_utils::float_to_s(FONT_SIZE_24, 2)].inter_tight_regular;
+    // The fonts, made for the display's scale (1 but on Windows): again when the window reaches a monitor with
+    // another scale (see the frame loop).
+    auto load_ui_fonts = [&](float scale) {
+        io.Fonts->Clear();
+        r_ui_utils::fonts.clear();
+        for(float size : {FONT_SIZE_24, FONT_SIZE_22, FONT_SIZE_20, FONT_SIZE_18, FONT_SIZE_14})
+            r_ui_utils::load_fonts(io, size, scale, r_ui_utils::fonts);
+        r_ui_utils::build_fonts(io, scale);
+        io.FontDefault = r_ui_utils::fonts[r_string_utils::float_to_s(FONT_SIZE_24, 2)].inter_tight_regular;
+    };
+    float font_scale = _display_scale(window, renderer, 1.0f);
+    R_LOG_INFO("Display scale %.2f", font_scale);
+    load_ui_fonts(font_scale);
 
     // Generate font key strings for the loaded sizes
     auto FONT_KEY_24 = r_string_utils::float_to_s(FONT_SIZE_24, 2);
@@ -3541,6 +3319,365 @@ int main(int argc, char** argv)
             camera_setup_wizard.next("remove_camera_modal");
         }
     };
+    // The camera's properties, edited in its pane (see camera_properties_pane.h) while main_window_state.properties_open.
+    revere::camera_properties_session properties_session;
+    // Leaves the properties without saving: what they were opened from is gone.
+    auto close_properties = [&](){
+        ui_state.do_motion_detection = false;
+        ui_state.do_motion_pruning = false;
+        ui_state.min_continuous_recording_hours = "24";
+        main_window_state.properties_open = false;
+    };
+    main_window_actions.draw_properties = [&](){
+        auto& streams = as.streams;
+        auto camera_id = ui_state.selected_camera_id();
+        if(camera_id.is_null() || camera_id.value() != properties_session.camera_id)
+        {
+            // The selection moved on without leaving through the list (the camera went away).
+            close_properties();
+            return;
+        }
+        // The Doorbell section's view of its presses and email setup, read every 2 s while it shows; its login once.
+        auto read_door_view = [&](bool now){
+            if(!ui_state.is_doorbell)
+                return;
+            auto t = std::chrono::steady_clock::now();
+            if(!now && ui_state.door_view.loaded && t - ui_state.door_view_read < std::chrono::seconds(2))
+                return;
+            ui_state.door_view_read = t;
+            auto& v = ui_state.door_view;
+            v.loaded = true;
+            auto presses = streamKeeper.doorbell_presses(camera_id.value());
+            if(!presses.is_null())
+            {
+                const auto& p = presses.value();
+                v.saved_source = p.press_source;
+                v.suggest_onvif = p.suggest_onvif;
+                v.last_email_ms = p.last_email_ms.is_null() ? 0 : p.last_email_ms.value();
+                v.test_any = p.test.any;
+                v.test_open = p.test.open;
+                v.test_ends_ms = p.test.ends_ms;
+                v.test_sources.clear();
+                for(auto& src : p.test.sources)
+                    v.test_sources.push_back({src.source, src.seen, src.seen ? src.arrived_ms - src.press_ms : 0});
+                v.test_other_mail = p.test.other_mail;
+                v.clock_known = !p.clock_offset_ms.is_null();
+                v.clock_offset_ms = v.clock_known ? p.clock_offset_ms.value() : 0;
+            }
+            auto mail = streamKeeper.doorbell_mail_setup(camera_id.value(), !v.has_login);
+            v.has_mail = !mail.is_null();
+            if(v.has_mail)
+            {
+                const auto& m = mail.value();
+                v.server = m.setup.server;
+                v.port = m.setup.port;
+                v.sender = m.setup.sender;
+                if(!v.has_login)
+                {
+                    v.password = m.setup.password;
+                    v.has_login = true;
+                }
+                v.recipient = m.setup.recipient;
+                v.listening = m.listening;
+                v.other_mail = m.counts.other_mail;
+                v.bad_logins = m.counts.bad_logins;
+                v.locked_for_ms = m.locked_for_ms;
+                v.last_error = m.counts.last_error;
+            }
+        };
+        read_door_view(false);
+        auto press_test = [&](){
+            streamKeeper.start_doorbell_press_test(camera_id.value(), false);
+            read_door_view(true);
+        };
+        // "New password", confirmed: a new email password, shown at once.
+        auto new_password = [&](){
+            auto made = streamKeeper.new_doorbell_mail_login(camera_id.value());
+            if(made.is_null())
+                return;
+            auto& v = ui_state.door_view;
+            v.password = made.value().setup.password;
+            v.sender = made.value().setup.sender;
+            v.has_login = true;
+            v.reveal = true;
+            read_door_view(true);
+        };
+
+        string record_path;
+        bool can_sync_time = false;
+        {
+            auto camera_opt = devices.get_camera_by_id(camera_id.value());
+            if(!camera_opt.is_null())
+            {
+                const auto& c = camera_opt.value();
+                if(!c.record_file_path.is_null())
+                    record_path = _get_storage_path(c.record_file_path.value());
+                can_sync_time = !c.ipv4.is_null() && !c.xaddrs.is_null();
+            }
+        }
+
+        auto move_storage = [&](){
+            // Move Storage button
+            auto cid = ui_state.selected_camera_id();
+            if(!cid.is_null())
+            {
+                auto maybe_camera = devices.get_camera_by_id(cid.value());
+                if(!maybe_camera.is_null())
+                {
+                    auto& c = maybe_camera.value();
+                    s_storage_op.camera_id = c.id;
+                    s_storage_op.camera_name = c.friendly_name.is_null() ? c.camera_name.value() : c.friendly_name.value();
+                    s_storage_op.new_dir.clear();
+                    s_storage_op.running = false;
+                    s_storage_op.done = false;
+                    s_storage_op.error = false;
+                    s_storage_op.progress = 0.f;
+                    s_storage_op.start_fresh = false;
+                    s_storage_op.delete_confirmed = false;
+                }
+            }
+            camera_setup_wizard.next("move_storage_modal");
+        };
+
+        auto change_retention = [&](){
+            // Change Retention button
+            auto cid = ui_state.selected_camera_id();
+            if(!cid.is_null())
+            {
+                auto maybe_camera = devices.get_camera_by_id(cid.value());
+                if(!maybe_camera.is_null())
+                {
+                    auto& c = maybe_camera.value();
+
+                    // Live bitrate drives the new ring size (same source
+                    // the recording list uses to show retention).
+                    int64_t bps = 0;
+                    for(auto& st : streamKeeper.fetch_stream_status())
+                    {
+                        if(st.camera.id == c.id) { bps = st.bytes_per_second; break; }
+                    }
+
+                    int64_t nb = c.n_record_file_blocks.is_null() ? 0 : c.n_record_file_blocks.value();
+                    int64_t bs = c.record_file_block_size.is_null() ? 0 : c.record_file_block_size.value();
+                    double cap_days = (bps > 0 && nb > 0 && bs > 0)
+                        ? ((double)(nb * bs) / (double)bps / 86400.0) : 0.0;
+
+                    s_storage_op.camera_id = c.id;
+                    s_storage_op.camera_name = c.friendly_name.is_null() ? c.camera_name.value() : c.friendly_name.value();
+                    s_storage_op.byte_rate = bps;
+                    s_storage_op.retention_days = (cap_days > 0.0) ? cap_days : 1.0;
+                    s_storage_op.new_num_blocks = nb;
+                    s_storage_op.new_block_size = bs;
+                    s_storage_op.running = false;
+                    s_storage_op.done = false;
+                    s_storage_op.error = false;
+                    s_storage_op.progress = 0.f;
+                    s_storage_op.delete_confirmed = false;
+                    {
+                        std::lock_guard<std::mutex> g(s_storage_op.mtx);
+                        s_storage_op.status.clear();
+                    }
+                }
+            }
+            camera_setup_wizard.next("change_retention_modal");
+        };
+
+        auto streams_click = [&](const std::string& op, const std::string& token){
+            // A click in the Streams section: Off, a smaller stream, or look again.
+            auto cid = ui_state.selected_camera_id();
+            if(cid.is_null())
+                return;
+            if(op == "analysis")
+            {
+                std::lock_guard<std::mutex> g(streams.m);
+                streams.sub.sub_analysis.set_value(token == "1" ? 1 : 0);
+                streams.changed = true;
+                return;
+            }
+            if(op == "off")
+            {
+                std::lock_guard<std::mutex> g(streams.m);
+                if(!streams.working)
+                {
+                    streams.sub.sub_mode.set_value("off");
+                    streams.changed = true;
+                }
+                return;
+            }
+            auto maybe_camera = devices.get_camera_by_id(cid.value());
+            if(maybe_camera.is_null())
+                return;
+            uint64_t gen = 0;
+            {
+                std::lock_guard<std::mutex> g(streams.m);
+                if(streams.working)
+                    return;
+                streams.working = true;
+                gen = streams.generation;
+            }
+            // Asking the camera and probing its streams takes seconds; off the UI thread.
+            std::thread([&agent, &devices, &streams, camera = maybe_camera.value(), token, gen]() mutable {
+                try
+                {
+                    auto creds = devices.get_credentials(camera.id);
+                    std::pair<uint16_t, uint16_t> size {0, 0};
+                    if(!camera.video_codec.is_null() && !camera.video_codec_parameters.is_null())
+                        size = r_disco::main_picture_size(camera.video_codec.value(), camera.video_codec_parameters.value());
+                    agent.find_camera_substream(camera, creds.first, creds.second, size.first, size.second, token);
+                }
+                catch(const std::exception& e)
+                {
+                    R_LOG_INFO("substream: not looked for: %s", e.what());
+                    r_disco::substream_clear(camera, "couldn't ask the camera");
+                }
+                std::lock_guard<std::mutex> g(streams.m);
+                if(streams.generation != gen)
+                    return;
+                r_disco::substream_copy(camera, streams.sub);
+                streams.changed = true;
+                streams.working = false;
+            }).detach();
+        };
+
+        auto sync_time = [&](){
+            // Sync Camera Time button
+            auto cid = ui_state.selected_camera_id();
+            if(cid.is_null())
+                return;
+            auto maybe_camera = devices.get_camera_by_id(cid.value());
+            if(maybe_camera.is_null() || maybe_camera.value().ipv4.is_null() || maybe_camera.value().xaddrs.is_null())
+                return;
+            auto camera = maybe_camera.value();
+            int gen = ++s_sync_time.generation;
+
+            // The wait first, so a worker that finishes at once isn't overwritten by it.
+            camera_setup_wizard.next("sync_camera_time_wait");
+            std::thread th([&agent, &streamKeeper, &camera_setup_wizard, camera, gen](){
+                string title, message;
+                try
+                {
+                    auto r = agent.sync_camera_time(
+                        camera.ipv4.value(), camera.xaddrs.value(),
+                        camera.rtsp_username, camera.rtsp_password,
+                        camera.onvif_port, camera.onvif_protocol
+                    );
+                    // Its events subscription reads the new clock, for a doorbell's email ring times.
+                    if(r.changed)
+                        streamKeeper.camera_clock_set(camera.id);
+                    title = "Camera time synced";
+                    message = _describe_time_sync(r);
+                }
+                catch(const r_disco::r_ptz_error& e)
+                {
+                    R_LOG_ERROR("Sync camera time for %s failed (%s): %s", camera.id.c_str(), e.code().c_str(), e.what());
+                    title = "Couldn't sync camera time";
+                    if(e.code() == "unreachable")
+                        message = "Revere couldn't reach the camera's ONVIF service. Check that the camera is on and has ONVIF turned on.";
+                    else if(e.code() == "not_authorized")
+                        message = "The camera wouldn't let Revere change its time. On most cameras that needs an administrator account; "
+                                  "the account Revere uses for this camera may not be one.";
+                    else
+                        message = string("The camera didn't set its time.\n\n") + e.what();
+                }
+                catch(const std::exception& e)
+                {
+                    R_LOG_ERROR("Sync camera time for %s failed: %s", camera.id.c_str(), e.what());
+                    title = "Couldn't sync camera time";
+                    message = string("The camera didn't set its time.\n\n") + e.what();
+                }
+
+                if(gen != s_sync_time.generation.load())
+                    return;  // the wait was cancelled
+                {
+                    std::lock_guard<std::mutex> g(s_sync_time.mtx);
+                    s_sync_time.title = title;
+                    s_sync_time.message = message;
+                }
+                camera_setup_wizard.next("sync_camera_time_result");
+            });
+            th.detach();
+        };
+
+        auto result = revere::camera_properties_pane(
+            properties_session,
+            ui_state.is_doorbell,
+            ui_state.press_source,
+            ui_state.door_view,
+            ui_state.do_motion_detection,
+            ui_state.do_motion_pruning,
+            ui_state.min_continuous_recording_hours,
+            ui_state.motion_tier,
+            ui_state.motion_tier_status,
+            ui_state.rtsp_transport,
+            ui_state.rtsp_transport_status,
+            record_path,
+            streams,
+            can_sync_time,
+            streams_click,
+            sync_time,
+            move_storage,
+            change_retention,
+            press_test,
+            new_password
+        );
+        if(result == revere::camera_properties_result::cancel)
+            close_properties();
+        else if(result == revere::camera_properties_result::save)
+        {
+            auto camera_id = ui_state.selected_camera_id();
+            auto camera = devices.get_camera_by_id(camera_id.value()).value();
+
+            string initial_md_file_name;
+            if(!camera.motion_detection_file_path.is_null())
+                initial_md_file_name = camera.motion_detection_file_path.value();
+
+            string motion_file_name = initial_md_file_name;
+            auto existing_path = _get_storage_path(motion_file_name);
+            if(motion_file_name.empty() || !r_fs::file_exists(existing_path))
+            {
+                motion_file_name = camera.record_file_path.value();
+
+                auto dot_pos = motion_file_name.find_last_of('.');
+
+                motion_file_name = (dot_pos == string::npos)?motion_file_name+".mdb":motion_file_name.substr(0, dot_pos)+".mdb";
+
+                auto motion_path = _get_storage_path(motion_file_name);
+
+                _create_motion_files(motion_path);
+            }
+
+            camera.do_motion_detection.set_value(ui_state.do_motion_detection);
+            camera.motion_detection_file_path.set_value(motion_file_name);
+            camera.do_motion_pruning.set_value(ui_state.do_motion_pruning);
+            camera.min_continuous_recording_hours.set_value(r_string_utils::s_to_int(ui_state.min_continuous_recording_hours));
+            camera.motion_tier.set_value(ui_state.motion_tier);
+            camera.rtsp_transport.set_value(ui_state.rtsp_transport);
+            // Kept as a choice only once it differs from what the model suggests, or was chosen before.
+            {
+                const string kind = ui_state.is_doorbell ? "doorbell" : "camera";
+                if(!camera.kind.is_null() || kind != r_disco::camera_kind(camera))
+                    camera.kind.set_value(kind);
+            }
+            // A doorbell's press source, kept once it's chosen (onvif is what an unset one means).
+            if(ui_state.is_doorbell && (!camera.press_source.is_null() || ui_state.press_source != "onvif"))
+                camera.press_source.set_value(ui_state.press_source);
+            {
+                // The Streams section's choice, when it was changed.
+                std::lock_guard<std::mutex> g(streams.m);
+                if(streams.changed)
+                    r_disco::substream_copy(streams.sub, camera);
+            }
+            devices.save_camera(camera);
+
+            streamKeeper.bounce(camera_id.value());
+
+            ui_state.do_motion_detection = false;
+            ui_state.do_motion_pruning = false;
+            ui_state.min_continuous_recording_hours = "24";
+
+            main_window_state.properties_open = false;
+        }
+    };
     main_window_actions.properties = [&](int i){
         ui_state.recording_selected_item = i;
         ui_state.discovered_selected_item = -1;
@@ -3548,6 +3685,9 @@ int main(int argc, char** argv)
 
         // Go to camera properties modal
         auto camera = devices.get_camera_by_id(ui_state.selected_camera_id().value()).value();
+        ui_state.is_doorbell = r_disco::camera_kind(camera) == "doorbell";
+        ui_state.press_source = r_disco::camera_press_source(camera);
+        ui_state.door_view = revere::doorbell_view();
         ui_state.do_motion_detection = camera.do_motion_detection.value();
         ui_state.do_motion_pruning = camera.do_motion_pruning.value();
         ui_state.min_continuous_recording_hours = r_string_utils::int_to_s(camera.min_continuous_recording_hours.value());
@@ -3620,8 +3760,51 @@ int main(int argc, char** argv)
                 }).detach();
             }
         }
-        camera_setup_wizard.next("camera_properties_modal");
+        properties_session.begin(camera.id, ui_state.is_doorbell, ui_state.do_motion_detection, ui_state.do_motion_pruning && ui_state.do_motion_detection,
+                                 ui_state.min_continuous_recording_hours, ui_state.motion_tier, ui_state.rtsp_transport, ui_state.press_source);
+        main_window_state.properties_open = true;
     };
+    // Selecting something else while the properties have unsaved changes asks first.
+    std::function<void()> after_discard;
+    main_window_actions.leave_properties = [&](std::function<void()> go){
+        if(!main_window_state.properties_open)
+        {
+            go();
+            return;
+        }
+        bool streams_changed;
+        {
+            std::lock_guard<std::mutex> g(as.streams.m);
+            streams_changed = as.streams.changed;
+        }
+        if(!properties_session.dirty(ui_state.is_doorbell, ui_state.do_motion_detection, ui_state.do_motion_pruning && ui_state.do_motion_detection,
+                                     ui_state.motion_tier, ui_state.rtsp_transport, streams_changed, ui_state.press_source))
+        {
+            close_properties();
+            go();
+            return;
+        }
+        after_discard = std::move(go);
+        camera_setup_wizard.next("discard_properties_modal");
+    };
+    camera_setup_wizard.add_step(
+        "discard_properties_modal",
+        [&](){
+            ImGui::OpenPopup("Discard changes?");
+            revere::discard_changes_modal(
+                "Discard changes?",
+                [&](){ after_discard = nullptr; camera_setup_wizard.cancel(); },
+                [&](){
+                    close_properties();
+                    auto go = std::move(after_discard);
+                    after_discard = nullptr;
+                    camera_setup_wizard.cancel();
+                    if(go)
+                        go();
+                }
+            );
+        }
+    );
     main_window_actions.view = [&](int i){
         auto cid = ui_state.recording_items[i].camera_id;
         if(cid.empty())
@@ -3932,9 +4115,10 @@ int main(int argc, char** argv)
                     {
                         ui_state.friendly_name = status.camera.friendly_name.value();
                         ui_state.ipv4 = status.camera.ipv4.value();
-                        // With the credential, so the URL works as copied (e.g. into VLC).
-                        ui_state.restream_url = r_string_utils::format("rtsp://%s:%s@127.0.0.1:8554/%s",
-                            r_vss::r_rtsp_auth::RTSP_USER, streamKeeper.rtsp_password().c_str(), ui_state.friendly_name.c_str());
+                        // With the credential, so the URL works as copied (e.g. into VLC), and at the path the camera is
+                        // mounted at: a name's spaces are underscores there, so the raw name gave a 404.
+                        ui_state.restream_url = r_vss::restream_url("127.0.0.1", 8554, ui_state.friendly_name,
+                            r_vss::r_rtsp_auth::RTSP_USER, streamKeeper.rtsp_password());
                         ui_state.kbps = r_string_utils::format("%ld kbps", (status.bytes_per_second*8)/1024);
                         auto retention_days = ((double)streamKeeper.get_retention_hours(status.camera.id).count()) / 24.0;
                         ui_state.retention = _format_retention_days(status.camera, status.bytes_per_second, retention_days);
@@ -3948,6 +4132,20 @@ int main(int argc, char** argv)
             continue;
 
         need_render = false;  // Reset for next iteration
+
+        // The window is on a monitor with another scale (moved, or the display's scale was changed): the fonts again,
+        // sharp at it. The renderer makes their texture again in its NewFrame.
+        {
+            const float scale = _display_scale(window, renderer, font_scale);
+            if(scale != font_scale)
+            {
+                R_LOG_INFO("Display scale %.2f, was %.2f", scale, font_scale);
+                font_scale = scale;
+                ImGui_ImplSDLRenderer_DestroyFontsTexture();
+                load_ui_fonts(scale);
+                frame_skipper.invalidate();
+            }
+        }
 
         // Start the Dear ImGui frame
         ImGui_ImplSDLRenderer_NewFrame();
@@ -4187,6 +4385,12 @@ int main(int argc, char** argv)
             (Uint8)(clear_color.z * 255),
             (Uint8)(clear_color.w * 255));
         SDL_RenderClear(renderer);
+
+#ifdef IS_WINDOWS
+        // Points to the window's pixels: this ImGui renderer doesn't scale its vertices itself, it leaves that to the
+        // SDL renderer's scale (macOS gets it from SDL_RenderSetLogicalSize).
+        SDL_RenderSetScale(renderer, ImGui::GetIO().DisplayFramebufferScale.x, ImGui::GetIO().DisplayFramebufferScale.y);
+#endif
 
         // Render ImGui
         ImGui_ImplSDLRenderer_RenderDrawData(ImGui::GetDrawData());

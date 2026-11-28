@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import pathlib
 import platform
 import re
@@ -18,7 +19,7 @@ from typing import Callable
 
 from rich.console import Console
 
-from revere_harness import catalog, probe, sandbox
+from revere_harness import catalog, probe, sandbox, starvation
 from revere_harness.report import write_reports
 from revere_harness.reporter import Reporter
 from revere_harness.sampler import Sampler
@@ -45,6 +46,8 @@ class Context:
     keep: bool
     params: dict
     snap: Callable[[str, str], None]
+    # A picture already taken (the recorder's own, of what it recorded), saved the way snap saves one.
+    snap_jpeg: Callable[[str, bytes], None]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -55,13 +58,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--keep", action="store_true",
                         help="keep the recorder's data, secret and home directories after a passing run")
     parser.add_argument("--param", action="append", default=[], metavar="NAME=VALUE", help="a suite parameter")
-    parser.add_argument("--port", type=int, default=8090, help="port for the web page (loopback only)")
+    parser.add_argument("--port", type=int, default=8090, help="port for the web page")
+    parser.add_argument("--bind", default="127.0.0.1",
+                        help="address the web page listens on; only a container that publishes the port to its "
+                             "host's loopback should change it")
     args = parser.parse_args(argv)
 
     if args.suite == "web":
         # The page starts runs as separate processes, and each of those enters its own sandbox.
         from revere_harness import web
-        return web.serve(HARNESS_DIR, HARNESS_DIR / "out", port=args.port,
+        return web.serve(HARNESS_DIR, out_base(), port=args.port, bind=args.bind,
                          revere_dir=pathlib.Path(args.revere_dir).resolve() if args.revere_dir else None)
 
     try:
@@ -69,6 +75,10 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    if not sandbox.in_sandbox():
+        for caution in catalog.warnings(args.suite, params):
+            print(f"warning: {caution}", file=sys.stderr)
 
     revere_dir = resolve_revere_dir(args.revere_dir)
     out_dir = resolve_out_dir(args.out, args.suite)
@@ -86,11 +96,17 @@ def resolve_revere_dir(cli_path: str | None) -> pathlib.Path:
     return pathlib.Path("/usr/local/revere")
 
 
+def out_base() -> pathlib.Path:
+    """Where run folders go: tools/harness/out, or REVERE_HARNESS_OUT when the harness folder is read-only."""
+    override = os.environ.get("REVERE_HARNESS_OUT")
+    return pathlib.Path(override).resolve() if override else HARNESS_DIR / "out"
+
+
 def resolve_out_dir(cli_path: str | None, suite_name: str) -> pathlib.Path:
     if cli_path:
         return pathlib.Path(cli_path).resolve()
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    return HARNESS_DIR / "out" / f"{stamp}-{suite_name}"
+    return out_base() / f"{stamp}-{suite_name}"
 
 
 def run_host(revere_dir: pathlib.Path, out_dir: pathlib.Path, args: argparse.Namespace) -> int:
@@ -154,6 +170,18 @@ def run_sandboxed(revere_dir: pathlib.Path, out_dir: pathlib.Path, suite_name: s
         except Exception:
             pass
 
+    def snap_jpeg(caption: str, data: bytes) -> None:
+        nonlocal shots
+        try:
+            shots += 1
+            name = re.sub(r"[^A-Za-z0-9]+", "-", caption).strip("-")
+            file = f"snapshots/{shots:04d}-{name}.jpg"
+            (out_dir / file).parent.mkdir(parents=True, exist_ok=True)
+            (out_dir / file).write_bytes(data)
+            reporter.snapshot(file, caption)
+        except Exception:
+            pass
+
     meta = {
         "suite": suite_name,
         "started": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -165,7 +193,7 @@ def run_sandboxed(revere_dir: pathlib.Path, out_dir: pathlib.Path, suite_name: s
     }
     run = Run(suite_name, reporter)
     ctx = Context(revere_dir=revere_dir, out_dir=out_dir, reporter=reporter, sampler=sampler,
-                  keep=keep, params=params, snap=snap)
+                  keep=keep, params=params, snap=snap, snap_jpeg=snap_jpeg)
     interrupted = False
     try:
         reporter.run_started(suite_name, out_dir)
@@ -181,6 +209,13 @@ def run_sandboxed(revere_dir: pathlib.Path, out_dir: pathlib.Path, suite_name: s
             meta["suite_error"] = f"{type(exc).__name__}: {exc}"
         finally:
             sampler.stop()
+
+        # Fake cameras that could not keep up make the recorder reconnect to them, and the tests then report gaps: say
+        # so as a failure of its own, so a starved host is never read as a recorder fault.
+        try:
+            starvation.check(run, out_dir)
+        except Exception as exc:
+            reporter.note(f"could not check whether the fake cameras kept up: {exc}")
 
         passed = run.failed == 0 and "suite_error" not in meta
         report_path = write_reports(out_dir, suite_name, run.results, meta, sampler.summary())

@@ -64,6 +64,9 @@ public:
     R_API r_video_encoder& operator=(r_video_encoder&& obj);
 
     R_API void attach_buffer(const uint8_t* data, size_t size, int64_t pts);
+    // As above; force_key makes this picture a key frame (an IDR for H.264 and H.265) whatever the GOP's count says,
+    // for a caller that keys on its own clock. The GOP's count goes on from it.
+    R_API void attach_buffer(const uint8_t* data, size_t size, int64_t pts, bool force_key);
 
     R_API void set_bitrate(uint32_t bitrate);
 
@@ -94,6 +97,7 @@ private:
     int64_t _pts;
     bool _frame_sent;
     bool _flushing;
+    bool _force_key {false};
     std::vector<uint8_t> _buffer;
     r_utils::r_std_utils::raii_ptr<AVPacket> _pkt;
 };

@@ -22,9 +22,13 @@ namespace r_disco
 // at once: an address change never stops recording. Whether the old address
 // still answers doesn't matter (another device taking it is often why the
 // camera got a new one). Otherwise the move is held: the camera keeps its
-// current address, and isn't recorded at the new one, until the user confirms
-// the move or keeps the current one (r_agent::confirm_camera_move,
-// dismiss_camera_move, answer_camera_move).
+// current address, and isn't recorded at the new one, and nothing is sent to the
+// new address, until the user confirms the move or keeps the current one
+// (r_agent::confirm_camera_move, dismiss_camera_move, answer_camera_move).
+//
+// A different MAC at the new address is always held. A move that can't be
+// checked (no MAC on file, or none readable there) is held too, unless the
+// computer is set to follow unverified moves (load_camera_move_policy).
 struct r_camera_move
 {
     // "held" (waiting, or for the user) or "followed" (applied).
@@ -43,32 +47,34 @@ struct r_camera_move
     // first check, and for a followed move.
     std::string hold_reason;
     // A followed move only: how the camera's MAC compared at the new address
-    // (mac_check_for): "match", or, when the computer doesn't pause on an
-    // address change (load_camera_move_policy), "changed", "unknown" or "none".
-    // Empty for a move a person confirmed.
+    // (mac_check_for): "match", or, for a move followed unverified (the computer
+    // is set to, load_camera_move_policy), "unknown" or "none". Empty for a move
+    // a person confirmed.
     std::string mac_check;
 };
 
 // What a move's hold_reason says about the camera's MAC at the new address:
-// "" -> "match", "mac_mismatch" -> "changed", "mac_unknown" -> "unknown",
+// "" -> "match", "mac_unknown" -> "unknown", "mac_mismatch" -> "changed" (never followed),
 // "no_stored_mac" -> "none".
 R_API std::string mac_check_for(const std::string& hold_reason);
 
-// Whether this computer pauses recording a camera that turns up at a new
-// address its MAC doesn't vouch for (no MAC stored, none readable there, a
-// different one) until a person confirms. Off unless the cloud said otherwise:
-// the camera keeps recording at the new address, and the move says how its MAC
-// compared. A move whose MAC matches is followed either way.
+// Whether this computer follows a move it can't check, with no pause: no MAC
+// stored for the camera, or none readable at the new address (a network where
+// ARP can't be read). Off by default: such a move is held until a person
+// confirms. A move to an address with a different MAC is held whatever this
+// says, and a move whose MAC matches is followed either way.
 //
-// config/camera_moves.json: {"pause_on_address_change": false}. A missing
-// file, bad JSON or a non-boolean value is off.
+// config/camera_moves.json: {"follow_unverified_moves": false}. A missing
+// file, bad JSON or a non-boolean value is off. (An older file's
+// "pause_on_address_change" is not read: it was off by default, and off must not
+// become "follow".)
 R_API bool parse_camera_move_policy(const std::string& json_text);
-R_API std::string camera_move_policy_json(bool pause_on_address_change);
+R_API std::string camera_move_policy_json(bool follow_unverified_moves);
 R_API bool load_camera_move_policy(const std::string& top_dir);
 // Saves the choice; false when it couldn't be written.
-R_API bool save_camera_move_policy(const std::string& top_dir, bool pause_on_address_change);
+R_API bool save_camera_move_policy(const std::string& top_dir, bool follow_unverified_moves);
 
-// Cameras followed to a new address, without pausing, while no MAC was on
+// Cameras followed to a new address, unverified, while no MAC was on
 // file to check them by: camera id -> that address. While a camera is still
 // there its MAC isn't noted, since nothing vouched that what answers there is
 // the camera; a person's confirm, or a move elsewhere, ends it.

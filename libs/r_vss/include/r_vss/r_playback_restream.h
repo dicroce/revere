@@ -40,6 +40,11 @@ struct playback_restreaming_state
     {}
 
     GstRTSPMedia* media {nullptr};
+    // The mount the session came from (a ref on mounts, released at cleanup): removed with the session, if it is still
+    // the one at url.
+    GstRTSPMountPoints* mounts {nullptr};
+    GstRTSPMediaFactory* factory {nullptr};
+    std::string url;
     std::string top_dir;
     r_disco::r_devices& devices;
 
@@ -90,7 +95,9 @@ R_API r_utils::r_nullable<r_disco::r_camera> playback_camera(const std::vector<r
 
 // Mounts `url` to play camera_id's recording from start_ts to end_ts (epoch
 // ms), from storage under top_dir. False, with nothing mounted, when nothing is
-// recorded in that range. Throws when the recording can't be read.
+// recorded in that range. Throws when the recording can't be read. The mount
+// goes when a session played from it ends (each playback URL is mounted again by
+// the next request for it: r_stream_keeper's OPTIONS handler).
 R_API bool add_playback_mount(GstRTSPMountPoints* mounts, const std::string& url, const std::string& top_dir, r_disco::r_devices& devices,
                               const std::string& camera_id, uint64_t start_ts, uint64_t end_ts);
 

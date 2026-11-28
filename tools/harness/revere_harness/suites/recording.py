@@ -52,14 +52,24 @@ def run(run: Run, ctx: object) -> None:
     long_drop = float(params.get("long_drop", LONG_DROP))
     short_drop = float(params.get("short_drop", SHORT_DROP))
 
-    snap = getattr(ctx, "snap", None)
+    snap_jpeg = getattr(ctx, "snap_jpeg", None)
+    api_for_shots: list[Api] = []
 
     def shot(caption: str, cam: FakeCamera) -> None:
-        if snap is not None:
-            try:
-                snap(caption, cam.rtsp_url())
-            except Exception:
-                pass
+        # The picture comes from the recorder (what it recorded a moment ago), never from the fake camera: a second RTSP
+        # client on the fake camera makes its media seek, which resets its timeline under the recorder, and sometimes
+        # stalls the stream for 20 seconds. A snapshot must never fail a step.
+        if snap_jpeg is None or not api_for_shots:
+            return
+        state = cameras_state.get(cam.spec.name)
+        if state is None or state.camera_id is None:
+            return
+        try:
+            data = api_for_shots[0].picture(state.camera_id)
+            if data:
+                snap_jpeg(caption, data)
+        except Exception:
+            pass
 
     try:
         # 1. Sandbox and bridge
@@ -95,6 +105,7 @@ def run(run: Run, ctx: object) -> None:
 
         # 4. Add cameras to recorder
         api = Api(recorder.API, recorder.token())
+        api_for_shots.append(api)
         
         for spec in specs:
             with run.step(f"recorder starts recording {spec.name}"):

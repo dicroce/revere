@@ -29,6 +29,8 @@ struct playback_mount
     string top_dir;
     r_devices* devices {nullptr};
     string camera_id;
+    GstRTSPMountPoints* mounts {nullptr}; // a ref, released with the mount
+    string url;
 };
 
 tuple<string, system_clock::time_point, system_clock::time_point> _get_playback_url_parts()
@@ -290,13 +292,33 @@ void _playback_restream_cleanup(gpointer data)
     if(prs->v_appsrc) { gst_object_unref(prs->v_appsrc); prs->v_appsrc = nullptr; }
     if(prs->a_appsrc) { gst_object_unref(prs->a_appsrc); prs->a_appsrc = nullptr; }
 
+    // Each playback URL got a mount of its own, kept for good: one more per play, scrub or gap skip, for as long as
+    // revere ran. It goes with its session now, unless a newer one has taken its place (the next request for the
+    // URL mounts it again).
+    if(prs->mounts)
+    {
+        gint matched = 0;
+        auto current = gst_rtsp_mount_points_match(prs->mounts, prs->url.c_str(), &matched);
+        if(current)
+        {
+            if(current == prs->factory && matched == (gint)prs->url.size())
+                gst_rtsp_mount_points_remove_factory(prs->mounts, prs->url.c_str());
+            g_object_unref(current);
+        }
+        g_object_unref(prs->mounts);
+        prs->mounts = nullptr;
+    }
+
     delete prs;
 }
 
-void _configure_session(GstRTSPMedia* media, const playback_mount& pm)
+void _configure_session(GstRTSPMediaFactory* factory, GstRTSPMedia* media, const playback_mount& pm)
 {
     auto prs = new playback_restreaming_state(pm.top_dir, *pm.devices);
     prs->media = media;
+    prs->mounts = GST_RTSP_MOUNT_POINTS(g_object_ref(pm.mounts));
+    prs->factory = factory;
+    prs->url = pm.url;
     // The media owns the session from here: freed by _playback_restream_cleanup whatever happens below.
     g_object_set_data_full(G_OBJECT(media), "rtsp-extra-data", prs, _playback_restream_cleanup);
 
@@ -363,12 +385,12 @@ void _configure_session(GstRTSPMedia* media, const playback_mount& pm)
     prs->playback_thread = std::thread(_playback_entry_point, prs);
 }
 
-void _playback_media_configure(GstRTSPMediaFactory*, GstRTSPMedia* media, playback_mount* pm)
+void _playback_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, playback_mount* pm)
 {
     // A GLib signal handler: nothing may be thrown through it.
     try
     {
-        _configure_session(media, *pm);
+        _configure_session(factory, media, *pm);
     }
     catch(const std::exception& e)
     {
@@ -378,7 +400,10 @@ void _playback_media_configure(GstRTSPMediaFactory*, GstRTSPMedia* media, playba
 
 void _free_playback_mount(gpointer data, GClosure*)
 {
-    delete static_cast<playback_mount*>(data);
+    auto pm = static_cast<playback_mount*>(data);
+    if(pm->mounts)
+        g_object_unref(pm->mounts);
+    delete pm;
 }
 
 }
@@ -468,7 +493,8 @@ bool r_vss::add_playback_mount(GstRTSPMountPoints* mounts, const string& url, co
 
     // The mount owns what it plays (freed with its handler), so it never points at anything that can go before it.
     g_signal_connect_data(factory, "media-configure", (GCallback)_playback_media_configure,
-                          new playback_mount{top_dir, &devices, camera_id}, _free_playback_mount, (GConnectFlags)0);
+                          new playback_mount{top_dir, &devices, camera_id, GST_RTSP_MOUNT_POINTS(g_object_ref(mounts)), url},
+                          _free_playback_mount, (GConnectFlags)0);
 
     gst_rtsp_mount_points_add_factory(mounts, url.c_str(), factory);
     return true;

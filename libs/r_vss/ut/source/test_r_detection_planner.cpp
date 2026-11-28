@@ -16,6 +16,7 @@ static r_detection _det(const string& cls, float x1, float y1, float x2, float y
     r_detection d;
     d.class_name = cls;
     d.confidence = 0.9f;
+    d.ts = 0;
     d.x1 = x1; d.y1 = y1; d.x2 = x2; d.y2 = y2;
     return d;
 }
@@ -35,7 +36,11 @@ static void _run(P& p, int64_t from, int64_t to, const function<vector<r_detecti
                 break;
             if (looks)
                 looks->push_back(l.value());
-            p.look_done(l.value(), true, l.value().ts, dets(l.value()), t);
+            // A detection carries its frame's time, as the detection pass stamps it.
+            auto found = dets(l.value());
+            for (auto& d : found)
+                d.ts = l.value().ts;
+            p.look_done(l.value(), true, l.value().ts, found, t);
         }
         auto f = p.finished(t);
         if (finished)

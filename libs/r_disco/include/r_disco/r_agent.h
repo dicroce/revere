@@ -92,11 +92,11 @@ public:
     R_API void set_assigned_cameras_cb(assigned_cameras_cb cb) {_assigned_cameras_cb = cb;}
     R_API void set_camera_move_cb(camera_move_cb cb) {_camera_move_cb = cb;}
     R_API void set_mac_lookup(mac_lookup l) {_mac_lookup = l;}
-    // Whether to pause recording a camera that turns up at a new address its MAC doesn't vouch for, until a person
-    // confirms (r_camera_move.h's load_camera_move_policy). Off by default, as on a computer the cloud never told: the
-    // camera keeps recording at the new address, and the move says how its MAC compared.
-    R_API void set_pause_on_address_change(bool pause) {_pause_on_address_change = pause;}
-    R_API bool pause_on_address_change() const {return _pause_on_address_change.load();}
+    // Whether to follow, with no pause, a move to an address that can't be checked (no MAC stored, none readable
+    // there) rather than hold it until a person confirms (r_camera_move.h's load_camera_move_policy). Off by default.
+    // A different MAC at the new address is held whatever this says.
+    R_API void set_follow_unverified_moves(bool follow) {_follow_unverified_moves = follow;}
+    R_API bool follow_unverified_moves() const {return _follow_unverified_moves.load();}
     R_API void set_clock_ms(clock_ms c) {_clock_ms = c;}
 
     // Notes the MAC of each assigned camera that has none, at its stored address, as discovery does for a camera it
@@ -303,7 +303,7 @@ private:
     mutable std::mutex _moves_mutex;
     std::map<std::string, _held_move> _held_moves;
     std::map<std::string, r_camera_move> _followed_moves;
-    std::atomic<bool> _pause_on_address_change {false};
+    std::atomic<bool> _follow_unverified_moves {false};
     // Cameras followed without pausing while no MAC was on file: id -> that address (load_unconfirmed_addresses).
     // Kept across restarts; under _moves_mutex.
     std::map<std::string, std::string> _unconfirmed_addresses;
