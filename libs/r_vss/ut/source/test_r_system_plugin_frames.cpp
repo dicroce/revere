@@ -72,7 +72,7 @@ void test_r_system_plugin_frames::test_a_plugin_gets_the_host_functions()
     host.set_frame_source(&feeds, _recording("cam1"));
     auto l = _lines(_top + "/frames.txt");
     RTF_ASSERT_EQUAL(l.size(), (size_t)1);
-    RTF_ASSERT(l[0] == "api version=2 size_ok=1");
+    RTF_ASSERT(l[0] == "api version=4 size_ok=1");
     // Once: a second call doesn't give them again.
     host.set_frame_source(&feeds, _recording("cam1"));
     RTF_ASSERT_EQUAL(_lines(_top + "/frames.txt").size(), (size_t)1);
