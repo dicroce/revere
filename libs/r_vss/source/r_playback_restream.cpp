@@ -8,7 +8,9 @@
 #include "r_utils/r_logger.h"
 #include "r_utils/r_string_utils.h"
 #include "r_utils/r_time_utils.h"
+#include <map>
 #include <memory>
+#include <mutex>
 #include <tuple>
 
 using namespace r_vss;
@@ -29,9 +31,49 @@ struct playback_mount
     string top_dir;
     r_devices* devices {nullptr};
     string camera_id;
-    GstRTSPMountPoints* mounts {nullptr}; // a ref, released with the mount
+    // Not a ref: the mount points hold the factory, which holds this, so a ref here would keep them alive past the
+    // server whenever a mount is never removed. The factory only configures media while it's mounted, so they're there
+    // then; each session takes a ref of its own (_configure_session).
+    GstRTSPMountPoints* mounts {nullptr};
     string url;
 };
+
+// The playback mounts no session has used yet, per mount points (kept on them as object data, freed with them):
+// url -> its factory (no ref: only compared with what's mounted at the url) and when it was mounted. A client that
+// mounts a URL with its OPTIONS but never gets to a media (it gave up, or its SETUP failed) leaves a mount that no
+// session end will remove; remove_unused_playback_mounts() takes those out.
+typedef map<string, pair<GstRTSPMediaFactory*, int64_t>> unused_mounts;
+const char* UNUSED_MOUNTS_KEY = "r-playback-unused-mounts";
+std::mutex _unused_lock;
+
+void _free_unused_mounts(gpointer data)
+{
+    delete static_cast<unused_mounts*>(data);
+}
+
+// Under _unused_lock.
+unused_mounts& _unused(GstRTSPMountPoints* mounts)
+{
+    auto u = static_cast<unused_mounts*>(g_object_get_data(G_OBJECT(mounts), UNUSED_MOUNTS_KEY));
+    if(!u)
+    {
+        u = new unused_mounts();
+        g_object_set_data_full(G_OBJECT(mounts), UNUSED_MOUNTS_KEY, u, _free_unused_mounts);
+    }
+    return *u;
+}
+
+// Whether factory is what's mounted at url, matching the whole url.
+bool _mounted_at(GstRTSPMountPoints* mounts, const string& url, GstRTSPMediaFactory* factory)
+{
+    gint matched = 0;
+    auto current = gst_rtsp_mount_points_match(mounts, url.c_str(), &matched);
+    if(!current)
+        return false;
+    bool same = current == factory && matched == (gint)url.size();
+    g_object_unref(current);
+    return same;
+}
 
 tuple<string, system_clock::time_point, system_clock::time_point> _get_playback_url_parts()
 {
@@ -297,14 +339,8 @@ void _playback_restream_cleanup(gpointer data)
     // URL mounts it again).
     if(prs->mounts)
     {
-        gint matched = 0;
-        auto current = gst_rtsp_mount_points_match(prs->mounts, prs->url.c_str(), &matched);
-        if(current)
-        {
-            if(current == prs->factory && matched == (gint)prs->url.size())
-                gst_rtsp_mount_points_remove_factory(prs->mounts, prs->url.c_str());
-            g_object_unref(current);
-        }
+        if(_mounted_at(prs->mounts, prs->url, prs->factory))
+            gst_rtsp_mount_points_remove_factory(prs->mounts, prs->url.c_str());
         g_object_unref(prs->mounts);
         prs->mounts = nullptr;
     }
@@ -319,6 +355,14 @@ void _configure_session(GstRTSPMediaFactory* factory, GstRTSPMedia* media, const
     prs->mounts = GST_RTSP_MOUNT_POINTS(g_object_ref(pm.mounts));
     prs->factory = factory;
     prs->url = pm.url;
+    {
+        // Used: from here its session's end removes it.
+        std::lock_guard<std::mutex> g(_unused_lock);
+        auto& u = _unused(pm.mounts);
+        auto it = u.find(pm.url);
+        if(it != u.end() && it->second.first == factory)
+            u.erase(it);
+    }
     // The media owns the session from here: freed by _playback_restream_cleanup whatever happens below.
     g_object_set_data_full(G_OBJECT(media), "rtsp-extra-data", prs, _playback_restream_cleanup);
 
@@ -400,10 +444,7 @@ void _playback_media_configure(GstRTSPMediaFactory* factory, GstRTSPMedia* media
 
 void _free_playback_mount(gpointer data, GClosure*)
 {
-    auto pm = static_cast<playback_mount*>(data);
-    if(pm->mounts)
-        g_object_unref(pm->mounts);
-    delete pm;
+    delete static_cast<playback_mount*>(data);
 }
 
 }
@@ -426,9 +467,42 @@ r_nullable<r_camera> r_vss::playback_camera(const vector<r_camera>& cameras, con
     return found;
 }
 
-bool r_vss::add_playback_mount(GstRTSPMountPoints* mounts, const string& url, const string& top_dir, r_devices& devices,
-                               const string& camera_id, uint64_t start_ts, uint64_t end_ts)
+int64_t r_vss::playback_mount_clock_ms()
 {
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+size_t r_vss::remove_unused_playback_mounts(GstRTSPMountPoints* mounts, int64_t now_ms)
+{
+    std::lock_guard<std::mutex> g(_unused_lock);
+    auto& u = _unused(mounts);
+    size_t removed = 0;
+    for(auto it = u.begin(); it != u.end();)
+    {
+        if(now_ms - it->second.second < UNUSED_PLAYBACK_MOUNT_MS)
+        {
+            ++it;
+            continue;
+        }
+        // Only if it's still the one there: the next request for the url mounts a new one.
+        if(_mounted_at(mounts, it->first, it->second.first))
+        {
+            gst_rtsp_mount_points_remove_factory(mounts, it->first.c_str());
+            ++removed;
+        }
+        it = u.erase(it);
+    }
+    return removed;
+}
+
+bool r_vss::add_playback_mount(GstRTSPMountPoints* mounts, const string& url, const string& top_dir, r_devices& devices,
+                               const string& camera_id, uint64_t start_ts, uint64_t end_ts, int64_t now_ms)
+{
+    if(now_ms < 0)
+        now_ms = playback_mount_clock_ms();
+    // Each request mounts a URL, so the ones no session took are cleared as often as mounts are made.
+    remove_unused_playback_mounts(mounts, now_ms);
+
     system_clock::time_point start_tp{milliseconds{start_ts}};
     system_clock::time_point end_tp{milliseconds{end_ts}};
 
@@ -493,9 +567,13 @@ bool r_vss::add_playback_mount(GstRTSPMountPoints* mounts, const string& url, co
 
     // The mount owns what it plays (freed with its handler), so it never points at anything that can go before it.
     g_signal_connect_data(factory, "media-configure", (GCallback)_playback_media_configure,
-                          new playback_mount{top_dir, &devices, camera_id, GST_RTSP_MOUNT_POINTS(g_object_ref(mounts)), url},
+                          new playback_mount{top_dir, &devices, camera_id, mounts, url},
                           _free_playback_mount, (GConnectFlags)0);
 
+    {
+        std::lock_guard<std::mutex> g(_unused_lock);
+        _unused(mounts)[url] = make_pair(factory, now_ms);
+    }
     gst_rtsp_mount_points_add_factory(mounts, url.c_str(), factory);
     return true;
 }
