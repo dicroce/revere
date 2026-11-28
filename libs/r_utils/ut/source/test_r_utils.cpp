@@ -1022,6 +1022,102 @@ void test_r_utils::test_ssl_socket_connect_to_google()
     RTF_ASSERT(r_string_utils::contains(response, "google"));
 }
 
+// The decision after a Windows handshake: only a certificate that is good but for its root not being one held may
+// be accepted, and only when the operating system says it trusts it.
+void test_r_utils::test_ssl_socket_accepts_verify_result()
+{
+    int asked = 0;
+    auto yes = [&]() { ++asked; return true; };
+    auto no = [&]() { ++asked; return false; };
+
+    // Verified in every way: accepted without asking the system.
+    RTF_ASSERT(r_ssl_socket::accepts_verify_result(0, no));
+    RTF_ASSERT_EQUAL(asked, 0);
+
+    // Only "not trusted": the system decides.
+    RTF_ASSERT(r_ssl_socket::accepts_verify_result(MBEDTLS_X509_BADCERT_NOT_TRUSTED, yes));
+    RTF_ASSERT(!r_ssl_socket::accepts_verify_result(MBEDTLS_X509_BADCERT_NOT_TRUSTED, no));
+    RTF_ASSERT_EQUAL(asked, 2);
+
+    // Anything else is refused, whatever the system says, and it isn't even asked: expired, a name that doesn't match,
+    // revoked, a weak algorithm, never verified, and not-trusted together with any of them.
+    asked = 0;
+    const uint32_t others[] = {
+        MBEDTLS_X509_BADCERT_EXPIRED, MBEDTLS_X509_BADCERT_CN_MISMATCH, MBEDTLS_X509_BADCERT_REVOKED,
+        MBEDTLS_X509_BADCERT_BAD_MD, MBEDTLS_X509_BADCERT_BAD_PK, MBEDTLS_X509_BADCERT_FUTURE,
+        MBEDTLS_X509_BADCERT_SKIP_VERIFY, MBEDTLS_X509_BADCERT_OTHER, 0xFFFFFFFFu,
+        MBEDTLS_X509_BADCERT_NOT_TRUSTED | MBEDTLS_X509_BADCERT_EXPIRED,
+        MBEDTLS_X509_BADCERT_NOT_TRUSTED | MBEDTLS_X509_BADCERT_CN_MISMATCH,
+        MBEDTLS_X509_BADCERT_NOT_TRUSTED | MBEDTLS_X509_BADCERT_BAD_MD,
+    };
+    for(auto f : others)
+        RTF_ASSERT(!r_ssl_socket::accepts_verify_result(f, yes));
+    RTF_ASSERT_EQUAL(asked, 0);
+
+    // No system check to ask at all: refused.
+    RTF_ASSERT(!r_ssl_socket::accepts_verify_result(MBEDTLS_X509_BADCERT_NOT_TRUSTED, std::function<bool()>()));
+}
+
+// Bad certificates stay refused with authentication on, however the roots are looked up: expired, the wrong name,
+// self-signed, and a root nobody trusts (badssl.com), and a local server with its own self-signed certificate. A refusal
+// closes the connection. (The badssl.com ones need the network: the run says so and checks only the local one without it.)
+void test_r_utils::test_ssl_socket_still_refuses_bad_certificates()
+{
+    auto refused = [](const char* host, int port) {
+        r_ssl_socket sock(true);
+        bool threw = false;
+        try { sock.connect(host, port); }
+        catch(const std::exception&) { threw = true; }
+        return threw && !sock.valid();
+    };
+
+    // A local server with a self-signed certificate: not trusted by anything, a certificate for 127.0.0.1.
+    {
+        auto pems = r_ssl_server_config::generate_self_signed();
+        auto cfg = make_shared<r_ssl_server_config>(pems.first, pems.second);
+        r_ssl_server_socket listener(cfg);
+        int port = 0;
+        for(int i = 0; i < 10 && port == 0; ++i)
+        {
+            int p = RTF_NEXT_PORT();
+            try { listener.bind(p, "127.0.0.1"); port = p; } catch(...) {}
+        }
+        RTF_ASSERT(port != 0);
+        listener.listen();
+        atomic<bool> done{false};
+        thread server([&]() {
+            try
+            {
+                auto conn = listener.accept();
+                uint64_t ms = 3000;
+                conn.wait_till_recv_wont_block(ms);
+                while(!done)
+                    this_thread::sleep_for(chrono::milliseconds(20));
+            }
+            catch(...) {}
+        });
+        bool local_refused = refused("127.0.0.1", port);
+        done = true;
+        server.join();
+        RTF_ASSERT(local_refused);
+    }
+
+    // The network: a good site reachable first, or these say nothing.
+    {
+        r_ssl_socket good(true);
+        try { good.connect("www.google.com", 443); }
+        catch(const std::exception&)
+        {
+            fprintf(stderr, "[ssl_socket] no network: the badssl.com refusals were not checked\n");
+            return;
+        }
+    }
+    RTF_ASSERT(refused("expired.badssl.com", 443));
+    RTF_ASSERT(refused("wrong.host.badssl.com", 443));
+    RTF_ASSERT(refused("self-signed.badssl.com", 443));
+    RTF_ASSERT(refused("untrusted-root.badssl.com", 443));
+}
+
 void test_r_utils::test_ssl_socket_certificate_validation()
 {
     // Test that certificate validation works correctly

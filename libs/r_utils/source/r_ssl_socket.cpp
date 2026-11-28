@@ -11,16 +11,107 @@
 #include <errno.h>
 #else
 #include <WinSock2.h>
+#include <WS2tcpip.h>
 #endif
 
 #ifdef IS_WINDOWS
 #include <windows.h>
 #include <wincrypt.h>
+#include <vector>
 #else
 #include <fstream>
 #endif
 
 using namespace r_utils;
+
+bool r_ssl_socket::accepts_verify_result(uint32_t flags, const std::function<bool()>& os_trusts)
+{
+    if (flags == 0)
+        return true;
+    // Exactly "not trusted": no other flag with it (expired, a name that doesn't match, a revoked or weak certificate,
+    // never verified at all).
+    if (flags != MBEDTLS_X509_BADCERT_NOT_TRUSTED)
+        return false;
+    return os_trusts && os_trusts();
+}
+
+#ifdef IS_WINDOWS
+// Whether Windows trusts the chain the server presented, for this host: its own chain building (which fetches a root
+// it doesn't have yet, as Automatic Root Certificates Update does; enumerating the ROOT store never does) and then the
+// SSL policy for a server, with the name checked. No revocation checking, as before. An address in place of a name gets
+// no fallback: the certificate has to be one this process already trusts. The wait on the network is bounded.
+static bool _windows_trusts(const mbedtls_ssl_context* ssl, const std::string& host, uint64_t timeout_ms)
+{
+    const mbedtls_x509_crt* leaf = mbedtls_ssl_get_peer_cert(ssl);
+    if (!leaf || !leaf->raw.p || leaf->raw.len == 0)
+        return false;
+
+    in_addr a4;
+    in6_addr a6;
+    if (host.empty() || inet_pton(AF_INET, host.c_str(), &a4) == 1 || inet_pton(AF_INET6, host.c_str(), &a6) == 1)
+        return false;
+
+    // The name as Windows wants it: UTF-16, converted properly (a name that isn't valid is no name).
+    const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, host.c_str(), -1, nullptr, 0);
+    if (wide_len <= 1)
+        return false;
+    std::vector<wchar_t> wide_host((size_t)wide_len);
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, host.c_str(), -1, wide_host.data(), wide_len) == 0)
+        return false;
+
+    PCCERT_CONTEXT leaf_ctx = CertCreateCertificateContext(X509_ASN_ENCODING, leaf->raw.p, (DWORD)leaf->raw.len);
+    if (!leaf_ctx)
+        return false;
+
+    bool trusted = false;
+    HCERTSTORE extra = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, 0, nullptr);
+    PCCERT_CHAIN_CONTEXT chain = nullptr;
+    if (extra)
+    {
+        // The certificates the server sent after its own: the intermediates Windows may need.
+        for (const mbedtls_x509_crt* c = leaf->next; c; c = c->next)
+            CertAddEncodedCertificateToStore(extra, X509_ASN_ENCODING, c->raw.p, (DWORD)c->raw.len, CERT_STORE_ADD_USE_EXISTING, nullptr);
+
+        static char server_auth[] = szOID_PKIX_KP_SERVER_AUTH;
+        LPSTR usages[] = { server_auth };
+        CERT_CHAIN_PARA para;
+        memset(&para, 0, sizeof(para));
+        para.cbSize = sizeof(para);
+        para.RequestedUsage.dwType = USAGE_MATCH_TYPE_OR;
+        para.RequestedUsage.Usage.cUsageIdentifier = 1;
+        para.RequestedUsage.Usage.rgpszUsageIdentifier = usages;
+        para.dwUrlRetrievalTimeout = (DWORD)(timeout_ms > 0xFFFFFF ? 0xFFFFFF : timeout_ms);
+
+        if (CertGetCertificateChain(nullptr, leaf_ctx, nullptr, extra, &para, 0, nullptr, &chain) && chain)
+        {
+            SSL_EXTRA_CERT_CHAIN_POLICY_PARA ssl_para;
+            memset(&ssl_para, 0, sizeof(ssl_para));
+            ssl_para.cbSize = sizeof(ssl_para);
+            ssl_para.dwAuthType = AUTHTYPE_SERVER;
+            ssl_para.pwszServerName = wide_host.data();
+
+            CERT_CHAIN_POLICY_PARA policy;
+            memset(&policy, 0, sizeof(policy));
+            policy.cbSize = sizeof(policy);
+            policy.pvExtraPolicyPara = &ssl_para;
+
+            CERT_CHAIN_POLICY_STATUS status;
+            memset(&status, 0, sizeof(status));
+            status.cbSize = sizeof(status);
+
+            if (CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_SSL, chain, &policy, &status))
+                trusted = (status.dwError == 0);
+        }
+    }
+
+    if (chain)
+        CertFreeCertificateChain(chain);
+    if (extra)
+        CertCloseStore(extra, 0);
+    CertFreeCertificateContext(leaf_ctx);
+    return trusted;
+}
+#endif
 
 int r_ssl_socket::_bio_send(void* ctx, const unsigned char* buf, size_t len)
 {
@@ -159,7 +250,16 @@ r_ssl_socket::r_ssl_socket(bool enable_auth) :
             throw std::runtime_error("Failed to load system root certificates");
 
         mbedtls_ssl_conf_ca_chain(&_conf, &_ca_cert, nullptr);
+#if defined(IS_WINDOWS) || defined(R_FORCE_TLS_VERIFY_AFTER_HANDSHAKE)
+        // Optional: the handshake goes on past an untrusted root, and start_tls reads the verdict before anything is
+        // sent (accepts_verify_result), so Windows can be asked about a root it hasn't fetched yet. (The second macro
+        // is for a test build on another platform, where the operating system is never asked and nothing is trusted
+        // beyond what mbedtls already does.)
+        mbedtls_ssl_conf_authmode(&_conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+        _verify_after_handshake = true;
+#else
         mbedtls_ssl_conf_authmode(&_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+#endif
     }
     else
     {
@@ -232,6 +332,31 @@ void r_ssl_socket::start_tls()
             mbedtls_strerror(ret, error_buf, sizeof(error_buf));
             std::string error_msg = std::string("mbedtls_ssl_handshake() failed: ") + error_buf + " (code: " + std::to_string(ret) + ")";
             R_THROW((error_msg.c_str()));
+        }
+    }
+
+    if (_verify_after_handshake)
+    {
+        // Before anything is sent or read on the connection: the handshake has only established who holds the key.
+        const uint32_t flags = mbedtls_ssl_get_verify_result(&_ssl);
+        bool os_trusts_it_called = false;
+        const bool accepted = accepts_verify_result(flags, [&]() {
+            os_trusts_it_called = true;
+#ifdef IS_WINDOWS
+            return _windows_trusts(&_ssl, _host, _ioTimeOut);
+#else
+            return false;
+#endif
+        });
+        if (!accepted)
+        {
+            char info[512];
+            mbedtls_x509_crt_verify_info(info, sizeof(info), "", flags);
+            _sok.close();
+            std::string detail(info);
+            while (!detail.empty() && (detail.back() == '\n' || detail.back() == ' '))
+                detail.pop_back();
+            R_THROW(("Certificate verification failed%s: %s", os_trusts_it_called ? " (Windows does not trust it either)" : "", detail.c_str()));
         }
     }
 

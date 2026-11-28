@@ -98,6 +98,10 @@ target_link_libraries(
 if(WIN32)
     # Windows-specific libraries for r_secure_store (DPAPI and SHGetFolderPath)
     target_link_libraries(r_utils PUBLIC crypt32 shell32 ole32)
+    # r_ssl_socket asks CertGetCertificateChain to stop waiting on the network after a while
+    # (CERT_CHAIN_PARA::dwUrlRetrievalTimeout), a field wincrypt.h only declares with this defined.
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/source/r_ssl_socket.cpp
+        PROPERTIES COMPILE_DEFINITIONS CERT_CHAIN_PARA_HAS_EXTRA_FIELDS)
 elseif(APPLE)
     # macOS-specific frameworks for r_startup (Login Items)
     find_package(Threads REQUIRED)
