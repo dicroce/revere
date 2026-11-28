@@ -1025,6 +1025,30 @@ r_utils::r_nullable<int> r_onvif::r_onvif_cam::clock_offset_seconds() const
     return _time_known ? r_utils::r_nullable<int>(_time_offset_seconds) : r_utils::r_nullable<int>();
 }
 
+r_utils::r_nullable<int> r_onvif::r_onvif_cam::read_clock_offset()
+{
+    const auto now = chrono::system_clock::to_time_t(chrono::system_clock::now());
+    time_t camera_time = 0;
+    try
+    {
+        camera_time = get_camera_system_date_and_time(r_nullable<string>(), r_nullable<string>());
+    }
+    catch (...)
+    {
+        try
+        {
+            camera_time = get_camera_system_date_and_time(_username, _password);
+        }
+        catch (...)
+        {
+            return r_utils::r_nullable<int>();
+        }
+    }
+    _time_offset_seconds = (int)((int64_t)camera_time - (int64_t)now);
+    _time_known = true;
+    return r_utils::r_nullable<int>(_time_offset_seconds);
+}
+
 // Helper to check if response indicates SOAP version mismatch
 static bool _is_soap_version_error(int status, const string& body)
 {

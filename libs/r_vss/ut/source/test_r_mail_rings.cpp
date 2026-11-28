@@ -619,6 +619,14 @@ void test_r_mail_rings::test_wrong_logins_counted_per_address()
         RTF_ASSERT_EQUAL(c.line(), string("(closed)"));
     }
     RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)3);   // a refused one isn't another
+    {
+        // Nor a wrong one while refused: its password isn't checked, so it can't push the lock out.
+        client c(r.port);
+        c.secure();
+        RTF_ASSERT(client::code(c.auth_plain(USER, "wrong"), "454"));
+    }
+    RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)3);
+    RTF_ASSERT_EQUAL(r.server->locked_for_ms("127.0.0.1"), (int64_t)(8 * 60000));
     r.now_ms = t0 + 10 * 60000 - 1;
     RTF_ASSERT_EQUAL(r.server->locked_for_ms("127.0.0.1"), (int64_t)1);
     r.now_ms = t0 + 10 * 60000;
@@ -630,23 +638,24 @@ void test_r_mail_rings::test_wrong_logins_counted_per_address()
     }
 }
 
-void test_r_mail_rings::test_the_password_with_spaces_or_dashes()
+void test_r_mail_rings::test_the_password_however_typed()
 {
-    // Typed from a screen as "abcd efgh" or "abcd-efgh": the same password. Other characters still count.
+    // Typed from a screen as "abcd efgh" or "abcd-efgh", or with capitals (a phone's first letter): the same
+    // password. Other characters still count.
     rig r(12547, [](r_mail_rings_config& c) { c.password = "k7mq2xpa"; });
-    for (const char* typed : {"k7mq2xpa", "k7mq 2xpa", "k7mq-2xpa", " k7mq - 2xpa "})
+    for (const char* typed : {"k7mq2xpa", "k7mq 2xpa", "k7mq-2xpa", " k7mq - 2xpa ", "K7MQ2XPA", "K7mq 2xpA"})
     {
         client c(r.port);
         c.secure();
         RTF_ASSERT(client::code(c.auth_plain(USER, typed), "235"));
     }
-    for (const char* typed : {"k7mq_2xpa", "k7mq2xp", "k7mq2xpa-x", "K7MQ2XPA"})
+    for (const char* typed : {"k7mq_2xpa", "k7mq2xp", "k7mq2xpa-x"})
     {
         client c(r.port);
         c.secure();
         RTF_ASSERT(client::code(c.auth_plain(USER, typed), "535"));
     }
-    RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)4);
+    RTF_ASSERT_EQUAL(r.server->status().bad_logins, (uint64_t)3);
 }
 
 void test_r_mail_rings::test_which_doorbells_send_by_email()

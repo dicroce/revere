@@ -258,7 +258,7 @@
               </div>
               <p v-if="doorMail" class="blurb">Then set the email Alarm Schedule to Ring only. Otherwise the doorbell also emails when it sees motion.</p>
               <p v-if="doorMail && doorMailError" class="warn">{{ doorMailError }}</p>
-              <p class="blurb">The doorbell sends its email about 15 seconds after the press, so the ring arrives late.</p>
+              <p class="blurb">The doorbell sends its email about a second after the press, so the ring comes a second or so after it.</p>
               <p class="blurb">The doorbell sends at most one email about every 10 minutes, and has no setting to change that. A second press in that time doesn't reach Revere.</p>
               <p v-for="line in mailLines" :key="line" class="blurb">{{ line }}</p>
             </div>
@@ -332,7 +332,7 @@ import RecordWizard from './RecordWizard.vue'
 import StorageDialog from './StorageDialog.vue'
 import PluginsSection from './PluginsSection.vue'
 import { doorbellChoice } from '../utils/cameraKind.js'
-import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, mailSetupRows, mailSetupAfterRead, passwordShown, mailSetupError } from '../utils/doorbellSetup.js'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, mailSetupRows, mailSetupAfterRead, newPasswordAfter, passwordShown, mailSetupError } from '../utils/doorbellSetup.js'
 import { unsaved } from '../utils/unsaved.js'
 import { activeSection, sameTabs, isScrollKey } from '../utils/propsSections.js'
 
@@ -523,14 +523,19 @@ onUnmounted(stopDoorReads)
 async function newPassword() {
   if (!propsTarget.value) return
   doorNewPassword.value = true
-  doorMailEpoch++
+  const epoch = ++doorMailEpoch
+  const now = () => ({ mail: doorMail.value, reveal: doorReveal.value, confirming: doorConfirmNew.value, error: doorMailError.value })
+  const apply = (s) => {
+    doorMail.value = s.mail
+    doorReveal.value = s.reveal
+    doorConfirmNew.value = s.confirming
+    doorMailError.value = s.error
+  }
   try {
-    doorMail.value = await newDoorbellMailLogin(propsTarget.value.id)
-    doorMailError.value = ''
-    doorReveal.value = true
-    doorConfirmNew.value = false
+    const m = await newDoorbellMailLogin(propsTarget.value.id)
+    apply(newPasswordAfter(now(), m, { stale: epoch !== doorMailEpoch }))
   } catch (e) {
-    doorMailError.value = mailSetupError(e)
+    apply(newPasswordAfter(now(), null, { stale: epoch !== doorMailEpoch, failed: mailSetupError(e) }))
   } finally {
     doorNewPassword.value = false
   }

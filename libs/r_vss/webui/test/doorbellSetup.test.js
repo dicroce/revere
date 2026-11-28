@@ -1,7 +1,7 @@
 // Run with: npm test (node's built-in test runner; no extra dependencies).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, clockText, passwordShown, mailSetupError, mailSetupRows, mailSetupAfterRead, MAIL_SENDER } from '../src/utils/doorbellSetup.js'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, clockText, passwordShown, mailSetupError, mailSetupRows, mailSetupAfterRead, newPasswordAfter, MAIL_SENDER } from '../src/utils/doorbellSetup.js'
 
 test('the press source is sent for a doorbell once chosen, never for a camera or to an older revere', () => {
   assert.deepEqual(pressSourceChoice({ press_source: 'onvif' }, true, 'onvif'), {})
@@ -113,4 +113,17 @@ test("a read of the email setup that began before New password changes nothing",
   assert.equal(mailSetupAfterRead(null, null, { haveLogin: false, stale: false, failed: true }), null)
   assert.equal(mailSetupAfterRead(made, null, { haveLogin: false, stale: false, failed: true }), null)
   assert.equal(mailSetupAfterRead(made, null, { haveLogin: true, stale: false, failed: true }), made)
+})
+
+test("New password's answer: shown at once, unless another camera was opened while it was asked", () => {
+  const shown = { mail: { server: '192.168.1.21', password: 'olD0pass' }, reveal: false, confirming: true, error: 'x' }
+  const made = { server: '192.168.1.21', password: 'p3nw8hrd' }
+  // It counts: the new login, revealed, the confirm closed, no error.
+  assert.deepEqual(newPasswordAfter(shown, made, { stale: false }), { mail: made, reveal: true, confirming: false, error: '' })
+  // Another camera opened meanwhile: its pane is left as it is, and the old camera's password isn't shown there.
+  const other = { mail: null, reveal: false, confirming: false, error: '' }
+  assert.equal(newPasswordAfter(other, made, { stale: true }), other)
+  assert.equal(newPasswordAfter(other, null, { stale: true, failed: "Couldn't reach Revere" }), other)
+  // It failed: the error, with the setup as it was.
+  assert.deepEqual(newPasswordAfter(shown, null, { stale: false, failed: "Couldn't reach Revere" }), { ...shown, error: "Couldn't reach Revere" })
 })

@@ -276,6 +276,10 @@ public:
     // Null when the camera isn't a doorbell (or is gone).
     R_API r_utils::r_nullable<doorbell_press_status> doorbell_presses(const std::string& camera_id);
 
+    // Revere just set the camera's clock (Sync Camera Time): its events subscription reads the clock again, so the
+    // offset a doorbell's email rings are corrected by is the new one, not the one from before the sync.
+    R_API void camera_clock_set(const std::string& camera_id);
+
     // A Reolink doorbell's email setup (r_mail_setup: what to type in its app) and the listener's counts. The login is
     // made here if it isn't yet, so setup can show it before the press source is saved. listening: the listener is up
     // and takes this doorbell's mail (its press source is saved as reolink_email). Null for a camera that isn't a

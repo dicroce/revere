@@ -856,6 +856,11 @@ void r_stream_keeper::_doorbell_press(const string& camera_id, int64_t press_ms,
     write_metadata(camera_id, "doorbell_rings", doorbell_ring_json(press_ms), press_ms);
 }
 
+void r_stream_keeper::camera_clock_set(const string& camera_id)
+{
+    _camera_events.read_clock(camera_id);
+}
+
 r_utils::r_nullable<r_stream_keeper::doorbell_press_status> r_stream_keeper::doorbell_presses(const string& camera_id)
 {
     auto camera = _devices.get_camera_by_id(camera_id);

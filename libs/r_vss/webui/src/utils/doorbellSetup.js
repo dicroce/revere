@@ -37,6 +37,15 @@ export function mailSetupAfterRead(current, answer, { haveLogin, stale, failed =
   return haveLogin ? { ...answer, password: current?.password } : answer
 }
 
+// What New password's answer does to the pane's email setup (mail, reveal, confirming, error): the new login shown at
+// once. When the pane moved on while it was asked (another camera opened), it changes nothing, so one camera's new
+// password can't land on another's setup. failed: the error to show instead (the setup stays as it was).
+export function newPasswordAfter(state, answer, { stale, failed = null }) {
+  if (stale) return state
+  if (failed) return { ...state, error: failed }
+  return { mail: answer, reveal: true, confirming: false, error: '' }
+}
+
 // The password as the row shows it: exactly as it is, all its characters together, as Copy copies it (a space or dash
 // added for reading would be typed into the doorbell's app too); hidden until shown.
 export const passwordShown = (password, reveal) => (reveal ? password || '' : '••••••••••••')

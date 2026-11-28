@@ -464,6 +464,11 @@ public:
     // offset its digests use), or after sync_camera_time. Null when the camera never said.
     R_API r_utils::r_nullable<int> clock_offset_seconds() const;
 
+    // The camera's clock read again (GetSystemDateAndTime, unauthenticated first, as the session's start reads it),
+    // for a clock that may have moved since: set by Sync Camera Time, or drifting. The session's offset (its digests'
+    // too) becomes the new one, which comes back. Null, and the offset left as it was, when the camera doesn't say.
+    R_API r_utils::r_nullable<int> read_clock_offset();
+
     // GetSystemDateAndTime with the session's credentials, parsed (parse_system_date_and_time).
     R_API onvif_system_date_time get_system_date_and_time();
 

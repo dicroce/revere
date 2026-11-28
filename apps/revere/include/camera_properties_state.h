@@ -224,9 +224,9 @@ inline std::string press_source_name(const std::string& source) { return source 
 
 // ---- The pane's layout ----
 
-// The width of the pane's one column of sections: the room there is, up to about 36 of its characters wide (792 px
-// at the 22 px text Windows uses, 576 at macOS's 16), so lines stay readable in a wide pane. Never less than 420 px
-// unless there's less room than that.
+// The width of the pane's one column of sections: the room there is, up to about 36 of its characters wide (576 px
+// at the 16 px text macOS and Windows use, 792 at Linux's 22), so lines stay readable in a wide pane. Never less
+// than 420 px unless there's less room than that.
 inline float properties_content_width(float avail, float font_size)
 {
     return std::min(avail, std::max(420.0f, font_size * 36.0f));

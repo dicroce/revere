@@ -3551,7 +3551,7 @@ int main(int argc, char** argv)
 
             // The wait first, so a worker that finishes at once isn't overwritten by it.
             camera_setup_wizard.next("sync_camera_time_wait");
-            std::thread th([&agent, &camera_setup_wizard, camera, gen](){
+            std::thread th([&agent, &streamKeeper, &camera_setup_wizard, camera, gen](){
                 string title, message;
                 try
                 {
@@ -3560,6 +3560,9 @@ int main(int argc, char** argv)
                         camera.rtsp_username, camera.rtsp_password,
                         camera.onvif_port, camera.onvif_protocol
                     );
+                    // Its events subscription reads the new clock, for a doorbell's email ring times.
+                    if(r.changed)
+                        streamKeeper.camera_clock_set(camera.id);
                     title = "Camera time synced";
                     message = _describe_time_sync(r);
                 }
