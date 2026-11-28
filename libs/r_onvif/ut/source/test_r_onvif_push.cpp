@@ -5,6 +5,7 @@
 #include "r_utils/r_socket.h"
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -44,6 +45,34 @@ static int _send_raw(int port, const string& bytes)
     s.send(bytes.data(), bytes.size());
     string got;
     for(int i = 0; i < 100; ++i)
+    {
+        uint64_t ms = 100;
+        if(!s.wait_till_recv_wont_block(ms))
+            continue;
+        char buf[512];
+        int n = 0;
+        try { n = s.recv(buf, sizeof(buf)); } catch(...) { break; }
+        if(n <= 0)
+            break;
+        got.append(buf, (size_t)n);
+        if(got.find("\r\n") != string::npos)
+            break;
+    }
+    if(got.compare(0, 9, "HTTP/1.1 ") != 0)
+        return 0;
+    return atoi(got.c_str() + 9);
+}
+
+// As _send_raw, but the client reads its answer only after `delay_ms`: the listener has long since answered and closed, so
+// an answer sent before a reset is what the client finds (or does not).
+static int _send_raw_late(int port, const string& bytes, int delay_ms)
+{
+    r_socket s;
+    s.connect("127.0.0.1", port);
+    try { s.send(bytes.data(), bytes.size()); } catch(...) {}
+    this_thread::sleep_for(chrono::milliseconds(delay_ms));
+    string got;
+    for(int i = 0; i < 30; ++i)
     {
         uint64_t ms = 100;
         if(!s.wait_till_recv_wont_block(ms))
@@ -252,6 +281,147 @@ void test_r_onvif_push::test_listener_turns_away()
     strangers.add("x", "10.9.9.9", [&](const string&) { ++called; });
     RTF_ASSERT_EQUAL(_send_raw(strangers.port(), _post("/onvif/notify/x", NOTIFY)), 0);
     RTF_ASSERT_EQUAL(called.load(), 0);
+}
+
+// The answer is read whole while the client has more in flight than the listener read: closing a socket with unread
+// input sends a reset, which on Windows often throws the answer away. Done many times, with every way a request is
+// left partly unread: a body refused by its length, a head cut at the limit, a refused id with a body behind it, and
+// a request with more bytes after its body.
+void test_r_onvif_push::test_listener_answer_survives_unread_input()
+{
+    auto l = make_shared<r_onvif_push_listener>("127.0.0.1", 11060, 11079);
+    atomic<int> called {0};
+    l->add("mine", "127.0.0.1", [&](const string&) { ++called; });
+
+    const string big(60 * 1024, 'x');
+    for(int i = 0; i < 25; ++i)
+    {
+        RTF_ASSERT_EQUAL(_send_raw(l->port(), "POST /onvif/notify/mine HTTP/1.1\r\nContent-Length: 70000\r\n\r\n" + big), 413);
+        RTF_ASSERT_EQUAL(_send_raw(l->port(), "POST /onvif/notify/mine HTTP/1.1\r\nX: " + string(40000, 'a')), 413);
+        RTF_ASSERT_EQUAL(_send_raw(l->port(), _post("/onvif/notify/nobody", big)), 404);
+        RTF_ASSERT_EQUAL(_send_raw(l->port(), _post("/onvif/notify/mine", NOTIFY) + big), 200);
+    }
+    RTF_ASSERT_EQUAL(called.load(), 25);
+
+    // The client reads late, after the listener has answered and closed: the answer is still there.
+    for(int i = 0; i < 5; ++i)
+    {
+        RTF_ASSERT_EQUAL(_send_raw_late(l->port(), "POST /onvif/notify/mine HTTP/1.1\r\nContent-Length: 70000\r\n\r\n" + big, 700), 413);
+        RTF_ASSERT_EQUAL(_send_raw_late(l->port(), _post("/onvif/notify/mine", NOTIFY) + big, 700), 200);
+    }
+}
+
+// A request that was read to its end is answered and let go at once: the drain is only for unread input, so a client
+// that keeps its connection open after a 200 doesn't hold the listener's thread.
+void test_r_onvif_push::test_listener_lets_go_of_a_finished_request()
+{
+    auto l = make_shared<r_onvif_push_listener>("127.0.0.1", 11060, 11079);
+    l->add("mine", "127.0.0.1", [&](const string&) {});
+
+    r_socket s;
+    s.connect("127.0.0.1", l->port());
+    string req = _post("/onvif/notify/mine", NOTIFY);
+    s.send(req.data(), req.size());
+    char buf[512];
+    uint64_t ms = 3000;
+    RTF_ASSERT(s.wait_till_recv_wont_block(ms));
+    RTF_ASSERT(s.recv(buf, sizeof(buf)) > 0);
+    // The answer is in; the client stays connected and silent. The listener closes its side without waiting.
+    auto t0 = chrono::steady_clock::now();
+    ms = 3000;
+    bool closed = false;
+    if(s.wait_till_recv_wont_block(ms))
+    {
+        int n = 0;
+        try { n = s.recv(buf, sizeof(buf)); } catch(...) { n = -1; }
+        closed = n <= 0;
+    }
+    auto waited = chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - t0).count();
+    RTF_ASSERT(closed);
+    RTF_ASSERT(waited < 300);
+
+    // A request with more bytes after its body (a pipelined second one) is answered and its connection closed for
+    // sending at once, though the client stays silent: the client sees the end without waiting out the drain.
+    {
+        r_socket p;
+        p.connect("127.0.0.1", l->port());
+        string two = req + "POST /onvif/notify/mine HTTP/1.1\r\n";
+        p.send(two.data(), two.size());
+        uint64_t w = 3000;
+        RTF_ASSERT(p.wait_till_recv_wont_block(w));
+        RTF_ASSERT(p.recv(buf, sizeof(buf)) > 0);
+        auto start = chrono::steady_clock::now();
+        w = 3000;
+        bool ended = false;
+        if(p.wait_till_recv_wont_block(w))
+        {
+            int n = 0;
+            try { n = p.recv(buf, sizeof(buf)); } catch(...) { n = -1; }
+            ended = n <= 0;
+        }
+        RTF_ASSERT(ended);
+        RTF_ASSERT(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - start).count() < 300);
+    }
+
+    // The listener has a few threads, one per connection being served. Many clients that each get their 200 and keep
+    // their connection open must not keep them busy (500 ms each, if every reply drained): the next client is
+    // answered at once.
+    {
+        vector<unique_ptr<r_socket>> held;
+        // All sent first, then all read: the listener has 4 workers and room for 16 waiting, so 15 is within what it can hold.
+        for(int i = 0; i < 15; ++i)
+        {
+            auto c = make_unique<r_socket>();
+            c->connect("127.0.0.1", l->port());
+            c->send(req.data(), req.size());
+            held.push_back(std::move(c));
+        }
+        for(auto& c : held)
+        {
+            uint64_t w = 10000;
+            RTF_ASSERT(c->wait_till_recv_wont_block(w));
+            RTF_ASSERT(c->recv(buf, sizeof(buf)) > 0);
+        }
+        auto start = chrono::steady_clock::now();
+        RTF_ASSERT_EQUAL(_send_raw(l->port(), req), 200);
+        RTF_ASSERT(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - start).count() < 400);
+    }
+
+    // A refused request with nothing left unread (a complete small body) is let go quickly too.
+    r_socket t;
+    t.connect("127.0.0.1", l->port());
+    string req404 = _post("/onvif/notify/nobody", NOTIFY);
+    t.send(req404.data(), req404.size());
+    ms = 3000;
+    RTF_ASSERT(t.wait_till_recv_wont_block(ms));
+    RTF_ASSERT(t.recv(buf, sizeof(buf)) > 0);
+}
+
+// The drain has limits: a client that keeps sending after a refusal is read for about half a second, or 64 KB, and
+// then the connection is closed on it.
+void test_r_onvif_push::test_listener_drain_is_bounded()
+{
+    auto l = make_shared<r_onvif_push_listener>("127.0.0.1", 11060, 11079);
+    l->add("mine", "127.0.0.1", [&](const string&) {});
+
+    r_socket s;
+    s.connect("127.0.0.1", l->port());
+    string head = "POST /onvif/notify/mine HTTP/1.1\r\nContent-Length: 70000\r\n\r\n";
+    s.send(head.data(), head.size());
+    auto t0 = chrono::steady_clock::now();
+    const string piece(1024, 'y');
+    bool ended = false;
+    // The listener closes its sending side at once, so the client reads an end almost at once; what shows that it stopped
+    // reading is that sending to it fails.
+    for(int i = 0; i < 400 && !ended; ++i)   // up to 4 s of a client that never stops
+    {
+        try { if(s.send(piece.data(), piece.size()) <= 0) ended = true; }
+        catch(...) { ended = true; }
+        this_thread::sleep_for(chrono::milliseconds(10));
+    }
+    auto elapsed = chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - t0).count();
+    RTF_ASSERT(ended);
+    RTF_ASSERT(elapsed < 2500);
 }
 
 void test_r_onvif_push::test_listener_bare_path()
