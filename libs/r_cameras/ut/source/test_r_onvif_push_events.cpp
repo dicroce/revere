@@ -21,6 +21,17 @@ using namespace r_utils;
 
 REGISTER_TEST_FIXTURE(test_r_onvif_push_events);
 
+// Windows needs WSAStartup before any socket call; without it every test that opens one fails.
+void test_r_onvif_push_events::setup()
+{
+    r_raw_socket::socket_startup();
+}
+
+void test_r_onvif_push_events::teardown()
+{
+    r_raw_socket::socket_cleanup();
+}
+
 namespace
 {
 

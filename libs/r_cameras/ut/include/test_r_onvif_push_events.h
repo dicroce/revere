@@ -30,8 +30,8 @@ public:
 
     virtual ~test_r_onvif_push_events() throw() {}
 
-    virtual void setup() {}
-    virtual void teardown() {}
+    virtual void setup();
+    virtual void teardown();
 
     void test_push_when_the_camera_has_no_pull_point();
     void test_push_when_pull_point_is_not_supported();
