@@ -6,6 +6,8 @@ public:
     RTF_FIXTURE(test_r_playback_restream);
       TEST(test_r_playback_restream::test_plays_with_no_camera_connected);
       TEST(test_r_playback_restream::test_plays_to_the_end_of_its_range);
+      TEST(test_r_playback_restream::test_mount_goes_with_its_session);
+      TEST(test_r_playback_restream::test_newer_mount_stays);
       TEST(test_r_playback_restream::test_nothing_recorded_mounts_nothing);
       TEST(test_r_playback_restream::test_playback_camera);
     RTF_FIXTURE_END();
@@ -17,6 +19,8 @@ public:
 
     void test_plays_with_no_camera_connected();
     void test_plays_to_the_end_of_its_range();
+    void test_mount_goes_with_its_session();
+    void test_newer_mount_stays();
     void test_nothing_recorded_mounts_nothing();
     void test_playback_camera();
 };

@@ -1518,3 +1518,156 @@ void test_r_http::test_web_server_max_request_body()
 
     ws.stop();
 }
+
+namespace
+{
+
+// What r_server_request made of a request whose first part is sent at once and the rest a byte at a time.
+struct trickled_read
+{
+    std::string outcome;  // "ok", "408" or "other"
+    std::string body;
+    std::chrono::milliseconds took {0};
+};
+
+trickled_read _read_trickled(const std::string& at_once, const std::string& trickled, int every_ms, uint64_t deadline_ms)
+{
+    int port = RTF_NEXT_PORT();
+    trickled_read result;
+    std::atomic<bool> listening {false}, done {false};
+    auto th = std::thread([&]() {
+        try
+        {
+            r_socket listener;
+            listener.bind(port, "127.0.0.1");
+            listener.listen();
+            listening = true;
+            auto conn = listener.accept();
+            r_server_request request;
+            request.set_read_deadline(deadline_ms);
+            auto t0 = std::chrono::steady_clock::now();
+            try
+            {
+                request.read_request(conn, 5000);
+                result.outcome = "ok";
+                result.body = request.get_body_as_string();
+            }
+            catch(r_http_408_exception&) { result.outcome = "408"; }
+            catch(...) { result.outcome = "other"; }
+            result.took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0);
+        }
+        catch(...)
+        {
+            result.outcome = "server";
+        }
+        done = true;
+    });
+    RTF_ASSERT(_wait_for([&]() { return listening.load(); }));
+    r_socket client;
+    client.connect("127.0.0.1", port);
+    r_networking::r_send(client, at_once.data(), at_once.size());
+    for(size_t i = 0; i < trickled.size() && !done; ++i)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(every_ms));
+        try { r_networking::r_send(client, &trickled[i], 1); } catch(...) { break; }
+    }
+    th.join();
+    return result;
+}
+
+}
+
+// A request must arrive whole within the read deadline, however steadily its bytes come: a byte every 100 ms keeps
+// each wait short, and still the read ends at the deadline. One that arrives in time is read; with no deadline (the
+// request's default) a slow one is still read.
+void test_r_http::test_server_request_read_deadline()
+{
+    r_server_request request;
+    RTF_ASSERT(request.get_read_deadline() == 0);
+    request.set_read_deadline(1234);
+    r_server_request copy(request);
+    RTF_ASSERT(copy.get_read_deadline() == 1234);
+    r_server_request assigned;
+    assigned = request;
+    RTF_ASSERT(assigned.get_read_deadline() == 1234);
+
+    std::string head = "POST /in HTTP/1.1\r\nHost: x\r\nContent-Length: 40\r\n\r\n";
+    auto slow_body = _read_trickled(head, std::string(40, 'b'), 100, 500);
+    RTF_ASSERT(slow_body.outcome == "408");
+    RTF_ASSERT(slow_body.took >= std::chrono::milliseconds(450) && slow_body.took < std::chrono::milliseconds(2000));
+
+    // A sender that goes quiet: the read ends at the deadline, not after the longer wait between bytes.
+    auto quiet = _read_trickled("POST /in HTTP/1.1\r\n", "", 100, 500);
+    RTF_ASSERT(quiet.outcome == "408");
+    RTF_ASSERT(quiet.took >= std::chrono::milliseconds(450) && quiet.took < std::chrono::milliseconds(2000));
+
+    // Headers that never end.
+    auto slow_headers = _read_trickled("POST /in HTTP/1.1\r\n", std::string(200, 'h'), 50, 500);
+    RTF_ASSERT(slow_headers.outcome == "408");
+    RTF_ASSERT(slow_headers.took < std::chrono::milliseconds(2000));
+
+    // A chunked body, too.
+    auto slow_chunks = _read_trickled("POST /in HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n28\r\n", std::string(40, 'c'), 100, 500);
+    RTF_ASSERT(slow_chunks.outcome == "408");
+
+    auto in_time = _read_trickled(head + std::string(38, 'b'), "bb", 10, 2000);
+    RTF_ASSERT(in_time.outcome == "ok");
+    RTF_ASSERT(in_time.body == std::string(40, 'b'));
+
+    auto no_deadline_whole = _read_trickled("POST /in HTTP/1.1\r\nHost: x\r\nContent-Length: 12\r\n\r\n", std::string(12, 'b'), 100, 0);
+    RTF_ASSERT(no_deadline_whole.outcome == "ok");
+    RTF_ASSERT(no_deadline_whole.took >= std::chrono::milliseconds(1000));
+}
+
+// A web server answers a request still arriving at its deadline 408, before any route runs, and its worker goes on to
+// the next request.
+void test_r_http::test_web_server_read_deadline()
+{
+    int port = RTF_NEXT_PORT();
+    std::atomic<int> ran {0};
+    r_web_server<r_socket> ws(port, "127.0.0.1", 1);
+    RTF_ASSERT(r_web_server<r_socket>::DEFAULT_REQUEST_READ_DEADLINE_MS == 30000);
+    RTF_ASSERT(ws.request_read_deadline() == r_web_server<r_socket>::DEFAULT_REQUEST_READ_DEADLINE_MS);
+    ws.set_request_read_deadline(400);
+    RTF_ASSERT(ws.request_read_deadline() == 400);
+    ws.add_route(METHOD_POST, "/in", [&](const r_web_server<r_socket>&, r_socket&, const r_server_request&) {
+        ++ran;
+        return r_server_response();
+    });
+    ws.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Headers, then the body a byte every 100 ms.
+    r_socket slow;
+    slow.connect("127.0.0.1", port);
+    std::string head = "POST /in HTTP/1.1\r\nHost: x\r\nContent-Length: 40\r\n\r\n";
+    r_networking::r_send(slow, head.data(), head.size());
+    std::atomic<bool> stop_trickle {false};
+    auto trickle = std::thread([&]() {
+        for(int i = 0; i < 40 && !stop_trickle; ++i)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            try { r_networking::r_send(slow, "b", 1); } catch(...) { break; }
+        }
+    });
+    auto t0 = std::chrono::steady_clock::now();
+    r_client_response refused;
+    refused.read_response(slow);
+    stop_trickle = true;
+    trickle.join();
+    RTF_ASSERT(refused.get_status() == 408);
+    RTF_ASSERT(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+    RTF_ASSERT(ran == 0);
+
+    // The one worker is free again.
+    r_socket next;
+    next.connect("127.0.0.1", port);
+    std::string whole = "POST /in HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nok";
+    r_networking::r_send(next, whole.data(), whole.size());
+    r_client_response answered;
+    answered.read_response(next);
+    RTF_ASSERT(answered.get_status() == 200);
+    RTF_ASSERT(ran == 1);
+
+    ws.stop();
+}

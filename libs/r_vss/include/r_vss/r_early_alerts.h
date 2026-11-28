@@ -21,6 +21,20 @@ struct r_box
 };
 
 R_API float box_iou(const r_box& a, const r_box& b);
+// A box for the log: "[x1,y1 x2,y2] WxH", whole pixels of the letterbox.
+R_API std::string box_text(const r_box& b);
+
+// Whether two boxes of a class are the same thing in the same place: IoU at
+// least iou, or, for a vehicle, YOLO's jitter on a small box. A far car only
+// 20x12 px in the letterbox drops under IoU 0.5 when its box moves 8 px, so
+// IoU alone never saw it sit still. A vehicle's boxes also match when their
+// centres are within VEHICLE_JITTER_PX (and half the box) on each axis and
+// each side is within VEHICLE_JITTER_SIZE of the other's. On a big box that
+// much jitter keeps a high IoU anyway; a car driving past moves further.
+// Persons and animals: IoU only (a far person walking slowly moves little).
+constexpr float VEHICLE_JITTER_PX = 8.0f;
+constexpr float VEHICLE_JITTER_SIZE = 1.5f;
+R_API bool same_place(const std::string& class_name, const r_box& a, const r_box& b, float iou);
 
 // "person", "vehicle" or "animal" for the classes that alert (as revere_cloud
 // and belfry group them), "" for the rest.
@@ -117,6 +131,11 @@ public:
     // Decides for one detection YOLO found over the motion at ts, and
     // records it as sent if it is.
     R_API r_decision consider(const std::string& camera_id, const std::string& class_name, float confidence, const r_box& box, int64_t ts);
+    // Whether a detection is on one of the camera's active anchors of its
+    // class, as consider() holds it (early_anchored or early_not_alerting),
+    // with no floor and nothing recorded: for the detection pass on tier 3,
+    // which sends once per session itself.
+    R_API r_decision anchored(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts) const;
     // Whether a detection (class at ts) went out early this event.
     R_API bool sent_early(const std::string& camera_id, const std::string& class_name, int64_t ts) const;
     // Whether a vehicle at box (at ts) sits on one of the camera's learnt anchors: a parked car seen in an event
@@ -131,7 +150,16 @@ public:
     R_API int64_t look_interval_ms(const std::string& camera_id) const;
     // Learns anchors from the detections (unfiltered) in the frames that
     // started and ended the event; true if the camera's anchors changed.
-    R_API bool event_ended(const std::string& camera_id, int64_t ts, const std::vector<r_seen>& start_frame, const std::vector<r_seen>& end_frame);
+    // notes, if given, gets a line for each person, vehicle or animal in the
+    // start frame: its best match in the end frame and what that did to the
+    // anchors (nothing, a new one, or one seen again), for the log.
+    R_API bool event_ended(const std::string& camera_id, int64_t ts, const std::vector<r_seen>& start_frame, const std::vector<r_seen>& end_frame,
+                           std::vector<std::string>* notes = nullptr);
+    // For the log, when a detection wasn't held or left out: the camera's
+    // anchor of its class that best overlaps box, active or not, as
+    // "nearest car anchor [..] WxH: IoU 0.31, 1 sighting, weak, not active",
+    // or "no car anchor".
+    R_API std::string nearest_anchor(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts) const;
 
     R_API size_t anchor_count(const std::string& camera_id, int64_t now) const;
     R_API std::string to_json() const;
@@ -159,6 +187,9 @@ private:
         std::set<std::string> classes_sent;
         std::set<std::pair<std::string, int64_t>> sent;
     };
+
+    // consider()'s anchor test. PRECONDITION: _mtx held.
+    r_decision _anchored_locked(const std::string& camera_id, const std::string& class_name, const r_box& box, int64_t ts) const;
 
     mutable std::mutex _mtx;
     std::map<std::string, std::vector<anchor>> _anchors;

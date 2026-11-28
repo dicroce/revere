@@ -183,6 +183,47 @@ int frames_played(const string& url)
     return frames;
 }
 
+// A viewer that stays connected: take() waits for frames, and the session lasts until the viewer goes.
+struct viewer
+{
+    GstElement* pipeline {nullptr};
+    GstElement* out {nullptr};
+
+    explicit viewer(const string& url)
+    {
+        auto launch = "rtspsrc location=" + url + " protocols=tcp latency=0 ! rtph264depay ! video/x-h264,stream-format=byte-stream,alignment=au ! appsink name=out sync=false";
+        GError* err = nullptr;
+        pipeline = gst_parse_launch(launch.c_str(), &err);
+        if(err)
+            g_error_free(err);
+        RTF_ASSERT(pipeline != nullptr);
+        out = gst_bin_get_by_name(GST_BIN(pipeline), "out");
+        gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    }
+
+    ~viewer()
+    {
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        gst_object_unref(out);
+        gst_object_unref(pipeline);
+    }
+
+    // Up to n frames, each within 5 s of the last; how many came.
+    int take(int n)
+    {
+        int got = 0;
+        while(got < n)
+        {
+            auto sample = gst_app_sink_try_pull_sample(GST_APP_SINK(out), 5 * GST_SECOND);
+            if(!sample)
+                break;
+            gst_sample_unref(sample);
+            ++got;
+        }
+        return got;
+    }
+};
+
 // The status line of a DESCRIBE for url.
 int describe_status(int port, const string& url)
 {
@@ -227,9 +268,54 @@ void test_r_playback_restream::test_plays_to_the_end_of_its_range()
     auto n = frames_played(rs.url(path));
     RTF_ASSERT(n >= 2000 * FPS / 1000 && n <= 2000 * FPS / 1000 + 1);
 
-    // Again, on the same mount: a second session of its own.
+    // Again: mounted again first, as the stream keeper does on the next OPTIONS for it (the mount went with the
+    // session).
+    RTF_ASSERT(add_playback_mount(rs.mounts, path, PB_TOP, *rec.devices, "cam-pb", rec.base, rec.base + 2000));
     auto again = frames_played(rs.url(path));
     RTF_ASSERT(again == n);
+}
+
+// Whether a DESCRIBE for url answers `status` within 3 s.
+static bool describes_within(int port, const string& url, int status)
+{
+    for(int i = 0; i < 30; ++i)
+    {
+        if(describe_status(port, url) == status)
+            return true;
+        this_thread::sleep_for(chrono::milliseconds(100));
+    }
+    return false;
+}
+
+void test_r_playback_restream::test_mount_goes_with_its_session()
+{
+    recording rec;
+    rtsp_server rs;
+
+    auto path = rec.path(0, 2000);
+    RTF_ASSERT(add_playback_mount(rs.mounts, path, PB_TOP, *rec.devices, "cam-pb", rec.base, rec.base + 2000));
+    RTF_ASSERT(frames_played(rs.url(path)) > 0);
+
+    // Its session over, the mount is gone: mounts no longer pile up, one per play, for as long as revere runs.
+    RTF_ASSERT(describes_within(rs.port, rs.url(path), 404));
+}
+
+void test_r_playback_restream::test_newer_mount_stays()
+{
+    recording rec;
+    rtsp_server rs;
+
+    auto path = rec.path(0, 4000);
+    RTF_ASSERT(add_playback_mount(rs.mounts, path, PB_TOP, *rec.devices, "cam-pb", rec.base, rec.base + 4000));
+    {
+        viewer first(rs.url(path));
+        RTF_ASSERT(first.take(5) == 5);
+        // Another viewer's request for the same URL mounts it again, in place of the first's.
+        RTF_ASSERT(add_playback_mount(rs.mounts, path, PB_TOP, *rec.devices, "cam-pb", rec.base, rec.base + 4000));
+    }
+    // The first session ends without taking the newer mount with it.
+    this_thread::sleep_for(chrono::seconds(1));
+    RTF_ASSERT(describe_status(rs.port, rs.url(path)) == 200);
 }
 
 void test_r_playback_restream::test_nothing_recorded_mounts_nothing()

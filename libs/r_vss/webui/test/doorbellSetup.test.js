@@ -1,0 +1,129 @@
+// Run with: npm test (node's built-in test runner; no extra dependencies).
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { pressSourceChoice, pressTestLines, pressTestVerdict, mailStatusLines, clockText, passwordShown, mailSetupError, mailSetupRows, mailSetupAfterRead, newPasswordAfter, MAIL_SENDER } from '../src/utils/doorbellSetup.js'
+
+test('the press source is sent for a doorbell once chosen, never for a camera or to an older revere', () => {
+  assert.deepEqual(pressSourceChoice({ press_source: 'onvif' }, true, 'onvif'), {})
+  assert.deepEqual(pressSourceChoice({ press_source: 'onvif' }, true, 'reolink_email'), { press_source: 'reolink_email' })
+  assert.deepEqual(pressSourceChoice({ press_source: 'reolink_email' }, true, 'reolink_email'), { press_source: 'reolink_email' })
+  assert.deepEqual(pressSourceChoice({ press_source: 'reolink_email' }, true, 'onvif'), { press_source: 'onvif' })
+  assert.deepEqual(pressSourceChoice({ press_source: 'onvif' }, false, 'reolink_email'), {})
+  assert.deepEqual(pressSourceChoice({}, true, 'reolink_email'), {})
+  assert.deepEqual(pressSourceChoice(null, true, 'reolink_email'), {})
+})
+
+test("the press test's lines: right away, how late, not yet while it runs, didn't arrive once it's over", () => {
+  const sources = [{ source: 'onvif', seen: true, after_ms: 300 }, { source: 'reolink_email', seen: false }]
+  assert.deepEqual(pressTestLines({ open: true, sources }), ['ONVIF: arrived right away', 'Email: not yet'])
+  assert.deepEqual(pressTestLines({ open: false, sources: [{ source: 'onvif', seen: false }, { source: 'reolink_email', seen: true, after_ms: 14400 }] }),
+    ["ONVIF: didn't arrive", 'Email: arrived after 14 seconds'])
+  assert.deepEqual(pressTestLines({ open: false, sources: [{ source: 'reolink_email', seen: true, after_ms: 1200 }] }), ['Email: arrived after 1 second'])
+  assert.deepEqual(pressTestLines(null), [])
+  // An email that wasn't a press came during the test.
+  assert.deepEqual(pressTestLines({ open: false, other_mail: true, sources: [{ source: 'onvif', seen: false }, { source: 'reolink_email', seen: false }] }),
+    ['ONVIF: didn\'t arrive', 'Email: didn\'t arrive', "Got an email from the doorbell, but it wasn't a press."])
+  // The doorbell's clock 3 s or more off (GET /doorbell_presses' clock_offset_ms): said, with what to do.
+  const done = { open: false, sources: [{ source: 'reolink_email', seen: true, after_ms: 1000 }] }
+  assert.equal(pressTestLines(done, -9000).at(-1), "The doorbell's clock is 9 seconds slow. Turn on time sync (NTP) in the Reolink app.")
+  assert.equal(pressTestLines(done, 3000).at(-1), "The doorbell's clock is 3 seconds fast. Turn on time sync (NTP) in the Reolink app.")
+  assert.equal(pressTestLines(done, -3000).length, 2)
+  assert.equal(pressTestLines(done, -2999).length, 1)
+  assert.equal(pressTestLines(done, 2999).length, 1)
+  assert.equal(pressTestLines(done, null).length, 1)
+  assert.equal(pressTestLines(done).length, 1)
+  assert.deepEqual(pressTestLines(null, -9000), [])
+})
+
+test("the test's verdict, once it's over", () => {
+  assert.equal(pressTestVerdict(null, 'onvif'), '')
+  assert.equal(pressTestVerdict({ open: true, sources: [{ source: 'onvif', seen: true }] }, 'onvif'), '')
+  const onvif = { open: false, sources: [{ source: 'onvif', seen: true }] }
+  assert.equal(pressTestVerdict(onvif, 'onvif'), 'The doorbell sent the press over ONVIF. Rings will arrive right away.')
+  assert.equal(pressTestVerdict(onvif, 'reolink_email'), 'The doorbell sent the press over ONVIF. Choose ONVIF so rings arrive right away.')
+  assert.equal(pressTestVerdict({ open: false, sources: [{ source: 'onvif', seen: false }, { source: 'reolink_email', seen: true }] }, 'reolink_email'), 'The doorbell only emailed the press. Keep Reolink email.')
+  assert.equal(pressTestVerdict({ open: false, sources: [{ source: 'onvif', seen: false }] }, 'onvif'), 'No press arrived. If this is a Reolink doorbell, choose Reolink email and set it up.')
+  assert.equal(pressTestVerdict({ open: false, sources: [{ source: 'reolink_email', seen: false }] }, 'reolink_email'), 'No press arrived. Check the email settings in the Reolink app, then test again.')
+})
+
+test("the doorbell's email status, a line at a time", () => {
+  assert.deepEqual(mailStatusLines({}, { press_source: 'onvif' }, 'onvif'), [])
+  assert.equal(mailStatusLines({}, { press_source: 'onvif' }, 'reolink_email')[0], "Save to start receiving this doorbell's email.")
+  const saved = { press_source: 'reolink_email', last_press_ms: { reolink_email: null } }
+  assert.equal(mailStatusLines({ listening: false }, saved, 'reolink_email')[0], "Revere is getting ready to receive the doorbell's email. This takes a few seconds.")
+  assert.equal(mailStatusLines({ listening: false, last_error: 'the port is in use' }, saved, 'reolink_email')[0], "Revere can't receive the doorbell's email: the port is in use")
+  assert.equal(mailStatusLines({ listening: true }, saved, 'reolink_email')[0], "Ready. The doorbell hasn't emailed a press yet. Press it once to check.")
+  const rung = { press_source: 'reolink_email', last_press_ms: { reolink_email: 1764018345000 } }
+  const lines = mailStatusLines({ listening: true, other_mail: 1, bad_logins: 2 }, rung, 'reolink_email')
+  assert.equal(lines[0], `The doorbell last emailed a press at ${clockText(1764018345000)}.`)
+  assert.equal(lines[1], "The doorbell sent 1 email that wasn't a press. In the Reolink app, set the email Alarm Schedule to Ring only.")
+  assert.equal(lines[2], "The doorbell's email login failed 2 times. Check the password in the Reolink app.")
+  const more = mailStatusLines({ listening: true, other_mail: 3, bad_logins: 1 }, rung, 'reolink_email')
+  assert.match(more[1], /sent 3 emails that weren't presses\./)
+  assert.match(more[2], /failed 1 time\./)
+  assert.equal(more.length, 3)
+  // Locked for its wrong passwords: whole minutes left, rounded up.
+  const locked = (ms) => mailStatusLines({ listening: true, other_mail: 3, bad_logins: 1, locked_for_ms: ms }, rung, 'reolink_email')[3]
+  assert.equal(locked(7 * 60000 - 1000), 'Too many wrong passwords from the doorbell. Locked for 7 more minutes.')
+  assert.equal(locked(1), 'Too many wrong passwords from the doorbell. Locked for 1 more minute.')
+  assert.equal(locked(60001), 'Too many wrong passwords from the doorbell. Locked for 2 more minutes.')
+  assert.match(clockText(1764018345000), /^\d\d:\d\d:\d\d$/)
+})
+
+test('the password is shown as it is, and a real sender address', () => {
+  // All 8 characters together, no space or dash, as Copy copies it; hidden until shown.
+  assert.equal(passwordShown('k7mq2xpa', true), 'k7mq2xpa')
+  assert.equal(passwordShown('k7mq2xpa', false), '••••••••••••')
+  assert.equal(passwordShown(undefined, true), '')
+  assert.equal(MAIL_SENDER, 'doorbell@revere.video')
+})
+
+test('the mail setup rows are what the Reolink app asks for, with no user name', () => {
+  const mail = { server: '192.168.1.20', port: 2525, sender: 'doorbell@revere.video', password: 'k7mq2xpa', recipient: 'pressed@revere.video', user: 'ignored' }
+  const rows = mailSetupRows(mail)
+  assert.deepEqual(rows.map((r) => r.name), ['SMTP server', 'SMTP port', 'SSL or TLS', "Sender's email", 'Password', 'Recipient'])
+  assert.deepEqual(rows.map((r) => r.value), ['192.168.1.20', '2525', 'On', 'doorbell@revere.video', 'k7mq2xpa', 'pressed@revere.video'])
+  assert.deepEqual(rows.map((r) => !!r.secret), [false, false, false, false, true, false])
+  assert.deepEqual(rows.map((r) => !!r.copy), [true, true, false, true, true, true])
+  // An older revere gives no sender: ours is shown.
+  assert.equal(mailSetupRows({ ...mail, sender: undefined })[3].value, 'doorbell@revere.video')
+  assert.deepEqual(mailSetupRows(null), [])
+})
+
+test("the email setup's error says what went wrong", () => {
+  assert.equal(mailSetupError(new Error('Request failed (404)')), "This computer doesn't have an address the doorbell can reach yet, or this camera isn't a doorbell.")
+  assert.equal(mailSetupError(new Error('Not a doorbell.')), "This computer doesn't have an address the doorbell can reach yet, or this camera isn't a doorbell.")
+  assert.match(mailSetupError(new Error('Session expired — please log in again.')), /Sign in again/)
+  assert.match(mailSetupError(new TypeError('Failed to fetch')), /Couldn't reach Revere/)
+  assert.equal(mailSetupError(new Error('Request failed (500)')), "Couldn't read the email setup: Request failed (500)")
+})
+
+test("a read of the email setup that began before New password changes nothing", () => {
+  const before = { server: '192.168.1.20', password: 'k7mq2xpa', listening: true }
+  const made = { server: '192.168.1.20', password: 'p3nw8hrd', listening: true }
+  // The first read (with the login) answers after the new password: the old one doesn't come back.
+  assert.equal(mailSetupAfterRead(made, before, { haveLogin: false, stale: true }), made)
+  // Nor does its failure clear the setup.
+  assert.equal(mailSetupAfterRead(made, null, { haveLogin: false, stale: true, failed: true }), made)
+  // A read that counts: the login when it was asked for, else the status with the password already shown.
+  assert.deepEqual(mailSetupAfterRead(null, before, { haveLogin: false, stale: false }), before)
+  assert.deepEqual(mailSetupAfterRead(made, { server: '192.168.1.21', listening: false }, { haveLogin: true, stale: false }),
+    { server: '192.168.1.21', listening: false, password: 'p3nw8hrd' })
+  // A failed read forgets the setup only when it was the one bringing the login.
+  assert.equal(mailSetupAfterRead(null, null, { haveLogin: false, stale: false, failed: true }), null)
+  assert.equal(mailSetupAfterRead(made, null, { haveLogin: false, stale: false, failed: true }), null)
+  assert.equal(mailSetupAfterRead(made, null, { haveLogin: true, stale: false, failed: true }), made)
+})
+
+test("New password's answer: shown at once, unless another camera was opened while it was asked", () => {
+  const shown = { mail: { server: '192.168.1.21', password: 'olD0pass' }, reveal: false, confirming: true, error: 'x' }
+  const made = { server: '192.168.1.21', password: 'p3nw8hrd' }
+  // It counts: the new login, revealed, the confirm closed, no error.
+  assert.deepEqual(newPasswordAfter(shown, made, { stale: false }), { mail: made, reveal: true, confirming: false, error: '' })
+  // Another camera opened meanwhile: its pane is left as it is, and the old camera's password isn't shown there.
+  const other = { mail: null, reveal: false, confirming: false, error: '' }
+  assert.equal(newPasswordAfter(other, made, { stale: true }), other)
+  assert.equal(newPasswordAfter(other, null, { stale: true, failed: "Couldn't reach Revere" }), other)
+  // It failed: the error, with the setup as it was.
+  assert.deepEqual(newPasswordAfter(shown, null, { stale: false, failed: "Couldn't reach Revere" }), { ...shown, error: "Couldn't reach Revere" })
+})

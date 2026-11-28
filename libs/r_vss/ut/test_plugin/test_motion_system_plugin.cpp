@@ -1,7 +1,7 @@
 // A system plugin for test_r_system_plugin_motion: it appends each system_plugin_post_motion call to
-// <top_dir>/motion.txt ("camera started ts") and each system_plugin_camera_state call to <top_dir>/state.txt
-// ("camera receiving failed"). A call for a camera named "slow..." takes half a second. Built twice, the second time with
-// NO_MOTION_EXPORTS: a plugin with neither export (and the detection export a plugin of this kind has).
+// <top_dir>/motion.txt ("camera started ts"), each system_plugin_camera_state call to <top_dir>/state.txt
+// ("camera receiving failed") and each system_plugin_doorbell_ring call to <top_dir>/ring.txt ("camera ts"). A call for a camera named "slow..." takes half a second. Built twice, the second time with
+// NO_MOTION_EXPORTS: a plugin with none of the three; and with RING_ONLY, one with only system_plugin_doorbell_ring (and the detection export a plugin of this kind has).
 #include "r_vss/r_system_plugin.h"
 #include <chrono>
 #include <cstdio>
@@ -70,7 +70,7 @@ R_API void system_plugin_post_detection(r_system_plugin_handle h, const char* ca
     append(h, "detection.txt", std::string(camera_id) + " " + std::to_string(ts) + " " + class_name);
 }
 
-#ifndef NO_MOTION_EXPORTS
+#if !defined(NO_MOTION_EXPORTS) && !defined(RING_ONLY)
 R_API void system_plugin_post_motion(r_system_plugin_handle h, const char* camera_id, int started, int64_t ts_ms)
 {
     maybe_slow(camera_id);
@@ -81,6 +81,14 @@ R_API void system_plugin_camera_state(r_system_plugin_handle h, const char* came
 {
     maybe_slow(camera_id);
     append(h, "state.txt", std::string(camera_id) + " " + std::to_string(receiving_video) + " " + std::to_string(stream_failed));
+}
+#endif
+
+#ifndef NO_MOTION_EXPORTS
+R_API void system_plugin_doorbell_ring(r_system_plugin_handle h, const char* camera_id, int64_t ts_ms)
+{
+    maybe_slow(camera_id);
+    append(h, "ring.txt", std::string(camera_id) + " " + std::to_string(ts_ms));
 }
 #endif
 

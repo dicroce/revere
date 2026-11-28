@@ -307,6 +307,18 @@ void r_raw_socket::close()
 #endif
 }
 
+void r_raw_socket::shutdown()
+{
+    sock_t s = _sok.load(std::memory_order_acquire);
+    if (s == kInvalidSock)
+        return;
+#ifdef IS_WINDOWS
+    ::shutdown(s, SD_BOTH);
+#else
+    ::shutdown(s, SHUT_RDWR);
+#endif
+}
+
 sock_t r_raw_socket::get_sok_id() const
 {
     return _sok;

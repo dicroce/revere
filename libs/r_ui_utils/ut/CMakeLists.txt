@@ -13,6 +13,8 @@ add_executable(
     source/test_log_tail.cpp
     include/test_view_status.h
     source/test_view_status.cpp
+    include/test_font_scale.h
+    source/test_font_scale.cpp
 )
 
 target_include_directories(
