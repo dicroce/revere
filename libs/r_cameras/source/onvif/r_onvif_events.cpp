@@ -10,7 +10,10 @@ using namespace r_utils;
 using namespace std;
 using namespace std::chrono;
 
-static const int PULL_TIMEOUT_S = 2;       // short, so a stop is never waiting on a long pull
+// How long one pull waits for the camera to have something. A stop cuts it short (r_onvif_interrupt), so it can be
+// long: one request every LONG_PULL_S when nothing happens, in place of one every couple of seconds.
+static const int LONG_PULL_S = 20;
+static const int PUSH_WAIT_S = 2;          // the push session's wait between checks of its notifications
 static atomic<int> g_termination_s {120};
 static atomic<int> g_silence_floor_s {30};
 
@@ -49,8 +52,36 @@ static string _first_line(const string& s)
 }
 
 r_onvif_events::r_onvif_events(const r_disco::r_camera& camera, transition_fn on_transition) :
-    r_camera_events_base(camera, std::move(on_transition), "onvif")
+    r_camera_events_base(camera, std::move(on_transition), "onvif"),
+    _interrupt(make_shared<r_onvif::r_onvif_interrupt>())
 {
+}
+
+void r_onvif_events::read_clock()
+{
+    _clock_asked = true;
+    _notify_cv.notify_all();   // a push session's wait ends; a pull's ends on its own
+}
+
+void r_onvif_events::_read_clock(r_onvif::r_onvif_cam& cam, bool connecting)
+{
+    const auto now = steady_clock::now();
+    if (connecting)
+        _clock_asked = false;   // the session's own read, just made, is the one asked for
+    else if (!clock_read_due(_clock_asked.exchange(false), duration_cast<seconds>(now - _clock_read).count()))
+        return;
+    _clock_read = now;
+    auto offset = connecting ? cam.clock_offset_seconds() : cam.read_clock_offset();
+    if (offset.is_null())
+        return;
+    const int64_t ms = (int64_t)offset.value() * 1000;
+    _update([ms](r_camera_events_status& s) { s.clock_offset_ms = ms; });
+}
+
+void r_onvif_events::_stop_requested()
+{
+    _interrupt->interrupt();
+    _notify_cv.notify_all();
 }
 
 r_onvif_events::~r_onvif_events() noexcept
@@ -79,6 +110,8 @@ void r_onvif_events::_run()
             stage = "connecting";
             r_onvif::r_onvif_cam cam(ep.value().host, ep.value().port, ep.value().protocol, ep.value().uri,
                                      _camera.rtsp_username, _camera.rtsp_password);
+            cam.set_interrupt(_interrupt);
+            _read_clock(cam, true);
             stage = "GetCapabilities";
             auto caps = cam.get_camera_capabilities();
             auto events = cam.get_events_service(caps);
@@ -121,7 +154,8 @@ void r_onvif_events::_run()
             {
                 r_onvif::r_onvif_cam& cam;
                 r_onvif::onvif_pull_point& pp;
-                ~unsubscribe_on_exit() { try { cam.unsubscribe(pp); } catch (...) {} }
+                // Not cut short by a stop: the interrupt only ends the pull in flight.
+                ~unsubscribe_on_exit() { try { cam.set_interrupt(nullptr); cam.unsubscribe(pp); } catch (...) {} }
             } unsubscribe_it{cam, pp};
             {
                 int port = ep.value().port;
@@ -133,10 +167,34 @@ void r_onvif_events::_run()
             _check_region(cam, caps);
 
             auto renewed = steady_clock::now();
+            int failed_pulls = 0;
             while (_running())
             {
                 stage = "PullMessages";
-                _apply(_tracker.process(cam.pull_messages(pp, PULL_TIMEOUT_S, 100)));
+                vector<r_onvif::onvif_event> pulled;
+                const auto asked = steady_clock::now();
+                try
+                {
+                    pulled = cam.pull_messages(pp, LONG_PULL_S, 100);
+                    failed_pulls = 0;
+                }
+                catch (const exception& e)
+                {
+                    // A stop cut it short; else one failure (a dropped connection) is asked again on the same
+                    // subscription, and only a second in a row makes a new one: the camera keeps only a few.
+                    if (!_running())
+                        break;
+                    if (++failed_pulls >= 2)
+                        throw;
+                    R_LOG_WARNING("%sa pull failed (%s): asking the same subscription again", _prefix().c_str(), _first_line(e.what()).c_str());
+                    if (!_wait(1))
+                        break;
+                    continue;
+                }
+                // A camera that answers at once with nothing, whatever the wait asked for, isn't asked again at once.
+                if (pulled.empty() && steady_clock::now() - asked < seconds(1) && !_wait(1))
+                    break;
+                _apply(_tracker.process(pulled));
 
                 // Topics and classes are learned from the first pull's
                 // Initialized states too, which usually cause no transitions.
@@ -149,6 +207,8 @@ void r_onvif_events::_run()
                 // An event open far longer than anything real means its end was missed.
                 if (_stale())
                     _apply(_tracker.close_all());
+
+                _read_clock(cam, false);
 
                 if (steady_clock::now() - renewed > seconds(g_termination_s.load() / 2))
                 {
@@ -247,7 +307,8 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
     {
         r_onvif::r_onvif_cam& cam;
         r_onvif::onvif_pull_point& sub;
-        ~unsubscribe_on_exit() { try { cam.unsubscribe(sub); } catch (...) {} }
+        // Not cut short by a stop: the interrupt only ends the request in flight.
+        ~unsubscribe_on_exit() { try { cam.set_interrupt(nullptr); cam.unsubscribe(sub); } catch (...) {} }
     } unsubscribe_it{cam, sub};
     _update([port](r_camera_events_status& s) { s.up = true; s.state = "subscribed"; s.port = port; s.last_error.clear(); });
     backoff_s = 10;
@@ -277,7 +338,7 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
         vector<string> bodies;
         {
             unique_lock<mutex> lk(_notify_lock);
-            _notify_cv.wait_for(lk, seconds(PULL_TIMEOUT_S), [this]() { return !_notifies.empty() || !_running(); });
+            _notify_cv.wait_for(lk, seconds(PUSH_WAIT_S), [this]() { return !_notifies.empty() || !_running() || _clock_asked.load(); });
             bodies.swap(_notifies);
         }
         stage = "Notify";
@@ -333,6 +394,8 @@ void r_onvif_events::_push_session(r_onvif::r_onvif_cam& cam, const string& even
         }
         if (_stale())
             _apply(_tracker.close_all());
+
+        _read_clock(cam, false);
 
         if (!received && !hinted && steady_clock::now() - subscribed > seconds(HINT_AFTER_S))
         {

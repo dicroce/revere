@@ -3,6 +3,9 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <time.h>
+#include <mutex>
+#include <random>
+#include <string.h>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -11,7 +14,10 @@
 #include <strsafe.h>
 #include <tchar.h>
 #else
+#include <arpa/inet.h>
 #include <dirent.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -121,14 +127,45 @@ bool rtf_file_exists(const std::string& fileName) {
 #endif
 }
 
-// This is a globally (across test) incrementing counter so that tests can avoid
-// having hardcoded port numbers but can avoid stepping on eachothers ports.
-int _next_port = 5000;
+// Whether nothing on this machine holds the TCP port. (Not on Windows, where this says yes: a port there is not
+// checked, only started from a different place by each test process.)
+static bool rtf_port_is_free(int port) {
+#ifdef _WIN32
+  (void)port;
+  return true;
+#else
+  int s = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (s < 0)
+    return true;
+  sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons((uint16_t)port);
+  // No SO_REUSEADDR: a port that is listened on, or still closing, is not free.
+  const bool free = ::bind(s, (sockaddr*)&addr, sizeof(addr)) == 0;
+  ::close(s);
+  return free;
+#endif
+}
 
+// A port for a test to listen on, different for each call. Test processes run at the same time on one machine (several
+// people, several checkouts, a build server), so each starts from a place of its own, and a port something already
+// holds is skipped: a counter that every process started at 5000 had them all use the same ports, and a test then
+// failed to listen, or talked to another process's server.
 int rtf_next_port() {
-  int ret = _next_port;
-  _next_port++;
-  return ret;
+  static std::mutex m;
+  static int next = 0;
+  std::lock_guard<std::mutex> g(m);
+  if (next == 0)
+    next = 10000 + (int)(std::random_device()() % 16000);
+  while (true) {
+    int port = next++;
+    if (next > 40000)
+      next = 10000;
+    if (rtf_port_is_free(port))
+      return port;
+  }
 }
 
 void handle_terminate() {

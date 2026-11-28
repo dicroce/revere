@@ -263,7 +263,14 @@ def _stay_healthy(rig: _Rig, seconds: float) -> None:
                                   f"{len(state['lagging'])} lagging, largest lag {state['max_lag_ms']} ms")
             if not snapped and elapsed >= seconds / 2:
                 snapped = True
-                ctx.snap(f"{rig.cams[0].spec.name} halfway", rig.cams[0].rtsp_url())
+                # From the recorder, not the fake camera: a second RTSP client on it resets its timeline.
+                try:
+                    entry = rig.api.camera(rig.cams[0].spec.name)
+                    data = rig.api.picture(entry["id"]) if entry and entry.get("id") else None
+                    if data:
+                        ctx.snap_jpeg(f"{rig.cams[0].spec.name} halfway", data)
+                except Exception:
+                    pass
         ctx.reporter.note(f"{checks} health checks; {lagging_checks} showed a lagging camera; largest lag {worst_lag} ms")
         run.check(not bad, f"cameras not receiving or failed, with the number of checks: {bad}")
 

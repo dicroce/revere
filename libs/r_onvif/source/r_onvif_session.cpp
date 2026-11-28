@@ -72,7 +72,8 @@ static pair<int, string> _http_interact(
     const string& soap_action = "",
     int timeout_ms = 30000,
     int net_attempts = 2,
-    bool log_request = true   // false for requests made every few seconds (event pulls); failures still log
+    bool log_request = true,  // false for requests made every few seconds (event pulls); failures still log
+    r_onvif::r_onvif_interrupt* interrupt = nullptr   // a stop can cut it short (r_onvif_interrupt)
 )
 {
     const int MAX_NET_ATTEMPTS = net_attempts;
@@ -90,6 +91,8 @@ retry_redirect:
             this_thread::sleep_for(chrono::milliseconds(300));
         }
 
+        if (interrupt && interrupt->interrupted())
+            throw std::runtime_error("interrupted: the subscriber is stopping");
         try
         {
             if (log_request)
@@ -100,6 +103,16 @@ retry_redirect:
                 sock = std::make_unique<r_utils::r_ssl_socket>();
             else
                 sock = std::make_unique<r_utils::r_socket>();
+
+            // While it's in flight, a stop shuts this socket's connection down, which wakes a connect, a send or a long
+            // read; it's closed here, on this thread.
+            if (interrupt && !interrupt->set_active(sock.get()))
+                throw std::runtime_error("interrupted: the subscriber is stopping");
+            struct inactive_on_exit
+            {
+                r_onvif::r_onvif_interrupt* interrupt;
+                ~inactive_on_exit() { if (interrupt) interrupt->set_active(nullptr); }
+            } inactive{interrupt};
 
             sock->connect(host, port);
 
@@ -173,7 +186,8 @@ retry_redirect:
         }
         catch (const std::exception& ex)
         {
-            if (net_attempt + 1 == MAX_NET_ATTEMPTS)
+            // A stop cut it short: no retry.
+            if (net_attempt + 1 == MAX_NET_ATTEMPTS || (interrupt && interrupt->interrupted()))
                 throw;
             R_LOG_INFO("HTTP attempt %d/%d failed (%s), retrying...", net_attempt + 1, MAX_NET_ATTEMPTS, ex.what());
         }
@@ -982,6 +996,7 @@ r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::
             try
             {
                 camera_time = get_camera_system_date_and_time(_username, _password);
+                time_synced = true;
                 break;
             }
             catch (const std::exception& ex)
@@ -1002,6 +1017,36 @@ r_onvif::r_onvif_cam::r_onvif_cam(const std::string& host, int port, const std::
     }
 
     _time_offset_seconds = (int)((int64_t)camera_time - (int64_t)now);
+    _time_known = time_synced;
+}
+
+r_utils::r_nullable<int> r_onvif::r_onvif_cam::clock_offset_seconds() const
+{
+    return _time_known ? r_utils::r_nullable<int>(_time_offset_seconds) : r_utils::r_nullable<int>();
+}
+
+r_utils::r_nullable<int> r_onvif::r_onvif_cam::read_clock_offset()
+{
+    const auto now = chrono::system_clock::to_time_t(chrono::system_clock::now());
+    time_t camera_time = 0;
+    try
+    {
+        camera_time = get_camera_system_date_and_time(r_nullable<string>(), r_nullable<string>());
+    }
+    catch (...)
+    {
+        try
+        {
+            camera_time = get_camera_system_date_and_time(_username, _password);
+        }
+        catch (...)
+        {
+            return r_utils::r_nullable<int>();
+        }
+    }
+    _time_offset_seconds = (int)((int64_t)camera_time - (int64_t)now);
+    _time_known = true;
+    return r_utils::r_nullable<int>(_time_offset_seconds);
 }
 
 // Helper to check if response indicates SOAP version mismatch
@@ -1150,7 +1195,7 @@ pair<int, string> r_onvif::r_onvif_cam::_soap_request(
             string body = _build_soap_envelope(ver, auth, build_body, username, password, _time_offset_seconds, build_header);
 
             // Pass SOAP version and action to set appropriate headers
-            result = _http_interact(host, port, "POST", uri, body, ver, soap_action, timeout_ms, net_attempts, log_request);
+            result = _http_interact(host, port, "POST", uri, body, ver, soap_action, timeout_ms, net_attempts, log_request, _interrupt.get());
 
             // Check if successful
             if (result.first == 200)
@@ -1276,6 +1321,7 @@ r_onvif::onvif_time_sync r_onvif::r_onvif_cam::sync_system_date_and_time()
     }
     out.offset_after = (int64_t)after.time - (int64_t)now();
     _time_offset_seconds = (int)out.offset_after;
+    _time_known = true;
 
     if (llabs(out.offset_after) > ONVIF_TIME_SYNC_TOLERANCE_SECONDS)
         throw std::runtime_error("The camera accepted the new time but its clock is still " +
@@ -2920,6 +2966,31 @@ pair<int, string> r_onvif::r_onvif_cam::_pull_point_request(
         timeout_ms,
         net_attempts
     );
+}
+
+void r_onvif::r_onvif_interrupt::interrupt()
+{
+    lock_guard<mutex> g(_lock);
+    _interrupted = true;
+    // Shut down, not closed: the request's thread may be inside the socket (mbedtls_ssl_read on 443) and closes it
+    // itself. set_active(nullptr) comes before the socket goes, under this lock, so _active is never a freed one.
+    if (_active)
+        _active->shutdown();
+}
+
+bool r_onvif::r_onvif_interrupt::interrupted() const
+{
+    lock_guard<mutex> g(_lock);
+    return _interrupted;
+}
+
+bool r_onvif::r_onvif_interrupt::set_active(r_utils::r_socket_base* sock)
+{
+    lock_guard<mutex> g(_lock);
+    if (_interrupted && sock)
+        return false;
+    _active = sock;
+    return true;
 }
 
 vector<r_onvif::onvif_event> r_onvif::r_onvif_cam::pull_messages(const onvif_pull_point& pull_point, int timeout_seconds, int message_limit)

@@ -3,14 +3,15 @@
 all of Vision's icons, in the same style.
 
 The style is build-icons.sh's desktop tile: a square, full-bleed tile with the mark
-(revere-mark-compact.svg: outline 12->52 with a 3.5 stroke, stamp 27->37 on the 64
-grid) spanning half the tile, white on ink. 16/32/48 are drawn on the pixel grid with
-the same coordinates build-icons.sh uses; 256 is rendered from the geometry.
+spanning half the tile, white on ink. Revere's mark is the Shutter
+(revere-mark-compact.svg at 32 px and below: four blades on the 64 grid, outer bounds
+12->52), rendered from its geometry.
 
-Vision has the same tile and outline with a play triangle as its stamp, so the two
-apps are told apart by shape: (27.5, 24.5), (41.5, 32), (27.5, 39.5) on the 64 grid,
-nudged right of centre so it looks centred. At 16/32/48 the triangle is placed by
-hand on the pixel grid (PLAY_STAMPS) so its edges step cleanly.
+Vision has its own mark: a square outline (12->52 with a 3.5 stroke) with a play
+triangle as its stamp: (27.5, 24.5), (41.5, 32), (27.5, 39.5) on the 64 grid, nudged
+right of centre so it looks centred. 16/32/48 are drawn on the pixel grid; there the
+triangle is placed by hand (PLAY_STAMPS) so its edges step cleanly. 256 is rendered
+from the geometry.
 
 Pure Python (no rsvg/ImageMagick needed). Writes:
   apps/revere/include/R_32x32.h      Revere window (title bar) icon
@@ -28,8 +29,8 @@ import zlib
 INK = (0x18, 0x18, 0x1B)
 PAPER = (0xFF, 0xFF, 0xFF)
 
-# size -> (outline first px, outline last px, stroke px, stamp first px, stamp last px),
-# inclusive pixel coordinates, identical to build-icons.sh's pixel_tile calls.
+# Vision: size -> (outline first px, outline last px, stroke px, stamp first px, stamp last px),
+# inclusive pixel coordinates.
 PIXEL_TILES = {
     16: (4, 11, 1, 7, 8),
     32: (8, 23, 2, 14, 17),
@@ -48,6 +49,9 @@ PLAY_STAMPS = {
     48: (20, 21, (2, 4, 6, 8, 8, 6, 4, 2)),
 }
 PLAY_TRIANGLE = ((27.5, 24.5), (41.5, 32.0), (27.5, 39.5))  # on the 64 grid
+# Revere's Shutter, compact cut (revere-mark-compact.svg): the blades as (x, y, w, h) on the 64 grid.
+SHUTTER_COMPACT = ((12, 12, 24, 12), (40, 12, 12, 24), (28, 40, 24, 12), (12, 28, 12, 24))
+SHUTTER_SPAN = 40.0  # outer bounds 12 -> 52
 SMOOTH_SIZE = 256
 SS = 8  # supersamples per axis for the smooth size
 
@@ -113,6 +117,29 @@ def smooth_tile(size, tile, mark, play=False):
     return rows
 
 
+def shutter_tile(size, tile, mark, blades=SHUTTER_COMPACT):
+    """Revere's tile at `size`: the Shutter's blades spanning half of it, as build-icons.sh renders them, each pixel
+    covered in proportion to the blades over it (SS x SS samples)."""
+    s = 0.5 * size / SHUTTER_SPAN
+    t = size / 2.0 - 32.0 * s
+    rects = [(t + x * s, t + y * s, t + (x + w) * s, t + (y + h) * s) for x, y, w, h in blades]
+    rows = []
+    for py in range(size):
+        row = bytearray()
+        for px in range(size):
+            hits = 0
+            for sy in range(SS):
+                y = py + (sy + 0.5) / SS
+                for sx in range(SS):
+                    x = px + (sx + 0.5) / SS
+                    if any(x0 <= x < x1 and y0 <= y < y1 for x0, y0, x1, y1 in rects):
+                        hits += 1
+            m = hits / (SS * SS)
+            row += bytes((*(round(tile[i] * (1 - m) + mark[i] * m) for i in range(3)), 255))
+        rows.append(bytes(row))
+    return rows
+
+
 def png_bytes(size, rows):
     def chunk(tag, data):
         c = struct.pack(">I", len(data)) + tag + data
@@ -156,14 +183,14 @@ def c_array(name, data):
     return "\n".join(lines) + "\n"
 
 
-def write_header(path, name, size, tile, mark, play=False):
+def write_header(path, name, size, rows):
     with open(path, "w", newline="\n") as f:
-        f.write(c_array(name, png_bytes(size, pixel_tile(size, tile, mark, play))))
+        f.write(c_array(name, png_bytes(size, rows)))
     print("wrote", os.path.relpath(path, ROOT))
 
 
 if __name__ == "__main__":
-    write_header(os.path.join(ROOT, "apps/revere/include/R_32x32.h"), "R_32x32_png", 32, INK, PAPER)
+    write_header(os.path.join(ROOT, "apps/revere/include/R_32x32.h"), "R_32x32_png", 32, shutter_tile(32, INK, PAPER))
 
     images = [(s, pixel_tile(s, INK, PAPER, play=True)) for s in sorted(PIXEL_TILES)]
     images.append((SMOOTH_SIZE, smooth_tile(SMOOTH_SIZE, INK, PAPER, play=True)))
@@ -172,4 +199,4 @@ if __name__ == "__main__":
     with open(os.path.join(ROOT, "apps/vision/V.png"), "wb") as f:
         f.write(png_bytes(SMOOTH_SIZE, images[-1][1]))
     print("wrote apps/vision/V.ico, apps/vision/V.png")
-    write_header(os.path.join(ROOT, "apps/vision/include/V_32x32.h"), "V_32x32_png", 32, INK, PAPER, play=True)
+    write_header(os.path.join(ROOT, "apps/vision/include/V_32x32.h"), "V_32x32_png", 32, pixel_tile(32, INK, PAPER, play=True))

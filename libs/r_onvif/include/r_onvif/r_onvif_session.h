@@ -8,7 +8,11 @@
 #include <vector>
 #include <stdbool.h>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <pugixml.hpp>
+
+namespace r_utils { class r_socket_base; }
 
 namespace r_onvif
 {
@@ -422,6 +426,27 @@ enum class auth_mode
     unknown     // Not yet determined
 };
 
+// Cuts short a camera's request in flight, from another thread: an event subscriber's long pull, when it's told to
+// stop, so the stop doesn't wait out the pull. Once interrupted, the camera's later requests fail at once.
+class r_onvif_interrupt
+{
+public:
+    // Shuts down the connection of the request in flight (r_socket_base::shutdown), which wakes it, and refuses later
+    // ones. It never closes the socket: the request's own thread does, as it unwinds, so a TLS read in flight (port
+    // 443) is never raced.
+    R_API void interrupt();
+    R_API bool interrupted() const;
+
+    // For the request itself: this socket is the one in flight (nullptr: none). False, and nothing set, when already
+    // interrupted.
+    R_API bool set_active(r_utils::r_socket_base* sock);
+
+private:
+    mutable std::mutex _lock;
+    r_utils::r_socket_base* _active {nullptr};
+    bool _interrupted {false};
+};
+
 class r_onvif_cam
 {
 public:
@@ -434,6 +459,15 @@ public:
         r_utils::r_nullable<std::string> username,
         r_utils::r_nullable<std::string> password
     );
+
+    // The camera's clock less this computer's, in seconds: read with GetSystemDateAndTime as the session started (the
+    // offset its digests use), or after sync_camera_time. Null when the camera never said.
+    R_API r_utils::r_nullable<int> clock_offset_seconds() const;
+
+    // The camera's clock read again (GetSystemDateAndTime, unauthenticated first, as the session's start reads it),
+    // for a clock that may have moved since: set by Sync Camera Time, or drifting. The session's offset (its digests'
+    // too) becomes the new one, which comes back. Null, and the offset left as it was, when the camera doesn't say.
+    R_API r_utils::r_nullable<int> read_clock_offset();
 
     // GetSystemDateAndTime with the session's credentials, parsed (parse_system_date_and_time).
     R_API onvif_system_date_time get_system_date_and_time();
@@ -545,6 +579,9 @@ public:
     soap_version get_soap_version() const { return _soap_ver; }
     auth_mode get_auth_mode() const { return _auth_mode; }
 
+    // Every request this camera makes from now on can be cut short by `interrupt` (an event subscriber's stop).
+    void set_interrupt(std::shared_ptr<r_onvif_interrupt> interrupt) { _interrupt = std::move(interrupt); }
+
 private:
     std::pair<int, std::string> _soap_request(
         const std::string& host,
@@ -581,8 +618,10 @@ private:
     r_utils::r_nullable<std::string> _password;
 
     int _time_offset_seconds;
+    bool _time_known {false};   // _time_offset_seconds is the camera's word, not the 0 assumed when it didn't answer
     mutable soap_version _soap_ver;
     mutable auth_mode _auth_mode;
+    std::shared_ptr<r_onvif_interrupt> _interrupt;
 };
 
 }

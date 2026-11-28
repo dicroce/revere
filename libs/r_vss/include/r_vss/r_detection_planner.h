@@ -52,6 +52,16 @@ struct r_detection_session
     int64_t first_found_ms {0};               // when a look first found something new (not in the pre-roll), 0 if none
     std::vector<r_detection> first_found;     // what it found: what an alert would have said
     bool cut {false};                         // finished at MAX_SESSION_MS with the motion still on; a new session carries on
+    bool continues {false};                   // carries on from a cut session: the same motion
+    // What the pre-roll and the session's first and last frames showed (unfiltered): what parked-car anchors are
+    // learnt from, and what tells a car already parked from one that arrived.
+    std::vector<r_detection> pre_roll;
+    std::vector<r_detection> first_frame;
+    std::vector<r_detection> last_frame;
+    // The first frame of the chain's first session (first_frame itself unless the session continues): what the
+    // motion's first look showed, not the frame at a cut. Anchors are learnt once per chain, from it to the final
+    // session's last_frame (pass_learn).
+    std::vector<r_detection> chain_first_frame;
 };
 
 // Plans the detection pass over camera-reported motion (milestone 4): when to
@@ -130,7 +140,8 @@ public:
     // Sessions that finished; each is returned once.
     R_API std::vector<r_detection_session> finished(int64_t now_ms);
 
-    // Same class and IoU >= 0.85 (boxes in 640x640 space).
+    // Same class and IoU >= 0.85 (boxes in 640x640 space), or a vehicle's small box jittering in place
+    // (r_vss::same_place).
     R_API static bool same_object(const r_detection& a, const r_detection& b);
 
 private:
@@ -151,6 +162,8 @@ private:
         std::vector<r_detection> seen;  // every detection from the looks at the session itself
         std::vector<r_detection> first_frame, last_frame;
         int64_t first_frame_ts {-1}, last_frame_ts {-1};
+        bool continues {false};                       // carries on from a cut
+        std::vector<r_detection> chain_first_frame;   // when it continues: the chain's first session's first frame
     };
 
     bool _active(const _session& s) const { return !s.active_sources.empty(); }

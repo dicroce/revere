@@ -127,6 +127,9 @@ struct main_window_state
     r_ui_utils::text_selection log_selection;
     bool log_dragging {false};
     std::string selected_plugin;    // empty unless a plugin row is selected
+    // The selected camera's detail pane shows its properties for editing (actions.draw_properties) instead of its
+    // summary.
+    bool properties_open {false};
     // False until r_devices' first cache fill; the camera sections say
     // "Loading cameras..." rather than that they're empty.
     bool cameras_loaded {true};
@@ -153,7 +156,11 @@ struct main_window_actions
     std::function<void(int)> select_discovered;
     std::function<void()> select_plugin;    // clears the camera selection
     std::function<void(int)> view;
-    std::function<void(int)> properties;
+    std::function<void(int)> properties;    // opens the properties in the camera's pane
+    std::function<void()> draw_properties;  // draws them, in the detail pane's remaining space
+    // Called with what a click on a list row would do. While properties are being edited the owner asks about
+    // unsaved changes first and may run it later, or never; unset, it runs at once.
+    std::function<void(std::function<void()>)> leave_properties;
     std::function<void(int)> remove;
     std::function<void(int)> repair;        // the card's action_label button
     std::function<void(int)> move_use;      // a held move: use the new address
@@ -217,6 +224,18 @@ inline std::string short_version(std::string v)
 
 namespace main_window_detail
 {
+
+// How many InvisibleButtons were given a zero width or height. ImGui asserts on that, but only in a build that has
+// asserts: a Release build goes on, and draws nothing for the button. Every invisible button in the app goes through
+// invisible_button() so that the tests can read this in either build.
+inline int zero_size_buttons = 0;
+
+inline bool invisible_button(const char* id, const ImVec2& size, ImGuiButtonFlags flags = 0)
+{
+    if(size.x == 0.0f || size.y == 0.0f)
+        ++zero_size_buttons;
+    return ImGui::InvisibleButton(id, size, flags);
+}
 
 inline ImFont* font(const std::string& key, bool semibold = false)
 {
@@ -416,7 +435,7 @@ inline void section_header(const std::string& id, const std::string& title, size
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
     const float h = ImGui::GetFontSize() + 10.0f;
     const float width = ImGui::GetContentRegionAvail().x;
-    if(ImGui::InvisibleButton(id.c_str(), ImVec2(width, h)))
+    if(invisible_button(id.c_str(), ImVec2(std::max(1.0f, width), h)))
         open = !open;
     const bool hovered = ImGui::IsItemHovered();
     auto min = ImGui::GetItemRectMin();
@@ -795,7 +814,7 @@ inline bool compact_toggle(const char* label, bool* v, const main_window_fonts& 
     const ImVec2 size(label_size.x + 8.0f + track_w, h);
 
     ImGui::PushID(label);
-    bool clicked = ImGui::InvisibleButton("##toggle", size);
+    bool clicked = invisible_button("##toggle", size);
     ImGui::PopID();
     bool hovered = ImGui::IsItemHovered();
     if(hovered)
@@ -1480,6 +1499,17 @@ inline void main_window(
         sel_index = 0;
     }
 
+    if(sel != kind::recording)
+        state.properties_open = false;
+
+    // Selecting something else while a camera's properties are open asks first about unsaved changes.
+    auto leave_then = [&](std::function<void()> go) {
+        if(actions.leave_properties)
+            actions.leave_properties(std::move(go));
+        else
+            go();
+    };
+
     auto select_plugin = [&](const std::string& name) {
         state.selected_plugin = name;
         actions.select_plugin();
@@ -1515,7 +1545,7 @@ inline void main_window(
         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
 
     auto vertical_rule = [&](const char* id, float h, float& value, float sign) {
-        ImGui::InvisibleButton(id, ImVec2(splitter, h));
+        invisible_button(id, ImVec2(splitter, std::max(1.0f, h)));
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
         if(hot)
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -1540,8 +1570,14 @@ inline void main_window(
             const auto& item = recording[i];
             if(list_row("##rec" + std::to_string(i), sel == kind::recording && sel_index == i, camera_dot(item.health), item.label, item.sub_label, fonts))
             {
-                state.selected_plugin.clear();
-                actions.select_recording(i);
+                auto go = [&state, &actions, i]() {
+                    state.selected_plugin.clear();
+                    actions.select_recording(i);
+                };
+                if(sel == kind::recording && sel_index == i)
+                    go();
+                else
+                    leave_then(go);
             }
         }
 
@@ -1562,8 +1598,11 @@ inline void main_window(
             const auto& item = discovered[i];
             if(list_row("##disc" + std::to_string(i), sel == kind::discovered && sel_index == i, status_neutral_dot, item.label, item.sub_label, fonts))
             {
-                state.selected_plugin.clear();
-                actions.select_discovered(i);
+                auto go = [&state, &actions, i]() {
+                    state.selected_plugin.clear();
+                    actions.select_discovered(i);
+                };
+                leave_then(go);
             }
         }
 
@@ -1577,7 +1616,10 @@ inline void main_window(
             ImVec4 dot = p.has_status ? p.status_color : status_neutral_dot;
             std::string right = p.has_status ? p.status_label : (p.enabled ? "Enabled" : "Disabled");
             if(list_row("##plugin" + std::to_string(i), sel == kind::plugin && sel_index == i, dot, plugin_display_name(p), right, fonts))
-                select_plugin(p.name);
+                leave_then([&state, &actions, name = p.name]() {
+                    state.selected_plugin = name;
+                    actions.select_plugin();
+                });
         }
     }
     ImGui::EndChild();
@@ -1594,7 +1636,12 @@ inline void main_window(
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 10.0f));
     ImGui::BeginChild("##detail", ImVec2(0.0f, top_h), false, ImGuiWindowFlags_AlwaysUseWindowPadding);
     {
-        if(sel == kind::recording)
+        if(sel == kind::recording && state.properties_open && actions.draw_properties)
+        {
+            detail_title(recording[sel_index].label, "Camera properties", fonts);
+            actions.draw_properties();
+        }
+        else if(sel == kind::recording)
         {
             const auto& item = recording[sel_index];
             std::string sub = item.sub_label.empty() ? std::string(camera_state(item.health)) : item.sub_label + " \xC2\xB7 " + camera_state(item.health);
@@ -1781,7 +1828,7 @@ inline void main_window(
     // ---- Log ----
     if(state.show_log)
     {
-        ImGui::InvisibleButton("##log_splitter", ImVec2(w, splitter));
+        invisible_button("##log_splitter", ImVec2(std::max(1.0f, w), splitter));
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
         if(hot)
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
@@ -1870,7 +1917,7 @@ inline void main_window(
         float status_room = (right - left) - chips_w - (show_version ? version_w + gap : 0.0f);
         status_room = std::max(min_status, std::min(status_w, status_room));
         ImGui::SetCursorScreenPos(ImVec2(left, cy - line_h * 0.5f));
-        ImGui::InvisibleButton("##status_text", ImVec2(std::max(1.0f, status_room), line_h));
+        invisible_button("##status_text", ImVec2(std::max(1.0f, status_room), line_h));
         ellipsis_text(dl, ImVec2(left, cy - line_h * 0.5f), status_room, status_warning ? status_warning_text : text_secondary, status_text);
         if(status_room < status_w && ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", status_text.c_str());
@@ -1888,7 +1935,7 @@ inline void main_window(
             ImVec2 a(x, cy - ch * 0.5f);
             ImGui::SetCursorScreenPos(a);
             ImGui::PushID((int)i);
-            bool clicked = ImGui::InvisibleButton("##chip", ImVec2(cw, ch));
+            bool clicked = invisible_button("##chip", ImVec2(cw, ch));
             bool hovered = ImGui::IsItemHovered();
             ImGui::PopID();
             ImVec2 b(a.x + cw, a.y + ch);

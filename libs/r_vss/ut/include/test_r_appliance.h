@@ -12,6 +12,8 @@ public:
       TEST(test_r_appliance::test_set_password_bootstrap);
       TEST(test_r_appliance::test_set_password_normal_install);
       TEST(test_r_appliance::test_set_password_appliance);
+      TEST(test_r_appliance::test_login_password_appliance);
+      TEST(test_r_appliance::test_login_password_normal_install);
     RTF_FIXTURE_END();
 
     virtual ~test_r_appliance() throw() {}
@@ -27,4 +29,6 @@ public:
     void test_set_password_bootstrap();
     void test_set_password_normal_install();
     void test_set_password_appliance();
+    void test_login_password_appliance();
+    void test_login_password_normal_install();
 };

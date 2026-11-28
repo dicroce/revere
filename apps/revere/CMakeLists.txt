@@ -124,6 +124,17 @@ target_link_libraries(
 # Link tray library on all platforms
 target_link_libraries(revere tray)
 
+# Xlib, for the X error handler (source/x11_errors.cpp). SDL loads Xlib by itself, so revere doesn't otherwise link
+# it; without it the handler is left out and the build is as before.
+if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
+    find_package(X11)
+    if(X11_FOUND)
+        target_include_directories(revere PRIVATE ${X11_INCLUDE_DIR})
+        target_link_libraries(revere ${X11_X11_LIB})
+        target_compile_definitions(revere PRIVATE REVERE_HAVE_X11)
+    endif()
+endif()
+
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     if (CMAKE_BUILD_TYPE STREQUAL "Debug")
         target_compile_options(revere PUBLIC -rdynamic -ggdb3 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fasynchronous-unwind-tables -Wl,--whole-archive)
