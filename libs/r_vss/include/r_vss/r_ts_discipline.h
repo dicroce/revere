@@ -2,8 +2,10 @@
 #define __r_vss_r_ts_discipline_h
 
 #include "r_utils/r_macro.h"
+#include "r_utils/3rdparty/json/json.h"
 #include <atomic>
 #include <cstdint>
+#include <string>
 
 namespace r_vss
 {
@@ -54,6 +56,18 @@ namespace r_vss
 // since the frame before (a clock set forward; a stall can't do that, its
 // frames come with the wall clock ahead of them). The frame is stored at its
 // arrival time, or 1 ms after the frame before it if that is later.
+//
+// How far the correction has moved since the anchor (the first frame, or the
+// last jump) is how far the camera's clock has drifted from ours: drift_ms(),
+// negative when it runs fast. It is reported on /cameras, and drift_warning()
+// is true at the frame where it first reaches DRIFT_WARN_MS either way, and at
+// each further DRIFT_WARN_MS. 10 s: a camera
+// clock within spec (50 ppm, about 4 s a day) takes more than two days to get
+// there, the worst one measured (1.2 s an hour) about eight hours. And 10 s is
+// how far the detection pass looks for a stored frame (STORED_MAX_GAP_MS): a
+// recorder without this correction, or one where it couldn't keep up, would
+// show an event's video from the wrong moment by then. The recording stays
+// right, but such a camera should take its time from NTP.
 class r_ts_discipline
 {
 public:
@@ -63,7 +77,8 @@ public:
         TAU_MS = 30000,
         MAX_SLEW_PPM = 5000,
         MAX_LATE_SLEW_PPM = 1000,
-        JUMP_MS = 5000
+        JUMP_MS = 5000,
+        DRIFT_WARN_MS = 10000
     };
 
     // One video frame: raw_ts_ms = stream start + pts, now_ms = the wall clock
@@ -75,11 +90,25 @@ public:
     // The correction as of the last video frame. Any thread.
     R_API int64_t correction_ms() const { return _published.load(std::memory_order_relaxed); }
 
-    // How many times the camera's clock jumped and the timeline was re-anchored.
-    R_API int jumps() const { return _jumps; }
+    // How many times the camera's clock jumped and the timeline was re-anchored. Any thread.
+    R_API int jumps() const { return _jumps.load(std::memory_order_relaxed); }
+
+    // The wall clock (ms since the epoch) the drift has been building up
+    // from: the first frame's arrival, or the last jump's. 0 before the first
+    // frame. Any thread.
+    R_API int64_t anchored_at_ms() const { return _anchored_at.load(std::memory_order_relaxed); }
+
+    // How far the camera's clock has drifted from ours since then, in ms:
+    // the correction less what it was at the anchor. Negative: the camera's
+    // clock runs fast. Any thread.
+    R_API int64_t drift_ms() const { return _drift.load(std::memory_order_relaxed); }
 
     // True when the last video_frame() re-anchored.
     R_API bool jumped() const { return _jumped; }
+
+    // True when the last video_frame() took the correction to a new multiple
+    // of DRIFT_WARN_MS since the anchor: the caller logs it.
+    R_API bool drift_warning() const { return _drift_warning; }
 
 private:
     bool _started {false};
@@ -92,9 +121,22 @@ private:
     double _window_max_error {0.0};
     bool _window_has_error {false};
     bool _window_backed_up {false};
-    int _jumps {0};
+    std::atomic<int> _jumps {0};
+    std::atomic<int64_t> _anchored_at {0};
+    double _anchor_correction {0.0};
+    std::atomic<int64_t> _drift {0};
     bool _jumped {false};
+    int64_t _drift_warned {0};   // multiples of DRIFT_WARN_MS warned of since the anchor
+    bool _drift_warning {false};
 };
+
+// The warning for a drift of drift_ms over_ms after the anchor: "the camera's
+// clock is 10.0 s fast of ours after 8.3 h (about 1.2 s an hour); ...".
+R_API std::string drift_message(int64_t drift_ms, int64_t over_ms);
+
+// /cameras' recording_clock: {"drift_ms", "since_ms", "jumps"}, or null while
+// the camera isn't recording (or before its first frame).
+R_API nlohmann::json recording_clock_json(bool receiving_video, int64_t drift_ms, int64_t anchored_at_ms, int jumps);
 
 }
 

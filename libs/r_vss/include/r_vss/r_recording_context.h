@@ -268,6 +268,13 @@ public:
     // video.
     R_API int64_t storage_timeline_lag_ms() const;
 
+    // The camera's clock against ours (r_ts_discipline): how far it has drifted
+    // in ms (negative: fast), since when (ms since the epoch, 0 before the first
+    // frame), and how many times it jumped. The recording is corrected for it.
+    R_API int64_t clock_drift_ms() const { return _ts_discipline.drift_ms(); }
+    R_API int64_t clock_anchored_at_ms() const { return _ts_discipline.anchored_at_ms(); }
+    R_API int clock_jumps() const { return _ts_discipline.jumps(); }
+
     // How far this camera's frames reach us behind live (see r_lag_watchdog).
     // wants_reconnect: far enough behind, for long enough, that the stream
     // keeper should reconnect it to drop the backlog (it decides, with backoff).

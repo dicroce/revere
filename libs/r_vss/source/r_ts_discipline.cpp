@@ -1,6 +1,7 @@
 #include "r_vss/r_ts_discipline.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 using namespace r_vss;
 using namespace std;
@@ -8,11 +9,13 @@ using namespace std;
 int64_t r_ts_discipline::video_frame(int64_t raw_ts_ms, int64_t now_ms, bool backed_up)
 {
     _jumped = false;
+    _drift_warning = false;
 
     if(!_started)
     {
         _started = true;
         _window_start_ms = now_ms;
+        _anchored_at.store(now_ms, std::memory_order_relaxed);
     }
     else
     {
@@ -27,7 +30,10 @@ int64_t r_ts_discipline::video_frame(int64_t raw_ts_ms, int64_t now_ms, bool bac
             _window_start_ms = now_ms;
             _window_has_error = false;
             _window_backed_up = false;
-            ++_jumps;
+            _jumps.fetch_add(1, std::memory_order_relaxed);
+            _anchored_at.store(now_ms, std::memory_order_relaxed);
+            _anchor_correction = _correction;
+            _drift_warned = 0;
             _jumped = true;
         }
     }
@@ -64,9 +70,43 @@ int64_t r_ts_discipline::video_frame(int64_t raw_ts_ms, int64_t now_ms, bool bac
     int64_t correction = (int64_t)std::llround(_correction);
     _published.store(correction, std::memory_order_relaxed);
 
+    // The drift since the anchor, and a warning at each new multiple of
+    // DRIFT_WARN_MS of it.
+    int64_t drift = (int64_t)std::llround(_correction - _anchor_correction);
+    _drift.store(drift, std::memory_order_relaxed);
+    int64_t steps = (drift < 0 ? -drift : drift) / DRIFT_WARN_MS;
+    if(steps > _drift_warned)
+    {
+        _drift_warned = steps;
+        _drift_warning = true;
+    }
+
     _last_raw_ms = raw_ts_ms;
     _last_now_ms = now_ms;
     _last_out_ms = raw_ts_ms + correction;
 
     return correction;
+}
+
+string r_vss::drift_message(int64_t drift_ms, int64_t over_ms)
+{
+    const double secs = (double)(drift_ms < 0 ? -drift_ms : drift_ms) / 1000.0;
+    const double hours = (double)(over_ms > 0 ? over_ms : 0) / 3600000.0;
+    char buf[256];
+    if(hours >= 0.1)
+        snprintf(buf, sizeof(buf), "the camera's clock is %.1f s %s of ours after %.1f h (about %.1f s an hour); "
+                 "the recording is kept on our clock, but the camera should take its time from NTP",
+                 secs, drift_ms < 0 ? "fast" : "slow", hours, secs / hours);
+    else
+        snprintf(buf, sizeof(buf), "the camera's clock is %.1f s %s of ours; "
+                 "the recording is kept on our clock, but the camera should take its time from NTP",
+                 secs, drift_ms < 0 ? "fast" : "slow");
+    return buf;
+}
+
+nlohmann::json r_vss::recording_clock_json(bool receiving_video, int64_t drift_ms, int64_t anchored_at_ms, int jumps)
+{
+    if(!receiving_video || anchored_at_ms <= 0)
+        return nullptr;
+    return {{"drift_ms", drift_ms}, {"since_ms", anchored_at_ms}, {"jumps", jumps}};
 }

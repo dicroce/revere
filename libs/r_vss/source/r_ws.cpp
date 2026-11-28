@@ -2,6 +2,7 @@
 #include "r_vss/r_substream_recorder.h"
 #include "r_disco/r_substream.h"
 #include "r_vss/r_ws.h"
+#include "r_vss/r_ts_discipline.h"
 #include "r_vss/r_appliance.h"
 #include "r_vss/r_storage_summary.h"
 #include "r_vss/r_ws_client_errors.h"
@@ -875,6 +876,7 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
             json camera_events = nullptr;
             json motion_tier = nullptr;
             json ingest_lag = nullptr;
+            json recording_clock = nullptr;
             auto sit = status_by_id.find(c.id);
             if(sit != status_by_id.end())
             {
@@ -887,6 +889,8 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                 stream_failed = sit->second.failed;
                 storage_write_lag_ms = sit->second.storage_write_lag_ms;
                 storage_timeline_lag_ms = sit->second.storage_timeline_lag_ms;
+                recording_clock = recording_clock_json(sit->second.receiving_video, sit->second.clock_drift_ms,
+                                                       sit->second.clock_anchored_at_ms, sit->second.clock_jumps);
                 if(sit->second.has_camera_events)
                 {
                     const auto& oe = sit->second.camera_events;
@@ -1018,7 +1022,11 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     // The tier in use now and why; null while not recording.
                     {"motion_tier", motion_tier},
                     // How far its frames reach us behind live; null while not recording.
-                    {"ingest_lag", ingest_lag}
+                    {"ingest_lag", ingest_lag},
+                    // Its clock against ours, which the recording is corrected for (r_ts_discipline): drift_ms
+                    // (negative: the camera's clock is fast), since_ms (when it started building up: the stream's
+                    // start or the clock's last jump) and jumps; null while not recording.
+                    {"recording_clock", recording_clock}
                 }
             );
         }

@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <string>
+#include <vector>
 
 using namespace r_vss;
 using namespace std;
@@ -53,6 +55,8 @@ struct stream
     int64_t worst_capture_error {0}; // furthest a frame was stored from when it was captured
     double capture_error_sum {0};
     int64_t frames {0};
+    int64_t first_arrival {0};
+    std::vector<int64_t> drift_warnings;   // the drift at each frame that warned
 
     // Sends one frame; returns how far from its arrival it was stored (+ = ahead of the wall clock).
     int64_t frame(bool track = true)
@@ -82,6 +86,10 @@ struct stream
             backed_up = lag.lag_ms() > r_lag_watchdog::LAG_MS;
         }
         int64_t stored = raw + d.video_frame(raw, arrival, backed_up);
+        if(first_arrival == 0)
+            first_arrival = arrival;
+        if(d.drift_warning())
+            drift_warnings.push_back(d.drift_ms());
 
         if(have_last && !d.jumped())
         {
@@ -453,4 +461,100 @@ void test_r_ts_discipline::test_backed_up_window()
     ms += 20 * SEC;
     d.video_frame(t0 + ms - SEC, t0 + ms, false);
     RTF_ASSERT(d.correction_ms() - before <= 5);
+}
+
+// The drift is how far the camera's clock has moved from ours since the
+// stream started: 400 ppm fast is 1.44 s an hour, reported negative.
+void test_r_ts_discipline::test_drift_reported()
+{
+    stream s;
+    s.clock_rate = 1.0 + 400e-6;
+    RTF_ASSERT(s.d.anchored_at_ms() == 0);
+    s.run(10 * HOUR);
+    RTF_ASSERT(s.d.anchored_at_ms() == s.first_arrival);
+    RTF_ASSERT(llabs(s.d.drift_ms() + 14400) < 200);
+    RTF_ASSERT(s.d.drift_ms() == s.d.correction_ms());   // no jump: the correction is all drift
+
+    stream t;
+    t.clock_rate = 1.0 - 400e-6;
+    t.run(10 * HOUR);
+    RTF_ASSERT(llabs(t.d.drift_ms() - 14400) < 200);
+
+    stream g;
+    g.run(10 * HOUR);
+    RTF_ASSERT(llabs(g.d.drift_ms()) < 100);
+}
+
+// One warning as the drift reaches each 10 s, either way: three days at
+// 400 ppm is about 104 s, ten warnings, never two for the same 10 s.
+void test_r_ts_discipline::test_drift_warnings()
+{
+    stream s;
+    s.clock_rate = 1.0 + 400e-6;
+    s.run(72 * HOUR);
+    RTF_ASSERT(s.drift_warnings.size() == 10);
+    for(size_t i = 0; i < s.drift_warnings.size(); ++i)
+    {
+        int64_t at = -s.drift_warnings[i];
+        RTF_ASSERT(at >= (int64_t)(i + 1) * D::DRIFT_WARN_MS && at < (int64_t)(i + 1) * D::DRIFT_WARN_MS + 100);
+    }
+
+    stream t;
+    t.clock_rate = 1.0 - 400e-6;
+    t.run(8 * HOUR);
+    RTF_ASSERT(t.drift_warnings.size() == 1);
+    RTF_ASSERT(t.drift_warnings[0] >= D::DRIFT_WARN_MS);
+
+    // A good clock: none.
+    stream g;
+    g.jitter_ms = 40;
+    g.run(24 * HOUR);
+    RTF_ASSERT(g.drift_warnings.empty());
+}
+
+// A jump re-anchors: what it was set to isn't drift, the drift starts again
+// from there, and the warnings with it.
+void test_r_ts_discipline::test_drift_after_jump()
+{
+    stream s;
+    s.clock_rate = 1.0 + 400e-6;
+    s.run(8 * HOUR);
+    RTF_ASSERT(s.drift_warnings.size() == 1);
+    s.cam -= 3.0 * HOUR;
+    s.frame();
+    RTF_ASSERT(s.d.jumped());
+    RTF_ASSERT(!s.d.drift_warning());
+    RTF_ASSERT(s.d.anchored_at_ms() == s.last_arrival);
+    RTF_ASSERT(llabs(s.d.drift_ms()) <= 1);
+    RTF_ASSERT(s.d.correction_ms() > 3 * HOUR - 20 * SEC);
+
+    s.run(8 * HOUR);
+    RTF_ASSERT(llabs(s.d.drift_ms() + 11520) < 200);
+    RTF_ASSERT(s.drift_warnings.size() == 2);
+    RTF_ASSERT(-s.drift_warnings[1] >= D::DRIFT_WARN_MS && -s.drift_warnings[1] < D::DRIFT_WARN_MS + 100);
+}
+
+void test_r_ts_discipline::test_drift_message()
+{
+    RTF_ASSERT(drift_message(-10000, (int64_t)(8.3 * HOUR)) ==
+               "the camera's clock is 10.0 s fast of ours after 8.3 h (about 1.2 s an hour); "
+               "the recording is kept on our clock, but the camera should take its time from NTP");
+    RTF_ASSERT(drift_message(20500, 10 * HOUR) ==
+               "the camera's clock is 20.5 s slow of ours after 10.0 h (about 2.0 s an hour); "
+               "the recording is kept on our clock, but the camera should take its time from NTP");
+    // Too soon for a rate.
+    RTF_ASSERT(drift_message(-10000, 2 * MIN) ==
+               "the camera's clock is 10.0 s fast of ours; "
+               "the recording is kept on our clock, but the camera should take its time from NTP");
+}
+
+void test_r_ts_discipline::test_recording_clock_json()
+{
+    auto j = recording_clock_json(true, -90000, 1795000000000, 2);
+    RTF_ASSERT(j.is_object());
+    RTF_ASSERT(j["drift_ms"].get<int64_t>() == -90000);
+    RTF_ASSERT(j["since_ms"].get<int64_t>() == 1795000000000);
+    RTF_ASSERT(j["jumps"].get<int>() == 2);
+    RTF_ASSERT(recording_clock_json(false, -90000, 1795000000000, 2).is_null());
+    RTF_ASSERT(recording_clock_json(true, 0, 0, 0).is_null());
 }
