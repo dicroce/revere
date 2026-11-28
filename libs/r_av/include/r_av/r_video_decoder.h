@@ -12,6 +12,7 @@ extern "C"
 }
 
 #include "r_av/r_codec_state.h"
+#include "r_av/r_failure_run.h"
 #include "r_av/r_hw_accel.h"
 #include "r_utils/r_macro.h"
 #include <vector>
@@ -60,12 +61,19 @@ public:
 
     R_API void set_extradata(const std::vector<uint8_t>& ed);
 
-    R_API void attach_buffer(const uint8_t* data, size_t size);
+    // pts goes with the data to the picture decoded from it (output_pts()), in whatever units the caller likes. A
+    // picture is matched to its own input this way even when the decoder drops one (a packet it can't decode, or a
+    // picture held back after lost frames), where counting inputs would put every later picture one input early.
+    R_API void attach_buffer(const uint8_t* data, size_t size, int64_t pts = AV_NOPTS_VALUE);
 
     R_API r_codec_state decode();
     R_API r_codec_state flush();
 
     R_API std::shared_ptr<std::vector<uint8_t>> get(AVPixelFormat output_format, uint16_t output_width, uint16_t output_height, int alignment = 32);
+
+    // The pts attach_buffer was given with the input of the picture decode() or flush() last gave; AV_NOPTS_VALUE if
+    // it was given none.
+    R_API int64_t output_pts() const;
 
     R_API uint16_t input_width() const;
     R_API uint16_t input_height() const;
@@ -98,6 +106,7 @@ private:
     size_t _buffer_size;
     const uint8_t* _pos;
     int _remaining_size;
+    int64_t _pts {AV_NOPTS_VALUE};   // attach_buffer's, for the packet sent from it
     AVFrame* _frame;
     AVFrame* _sw_frame;        // staging frame for hw->cpu transfer
     AVBufferRef* _hw_device_ctx;
@@ -106,6 +115,8 @@ private:
     bool _codec_opened;
     // Hardware sends that failed with AVERROR_EXTERNAL in a row (see _fall_back_to_software).
     int _hw_send_failures {0};
+    // Sends that failed in a burst of any kind (successes in it don't end it): logged once, then every few seconds with a count.
+    r_failure_run _send_failure_run;
 
     void _open_codec();
     static AVPixelFormat _get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);
@@ -125,6 +136,9 @@ constexpr int R_HW_DECODE_FAILURES_TO_FALL_BACK = 5;
 
 // Tests only: decode() sends packets through `send` instead of avcodec_send_packet (nullptr restores it).
 R_API void r_video_decoder_send_override(int (*send)(AVCodecContext*, const AVPacket*));
+
+// Tests only: the quiet time that ends a burst of send failures, in milliseconds (0 or less restores 10 seconds).
+R_API void r_video_decoder_failure_window_override(int ms);
 
 // Tests only: the decoder opens through `open` instead of avcodec_open2 (nullptr restores it).
 R_API void r_video_decoder_open_override(int (*open)(AVCodecContext*, const AVCodec*, AVDictionary**));

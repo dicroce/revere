@@ -2,7 +2,9 @@
 #include "r_vss/r_substream_recorder.h"
 #include "r_disco/r_substream.h"
 #include "r_vss/r_ws.h"
+#include "r_vss/r_ts_discipline.h"
 #include "r_vss/r_appliance.h"
+#include "r_vss/r_storage_summary.h"
 #include "r_vss/r_ws_client_errors.h"
 #include "r_vss/r_export_output.h"
 #include "r_vss/r_export_audio.h"
@@ -154,6 +156,10 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_GET, "/contents", &r_ws::_get_contents);
     route(METHOD_GET, "/motion_events", &r_ws::_get_motion_events);
     route(METHOD_GET, "/camera_events", &r_ws::_get_camera_events);
+    route(METHOD_GET, "/doorbell_presses", &r_ws::_get_doorbell_presses);
+    route(METHOD_GET, "/doorbell_mail_setup", &r_ws::_get_doorbell_mail_setup);
+    route(METHOD_POST, "/doorbell_mail_login", &r_ws::_post_doorbell_mail_login);
+    route(METHOD_POST, "/doorbell_press_test", &r_ws::_post_doorbell_press_test);
     route(METHOD_GET, "/analytics", &r_ws::_get_analytics);
 
     route(METHOD_GET, "/key_frame", &r_ws::_get_key_frame);
@@ -195,6 +201,7 @@ void r_ws::_add_routes(r_http::r_web_server<SOK_T>& server)
     route(METHOD_GET, "/discovery_status", &r_ws::_get_discovery_status);
     route(METHOD_POST, "/add_rtsp_camera", &r_ws::_post_add_rtsp_camera);
     route(METHOD_GET, "/storage_info", &r_ws::_get_storage_info);
+    route(METHOD_GET, "/storage_summary", &r_ws::_get_storage_summary);
     route(METHOD_POST, "/storage_move", &r_ws::_post_storage_move);
     route(METHOD_POST, "/storage_change_retention", &r_ws::_post_storage_change_retention);
     route(METHOD_GET, "/storage_op", &r_ws::_get_storage_op);
@@ -870,6 +877,7 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
             json camera_events = nullptr;
             json motion_tier = nullptr;
             json ingest_lag = nullptr;
+            json recording_clock = nullptr;
             auto sit = status_by_id.find(c.id);
             if(sit != status_by_id.end())
             {
@@ -882,6 +890,8 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                 stream_failed = sit->second.failed;
                 storage_write_lag_ms = sit->second.storage_write_lag_ms;
                 storage_timeline_lag_ms = sit->second.storage_timeline_lag_ms;
+                recording_clock = recording_clock_json(sit->second.receiving_video, sit->second.clock_drift_ms,
+                                                       sit->second.clock_anchored_at_ms, sit->second.clock_jumps);
                 if(sit->second.has_camera_events)
                 {
                     const auto& oe = sit->second.camera_events;
@@ -1016,10 +1026,16 @@ r_http::r_server_response r_ws::_get_cameras(r_utils::r_socket_base&, const r_ht
                     {"kind", r_disco::camera_kind(c)},
                     // What a person set it to; null until someone chooses.
                     {"kind_setting", c.kind.is_null() ? json(nullptr) : json(c.kind.value())},
+                    // A doorbell's press source (r_disco::camera_press_source): "onvif" or "reolink_email".
+                    {"press_source", r_disco::camera_press_source(c)},
                     // The tier in use now and why; null while not recording.
                     {"motion_tier", motion_tier},
                     // How far its frames reach us behind live; null while not recording.
-                    {"ingest_lag", ingest_lag}
+                    {"ingest_lag", ingest_lag},
+                    // Its clock against ours, which the recording is corrected for (r_ts_discipline): drift_ms
+                    // (negative: the camera's clock is fast), since_ms (when it started building up: the stream's
+                    // start or the clock's last jump) and jumps; null while not recording.
+                    {"recording_clock", recording_clock}
                 }
             );
         }
@@ -1507,6 +1523,169 @@ r_http::r_server_response r_ws::_get_analytics(r_utils::r_socket_base&, const r_
     R_STHROW(r_http_500_exception, ("Failed to query analytics."));
 }
 
+
+static json _press_test_json(const r_press_test& t)
+{
+    json sources = json::array();
+    for(auto& s : t.sources)
+    {
+        json j = {{"source", s.source}, {"seen", s.seen}};
+        if(s.seen)
+        {
+            j["press_ms"] = s.press_ms;
+            j["arrived_ms"] = s.arrived_ms;
+            j["after_ms"] = s.arrived_ms - s.press_ms;   // how late the report was
+        }
+        sources.push_back(j);
+    }
+    return {{"open", t.open}, {"started_ms", t.started_ms}, {"ends_ms", t.ends_ms}, {"ring_phones", t.ring_phones}, {"sources", sources},
+            {"other_mail", t.other_mail}};
+}
+
+// A doorbell's mail setup as GET /doorbell_mail_setup and POST /doorbell_mail_login give it.
+static json _doorbell_mail_json(const r_stream_keeper::doorbell_mail_status& v, bool with_login)
+{
+    json j = {
+        {"server", v.setup.server},
+        {"port", v.setup.port},
+        {"tls", true},
+        {"sender", v.setup.sender},
+        {"recipient", v.setup.recipient},
+        {"listening", v.listening},
+        {"rings", v.counts.rings},
+        {"other_mail", v.counts.other_mail},
+        {"bad_logins", v.counts.bad_logins},
+        {"locked_for_ms", v.locked_for_ms},
+        {"last_ring_ms", v.counts.last_ring_ms ? json(v.counts.last_ring_ms) : json(nullptr)},
+        {"last_error", v.counts.last_error},
+    };
+    if(with_login)
+        j["password"] = v.setup.password;
+    return j;
+}
+
+// GET /doorbell_mail_setup?camera_id=<id>[&login=0]: what to type in a Reolink doorbell's email settings for its
+// presses to reach this box (r_stream_keeper::doorbell_mail_setup), and how the listener is doing. The password is in
+// it: the route needs a login, as every route does. login=0 leaves the password out, for a status read made every few
+// seconds. 404 for a camera that isn't a doorbell.
+r_http::r_server_response r_ws::_get_doorbell_mail_setup(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("camera_id") == args.end())
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
+        _camera_or_404(_devices, args["camera_id"]);
+        const bool with_login = args.find("login") == args.end() || args["login"] != "0";
+        auto s = _stream_keeper.doorbell_mail_setup(args["camera_id"], with_login);
+        if(s.is_null())
+            R_STHROW(r_http_404_exception, ("Not a doorbell."));
+        r_server_response response;
+        response.set_content_type("application/json");
+        response.set_body(_doorbell_mail_json(s.value(), with_login).dump());
+        return response;
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to read the doorbell's mail setup."));
+}
+
+// POST /doorbell_mail_login?camera_id=<id>: a new password for the doorbells' mail login
+// (r_stream_keeper::new_doorbell_mail_login), and the setup with it, as GET /doorbell_mail_setup gives it. Every
+// doorbell sending presses by email needs the new password typed in its app. 404 for a camera that isn't a doorbell,
+// with nothing changed.
+r_http::r_server_response r_ws::_post_doorbell_mail_login(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("camera_id") == args.end())
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
+        _camera_or_404(_devices, args["camera_id"]);
+        auto s = _stream_keeper.new_doorbell_mail_login(args["camera_id"]);
+        if(s.is_null())
+            R_STHROW(r_http_404_exception, ("Not a doorbell."));
+        r_server_response response;
+        response.set_content_type("application/json");
+        response.set_body(_doorbell_mail_json(s.value(), true).dump());
+        return response;
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to make a new mail login."));
+}
+
+// GET /doorbell_presses?camera_id=<id>: a doorbell's press source, when each source last reported a press (null:
+// never, since revere started), whether to suggest ONVIF again, and its press test (null: none yet). 404 for a camera
+// that isn't a doorbell.
+r_http::r_server_response r_ws::_get_doorbell_presses(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("camera_id") == args.end())
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
+        _camera_or_404(_devices, args["camera_id"]);
+        auto s = _stream_keeper.doorbell_presses(args["camera_id"]);
+        if(s.is_null())
+            R_STHROW(r_http_404_exception, ("Not a doorbell."));
+        auto& v = s.value();
+        auto ms = [](const r_nullable<int64_t>& m) { return m.is_null() ? json(nullptr) : json(m.value()); };
+        json j = {
+            {"press_source", v.press_source},
+            {"last_press_ms", {{"onvif", ms(v.last_onvif_ms)}, {"reolink_email", ms(v.last_email_ms)}}},
+            {"suggest_onvif", v.suggest_onvif},
+            {"clock_offset_ms", ms(v.clock_offset_ms)},
+            {"test", v.test.any ? _press_test_json(v.test) : json(nullptr)},
+        };
+        r_server_response response;
+        response.set_content_type("application/json");
+        response.set_body(j.dump());
+        return response;
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to read the doorbell's presses."));
+}
+
+// POST /doorbell_press_test?camera_id=<id>[&ring_phones=1]: "Press the doorbell now". Opens a 60 s window in which
+// each source's report of a press is noted (GET /doorbell_presses shows it); its press rings the phones only with
+// ring_phones=1. 404 for a camera that isn't a doorbell.
+r_http::r_server_response r_ws::_post_doorbell_press_test(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    try
+    {
+        auto args = request.get_uri().get_get_args();
+        if(args.find("camera_id") == args.end())
+            R_STHROW(r_http_400_exception, ("Missing camera_id."));
+        _camera_or_404(_devices, args["camera_id"]);
+        bool ring_phones = args.find("ring_phones") != args.end() && args["ring_phones"] == "1";
+        auto t = _stream_keeper.start_doorbell_press_test(args["camera_id"], ring_phones);
+        if(t.is_null())
+            R_STHROW(r_http_404_exception, ("Not a doorbell."));
+        r_server_response response;
+        response.set_content_type("application/json");
+        response.set_body(_press_test_json(t.value()).dump());
+        return response;
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to start the doorbell's press test."));
+}
 
 // GET /camera_events?camera_id=<id>[&since_ms=<epoch ms>]: the camera's own
 // event spans (motion, person, vehicle, ...) on Revere's clock, as its ONVIF
@@ -4014,8 +4193,16 @@ r_http::r_server_response r_ws::_post_update_camera_properties(r_utils::r_socket
                 R_STHROW(r_http_400_exception, ("kind must be camera or doorbell."));
             kind.set_value(req["kind"].get<string>());
         }
+        // "onvif" or "reolink_email"; left as it is when absent.
+        r_nullable<string> press_source;
+        if(req.contains("press_source"))
+        {
+            if(!req["press_source"].is_string())
+                R_STHROW(r_http_400_exception, ("press_source must be onvif or reolink_email."));
+            press_source.set_value(req["press_source"].get<string>());
+        }
 
-        query_update_camera_properties(_top_dir, _devices, camera_id, do_motion, do_prune, min_hours, motion_tier, kind);
+        query_update_camera_properties(_top_dir, _devices, camera_id, do_motion, do_prune, min_hours, motion_tier, kind, press_source);
 
         // Restart the recording context so the new settings take effect live —
         // the poll loop only re-applies stream-config changes, not these.
@@ -4329,6 +4516,55 @@ r_http::r_server_response r_ws::_get_storage_info(r_utils::r_socket_base&, const
         R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
     }
     R_STHROW(r_http_500_exception, ("Failed to get storage info."));
+}
+
+r_http::r_server_response r_ws::_get_storage_summary(r_utils::r_socket_base&, const r_http::r_server_request& request)
+{
+    _require_auth(request);
+
+    try
+    {
+        vector<r_storage_camera> cams;
+        for(auto& camera : _devices.get_all_cameras())
+        {
+            if(camera.record_file_path.is_null())
+                continue;
+            int64_t nb = camera.n_record_file_blocks.is_null() ? 0 : camera.n_record_file_blocks.value();
+            int64_t bs = camera.record_file_block_size.is_null() ? 0 : camera.record_file_block_size.value();
+            auto path = storage_path(_top_dir, camera.record_file_path.value());
+            cams.push_back({std::filesystem::u8path(path).parent_path().u8string(), nb * bs, _camera_byte_rate(_stream_keeper, camera.id)});
+        }
+        auto summary = summarize_storage(cams);
+
+        // The drive the files are on, or the default video folder without cameras. A drive that can't be read gives
+        // nulls: the rest of the summary still stands.
+        auto dir = summary.main_dir.empty() ? _top_dir + PATH_SLASH + "video" : summary.main_dir;
+        json j;
+        j["path"] = dir;
+        j["total_bytes"] = nullptr;
+        j["free_bytes"] = nullptr;
+        try
+        {
+            uint64_t size = 0, free = 0;
+            r_utils::r_fs::get_fs_usage(dir, size, free);
+            j["total_bytes"] = size;
+            j["free_bytes"] = free;
+        }
+        catch(const std::exception&)
+        {
+        }
+        j["recordings_bytes"] = summary.recordings_bytes;
+        j["cameras"] = summary.cameras;
+        j["retention_days_min"] = summary.retention_days_min;
+        j["retention_days_max"] = summary.retention_days_max;
+        return _json_reply(j);
+    }
+    R_WS_PASS_CLIENT_ERRORS
+    catch(const std::exception& ex)
+    {
+        R_LOG_EXCEPTION_AT(ex, __FILE__, __LINE__);
+    }
+    R_STHROW(r_http_500_exception, ("Failed to get the storage summary."));
 }
 
 r_http::r_server_response r_ws::_post_storage_move(r_utils::r_socket_base&, const r_http::r_server_request& request)
@@ -4668,13 +4904,23 @@ static json _keep_awake_json(const r_keep_awake_status& s)
     };
 }
 
-// Whether this computer pauses recording a camera whose address changes until a person confirms
-// (r_disco::load_camera_move_policy): {"pause_on_address_change": bool}. Set by the cloud plugin from the
-// organization's setting, and kept in config/camera_moves.json for when the cloud is out of reach.
+static json _camera_move_policy_reply(bool follow_unverified_moves)
+{
+    auto j = json::parse(r_disco::camera_move_policy_json(follow_unverified_moves));
+    j["pause_on_address_change"] = !follow_unverified_moves;   // the older name, for a client that still reads it
+    return j;
+}
+
+// Whether this computer follows, with no pause, a camera's move to an address that can't be checked (no MAC on file,
+// none readable there), rather than holding it until a person confirms (r_disco::load_camera_move_policy):
+// {"follow_unverified_moves": bool}, off by default. A move to a different MAC is held whatever it says. Set by the
+// cloud plugin from the organization's setting, and kept in config/camera_moves.json for when the cloud is out of reach.
+// The older {"pause_on_address_change": bool} is still answered, as the opposite of this (true unless the above is on),
+// and ignored when posted: it was off by default, and must not turn following on.
 r_http::r_server_response r_ws::_get_camera_move_policy(r_utils::r_socket_base&, const r_http::r_server_request& request)
 {
     _require_auth(request);
-    return _json_reply(json::parse(r_disco::camera_move_policy_json(_agent.pause_on_address_change())));
+    return _json_reply(_camera_move_policy_reply(_agent.follow_unverified_moves()));
 }
 
 // {"replies_blocked": bool, "warning": "..."}: whether discovery's replies look blocked (r_discovery_health), and what
@@ -4693,17 +4939,22 @@ r_http::r_server_response r_ws::_post_camera_move_policy(r_utils::r_socket_base&
 {
     _require_auth(request);
     auto req = json::parse(request.get_body_as_string(), nullptr, false);
-    if(!req.is_object() || !req.contains("pause_on_address_change") || !req["pause_on_address_change"].is_boolean())
-        return _json_error(response_bad_request, "Expected {\"pause_on_address_change\": true|false}.");
-    auto pause = req["pause_on_address_change"].get<bool>();
-    if(pause != _agent.pause_on_address_change())
+    if(req.is_object() && req.contains("follow_unverified_moves") && req["follow_unverified_moves"].is_boolean())
     {
-        _agent.set_pause_on_address_change(pause);
-        r_disco::save_camera_move_policy(_top_dir, pause);
-        R_LOG_INFO("Camera moves: %s", pause ? "a camera whose address changes pauses until its move is confirmed"
-                                             : "a camera whose address changes keeps recording at the new address");
+        auto follow = req["follow_unverified_moves"].get<bool>();
+        if(follow != _agent.follow_unverified_moves())
+        {
+            _agent.set_follow_unverified_moves(follow);
+            r_disco::save_camera_move_policy(_top_dir, follow);
+            R_LOG_INFO("Camera moves: %s", follow ? "a camera that moves to an address that can't be checked keeps recording there"
+                                                  : "a camera that moves to an address that can't be checked is held until its move is confirmed");
+        }
+        return _json_reply(_camera_move_policy_reply(follow));
     }
-    return _json_reply(json::parse(r_disco::camera_move_policy_json(pause)));
+    // The older setting: accepted, and no longer acted on.
+    if(req.is_object() && req.contains("pause_on_address_change") && req["pause_on_address_change"].is_boolean())
+        return _json_reply(_camera_move_policy_reply(_agent.follow_unverified_moves()));
+    return _json_error(response_bad_request, "Expected {\"follow_unverified_moves\": true|false}.");
 }
 
 // {"enabled", "on_battery", "power": "ac"|"battery"|"unknown", "wanted",

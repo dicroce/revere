@@ -39,7 +39,8 @@ public:
     using detect_fn = std::function<bool(const std::string& camera_id, const r_letterboxed_frame& frame, std::vector<r_detection>& out)>;
     // A camera's display name, for the log.
     using name_fn = std::function<std::string(const std::string& camera_id)>;
-    using found_fn = std::function<void(const std::string& camera_id, const std::vector<r_detection>& detections)>;
+    // What a look found that is new, and the look's whole frame as YOLO saw it (unfiltered).
+    using found_fn = std::function<void(const std::string& camera_id, const std::vector<r_detection>& detections, const std::vector<r_detection>& frame)>;
     using session_fn = std::function<void(const r_detection_session& session)>;
 
     enum

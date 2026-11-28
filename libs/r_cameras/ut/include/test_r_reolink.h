@@ -10,6 +10,7 @@ public:
       TEST(test_r_reolink::test_state_tracker);
       TEST(test_r_reolink::test_chain_falls_back_and_returns);
       TEST(test_r_reolink::test_chain_probe_fails);
+      TEST(test_r_reolink::test_chain_keeps_the_cameras_clock);
     RTF_FIXTURE_END();
 
     virtual ~test_r_reolink() throw() {}
@@ -21,4 +22,5 @@ public:
     void test_state_tracker();
     void test_chain_falls_back_and_returns();
     void test_chain_probe_fails();
+    void test_chain_keeps_the_cameras_clock();
 };

@@ -42,6 +42,10 @@ protected:
     virtual void _run() = 0;
     R_API void _join();
 
+    // Told once a stop is asked for, on the asking thread, after _running() turned false: for a source to cut short a
+    // wait _wait() doesn't cover (an ONVIF long pull). A subclass's destructor calls _join() first, so this reaches it.
+    virtual void _stop_requested() {}
+
     bool _running() const { return _keep_running.load(); }
 
     // Waits up to seconds, returning early (false) if asked to stop.

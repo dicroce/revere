@@ -19,9 +19,21 @@ public:
       TEST(test_r_codec::test_hw_failure_on_one_format_keeps_others_in_hardware);
       TEST(test_r_codec::test_dead_hw_context_falls_back_to_software);
       TEST(test_r_codec::test_software_decoder_does_not_fall_back);
+      TEST(test_r_codec::test_failure_run_logs_the_first_then_one_per_interval);
+      TEST(test_r_codec::test_failure_run_counts_what_was_left_out);
+      TEST(test_r_codec::test_failures_with_successes_between_are_still_one_burst);
+      TEST(test_r_codec::test_a_burst_nobody_ended_is_over_after_the_quiet);
+      TEST(test_r_codec::test_alternating_send_failures_are_not_a_line_each);
+      TEST(test_r_codec::test_a_run_of_send_failures_is_one_log_line);
+      TEST(test_r_codec::test_send_failure_run_ends_when_sends_work_again);
       TEST(test_r_codec::test_hw_invalid_data_does_not_fall_back);
       TEST(test_r_codec::test_hw_failures_not_in_a_row_keep_the_hardware);
       TEST(test_r_codec::test_hw_decoder_that_wont_open_decodes_in_software);
+      TEST(test_r_codec::test_a_forced_key_frame_is_an_idr);
+      TEST(test_r_codec::test_a_forced_key_frame_is_an_idr_in_hardware);
+      TEST(test_r_codec::test_a_moved_encoder_keeps_a_forced_key_frame);
+      TEST(test_r_codec::test_a_picture_keeps_its_input_pts);
+      TEST(test_r_codec::test_a_picture_keeps_its_input_pts_in_hardware);
     RTF_FIXTURE_END();
 
     virtual ~test_r_codec() throw() {}
@@ -43,7 +55,19 @@ public:
     void test_hw_failure_on_one_format_keeps_others_in_hardware();
     void test_dead_hw_context_falls_back_to_software();
     void test_software_decoder_does_not_fall_back();
+    void test_failure_run_logs_the_first_then_one_per_interval();
+    void test_failure_run_counts_what_was_left_out();
+    void test_failures_with_successes_between_are_still_one_burst();
+    void test_a_burst_nobody_ended_is_over_after_the_quiet();
+    void test_alternating_send_failures_are_not_a_line_each();
+    void test_a_run_of_send_failures_is_one_log_line();
+    void test_send_failure_run_ends_when_sends_work_again();
     void test_hw_invalid_data_does_not_fall_back();
     void test_hw_failures_not_in_a_row_keep_the_hardware();
     void test_hw_decoder_that_wont_open_decodes_in_software();
+    void test_a_forced_key_frame_is_an_idr();
+    void test_a_forced_key_frame_is_an_idr_in_hardware();
+    void test_a_moved_encoder_keeps_a_forced_key_frame();
+    void test_a_picture_keeps_its_input_pts();
+    void test_a_picture_keeps_its_input_pts_in_hardware();
 };

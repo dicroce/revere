@@ -26,8 +26,10 @@ namespace r_cameras
 //  - When the primary is up again, the fallback stops (its open events end)
 //    and the primary's own state takes over.
 //
-// Status is the fallback's while it runs, else the primary's. Spans are both
-// sources', the fallback's kept after it stops.
+// Status is the fallback's while it runs, else the primary's; the camera's
+// clock offset is the primary's while the fallback has none (a Reolink API
+// doesn't read it), so a doorbell's email rings stay on the press's time.
+// Spans are both sources', the fallback's kept after it stops.
 class r_camera_events_chain final : public r_camera_events
 {
 public:
@@ -54,6 +56,8 @@ public:
     R_API void request_stop() override;
     R_API r_camera_events_status status() const override;
     R_API std::vector<r_camera_span> spans(int64_t since_ms = 0) const override;
+    // To both sources (the primary reads the clock as its session allows: once it's back, if it's down).
+    R_API void read_clock() override;
 
     // One check: starts or stops the fallback as the primary's state says.
     // Public for tests, which call it with their own clock and no thread.

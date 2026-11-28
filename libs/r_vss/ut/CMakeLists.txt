@@ -15,6 +15,12 @@ add_executable(
     source/test_r_frame_tap.cpp
     include/test_r_frame_feeds.h
     source/test_r_frame_feeds.cpp
+    include/test_r_camera_events_keeper.h
+    source/test_r_camera_events_keeper.cpp
+    include/test_r_press_check.h
+    source/test_r_press_check.cpp
+    include/test_r_mail_rings.h
+    source/test_r_mail_rings.cpp
     include/test_r_live_fanout.h
     source/test_r_live_fanout.cpp
     include/test_r_restream_track.h
@@ -37,6 +43,8 @@ add_executable(
     source/test_r_client_errors.cpp
     include/test_r_event_timing.h
     source/test_r_event_timing.cpp
+    include/test_r_storage_summary.h
+    source/test_r_storage_summary.cpp
     include/test_r_detection_cap.h
     source/test_r_detection_cap.cpp
     include/test_r_recording_context.h
@@ -53,6 +61,8 @@ add_executable(
     source/test_r_network_watch.cpp
     include/test_r_lag_watchdog.h
     source/test_r_lag_watchdog.cpp
+    include/test_r_ts_discipline.h
+    source/test_r_ts_discipline.cpp
     include/test_r_key_frame_reply.h
     source/test_r_key_frame_reply.cpp
     include/test_r_failure_reason.h
@@ -71,6 +81,8 @@ add_executable(
     source/test_r_plugin_loader.cpp
     include/test_r_plugin_installer.h
     source/test_r_plugin_installer.cpp
+    include/test_r_plugin_catalog.h
+    source/test_r_plugin_catalog.cpp
     include/test_r_cloud_install.h
     source/test_r_cloud_install.cpp
     include/test_r_keep_awake.h
@@ -98,6 +110,8 @@ add_executable(
     source/test_r_teardown_queue.cpp
     include/test_r_restream_opus.h
     source/test_r_restream_opus.cpp
+    include/test_r_restream_mount.h
+    source/test_r_restream_mount.cpp
     include/test_r_opus_transcoder.h
     source/test_r_opus_transcoder.cpp
     include/test_r_substream_recorder.h

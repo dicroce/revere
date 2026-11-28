@@ -1,6 +1,8 @@
 #include "r_vss/r_early_alerts.h"
 #include "r_utils/3rdparty/json/json.h"
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 
 using namespace r_vss;
 using namespace std;
@@ -15,6 +17,68 @@ float r_vss::box_iou(const r_box& a, const r_box& b)
     float inter = (ix2 - ix1) * (iy2 - iy1);
     float uni = (a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - inter;
     return (uni > 0.0f) ? inter / uni : 0.0f;
+}
+
+string r_vss::box_text(const r_box& b)
+{
+    char buf[96];
+    snprintf(buf, sizeof(buf), "[%d,%d %d,%d] %dx%d", (int)lround(b.x1), (int)lround(b.y1), (int)lround(b.x2), (int)lround(b.y2),
+             (int)lround(b.x2 - b.x1), (int)lround(b.y2 - b.y1));
+    return buf;
+}
+
+bool r_vss::same_place(const string& class_name, const r_box& a, const r_box& b, float iou)
+{
+    if(box_iou(a, b) >= iou)
+        return true;
+    if(alert_group_of(class_name) != "vehicle")
+        return false;
+    const float aw = a.x2 - a.x1, ah = a.y2 - a.y1, bw = b.x2 - b.x1, bh = b.y2 - b.y1;
+    if(aw <= 0 || ah <= 0 || bw <= 0 || bh <= 0)
+        return false;
+    if(max(aw, bw) > VEHICLE_JITTER_SIZE * min(aw, bw) || max(ah, bh) > VEHICLE_JITTER_SIZE * min(ah, bh))
+        return false;
+    const float dx = fabs((a.x1 + a.x2) - (b.x1 + b.x2)) / 2, dy = fabs((a.y1 + a.y2) - (b.y1 + b.y2)) / 2;
+    return dx <= min(VEHICLE_JITTER_PX, (aw + bw) / 4) && dy <= min(VEHICLE_JITTER_PX, (ah + bh) / 4);
+}
+
+bool r_vss::mostly_inside(const r_box& part, const r_box& whole)
+{
+    const float pa = (part.x2 - part.x1) * (part.y2 - part.y1), wa = (whole.x2 - whole.x1) * (whole.y2 - whole.y1);
+    if(pa <= 0 || wa <= 0)
+        return false;
+    float ix1 = (std::max)(part.x1, whole.x1), iy1 = (std::max)(part.y1, whole.y1);
+    float ix2 = (std::min)(part.x2, whole.x2), iy2 = (std::min)(part.y2, whole.y2);
+    if(ix1 >= ix2 || iy1 >= iy2)
+        return false;
+    if((ix2 - ix1) * (iy2 - iy1) >= CONTAINED_FRACTION * pa)
+        return true;
+    // Within it across, and overlapping it for at least half its height, sticking out only above it: a cab whose box
+    // reaches above the truck's. A car in front of the truck sticks out below it (it's nearer the camera), so it isn't.
+    return part.y2 <= whole.y2 && (ix2 - ix1) >= CONTAINED_ACROSS * (part.x2 - part.x1) &&
+           (iy2 - iy1) >= CONTAINED_DOWN * (part.y2 - part.y1);
+}
+
+bool r_vss::upper_part_of(const r_box& part, const r_box& whole)
+{
+    const float wh = whole.y2 - whole.y1;
+    const float pa = (part.x2 - part.x1) * (part.y2 - part.y1), wa = (whole.x2 - whole.x1) * wh;
+    if(pa <= 0 || wa <= 0)
+        return false;
+    return part.y2 <= whole.y1 + UPPER_PART_LINE * wh && pa < UPPER_PART_AREA * wa;
+}
+
+// How an anchor stands, for the log: "2 sightings, weak, active".
+static string anchor_state_text(int sightings, bool strong, bool active)
+{
+    return to_string(sightings) + (sightings == 1 ? " sighting, " : " sightings, ") + (strong ? "strong, " : "weak, ") + (active ? "active" : "not active");
+}
+
+static string iou_text(float iou)
+{
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.2f", iou);
+    return buf;
 }
 
 string r_vss::alert_group_of(const string& class_name)
@@ -55,24 +119,9 @@ r_early_alerts::r_decision r_early_alerts::consider(const string& camera_id, con
         d.verdict = early_below_floor;
         return d;
     }
-    auto it = _anchors.find(camera_id);
-    if(it != _anchors.end())
-    {
-        for(const auto& a : it->second)
-        {
-            if(a.class_name != class_name || !a.active(ts))
-                continue;
-            auto iou = box_iou(a.box, box);
-            if(iou >= ANCHOR_MATCH_IOU && iou > d.anchor_iou)
-            {
-                d.verdict = early_anchored;
-                d.anchor_iou = iou;
-                d.strong_anchor = a.strong;
-            }
-        }
-        if(d.verdict == early_anchored)
-            return d;
-    }
+    auto a = _anchored_locked(camera_id, class_name, box, ts);
+    if(a.verdict == early_anchored)
+        return a;
 
     d.verdict = early_sent;
     ev.classes_sent.insert(class_name);
@@ -80,7 +129,88 @@ r_early_alerts::r_decision r_early_alerts::consider(const string& camera_id, con
     return d;
 }
 
-bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts, const vector<r_seen>& start_frame) const
+r_early_alerts::r_decision r_early_alerts::_anchored_locked(const string& camera_id, const string& class_name, const r_box& box, int64_t ts) const
+{
+    r_decision d;
+    auto it = _anchors.find(camera_id);
+    if(it == _anchors.end())
+        return d;
+    bool on = false;
+    for(const auto& a : it->second)
+    {
+        if(a.class_name != class_name || !a.active(ts) || !same_place(class_name, a.box, box, ANCHOR_MATCH_IOU))
+            continue;
+        auto iou = box_iou(a.box, box);
+        if(!on || iou > d.anchor_iou)
+        {
+            on = true;
+            d.verdict = early_anchored;
+            d.anchor_iou = iou;
+            d.strong_anchor = a.strong;
+        }
+    }
+    return d;
+}
+
+const r_early_alerts::anchor* r_early_alerts::_containing_anchor_locked(const string& camera_id, const string& class_name, const r_box& box, int64_t ts,
+                                                                          const vector<r_seen>& same_frame, bool* whole_in_frame) const
+{
+    if(alert_group_of(class_name) != "vehicle")
+        return nullptr;
+    auto it = _anchors.find(camera_id);
+    if(it == _anchors.end())
+        return nullptr;
+    for(const auto& a : it->second)
+    {
+        if(!a.strong || !a.active(ts) || alert_group_of(a.class_name) != "vehicle" || !mostly_inside(box, a.box))
+            continue;
+        // The whole vehicle in the same frame: this box is something else in front of it, unless it's an upper part
+        // of the vehicle (its cab, boxed as well as the truck).
+        bool whole_seen = false;
+        for(const auto& s : same_frame)
+            if(alert_group_of(s.class_name) == "vehicle" && same_place(a.class_name, a.box, s.box, ANCHOR_MATCH_IOU))
+                whole_seen = true;
+        if(!whole_seen || upper_part_of(box, a.box))
+        {
+            if(whole_in_frame)
+                *whole_in_frame = whole_seen;
+            return &a;
+        }
+    }
+    return nullptr;
+}
+
+r_early_alerts::r_decision r_early_alerts::anchored(const string& camera_id, const string& class_name, const r_box& box, int64_t ts,
+                                                    const vector<r_seen>* same_frame) const
+{
+    if(alert_group_of(class_name).empty())
+        return r_decision();
+    lock_guard<mutex> g(_mtx);
+    auto d = _anchored_locked(camera_id, class_name, box, ts);
+    if(d.verdict != early_anchored && same_frame)
+    {
+        bool whole = false;
+        if(auto a = _containing_anchor_locked(camera_id, class_name, box, ts, *same_frame, &whole))
+        {
+            d.whole_in_frame = whole;
+            d.verdict = early_anchored;
+            d.anchor_iou = box_iou(a->box, box);
+            d.strong_anchor = true;
+            d.part_of_vehicle = true;
+        }
+    }
+    return d;
+}
+
+bool r_early_alerts::part_of_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts,
+                                            const vector<r_seen>& same_frame) const
+{
+    lock_guard<mutex> g(_mtx);
+    return _containing_anchor_locked(camera_id, class_name, box, ts, same_frame) != nullptr;
+}
+
+bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& class_name, const r_box& box, int64_t ts, const vector<r_seen>& start_frame,
+                                       const vector<r_seen>* same_frame, string* why) const
 {
     if(alert_group_of(class_name) != "vehicle")
         return false;
@@ -89,13 +219,29 @@ bool r_early_alerts::is_parked_vehicle(const string& camera_id, const string& cl
     if(it == _anchors.end())
         return false;
     for(const auto& a : it->second)
-        if(a.class_name == class_name && a.active(ts) && box_iou(a.box, box) >= ANCHOR_MATCH_IOU)
+        if(a.class_name == class_name && a.active(ts) && same_place(class_name, a.box, box, ANCHOR_MATCH_IOU))
         {
             // Parked before the event began? Otherwise it arrived at (or took) the spot during it.
             for(const auto& s : start_frame)
-                if(s.class_name == class_name && box_iou(a.box, s.box) >= ANCHOR_MATCH_IOU)
+                if(s.class_name == class_name && same_place(class_name, a.box, s.box, ANCHOR_MATCH_IOU))
+                {
+                    if(why)
+                        *why = "on its anchor (IoU " + iou_text(box_iou(a.box, box)) + ")";
                     return true;
+                }
         }
+    // Only part of a parked vehicle (its cab, the rest hidden or boxed too): parked if the whole vehicle was there before.
+    bool whole = false;
+    if(same_frame)
+        if(auto a = _containing_anchor_locked(camera_id, class_name, box, ts, *same_frame, &whole))
+            for(const auto& s : start_frame)
+                if(s.class_name == a->class_name && same_place(a->class_name, a->box, s.box, ANCHOR_MATCH_IOU))
+                {
+                    if(why)
+                        *why = string("part of a parked vehicle (") + (whole ? "upper part, whole vehicle in frame" : "inside its anchor") +
+                               ", IoU " + iou_text(box_iou(a->box, box)) + ")";
+                    return true;
+                }
     return false;
 }
 
@@ -113,7 +259,8 @@ int64_t r_early_alerts::look_interval_ms(const string& camera_id) const
     return (it != _events.end() && !it->second.sent.empty()) ? SLOW_LOOK_MS : FAST_LOOK_MS;
 }
 
-bool r_early_alerts::event_ended(const string& camera_id, int64_t ts, const vector<r_seen>& start_frame, const vector<r_seen>& end_frame)
+bool r_early_alerts::event_ended(const string& camera_id, int64_t ts, const vector<r_seen>& start_frame, const vector<r_seen>& end_frame,
+                                 vector<string>* notes)
 {
     lock_guard<mutex> g(_mtx);
     auto& anchors = _anchors[camera_id];
@@ -128,21 +275,39 @@ bool r_early_alerts::event_ended(const string& camera_id, int64_t ts, const vect
     {
         // Its best match of the same class in the end frame.
         float best = 0.0f;
+        bool in_end = false;
         for(const auto& e : end_frame)
             if(e.class_name == s.class_name)
+            {
+                in_end = true;
                 best = max(best, box_iou(s.box, e.box));
+            }
+        // A vehicle's small box jittering in place (same_place) is a sighting too, never a strong anchor by itself.
+        bool jitter = false;
         if(best < SIGHTING_IOU)
+            for(const auto& e : end_frame)
+                if(e.class_name == s.class_name && same_place(s.class_name, s.box, e.box, SIGHTING_IOU))
+                    jitter = true;
+        const bool noted = notes && !alert_group_of(s.class_name).empty();
+        const string pairing = "end-frame IoU " + iou_text(best) + (best < SIGHTING_IOU ? ", a small box jittering in place" : "");
+        const string seen = s.class_name + " " + box_text(s.box) + ": ";
+        if(best < SIGHTING_IOU && !jitter)
+        {
+            if(noted)
+                notes->push_back(seen + (in_end ? "end frame's best " + s.class_name + " IoU " + iou_text(best) + ", under " + iou_text(SIGHTING_IOU) + ": not learnt"
+                                                : "no " + s.class_name + " in the end frame: not learnt"));
             continue;
+        }
 
         bool strong = best >= STATIC_IOU;
         anchor* match = nullptr;
         float match_iou = 0.0f;
         for(auto& a : anchors)
         {
-            if(a.class_name != s.class_name)
+            if(a.class_name != s.class_name || !same_place(s.class_name, a.box, s.box, ANCHOR_MATCH_IOU))
                 continue;
             auto iou = box_iou(a.box, s.box);
-            if(iou >= ANCHOR_MATCH_IOU && iou > match_iou)
+            if(!match || iou > match_iou)
             {
                 match = &a;
                 match_iou = iou;
@@ -155,6 +320,9 @@ bool r_early_alerts::event_ended(const string& camera_id, int64_t ts, const vect
             match->strong = match->strong || strong;
             match->box = s.box;
             match->last_seen = ts;
+            if(noted)
+                notes->push_back(seen + pairing + ": anchor seen again (IoU " + iou_text(match_iou) + "): " +
+                                 anchor_state_text(match->sightings, match->strong, match->active(ts)));
         }
         else
         {
@@ -165,6 +333,8 @@ bool r_early_alerts::event_ended(const string& camera_id, int64_t ts, const vect
             a.strong = strong;
             a.last_seen = ts;
             anchors.push_back(a);
+            if(noted)
+                notes->push_back(seen + pairing + ": new anchor: " + anchor_state_text(a.sightings, a.strong, a.active(ts)));
         }
         changed = true;
     }
@@ -177,6 +347,30 @@ bool r_early_alerts::event_ended(const string& camera_id, int64_t ts, const vect
 
     _events.erase(camera_id);
     return changed;
+}
+
+string r_early_alerts::nearest_anchor(const string& camera_id, const string& class_name, const r_box& box, int64_t ts) const
+{
+    lock_guard<mutex> g(_mtx);
+    const anchor* best = nullptr;
+    float best_iou = -1.0f;
+    auto it = _anchors.find(camera_id);
+    if(it != _anchors.end())
+        for(const auto& a : it->second)
+        {
+            if(a.class_name != class_name)
+                continue;
+            auto iou = box_iou(a.box, box);
+            if(iou > best_iou)
+            {
+                best = &a;
+                best_iou = iou;
+            }
+        }
+    if(!best)
+        return "no " + class_name + " anchor";
+    return "nearest " + class_name + " anchor " + box_text(best->box) + ": IoU " + iou_text(best_iou) + ", " +
+           anchor_state_text(best->sightings, best->strong, best->active(ts));
 }
 
 size_t r_early_alerts::anchor_count(const string& camera_id, int64_t now) const

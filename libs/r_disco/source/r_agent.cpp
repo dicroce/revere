@@ -881,20 +881,18 @@ void r_agent::recheck_held_moves()
             continue;
         }
 
-        // This computer doesn't pause recording when a camera's address changes (the default, and the cloud's
-        // setting): the camera keeps recording at the new address, and the move says how its MAC compared. The
-        // stored MAC stays as it was: only a person's confirm teaches a new one, so whatever answered there once
-        // (another device, or one posing as the camera) never becomes the MAC the next move is checked against.
-        if(!_pause_on_address_change.load())
+        // A move that can't be checked (no MAC on file, none readable there) is followed with no pause only when this
+        // computer is set to (an opt-in, for a network where ARP can't be read): the camera keeps recording at the new
+        // address, and the move says it wasn't checked. The stored MAC stays as it was: only a person's confirm teaches
+        // a new one. A different MAC is never followed this way: something else answers there, and the camera's login
+        // is not sent to it until a person says so.
+        if(reason != "mac_mismatch" && _follow_unverified_moves.load())
         {
-            auto shown = [](const r_nullable<string>& m) { return m.is_null() ? string("none") : m.value(); };
             h.move.mac_check = mac_check_for(reason);
             // No MAC on file: the new address isn't vouched for, so its MAC isn't noted there either.
             _set_unconfirmed_address(id, reason == "no_stored_mac" ? h.move.new_ipv4 : string());
-            _follow(id, h, "this computer doesn't pause recording when a camera's address changes; its MAC " +
-                    (reason == "no_stored_mac" ? string("wasn't on file")
-                                               : (reason == "mac_unknown" ? string("couldn't be read there")
-                                                                          : "differs there (stored " + shown(stored.mac) + ", seen " + shown(new_mac) + ")")));
+            _follow(id, h, string("this computer follows moves it can't check; the camera's MAC ") +
+                    (reason == "no_stored_mac" ? "wasn't on file" : "couldn't be read there"));
             continue;
         }
 

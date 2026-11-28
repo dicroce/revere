@@ -194,6 +194,10 @@ private:
     r_http::r_server_response _get_motion_events(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _get_camera_events(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _get_doorbell_presses(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _get_doorbell_mail_setup(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _post_doorbell_mail_login(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+    r_http::r_server_response _post_doorbell_press_test(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _get_analytics(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
@@ -250,6 +254,9 @@ private:
 
     // Move storage / Change retention (the desktop's Camera properties).
     r_http::r_server_response _get_storage_info(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
+
+    // The recordings' drive: its size and free space, and what the cameras' files reserve of it.
+    r_http::r_server_response _get_storage_summary(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 
     r_http::r_server_response _post_storage_move(r_utils::r_socket_base& conn, const r_http::r_server_request& request);
 

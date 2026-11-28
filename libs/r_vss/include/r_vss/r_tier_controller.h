@@ -66,6 +66,10 @@ R_API r_tier_status tier_status_without_detector(const r_tier_status& status);
 //    camera's motion, and each of its sessions with a person in it is a
 //    person check (pass_session). Five events can verify a camera before it
 //    has met three people, and with MOG2 off there'd be no other way up.
+//  - A doorbell isn't moved to tier 2 automatically: verified for it, it runs on tier 3, so Revere's YOLO looks at
+//    every motion the camera reports. A person the camera misses at a doorbell is a visitor missed, and a doorbell's
+//    own person events can miss one (it sent only motion while someone stood at the door). Its verification is kept
+//    as it is, so a camera that stops being a doorbell goes to tier 2 then. Forced tiers are unchanged.
 //  - The verified tier outlives a restart: the caller saves verified_tier()
 //    and gives it back with restore(); the camera then returns to it once its
 //    subscription has been up for STABLE_MS, without checking again.
@@ -89,6 +93,8 @@ public:
 
     // "auto" (or empty) or "1", "2", "3"; anything else counts as auto.
     R_API void set_setting(const std::string& camera_id, const std::string& setting);
+    // Whether the camera is a doorbell (r_disco::camera_kind): automatic, it goes no further than tier 3.
+    R_API void set_doorbell(const std::string& camera_id, bool doorbell);
 
     // The camera has a working event subscription (state "subscribed") or not.
     // A camera never reported on (no subscription at all) stays on tier 1.
@@ -129,6 +135,7 @@ private:
     struct _camera
     {
         int forced {0};                       // 0 = automatic
+        bool doorbell {false};
         bool known {false};                   // a subscription has been reported
         bool up {false};
         int64_t up_since {0}, down_since {0};
