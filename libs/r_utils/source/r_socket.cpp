@@ -71,6 +71,7 @@ r_raw_socket::r_raw_socket(r_raw_socket&& obj) noexcept
     // Atomically steal the socket from obj
     const sock_t stolen = obj._sok.exchange(kInvalidSock, std::memory_order_acq_rel);
     _sok.store(stolen, std::memory_order_release);
+    _shut.store(obj._shut.exchange(false, std::memory_order_acq_rel), std::memory_order_release);
 
     _addr = std::move(obj._addr);
     _host = std::move(obj._host);
@@ -96,6 +97,7 @@ r_raw_socket& r_raw_socket::operator=(r_raw_socket&& obj) noexcept
     // Atomically steal the socket from obj
     const sock_t stolen = obj._sok.exchange(kInvalidSock, std::memory_order_acq_rel);
     _sok.store(stolen, std::memory_order_release);
+    _shut.store(obj._shut.exchange(false, std::memory_order_acq_rel), std::memory_order_release);
 
     _addr = std::move(obj._addr);
     _host = std::move(obj._host);
@@ -106,6 +108,8 @@ r_raw_socket& r_raw_socket::operator=(r_raw_socket&& obj) noexcept
 void r_raw_socket::create( int af )
 {
     _sok = (sock_t) ::socket( af, SOCK_STREAM, 0 );
+    // A new socket has not been shut down, whatever the one before it went through.
+    _shut.store(false, std::memory_order_release);
 
     if( _sok == kInvalidSock )
         R_STHROW( r_socket_exception, ("Unable to create socket.") );
@@ -312,6 +316,8 @@ void r_raw_socket::shutdown()
     sock_t s = _sok.load(std::memory_order_acquire);
     if (s == kInvalidSock)
         return;
+    // Before the shutdown itself, so a waiter that the shutdown wakes (or that looks between its slices) sees it.
+    _shut.store(true, std::memory_order_release);
 #ifdef IS_WINDOWS
     ::shutdown(s, SD_BOTH);
 #else
@@ -336,6 +342,47 @@ bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
     if(sok == kInvalidSock)
         return false;
 
+    auto before = std::chrono::steady_clock::now();
+
+#ifdef IS_WINDOWS
+    // shutdown() doesn't wake a select() here, as it does elsewhere, so a thread stopping this one would wait out the
+    // whole timeout. Wait in slices instead, and answer "won't block" as soon as shutdown() has been called: the
+    // caller's recv() then sees the end of the connection, as it does after the wake-up on the other platforms.
+    int fds_with_data = 0;
+    uint64_t left = millis;
+    for(;;)
+    {
+        // The socket this wait started on was closed (or the object went on to another one): stop, and don't wait on
+        // a handle that may now be someone else's. The check after the loop answers false.
+        if(_sok.load(std::memory_order_acquire) != sok)
+        {
+            fds_with_data = 0;
+            break;
+        }
+
+        if(_shut.load(std::memory_order_acquire))
+        {
+            fds_with_data = 1;
+            break;
+        }
+
+        const uint64_t slice = (left < 100) ? left : 100;
+        struct timeval slice_timeout;
+        slice_timeout.tv_sec = (uint32_t)(slice / 1000);
+        slice_timeout.tv_usec = (uint32_t)((slice % 1000) * 1000);
+
+        fd_set recv_fds;
+        FD_ZERO(&recv_fds);
+        FD_SET((int)sok, &recv_fds);
+
+        fds_with_data = select((int)(sok + 1), &recv_fds, NULL, NULL, &slice_timeout);
+
+        if(fds_with_data != 0 || slice >= left)
+            break;
+
+        left -= slice;
+    }
+#else
     struct timeval recv_timeout;
     recv_timeout.tv_sec = (uint32_t)(millis / 1000);
     recv_timeout.tv_usec = (uint32_t)((millis % 1000) * 1000);
@@ -344,9 +391,8 @@ bool r_raw_socket::wait_till_recv_wont_block( uint64_t& millis ) const
     FD_ZERO(&recv_fds);
     FD_SET((int)sok, &recv_fds);
 
-    auto before = std::chrono::steady_clock::now();
-
     auto fds_with_data = select((int)(sok + 1), &recv_fds, NULL, NULL, &recv_timeout);
+#endif
 
     auto after = std::chrono::steady_clock::now();
 

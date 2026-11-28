@@ -108,6 +108,9 @@ public:
     R_API virtual int recv(void* buf, size_t len);
 
     R_API virtual void close();
+    /// Ends the connection from another thread and wakes whoever is waiting on it. Once called, wait_till_recv_wont_block()
+    /// answers true at once (until create() makes a new socket), so a reader goes on to recv() and sees the end. On
+    /// Windows select() isn't woken by it, so the wait looks at that flag between short slices.
     R_API virtual void shutdown() override;
 
     R_API virtual bool wait_till_recv_wont_block( uint64_t& millis ) const;
@@ -123,6 +126,9 @@ public:
 
 protected:
     std::atomic<sock_t> _sok;
+    // shutdown() was called on the socket now held: set there, cleared when a new socket is created, and carried with
+    // the socket when it is moved.
+    std::atomic<bool> _shut {false};
     r_socket_address _addr;
     std::string _host;
 };
