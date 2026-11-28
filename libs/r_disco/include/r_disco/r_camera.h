@@ -2,6 +2,7 @@
 #define r_disco_r_camera_h
 
 #include "r_utils/r_nullable.h"
+#include <cctype>
 #include <string>
 
 namespace r_disco
@@ -82,8 +83,52 @@ struct r_camera
     // the decoding. Off (0, or null) until chosen, and off whenever the camera has no substream in use.
     r_utils::r_nullable<int> sub_analysis;
 
+    // What the device is: "camera" or "doorbell", as the person chose it; null until they do (camera_kind()).
+    r_utils::r_nullable<std::string> kind;
+
+    // How a doorbell tells revere it was pressed, besides ONVIF (which always counts): "onvif" (nothing more), or
+    // "reolink_email" (its email alerts, to revere's mail listener). Null until chosen: onvif (camera_press_source()).
+    r_utils::r_nullable<std::string> press_source;
+
     std::string stream_config_hash;
 };
+
+// "doorbell" or "camera": the kind the person chose, or, until they choose, "doorbell" for a camera whose model
+// says it is one (ONVIF's GetDeviceInformation: Reolink's is "Reolink Video Doorbell PoE"), else "camera".
+inline std::string camera_kind(const r_camera& camera)
+{
+    if(!camera.kind.is_null() && (camera.kind.value() == "doorbell" || camera.kind.value() == "camera"))
+        return camera.kind.value();
+    if(!camera.model.is_null())
+    {
+        std::string m = camera.model.value();
+        for(auto& ch : m)
+            ch = (char)std::tolower((unsigned char)ch);
+        if(m.find("doorbell") != std::string::npos)
+            return "doorbell";
+    }
+    return "camera";
+}
+
+// Whether kind is one a person can choose.
+inline bool valid_camera_kind(const std::string& kind)
+{
+    return kind == "camera" || kind == "doorbell";
+}
+
+// A doorbell's press source as it's used: the one chosen, or "onvif".
+inline std::string camera_press_source(const r_camera& camera)
+{
+    if(!camera.press_source.is_null() && camera.press_source.value() == "reolink_email")
+        return "reolink_email";
+    return "onvif";
+}
+
+// Whether source is one a person can choose.
+inline bool valid_press_source(const std::string& source)
+{
+    return source == "onvif" || source == "reolink_email";
+}
 
 // Whether the camera uses its substream: only sub_mode "on" counts; null or
 // anything else is off.

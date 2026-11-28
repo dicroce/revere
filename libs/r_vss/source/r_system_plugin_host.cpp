@@ -482,6 +482,7 @@ bool r_system_plugin_host::_load(const std::string& path, std::string& why)
         auto cameras_changed_func = _symbol<system_plugin_cameras_changed_func>(*lib, "system_plugin_cameras_changed");
         auto post_motion_func = _symbol<system_plugin_post_motion_func>(*lib, "system_plugin_post_motion");
         auto camera_state_func = _symbol<system_plugin_camera_state_func>(*lib, "system_plugin_camera_state");
+        auto doorbell_ring_func = _symbol<system_plugin_doorbell_ring_func>(*lib, "system_plugin_doorbell_ring");
         auto action_func = _symbol<void (*)(r_system_plugin_handle, const char*)>(*lib, "system_plugin_action");
         auto set_host_api_func = _symbol<void (*)(r_system_plugin_handle, const r_system_plugin_host_api*)>(*lib, "system_plugin_set_host_api");
 
@@ -538,7 +539,8 @@ bool r_system_plugin_host::_load(const std::string& path, std::string& why)
         p.set_host_api_func = set_host_api_func;
         p.post_motion_func = post_motion_func;
         p.camera_state_func = camera_state_func;
-        if (post_motion_func || camera_state_func)
+        p.doorbell_ring_func = doorbell_ring_func;
+        if (post_motion_func || camera_state_func || doorbell_ring_func)
             p.notifier = std::make_shared<r_plugin_notifier>();
         p.path = path;
 
@@ -1015,6 +1017,18 @@ void r_system_plugin_host::notify_motion(const std::string& camera_id, bool star
         auto handle = p->plugin_handle;
         auto fn = p->post_motion_func;
         p->notifier->post([handle, fn, camera_id, started, ts_ms]() { post_motion_to_plugin(handle, fn, camera_id, started, ts_ms); });
+    }
+}
+
+void r_system_plugin_host::notify_doorbell_ring(const std::string& camera_id, int64_t ts_ms)
+{
+    for(auto p : _snapshot())
+    {
+        if(!p->notifier || !p->doorbell_ring_func || !p->plugin_handle)
+            continue;
+        auto handle = p->plugin_handle;
+        auto fn = p->doorbell_ring_func;
+        p->notifier->post([handle, fn, camera_id, ts_ms]() { fn(handle, camera_id.c_str(), ts_ms); });
     }
 }
 

@@ -169,7 +169,7 @@ r_ssl_socket::~r_ssl_socket()
     mbedtls_entropy_free(&_entropy);
 }
 
-void r_ssl_socket::connect(const std::string& host, int port)
+void r_ssl_socket::connect_plain(const std::string& host, int port)
 {
     _host = host;
 
@@ -190,9 +190,26 @@ void r_ssl_socket::connect(const std::string& host, int port)
     // The timeouts above don't cover connect() itself on Windows.
     _sok.connect(host, port, _ioTimeOut);
 
+    _plain = true;
+    _valid = true;
+}
+
+void r_ssl_socket::connect(const std::string& host, int port)
+{
+    connect_plain(host, port);
+    start_tls();
+}
+
+void r_ssl_socket::start_tls()
+{
+    if (!_plain)
+        R_THROW(("r_ssl_socket::start_tls(): not connected, or TLS already started."));
+    _valid = false;
+    _plain = false;
+
     mbedtls_ssl_set_bio(&_ssl, &_sok, _mbedtls_send, _mbedtls_recv, nullptr);
 
-    if (mbedtls_ssl_set_hostname(&_ssl, host.c_str()) != 0)
+    if (mbedtls_ssl_set_hostname(&_ssl, _host.c_str()) != 0)
         R_THROW(("mbedtls_ssl_set_hostname() failed"));
 
     int ret;
@@ -212,6 +229,11 @@ void r_ssl_socket::connect(const std::string& host, int port)
 
 void r_ssl_socket::close()
 {
+    if (_valid && _plain) {
+        _sok.close();
+        _valid = false;
+        _plain = false;
+    }
     if (_valid) {
         mbedtls_ssl_close_notify(&_ssl);
         _sok.close();
@@ -228,6 +250,8 @@ int r_ssl_socket::send(const void* buf, size_t len)
 {
     if (!_valid)
         return MBEDTLS_ERR_SSL_CONN_EOF;
+    if (_plain)
+        return _sok.send(buf, len);
 
     // Retry loop for WANT_READ/WANT_WRITE with a short timeout per attempt
     // This handles the case where SSL needs multiple network writes to encrypt and send data
@@ -257,6 +281,8 @@ int r_ssl_socket::recv(void* buf, size_t len)
 {
     if (!_valid)
         return MBEDTLS_ERR_SSL_CONN_EOF;
+    if (_plain)
+        return _sok.recv(buf, len);
 
     // Retry loop for WANT_READ/WANT_WRITE with a short timeout per attempt
     // This handles the case where SSL needs multiple network reads to decrypt a record
@@ -286,6 +312,8 @@ bool r_ssl_socket::wait_till_recv_wont_block(uint64_t& millis) const
 {
     if (!_valid)
         return false;
+    if (_plain)
+        return _sok.wait_till_recv_wont_block(millis);
 
     // Check if mbedtls has already buffered decrypted data
     if (mbedtls_ssl_get_bytes_avail(&_ssl) > 0)

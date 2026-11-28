@@ -45,6 +45,7 @@ a { color: var(--fg); text-decoration: underline; cursor: pointer; margin-right:
 .modal img { max-width: 90%; max-height: 90%; border-radius: 4px; }
 .error-msg { color: var(--err); font-size: 0.8rem; margin-top: 0.5rem; }
 .help-text { font-size: 0.75rem; color: var(--dim); display: block; margin-top: 2px; }
+.warn-text { font-size: 0.75rem; color: #e0a030; display: block; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -104,6 +105,23 @@ async function loadSuites() {
   });
 }
 
+const WARN_OPS = { '<': (a, b) => a < b, '<=': (a, b) => a <= b, '>': (a, b) => a > b, '>=': (a, b) => a >= b };
+// Cautions for one parameter's current value, from the "warn" and "warn_choice" rules in the suite's catalog entry.
+function paramWarnings(p, inp) {
+  const out = [];
+  if(p.type === 'choice') {
+    const w = p.warn_choice && p.warn_choice[inp.value];
+    if(w) out.push(w);
+    return out;
+  }
+  const v = parseFloat(inp.value);
+  if(Number.isNaN(v)) return out;
+  (p.warn || []).forEach(r => {
+    if(WARN_OPS[r.op](v, r.value)) out.push(r.message.replace('{minutes}', (Math.round(v * (r.per || 1) / 6) / 10).toString()));
+  });
+  return out;
+}
+
 let selectedSuite = null;
 function selectSuite(suite, card) {
   document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
@@ -141,6 +159,17 @@ function selectSuite(suite, card) {
         const h = el('span', 'help-text', p.help);
         g.appendChild(h);
       }
+      if(p.recommended) {
+        g.appendChild(el('span', 'help-text', 'Recommended: ' + p.recommended.value + ', ' + p.recommended.why));
+      }
+      // Cautions about the value as it is typed (the same rules the command line prints).
+      const warnBox = el('span', 'warn-text', '');
+      warnBox.setAttribute('role', 'status');
+      g.appendChild(warnBox);
+      const refresh = () => { warnBox.textContent = paramWarnings(p, inp).join(' '); };
+      inp.addEventListener('input', refresh);
+      inp.addEventListener('change', refresh);
+      refresh();
       pCont.appendChild(g);
     });
   } else {

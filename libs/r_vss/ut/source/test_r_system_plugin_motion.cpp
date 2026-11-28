@@ -291,3 +291,42 @@ void test_r_system_plugin_motion::test_a_late_detection_does_not_go_on_to_the_ne
     RTF_ASSERT_EQUAL(calls, string("slow1\n"));
     RTF_ASSERT_EQUAL(lines, string("slow1 6 person\n"));
 }
+
+void test_r_system_plugin_motion::test_plugin_gets_doorbell_rings_in_order_with_motion()
+{
+    install(_top, TEST_MOTION_PLUGIN);
+    r_system_plugin_host host(_top);
+    host.start_all();
+
+    host.notify_motion("door", true, 1000);
+    host.notify_doorbell_ring("door", 1200);
+    host.notify_doorbell_ring("door", 9000);
+    host.notify_motion("door", false, 9500);
+
+    RTF_ASSERT_EQUAL(eventually_reads(_top + "/ring.txt", "door 1200\ndoor 9000\n"), string("door 1200\ndoor 9000\n"));
+    RTF_ASSERT_EQUAL(eventually_reads(_top + "/motion.txt", "door 1 1000\ndoor 0 9500\n"), string("door 1 1000\ndoor 0 9500\n"));
+    host.stop_all();
+}
+
+void test_r_system_plugin_motion::test_a_plugin_without_the_ring_export_is_left_alone()
+{
+    install(_top, TEST_NO_MOTION_PLUGIN);
+    r_system_plugin_host host(_top);
+    host.start_all();
+    host.notify_doorbell_ring("door", 1200);
+    this_thread::sleep_for(milliseconds(100));
+    RTF_ASSERT(!fs::exists(_top + "/ring.txt"));
+    host.stop_all();
+}
+
+void test_r_system_plugin_motion::test_a_plugin_with_only_the_ring_export_gets_rings()
+{
+    install(_top, TEST_RING_ONLY_PLUGIN);
+    r_system_plugin_host host(_top);
+    host.start_all();
+    host.notify_motion("door", true, 1000);
+    host.notify_doorbell_ring("door", 1200);
+    RTF_ASSERT_EQUAL(eventually_reads(_top + "/ring.txt", "door 1200\n"), string("door 1200\n"));
+    RTF_ASSERT(!fs::exists(_top + "/motion.txt"));
+    host.stop_all();
+}

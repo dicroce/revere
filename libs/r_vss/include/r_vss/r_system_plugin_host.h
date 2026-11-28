@@ -32,6 +32,7 @@ typedef void (*system_plugin_post_detection_v2_func)(r_system_plugin_handle, con
 
 typedef void (*system_plugin_post_motion_func)(r_system_plugin_handle, const char*, int, int64_t);
 typedef void (*system_plugin_camera_state_func)(r_system_plugin_handle, const char*, int, int);
+typedef void (*system_plugin_doorbell_ring_func)(r_system_plugin_handle, const char*, int64_t);
 
 // The calls a plugin's system_plugin_post_motion and system_plugin_camera_state get; nothing when the plugin has
 // no handle or no such function.
@@ -197,6 +198,9 @@ public:
     // notify_motion. Remembered, so a plugin that starts later is told each camera's latest.
     R_API void notify_camera_state(const std::string& camera_id, bool receiving_video, bool stream_failed);
 
+    // A doorbell rang at ts_ms (system_plugin_doorbell_ring). Queued like notify_motion.
+    R_API void notify_doorbell_ring(const std::string& camera_id, int64_t ts_ms);
+
     // A camera is gone: its state is no longer given to plugins that start later.
     R_API void forget_camera_state(const std::string& camera_id);
 
@@ -241,7 +245,8 @@ private:
         void (*set_host_api_func)(r_system_plugin_handle, const r_system_plugin_host_api*) = nullptr;   // Optional
         system_plugin_post_motion_func post_motion_func = nullptr;        // Optional
         system_plugin_camera_state_func camera_state_func = nullptr;      // Optional
-        // Calls the two above on a thread of its own; only for a plugin that has either.
+        system_plugin_doorbell_ring_func doorbell_ring_func = nullptr;    // Optional
+        // Calls the three above on a thread of its own; only for a plugin that has any of them.
         std::shared_ptr<r_plugin_notifier> notifier {};
         // Detections inside this plugin right now (a stuck one is still counted after stop_all() gave up on it).
         std::shared_ptr<std::atomic<int>> detections_inside = std::make_shared<std::atomic<int>>(0);

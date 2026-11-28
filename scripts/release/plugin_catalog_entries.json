@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "plugins": [
+    {
+      "id": "revere_cloud",
+      "type": "plugin",
+      "name": "Revere Cloud",
+      "description": "Watch your cameras from anywhere with the Revere mobile app, and get alerts, clips and AI summaries. Your recordings stay on this computer; Revere Cloud syncs events, snapshots and recording times, and streams video only when you ask for it.",
+      "source": "closed",
+      "terms_url": "https://revere.video/terms",
+      "terms_version": 1,
+      "asset": "cloud",
+      "file": "revere_cloud_system_plugin"
+    },
+    {
+      "id": "revere_homekit",
+      "type": "plugin",
+      "name": "Apple Home",
+      "description": "Show your cameras in the Apple Home app on your iPhone, iPad and Mac, on your home network. Video goes straight from this computer to your Apple devices on your home network.",
+      "source": "closed",
+      "beta": true,
+      "terms_url": "https://revere.video/terms",
+      "terms_version": 1,
+      "asset": "homekit",
+      "file": "revere_homekit_system_plugin"
+    }
+  ]
+}

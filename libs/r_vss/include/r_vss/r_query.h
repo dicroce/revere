@@ -142,7 +142,8 @@ R_API void query_remove_camera(const std::string& top_dir, r_disco::r_devices& d
 // allocating them if missing. Mirrors the desktop Camera Properties dialog. The
 // caller must bounce() the camera afterward for the change to take effect live.
 // motion_tier: "auto", "1", "2" or "3" (see r_tier_controller); null leaves it as it is.
-R_API void query_update_camera_properties(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours, const r_utils::r_nullable<std::string>& motion_tier = r_utils::r_nullable<std::string>());
+// motion_tier and kind ("camera" or "doorbell", r_disco::r_camera::kind) change only when given; anything else is a 400.
+R_API void query_update_camera_properties(const std::string& top_dir, r_disco::r_devices& devices, const std::string& camera_id, bool do_motion_detection, bool do_motion_pruning, int min_continuous_recording_hours, const r_utils::r_nullable<std::string>& motion_tier = r_utils::r_nullable<std::string>(), const r_utils::r_nullable<std::string>& kind = r_utils::r_nullable<std::string>(), const r_utils::r_nullable<std::string>& press_source = r_utils::r_nullable<std::string>());
 
 // The reason in an exception's what(), for text that leaves the recorder (an HTTP error body, which a clip's
 // error then shows the user): its first line (the rest is the stack) without the build paths in it. A nanots
