@@ -3130,19 +3130,24 @@ void test_r_utils::test_ssl_socket_shutdown_wakes_a_read()
         client.close();                       // its own thread closes it
     });
     this_thread::sleep_for(chrono::milliseconds(300));
-    RTF_ASSERT(!returned);
+    const bool still_reading = !returned;
     auto t0 = chrono::steady_clock::now();
     client.shutdown();
     for (int i = 0; i < 200 && !returned; ++i)
         this_thread::sleep_for(chrono::milliseconds(10));
-    RTF_ASSERT(returned);
-    RTF_ASSERT(got <= 0);
-    RTF_ASSERT(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - t0).count() < 2000);
+    const bool woke = returned;
+    const auto woke_after_ms = chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - t0).count();
+    // Both threads are joined before anything is asserted: a read that isn't woken then fails the test (after the
+    // read's own timeout) instead of ending the program on a joinable thread.
     reader.join();
-    RTF_ASSERT(!client.valid());
-    client.shutdown();   // after close: nothing to do
     done = true;
     server.join();
+    RTF_ASSERT(still_reading);
+    RTF_ASSERT(woke);
+    RTF_ASSERT(got <= 0);
+    RTF_ASSERT(woke_after_ms < 2000);
+    RTF_ASSERT(!client.valid());
+    client.shutdown();   // after close: nothing to do
 }
 
 void test_r_utils::test_ssl_server_socket_rejects_plaintext_client()

@@ -289,6 +289,21 @@ int r_ssl_socket::recv(void* buf, size_t len)
     uint64_t timeout_ms = 100;  // Short timeout per read attempt
     const int MAX_RETRIES = 50;  // Allow up to 5 seconds total (50 * 100ms)
 
+#ifdef IS_WINDOWS
+    // mbedtls_ssl_read() reads the connection with a blocking recv() when it has nothing buffered, and on Windows a
+    // shutdown() from another thread doesn't wake that: the read would wait out the socket's whole timeout. So wait
+    // first, with the socket's own wait (which shutdown() does end), unless mbedtls already holds something to work
+    // on: decrypted data not yet read (bytes_avail), or anything read off the connection and not yet processed
+    // (check_pending: whole records after the one being read, which mbedtls may read together, or the start of
+    // one). Either way mbedtls_ssl_read() has what it needs, or reads the rest of the record, which is on its way.
+    if (mbedtls_ssl_get_bytes_avail(&_ssl) == 0 && mbedtls_ssl_check_pending(&_ssl) == 0)
+    {
+        uint64_t first_wait_ms = _ioTimeOut;
+        if (!_sok.wait_till_recv_wont_block(first_wait_ms))
+            return MBEDTLS_ERR_SSL_WANT_READ;
+    }
+#endif
+
     for (int retry = 0; retry < MAX_RETRIES; ++retry)
     {
         int ret = mbedtls_ssl_read(&_ssl, static_cast<unsigned char*>(buf), len);
