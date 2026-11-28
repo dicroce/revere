@@ -239,6 +239,21 @@ void r_stream_keeper::start()
 
     if(_meph.has_object_detector())
     {
+        // Tier 3's parked cars, learnt before a restart.
+        try
+        {
+            auto path = _pass_anchors_path();
+            if(r_fs::file_exists(path))
+            {
+                auto bytes = r_fs::read_file(path);
+                _pass_anchors.from_json(string(bytes.begin(), bytes.end()));
+            }
+        }
+        catch(const exception& e)
+        {
+            R_LOG_ERROR("detection pass: couldn't read its static anchors: %s", e.what());
+        }
+
         auto pass = make_unique<r_detection_pass>(
             [this](const string& camera_id, int64_t) -> r_nullable<r_letterboxed_frame> {
                 std::shared_ptr<r_recording_context> rc;
@@ -1042,7 +1057,12 @@ void r_stream_keeper::_pass_found(const string& camera_id, const vector<r_detect
         if(reported_class(d.class_name))
             reported.push_back(d);
 
-    // On the bus at once: an alert shouldn't wait for the session to finish.
+    // On the bus at once: an alert shouldn't wait for the session to finish. Less what sits on a parked car's
+    // anchor: that goes at the session's end, if the record keeps it.
+    vector<string> notes;
+    reported = pass_alert_now(_pass_anchors, camera_id, reported, &notes);
+    for(auto& n : notes)
+        R_LOG_INFO("detection pass [%s]: alert: %s", _camera_name(camera_id).c_str(), n.c_str());
     for(auto& d : reported)
         _meph.emit_detection(d);
 
@@ -1073,13 +1093,38 @@ void r_stream_keeper::_pass_session(const r_detection_session& session)
         _tiers.pass_session(session.camera_id, yolo_person, camera_person);
     }
 
-    if(motion_tier(session.camera_id) != motion_tier_3 || !_motion_detection_on(session.camera_id))
+    const bool tier_3 = motion_tier(session.camera_id) == motion_tier_3 && _motion_detection_on(session.camera_id);
+
+    // The record: less each parked car (before learning from this session, as tier 1 does).
+    vector<r_detection> kept;
+    if(tier_3)
+    {
+        vector<string> notes;
+        kept = pass_record(_pass_anchors, session, &notes);
+        for(auto& n : notes)
+            R_LOG_INFO("detection pass [%s]: record: %s", _camera_name(session.camera_id).c_str(), n.c_str());
+    }
+
+    // Anchors from every chain's end, on any tier (none at a cut: pass_learn): a camera that moves to tier 3 already
+    // knows its parked cars.
+    {
+        vector<string> notes;
+        if(pass_learn(_pass_anchors, session, &notes))
+            _save_pass_anchors();
+        for(auto& n : notes)
+            R_LOG_INFO("detection pass [%s]: anchors: %s", _camera_name(session.camera_id).c_str(), n.c_str());
+    }
+
+    if(!tier_3)
         return;
 
-    vector<r_detection> kept;
-    for(auto& d : session.detections)
-        if(reported_class(d.class_name))
-            kept.push_back(d);
+    {
+        vector<r_detection> reported;
+        for(auto& d : kept)
+            if(reported_class(d.class_name))
+                reported.push_back(d);
+        kept = std::move(reported);
+    }
     if(kept.empty())
         return;
 
@@ -1092,6 +1137,27 @@ void r_stream_keeper::_pass_session(const r_detection_session& session)
             sent = sent || _same_detection(a, d);
         if(!sent)
             _meph.emit_detection(d);
+    }
+}
+
+string r_stream_keeper::_pass_anchors_path() const
+{
+    return _top_dir + PATH_SLASH + "detection_pass_static_anchors.json";
+}
+
+void r_stream_keeper::_save_pass_anchors()
+{
+    try
+    {
+        auto path = _pass_anchors_path();
+        auto j = _pass_anchors.to_json();
+        auto tmp = path + ".tmp";
+        r_fs::write_file((const uint8_t*)j.data(), j.size(), tmp);
+        r_fs::atomic_rename_file(tmp, path);
+    }
+    catch(const exception& e)
+    {
+        R_LOG_ERROR("detection pass: couldn't save its static anchors: %s", e.what());
     }
 }
 
