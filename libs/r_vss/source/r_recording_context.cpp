@@ -212,7 +212,9 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
         try
         {
             auto mi = buffer.map(r_gst_buffer::MT_READ);
-            const r_audio_sample sample {mi.data(), mi.size(), key, sc.stream_start_ts() + pts, pts};
+            // With the video's wall-clock correction (r_ts_discipline), so sound
+            // and picture stay as far apart as the camera sent them.
+            const r_audio_sample sample {mi.data(), mi.size(), key, (sc.stream_start_ts() + pts) + _ts_discipline.correction_ms(), pts};
             r_audio_sinks sinks;
 
             // The first kept sample's setup, and the session's counts.
@@ -431,7 +433,27 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
                 }
             }
 
-            auto ts = (sc.stream_start_ts() + pts);
+            // Stream start + pts follows the camera's clock, which drifts from
+            // ours; the correction keeps the recorded timeline on the wall clock.
+            const auto raw_ts = (sc.stream_start_ts() + pts);
+            // While frames reach us behind live, their lateness is ours, not
+            // the camera's clock, so it mustn't pull the timeline later.
+            const auto ts = raw_ts + _ts_discipline.video_frame(
+                raw_ts, duration_cast<milliseconds>(_last_v_time.time_since_epoch()).count(),
+                ingest_lag_ms > r_lag_watchdog::LAG_MS);
+            if(_ts_discipline.jumped())
+            {
+                auto name = _camera.friendly_name.is_null() ? _camera.id : _camera.friendly_name.value();
+                R_LOG_WARNING("recording time[%s]: camera time jumped; the recorded timeline is re-anchored at the wall clock (correction now %lld ms)",
+                              name.c_str(), (long long)_ts_discipline.correction_ms());
+            }
+            if(_ts_discipline.drift_warning())
+            {
+                auto name = _camera.friendly_name.is_null() ? _camera.id : _camera.friendly_name.value();
+                auto now_ms = duration_cast<milliseconds>(_last_v_time.time_since_epoch()).count();
+                R_LOG_WARNING("recording time[%s]: %s", name.c_str(),
+                              drift_message(_ts_discipline.drift_ms(), now_ms - _ts_discipline.anchored_at_ms()).c_str());
+            }
 
             // NOTE: live restream forwarding (GOP cache + queue posts) happens
             // BEFORE the storage write and motion post. write_frame is
@@ -559,25 +581,19 @@ r_recording_context::r_recording_context(r_stream_keeper* sk, const r_camera& ca
 
     _source.play();
 
-    if(r_cameras::camera_events_wanted(_camera))
-    {
-        // The subscriber is reset before this context is gone (see the destructor).
-        _camera_events = r_cameras::make_camera_events(_camera, [this](const r_cameras::r_camera_transition& t) {
-            _on_camera_transition(t);
-            _sk->camera_transition(_camera.id, t);
-        });
-        _camera_events->start();
-    }
+    // The camera's events are the stream keeper's, kept across reconnects: it attaches this context to them
+    // (on_camera_transition) once it's made.
 }
 
 r_recording_context::~r_recording_context() noexcept
 {
     // Each step is logged first, so a teardown that never finishes names the
-    // call it is stuck in. The event subscription is asked to stop before the
-    // steps that can block, so a stuck teardown doesn't leave it polling.
+    // call it is stuck in. The camera's event subscription isn't this context's
+    // (the stream keeper keeps it across reconnects): it only detaches.
     auto id = _camera.id.substr(0, 8);
-    R_LOG_INFO("teardown %s: events stop", id.c_str());
-    stop_camera_events();
+    // First: the camera's events stop reaching this context, and what's open ends for it.
+    R_LOG_INFO("teardown %s: events detach", id.c_str());
+    _sk->camera_events_detach(_camera.id, this);
 
     R_LOG_INFO("teardown %s: mount", id.c_str());
     _sk->remove_restream_mount(_restream_mount_path);
@@ -585,10 +601,6 @@ r_recording_context::~r_recording_context() noexcept
 
     R_LOG_INFO("teardown %s: source stop", id.c_str());
     _source.stop();
-
-    // Waits for the subscriber's thread (asked to finish above).
-    R_LOG_INFO("teardown %s: events join", id.c_str());
-    _camera_events.reset();
 
     R_LOG_INFO("teardown %s: storage", id.c_str());
 
@@ -1005,29 +1017,11 @@ void r_recording_context::live_restream_media_configure(GstRTSPMediaFactory*, Gs
 
 void r_recording_context::stop()
 {
-    // Asks without waiting, so stopping every camera at shutdown winds their
-    // subscribers down in parallel; the destructor waits.
-    stop_camera_events();
+    // Its camera's events are the stream keeper's: it stops them itself (r_stream_keeper::stop).
     _source.stop();
 }
 
-void r_recording_context::stop_camera_events()
-{
-    if(_camera_events)
-        _camera_events->request_stop();
-}
-
-bool r_recording_context::has_camera_events() const
-{
-    return (bool)_camera_events;
-}
-
-r_cameras::r_camera_events_status r_recording_context::camera_events_status() const
-{
-    return _camera_events ? _camera_events->status() : r_cameras::r_camera_events_status();
-}
-
-void r_recording_context::_on_camera_transition(const r_cameras::r_camera_transition& t)
+void r_recording_context::on_camera_transition(const r_cameras::r_camera_transition& t)
 {
     if(t.what != "motion")
         return;
@@ -1155,11 +1149,6 @@ r_nullable<r_live_key_frame> r_recording_context::latest_key_frame() const
     kf.data.assign(mi.data(), mi.data() + mi.size());
     out.set_value(std::move(kf));
     return out;
-}
-
-vector<r_cameras::r_camera_span> r_recording_context::camera_spans(int64_t since_ms) const
-{
-    return _camera_events ? _camera_events->spans(since_ms) : vector<r_cameras::r_camera_span>();
 }
 
 void r_recording_context::_live_restream_cleanup_cbs(live_restreaming_state* lrs)

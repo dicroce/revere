@@ -39,6 +39,7 @@ void r_camera_events_base::request_stop()
         _keep_running = false;
     }
     _cv.notify_all();
+    _stop_requested();
 }
 
 void r_camera_events_base::_join()

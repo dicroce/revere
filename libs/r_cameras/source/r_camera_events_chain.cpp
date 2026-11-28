@@ -163,10 +163,24 @@ r_camera_events_status r_camera_events_chain::status() const
 {
     lock_guard<mutex> g(_lock);
     if (_fallback)
-        return _fallback->status();
+    {
+        auto s = _fallback->status();
+        if (s.clock_offset_ms.is_null() && _primary)
+            s.clock_offset_ms = _primary->status().clock_offset_ms;
+        return s;
+    }
     if (_primary)
         return _primary->status();
     return r_camera_events_status();
+}
+
+void r_camera_events_chain::read_clock()
+{
+    lock_guard<mutex> g(_lock);
+    if (_primary)
+        _primary->read_clock();
+    if (_fallback)
+        _fallback->read_clock();
 }
 
 vector<r_camera_span> r_camera_events_chain::spans(int64_t since_ms) const

@@ -49,6 +49,23 @@ void test_r_camera_kind::test_update_properties_sets_kind()
         }
         RTF_ASSERT(kind_of().value() == "doorbell");    // a refused change changes nothing
 
+        // The press source: set, kept when not given, and only onvif or reolink_email.
+        auto source_of = [&]() { return devices.get_camera_by_id("cam-1").value().press_source; };
+        RTF_ASSERT(source_of().is_null());
+        query_update_camera_properties(dir, devices, "cam-1", false, false, 24, r_nullable<string>(), r_nullable<string>(), string("reolink_email"));
+        RTF_ASSERT(source_of().value() == "reolink_email");
+        query_update_camera_properties(dir, devices, "cam-1", false, false, 24, string("2"));
+        RTF_ASSERT(source_of().value() == "reolink_email");
+        for(auto bad : {"", "email", "ONVIF"})
+        {
+            bool refused = false;
+            try { query_update_camera_properties(dir, devices, "cam-1", false, false, 24, r_nullable<string>(), r_nullable<string>(), string(bad)); }
+            catch(const r_http::r_http_400_exception&) { refused = true; }
+            RTF_ASSERT(refused);
+        }
+        query_update_camera_properties(dir, devices, "cam-1", false, false, 24, r_nullable<string>(), r_nullable<string>(), string("onvif"));
+        RTF_ASSERT(source_of().value() == "onvif");
+
         bool not_found = false;
         try { query_update_camera_properties(dir, devices, "no-such", false, false, 24, r_nullable<string>(), string("doorbell")); }
         catch(const r_not_found_exception&) { not_found = true; }

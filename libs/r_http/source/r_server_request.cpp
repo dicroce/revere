@@ -10,6 +10,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cstdint>
+#include <chrono>
 
 using namespace r_http;
 using namespace r_utils;
@@ -56,7 +57,9 @@ r_server_request::r_server_request() :
     _headerOverRead(),
     _chunkCallback(),
     _chunk(),
-    _maxBodySize(DEFAULT_MAX_BODY_SIZE)
+    _maxBodySize(DEFAULT_MAX_BODY_SIZE),
+    _readDeadlineMillis(0),
+    _readDeadlineAt()
 {
 }
 
@@ -69,7 +72,9 @@ r_server_request::r_server_request(const r_server_request& obj) :
     _headerOverRead(obj._headerOverRead),
     _chunkCallback(obj._chunkCallback),
     _chunk(obj._chunk),
-    _maxBodySize(obj._maxBodySize)
+    _maxBodySize(obj._maxBodySize),
+    _readDeadlineMillis(obj._readDeadlineMillis),
+    _readDeadlineAt(obj._readDeadlineAt)
 {
 }
 
@@ -88,6 +93,8 @@ r_server_request& r_server_request::operator = (const r_server_request& obj)
     _chunkCallback = obj._chunkCallback;
     _chunk = obj._chunk;
     _maxBodySize = obj._maxBodySize;
+    _readDeadlineMillis = obj._readDeadlineMillis;
+    _readDeadlineAt = obj._readDeadlineAt;
 
     return *this;
 }
@@ -95,6 +102,8 @@ r_server_request& r_server_request::operator = (const r_server_request& obj)
 void r_server_request::read_request(r_utils::r_socket_base& socket, uint64_t timeout_millis)
 {
     _headerOverRead.clear();
+    if(_readDeadlineMillis > 0)
+        _readDeadlineAt = chrono::steady_clock::now() + chrono::milliseconds(_readDeadlineMillis);
 
     string headerBlock = _read_headers(socket, timeout_millis);
 
@@ -247,8 +256,8 @@ string r_server_request::_read_headers(r_socket_base& socket, uint64_t timeout_m
 
     while(buffer.size() < MAX_TOTAL_HEADERS_SIZE)
     {
-        // Note: we do not use r_networking::r_recv() here because we are handling partial reads
-        int received = socket.recv(chunk, CHUNK_SIZE);
+        // Whatever has come, up to a chunk (headers end somewhere inside one).
+        int received = _recv_some(socket, chunk, CHUNK_SIZE, timeout_millis);
         if(!socket.valid())
             R_STHROW(r_http_io_exception, ("Socket invalid."));
 
@@ -362,11 +371,10 @@ void r_server_request::_process_body(r_socket_base& socket, uint64_t timeout_mil
         {
             size_t step = (size_t)min((uint64_t)BODY_READ_STEP, contentLength - totalReceived);
             _body.resize(totalReceived + step);
-            int received = r_networking::r_recv(socket, _body.data() + totalReceived, step, timeout_millis);
-            if(received > 0)
-                totalReceived += received;
-            if(received < (int)step)
+            int received = _recv_some(socket, _body.data() + totalReceived, step, timeout_millis);
+            if(received <= 0)
                 break;
+            totalReceived += received;
         }
 
         _body.resize(totalReceived);
@@ -415,6 +423,42 @@ size_t r_server_request::get_max_body_size() const
     return _maxBodySize;
 }
 
+void r_server_request::set_read_deadline(uint64_t deadline_millis)
+{
+    _readDeadlineMillis = deadline_millis;
+}
+
+uint64_t r_server_request::get_read_deadline() const
+{
+    return _readDeadlineMillis;
+}
+
+int r_server_request::_recv_some(r_socket_base& socket, void* buf, size_t len, uint64_t timeout_millis)
+{
+    uint64_t wait = timeout_millis;
+    // The wait ends at the deadline (rounded up to a whole ms): nothing by then is the deadline's, not a timeout.
+    bool until_deadline = false;
+    if(_readDeadlineMillis > 0)
+    {
+        auto left_us = chrono::duration_cast<chrono::microseconds>(_readDeadlineAt - chrono::steady_clock::now()).count();
+        if(left_us <= 0)
+            R_STHROW(r_http_408_exception, ("Request not read within %llu ms.", (unsigned long long)_readDeadlineMillis));
+        uint64_t left = ((uint64_t)left_us + 999) / 1000;
+        if(left <= wait)
+        {
+            wait = left;
+            until_deadline = true;
+        }
+    }
+    if(!socket.wait_till_recv_wont_block(wait))
+    {
+        if(until_deadline)
+            R_STHROW(r_http_408_exception, ("Request not read within %llu ms.", (unsigned long long)_readDeadlineMillis));
+        R_STHROW(r_socket_exception, ("recv timeout"));
+    }
+    return socket.recv(buf, len);
+}
+
 bool r_server_request::_read_line(r_socket_base& socket, string& line, uint64_t timeout_millis)
 {
     line.clear();
@@ -435,7 +479,7 @@ bool r_server_request::_read_line(r_socket_base& socket, string& line, uint64_t 
     // Read from socket
     while(socket.valid())
     {
-        int received = r_networking::r_recv(socket, &ch, 1, timeout_millis);
+        int received = _recv_some(socket, &ch, 1, timeout_millis);
         if(received <= 0)
             return false;
 
@@ -518,11 +562,10 @@ void r_server_request::_read_chunked_body(r_socket_base& socket, uint64_t timeou
         {
             size_t step = (size_t)min((uint64_t)BODY_READ_STEP, chunkLen - totalReceived);
             _chunk.resize(totalReceived + step);
-            int received = r_networking::r_recv(socket, &_chunk[totalReceived], step, timeout_millis);
-            if(received > 0)
-                totalReceived += received;
-            if(received < (int)step)
+            int received = _recv_some(socket, &_chunk[totalReceived], step, timeout_millis);
+            if(received <= 0)
                 break;
+            totalReceived += received;
         }
         _chunk.resize(totalReceived);
 
